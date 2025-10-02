@@ -1,6 +1,3 @@
-pub mod noop_auth_component;
-pub mod add_component;
-
 use miden_objects::account::Account;
 use miden_objects::utils::serde::{Deserializable, Serializable};
 use base64::Engine;
@@ -44,14 +41,13 @@ mod tests {
   use miden_lib::account::{auth::AuthRpoFalcon512, wallets::BasicWallet};
   use miden_objects::{
     account::AccountBuilder,
-    crypto::{dsa::rpo_falcon512::PublicKey, rand::Randomizable},
+    crypto::{dsa::rpo_falcon512::PublicKey},
   };
-  use miden_vm::Word;
 
   #[test]
   fn test_account_json_round_trip() {
     // Create a test account
-    let public_key = PublicKey::new(Word::from_random_bytes(&[0; 32]).unwrap());
+    let public_key = PublicKey::new([true; 4].into());
     let (account, _) = AccountBuilder::new([0xff; 32])
       .with_auth_component(AuthRpoFalcon512::new(public_key))
       .with_component(BasicWallet)
@@ -60,8 +56,6 @@ mod tests {
 
     // Serialize to JSON
     let json = account.to_json();
-    let json_string = serde_json::to_string(&json).unwrap();
-    let json_pretty = serde_json::to_string_pretty(&json).unwrap();
 
     // Deserialize from JSON
     let deserialized_account = Account::from_json(&json).expect("Failed to deserialize account");

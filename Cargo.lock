@@ -1346,14 +1346,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
-name = "private-state-manager"
+name = "private-state-manager-client"
+version = "0.1.0"
+dependencies = [
+ "miden-lib",
+ "miden-objects",
+ "miden-processor 0.16.4",
+ "miden-vm",
+ "private-state-manager-shared",
+ "serde_json",
+]
+
+[[package]]
+name = "private-state-manager-server"
+version = "0.1.0"
+dependencies = [
+ "private-state-manager-shared",
+]
+
+[[package]]
+name = "private-state-manager-shared"
 version = "0.1.0"
 dependencies = [
  "base64",
  "miden-lib",
  "miden-objects",
- "miden-processor 0.16.4",
- "miden-vm",
  "serde_json",
 ]
 
