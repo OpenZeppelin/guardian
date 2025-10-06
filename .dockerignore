@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+target/
+**/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# Local data
+*.sqlite3
+keystore/
+store.sqlite3
+
+# Documentation
+README.md
+*.md
+
+# Config files
+miden-client.toml
+
+# Templates
+templates/
