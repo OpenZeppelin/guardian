@@ -1,72 +1,77 @@
+use base64::Engine;
 use miden_objects::account::Account;
 use miden_objects::utils::serde::{Deserializable, Serializable};
-use base64::Engine;
 
 pub trait ToJson {
-  fn to_json(&self) -> serde_json::Value;
+    fn to_json(&self) -> serde_json::Value;
 }
 
 pub trait FromJson: Sized {
-  fn from_json(json: &serde_json::Value) -> Result<Self, String>;
+    fn from_json(json: &serde_json::Value) -> Result<Self, String>;
 }
 
 impl ToJson for Account {
-  fn to_json(&self) -> serde_json::Value {
-    let bytes = self.to_bytes();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    serde_json::json!({
-      "data": encoded,
-      "account_id": self.id().to_hex(),
-    })
-  }
+    fn to_json(&self) -> serde_json::Value {
+        let bytes = self.to_bytes();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        serde_json::json!({
+          "data": encoded,
+          "account_id": self.id().to_hex(),
+        })
+    }
 }
 
 impl FromJson for Account {
-  fn from_json(json: &serde_json::Value) -> Result<Self, String> {
-    let encoded = json.get("data")
-      .and_then(|v| v.as_str())
-      .ok_or("Missing or invalid 'data' field")?;
+    fn from_json(json: &serde_json::Value) -> Result<Self, String> {
+        let encoded = json
+            .get("data")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing or invalid 'data' field")?;
 
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
-      .map_err(|e| format!("Base64 decode error: {}", e))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|e| format!("Base64 decode error: {}", e))?;
 
-    Account::read_from_bytes(&bytes)
-      .map_err(|e| format!("Deserialization error: {}", e))
-  }
+        Account::read_from_bytes(&bytes).map_err(|e| format!("Deserialization error: {}", e))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use miden_lib::account::{auth::AuthRpoFalcon512, wallets::BasicWallet};
-  use miden_objects::{
-    account::AccountBuilder,
-    crypto::{dsa::rpo_falcon512::PublicKey},
-  };
+    use super::*;
+    use miden_lib::account::{auth::AuthRpoFalcon512, wallets::BasicWallet};
+    use miden_objects::{account::AccountBuilder, crypto::dsa::rpo_falcon512::PublicKey};
 
-  #[test]
-  fn test_account_json_round_trip() {
-    // Create a test account
-    let public_key = PublicKey::new([true; 4].into());
-    let (account, _) = AccountBuilder::new([0xff; 32])
-      .with_auth_component(AuthRpoFalcon512::new(public_key))
-      .with_component(BasicWallet)
-      .build()
-      .unwrap();
+    #[test]
+    fn test_account_json_round_trip() {
+        // Create a test account
+        let public_key = PublicKey::new([true; 4].into());
+        let (account, _) = AccountBuilder::new([0xff; 32])
+            .with_auth_component(AuthRpoFalcon512::new(public_key))
+            .with_component(BasicWallet)
+            .build()
+            .unwrap();
 
-    // Serialize to JSON
-    let json = account.to_json();
+        // Serialize to JSON
+        let json = account.to_json();
 
-    // Deserialize from JSON
-    let deserialized_account = Account::from_json(&json).expect("Failed to deserialize account");
+        // Deserialize from JSON
+        let deserialized_account =
+            Account::from_json(&json).expect("Failed to deserialize account");
 
-    // Verify round-trip
-    assert_eq!(account.id(), deserialized_account.id());
-    assert_eq!(account.nonce(), deserialized_account.nonce());
-    assert_eq!(account.commitment(), deserialized_account.commitment());
-    assert_eq!(account.storage().commitment(), deserialized_account.storage().commitment());
-    assert_eq!(account.code().commitment(), deserialized_account.code().commitment());
+        // Verify round-trip
+        assert_eq!(account.id(), deserialized_account.id());
+        assert_eq!(account.nonce(), deserialized_account.nonce());
+        assert_eq!(account.commitment(), deserialized_account.commitment());
+        assert_eq!(
+            account.storage().commitment(),
+            deserialized_account.storage().commitment()
+        );
+        assert_eq!(
+            account.code().commitment(),
+            deserialized_account.code().commitment()
+        );
 
-    println!("Round-trip test passed!");
-  }
+        println!("Round-trip test passed!");
+    }
 }

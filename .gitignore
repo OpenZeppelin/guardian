@@ -3,3 +3,4 @@ store.sqlite3
 keystore/
 miden-client.toml
 templates/
+.env
