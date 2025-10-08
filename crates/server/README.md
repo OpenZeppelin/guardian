@@ -2,38 +2,38 @@
 
 Server for managing private account states and deltas.
 
-## Configuration
+### Configuration
 
-### Environment Variables
+#### Environment Variables
 
 - `PSM_APP_PATH` - Base directory for filesystem storage (default: `/var/psm/app`)
 
-### Storage Backends
+#### Storage Backends
 
 Currently supported:
 - **Filesystem** - Local file-based storage (default)
 
-## API Endpoints
+### API Endpoints
 
-### POST /configure
+POST `/configure`
 Configure a new account with initial state.
 
-### POST /delta
+POST `/delta`
 Submit a new delta for an account.
 
-### GET /delta
+GET `/delta`
 Retrieve a specific delta by account ID and nonce.
 
-### GET /head
+GET `/head`
 Get the latest delta (highest nonce) for an account.
 
-### GET /state
+GET `/state`
 Retrieve the current state of an account.
 
 
-## Testing with curl
+### Testing with curl
 
-### 1. Configure an account
+#### 1. Configure an account
 
 ```bash
 curl -X POST http://localhost:3000/configure \
@@ -47,7 +47,7 @@ curl -X POST http://localhost:3000/configure \
   }'
 ```
 
-### 2. Push a delta
+#### 2. Push a delta
 
 ```bash
 curl -X POST http://localhost:3000/delta \
@@ -70,19 +70,19 @@ curl -X POST http://localhost:3000/delta \
   }'
 ```
 
-### 3. Get a specific delta
+#### 3. Get a specific delta
 
 ```bash
 curl "http://localhost:3000/delta?account_id=alice&nonce=1"
 ```
 
-### 4. Get the latest delta (head)
+#### 4. Get the latest delta (head)
 
 ```bash
 curl "http://localhost:3000/head?account_id=alice"
 ```
 
-### 5. Get account state
+#### 5. Get account state
 
 ```bash
 curl "http://localhost:3000/state?account_id=alice"

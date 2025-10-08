@@ -2,27 +2,27 @@
 
 Warning: This is a work in progress.
 
-## Project Structure
+### Project Structure
 
 - **[crates/server](crates/server/README.md)** - Server for managing private account states and deltas
 - **crates/client** - Client side SDK
 - **crates/shared** - Shared types and utilities
 
-## Quick Start
+### Quick Start
 
 See the [Server README](crates/server/README.md) for detailed API documentation and usage examples.
 
-## Configuration
+### Configuration
 
-### Environment Variables
+#### Environment Variables
 
 - `PSM_APP_PATH` - Base directory for PSM writes (default: `/var/psm/app`)
 - `PSM_ENV` - Environment (default: `dev`)
 - `RUST_LOG` - Logging level (default: `info`)
 
-## Running
+### Running
 
-### Running with Docker Compose
+#### Running with Docker Compose
 
 1. Copy `.env.example` to `.env`
 
@@ -52,7 +52,7 @@ docker-compose down
 
 The server will be available at `http://localhost:3000`
 
-## Local Storage structure
+### Local Storage structure
 
 ```
 /var/psm/
