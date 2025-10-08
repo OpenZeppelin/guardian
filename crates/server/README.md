@@ -13,6 +13,15 @@ Server for managing private account states and deltas.
 Currently supported:
 - **Filesystem** - Local file-based storage (default)
 
+#### Metadata Storage
+
+Account metadata is stored in `.metadata/accounts.json` and includes:
+- `account_id` - Unique identifier for the account
+- `storage_type` - Backend storage type (e.g., "local")
+- `cosigner_pubkeys` - List of authorized cosigner public keys
+- `created_at` - Account creation timestamp (ISO 8601)
+- `updated_at` - Last update timestamp (ISO 8601)
+
 ### API Endpoints
 
 POST `/configure`

@@ -57,8 +57,10 @@ The server will be available at `http://localhost:3000`
 ```
 /var/psm/
 ├── app/                           # Write directory (PSM only)
+│   ├── .metadata/
+│   │   └── accounts.json         # Account metadata (storage type, cosigner pubkeys, timestamps)
 │   └── {account_id}/
 │       ├── state.json            # Current account state
-        └── deltas/
-            └── {nonce}.json      # Individual 
+│       └── deltas/
+│           └── {nonce}.json      # Individual deltas
 ```

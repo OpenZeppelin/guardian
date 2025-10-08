@@ -4,10 +4,11 @@ use axum::{routing::get, routing::post, Router};
 
 pub mod config;
 pub mod handlers;
+pub mod metadata;
 pub mod state;
 pub mod storage;
 
-use config::initialize_storage;
+use config::{initialize_metadata, initialize_storage};
 use handlers::{configure, get_delta, get_delta_head, get_state, push_delta};
 use state::AppState;
 
@@ -15,16 +16,18 @@ async fn root() -> &'static str {
     "Hello, World!"
 }
 
+/// Main server entrypoint.
 pub async fn run() {
-    // Initialize storage backend
+    let metadata = initialize_metadata()
+        .await
+        .expect("Failed to initialize metadata");
+
     let storage = initialize_storage()
         .await
         .expect("Failed to initialize storage");
 
-    // Create shared application state
-    let app_state = AppState { storage };
+    let app_state = AppState { storage, metadata };
 
-    // Build router
     let app = Router::new()
         .route("/", get(root))
         .route("/delta", post(push_delta))
@@ -34,7 +37,6 @@ pub async fn run() {
         .route("/state", get(get_state))
         .with_state(app_state);
 
-    // Start server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .unwrap();

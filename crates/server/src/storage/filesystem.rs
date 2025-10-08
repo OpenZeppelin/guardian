@@ -45,7 +45,9 @@ impl FilesystemService {
                 .map_err(|e| format!("Failed to create parent directory: {}", e))?;
         }
 
-        // Write to temp file in app directory
+        // Write to temp file first to ensure atomic operation:
+        // If process crashes during write, original file remains intact.
+        // The rename operation below is atomic on Unix/Linux.
         let temp_path = app_path.with_extension("tmp");
         let mut file = fs::File::create(&temp_path)
             .await
@@ -70,7 +72,7 @@ impl FilesystemService {
     }
 
     /// Get the app path for an account's state file
-    fn get_state_app_path(&self, account_id: &str) -> PathBuf {
+    fn get_state_path(&self, account_id: &str) -> PathBuf {
         self.config
             .app_path
             .join(account_id)
@@ -78,7 +80,7 @@ impl FilesystemService {
     }
 
     /// Get the app path for a delta file
-    fn get_delta_app_path(&self, account_id: &str, nonce: u64) -> PathBuf {
+    fn get_delta_path(&self, account_id: &str, nonce: u64) -> PathBuf {
         self.config
             .app_path
             .join(account_id)
@@ -93,7 +95,7 @@ impl StorageBackend for FilesystemService {
         let content = serde_json::to_string_pretty(state)
             .map_err(|e| format!("Failed to serialize state: {}", e))?;
 
-        let app_path = self.get_state_app_path(&state.account_id);
+        let app_path = self.get_state_path(&state.account_id);
 
         self.write(&app_path, &content).await
     }
@@ -102,13 +104,13 @@ impl StorageBackend for FilesystemService {
         let content = serde_json::to_string_pretty(delta)
             .map_err(|e| format!("Failed to serialize delta: {}", e))?;
 
-        let app_path = self.get_delta_app_path(&delta.account_id, delta.nonce);
+        let app_path = self.get_delta_path(&delta.account_id, delta.nonce);
 
         self.write(&app_path, &content).await
     }
 
     async fn pull_state(&self, account_id: &str) -> Result<AccountState, String> {
-        let app_path = self.get_state_app_path(account_id);
+        let app_path = self.get_state_path(account_id);
 
         let content = fs::read_to_string(&app_path)
             .await
@@ -121,7 +123,7 @@ impl StorageBackend for FilesystemService {
     }
 
     async fn pull_delta(&self, account_id: &str, nonce: u64) -> Result<DeltaObject, String> {
-        let app_path = self.get_delta_app_path(account_id, nonce);
+        let app_path = self.get_delta_path(account_id, nonce);
 
         let content = fs::read_to_string(&app_path)
             .await
