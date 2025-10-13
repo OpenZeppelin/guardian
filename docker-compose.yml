@@ -6,7 +6,8 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "3000:3000"    # HTTP
+      - "50051:50051"  # gRPC
     volumes:
       - psm-app:/var/psm/app
     environment:
