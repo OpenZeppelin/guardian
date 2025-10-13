@@ -44,10 +44,17 @@ async fn run_grpc_server(app_state: AppState) {
     let addr = "0.0.0.0:50051".parse().unwrap();
     let service = StateManagerService { app_state };
 
+    // Enable gRPC reflection
+    let reflection_service = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(grpc::state_manager::FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .unwrap();
+
     println!("gRPC server listening on {}", addr);
 
     Server::builder()
         .add_service(StateManagerServer::new(service))
+        .add_service(reflection_service)
         .serve(addr)
         .await
         .unwrap();
@@ -65,7 +72,6 @@ pub async fn run() {
 
     let app_state = AppState { storage, metadata };
 
-    // Clone app_state for the gRPC server
     let grpc_app_state = AppState {
         storage: app_state.storage.clone(),
         metadata: app_state.metadata.clone(),

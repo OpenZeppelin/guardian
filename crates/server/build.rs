@@ -1,4 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::compile_protos("proto/state_manager.proto")?;
+    tonic_build::configure()
+        .file_descriptor_set_path("proto/state_manager_descriptor.bin")
+        .compile_protos(&["proto/state_manager.proto"], &["proto"])?;
     Ok(())
 }

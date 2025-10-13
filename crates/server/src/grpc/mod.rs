@@ -6,6 +6,10 @@ use tonic::{Request, Response, Status};
 // Include the generated protobuf code
 pub mod state_manager {
     tonic::include_proto!("state_manager");
+
+    // Include the file descriptor set for reflection
+    pub const FILE_DESCRIPTOR_SET: &[u8] =
+        include_bytes!("../../proto/state_manager_descriptor.bin");
 }
 
 use state_manager::state_manager_server::StateManager;
