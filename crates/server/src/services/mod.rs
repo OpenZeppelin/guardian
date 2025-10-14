@@ -18,17 +18,17 @@ impl ServiceError {
     }
 }
 
-/// Verify that the publisher public key is authorized (in the cosigner list)
-fn verify_publisher_authorized(
+/// Verify that the public key is authorized (in the cosigner list)
+fn verify_authorized(
     account_metadata: &AccountMetadata,
-    publisher_pubkey: &str,
+    pubkey: &str,
 ) -> ServiceResult<()> {
-    if account_metadata.cosigner_pubkeys.contains(&publisher_pubkey.to_string()) {
+    if account_metadata.cosigner_pubkeys.contains(&pubkey.to_string()) {
         Ok(())
     } else {
         Err(ServiceError::new(format!(
-            "Publisher public key '{}' is not authorized for account '{}'",
-            publisher_pubkey, account_metadata.account_id
+            "Public key '{}' is not authorized for account '{}'",
+            pubkey, account_metadata.account_id
         )))
     }
 }
@@ -38,15 +38,15 @@ fn verify_request_auth(
     auth_type: &AuthType,
     account_metadata: &AccountMetadata,
     account_id: &str,
-    publisher_pubkey: &str,
-    publisher_sig: &str,
+    pubkey: &str,
+    signature: &str,
 ) -> ServiceResult<()> {
-    // Check if publisher is authorized
-    verify_publisher_authorized(account_metadata, publisher_pubkey)?;
+    // Check if public key is authorized
+    verify_authorized(account_metadata, pubkey)?;
 
     // Verify signature
     auth_type
-        .verify_signature(account_id, publisher_pubkey, publisher_sig)
+        .verify_signature(account_id, pubkey, signature)
         .map_err(|e| ServiceError::new(format!("Signature verification failed: {}", e)))
 }
 
@@ -102,8 +102,8 @@ pub async fn configure_account(
 pub async fn push_delta(
     state: &AppState,
     delta: DeltaObject,
-    publisher_pubkey: String,
-    publisher_sig: String,
+    pubkey: String,
+    signature: String,
 ) -> ServiceResult<DeltaObject> {
     // Verify account exists
     let metadata = state.metadata.lock().await;
@@ -117,8 +117,8 @@ pub async fn push_delta(
         &account_metadata.auth_type,
         &account_metadata,
         &delta.account_id,
-        &publisher_pubkey,
-        &publisher_sig,
+        &pubkey,
+        &signature,
     )?;
 
     // TODO: Verify prev_commitment matches current state commitment
@@ -137,8 +137,8 @@ pub async fn get_delta(
     state: &AppState,
     account_id: &str,
     nonce: u64,
-    publisher_pubkey: String,
-    publisher_sig: String,
+    pubkey: String,
+    signature: String,
 ) -> ServiceResult<DeltaObject> {
     // Verify account exists
     let metadata = state.metadata.lock().await;
@@ -152,8 +152,8 @@ pub async fn get_delta(
         &account_metadata.auth_type,
         &account_metadata,
         account_id,
-        &publisher_pubkey,
-        &publisher_sig,
+        &pubkey,
+        &signature,
     )?;
 
     // Fetch delta from storage
@@ -167,8 +167,8 @@ pub async fn get_delta(
 pub async fn get_delta_head(
     state: &AppState,
     account_id: &str,
-    publisher_pubkey: String,
-    publisher_sig: String,
+    pubkey: String,
+    signature: String,
 ) -> ServiceResult<DeltaObject> {
     // Verify account exists
     let metadata = state.metadata.lock().await;
@@ -182,8 +182,8 @@ pub async fn get_delta_head(
         &account_metadata.auth_type,
         &account_metadata,
         account_id,
-        &publisher_pubkey,
-        &publisher_sig,
+        &pubkey,
+        &signature,
     )?;
 
     let delta_files = state.storage.list_deltas(account_id).await
@@ -217,8 +217,8 @@ pub async fn get_delta_head(
 pub async fn get_latest_nonce(
     state: &AppState,
     account_id: &str,
-    publisher_pubkey: String,
-    publisher_sig: String,
+    pubkey: String,
+    signature: String,
 ) -> ServiceResult<Option<u64>> {
     // Verify account exists
     let metadata = state.metadata.lock().await;
@@ -232,8 +232,8 @@ pub async fn get_latest_nonce(
         &account_metadata.auth_type,
         &account_metadata,
         account_id,
-        &publisher_pubkey,
-        &publisher_sig,
+        &pubkey,
+        &signature,
     )?;
 
     let delta_files = state.storage.list_deltas(account_id).await
@@ -260,8 +260,8 @@ pub async fn get_latest_nonce(
 pub async fn get_state(
     state: &AppState,
     account_id: &str,
-    publisher_pubkey: String,
-    publisher_sig: String,
+    pubkey: String,
+    signature: String,
 ) -> ServiceResult<AccountState> {
     // Verify account exists
     let metadata = state.metadata.lock().await;
@@ -275,8 +275,8 @@ pub async fn get_state(
         &account_metadata.auth_type,
         &account_metadata,
         account_id,
-        &publisher_pubkey,
-        &publisher_sig,
+        &pubkey,
+        &signature,
     )?;
 
     let account_state = state.storage.pull_state(account_id).await

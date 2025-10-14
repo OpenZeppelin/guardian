@@ -20,9 +20,9 @@ pub struct StateManagerService {
     pub app_state: AppState,
 }
 
-/// Extract publisher authentication data from gRPC metadata
+/// Extract authentication data from gRPC metadata
 fn extract_auth(metadata: &tonic::metadata::MetadataMap) -> Result<(String, String), Status> {
-    let publisher_pubkey = metadata
+    let pubkey = metadata
         .get("x-pubkey")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| Status::invalid_argument("Missing or invalid x-pubkey metadata"))?
@@ -79,8 +79,8 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<PushDeltaRequest>,
     ) -> Result<Response<PushDeltaResponse>, Status> {
-        // Extract publisher authentication data from metadata
-        let (publisher_pubkey, publisher_sig) = extract_publisher_auth(request.metadata())?;
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
 
         let req = request.into_inner();
 
@@ -102,7 +102,7 @@ impl StateManager for StateManagerService {
         };
 
         // Call service layer
-        match services::push_delta(&self.app_state, delta, publisher_pubkey, publisher_sig).await {
+        match services::push_delta(&self.app_state, delta, pubkey, signature).await {
             Ok(delta) => Ok(Response::new(PushDeltaResponse {
                 success: true,
                 message: "Delta pushed successfully".to_string(),
@@ -120,13 +120,13 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<GetDeltaRequest>,
     ) -> Result<Response<GetDeltaResponse>, Status> {
-        // Extract publisher authentication data from metadata
-        let (publisher_pubkey, publisher_sig) = extract_publisher_auth(request.metadata())?;
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
 
         let req = request.into_inner();
 
         // Call service layer
-        match services::get_delta(&self.app_state, &req.account_id, req.nonce, publisher_pubkey, publisher_sig).await {
+        match services::get_delta(&self.app_state, &req.account_id, req.nonce, pubkey, signature).await {
             Ok(delta) => Ok(Response::new(GetDeltaResponse {
                 success: true,
                 message: "Delta retrieved successfully".to_string(),
@@ -144,13 +144,13 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<GetDeltaHeadRequest>,
     ) -> Result<Response<GetDeltaHeadResponse>, Status> {
-        // Extract publisher authentication data from metadata
-        let (publisher_pubkey, publisher_sig) = extract_publisher_auth(request.metadata())?;
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
 
         let req = request.into_inner();
 
         // Call service layer
-        match services::get_latest_nonce(&self.app_state, &req.account_id, publisher_pubkey, publisher_sig).await {
+        match services::get_latest_nonce(&self.app_state, &req.account_id, pubkey, signature).await {
             Ok(latest_nonce) => Ok(Response::new(GetDeltaHeadResponse {
                 success: true,
                 message: if latest_nonce.is_some() {
@@ -172,13 +172,13 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<GetStateRequest>,
     ) -> Result<Response<GetStateResponse>, Status> {
-        // Extract publisher authentication data from metadata
-        let (publisher_pubkey, publisher_sig) = extract_publisher_auth(request.metadata())?;
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
 
         let req = request.into_inner();
 
         // Call service layer
-        match services::get_state(&self.app_state, &req.account_id, publisher_pubkey, publisher_sig).await {
+        match services::get_state(&self.app_state, &req.account_id, pubkey, signature).await {
             Ok(state) => Ok(Response::new(GetStateResponse {
                 success: true,
                 message: "State retrieved successfully".to_string(),

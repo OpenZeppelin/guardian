@@ -88,6 +88,8 @@ curl -X POST http://localhost:3000/configure \
 ```bash
 curl -X POST http://localhost:3000/delta \
   -H "Content-Type: application/json" \
+  -H "x-pubkey: pubkey_xyz" \
+  -H "x-signature: signature_xyz" \
   -d '{
     "account_id": "alice",
     "nonce": 1,
@@ -98,8 +100,6 @@ curl -X POST http://localhost:3000/delta \
       "amount": 100
     },
     "ack_sig": "ack_signature",
-    "publisher_pubkey": "pubkey_xyz",
-    "publisher_sig": "publisher_signature",
     "candidate_at": "2025-10-08T12:00:00Z",
     "canonical_at": null,
     "discarded_at": null
@@ -148,15 +148,13 @@ grpcurl -plaintext -d '{
 
 #### 3. Push a delta
 ```bash
-grpcurl -plaintext -d '{
+grpcurl -plaintext -d '-H "x-pubkey: pubkey_xyz" -H "x-signature: signature_xyz"' '{
   "account_id": "alice",
   "nonce": 1,
   "prev_commitment": "prev_commit_hash",
   "delta_hash": "delta_hash_123",
   "delta_payload": "{\"operation\":\"transfer\",\"amount\":100}",
   "ack_sig": "ack_signature",
-  "publisher_pubkey": "pubkey_xyz",
-  "publisher_sig": "publisher_signature",
   "candidate_at": "2025-10-08T12:00:00Z"
 }' localhost:50051 state_manager.StateManager/PushDelta
 ```
