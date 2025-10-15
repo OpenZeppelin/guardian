@@ -1,31 +1,14 @@
 use crate::storage::{AccountMetadata, AccountState, DeltaObject, MetadataStore, StorageBackend};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
-#[derive(Clone, Debug)]
-pub struct FilesystemConfig {
-    pub app_path: PathBuf,
-}
-
-impl FilesystemConfig {
-    /// Load configuration from environment variables
-    pub fn from_env() -> Result<Self, String> {
-        let app_path = env::var("PSM_APP_PATH")
-            .unwrap_or_else(|_| "/var/psm/app".to_string())
-            .into();
-
-        Ok(Self { app_path })
-    }
-}
-
 pub struct FilesystemService {
-    config: FilesystemConfig,
+    app_path: PathBuf,
 }
 
 /// Filesystem-based metadata store
@@ -38,13 +21,13 @@ pub struct FilesystemMetadataStore {
 
 impl FilesystemService {
     /// Create a new FilesystemService
-    pub async fn new(config: FilesystemConfig) -> Result<Self, String> {
+    pub async fn new(app_path: PathBuf) -> Result<Self, String> {
         // Validate that base directories exist or can be created
-        fs::create_dir_all(&config.app_path)
+        fs::create_dir_all(&app_path)
             .await
             .map_err(|e| format!("Failed to create app directory: {e}"))?;
 
-        Ok(Self { config })
+        Ok(Self { app_path })
     }
 
     /// Atomically write a file
@@ -82,15 +65,14 @@ impl FilesystemService {
         Ok(())
     }
 
-    /// Get the app path for an account's state file
+    /// Get the path for an account's state file
     fn get_state_path(&self, account_id: &str) -> PathBuf {
-        self.config.app_path.join(account_id).join("state.json")
+        self.app_path.join(account_id).join("state.json")
     }
 
-    /// Get the app path for a delta file
+    /// Get the path for a delta file
     fn get_delta_path(&self, account_id: &str, nonce: u64) -> PathBuf {
-        self.config
-            .app_path
+        self.app_path
             .join(account_id)
             .join("deltas")
             .join(format!("{nonce}.json"))
@@ -144,7 +126,7 @@ impl StorageBackend for FilesystemService {
     }
 
     async fn list_deltas(&self, account_id: &str) -> Result<Vec<String>, String> {
-        let deltas_dir = self.config.app_path.join(account_id).join("deltas");
+        let deltas_dir = self.app_path.join(account_id).join("deltas");
 
         // If directory doesn't exist, return empty list
         if !deltas_dir.exists() {

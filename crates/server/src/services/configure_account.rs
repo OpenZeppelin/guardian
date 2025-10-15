@@ -23,7 +23,7 @@ pub async fn configure_account(
     state: &AppState,
     params: ConfigureAccountParams,
 ) -> ServiceResult<ConfigureAccountResult> {
-    // Validate account ID format based on system type
+    // Validate account ID format based on network type
     state
         .validate_account_id(&params.account_id)
         .map_err(ServiceError::new)?;

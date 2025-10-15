@@ -9,7 +9,7 @@ use tower::{Service, ServiceExt}; // For making service calls
 use server::api::http;
 use server::network::NetworkType;
 use server::state::AppState;
-use server::storage::filesystem::{FilesystemConfig, FilesystemMetadataStore, FilesystemService};
+use server::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
 
 use miden_objects::account::{AccountId, AccountIdVersion, AccountStorageMode, AccountType};
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
@@ -63,16 +63,16 @@ fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String) {
 /// Helper to create test app state
 async fn create_test_app_state() -> AppState {
     // Create temporary directory for test storage
-    let test_dir = std::env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&test_dir).expect("Failed to create test directory");
+    let storage_dir = std::env::temp_dir().join(format!("psm_test_storage_{}", uuid::Uuid::new_v4()));
+    let metadata_dir = std::env::temp_dir().join(format!("psm_test_metadata_{}", uuid::Uuid::new_v4()));
 
-    let config = FilesystemConfig {
-        app_path: test_dir.clone(),
-    };
-    let storage = FilesystemService::new(config.clone())
+    std::fs::create_dir_all(&storage_dir).expect("Failed to create storage directory");
+    std::fs::create_dir_all(&metadata_dir).expect("Failed to create metadata directory");
+
+    let storage = FilesystemService::new(storage_dir)
         .await
         .expect("Failed to create storage");
-    let metadata = FilesystemMetadataStore::new(config.app_path)
+    let metadata = FilesystemMetadataStore::new(metadata_dir)
         .await
         .expect("Failed to create metadata");
 
