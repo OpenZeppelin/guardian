@@ -5,7 +5,7 @@ use tonic::transport::Server;
 
 pub mod api;
 pub mod auth;
-pub mod config;
+pub mod network;
 pub mod services;
 pub mod state;
 pub mod storage;
@@ -13,8 +13,10 @@ pub mod storage;
 use api::grpc::StateManagerService;
 use api::grpc::state_manager::state_manager_server::StateManagerServer;
 use api::http::{configure, get_delta, get_delta_head, get_state, push_delta};
-use config::{initialize_metadata, initialize_storage};
+use network::NetworkType;
 use state::AppState;
+use std::sync::Arc;
+use storage::filesystem::{FilesystemConfig, FilesystemMetadataStore, FilesystemService};
 
 async fn root() -> &'static str {
     "Hello, World!"
@@ -62,19 +64,27 @@ async fn run_grpc_server(app_state: AppState) {
 
 /// Main server entrypoint - runs both HTTP and gRPC servers
 pub async fn run() {
-    let metadata = initialize_metadata()
-        .await
-        .expect("Failed to initialize metadata");
+    // Load configuration from environment
+    let config = FilesystemConfig::from_env().expect("Failed to load configuration");
 
-    let storage = initialize_storage()
+    // Create storage and metadata stores
+    let storage = FilesystemService::new(config.clone())
         .await
-        .expect("Failed to initialize storage");
-    let app_state = AppState { storage, metadata };
+        .expect("Failed to initialize filesystem storage");
 
-    let grpc_app_state = AppState {
-        storage: app_state.storage.clone(),
-        metadata: app_state.metadata.clone(),
+    let metadata = FilesystemMetadataStore::new(config.app_path)
+        .await
+        .expect("Failed to initialize metadata store");
+
+    // Create app state with Miden network type
+    // In the future, this will be configurable via builder pattern
+    let app_state = AppState {
+        storage: Arc::new(storage),
+        metadata: Arc::new(metadata),
+        network_type: NetworkType::Miden,
     };
+
+    let grpc_app_state = app_state.clone();
 
     // Run both servers concurrently
     tokio::join!(run_http_server(app_state), run_grpc_server(grpc_app_state));

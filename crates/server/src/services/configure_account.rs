@@ -1,7 +1,6 @@
 use crate::auth::Auth;
 use crate::state::AppState;
 use crate::storage::{AccountMetadata, AccountState, StorageType};
-use miden_objects::account::AccountId;
 
 use super::common::{ServiceError, ServiceResult};
 
@@ -24,9 +23,10 @@ pub async fn configure_account(
     state: &AppState,
     params: ConfigureAccountParams,
 ) -> ServiceResult<ConfigureAccountResult> {
-    // Validate account ID format
-    AccountId::from_hex(&params.account_id)
-        .map_err(|e| ServiceError::new(format!("Invalid account ID format: {e}")))?;
+    // Validate account ID format based on system type
+    state
+        .validate_account_id(&params.account_id)
+        .map_err(ServiceError::new)?;
 
     // Check if account already exists
     let existing = state

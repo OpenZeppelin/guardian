@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tonic::{Request, metadata::MetadataValue};
 
 use server::api::grpc::{StateManagerService, state_manager::*};
+use server::network::NetworkType;
 use server::state::AppState;
 use server::storage::filesystem::{FilesystemConfig, FilesystemMetadataStore, FilesystemService};
 
@@ -73,6 +74,7 @@ async fn create_test_app_state() -> AppState {
     AppState {
         storage: Arc::new(storage),
         metadata: Arc::new(metadata),
+        network_type: NetworkType::Miden,
     }
 }
 

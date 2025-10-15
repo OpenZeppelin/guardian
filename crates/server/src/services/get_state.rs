@@ -2,7 +2,7 @@ use crate::auth::Credentials;
 use crate::state::AppState;
 use crate::storage::AccountState;
 
-use super::common::{verify_request_auth, ServiceError, ServiceResult};
+use super::common::{ServiceError, ServiceResult, verify_request_auth};
 
 #[derive(Debug, Clone)]
 pub struct GetStateParams {

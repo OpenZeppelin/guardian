@@ -2,7 +2,7 @@ use crate::auth::Credentials;
 use crate::state::AppState;
 use crate::storage::DeltaObject;
 
-use super::common::{verify_request_auth, ServiceError, ServiceResult};
+use super::common::{ServiceError, ServiceResult, verify_request_auth};
 
 #[derive(Debug, Clone)]
 pub struct GetDeltaHeadParams {
@@ -43,7 +43,10 @@ pub async fn get_delta_head(
         .await
         .map_err(|e| ServiceError::new(format!("Failed to get latest nonce: {e}")))?
         .ok_or_else(|| {
-            ServiceError::new(format!("No deltas found for account '{}'", params.account_id))
+            ServiceError::new(format!(
+                "No deltas found for account '{}'",
+                params.account_id
+            ))
         })?;
 
     // Fetch the latest delta

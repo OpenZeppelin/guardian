@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tower::{Service, ServiceExt}; // For making service calls
 
 use server::api::http;
+use server::network::NetworkType;
 use server::state::AppState;
 use server::storage::filesystem::{FilesystemConfig, FilesystemMetadataStore, FilesystemService};
 
@@ -78,6 +79,7 @@ async fn create_test_app_state() -> AppState {
     AppState {
         storage: Arc::new(storage),
         metadata: Arc::new(metadata),
+        network_type: NetworkType::Miden,
     }
 }
 
