@@ -10,6 +10,8 @@ use server::api::http;
 use server::network::NetworkType;
 use server::state::AppState;
 use server::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
+use server::storage::{StorageBackend, StorageRegistry, StorageType};
+use std::collections::HashMap;
 
 use miden_objects::account::{AccountId, AccountIdVersion, AccountStorageMode, AccountType};
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
@@ -78,8 +80,13 @@ async fn create_test_app_state() -> AppState {
         .await
         .expect("Failed to create metadata");
 
+    // Create storage registry
+    let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
+    storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
+    let storage_registry = StorageRegistry::new(storage_backends);
+
     AppState {
-        storage: Arc::new(storage),
+        storage: storage_registry,
         metadata: Arc::new(metadata),
         network_type: NetworkType::Miden,
     }

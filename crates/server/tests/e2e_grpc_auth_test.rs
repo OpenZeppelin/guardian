@@ -5,6 +5,8 @@ use server::api::grpc::{StateManagerService, state_manager::*};
 use server::network::NetworkType;
 use server::state::AppState;
 use server::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
+use server::storage::{StorageBackend, StorageRegistry, StorageType};
+use std::collections::HashMap;
 
 /// Helper to create AuthConfig for Miden Falcon RPO
 fn create_miden_falcon_rpo_auth(cosigner_pubkeys: Vec<String>) -> AuthConfig {
@@ -82,8 +84,13 @@ async fn create_test_app_state() -> AppState {
         .await
         .expect("Failed to create metadata");
 
+    // Create storage registry
+    let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
+    storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
+    let storage_registry = StorageRegistry::new(storage_backends);
+
     AppState {
-        storage: Arc::new(storage),
+        storage: storage_registry,
         metadata: Arc::new(metadata),
         network_type: NetworkType::Miden,
     }

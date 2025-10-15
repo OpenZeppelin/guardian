@@ -40,9 +40,14 @@ pub async fn push_delta(
     // TODO: Verify prev_commitment matches current state commitment
     // TODO: Verify new commitment vs on-chain commitment in time window.
 
-    // Submit delta to storage
-    state
+    // Get the storage backend for this account
+    let storage_backend = state
         .storage
+        .get(&account_metadata.storage_type)
+        .map_err(ServiceError::new)?;
+
+    // Submit delta to storage
+    storage_backend
         .submit_delta(&params.delta)
         .await
         .map_err(|e| ServiceError::new(format!("Failed to submit delta: {e}")))?;

@@ -33,9 +33,14 @@ pub async fn get_delta(state: &AppState, params: GetDeltaParams) -> ServiceResul
         &params.credentials,
     )?;
 
-    // Fetch delta from storage
-    let delta = state
+    // Get the storage backend for this account
+    let storage_backend = state
         .storage
+        .get(&account_metadata.storage_type)
+        .map_err(ServiceError::new)?;
+
+    // Fetch delta from storage
+    let delta = storage_backend
         .pull_delta(&params.account_id, params.nonce)
         .await
         .map_err(|e| ServiceError::new(format!("Failed to fetch delta: {e}")))?;

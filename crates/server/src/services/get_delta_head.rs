@@ -35,9 +35,14 @@ pub async fn get_delta_head(
         &params.credentials,
     )?;
 
-    // Get the latest nonce from storage
-    let latest_nonce = state
+    // Get the storage backend for this account
+    let storage_backend = state
         .storage
+        .get(&account_metadata.storage_type)
+        .map_err(ServiceError::new)?;
+
+    // Get the latest nonce from storage
+    let latest_nonce = storage_backend
         .get_delta_head(&params.account_id)
         .await
         .map_err(|e| ServiceError::new(format!("Failed to get latest nonce: {e}")))?
@@ -49,8 +54,7 @@ pub async fn get_delta_head(
         })?;
 
     // Fetch the latest delta
-    let delta = state
-        .storage
+    let delta = storage_backend
         .pull_delta(&params.account_id, latest_nonce)
         .await
         .map_err(|e| ServiceError::new(format!("Failed to fetch latest delta: {e}")))?;

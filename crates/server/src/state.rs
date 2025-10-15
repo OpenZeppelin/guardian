@@ -1,11 +1,11 @@
 use crate::network::NetworkType;
-use crate::storage::{MetadataStore, StorageBackend};
+use crate::storage::{MetadataStore, StorageRegistry};
 use std::sync::Arc;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
-    pub storage: Arc<dyn StorageBackend>,
+    pub storage: StorageRegistry,
     pub metadata: Arc<dyn MetadataStore>,
     pub network_type: NetworkType,
 }

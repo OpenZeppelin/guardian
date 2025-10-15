@@ -51,9 +51,14 @@ pub async fn configure_account(
         updated_at: now,
     };
 
-    // Submit initial state to storage
-    state
+    // Get the storage backend for this account's storage type
+    let storage_backend = state
         .storage
+        .get(&params.storage_type)
+        .map_err(ServiceError::new)?;
+
+    // Submit initial state to storage
+    storage_backend
         .submit_state(&account_state)
         .await
         .map_err(|e| ServiceError::new(format!("Failed to submit initial state: {e}")))?;

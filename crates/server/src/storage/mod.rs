@@ -1,19 +1,21 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::auth::Auth;
 
 pub mod filesystem;
 
-/// Storage backend type
-/// Defines which storage implementation to use for an accounts data
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Storage backend type with configuration
+/// Each variant contains storage-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum StorageType {
     /// Filesystem-based storage (local disk)
     Filesystem,
-    // Future options:
-    // S3,
-    // PostgreSQL,
+    // Future options with configs:
+    // S3 { bucket: String, region: String },
+    // PostgreSQL { connection_string: String },
 }
 
 impl Default for StorageType {
@@ -97,4 +99,42 @@ pub trait MetadataStore: Send + Sync {
 
     /// List all account IDs
     async fn list(&self) -> Result<Vec<String>, String>;
+}
+
+/// Storage registry that maps storage types to their backend implementations
+#[derive(Clone)]
+pub struct StorageRegistry {
+    backends: Arc<HashMap<StorageType, Arc<dyn StorageBackend>>>,
+}
+
+impl StorageRegistry {
+    /// Create a new storage registry from a map of storage types to backends
+    pub fn new(backends: HashMap<StorageType, Arc<dyn StorageBackend>>) -> Self {
+        Self {
+            backends: Arc::new(backends),
+        }
+    }
+
+    /// Create a storage registry with only filesystem backend (using default path)
+    ///
+    /// Uses `/var/psm/storage` as the default storage path.
+    /// For custom paths or multiple backends, use `new()` instead.
+    pub async fn with_filesystem(storage_path: std::path::PathBuf) -> Result<Self, String> {
+        use crate::storage::filesystem::FilesystemService;
+
+        let fs_storage = FilesystemService::new(storage_path).await?;
+
+        let mut backends = HashMap::new();
+        backends.insert(StorageType::Filesystem, Arc::new(fs_storage) as Arc<dyn StorageBackend>);
+
+        Ok(Self::new(backends))
+    }
+
+    /// Get a storage backend for a specific storage type
+    pub fn get(&self, storage_type: &StorageType) -> Result<Arc<dyn StorageBackend>, String> {
+        self.backends
+            .get(storage_type)
+            .cloned()
+            .ok_or_else(|| format!("No storage backend registered for type: {}", storage_type))
+    }
 }

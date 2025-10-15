@@ -32,8 +32,13 @@ pub async fn get_state(state: &AppState, params: GetStateParams) -> ServiceResul
         &params.credentials,
     )?;
 
-    let account_state = state
+    // Get the storage backend for this account
+    let storage_backend = state
         .storage
+        .get(&account_metadata.storage_type)
+        .map_err(ServiceError::new)?;
+
+    let account_state = storage_backend
         .pull_state(&params.account_id)
         .await
         .map_err(|e| ServiceError::new(format!("Failed to fetch state: {e}")))?;
