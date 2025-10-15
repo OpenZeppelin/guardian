@@ -2,29 +2,25 @@
 
 Server for managing private account states and deltas.
 
-The server supports both **HTTP REST** and **gRPC** protocols simultaneously:
-- HTTP server runs on port **3000**
-- gRPC server runs on port **50051**
+## Protocols
 
-### Configuration
+Runs both HTTP REST and gRPC simultaneously:
+- HTTP: port 3000
+- gRPC: port 50051
 
-#### Environment Variables
+## Configuration
 
-- `PSM_APP_PATH` - Base directory for filesystem storage (default: `/var/psm/app`)
+### Environment Variables
 
-#### Storage Backends
+- `PSM_STORAGE_PATH` - Storage backend path (default: `/var/psm/storage`)
+- `PSM_METADATA_PATH` - Metadata store path (default: `/var/psm/metadata`)
 
-Currently supported:
-- **Filesystem** - Local file-based storage (default)
+### Account Configuration
 
-#### Metadata Storage
-
-Account metadata is stored in `.metadata/accounts.json` and includes:
-- `account_id` - Unique identifier for the account
-- `storage_type` - Backend storage type (e.g., "local")
-- `cosigner_pubkeys` - List of authorized cosigner public keys
-- `created_at` - Account creation timestamp (ISO 8601)
-- `updated_at` - Last update timestamp (ISO 8601)
+Each account has:
+- `account_id` - Network-specific identifier
+- `auth` - Auth type with authorization data (e.g., cosigner public keys)
+- `storage_type` - Which backend stores this account's data
 
 ### API Endpoints
 
@@ -68,22 +64,24 @@ Run gRPC E2E tests:
 cargo test --package private-state-manager-server --test e2e_grpc_auth_test -- --test-threads=1
 ```
 
-### Manualesting with curl
+## Manual Testing
 
+### HTTP with curl
 
-#### Manual tests using curl
-
-#### 1. Configure an account
+#### Configure an account
 
 ```bash
 curl -X POST http://localhost:3000/configure \
   -H "Content-Type: application/json" \
   -d '{
-    "account_id": "alice",
-    "initial_state": {
-      "nonce": 0
+    "account_id": "0x1234567890abcdef1234567890abcd",
+    "auth": {
+      "MidenFalconRpo": {
+        "cosigner_pubkeys": ["0xpubkey1", "0xpubkey2"]
+      }
     },
-    "storage_type": "local"
+    "initial_state": {},
+    "storage_type": "Filesystem"
   }'
 ```
 
@@ -92,10 +90,10 @@ curl -X POST http://localhost:3000/configure \
 ```bash
 curl -X POST http://localhost:3000/delta \
   -H "Content-Type: application/json" \
-  -H "x-pubkey: pubkey_xyz" \
-  -H "x-signature: signature_xyz" \
+  -H "x-pubkey: 0xpubkey1" \
+  -H "x-signature: 0xsignature_hex" \
   -d '{
-    "account_id": "alice",
+    "account_id": "0x1234567890abcdef1234567890abcd",
     "nonce": 1,
     "prev_commitment": "prev_commit_hash",
     "delta_hash": "delta_hash_123",
@@ -104,7 +102,7 @@ curl -X POST http://localhost:3000/delta \
       "amount": 100
     },
     "ack_sig": "ack_signature",
-    "candidate_at": "2025-10-08T12:00:00Z",
+    "candidate_at": "2025-10-15T12:00:00Z",
     "canonical_at": null,
     "discarded_at": null
   }'
@@ -113,19 +111,19 @@ curl -X POST http://localhost:3000/delta \
 #### 3. Get a specific delta
 
 ```bash
-curl "http://localhost:3000/delta?account_id=alice&nonce=1"
+curl "http://localhost:3000/delta?account_id=0x1234567890abcdef1234567890abcd&nonce=1"
 ```
 
 #### 4. Get the latest delta (head)
 
 ```bash
-curl "http://localhost:3000/head?account_id=alice"
+curl "http://localhost:3000/head?account_id=0x1234567890abcdef1234567890abcd"
 ```
 
 #### 5. Get account state
 
 ```bash
-curl "http://localhost:3000/state?account_id=alice"
+curl "http://localhost:3000/state?account_id=0x1234567890abcdef1234567890abcd"
 ```
 
 ### Testing with grpcurl
@@ -143,30 +141,37 @@ grpcurl -plaintext localhost:50051 list
 #### 2. Configure an account
 ```bash
 grpcurl -plaintext -d '{
-  "account_id": "alice",
+  "account_id": "0x1234567890abcdef1234567890abcd",
+  "auth": {
+    "miden_falcon_rpo": {
+      "cosigner_pubkeys": ["0xpubkey1", "0xpubkey2"]
+    }
+  },
   "initial_state": "{}",
-  "storage_type": "local",
-  "cosigner_pubkeys": []
+  "storage_type": "Filesystem"
 }' localhost:50051 state_manager.StateManager/Configure
 ```
 
 #### 3. Push a delta
 ```bash
-grpcurl -plaintext -d '-H "x-pubkey: pubkey_xyz" -H "x-signature: signature_xyz"' '{
-  "account_id": "alice",
+grpcurl -plaintext \
+  -H "x-pubkey: 0xpubkey1" \
+  -H "x-signature: 0xsignature_hex" \
+  -d '{
+  "account_id": "0x1234567890abcdef1234567890abcd",
   "nonce": 1,
   "prev_commitment": "prev_commit_hash",
   "delta_hash": "delta_hash_123",
   "delta_payload": "{\"operation\":\"transfer\",\"amount\":100}",
   "ack_sig": "ack_signature",
-  "candidate_at": "2025-10-08T12:00:00Z"
+  "candidate_at": "2025-10-15T12:00:00Z"
 }' localhost:50051 state_manager.StateManager/PushDelta
 ```
 
 #### 4. Get a specific delta
 ```bash
 grpcurl -plaintext -d '{
-  "account_id": "alice",
+  "account_id": "0x1234567890abcdef1234567890abcd",
   "nonce": 1
 }' localhost:50051 state_manager.StateManager/GetDelta
 ```
@@ -174,14 +179,14 @@ grpcurl -plaintext -d '{
 #### 5. Get the latest delta head
 ```bash
 grpcurl -plaintext -d '{
-  "account_id": "alice"
+  "account_id": "0x1234567890abcdef1234567890abcd"
 }' localhost:50051 state_manager.StateManager/GetDeltaHead
 ```
 
 #### 6. Get account state
 ```bash
 grpcurl -plaintext -d '{
-  "account_id": "alice"
+  "account_id": "0x1234567890abcdef1234567890abcd"
 }' localhost:50051 state_manager.StateManager/GetState
 ```
 
