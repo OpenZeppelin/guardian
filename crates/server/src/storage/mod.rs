@@ -5,12 +5,37 @@ use crate::auth::Auth;
 
 pub mod filesystem;
 
+/// Storage backend type
+/// Defines which storage implementation to use for an accounts data
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum StorageType {
+    /// Filesystem-based storage (local disk)
+    Filesystem,
+    // Future options:
+    // S3,
+    // PostgreSQL,
+}
+
+impl Default for StorageType {
+    fn default() -> Self {
+        Self::Filesystem
+    }
+}
+
+impl std::fmt::Display for StorageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageType::Filesystem => write!(f, "Filesystem"),
+        }
+    }
+}
+
 /// Metadata for a single account
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountMetadata {
     pub account_id: String,
     pub auth: Auth,
-    pub storage_type: String,
+    pub storage_type: StorageType,
     pub cosigner_pubkeys: Vec<String>,
     pub created_at: String,
     pub updated_at: String,

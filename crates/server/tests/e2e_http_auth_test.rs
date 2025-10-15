@@ -106,7 +106,7 @@ async fn test_configure_account() {
         "initial_state": {
             "balance": 0
         },
-        "storage_type": "filesystem",
+        "storage_type": "Filesystem",
         "cosigner_pubkeys": []
     });
 
@@ -137,7 +137,7 @@ async fn test_configure_and_push_delta_with_auth() {
         "initial_state": {
             "balance": 0
         },
-        "storage_type": "filesystem",
+        "storage_type": "Filesystem",
         "cosigner_pubkeys": [pubkey_hex.clone()]
     });
 
@@ -207,7 +207,7 @@ async fn test_push_delta_unauthorized_cosigner() {
         "initial_state": {
             "balance": 0
         },
-        "storage_type": "filesystem",
+        "storage_type": "Filesystem",
         "cosigner_pubkeys": [authorized_pubkey] // Only this key is authorized
     });
 
@@ -271,7 +271,7 @@ async fn test_push_delta_missing_auth_headers() {
         "initial_state": {
             "balance": 0
         },
-        "storage_type": "filesystem",
+        "storage_type": "Filesystem",
         "cosigner_pubkeys": [pubkey_hex]
     });
 

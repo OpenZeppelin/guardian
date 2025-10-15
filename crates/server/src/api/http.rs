@@ -4,7 +4,7 @@ use crate::services::{
     PushDeltaParams,
 };
 use crate::state::AppState;
-use crate::storage::{AccountState, DeltaObject};
+use crate::storage::{AccountState, DeltaObject, StorageType};
 use axum::{
     Json,
     extract::Query,
@@ -18,7 +18,7 @@ pub struct ConfigureRequest {
     pub account_id: String,
     pub auth: Auth,
     pub initial_state: serde_json::Value,
-    pub storage_type: String,
+    pub storage_type: StorageType,
     #[serde(default)]
     pub cosigner_pubkeys: Vec<String>,
 }

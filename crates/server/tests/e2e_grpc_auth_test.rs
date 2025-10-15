@@ -111,7 +111,7 @@ async fn test_grpc_configure_account() {
         account_id: account_id_hex,
         auth_type: "MidenFalconRpo".to_string(),
         initial_state: r#"{"balance": 0}"#.to_string(),
-        storage_type: "filesystem".to_string(),
+        storage_type: "Filesystem".to_string(),
         cosigner_pubkeys: vec![],
     };
 
@@ -138,7 +138,7 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
         account_id: account_id_hex.clone(),
         auth_type: "MidenFalconRpo".to_string(),
         initial_state: r#"{"balance": 0}"#.to_string(),
-        storage_type: "filesystem".to_string(),
+        storage_type: "Filesystem".to_string(),
         cosigner_pubkeys: vec![pubkey_hex.clone()],
     };
 
@@ -194,7 +194,7 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
         account_id: account_id_hex.clone(),
         auth_type: "MidenFalconRpo".to_string(),
         initial_state: r#"{"balance": 0}"#.to_string(),
-        storage_type: "filesystem".to_string(),
+        storage_type: "Filesystem".to_string(),
         cosigner_pubkeys: vec![authorized_pubkey], // Only this key is authorized
     };
 
@@ -248,7 +248,7 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
         account_id: account_id_hex.clone(),
         auth_type: "MidenFalconRpo".to_string(),
         initial_state: r#"{"balance": 0}"#.to_string(),
-        storage_type: "filesystem".to_string(),
+        storage_type: "Filesystem".to_string(),
         cosigner_pubkeys: vec![pubkey_hex],
     };
 
@@ -304,7 +304,7 @@ async fn test_grpc_get_delta_with_auth() {
         account_id: account_id_hex.clone(),
         auth_type: "MidenFalconRpo".to_string(),
         initial_state: r#"{"balance": 0}"#.to_string(),
-        storage_type: "filesystem".to_string(),
+        storage_type: "Filesystem".to_string(),
         cosigner_pubkeys: vec![pubkey_hex.clone()],
     };
 

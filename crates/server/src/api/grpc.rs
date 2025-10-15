@@ -4,7 +4,7 @@ use crate::services::{
     PushDeltaParams,
 };
 use crate::state::AppState;
-use crate::storage::DeltaObject;
+use crate::storage::{DeltaObject, StorageType};
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code
@@ -35,6 +35,10 @@ impl StateManager for StateManagerService {
         let auth: Auth = serde_json::from_str(&format!("\"{}\"", req.auth_type))
             .map_err(|e| Status::invalid_argument(format!("Invalid auth type: {e}")))?;
 
+        // Parse storage_type
+        let storage_type: StorageType = serde_json::from_str(&format!("\"{}\"", req.storage_type))
+            .map_err(|e| Status::invalid_argument(format!("Invalid storage type: {e}")))?;
+
         // Parse initial_state JSON
         let initial_state: serde_json::Value = serde_json::from_str(&req.initial_state)
             .map_err(|e| Status::invalid_argument(format!("Invalid initial_state JSON: {e}")))?;
@@ -43,7 +47,7 @@ impl StateManager for StateManagerService {
             account_id: req.account_id.clone(),
             auth,
             initial_state,
-            storage_type: req.storage_type,
+            storage_type,
             cosigner_pubkeys: req.cosigner_pubkeys,
         };
 

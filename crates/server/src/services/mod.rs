@@ -1,6 +1,6 @@
 use crate::auth::{Auth, Credentials};
 use crate::state::AppState;
-use crate::storage::{AccountMetadata, AccountState, DeltaObject};
+use crate::storage::{AccountMetadata, AccountState, DeltaObject, StorageType};
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -22,7 +22,7 @@ pub struct ConfigureAccountParams {
     pub account_id: String,
     pub auth: Auth,
     pub initial_state: serde_json::Value,
-    pub storage_type: String,
+    pub storage_type: StorageType,
     pub cosigner_pubkeys: Vec<String>,
 }
 
