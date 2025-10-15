@@ -4,3 +4,6 @@ keystore/
 miden-client.toml
 templates/
 .env
+
+.claude/
+CLAUDE.md

@@ -12,7 +12,7 @@ impl AuthType {
     ///
     /// # Arguments
     /// * `account_id` - The account ID
-    /// * `publisher_pubkey` - The publisher's public key (hex-encoded or scheme-specific format)
+    /// * `pubkey` - The public key (hex-encoded or scheme-specific format)
     /// * `signature` - The signature to verify (hex-encoded or scheme-specific format)
     ///
     /// # Returns
@@ -21,14 +21,14 @@ impl AuthType {
     pub fn verify_signature(
         &self,
         account_id: &str,
-        publisher_pubkey: &str,
+        pubkey: &str,
         signature: &str,
     ) -> Result<(), String> {
         match self {
             AuthType::MidenFalconRpo => {
                 miden_falcon_rpo::verify_request_signature(
                     account_id,
-                    publisher_pubkey,
+                    pubkey,
                     signature,
                 )
             }

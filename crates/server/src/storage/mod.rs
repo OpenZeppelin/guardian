@@ -22,8 +22,6 @@ pub struct DeltaObject {
     pub delta_hash: String,
     pub delta_payload: serde_json::Value,
     pub ack_sig: String,
-    pub publisher_pubkey: String,
-    pub publisher_sig: String,
     pub candidate_at: String,
     pub canonical_at: Option<String>,
     pub discarded_at: Option<String>,

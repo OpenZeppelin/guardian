@@ -20,6 +20,23 @@ pub struct StateManagerService {
     pub app_state: AppState,
 }
 
+/// Extract authentication data from gRPC metadata
+fn extract_auth(metadata: &tonic::metadata::MetadataMap) -> Result<(String, String), Status> {
+    let pubkey = metadata
+        .get("x-pubkey")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| Status::invalid_argument("Missing or invalid x-pubkey metadata"))?
+        .to_string();
+
+    let signature = metadata
+        .get("x-signature")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| Status::invalid_argument("Missing or invalid x-signature metadata"))?
+        .to_string();
+
+    Ok((pubkey, signature))
+}
+
 #[tonic::async_trait]
 impl StateManager for StateManagerService {
     async fn configure(
@@ -62,6 +79,9 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<PushDeltaRequest>,
     ) -> Result<Response<PushDeltaResponse>, Status> {
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
+
         let req = request.into_inner();
 
         // Parse delta_payload JSON
@@ -76,15 +96,13 @@ impl StateManager for StateManagerService {
             delta_hash: req.delta_hash,
             delta_payload,
             ack_sig: req.ack_sig,
-            publisher_pubkey: req.publisher_pubkey,
-            publisher_sig: req.publisher_sig,
             candidate_at: req.candidate_at,
             canonical_at: req.canonical_at,
             discarded_at: req.discarded_at,
         };
 
         // Call service layer
-        match services::push_delta(&self.app_state, delta).await {
+        match services::push_delta(&self.app_state, delta, pubkey, signature).await {
             Ok(delta) => Ok(Response::new(PushDeltaResponse {
                 success: true,
                 message: "Delta pushed successfully".to_string(),
@@ -102,10 +120,13 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<GetDeltaRequest>,
     ) -> Result<Response<GetDeltaResponse>, Status> {
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
+
         let req = request.into_inner();
 
         // Call service layer
-        match services::get_delta(&self.app_state, &req.account_id, req.nonce).await {
+        match services::get_delta(&self.app_state, &req.account_id, req.nonce, pubkey, signature).await {
             Ok(delta) => Ok(Response::new(GetDeltaResponse {
                 success: true,
                 message: "Delta retrieved successfully".to_string(),
@@ -123,10 +144,13 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<GetDeltaHeadRequest>,
     ) -> Result<Response<GetDeltaHeadResponse>, Status> {
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
+
         let req = request.into_inner();
 
         // Call service layer
-        match services::get_latest_nonce(&self.app_state, &req.account_id).await {
+        match services::get_latest_nonce(&self.app_state, &req.account_id, pubkey, signature).await {
             Ok(latest_nonce) => Ok(Response::new(GetDeltaHeadResponse {
                 success: true,
                 message: if latest_nonce.is_some() {
@@ -148,10 +172,13 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<GetStateRequest>,
     ) -> Result<Response<GetStateResponse>, Status> {
+        // Extract authentication data from metadata
+        let (pubkey, signature) = extract_auth(request.metadata())?;
+
         let req = request.into_inner();
 
         // Call service layer
-        match services::get_state(&self.app_state, &req.account_id).await {
+        match services::get_state(&self.app_state, &req.account_id, pubkey, signature).await {
             Ok(state) => Ok(Response::new(GetStateResponse {
                 success: true,
                 message: "State retrieved successfully".to_string(),
@@ -175,8 +202,6 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         delta_hash: delta.delta_hash.clone(),
         delta_payload: delta.delta_payload.to_string(),
         ack_sig: delta.ack_sig.clone(),
-        publisher_pubkey: delta.publisher_pubkey.clone(),
-        publisher_sig: delta.publisher_sig.clone(),
         candidate_at: delta.candidate_at.clone(),
         canonical_at: delta.canonical_at.clone(),
         discarded_at: delta.discarded_at.clone(),

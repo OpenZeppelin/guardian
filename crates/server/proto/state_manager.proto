@@ -42,11 +42,9 @@ message PushDeltaRequest {
   string delta_hash = 4;
   string delta_payload = 5; // JSON string
   string ack_sig = 6;
-  string publisher_pubkey = 7;
-  string publisher_sig = 8;
-  string candidate_at = 9;
-  optional string canonical_at = 10;
-  optional string discarded_at = 11;
+  string candidate_at = 7;
+  optional string canonical_at = 8;
+  optional string discarded_at = 9;
 }
 
 message PushDeltaResponse {
@@ -97,11 +95,9 @@ message DeltaObject {
   string delta_hash = 4;
   string delta_payload = 5; // JSON string
   string ack_sig = 6;
-  string publisher_pubkey = 7;
-  string publisher_sig = 8;
-  string candidate_at = 9;
-  optional string canonical_at = 10;
-  optional string discarded_at = 11;
+  string candidate_at = 7;
+  optional string canonical_at = 8;
+  optional string discarded_at = 9;
 }
 
 // Account state

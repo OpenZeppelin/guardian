@@ -8,7 +8,7 @@ use miden_objects::{Felt, FieldElement, Word};
 ///
 /// # Arguments
 /// * `account_id` - The account ID (hex-encoded)
-/// * `publisher_pubkey` - The publisher's public key (hex-encoded)
+/// * `pubkey` - The public key (hex-encoded)
 /// * `signature` - The signature to verify (hex-encoded)
 ///
 /// # Returns
@@ -16,12 +16,12 @@ use miden_objects::{Felt, FieldElement, Word};
 /// * `Err(String)` with error message otherwise
 pub fn verify_request_signature(
     account_id: &str,
-    publisher_pubkey: &str,
+    pubkey: &str,
     signature: &str,
 ) -> Result<(), String> {
     let message = account_id_to_digest(account_id)?;
 
-    let pubkey = parse_public_key(publisher_pubkey)?;
+    let pubkey = parse_public_key(pubkey)?;
 
     let sig = parse_signature(signature)?;
 
