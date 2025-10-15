@@ -82,6 +82,9 @@ pub trait StorageBackend: Send + Sync {
 
     /// List all deltas for an account
     async fn list_deltas(&self, account_id: &str) -> Result<Vec<String>, String>;
+
+    /// Get the latest nonce for an account (returns None if no deltas exist)
+    async fn get_delta_head(&self, account_id: &str) -> Result<Option<u64>, String>;
 }
 
 /// Metadata store trait for managing account metadata

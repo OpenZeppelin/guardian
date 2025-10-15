@@ -2,7 +2,6 @@ mod common;
 mod configure_account;
 mod get_delta;
 mod get_delta_head;
-mod get_latest_nonce;
 mod get_state;
 mod push_delta;
 
@@ -20,9 +19,6 @@ pub use get_delta::{get_delta, GetDeltaParams, GetDeltaResult};
 
 // Re-export get_delta_head
 pub use get_delta_head::{get_delta_head, GetDeltaHeadParams, GetDeltaHeadResult};
-
-// Re-export get_latest_nonce
-pub use get_latest_nonce::get_latest_nonce;
 
 // Re-export get_state
 pub use get_state::{get_state, GetStateParams, GetStateResult};

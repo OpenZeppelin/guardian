@@ -155,7 +155,7 @@ impl StorageBackend for FilesystemService {
             .await
             .map_err(|e| format!("Failed to read deltas directory: {e}"))?;
 
-        let mut delta_files = Vec::new();
+        let mut deltas = Vec::new();
         while let Some(entry) = entries
             .next_entry()
             .await
@@ -163,15 +163,35 @@ impl StorageBackend for FilesystemService {
         {
             if let Some(name) = entry.file_name().to_str() {
                 if name.ends_with(".json") {
-                    delta_files.push(name.to_string());
+                    deltas.push(name.to_string());
                 }
             }
         }
 
         // Sort by nonce (extract number from filename)
-        delta_files.sort_by_key(|name| name.trim_end_matches(".json").parse::<u64>().unwrap_or(0));
+        deltas.sort_by_key(|name| name.trim_end_matches(".json").parse::<u64>().unwrap_or(0));
 
-        Ok(delta_files)
+        Ok(deltas)
+    }
+
+    async fn get_delta_head(&self, account_id: &str) -> Result<Option<u64>, String> {
+        let deltas = self.list_deltas(account_id).await?;
+
+        if deltas.is_empty() {
+            return Ok(None);
+        }
+
+        // Parse nonces from filenames and find the maximum
+        let mut max_nonce: Option<u64> = None;
+        for filename in &deltas {
+            if let Some(nonce_str) = filename.strip_suffix(".json") {
+                if let Ok(nonce) = nonce_str.parse::<u64>() {
+                    max_nonce = Some(max_nonce.map_or(nonce, |current| current.max(nonce)));
+                }
+            }
+        }
+
+        Ok(max_nonce)
     }
 }
 

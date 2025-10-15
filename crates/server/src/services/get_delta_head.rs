@@ -36,31 +36,15 @@ pub async fn get_delta_head(
         &params.credentials,
     )?;
 
-    let delta_files = state
+    // Get the latest nonce from storage
+    let latest_nonce = state
         .storage
-        .list_deltas(&params.account_id)
+        .get_delta_head(&params.account_id)
         .await
-        .map_err(|e| ServiceError::new(format!("Failed to list deltas: {e}")))?;
-
-    if delta_files.is_empty() {
-        return Err(ServiceError::new(format!(
-            "No deltas found for account '{}'",
-            params.account_id
-        )));
-    }
-
-    // Parse nonces from filenames and find the maximum
-    let mut max_nonce: Option<u64> = None;
-    for filename in &delta_files {
-        if let Some(nonce_str) = filename.strip_suffix(".json") {
-            if let Ok(nonce) = nonce_str.parse::<u64>() {
-                max_nonce = Some(max_nonce.map_or(nonce, |current| current.max(nonce)));
-            }
-        }
-    }
-
-    let latest_nonce = max_nonce
-        .ok_or_else(|| ServiceError::new("Failed to parse nonces from delta files".to_string()))?;
+        .map_err(|e| ServiceError::new(format!("Failed to get latest nonce: {e}")))?
+        .ok_or_else(|| {
+            ServiceError::new(format!("No deltas found for account '{}'", params.account_id))
+        })?;
 
     // Fetch the latest delta
     let delta = state
