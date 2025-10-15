@@ -13,7 +13,16 @@ echo ""
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# Default to linux/amd64 for consistency across machines
+# Override with: PLATFORM=linux/arm64 ./verify-build-hash.sh
+PLATFORM="${PLATFORM:-linux/amd64}"
+
+echo -e "${BLUE}Target Platform:${NC} $PLATFORM"
+echo "  (Override with: PLATFORM=linux/arm64 $0)"
+echo ""
 
 # Verify we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -45,7 +54,7 @@ fi
 # Build the Docker image
 echo "Building server in Docker..."
 echo ""
-docker build -t psm-server-verify . --no-cache --quiet
+docker build --platform "$PLATFORM" -t psm-server-verify . --no-cache --progress=plain 2>&1 | grep -v "jemalloc" | grep -v "MADV_DONTNEED" | grep -v "QEMU"
 
 # Extract binary to temp location
 BUILD_DIR=$(mktemp -d)
@@ -64,12 +73,13 @@ echo "================================================"
 echo -e "${GREEN}Build Complete${NC}"
 echo "================================================"
 echo ""
-echo -e "${BLUE}SHA256:${NC} $HASH"
-echo -e "${BLUE}Size:${NC}   $SIZE bytes"
-echo -e "${BLUE}Commit:${NC} $GIT_COMMIT"
+echo -e "${BLUE}Platform:${NC} $PLATFORM"
+echo -e "${BLUE}SHA256:${NC}   $HASH"
+echo -e "${BLUE}Size:${NC}     $SIZE bytes"
+echo -e "${BLUE}Commit:${NC}   $GIT_COMMIT"
 echo ""
 echo "To verify across machines:"
 echo "  1. Ensure same git commit: git checkout $GIT_SHORT"
-echo "  2. Run this script on each machine"
+echo "  2. Use same platform: PLATFORM=$PLATFORM ./crates/server/tests/verify-build-hash.sh"
 echo "  3. Compare the SHA256 hashes - they should match exactly"
 echo ""

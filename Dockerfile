@@ -1,4 +1,5 @@
 # Build stage
+# Note: This builds for the host architecture by default.
 FROM rust:1.88@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 as builder
 
 # Install protobuf compiler (pinned to specific version)

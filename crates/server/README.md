@@ -67,25 +67,29 @@ cargo test --package private-state-manager-server --test e2e_grpc_auth_test -- -
 
 ### Reproducible Builds
 
-The server binary has reproducible builds. The same source code and build environment always produces bit-for-bit identical binaries across different machines and platforms.
+The server binary has reproducible builds. Building from the same source code and target architecture always produces bit-for-bit identical binaries, regardless of the build machine.
 
-#### Pinned Dependencies
+#### Verifying Published Binaries
 
-All build dependencies are pinned for reproducibility:
-- **Rust**: 1.88.0 (via `rust-toolchain.toml`)
-- **Docker base image**: `rust:1.88@sha256:af306cfa...` (pinned by digest)
-- **Protobuf compiler**: 3.21.12-3 (pinned Debian package version)
-- **Build flags**: Configured in `.cargo/config.toml` for deterministic compilation
+To verify a published binary matches the source code:
 
-#### Verifying Reproducibility
+1. Build for the target architecture and compare hashes:
+   ```bash
+   ./crates/server/tests/verify-build-hash.sh
+   # Compare SHA256 output with published release hash
+   ```
 
-Build and get the hash (run from repository root):
+2. If hashes match, the binary is verified authentic.
 
 ```bash
+# Build for linux/amd64 (default - matches official releases)
 ./crates/server/tests/verify-build-hash.sh
+
+# Build for linux/arm64
+PLATFORM=linux/arm64 ./crates/server/tests/verify-build-hash.sh
 ```
 
-This builds the server in Docker and displays the SHA256 hash. To verify reproducibility, run this script on different machines (Linux, macOS, Windows) from the same git commit and compare the hashes - they should match exactly.
+**Note**: Different architectures produce different binaries and hashes. For cross-machine verification, use the same target architecture on all machines.
 
 #### Benefits
 
