@@ -239,11 +239,11 @@ impl ServerHandle {
     /// # }
     /// ```
     pub async fn run(self) {
-        use axum::{routing::get, routing::post, Router};
+        use axum::{Router, routing::get, routing::post};
         use tonic::transport::Server;
 
-        use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
         use crate::api::grpc::StateManagerService;
+        use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
         use crate::api::http::{configure, get_delta, get_delta_head, get_state, push_delta};
 
         async fn root() -> &'static str {
@@ -272,7 +272,10 @@ impl ServerHandle {
                     .await
                     .expect("Failed to bind HTTP server");
 
-                println!("HTTP server listening on {}", listener.local_addr().unwrap());
+                println!(
+                    "HTTP server listening on {}",
+                    listener.local_addr().unwrap()
+                );
 
                 axum::serve(listener, app)
                     .await

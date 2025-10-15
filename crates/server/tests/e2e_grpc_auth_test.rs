@@ -58,8 +58,10 @@ fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String) {
 /// Helper to create test app state
 async fn create_test_app_state() -> AppState {
     // Create temporary directories for test storage
-    let storage_dir = std::env::temp_dir().join(format!("psm_test_grpc_storage_{}", uuid::Uuid::new_v4()));
-    let metadata_dir = std::env::temp_dir().join(format!("psm_test_grpc_metadata_{}", uuid::Uuid::new_v4()));
+    let storage_dir =
+        std::env::temp_dir().join(format!("psm_test_grpc_storage_{}", uuid::Uuid::new_v4()));
+    let metadata_dir =
+        std::env::temp_dir().join(format!("psm_test_grpc_metadata_{}", uuid::Uuid::new_v4()));
 
     std::fs::create_dir_all(&storage_dir).expect("Failed to create storage directory");
     std::fs::create_dir_all(&metadata_dir).expect("Failed to create metadata directory");
