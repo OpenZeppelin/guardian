@@ -9,3 +9,10 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+# Reproducible build configuration (workspace-wide)
+[profile.release]
+strip = true           # Strip debug symbols for smaller, more reproducible binaries
+lto = true            # Link-time optimization for better optimization and determinism
+codegen-units = 1     # Single codegen unit for maximum reproducibility
+incremental = false   # Disable incremental compilation for reproducibility

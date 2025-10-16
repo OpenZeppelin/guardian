@@ -14,7 +14,7 @@ impl AppState {
     /// Validate account ID format based on the network type
     pub fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
         match self.network_type {
-            NetworkType::Miden => {
+            NetworkType::MidenTestnet => {
                 use miden_objects::account::AccountId;
                 AccountId::from_hex(account_id)
                     .map(|_| ())

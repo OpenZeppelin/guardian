@@ -46,7 +46,7 @@ impl ServerBuilder {
     /// use server::network::NetworkType;
     ///
     /// let builder = ServerBuilder::new()
-    ///     .network(NetworkType::Miden);
+    ///     .network(NetworkType::MidenTestnet);
     /// ```
     pub fn network(mut self, network_type: NetworkType) -> Self {
         self.network_type = Some(network_type);
@@ -172,7 +172,7 @@ impl ServerBuilder {
     /// let storage_registry = StorageRegistry::new(backends);
     ///
     /// let handle = ServerBuilder::new()
-    ///     .network(NetworkType::Miden)
+    ///     .network(NetworkType::MidenTestnet)
     ///     .storage(storage_registry)
     ///     .metadata(Arc::new(metadata))
     ///     .build()?;
@@ -240,7 +240,7 @@ impl ServerHandle {
     ///
     /// # async fn example() -> Result<(), String> {
     /// let handle = ServerBuilder::new()
-    ///     .network(NetworkType::Miden)
+    ///     .network(NetworkType::MidenTestnet)
     ///     // ... other configuration
     ///     .build()?;
     ///

@@ -91,13 +91,6 @@ PLATFORM=linux/arm64 ./crates/server/tests/verify-build-hash.sh
 
 **Note**: Different architectures produce different binaries and hashes. For cross-machine verification, use the same target architecture on all machines.
 
-#### Benefits
-
-- **Binary verification**: Users can verify published binaries match source code
-- **Supply chain security**: Detect if binaries have been tampered with
-- **TEE attestation**: Enable cryptographic verification of code running in Trusted Execution Environments
-- **Build integrity**: Ensure builds are not influenced by local environment
-
 #### Updating Pinned Versions
 
 To update Docker image digests:
@@ -112,7 +105,11 @@ docker pull debian:bookworm-slim
 docker inspect debian:bookworm-slim | grep -A 1 "RepoDigests"
 ```
 
-Update the digests in `Dockerfile` to maintain reproducibility.
+Update the digests in `Dockerfile` to maintain reproducibility. Then verify that hash matches across machines:
+
+```bash
+./crates/server/tests/verify-build-hash.sh
+```
 
 ## Manual Testing
 

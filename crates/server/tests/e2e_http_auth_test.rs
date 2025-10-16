@@ -88,7 +88,7 @@ async fn create_test_app_state() -> AppState {
     AppState {
         storage: storage_registry,
         metadata: Arc::new(metadata),
-        network_type: NetworkType::Miden,
+        network_type: NetworkType::MidenTestnet,
     }
 }
 

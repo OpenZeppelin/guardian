@@ -28,7 +28,7 @@ async fn main() {
         .expect("Failed to initialize metadata store");
 
     ServerBuilder::new()
-        .network(NetworkType::Miden)
+        .network(NetworkType::MidenTestnet)
         .storage(storage_registry)
         .metadata(Arc::new(metadata))
         .http(true, 3000)

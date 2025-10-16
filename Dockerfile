@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Set SOURCE_DATE_EPOCH for reproducible builds
+# Set environment variables for reproducible builds
 ENV SOURCE_DATE_EPOCH=0
+ENV RUSTFLAGS="--remap-path-prefix /app=. --remap-path-prefix $HOME=~"
 
 # Copy workspace manifests
 COPY Cargo.toml Cargo.lock ./
