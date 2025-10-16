@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package rpc;
+
+// Miden node RPC API definitions
+// Based on https://github.com/0xPolygonMiden/miden-node/tree/next/proto/proto
+
+message AccountId {
+  bytes id = 1;  // 15-byte account ID (120 bits)
+}
+
+message Digest {
+  fixed64 d0 = 1;
+  fixed64 d1 = 2;
+  fixed64 d2 = 3;
+  fixed64 d3 = 4;
+}
+
+message AccountSummary {
+  AccountId account_id = 1;
+  Digest account_commitment = 2;  // Current account commitment or zero if account doesn't exist
+  uint32 block_num = 3;           // Block number at which the summary was made
+}
+
+message AccountDetails {
+  AccountSummary summary = 1;
+  optional bytes details = 2;     // Serialized account data (optional)
+}
+
+service Api {
+  // Returns the latest state of an account with the specified ID
+  rpc GetAccountDetails(AccountId) returns (AccountDetails);
+}

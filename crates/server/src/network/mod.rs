@@ -1,7 +1,17 @@
+pub mod miden;
+
 /// Network type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NetworkType {
     MidenTestnet,
+}
+
+impl NetworkType {
+    pub fn rpc_endpoint(&self) -> &str {
+        match self {
+            NetworkType::MidenTestnet => "https://rpc.testnet.miden.io",
+        }
+    }
 }
 
 impl Default for NetworkType {

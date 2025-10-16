@@ -23,6 +23,7 @@ tonic = "0.12"
 tonic-reflection = "0.12"
 prost = "0.13"
 miden-objects = { version = "0.11.4", features = ["testing"] }
+miden-client = { version = "0.11.10", default-features = false, features = ["tonic"] }
 
 # shared
 private-state-manager-shared = { path = "../shared" }
