@@ -5,7 +5,7 @@ Warning: This is a work in progress.
 ### Project Structure
 
 - **[crates/server](crates/server/README.md)** - Server for managing private account states and deltas
-  - The server code has reproducible builds
+  - Reproducible builds for binary verification and TEE deployment
 - **crates/client** - Client side SDK
 - **crates/shared** - Shared types and utilities
 

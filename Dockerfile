@@ -1,5 +1,6 @@
 # Build stage
-# Note: This builds for the host architecture by default.
+# For reproducible builds across machines, specify --platform:
+#   docker build --platform linux/amd64 ...
 FROM rust:1.88@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 as builder
 
 # Install protobuf compiler (pinned to specific version)
@@ -15,9 +16,6 @@ ENV SOURCE_DATE_EPOCH=0
 # Copy workspace manifests
 COPY Cargo.toml Cargo.lock ./
 COPY rust-toolchain.toml ./
-
-# Copy cargo config for reproducible builds
-COPY .cargo .cargo
 
 # Copy all crates
 COPY crates ./crates
