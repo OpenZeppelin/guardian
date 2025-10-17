@@ -1,0 +1,128 @@
+syntax = "proto3";
+package note;
+
+import "types/primitives.proto";
+import "types/account.proto";
+
+// NOTES
+// ================================================================================================
+
+// Represents a note's ID.
+message NoteId {
+    // A unique identifier of the note which is a 32-byte commitment to the underlying note data.
+    primitives.Digest id = 1;
+}
+
+// List of note IDs.
+message NoteIdList {
+    // List of note IDs to be queried from the database.
+    repeated NoteId ids = 1;
+}
+
+// Represents a note's metadata.
+message NoteMetadata {
+    // The account which sent the note.
+    account.AccountId sender = 1;
+
+    // The type of the note (0b01 = public, 0b10 = private, 0b11 = encrypted).
+    uint32 note_type = 2;
+
+    // A value which can be used by the recipient(s) to identify notes intended for them.
+    //
+    // See `miden_objects::note::note_tag` for more info.
+    fixed32 tag = 3;
+
+    // Specifies when a note is ready to be consumed.
+    //
+    // See `miden_objects::note::execution_hint` for more info.
+    fixed64 execution_hint = 4;
+
+    // An arbitrary user-defined value.
+    fixed64 aux = 5;
+}
+
+// Represents a note.
+//
+// The note is composed of the note metadata and its serialized details.
+message Note {
+    // The note's metadata.
+    NoteMetadata metadata = 1;
+
+    // Serialized note details (empty for private notes).
+    optional bytes details = 2;
+}
+
+// Represents a network note.
+//
+// Network notes are a subtype of public notes, and as such, their details are always publicly
+// known.
+message NetworkNote {
+    // The note's metadata.
+    NoteMetadata metadata = 1;
+
+    // Serialized note details (i.e., assets and recipient).
+    bytes details = 2;
+}
+
+// Represents a committed note.
+//
+// A committed note is a note that has been included in a block.
+message CommittedNote {
+    // Either private, public, or network note.
+    Note note = 1;
+
+    // The data needed to prove that the note is present in the chain.
+    NoteInclusionInBlockProof inclusion_proof = 2;
+}
+
+// Represents the result of getting committed notes.
+message CommittedNoteList {
+    // List of committed notes.
+    repeated CommittedNote notes = 1;
+}
+
+// Represents a proof of note's inclusion in a block.
+//
+// Does not include proof of the block's inclusion in the chain.
+message NoteInclusionInBlockProof {
+    // A unique identifier of the note which is a 32-byte commitment to the underlying note data.
+    NoteId note_id = 1;
+
+    // The block number in which the note was created.
+    fixed32 block_num = 2;
+
+    // The index of the note in the block.
+    uint32 note_index_in_block = 3;
+
+    // The note's inclusion proof in the block.
+    primitives.SparseMerklePath inclusion_path = 4;
+}
+
+// Represents proof of a note inclusion in the block.
+message NoteSyncRecord {
+    // A unique identifier of the note which is a 32-byte commitment to the underlying note data.
+    NoteId note_id = 1;
+
+    // The index of the note in the block.
+    uint32 note_index_in_block = 2;
+
+    // The note's metadata.
+    NoteMetadata metadata = 3;
+
+    // The note's inclusion proof in the block.
+    primitives.SparseMerklePath inclusion_path = 4;
+}
+
+// Represents a note root.
+message NoteRoot {
+    // The root of the note.
+    primitives.Digest root = 1;
+}
+
+// Represents a note script.
+message NoteScript {
+    // Entrypoint of the script.
+    uint32 entrypoint = 1;
+    // Mast of the script.
+    bytes mast = 2;
+}

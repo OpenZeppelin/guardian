@@ -1,0 +1,14 @@
+[package]
+name = "miden-rpc-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+miden-objects = "0.11.4"
+tonic = { version = "0.13", features = ["tls-native-roots", "tls-ring", "transport"] }
+prost = "0.13"
+tokio = { version = "1.47", features = ["rt-multi-thread"] }
+hex = "0.4"
+
+[build-dependencies]
+tonic-build = "0.13"

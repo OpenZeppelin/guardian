@@ -1,0 +1,119 @@
+// Specification of the user facing gRPC API.
+syntax = "proto3";
+package rpc;
+
+import "types/account.proto";
+import "types/blockchain.proto";
+import "types/note.proto";
+import "types/primitives.proto";
+import "types/transaction.proto";
+import "block_producer.proto";
+import "store/rpc.proto";
+import "store/shared.proto";
+import "google/protobuf/empty.proto";
+
+// RPC API
+// ================================================================================================
+
+// RPC API for the RPC component
+service Api {
+    // Returns the status info of the node.
+    rpc Status(google.protobuf.Empty) returns (RpcStatus) {}
+
+    // Returns a nullifier proof for each of the requested nullifiers.
+    rpc CheckNullifiers(rpc_store.NullifierList) returns (rpc_store.CheckNullifiersResponse) {}
+
+    // Returns the latest state of an account with the specified ID.
+    rpc GetAccountDetails(account.AccountId) returns (account.AccountDetails) {}
+
+    // Returns the latest state proof of the specified account.
+    rpc GetAccountProof(rpc_store.AccountProofRequest) returns (rpc_store.AccountProofResponse) {}
+
+    // Returns raw block data for the specified block number.
+    rpc GetBlockByNumber(blockchain.BlockNumber) returns (blockchain.MaybeBlock) {}
+
+    // Retrieves block header by given block number. Optionally, it also returns the MMR path
+    // and current chain length to authenticate the block's inclusion.
+    rpc GetBlockHeaderByNumber(shared.BlockHeaderByNumberRequest) returns (shared.BlockHeaderByNumberResponse) {}
+
+    // Returns a list of notes matching the provided note IDs.
+    rpc GetNotesById(note.NoteIdList) returns (note.CommittedNoteList) {}
+
+    // Returns the script for a note by its root.
+    rpc GetNoteScriptByRoot(note.NoteRoot) returns (rpc_store.MaybeNoteScript) {}
+
+    // Submits proven transaction to the Miden network.
+    rpc SubmitProvenTransaction(transaction.ProvenTransaction) returns (block_producer.SubmitProvenTransactionResponse) {}
+
+    // Submits a proven batch of transactions to the Miden network.
+    //
+    // The batch may include transactions which were are:
+    //
+    //   - already in the mempool i.e. previously successfully submitted
+    //   - will be submitted to the mempool in the future
+    //   - won't be submitted to the mempool at all
+    //
+    // All transactions in the batch but not in the mempool must build on the current mempool
+    // state following normal transaction submission rules.
+    rpc SubmitProvenBatch(transaction.ProvenTransactionBatch) returns (block_producer.SubmitProvenBatchResponse) {}
+
+    // Returns a list of nullifiers that match the specified prefixes and are recorded in the node.
+    //
+    // Note that only 16-bit prefixes are supported at this time.
+    rpc SyncNullifiers(rpc_store.SyncNullifiersRequest) returns (rpc_store.SyncNullifiersResponse) {}
+
+    // Returns account vault updates for specified account within a block range.
+    rpc SyncAccountVault(rpc_store.SyncAccountVaultRequest) returns (rpc_store.SyncAccountVaultResponse) {}
+
+    // Returns info which can be used by the client to sync up to the tip of chain for the notes they are interested in.
+    //
+    // Client specifies the `note_tags` they are interested in, and the block height from which to search for new for
+    // matching notes for. The request will then return the next block containing any note matching the provided tags.
+    //
+    // The response includes each note's metadata and inclusion proof.
+    //
+    // A basic note sync can be implemented by repeatedly requesting the previous response's block until reaching the
+    // tip of the chain.
+    rpc SyncNotes(rpc_store.SyncNotesRequest) returns (rpc_store.SyncNotesResponse) {}
+
+    // Returns info which can be used by the client to sync up to the latest state of the chain
+    // for the objects (accounts and notes) the client is interested in.
+    //
+    // This request returns the next block containing requested data. It also returns `chain_tip`
+    // which is the latest block number in the chain. Client is expected to repeat these requests
+    // in a loop until `response.block_header.block_num == response.chain_tip`, at which point
+    // the client is fully synchronized with the chain.
+    //
+    // Each update response also contains info about new notes, accounts etc. created. It also returns
+    // Chain MMR delta that can be used to update the state of Chain MMR. This includes both chain
+    // MMR peaks and chain MMR nodes.
+    //
+    // For preserving some degree of privacy, note tags contain only high
+    // part of hashes. Thus, returned data contains excessive notes, client can make
+    // additional filtering of that data on its side.
+    rpc SyncState(rpc_store.SyncStateRequest) returns (rpc_store.SyncStateResponse) {}
+
+    // Returns storage map updates for specified account and storage slots within a block range.
+    rpc SyncStorageMaps(rpc_store.SyncStorageMapsRequest) returns (rpc_store.SyncStorageMapsResponse) {}
+
+    // Returns transactions records for specific accounts within a block range.
+    rpc SyncTransactions(rpc_store.SyncTransactionsRequest) returns (rpc_store.SyncTransactionsResponse) {}
+}
+
+// RPC STATUS
+// ================================================================================================
+
+// Represents the status of the node.
+message RpcStatus {
+    // The rpc component's running version.
+    string version = 1;
+
+    // The genesis commitment.
+    primitives.Digest genesis_commitment = 2;
+
+    // The store status.
+    rpc_store.StoreStatus store = 3;
+
+    // The block producer status.
+    block_producer.BlockProducerStatus block_producer = 4;
+}

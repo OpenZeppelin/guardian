@@ -3,6 +3,7 @@ members = [
     "crates/shared",
     "crates/client",
     "crates/server",
+    "crates/miden-rpc-client",
 ]
 resolver = "2"
 
