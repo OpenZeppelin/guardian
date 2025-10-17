@@ -13,14 +13,38 @@ use server::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
 use server::storage::{StorageBackend, StorageRegistry, StorageType};
 use std::collections::HashMap;
 
-use miden_objects::account::{AccountId, AccountIdVersion, AccountStorageMode, AccountType};
+use miden_objects::account::AccountId;
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
 
-/// Helper to get the test account ID
-/// Uses a real account from Miden testnet that exists on-chain
+/// Load the test account fixture from fixtures/account.json
+/// Returns (account_id, account_id_hex, initial_state_json_value)
+fn load_fixture_account() -> (AccountId, String, serde_json::Value) {
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("account.json");
+
+    let fixture_contents = std::fs::read_to_string(&fixture_path)
+        .expect("Failed to read fixture file - run fetch_fixture_account test first");
+
+    let fixture_json: serde_json::Value = serde_json::from_str(&fixture_contents)
+        .expect("Failed to parse fixture JSON");
+
+    let account_id_hex = fixture_json["account_id"]
+        .as_str()
+        .expect("No account_id in fixture")
+        .to_string();
+
+    let account_id = AccountId::from_hex(&account_id_hex).expect("Invalid account ID in fixture");
+
+    // Return the fixture JSON value (not string) for HTTP tests
+    (account_id, account_id_hex, fixture_json)
+}
+
+/// Helper to get just the test account ID (for old tests that use invalid JSON)
 fn get_test_account_id() -> (AccountId, String) {
     let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
     let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
@@ -110,8 +134,7 @@ async fn test_configure_account() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    // Use a real account ID from Miden testnet that exists on-chain
-    let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
 
     // Prepare configure request
     let request_body = json!({
@@ -121,9 +144,7 @@ async fn test_configure_account() {
                 "cosigner_pubkeys": []
             }
         },
-        "initial_state": {
-            "balance": 0
-        },
+        "initial_state": initial_state,
         "storage_type": "Filesystem"
     });
 
@@ -153,7 +174,7 @@ async fn test_configure_and_push_delta_with_auth() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let (_, pubkey_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
 
     // Step 1: Configure account with the cosigner public key
@@ -164,9 +185,7 @@ async fn test_configure_and_push_delta_with_auth() {
                 "cosigner_pubkeys": [pubkey_hex.clone()]
             }
         },
-        "initial_state": {
-            "balance": 0
-        },
+        "initial_state": initial_state,
         "storage_type": "Filesystem"
     });
 
@@ -223,7 +242,7 @@ async fn test_push_delta_unauthorized_cosigner() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
 
     // Generate two different key pairs
     let (_, authorized_pubkey, _) = generate_falcon_signature(&account_id_hex);
@@ -237,9 +256,7 @@ async fn test_push_delta_unauthorized_cosigner() {
                 "cosigner_pubkeys": [authorized_pubkey] // Only this key is authorized
             }
         },
-        "initial_state": {
-            "balance": 0
-        },
+        "initial_state": initial_state,
         "storage_type": "Filesystem"
     });
 
@@ -293,7 +310,7 @@ async fn test_push_delta_missing_auth_headers() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let (_, pubkey_hex, _) = generate_falcon_signature(&account_id_hex);
 
     // Configure account
@@ -304,9 +321,7 @@ async fn test_push_delta_missing_auth_headers() {
                 "cosigner_pubkeys": [pubkey_hex]
             }
         },
-        "initial_state": {
-            "balance": 0
-        },
+        "initial_state": initial_state,
         "storage_type": "Filesystem"
     });
 

@@ -207,4 +207,24 @@ impl MidenRpcClient {
 
         Ok(format!("0x{}", hex::encode(bytes)))
     }
+
+    /// Fetch full account details including serialized account data
+    pub async fn get_account_details(
+        &mut self,
+        account_id: &AccountId,
+    ) -> Result<account::AccountDetails, String> {
+        let account_id_bytes = account_id.to_bytes();
+
+        let request = tonic::Request::new(account::AccountId {
+            id: account_id_bytes.to_vec(),
+        });
+
+        let response = self
+            .client
+            .get_account_details(request)
+            .await
+            .map_err(|e| format!("RPC call failed: {}", e))?;
+
+        Ok(response.into_inner())
+    }
 }

@@ -17,14 +17,37 @@ fn create_miden_falcon_rpo_auth(cosigner_pubkeys: Vec<String>) -> AuthConfig {
     }
 }
 
-use miden_objects::account::{AccountId, AccountIdVersion, AccountStorageMode, AccountType};
+use miden_objects::account::AccountId;
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
 
-/// Helper to get the test account ID
-/// Uses a real account from Miden testnet that exists on-chain
+/// Load the test account fixture from fixtures/account.json
+fn load_fixture_account() -> (AccountId, String, String) {
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("account.json");
+
+    let fixture_contents = std::fs::read_to_string(&fixture_path)
+        .expect("Failed to read fixture file - run fetch_fixture_account test first");
+
+    let fixture_json: serde_json::Value = serde_json::from_str(&fixture_contents)
+        .expect("Failed to parse fixture JSON");
+
+    let account_id_hex = fixture_json["account_id"]
+        .as_str()
+        .expect("No account_id in fixture")
+        .to_string();
+
+    let account_id = AccountId::from_hex(&account_id_hex).expect("Invalid account ID in fixture");
+
+    // Return the full fixture JSON as a string for initial_state
+    (account_id, account_id_hex, fixture_contents)
+}
+
+/// Helper to get just the test account ID (for old tests that use invalid JSON)
 fn get_test_account_id() -> (AccountId, String) {
     let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
     let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
@@ -127,21 +150,21 @@ async fn test_grpc_configure_account() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
 
     let configure_req = ConfigureRequest {
         account_id: account_id_hex,
         auth: Some(create_miden_falcon_rpo_auth(vec![])),
-        initial_state: r#"{"balance": 0}"#.to_string(),
+        initial_state,
         storage_type: "Filesystem".to_string(),
     };
 
     let request = Request::new(configure_req);
     let response = service.configure(request).await;
 
-    assert!(response.is_ok(), "Configure should succeed");
+    assert!(response.is_ok(), "Configure should succeed: {:?}", response.as_ref().err());
     let response = response.unwrap().into_inner();
-    assert!(response.success, "Configure response should be successful");
+    assert!(response.success, "Configure response should be successful. Message: {}", response.message);
 }
 
 #[tokio::test]
@@ -151,14 +174,14 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let (_, pubkey_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
 
     // Step 1: Configure account with the cosigner public key
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![pubkey_hex.clone()])),
-        initial_state: r#"{"balance": 0}"#.to_string(),
+        initial_state,
         storage_type: "Filesystem".to_string(),
     };
 
@@ -203,7 +226,7 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
 
     // Generate two different key pairs
     let (_, authorized_pubkey, _) = generate_falcon_signature(&account_id_hex);
@@ -213,7 +236,7 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![authorized_pubkey])), // Only this key is authorized
-        initial_state: r#"{"balance": 0}"#.to_string(),
+        initial_state,
         storage_type: "Filesystem".to_string(),
     };
 
@@ -259,14 +282,14 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let (_, pubkey_hex, _) = generate_falcon_signature(&account_id_hex);
 
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![pubkey_hex])),
-        initial_state: r#"{"balance": 0}"#.to_string(),
+        initial_state,
         storage_type: "Filesystem".to_string(),
     };
 
@@ -314,14 +337,14 @@ async fn test_grpc_get_delta_with_auth() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = get_test_account_id();
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let (_, pubkey_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
 
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![pubkey_hex.clone()])),
-        initial_state: r#"{"balance": 0}"#.to_string(),
+        initial_state,
         storage_type: "Filesystem".to_string(),
     };
 
