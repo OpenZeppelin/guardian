@@ -1,52 +1,12 @@
+mod utils;
+use utils::test_helpers::{create_test_app_state, create_router, load_fixture_account, generate_falcon_signature};
+
 use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
 use serde_json::json;
 use tower::{Service, ServiceExt}; // For making service calls
-
-mod utils;
-use utils::test_helpers::*;
-
-#[tokio::test]
-async fn test_configure_account() {
-    let state = create_test_app_state().await;
-    let app = create_router(state);
-
-    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-
-    // Prepare configure request
-    let request_body = json!({
-        "account_id": account_id_hex,
-        "auth": {
-            "MidenFalconRpo": {
-                "cosigner_pubkeys": []
-            }
-        },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
-    });
-
-    let request = Request::builder()
-        .uri("/configure")
-        .method("POST")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_string(&request_body).unwrap()))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
-
-    let status = response.status();
-    // Print response body if not OK for debugging
-    if status != StatusCode::OK {
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-        println!("Response status: {}", status);
-        println!("Response body: {}", body_str);
-    }
-
-    assert_eq!(status, StatusCode::OK);
-}
 
 #[tokio::test]
 async fn test_configure_and_push_delta_with_auth() {

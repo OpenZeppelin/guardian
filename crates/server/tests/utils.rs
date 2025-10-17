@@ -118,7 +118,7 @@ pub mod test_helpers {
             .join("account.json");
 
         let fixture_contents = std::fs::read_to_string(&fixture_path)
-            .expect("Failed to read fixture file - run fetch_fixture_account test first");
+            .expect("Failed to read fixture file");
 
         let fixture_json: serde_json::Value = serde_json::from_str(&fixture_contents)
             .expect("Failed to parse fixture JSON");
