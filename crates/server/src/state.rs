@@ -1,6 +1,7 @@
-use crate::network::NetworkType;
+use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::storage::{MetadataStore, StorageRegistry};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -8,6 +9,7 @@ pub struct AppState {
     pub storage: StorageRegistry,
     pub metadata: Arc<dyn MetadataStore>,
     pub network_type: NetworkType,
+    pub network_client: Arc<Mutex<MidenNetworkClient>>,
 }
 
 impl AppState {

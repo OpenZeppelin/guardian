@@ -34,6 +34,7 @@ async fn main() {
         .http(true, 3000)
         .grpc(true, 50051)
         .build()
+        .await
         .expect("Failed to build server")
         .run()
         .await;

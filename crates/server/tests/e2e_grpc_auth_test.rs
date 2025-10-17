@@ -23,16 +23,12 @@ use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
 
-/// Helper to create a test account ID
-fn create_test_account_id() -> (AccountId, String) {
-    let account_id = AccountId::dummy(
-        [0u8; 15],
-        AccountIdVersion::Version0,
-        AccountType::RegularAccountImmutableCode,
-        AccountStorageMode::Private,
-    );
-    let account_id_hex = account_id.to_hex();
-    (account_id, account_id_hex)
+/// Helper to get the test account ID
+/// Uses a real account from Miden testnet that exists on-chain
+fn get_test_account_id() -> (AccountId, String) {
+    let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
+    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+    (account_id, account_id_hex.to_string())
 }
 
 /// Helper to generate a Falcon key pair and signature
@@ -89,10 +85,16 @@ async fn create_test_app_state() -> AppState {
     storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
     let storage_registry = StorageRegistry::new(storage_backends);
 
+    // Create network client
+    let network_client = server::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+        .await
+        .expect("Failed to create network client");
+
     AppState {
         storage: storage_registry,
         metadata: Arc::new(metadata),
         network_type: NetworkType::MidenTestnet,
+        network_client: Arc::new(tokio::sync::Mutex::new(network_client)),
     }
 }
 
@@ -125,7 +127,7 @@ async fn test_grpc_configure_account() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
 
     let configure_req = ConfigureRequest {
         account_id: account_id_hex,
@@ -149,7 +151,7 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
     let (_, pubkey_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
 
     // Step 1: Configure account with the cosigner public key
@@ -201,7 +203,7 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
 
     // Generate two different key pairs
     let (_, authorized_pubkey, _) = generate_falcon_signature(&account_id_hex);
@@ -257,7 +259,7 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
     let (_, pubkey_hex, _) = generate_falcon_signature(&account_id_hex);
 
     // Configure account
@@ -312,7 +314,7 @@ async fn test_grpc_get_delta_with_auth() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
     let (_, pubkey_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
 
     // Configure account

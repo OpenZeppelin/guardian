@@ -19,16 +19,12 @@ use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
 
-/// Helper to create a test account ID
-fn create_test_account_id() -> (AccountId, String) {
-    let account_id = AccountId::dummy(
-        [0u8; 15],
-        AccountIdVersion::Version0,
-        AccountType::RegularAccountImmutableCode,
-        AccountStorageMode::Private,
-    );
-    let account_id_hex = account_id.to_hex();
-    (account_id, account_id_hex)
+/// Helper to get the test account ID
+/// Uses a real account from Miden testnet that exists on-chain
+fn get_test_account_id() -> (AccountId, String) {
+    let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
+    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+    (account_id, account_id_hex.to_string())
 }
 
 /// Helper to generate a Falcon key pair and signature
@@ -85,10 +81,16 @@ async fn create_test_app_state() -> AppState {
     storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
     let storage_registry = StorageRegistry::new(storage_backends);
 
+    // Create network client
+    let network_client = server::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+        .await
+        .expect("Failed to create network client");
+
     AppState {
         storage: storage_registry,
         metadata: Arc::new(metadata),
         network_type: NetworkType::MidenTestnet,
+        network_client: Arc::new(tokio::sync::Mutex::new(network_client)),
     }
 }
 
@@ -108,7 +110,8 @@ async fn test_configure_account() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    // Use a real account ID from Miden testnet that exists on-chain
+    let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
 
     // Prepare configure request
     let request_body = json!({
@@ -133,7 +136,16 @@ async fn test_configure_account() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    // Print response body if not OK for debugging
+    if status != StatusCode::OK {
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        println!("Response status: {}", status);
+        println!("Response body: {}", body_str);
+    }
+
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -141,7 +153,7 @@ async fn test_configure_and_push_delta_with_auth() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
     let (_, pubkey_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
 
     // Step 1: Configure account with the cosigner public key
@@ -211,7 +223,7 @@ async fn test_push_delta_unauthorized_cosigner() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
 
     // Generate two different key pairs
     let (_, authorized_pubkey, _) = generate_falcon_signature(&account_id_hex);
@@ -281,7 +293,7 @@ async fn test_push_delta_missing_auth_headers() {
     let state = create_test_app_state().await;
     let app = create_router(state);
 
-    let (_account_id, account_id_hex) = create_test_account_id();
+    let (_account_id, account_id_hex) = get_test_account_id();
     let (_, pubkey_hex, _) = generate_falcon_signature(&account_id_hex);
 
     // Configure account

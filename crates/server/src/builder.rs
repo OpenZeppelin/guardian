@@ -6,10 +6,11 @@
 //! - Authentication methods (MidenFalconRpo, EthereumECDSA, etc.)
 //! - API protocols (HTTP, gRPC)
 
-use crate::network::NetworkType;
+use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
 use crate::storage::{MetadataStore, StorageRegistry};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
@@ -175,13 +176,14 @@ impl ServerBuilder {
     ///     .network(NetworkType::MidenTestnet)
     ///     .storage(storage_registry)
     ///     .metadata(Arc::new(metadata))
-    ///     .build()?;
+    ///     .build()
+    ///     .await?;
     ///
     /// handle.run().await;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn build(self) -> Result<ServerHandle, String> {
+    pub async fn build(self) -> Result<ServerHandle, String> {
         let network_type = self
             .network_type
             .ok_or("Network type not set. Use .network(NetworkType::Miden)")?;
@@ -194,10 +196,15 @@ impl ServerBuilder {
             .metadata
             .ok_or("Metadata store not set. Use .metadata(...)")?;
 
+        let network_client = MidenNetworkClient::from_network(network_type)
+            .await
+            .map_err(|e| format!("Failed to create network client: {}", e))?;
+
         let app_state = AppState {
             storage,
             metadata,
             network_type,
+            network_client: Arc::new(Mutex::new(network_client)),
         };
 
         Ok(ServerHandle {
@@ -242,7 +249,8 @@ impl ServerHandle {
     /// let handle = ServerBuilder::new()
     ///     .network(NetworkType::MidenTestnet)
     ///     // ... other configuration
-    ///     .build()?;
+    ///     .build()
+    ///     .await?;
     ///
     /// handle.run().await;
     /// # Ok(())

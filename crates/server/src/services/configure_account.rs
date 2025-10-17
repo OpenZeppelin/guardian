@@ -22,12 +22,7 @@ pub async fn configure_account(
     state: &AppState,
     params: ConfigureAccountParams,
 ) -> ServiceResult<ConfigureAccountResult> {
-    // Validate account ID format based on network type
-    state
-        .validate_account_id(&params.account_id)
-        .map_err(ServiceError::new)?;
-
-    // Check if account already exists
+    // Check if account already exists in metadata
     let existing = state
         .metadata
         .get(&params.account_id)
@@ -41,12 +36,21 @@ pub async fn configure_account(
         )));
     }
 
+    // Verify account initial state validity.
+    let commitment = {
+        let mut client = state.network_client.lock().await;
+        client
+            .verify_intial_state(&params.account_id, &params.initial_state)
+            .await
+            .map_err(ServiceError::new)?
+    };
+
     // Create initial account state
     let now = chrono::Utc::now().to_rfc3339();
     let account_state = AccountState {
         account_id: params.account_id.clone(),
         state_json: params.initial_state,
-        commitment: String::new(), // TODO: calculate commitment + validate vs on-chain commitment.
+        commitment: commitment,
         created_at: now.clone(),
         updated_at: now,
     };
