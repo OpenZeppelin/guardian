@@ -56,7 +56,6 @@ pub mod test_helpers {
         AppState {
             storage: storage_registry,
             metadata: Arc::new(metadata),
-            network_type: NetworkType::MidenTestnet,
             network_client: Arc::new(tokio::sync::Mutex::new(network_client)),
             canonicalization_mode: server::canonicalization::CanonicalizationMode::default(),
         }

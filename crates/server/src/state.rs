@@ -1,29 +1,13 @@
 use crate::canonicalization::CanonicalizationMode;
-use crate::network::{NetworkType, miden::MidenNetworkClient};
+use crate::network::NetworkClient;
 use crate::storage::{MetadataStore, StorageRegistry};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
     pub storage: StorageRegistry,
     pub metadata: Arc<dyn MetadataStore>,
-    pub network_type: NetworkType,
-    pub network_client: Arc<Mutex<MidenNetworkClient>>,
+    pub network_client: Arc<Mutex<dyn NetworkClient>>,
     pub canonicalization_mode: CanonicalizationMode,
-}
-
-impl AppState {
-    /// Validate account ID format based on the network type
-    pub fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
-        match self.network_type {
-            NetworkType::MidenTestnet => {
-                use miden_objects::account::AccountId;
-                AccountId::from_hex(account_id)
-                    .map(|_| ())
-                    .map_err(|e| format!("Invalid Miden account ID format: {e}"))
-            }
-        }
-    }
 }

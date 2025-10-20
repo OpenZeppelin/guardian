@@ -205,11 +205,10 @@ async fn verify_and_canonicalize_delta(
     storage_backend: &Arc<dyn StorageBackend>,
     delta: &DeltaObject,
 ) -> Result<(), String> {
-    // Fetch on-chain commitment
     let on_chain_commitment = {
         let mut client = state.network_client.lock().await;
         client
-            .get_account_commitment(delta.account_id.clone())
+            .verify_on_chain_state(&delta.account_id)
             .await
             .map_err(|e| format!("Failed to fetch on-chain commitment: {e}"))?
     };
@@ -228,16 +227,10 @@ async fn verify_and_canonicalize_delta(
             .await
             .map_err(|e| format!("Failed to get current state: {e}"))?;
 
-        // Apply this delta to current state
         let (new_state_json, new_commitment) = {
             let client = state.network_client.lock().await;
             client
-                .verify_and_apply_delta(
-                    &delta.prev_commitment,
-                    &delta.new_commitment,
-                    &current_state.state_json,
-                    &delta.delta_payload,
-                )
+                .apply_delta(&current_state.state_json, &delta.delta_payload)
                 .map_err(|e| format!("Failed to apply delta during canonicalization: {e}"))?
         };
 

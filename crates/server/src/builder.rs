@@ -7,7 +7,7 @@
 //! - API protocols (HTTP, gRPC)
 
 use crate::canonicalization::CanonicalizationMode;
-use crate::network::{NetworkType, miden::MidenNetworkClient};
+use crate::network::{miden::MidenNetworkClient, NetworkType};
 use crate::state::AppState;
 use crate::storage::{MetadataStore, StorageRegistry};
 use std::sync::Arc;
@@ -233,7 +233,6 @@ impl ServerBuilder {
         let app_state = AppState {
             storage,
             metadata,
-            network_type,
             network_client: Arc::new(Mutex::new(network_client)),
             canonicalization_mode: self.canonicalization_mode,
         };

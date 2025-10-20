@@ -36,11 +36,10 @@ pub async fn configure_account(
         )));
     }
 
-    // Verify account initial state validity.
     let commitment = {
         let mut client = state.network_client.lock().await;
         client
-            .verify_intial_state(&params.account_id, &params.initial_state)
+            .verify_state(&params.account_id, &params.initial_state)
             .await
             .map_err(ServiceError::new)?
     };

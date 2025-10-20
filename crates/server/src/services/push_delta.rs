@@ -84,11 +84,10 @@ pub async fn push_delta(
         )));
     }
 
-    // Verify the delta is valid against current state
     {
         let client = state.network_client.lock().await;
         client
-            .verify_and_apply_delta(
+            .verify_delta(
                 &params.delta.prev_commitment,
                 &params.delta.new_commitment,
                 &current_state.state_json,
@@ -119,16 +118,10 @@ pub async fn push_delta(
             canonical_delta.candidate_at = Some(now.clone());
             canonical_delta.canonical_at = Some(now.clone());
 
-            // Apply the delta to get new state
             let (new_state_json, new_commitment) = {
                 let client = state.network_client.lock().await;
                 client
-                    .verify_and_apply_delta(
-                        &canonical_delta.prev_commitment,
-                        &canonical_delta.new_commitment,
-                        &current_state.state_json,
-                        &canonical_delta.delta_payload,
-                    )
+                    .apply_delta(&current_state.state_json, &canonical_delta.delta_payload)
                     .map_err(|e| ServiceError::new(format!("Failed to apply delta: {e}")))?
             };
 

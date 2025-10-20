@@ -1,4 +1,5 @@
-use crate::network::NetworkType;
+use crate::network::{NetworkClient, NetworkType};
+use async_trait::async_trait;
 use miden_objects::account::{Account, AccountDelta, AccountId};
 use miden_rpc_client::MidenRpcClient;
 use private_state_manager_shared::{FromJson, ToJson};
@@ -16,140 +17,7 @@ impl MidenNetworkClient {
         Ok(Self { client })
     }
 
-    /// Verify that the initial state is valid for the account.
-    ///
-    /// # Arguments
-    /// * `account_id_hex` - Account ID as hex string
-    /// * `state_json` - The initial state JSON with "data" field containing base64-encoded account bytes
-    ///
-    /// # Returns
-    /// * `Ok(commitment)` - The on-chain commitment hash (after full validation)
-    pub async fn verify_intial_state(
-        &mut self,
-        account_id_hex: &str,
-        state_json: &serde_json::Value,
-    ) -> Result<String, String> {
-        // Parse and validate account ID format
-        let account_id = AccountId::from_hex(account_id_hex)
-            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
-
-        // Fetch on-chain commitment - this verifies the account exists
-        let on_chain_commitment = self
-            .client
-            .get_account_commitment(&account_id)
-            .await
-            .map_err(|e| {
-                format!("Failed to verify account '{account_id_hex}' on Miden network: {e}")
-            })?;
-
-        // Construct account from state_json and validate commitment
-        // This will return an error if the JSON format is invalid
-        let account = Self::construct_account_from_json(&account_id, state_json)?;
-
-        let local_commitment = account.commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
-
-        if local_commitment_hex != on_chain_commitment {
-            return Err(format!(
-                "Commitment mismatch for account '{account_id_hex}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
-            ));
-        }
-
-        Ok(on_chain_commitment)
-    }
-
-    /// Fetch account commitment from the Miden network
-    /// Returns the commitment hash as a hex string
-    pub async fn get_account_commitment(&mut self, account_id: String) -> Result<String, String> {
-        let account_id =
-            AccountId::from_hex(&account_id).map_err(|e| format!("Invalid account ID: {e}"))?;
-        self.client.get_account_commitment(&account_id).await
-    }
-
-    /// Verify that a delta payload is valid by attempting to deserialize it as an AccountDelta.
-    pub fn verify_delta(&self, delta_payload: &serde_json::Value) -> Result<(), String> {
-        AccountDelta::from_json(delta_payload)?;
-        Ok(())
-    }
-
-    /// Verify delta commitments and apply the delta to the account state.
-    pub fn verify_and_apply_delta(
-        &self,
-        prev_commitment: &str,
-        new_commitment: &str,
-        prev_state_json: &serde_json::Value,
-        delta_payload: &serde_json::Value,
-    ) -> Result<(serde_json::Value, String), String> {
-        let delta = AccountDelta::from_json(delta_payload)?;
-        let mut account = Account::from_json(prev_state_json)?;
-
-        // Verify prev_commitment matches current state
-        let current_commitment = account.commitment();
-        let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
-
-        if current_commitment_hex != prev_commitment {
-            return Err(format!(
-                "Previous commitment mismatch: delta specifies {prev_commitment}, but current state has {current_commitment_hex}"
-            ));
-        }
-
-        // Apply delta
-        account
-            .apply_delta(&delta)
-            .map_err(|e| format!("Failed to apply delta to account: {e}"))?;
-
-        // Verify new_commitment matches actual result
-        let actual_new_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
-
-        if actual_new_commitment != new_commitment {
-            return Err(format!(
-                "New commitment mismatch: delta specifies {new_commitment}, but applying delta resulted in {actual_new_commitment}"
-            ));
-        }
-
-        let new_state_json = account.to_json();
-
-        Ok((new_state_json, actual_new_commitment))
-    }
-
-    /// Merge multiple delta payloads into a single AccountDelta.
-    pub fn merge_deltas(
-        &self,
-        delta_payloads: Vec<serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
-        if delta_payloads.is_empty() {
-            return Err("Cannot merge empty delta list".to_string());
-        }
-
-        // Deserialize all deltas
-        let mut deltas: Vec<AccountDelta> = delta_payloads
-            .iter()
-            .map(AccountDelta::from_json)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        if deltas.is_empty() {
-            return Err("No valid deltas to merge".to_string());
-        }
-
-        // Take the first delta as the base
-        let mut merged = deltas.remove(0);
-
-        // Merge remaining deltas in order
-        for delta in deltas {
-            merged
-                .merge(delta)
-                .map_err(|e| format!("Failed to merge deltas: {e}"))?;
-        }
-
-        // Convert back to JSON
-        Ok(merged.to_json())
-    }
-
     /// Construct an Account object from JSON state representation
-    ///
-    /// # Arguments
-    /// * `account_id` - The expected account ID
-    /// * `state_json` - JSON representation with "data" field containing base64-encoded account bytes
     fn construct_account_from_json(
         account_id: &AccountId,
         state_json: &serde_json::Value,
@@ -165,6 +33,129 @@ impl MidenNetworkClient {
         }
 
         Ok(account)
+    }
+}
+
+#[async_trait]
+impl NetworkClient for MidenNetworkClient {
+    async fn verify_state(
+        &mut self,
+        account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> Result<String, String> {
+        let account_id = AccountId::from_hex(account_id)
+            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+
+        let on_chain_commitment = self
+            .client
+            .get_account_commitment(&account_id)
+            .await
+            .map_err(|e| format!("Failed to verify account '{account_id}' on Miden network: {e}"))?;
+
+        let account = Self::construct_account_from_json(&account_id, state_json)?;
+
+        let local_commitment = account.commitment();
+        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
+
+        if local_commitment_hex != on_chain_commitment {
+            return Err(format!(
+                "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
+            ));
+        }
+
+        Ok(on_chain_commitment)
+    }
+
+    async fn verify_on_chain_state(&mut self, account_id: &str) -> Result<String, String> {
+        let account_id =
+            AccountId::from_hex(account_id).map_err(|e| format!("Invalid account ID: {e}"))?;
+        self.client.get_account_commitment(&account_id).await
+    }
+
+    fn verify_delta(
+        &self,
+        prev_commitment: &str,
+        new_commitment: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(), String> {
+        let delta = AccountDelta::from_json(delta_payload)?;
+        let mut account = Account::from_json(prev_state_json)?;
+
+        let current_commitment = account.commitment();
+        let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
+
+        if current_commitment_hex != prev_commitment {
+            return Err(format!(
+                "Previous commitment mismatch: delta specifies {prev_commitment}, but current state has {current_commitment_hex}"
+            ));
+        }
+
+        account
+            .apply_delta(&delta)
+            .map_err(|e| format!("Failed to apply delta to account: {e}"))?;
+
+        let actual_new_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+
+        if actual_new_commitment != new_commitment {
+            return Err(format!(
+                "New commitment mismatch: delta specifies {new_commitment}, but applying delta resulted in {actual_new_commitment}"
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn apply_delta(
+        &self,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(serde_json::Value, String), String> {
+        let delta = AccountDelta::from_json(delta_payload)?;
+        let mut account = Account::from_json(prev_state_json)?;
+
+        account
+            .apply_delta(&delta)
+            .map_err(|e| format!("Failed to apply delta to account: {e}"))?;
+
+        let new_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+        let new_state_json = account.to_json();
+
+        Ok((new_state_json, new_commitment))
+    }
+
+    fn merge_deltas(
+        &self,
+        delta_payloads: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        if delta_payloads.is_empty() {
+            return Err("Cannot merge empty delta list".to_string());
+        }
+
+        let mut deltas: Vec<AccountDelta> = delta_payloads
+            .iter()
+            .map(AccountDelta::from_json)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if deltas.is_empty() {
+            return Err("No valid deltas to merge".to_string());
+        }
+
+        let mut merged = deltas.remove(0);
+
+        for delta in deltas {
+            merged
+                .merge(delta)
+                .map_err(|e| format!("Failed to merge deltas: {e}"))?;
+        }
+
+        Ok(merged.to_json())
+    }
+
+    fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
+        AccountId::from_hex(account_id)
+            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+        Ok(())
     }
 }
 
@@ -192,14 +183,10 @@ mod tests {
             .await
             .expect("Failed to create client");
 
-        // Test with a real account that exists on testnet but invalid state JSON
-        // This should fail because state JSON is missing the required "data" field
         let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client
-            .verify_intial_state(account_id_hex, &state_json)
-            .await;
+        let result = client.verify_state(account_id_hex, &state_json).await;
         assert!(
             result.is_err(),
             "Should fail with invalid state JSON format"
@@ -217,7 +204,6 @@ mod tests {
             .await
             .expect("Failed to create client");
 
-        // Load fixture account with real data from fixtures/account.json
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -249,10 +235,7 @@ mod tests {
         println!("Testing with fixture account: {}", account_id_hex);
         println!("Expected commitment: {}", expected_commitment);
 
-        // This should succeed with full commitment validation
-        let result = client
-            .verify_intial_state(account_id_hex, &state_json)
-            .await;
+        let result = client.verify_state(account_id_hex, &state_json).await;
 
         assert!(
             result.is_ok(),
@@ -276,13 +259,10 @@ mod tests {
             .await
             .expect("Failed to create client");
 
-        // Test with invalid account ID format
         let invalid_account_id = "not_a_valid_hex";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client
-            .verify_intial_state(invalid_account_id, &state_json)
-            .await;
+        let result = client.verify_state(invalid_account_id, &state_json).await;
         assert!(result.is_err(), "Should fail with invalid account ID");
         assert!(
             result
@@ -291,93 +271,4 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_verify_delta_invalid_missing_data_field() {
-        let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
-
-        let invalid_delta = serde_json::json!({"changes": ["balance_update"]});
-
-        let result = client.verify_delta(&invalid_delta);
-        assert!(result.is_err(), "Should fail with missing 'data' field");
-        assert!(
-            result.unwrap_err().contains("data"),
-            "Error should mention missing 'data' field"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_verify_delta_invalid_base64() {
-        let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
-
-        let invalid_delta = serde_json::json!({"data": "not_valid_base64!!!"});
-
-        let result = client.verify_delta(&invalid_delta);
-        assert!(result.is_err(), "Should fail with invalid base64");
-        assert!(
-            result.unwrap_err().contains("Base64 decode error"),
-            "Error should mention base64 decode error"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_verify_delta_invalid_bytes() {
-        let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
-
-        // Valid base64 but invalid AccountDelta bytes
-        let invalid_delta = serde_json::json!({"data": "aGVsbG8gd29ybGQ="});
-
-        let result = client.verify_delta(&invalid_delta);
-        assert!(
-            result.is_err(),
-            "Should fail with invalid AccountDelta bytes"
-        );
-        assert!(
-            result.unwrap_err().contains("deserialization error"),
-            "Error should mention deserialization error"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_verify_delta_with_fixture() {
-        let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
-
-        // Load delta fixture
-        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("delta.json");
-
-        let fixture_contents = match std::fs::read_to_string(&fixture_path) {
-            Ok(contents) => contents,
-            Err(_) => {
-                println!("⚠️  Delta fixture not found - skipping test.");
-                return;
-            }
-        };
-
-        let delta_json: serde_json::Value =
-            serde_json::from_str(&fixture_contents).expect("Failed to parse delta fixture");
-
-        // Verify the fixture is a valid delta
-        let result = client.verify_delta(&delta_json);
-        assert!(
-            result.is_ok(),
-            "Delta fixture should be valid: {:?}",
-            result.err()
-        );
-
-        println!("✓ Delta fixture validation passed!");
-    }
 }
