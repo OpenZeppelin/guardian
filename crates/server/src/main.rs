@@ -27,8 +27,12 @@ async fn main() {
         .await
         .expect("Failed to initialize metadata store");
 
+    // Set rules for canonicalization
+    let canonicalization_mode = CanonicalizationMode::Enabled(CanonicalizationConfig::default());
+
     ServerBuilder::new()
         .network(NetworkType::MidenTestnet)
+        .with_canonicalization(canonicalization_mode)
         .storage(storage_registry)
         .metadata(Arc::new(metadata))
         .http(true, 3000)
