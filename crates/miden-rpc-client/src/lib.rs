@@ -1,6 +1,9 @@
 //! Minimal Miden RPC client using miden-node-proto crate
 use miden_objects::{account::AccountId, utils::Serializable};
-use tonic::{Request,transport::{Channel, ClientTlsConfig}};
+use tonic::{
+    transport::{Channel, ClientTlsConfig},
+    Request,
+};
 
 pub use miden_node_proto::generated::{
     account, block_producer, blockchain, note, primitives, rpc, rpc_store, shared, transaction,
@@ -17,12 +20,12 @@ impl MidenRpcClient {
         let endpoint_str = endpoint.into();
 
         let channel = Channel::from_shared(endpoint_str.clone())
-            .map_err(|e| format!("Invalid endpoint: {}", e))?
+            .map_err(|e| format!("Invalid endpoint: {e}"))?
             .tls_config(ClientTlsConfig::new().with_native_roots())
-            .map_err(|e| format!("TLS config error: {}", e))?
+            .map_err(|e| format!("TLS config error: {e}"))?
             .connect()
             .await
-            .map_err(|e| format!("Failed to connect to {}: {}", endpoint_str, e))?;
+            .map_err(|e| format!("Failed to connect to {endpoint_str}: {e}"))?;
 
         let client = ApiClient::new(channel);
 
@@ -40,7 +43,7 @@ impl MidenRpcClient {
             .client
             .status(Request::new(()))
             .await
-            .map_err(|e| format!("Status RPC failed: {}", e))?;
+            .map_err(|e| format!("Status RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }
@@ -60,7 +63,7 @@ impl MidenRpcClient {
             .client
             .get_block_header_by_number(Request::new(request))
             .await
-            .map_err(|e| format!("GetBlockHeaderByNumber RPC failed: {}", e))?;
+            .map_err(|e| format!("GetBlockHeaderByNumber RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }
@@ -78,7 +81,7 @@ impl MidenRpcClient {
             .client
             .submit_proven_transaction(Request::new(request))
             .await
-            .map_err(|e| format!("SubmitProvenTransaction RPC failed: {}", e))?;
+            .map_err(|e| format!("SubmitProvenTransaction RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }
@@ -90,7 +93,10 @@ impl MidenRpcClient {
         account_ids: Vec<Vec<u8>>,
         note_tags: Vec<u32>,
     ) -> Result<rpc_store::SyncStateResponse, String> {
-        let account_ids = account_ids.into_iter().map(|id| account::AccountId { id }).collect();
+        let account_ids = account_ids
+            .into_iter()
+            .map(|id| account::AccountId { id })
+            .collect();
 
         let request = rpc_store::SyncStateRequest {
             block_num,
@@ -102,7 +108,7 @@ impl MidenRpcClient {
             .client
             .sync_state(Request::new(request))
             .await
-            .map_err(|e| format!("SyncState RPC failed: {}", e))?;
+            .map_err(|e| format!("SyncState RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }
@@ -118,7 +124,7 @@ impl MidenRpcClient {
             .client
             .check_nullifiers(Request::new(request))
             .await
-            .map_err(|e| format!("CheckNullifiers RPC failed: {}", e))?;
+            .map_err(|e| format!("CheckNullifiers RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }
@@ -128,14 +134,17 @@ impl MidenRpcClient {
         &mut self,
         note_ids: Vec<primitives::Digest>,
     ) -> Result<note::CommittedNoteList, String> {
-        let note_ids = note_ids.into_iter().map(|id| note::NoteId { id: Some(id) }).collect();
+        let note_ids = note_ids
+            .into_iter()
+            .map(|id| note::NoteId { id: Some(id) })
+            .collect();
         let request = note::NoteIdList { ids: note_ids };
 
         let response = self
             .client
             .get_notes_by_id(Request::new(request))
             .await
-            .map_err(|e| format!("GetNotesById RPC failed: {}", e))?;
+            .map_err(|e| format!("GetNotesById RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }
@@ -155,7 +164,7 @@ impl MidenRpcClient {
             .client
             .get_account_details(request)
             .await
-            .map_err(|e| format!("RPC call failed: {}", e))?;
+            .map_err(|e| format!("RPC call failed: {e}"))?;
 
         let account_details = response.into_inner();
 
@@ -173,7 +182,8 @@ impl MidenRpcClient {
             commitment.d1.to_le_bytes(),
             commitment.d2.to_le_bytes(),
             commitment.d3.to_le_bytes(),
-        ].concat();
+        ]
+        .concat();
 
         Ok(format!("0x{}", hex::encode(bytes)))
     }
@@ -193,7 +203,7 @@ impl MidenRpcClient {
             .client
             .get_account_details(request)
             .await
-            .map_err(|e| format!("RPC call failed: {}", e))?;
+            .map_err(|e| format!("RPC call failed: {e}"))?;
 
         Ok(response.into_inner())
     }

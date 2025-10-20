@@ -1,5 +1,7 @@
 mod utils;
-use utils::test_helpers::{create_test_app_state, create_router, load_fixture_account, generate_falcon_signature};
+use utils::test_helpers::{
+    create_router, create_test_app_state, generate_falcon_signature, load_fixture_account,
+};
 
 use axum::{
     body::Body,

@@ -50,7 +50,7 @@ pub async fn configure_account(
     let account_state = AccountState {
         account_id: params.account_id.clone(),
         state_json: params.initial_state,
-        commitment: commitment,
+        commitment,
         created_at: now.clone(),
         updated_at: now,
     };

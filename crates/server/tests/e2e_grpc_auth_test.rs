@@ -1,8 +1,8 @@
 mod utils;
 use utils::test_helpers::*;
 
-use server::api::grpc::state_manager::{ConfigureRequest, PushDeltaRequest, GetDeltaRequest};
 use server::api::grpc::state_manager::state_manager_server::StateManager;
+use server::api::grpc::state_manager::{ConfigureRequest, GetDeltaRequest, PushDeltaRequest};
 use utils::test_helpers::load_fixture_account_grpc as load_fixture_account;
 
 #[tokio::test]

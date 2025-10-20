@@ -198,7 +198,7 @@ impl ServerBuilder {
 
         let network_client = MidenNetworkClient::from_network(network_type)
             .await
-            .map_err(|e| format!("Failed to create network client: {}", e))?;
+            .map_err(|e| format!("Failed to create network client: {e}"))?;
 
         let app_state = AppState {
             storage,

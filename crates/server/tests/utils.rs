@@ -21,15 +21,15 @@ pub mod test_helpers {
 
     // Re-export types needed by test functions
     pub use server::api::grpc::state_manager::*;
-    pub use tonic::{metadata::MetadataValue, Request};
+    pub use tonic::{Request, metadata::MetadataValue};
 
     /// Create test app state with temporary storage and metadata
     pub async fn create_test_app_state() -> AppState {
         // Create temporary directories for test storage
-        let storage_dir = std::env::temp_dir()
-            .join(format!("psm_test_storage_{}", uuid::Uuid::new_v4()));
-        let metadata_dir = std::env::temp_dir()
-            .join(format!("psm_test_metadata_{}", uuid::Uuid::new_v4()));
+        let storage_dir =
+            std::env::temp_dir().join(format!("psm_test_storage_{}", uuid::Uuid::new_v4()));
+        let metadata_dir =
+            std::env::temp_dir().join(format!("psm_test_metadata_{}", uuid::Uuid::new_v4()));
 
         std::fs::create_dir_all(&storage_dir).expect("Failed to create storage directory");
         std::fs::create_dir_all(&metadata_dir).expect("Failed to create metadata directory");
@@ -47,11 +47,10 @@ pub mod test_helpers {
         let storage_registry = StorageRegistry::new(storage_backends);
 
         // Create network client
-        let network_client = server::network::miden::MidenNetworkClient::from_network(
-            NetworkType::MidenTestnet,
-        )
-        .await
-        .expect("Failed to create network client");
+        let network_client =
+            server::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+                .await
+                .expect("Failed to create network client");
 
         AppState {
             storage: storage_registry,
@@ -117,11 +116,11 @@ pub mod test_helpers {
             .join("fixtures")
             .join("account.json");
 
-        let fixture_contents = std::fs::read_to_string(&fixture_path)
-            .expect("Failed to read fixture file");
+        let fixture_contents =
+            std::fs::read_to_string(&fixture_path).expect("Failed to read fixture file");
 
-        let fixture_json: serde_json::Value = serde_json::from_str(&fixture_contents)
-            .expect("Failed to parse fixture JSON");
+        let fixture_json: serde_json::Value =
+            serde_json::from_str(&fixture_contents).expect("Failed to parse fixture JSON");
 
         let account_id_hex = fixture_json["account_id"]
             .as_str()

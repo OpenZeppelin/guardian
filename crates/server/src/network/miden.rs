@@ -1,8 +1,7 @@
 use crate::network::NetworkType;
-use miden_objects::account::{AccountId, Account};
+use miden_objects::account::{Account, AccountId};
 use miden_rpc_client::MidenRpcClient;
 use private_state_manager_shared::FromJson;
-
 
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
@@ -32,17 +31,15 @@ impl MidenNetworkClient {
     ) -> Result<String, String> {
         // Parse and validate account ID format
         let account_id = AccountId::from_hex(account_id_hex)
-            .map_err(|e| format!("Invalid Miden account ID format: {}", e))?;
+            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
 
         // Fetch on-chain commitment - this verifies the account exists
-        let on_chain_commitment = self.client
+        let on_chain_commitment = self
+            .client
             .get_account_commitment(&account_id)
             .await
             .map_err(|e| {
-                format!(
-                    "Failed to verify account '{}' on Miden network: {}",
-                    account_id_hex, e
-                )
+                format!("Failed to verify account '{account_id_hex}' on Miden network: {e}")
             })?;
 
         // Construct account from state_json and validate commitment
@@ -54,8 +51,7 @@ impl MidenNetworkClient {
 
         if local_commitment_hex != on_chain_commitment {
             return Err(format!(
-                "Commitment mismatch for account '{}': local={}, on-chain={}",
-                account_id_hex, local_commitment_hex, on_chain_commitment
+                "Commitment mismatch for account '{account_id_hex}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
             ));
         }
 
@@ -123,9 +119,17 @@ mod tests {
         let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client.verify_intial_state(account_id_hex, &state_json).await;
-        assert!(result.is_err(), "Should fail with invalid state JSON format");
-        assert!(result.unwrap_err().contains("data"), "Error should mention missing 'data' field");
+        let result = client
+            .verify_intial_state(account_id_hex, &state_json)
+            .await;
+        assert!(
+            result.is_err(),
+            "Should fail with invalid state JSON format"
+        );
+        assert!(
+            result.unwrap_err().contains("data"),
+            "Error should mention missing 'data' field"
+        );
     }
 
     #[tokio::test]
@@ -147,25 +151,30 @@ mod tests {
         let fixture_contents = match std::fs::read_to_string(&fixture_path) {
             Ok(contents) => contents,
             Err(_) => {
-                println!("⚠️  Fixture not found - skipping test. Run fetch_fixture_account test first.");
+                println!(
+                    "⚠️  Fixture not found - skipping test. Run fetch_fixture_account test first."
+                );
                 return;
             }
         };
 
-        let state_json: serde_json::Value = serde_json::from_str(&fixture_contents)
-            .expect("Failed to parse fixture JSON");
+        let state_json: serde_json::Value =
+            serde_json::from_str(&fixture_contents).expect("Failed to parse fixture JSON");
 
         let account_id_hex = state_json["account_id"]
             .as_str()
             .expect("No account_id in fixture");
 
-        let expected_commitment = "0xa76d2a39784ebaf674f05f4a2138149c3ebdc5bb738eb7fed7f40af295a0d973";
+        let expected_commitment =
+            "0xa76d2a39784ebaf674f05f4a2138149c3ebdc5bb738eb7fed7f40af295a0d973";
 
         println!("Testing with fixture account: {}", account_id_hex);
         println!("Expected commitment: {}", expected_commitment);
 
         // This should succeed with full commitment validation
-        let result = client.verify_intial_state(account_id_hex, &state_json).await;
+        let result = client
+            .verify_intial_state(account_id_hex, &state_json)
+            .await;
 
         assert!(
             result.is_ok(),
@@ -193,9 +202,14 @@ mod tests {
         let invalid_account_id = "not_a_valid_hex";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client.verify_intial_state(invalid_account_id, &state_json).await;
+        let result = client
+            .verify_intial_state(invalid_account_id, &state_json)
+            .await;
         assert!(result.is_err(), "Should fail with invalid account ID");
-        assert!(result.unwrap_err().contains("Invalid Miden account ID format"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Invalid Miden account ID format")
+        );
     }
-
 }
