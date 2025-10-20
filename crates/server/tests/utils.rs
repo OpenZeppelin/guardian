@@ -151,8 +151,22 @@ pub mod test_helpers {
         (account_id, account_id_hex.to_string())
     }
 
-    /// Load the test delta fixture from fixtures/delta.json
-    pub fn load_fixture_delta() -> (AccountId, String, serde_json::Value) {
+    /// Load delta fixture by number (1 or 2)
+    pub fn load_fixture_delta(delta_num: u8) -> serde_json::Value {
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(format!("delta_{}.json", delta_num));
+
+        let fixture_contents =
+            std::fs::read_to_string(&fixture_path).expect("Failed to read delta fixture");
+
+        serde_json::from_str(&fixture_contents).expect("Failed to parse delta fixture")
+    }
+
+    /// Load the test delta fixture from fixtures/delta.json (old API)
+    #[allow(dead_code)]
+    pub fn load_fixture_delta_old() -> (AccountId, String, serde_json::Value) {
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")

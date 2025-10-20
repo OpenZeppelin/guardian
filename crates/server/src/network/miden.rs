@@ -67,10 +67,45 @@ impl MidenNetworkClient {
         self.client.get_account_commitment(account_id).await
     }
 
-    /// Verify that a delta payload is valid by attempting to deserialize it as an AccountDelta.
-    pub fn verify_delta(&self, delta_payload: &serde_json::Value) -> Result<(), String> {
-        AccountDelta::from_json(delta_payload)?;
-        Ok(())
+
+    /// Verify delta commitments and apply the delta to the account state.
+    pub fn verify_and_apply_delta(
+        &self,
+        prev_commitment: &str,
+        new_commitment: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(serde_json::Value, String), String> {
+        let delta = AccountDelta::from_json(delta_payload)?;
+        let mut account = Account::from_json(prev_state_json)?;
+
+        // Verify prev_commitment matches current state
+        let current_commitment = account.commitment();
+        let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
+
+        if current_commitment_hex != prev_commitment {
+            return Err(format!(
+                "Previous commitment mismatch: delta specifies {prev_commitment}, but current state has {current_commitment_hex}"
+            ));
+        }
+
+        // Apply delta
+        account
+            .apply_delta(&delta)
+            .map_err(|e| format!("Failed to apply delta to account: {e}"))?;
+
+        // Verify new_commitment matches actual result
+        let actual_new_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+
+        if actual_new_commitment != new_commitment {
+            return Err(format!(
+                "New commitment mismatch: delta specifies {new_commitment}, but applying delta resulted in {actual_new_commitment}"
+            ));
+        }
+
+        let new_state_json = account.to_json();
+
+        Ok((new_state_json, actual_new_commitment))
     }
 
     /// Merge multiple delta payloads into a single AccountDelta.

@@ -6,7 +6,7 @@ use server::api::grpc::state_manager::{
     ConfigureRequest, GetDeltaRequest, GetDeltaSinceRequest, PushDeltaRequest,
 };
 use utils::test_helpers::{
-    create_test_delta_payload, load_fixture_account_grpc as load_fixture_account,
+    load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
 };
 
 #[tokio::test]
@@ -30,15 +30,13 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     assert!(configure_response.unwrap().into_inner().success);
 
     // Step 2: Push a delta with authentication metadata
-    let delta_payload = create_test_delta_payload(&account_id_hex);
+    let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
-        account_id: account_id_hex,
-        nonce: 1,
-        prev_commitment: "0x0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
-        new_commitment: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        delta_payload: delta_payload.to_string(),
+        account_id: delta_1["account_id"].as_str().unwrap().to_string(),
+        nonce: delta_1["nonce"].as_u64().unwrap(),
+        prev_commitment: delta_1["prev_commitment"].as_str().unwrap().to_string(),
+        new_commitment: delta_1["new_commitment"].as_str().unwrap().to_string(),
+        delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
     let request = create_request_with_auth(push_req, &pubkey_hex, &signature_hex);
@@ -80,15 +78,13 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     assert!(configure_response.unwrap().into_inner().success);
 
     // Try to push delta with UNAUTHORIZED key
-    let delta_payload = create_test_delta_payload(&account_id_hex);
+    let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
-        account_id: account_id_hex,
-        nonce: 1,
-        prev_commitment: "0x0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
-        new_commitment: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        delta_payload: delta_payload.to_string(),
+        account_id: delta_1["account_id"].as_str().unwrap().to_string(),
+        nonce: delta_1["nonce"].as_u64().unwrap(),
+        prev_commitment: delta_1["prev_commitment"].as_str().unwrap().to_string(),
+        new_commitment: delta_1["new_commitment"].as_str().unwrap().to_string(),
+        delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
     let request = create_request_with_auth(push_req, &unauthorized_pubkey, &unauthorized_sig);
@@ -128,15 +124,13 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
     assert!(configure_response.unwrap().into_inner().success);
 
     // Try to push delta WITHOUT auth metadata
-    let delta_payload = create_test_delta_payload(&account_id_hex);
+    let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
-        account_id: account_id_hex,
-        nonce: 1,
-        prev_commitment: "0x0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
-        new_commitment: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        delta_payload: delta_payload.to_string(),
+        account_id: delta_1["account_id"].as_str().unwrap().to_string(),
+        nonce: delta_1["nonce"].as_u64().unwrap(),
+        prev_commitment: delta_1["prev_commitment"].as_str().unwrap().to_string(),
+        new_commitment: delta_1["new_commitment"].as_str().unwrap().to_string(),
+        delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
     // Request WITHOUT auth metadata
@@ -179,15 +173,13 @@ async fn test_grpc_get_delta_with_auth() {
         .unwrap();
 
     // Push a delta (nonce 1)
-    let delta_payload = create_test_delta_payload(&account_id_hex);
+    let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
-        account_id: account_id_hex.clone(),
-        nonce: 1,
-        prev_commitment: "0x0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
-        new_commitment: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        delta_payload: delta_payload.to_string(),
+        account_id: delta_1["account_id"].as_str().unwrap().to_string(),
+        nonce: delta_1["nonce"].as_u64().unwrap(),
+        prev_commitment: delta_1["prev_commitment"].as_str().unwrap().to_string(),
+        new_commitment: delta_1["new_commitment"].as_str().unwrap().to_string(),
+        delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
     service
@@ -238,15 +230,13 @@ async fn test_grpc_get_delta_since_with_auth() {
         .unwrap();
 
     // Push first delta (nonce 1)
-    let delta_payload_1 = create_test_delta_payload(&account_id_hex);
+    let delta_1 = load_fixture_delta(1);
     let push_req_1 = PushDeltaRequest {
-        account_id: account_id_hex.clone(),
-        nonce: 1,
-        prev_commitment: "0x0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
-        new_commitment: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        delta_payload: delta_payload_1.to_string(),
+        account_id: delta_1["account_id"].as_str().unwrap().to_string(),
+        nonce: delta_1["nonce"].as_u64().unwrap(),
+        prev_commitment: delta_1["prev_commitment"].as_str().unwrap().to_string(),
+        new_commitment: delta_1["new_commitment"].as_str().unwrap().to_string(),
+        delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
     service
@@ -259,15 +249,13 @@ async fn test_grpc_get_delta_since_with_auth() {
         .unwrap();
 
     // Push second delta (nonce 2)
-    let delta_payload_2 = create_test_delta_payload(&account_id_hex);
+    let delta_2 = load_fixture_delta(2);
     let push_req_2 = PushDeltaRequest {
-        account_id: account_id_hex.clone(),
-        nonce: 2,
-        prev_commitment: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        new_commitment: "0x2222222222222222222222222222222222222222222222222222222222222222"
-            .to_string(),
-        delta_payload: delta_payload_2.to_string(),
+        account_id: delta_2["account_id"].as_str().unwrap().to_string(),
+        nonce: delta_2["nonce"].as_u64().unwrap(),
+        prev_commitment: delta_2["prev_commitment"].as_str().unwrap().to_string(),
+        new_commitment: delta_2["new_commitment"].as_str().unwrap().to_string(),
+        delta_payload: serde_json::to_string(&delta_2["delta_payload"]).unwrap(),
     };
 
     service
@@ -306,12 +294,12 @@ async fn test_grpc_get_delta_since_with_auth() {
     );
     assert_eq!(
         merged_delta.prev_commitment,
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        delta_1["prev_commitment"].as_str().unwrap(),
         "Merged delta should have first delta's prev_commitment"
     );
     assert_eq!(
         merged_delta.new_commitment,
-        "0x2222222222222222222222222222222222222222222222222222222222222222",
+        delta_2["new_commitment"].as_str().unwrap(),
         "Merged delta should have last delta's new_commitment"
     );
 }
