@@ -15,16 +15,100 @@ pub mod test_helpers {
     use private_state_manager_shared::ToJson;
 
     use server::api::grpc::StateManagerService;
-    use server::network::NetworkType;
+    use server::network::{NetworkClient, NetworkType};
     use server::state::AppState;
     use server::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
     use server::storage::{StorageBackend, StorageRegistry, StorageType};
+    use async_trait::async_trait;
+    use private_state_manager_shared::FromJson;
 
     // Re-export types needed by test functions
     pub use server::api::grpc::state_manager::*;
     pub use tonic::{Request, metadata::MetadataValue};
 
+    /// Mock network client for testing that doesn't require real network calls
+    pub struct MockNetworkClient {
+        pub miden_client: server::network::miden::MidenNetworkClient,
+        pub initial_commitments: HashMap<String, String>,
+    }
+
+    impl MockNetworkClient {
+        pub fn new(miden_client: server::network::miden::MidenNetworkClient) -> Self {
+            Self {
+                miden_client,
+                initial_commitments: HashMap::new(),
+            }
+        }
+
+        pub fn register_account(&mut self, account_id: String, commitment: String) {
+            self.initial_commitments.insert(account_id, commitment);
+        }
+    }
+
+    #[async_trait]
+    impl NetworkClient for MockNetworkClient {
+        async fn verify_state(
+            &mut self,
+            _account_id: &str,
+            state_json: &serde_json::Value,
+        ) -> Result<String, String> {
+            use miden_objects::account::Account;
+
+            // For tests, compute commitment from state_json instead of querying network
+            let account = Account::from_json(state_json)
+                .map_err(|e| format!("Failed to deserialize account: {}", e))?;
+
+            let commitment = account.commitment();
+            let commitment_hex = format!("0x{}", hex::encode(commitment.as_bytes()));
+
+            // Register this account with its initial commitment for later on-chain queries
+            self.initial_commitments.insert(_account_id.to_string(), commitment_hex.clone());
+
+            Ok(commitment_hex)
+        }
+
+        async fn verify_on_chain_state(&mut self, account_id: &str) -> Result<String, String> {
+            // For tests, return the registered initial commitment
+            // This simulates checking on-chain state which won't have any deltas applied
+            if let Some(commitment) = self.initial_commitments.get(account_id) {
+                Ok(commitment.clone())
+            } else {
+                // Fallback to real client if not registered
+                self.miden_client.verify_on_chain_state(account_id).await
+            }
+        }
+
+        fn verify_delta(
+            &self,
+            prev_proof: &str,
+            prev_state_json: &serde_json::Value,
+            delta_payload: &serde_json::Value,
+        ) -> Result<(), String> {
+            self.miden_client.verify_delta(prev_proof, prev_state_json, delta_payload)
+        }
+
+        fn apply_delta(
+            &self,
+            prev_state_json: &serde_json::Value,
+            delta_payload: &serde_json::Value,
+        ) -> Result<(serde_json::Value, String), String> {
+            self.miden_client.apply_delta(prev_state_json, delta_payload)
+        }
+
+        fn merge_deltas(
+            &self,
+            delta_payloads: Vec<serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
+            self.miden_client.merge_deltas(delta_payloads)
+        }
+
+        fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
+            self.miden_client.validate_account_id(account_id)
+        }
+    }
+
     /// Create test app state with temporary storage and metadata
+    #[allow(dead_code)]
     pub async fn create_test_app_state() -> AppState {
         // Create temporary directories for test storage
         let storage_dir =
@@ -47,21 +131,24 @@ pub mod test_helpers {
         storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
         let storage_registry = StorageRegistry::new(storage_backends);
 
-        // Create network client
-        let network_client =
+        // Create mock network client for tests
+        let miden_client =
             server::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
                 .await
                 .expect("Failed to create network client");
 
+        let mock_client = MockNetworkClient::new(miden_client);
+
         AppState {
             storage: storage_registry,
             metadata: Arc::new(metadata),
-            network_client: Arc::new(tokio::sync::Mutex::new(network_client)),
+            network_client: Arc::new(tokio::sync::Mutex::new(mock_client)),
             canonicalization_mode: server::canonicalization::CanonicalizationMode::default(),
         }
     }
 
     /// Create gRPC service from app state
+    #[allow(dead_code)]
     pub fn create_grpc_service(state: AppState) -> StateManagerService {
         StateManagerService { app_state: state }
     }
@@ -72,6 +159,7 @@ pub mod test_helpers {
     /// * `payload` - The request payload
     /// * `pubkey` - Publisher public key (hex string with 0x prefix)
     /// * `sig` - Publisher signature (hex string with 0x prefix)
+    #[allow(dead_code)]
     pub fn create_request_with_auth<T>(payload: T, pubkey: &str, sig: &str) -> Request<T> {
         let mut request = Request::new(payload);
         let metadata = request.metadata_mut();
@@ -89,6 +177,7 @@ pub mod test_helpers {
     }
 
     /// Create AuthConfig for Miden Falcon RPO
+    #[allow(dead_code)]
     pub fn create_miden_falcon_rpo_auth(cosigner_pubkeys: Vec<String>) -> AuthConfig {
         AuthConfig {
             auth_type: Some(auth_config::AuthType::MidenFalconRpo(MidenFalconRpoAuth {
@@ -98,6 +187,7 @@ pub mod test_helpers {
     }
 
     /// Create HTTP router with all routes configured
+    #[allow(dead_code)]
     pub fn create_router(state: AppState) -> axum::Router {
         use server::api::http;
 
@@ -111,6 +201,7 @@ pub mod test_helpers {
     }
 
     /// Load the test account fixture from fixtures/account.json
+    #[allow(dead_code)]
     pub fn load_fixture_account() -> (AccountId, String, serde_json::Value) {
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -135,6 +226,7 @@ pub mod test_helpers {
     }
 
     /// Load fixture account for gRPC tests that need a String representation
+    #[allow(dead_code)]
     pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
         let (account_id, account_id_hex, fixture_json) = load_fixture_account();
         let fixture_string =
@@ -191,6 +283,7 @@ pub mod test_helpers {
 
     /// Create a test AccountDelta JSON payload with valid base64-encoded delta bytes
     /// This creates an in-memory delta for the given account ID
+    #[allow(dead_code)]
     pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
         let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
 
@@ -207,6 +300,7 @@ pub mod test_helpers {
     }
 
     /// Generate a Falcon key pair and signature for the given account ID
+    #[allow(dead_code)]
     pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String) {
         // Generate key pair
         let secret_key = SecretKey::new();

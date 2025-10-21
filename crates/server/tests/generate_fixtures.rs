@@ -1,145 +1,202 @@
 use miden_objects::{
-    Felt,
-    account::{
-        Account, AccountDelta, AccountId,
-        delta::{AccountStorageDelta, AccountVaultDelta},
-    },
+    Felt, Word,
+    account::{Account, AccountDelta, AccountBuilder},
+    crypto::dsa::rpo_falcon512::PublicKey,
+    account::delta::{AccountStorageDelta, AccountVaultDelta},
 };
-use private_state_manager_shared::ToJson;
+use miden_lib::account::{auth::AuthRpoFalcon512Multisig, wallets::BasicWallet};
+use private_state_manager_shared::{ToJson, FromJson};
 use std::fs;
 
 #[tokio::test]
-#[ignore] // Run manually with: cargo test --test generate_fixtures -- --ignored
-async fn generate_account_and_delta_fixtures() {
-    // Load existing fixture account
+#[ignore] // Run manually with: cargo test --test generate_fixtures generate_multisig_fixtures -- --ignored
+async fn generate_multisig_fixtures() {
+    let pub_key_1 = PublicKey::new(Word::from([1u32, 0, 0, 0]));
+    let pub_key_2 = PublicKey::new(Word::from([2u32, 0, 0, 0]));
+    let pub_key_3 = PublicKey::new(Word::from([3u32, 0, 0, 0]));
+    let approvers = vec![pub_key_1, pub_key_2, pub_key_3];
+    let threshold = 2u32;
+
+    let multisig_component = AuthRpoFalcon512Multisig::new(threshold, approvers.clone())
+        .expect("multisig component creation failed");
+
+    let (account, _) = AccountBuilder::new([0xff; 32])
+        .with_auth_component(multisig_component)
+        .with_component(BasicWallet)
+        .build()
+        .expect("account building failed");
+
+    let account_json = account.to_json();
+    let account_id = account.id();
+    let mut current_commitment = account.commitment();
+
+    println!("\nGenerated Multisig Account:");
+    println!("  Account ID: {}", account_id);
+    println!("  Commitment: 0x{}", hex::encode(current_commitment.as_bytes()));
+    println!("  Threshold: {}/{}", threshold, approvers.len());
+    println!("  Approvers:");
+    for (i, pub_key) in approvers.iter().enumerate() {
+        println!("    {}: {}", i, Word::from(*pub_key));
+    }
+
     let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("account.json");
 
-    let fixture_contents =
-        fs::read_to_string(&fixture_path).expect("Failed to read account fixture");
-    let account_json: serde_json::Value = serde_json::from_str(&fixture_contents).unwrap();
+    fs::write(
+        &fixture_path,
+        serde_json::to_string_pretty(&account_json).unwrap(),
+    )
+    .expect("Failed to write account.json");
 
-    let account_id_hex = account_json["account_id"].as_str().unwrap();
-    let account_id = AccountId::from_hex(account_id_hex).unwrap();
+    println!("✅ Multisig account fixture saved to account.json");
 
-    // Deserialize the account
-    use private_state_manager_shared::FromJson;
-    let account = Account::from_json(&account_json).expect("Failed to deserialize account");
-    let initial_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+    let mut commitments = vec![
+        ("initial_commitment".to_string(), format!("0x{}", hex::encode(current_commitment.as_bytes())))
+    ];
 
-    println!("Initial account:");
-    println!("  ID: {}", account_id_hex);
-    println!("  Commitment: {}", initial_commitment);
+    // Delta 1: Add 4th approver
+    let pub_key_4 = PublicKey::new(Word::from([4u32, 0, 0, 0]));
+    let mut storage_delta_1 = AccountStorageDelta::default();
+    storage_delta_1.set_map_item(1, Word::from([3u32, 0, 0, 0]), Word::from(pub_key_4));
+    storage_delta_1.set_item(0, Word::from([threshold, 4u32, 0, 0]));
 
-    // Create first delta - increment nonce by 1
     let delta_1 = AccountDelta::new(
-        account_id.clone(),
-        AccountStorageDelta::default(),
+        account_id,
+        storage_delta_1,
         AccountVaultDelta::default(),
-        Felt::new(1), // nonce delta: increment by 1
+        Felt::new(1),
     )
     .expect("Failed to create delta 1");
 
-    // Apply first delta
-    let mut account_after_delta_1 = account.clone();
-    account_after_delta_1
-        .apply_delta(&delta_1)
-        .expect("Failed to apply delta 1");
-    let commitment_after_delta_1 = format!(
-        "0x{}",
-        hex::encode(account_after_delta_1.commitment().as_bytes())
-    );
+    let mut account_state = Account::from_json(&account_json).expect("Failed to deserialize");
+    let prev_commitment_1 = current_commitment;
+    account_state.apply_delta(&delta_1).expect("Failed to apply delta 1");
+    current_commitment = account_state.commitment();
 
-    println!("\nAfter delta 1:");
-    println!("  Commitment: {}", commitment_after_delta_1);
+    println!("\nDelta 1 - Added 4th approver:");
+    println!("  New approver: {}", Word::from(pub_key_4));
+    println!("  Commitment: 0x{}", hex::encode(current_commitment.as_bytes()));
 
-    // Save delta 1 fixture
     let delta_1_fixture = serde_json::json!({
-        "account_id": account_id_hex,
+        "account_id": format!("{}", account_id),
         "nonce": 1,
-        "prev_commitment": initial_commitment,
-        "new_commitment": commitment_after_delta_1,
+        "prev_commitment": format!("0x{}", hex::encode(prev_commitment_1.as_bytes())),
+        "new_commitment": format!("0x{}", hex::encode(current_commitment.as_bytes())),
         "delta_payload": delta_1.to_json()
     });
 
-    let delta_1_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("delta_1.json");
-
     fs::write(
-        &delta_1_path,
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests").join("fixtures").join("delta_1.json"),
         serde_json::to_string_pretty(&delta_1_fixture).unwrap(),
-    )
-    .expect("Failed to write delta_1.json");
+    ).expect("Failed to write delta_1.json");
 
-    println!("✓ Saved delta_1.json");
+    commitments.push((
+        "commitment_after_delta_1".to_string(),
+        format!("0x{}", hex::encode(current_commitment.as_bytes()))
+    ));
 
-    // Create second delta - increment nonce by 1 again
+    // Delta 2: Add 5th approver
+    let pub_key_5 = PublicKey::new(Word::from([5u32, 0, 0, 0]));
+    let mut storage_delta_2 = AccountStorageDelta::default();
+    storage_delta_2.set_map_item(1, Word::from([4u32, 0, 0, 0]), Word::from(pub_key_5));
+    storage_delta_2.set_item(0, Word::from([threshold, 5u32, 0, 0]));
+
     let delta_2 = AccountDelta::new(
-        account_id.clone(),
-        AccountStorageDelta::default(),
+        account_id,
+        storage_delta_2,
         AccountVaultDelta::default(),
-        Felt::new(1), // nonce delta: increment by 1
+        Felt::new(1),
     )
     .expect("Failed to create delta 2");
 
-    // Apply second delta
-    let mut account_after_delta_2 = account_after_delta_1.clone();
-    account_after_delta_2
-        .apply_delta(&delta_2)
-        .expect("Failed to apply delta 2");
-    let commitment_after_delta_2 = format!(
-        "0x{}",
-        hex::encode(account_after_delta_2.commitment().as_bytes())
-    );
+    let prev_commitment_2 = current_commitment;
+    account_state.apply_delta(&delta_2).expect("Failed to apply delta 2");
+    current_commitment = account_state.commitment();
 
-    println!("\nAfter delta 2:");
-    println!("  Commitment: {}", commitment_after_delta_2);
+    println!("\nDelta 2 - Added 5th approver:");
+    println!("  New approver: {}", Word::from(pub_key_5));
+    println!("  Commitment: 0x{}", hex::encode(current_commitment.as_bytes()));
 
-    // Save delta 2 fixture
     let delta_2_fixture = serde_json::json!({
-        "account_id": account_id_hex,
+        "account_id": format!("{}", account_id),
         "nonce": 2,
-        "prev_commitment": commitment_after_delta_1,
-        "new_commitment": commitment_after_delta_2,
+        "prev_commitment": format!("0x{}", hex::encode(prev_commitment_2.as_bytes())),
+        "new_commitment": format!("0x{}", hex::encode(current_commitment.as_bytes())),
         "delta_payload": delta_2.to_json()
     });
 
-    let delta_2_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("delta_2.json");
-
     fs::write(
-        &delta_2_path,
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests").join("fixtures").join("delta_2.json"),
         serde_json::to_string_pretty(&delta_2_fixture).unwrap(),
+    ).expect("Failed to write delta_2.json");
+
+    commitments.push((
+        "commitment_after_delta_2".to_string(),
+        format!("0x{}", hex::encode(current_commitment.as_bytes()))
+    ));
+
+    // Delta 3: Increase threshold to 3
+    let mut storage_delta_3 = AccountStorageDelta::default();
+    storage_delta_3.set_item(0, Word::from([3u32, 5u32, 0, 0]));
+
+    let delta_3 = AccountDelta::new(
+        account_id,
+        storage_delta_3,
+        AccountVaultDelta::default(),
+        Felt::new(1),
     )
-    .expect("Failed to write delta_2.json");
+    .expect("Failed to create delta 3");
 
-    println!("✓ Saved delta_2.json");
+    let prev_commitment_3 = current_commitment;
+    account_state.apply_delta(&delta_3).expect("Failed to apply delta 3");
+    current_commitment = account_state.commitment();
 
-    // Update the summary fixture with commitments
-    let summary_fixture = serde_json::json!({
-        "account_id": account_id_hex,
-        "initial_commitment": initial_commitment,
-        "commitment_after_delta_1": commitment_after_delta_1,
-        "commitment_after_delta_2": commitment_after_delta_2
+    println!("\nDelta 3 - Increased threshold to 3:");
+    println!("  New threshold: 3/5");
+    println!("  Commitment: 0x{}", hex::encode(current_commitment.as_bytes()));
+
+    let delta_3_fixture = serde_json::json!({
+        "account_id": format!("{}", account_id),
+        "nonce": 3,
+        "prev_commitment": format!("0x{}", hex::encode(prev_commitment_3.as_bytes())),
+        "new_commitment": format!("0x{}", hex::encode(current_commitment.as_bytes())),
+        "delta_payload": delta_3.to_json()
     });
 
-    let summary_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("commitments.json");
+    fs::write(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests").join("fixtures").join("delta_3.json"),
+        serde_json::to_string_pretty(&delta_3_fixture).unwrap(),
+    ).expect("Failed to write delta_3.json");
+
+    commitments.push((
+        "commitment_after_delta_3".to_string(),
+        format!("0x{}", hex::encode(current_commitment.as_bytes()))
+    ));
+
+    // Save commitments summary
+    let mut commitments_map = serde_json::Map::new();
+    commitments_map.insert("account_id".to_string(), serde_json::json!(format!("{}", account_id)));
+    for (key, value) in commitments {
+        commitments_map.insert(key, serde_json::json!(value));
+    }
 
     fs::write(
-        &summary_path,
-        serde_json::to_string_pretty(&summary_fixture).unwrap(),
-    )
-    .expect("Failed to write commitments.json");
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests").join("fixtures").join("commitments.json"),
+        serde_json::to_string_pretty(&commitments_map).unwrap(),
+    ).expect("Failed to write commitments.json");
 
-    println!("✓ Saved commitments.json");
-    println!("\n✅ All fixtures generated successfully!");
+    println!("\n✅ Saved commitments.json");
+    println!("\n✅ All multisig fixtures generated successfully!");
+    println!("\nFixtures created:");
+    println!("  - account.json (initial state: 2/3 multisig)");
+    println!("  - delta_1.json (add 4th approver)");
+    println!("  - delta_2.json (add 5th approver)");
+    println!("  - delta_3.json (increase threshold to 3)");
+    println!("  - commitments.json (all commitments)");
 }

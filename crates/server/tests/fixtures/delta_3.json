@@ -1,0 +1,9 @@
+{
+  "account_id": "0x069cde0ebf59f29063051ad8a3d32d",
+  "delta_payload": {
+    "data": "BpzeDr9Z8pBjBRrYo9MtAAEAAwAAAAAAAAAFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQAAAAAAAAA="
+  },
+  "new_commitment": "0x01e37df4e2a2b5e38a87acbfd6aeb5c2db97f33ff9a5abb4bd7b611e3b85ffa9",
+  "nonce": 3,
+  "prev_commitment": "0xe9626a069d83f329cb7c8a3248343585869593a5b6e448c101d6ea2915001ece"
+}
