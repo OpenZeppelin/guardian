@@ -42,7 +42,7 @@ pub async fn get_delta_head(
 
     let delta = all_deltas
         .into_iter()
-        .filter(|d| d.discarded_at.is_none())
+        .filter(|d| !d.status.is_discarded())
         .max_by_key(|d| d.nonce)
         .ok_or_else(|| PsmError::DeltaNotFound {
             account_id: params.account_id.clone(),

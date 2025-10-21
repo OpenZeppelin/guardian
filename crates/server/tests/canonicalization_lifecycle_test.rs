@@ -3,7 +3,7 @@ mod utils;
 use server::auth::{Auth, Credentials};
 use server::services::{ConfigureAccountParams, PushDeltaParams};
 use server::services::{configure_account, process_canonicalizations_now, push_delta};
-use server::storage::{DeltaObject, StorageType};
+use server::storage::{DeltaObject, DeltaStatus, StorageType};
 use utils::test_helpers::*;
 
 /// Test canonicalization lifecycle - delta is discarded when on-chain doesn't match
@@ -38,9 +38,7 @@ async fn test_canonicalization_discards_mismatched_delta() {
             new_commitment: String::new(), // Will be calculated by service
             delta_payload: delta_1["delta_payload"].clone(),
             ack_sig: None,
-            candidate_at: None,
-            canonical_at: None,
-            discarded_at: None,
+            status: DeltaStatus::default(),
         },
         credentials: Credentials::Signature {
             pubkey: pubkey_hex.clone(),
@@ -71,13 +69,13 @@ async fn test_canonicalization_discards_mismatched_delta() {
 
     assert_eq!(deltas.len(), 1, "Should have 1 delta");
     let delta = &deltas[0];
-    assert!(delta.candidate_at.is_some(), "Delta should be candidate");
+    assert!(delta.status.is_candidate(), "Delta should be candidate");
     assert!(
-        delta.canonical_at.is_none(),
+        !delta.status.is_canonical(),
         "Delta should not be canonical yet"
     );
     assert!(
-        delta.discarded_at.is_none(),
+        !delta.status.is_discarded(),
         "Delta should not be discarded"
     );
 
@@ -95,16 +93,16 @@ async fn test_canonicalization_discards_mismatched_delta() {
     assert_eq!(deltas_after.len(), 1, "Should still have 1 delta");
     let delta_after = &deltas_after[0];
     assert!(
-        delta_after.candidate_at.is_some(),
-        "Delta should still have candidate_at"
+        delta_after.status.is_discarded(),
+        "Delta should be discarded"
     );
     assert!(
-        delta_after.canonical_at.is_none(),
+        !delta_after.status.is_canonical(),
         "Delta should NOT be canonical"
     );
     assert!(
-        delta_after.discarded_at.is_some(),
-        "Delta should be discarded"
+        !delta_after.status.is_candidate(),
+        "Delta should NOT still be a candidate"
     );
 
     // Step 6: Verify account state is NOT updated (still at initial commitment)
@@ -164,9 +162,7 @@ async fn test_failed_canonicalization_discards_delta() {
             new_commitment: String::new(), // Will be calculated by service
             delta_payload: delta_1["delta_payload"].clone(),
             ack_sig: None,
-            candidate_at: None,
-            canonical_at: None,
-            discarded_at: None,
+            status: DeltaStatus::default(),
         },
         credentials: Credentials::Signature {
             pubkey: pubkey_hex.clone(),
@@ -217,9 +213,7 @@ async fn test_only_pending_candidates_are_processed() {
             new_commitment: String::new(), // Will be calculated by service
             delta_payload: delta_1["delta_payload"].clone(),
             ack_sig: None,
-            candidate_at: None,
-            canonical_at: None,
-            discarded_at: None,
+            status: DeltaStatus::default(),
         },
         credentials: Credentials::Signature {
             pubkey: pubkey_hex.clone(),
@@ -246,10 +240,10 @@ async fn test_only_pending_candidates_are_processed() {
 
     assert_eq!(deltas_after_first.len(), 1);
     assert!(
-        deltas_after_first[0].discarded_at.is_some(),
+        deltas_after_first[0].status.is_discarded(),
         "Delta should be discarded"
     );
-    let first_discarded_at = deltas_after_first[0].discarded_at.clone();
+    let first_discarded_timestamp = deltas_after_first[0].status.timestamp().to_string();
 
     // Second canonicalization - should not reprocess the discarded delta
     let _ = process_canonicalizations_now(&state).await;
@@ -261,7 +255,8 @@ async fn test_only_pending_candidates_are_processed() {
 
     assert_eq!(deltas_after_second.len(), 1);
     assert_eq!(
-        deltas_after_second[0].discarded_at, first_discarded_at,
+        deltas_after_second[0].status.timestamp(),
+        first_discarded_timestamp,
         "Discarded delta should not be reprocessed (timestamp unchanged)"
     );
 }

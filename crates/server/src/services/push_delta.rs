@@ -2,7 +2,7 @@ use crate::auth::Credentials;
 use crate::canonicalization::CanonicalizationMode;
 use crate::error::{PsmError, Result};
 use crate::state::AppState;
-use crate::storage::{AccountState, DeltaObject, StorageBackend};
+use crate::storage::{AccountState, DeltaObject, DeltaStatus, StorageBackend};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -84,15 +84,10 @@ async fn check_no_pending_candidates(
 
     eprintln!("DEBUG: Checking {} existing deltas", all_deltas.len());
     for delta in &all_deltas {
-        eprintln!(
-            "  Delta {}: candidate_at={:?}, canonical_at={:?}, discarded_at={:?}",
-            delta.nonce, delta.candidate_at, delta.canonical_at, delta.discarded_at
-        );
+        eprintln!("  Delta {}: status={:?}", delta.nonce, delta.status);
     }
 
-    let has_pending_candidate = all_deltas
-        .iter()
-        .any(|d| d.candidate_at.is_some() && d.canonical_at.is_none() && d.discarded_at.is_none());
+    let has_pending_candidate = all_deltas.iter().any(|d| d.status.is_candidate());
 
     eprintln!("DEBUG: has_pending_candidate = {has_pending_candidate}");
 
@@ -143,7 +138,7 @@ async fn save_as_candidate(
 ) -> Result<()> {
     let mut candidate_delta = delta.clone();
     candidate_delta.new_commitment = new_commitment.to_string();
-    candidate_delta.candidate_at = Some(timestamp.to_string());
+    candidate_delta.status = DeltaStatus::candidate(timestamp.to_string());
 
     storage_backend
         .submit_delta(&candidate_delta)
@@ -161,8 +156,7 @@ async fn save_as_canonical(
 ) -> Result<()> {
     let mut canonical_delta = delta.clone();
     canonical_delta.new_commitment = new_commitment.to_string();
-    canonical_delta.candidate_at = Some(timestamp.to_string());
-    canonical_delta.canonical_at = Some(timestamp.to_string());
+    canonical_delta.status = DeltaStatus::canonical(timestamp.to_string());
 
     let (new_state_json, _) = {
         let client = state.network_client.lock().await;

@@ -84,12 +84,10 @@ impl StateManager for StateManagerService {
             account_id: req.account_id,
             nonce: req.nonce,
             prev_commitment: req.prev_commitment,
-            new_commitment: String::new(), // Will be calculated in service layer
+            new_commitment: String::new(),
             delta_payload,
             ack_sig: None,
-            candidate_at: None,
-            canonical_at: None,
-            discarded_at: None,
+            status: Default::default(),
         };
 
         let params = PushDeltaParams {
@@ -233,6 +231,18 @@ impl StateManager for StateManagerService {
 
 // Helper functions to convert between internal types and protobuf types
 fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
+    let (candidate_at, canonical_at, discarded_at) = match &delta.status {
+        crate::storage::DeltaStatus::Candidate { timestamp } => {
+            (Some(timestamp.clone()), None, None)
+        }
+        crate::storage::DeltaStatus::Canonical { timestamp } => {
+            (Some(timestamp.clone()), Some(timestamp.clone()), None)
+        }
+        crate::storage::DeltaStatus::Discarded { timestamp } => {
+            (None, None, Some(timestamp.clone()))
+        }
+    };
+
     state_manager::DeltaObject {
         account_id: delta.account_id.clone(),
         nonce: delta.nonce,
@@ -240,9 +250,9 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         new_commitment: delta.new_commitment.clone(),
         delta_payload: delta.delta_payload.to_string(),
         ack_sig: delta.ack_sig.clone().unwrap_or_default(),
-        candidate_at: delta.candidate_at.clone().unwrap_or_default(),
-        canonical_at: delta.canonical_at.clone(),
-        discarded_at: delta.discarded_at.clone(),
+        candidate_at: candidate_at.unwrap_or_default(),
+        canonical_at,
+        discarded_at,
     }
 }
 

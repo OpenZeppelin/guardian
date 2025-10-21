@@ -43,7 +43,7 @@ pub async fn get_delta_since(
 
     let deltas: Vec<DeltaObject> = all_deltas
         .into_iter()
-        .filter(|delta| delta.discarded_at.is_none())
+        .filter(|delta| !delta.status.is_discarded())
         .collect();
 
     if deltas.is_empty() {
@@ -72,9 +72,7 @@ pub async fn get_delta_since(
         new_commitment: last_delta.new_commitment.clone(),
         delta_payload: merged_payload,
         ack_sig: last_delta.ack_sig.clone(),
-        candidate_at: last_delta.candidate_at.clone(),
-        canonical_at: last_delta.canonical_at.clone(),
-        discarded_at: last_delta.discarded_at.clone(),
+        status: last_delta.status.clone(),
     };
 
     Ok(GetDeltaSinceResult { merged_delta })

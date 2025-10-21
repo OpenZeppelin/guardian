@@ -1,7 +1,7 @@
 use crate::canonicalization::{CanonicalizationConfig, CanonicalizationMode};
 use crate::error::{PsmError, Result};
 use crate::state::AppState;
-use crate::storage::{AccountState, DeltaObject, StorageBackend};
+use crate::storage::{AccountState, DeltaObject, DeltaStatus, StorageBackend};
 use std::sync::Arc;
 use tokio::time::interval;
 
@@ -150,7 +150,7 @@ fn filter_ready_candidates(
 }
 
 fn is_pending_candidate(delta: &DeltaObject) -> bool {
-    delta.candidate_at.is_some() && delta.canonical_at.is_none() && delta.discarded_at.is_none()
+    delta.status.is_candidate()
 }
 
 fn is_ready_candidate(
@@ -158,16 +158,16 @@ fn is_ready_candidate(
     now: &chrono::DateTime<chrono::Utc>,
     config: &CanonicalizationConfig,
 ) -> bool {
-    if let Some(candidate_at_str) = &delta.candidate_at {
-        if delta.canonical_at.is_some() || delta.discarded_at.is_some() {
-            return false;
-        }
-
-        if let Ok(candidate_at) = chrono::DateTime::parse_from_rfc3339(candidate_at_str) {
-            let elapsed = now.signed_duration_since(candidate_at);
-            return elapsed.num_seconds() >= config.delay_seconds as i64;
-        }
+    if !delta.status.is_candidate() {
+        return false;
     }
+
+    let candidate_at_str = delta.status.timestamp();
+    if let Ok(candidate_at) = chrono::DateTime::parse_from_rfc3339(candidate_at_str) {
+        let elapsed = now.signed_duration_since(candidate_at);
+        return elapsed.num_seconds() >= config.delay_seconds as i64;
+    }
+
     false
 }
 
@@ -265,7 +265,7 @@ async fn discard_delta(
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut discarded_delta = delta.clone();
-    discarded_delta.discarded_at = Some(now);
+    discarded_delta.status = DeltaStatus::discarded(now);
 
     storage_backend
         .submit_delta(&discarded_delta)
@@ -317,7 +317,7 @@ async fn mark_delta_canonical(
     timestamp: &str,
 ) -> Result<()> {
     let mut canonical_delta = delta.clone();
-    canonical_delta.canonical_at = Some(timestamp.to_string());
+    canonical_delta.status = DeltaStatus::canonical(timestamp.to_string());
 
     storage_backend
         .submit_delta(&canonical_delta)
