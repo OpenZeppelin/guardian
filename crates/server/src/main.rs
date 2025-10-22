@@ -20,6 +20,10 @@ async fn main() {
         .unwrap_or_else(|_| "/var/psm/metadata".to_string())
         .into();
 
+    let keystore_path: PathBuf = env::var("PSM_KEYSTORE_PATH")
+        .unwrap_or_else(|_| "/var/psm/keystore".to_string())
+        .into();
+
     // Create storage registry with filesystem backend
     let storage_registry = StorageRegistry::with_filesystem(storage_path)
         .await
@@ -38,6 +42,7 @@ async fn main() {
         .with_canonicalization(canonicalization_mode)
         .storage(storage_registry)
         .metadata(Arc::new(metadata))
+        .keystore(keystore_path)
         .http(true, 3000)
         .grpc(true, 50051)
         .build()

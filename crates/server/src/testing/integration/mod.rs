@@ -13,3 +13,6 @@ mod miden_rpc_integration;
 
 #[cfg(test)]
 mod generate_fixtures;
+
+#[cfg(test)]
+mod keystore;

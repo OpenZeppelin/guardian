@@ -8,6 +8,7 @@ use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
 use private_state_manager_shared::{FromJson, ToJson};
+use miden_keystore::FilesystemKeyStore;
 
 use crate::api::grpc::StateManagerService;
 use crate::network::{NetworkClient, NetworkType};
@@ -113,9 +114,12 @@ pub async fn create_test_app_state() -> AppState {
         std::env::temp_dir().join(format!("psm_test_storage_{}", uuid::Uuid::new_v4()));
     let metadata_dir =
         std::env::temp_dir().join(format!("psm_test_metadata_{}", uuid::Uuid::new_v4()));
+    let keystore_dir =
+        std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
 
     std::fs::create_dir_all(&storage_dir).expect("Failed to create storage directory");
     std::fs::create_dir_all(&metadata_dir).expect("Failed to create metadata directory");
+    std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
 
     let storage = FilesystemService::new(storage_dir)
         .await
@@ -123,6 +127,8 @@ pub async fn create_test_app_state() -> AppState {
     let metadata = FilesystemMetadataStore::new(metadata_dir)
         .await
         .expect("Failed to create metadata");
+    let keystore = FilesystemKeyStore::<rand_chacha::ChaCha20Rng>::new(keystore_dir)
+        .expect("Failed to create keystore");
 
     let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
     storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
@@ -139,6 +145,7 @@ pub async fn create_test_app_state() -> AppState {
         storage: storage_registry,
         metadata: Arc::new(metadata),
         network_client: Arc::new(tokio::sync::Mutex::new(mock_client)),
+        keystore: Arc::new(keystore),
         canonicalization_mode: crate::canonicalization::CanonicalizationMode::default(),
         clock: Arc::new(crate::clock::SystemClock),
     }

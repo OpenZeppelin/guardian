@@ -23,11 +23,15 @@ use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
 use crate::storage::{MetadataStore, StorageRegistry};
 
+use miden_keystore::FilesystemKeyStore;
+use rand_chacha::ChaCha20Rng;
+
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
     network_type: Option<NetworkType>,
     storage: Option<StorageRegistry>,
     metadata: Option<Arc<dyn MetadataStore>>,
+    keystore_path: Option<std::path::PathBuf>,
     canonicalization_mode: CanonicalizationMode,
     logging_config: Option<LoggingConfig>,
     http_enabled: bool,
@@ -43,6 +47,7 @@ impl ServerBuilder {
             network_type: None,
             storage: None,
             metadata: None,
+            keystore_path: None,
             canonicalization_mode: CanonicalizationMode::default(),
             logging_config: None,
             http_enabled: true,
@@ -120,6 +125,23 @@ impl ServerBuilder {
     /// ```
     pub fn metadata(mut self, metadata: Arc<dyn MetadataStore>) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Set the keystore path
+    ///
+    /// The keystore stores cryptographic keys for signing operations.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use server::builder::ServerBuilder;
+    /// use std::path::PathBuf;
+    ///
+    /// let builder = ServerBuilder::new()
+    ///     .keystore(PathBuf::from("/var/psm/keystore"));
+    /// ```
+    pub fn keystore(mut self, path: std::path::PathBuf) -> Self {
+        self.keystore_path = Some(path);
         self
     }
 
@@ -272,14 +294,22 @@ impl ServerBuilder {
             .metadata
             .ok_or("Metadata store not set. Use .metadata(...)")?;
 
+        let keystore_path = self
+            .keystore_path
+            .ok_or("Keystore path not set. Use .keystore(...)")?;
+
         let network_client = MidenNetworkClient::from_network(network_type)
             .await
             .map_err(|e| format!("Failed to create network client: {e}"))?;
+
+        let keystore = FilesystemKeyStore::<ChaCha20Rng>::new(keystore_path)
+            .map_err(|e| format!("Failed to create keystore: {e}"))?;
 
         let app_state = AppState {
             storage,
             metadata,
             network_client: Arc::new(Mutex::new(network_client)),
+            keystore: Arc::new(keystore),
             canonicalization_mode: self.canonicalization_mode,
             clock: Arc::new(SystemClock),
         };
