@@ -1,0 +1,279 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
+use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+use miden_objects::crypto::hash::rpo::Rpo256;
+use miden_objects::utils::Serializable;
+use miden_objects::{Felt, FieldElement, Word};
+use private_state_manager_shared::{FromJson, ToJson};
+
+use crate::api::grpc::StateManagerService;
+use crate::network::{NetworkClient, NetworkType};
+use crate::state::AppState;
+use crate::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
+use crate::storage::{StorageBackend, StorageRegistry, StorageType};
+
+pub use crate::api::grpc::state_manager::*;
+pub use tonic::{Request, metadata::MetadataValue};
+
+pub struct IntegrationMockNetworkClient {
+    miden_client: crate::network::miden::MidenNetworkClient,
+    initial_commitments: HashMap<String, String>,
+}
+
+impl IntegrationMockNetworkClient {
+    pub fn new(miden_client: crate::network::miden::MidenNetworkClient) -> Self {
+        Self {
+            miden_client,
+            initial_commitments: HashMap::new(),
+        }
+    }
+
+    pub fn register_account(&mut self, account_id: String, commitment: String) {
+        self.initial_commitments.insert(account_id, commitment);
+    }
+}
+
+#[async_trait]
+impl NetworkClient for IntegrationMockNetworkClient {
+    async fn verify_state(
+        &mut self,
+        _account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> Result<String, String> {
+        use miden_objects::account::Account;
+
+        let account = Account::from_json(state_json)
+            .map_err(|e| format!("Failed to deserialize account: {e}"))?;
+
+        let commitment = account.commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.as_bytes()));
+
+        self.initial_commitments
+            .insert(_account_id.to_string(), commitment_hex.clone());
+
+        Ok(commitment_hex)
+    }
+
+    async fn verify_on_chain_state(&mut self, account_id: &str) -> Result<String, String> {
+        if let Some(commitment) = self.initial_commitments.get(account_id) {
+            Ok(commitment.clone())
+        } else {
+            self.miden_client.verify_on_chain_state(account_id).await
+        }
+    }
+
+    fn verify_delta(
+        &self,
+        prev_proof: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.miden_client
+            .verify_delta(prev_proof, prev_state_json, delta_payload)
+    }
+
+    fn apply_delta(
+        &self,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(serde_json::Value, String), String> {
+        self.miden_client
+            .apply_delta(prev_state_json, delta_payload)
+    }
+
+    fn merge_deltas(
+        &self,
+        delta_payloads: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        self.miden_client.merge_deltas(delta_payloads)
+    }
+
+    fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
+        self.miden_client.validate_account_id(account_id)
+    }
+
+    async fn is_canonical(&mut self, delta: &crate::storage::DeltaObject) -> Result<bool, String> {
+        let on_chain_commitment = self.verify_on_chain_state(&delta.account_id).await?;
+        Ok(delta.new_commitment == on_chain_commitment)
+    }
+
+    async fn should_update_auth(
+        &mut self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<crate::auth::Auth>, String> {
+        self.miden_client.should_update_auth(state_json).await
+    }
+}
+
+pub async fn create_test_app_state() -> AppState {
+    let storage_dir =
+        std::env::temp_dir().join(format!("psm_test_storage_{}", uuid::Uuid::new_v4()));
+    let metadata_dir =
+        std::env::temp_dir().join(format!("psm_test_metadata_{}", uuid::Uuid::new_v4()));
+
+    std::fs::create_dir_all(&storage_dir).expect("Failed to create storage directory");
+    std::fs::create_dir_all(&metadata_dir).expect("Failed to create metadata directory");
+
+    let storage = FilesystemService::new(storage_dir)
+        .await
+        .expect("Failed to create storage");
+    let metadata = FilesystemMetadataStore::new(metadata_dir)
+        .await
+        .expect("Failed to create metadata");
+
+    let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
+    storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
+    let storage_registry = StorageRegistry::new(storage_backends);
+
+    let miden_client =
+        crate::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+            .await
+            .expect("Failed to create network client");
+
+    let mock_client = IntegrationMockNetworkClient::new(miden_client);
+
+    AppState {
+        storage: storage_registry,
+        metadata: Arc::new(metadata),
+        network_client: Arc::new(tokio::sync::Mutex::new(mock_client)),
+        canonicalization_mode: crate::canonicalization::CanonicalizationMode::default(),
+        clock: Arc::new(crate::clock::SystemClock),
+    }
+}
+
+pub fn create_grpc_service(state: AppState) -> StateManagerService {
+    StateManagerService { app_state: state }
+}
+
+pub fn create_request_with_auth<T>(payload: T, pubkey: &str, sig: &str) -> Request<T> {
+    let mut request = Request::new(payload);
+    let metadata = request.metadata_mut();
+
+    metadata.insert(
+        "x-pubkey",
+        MetadataValue::try_from(pubkey).expect("Valid pubkey metadata"),
+    );
+    metadata.insert(
+        "x-signature",
+        MetadataValue::try_from(sig).expect("Valid sig metadata"),
+    );
+
+    request
+}
+
+pub fn create_miden_falcon_rpo_auth(cosigner_pubkeys: Vec<String>) -> AuthConfig {
+    AuthConfig {
+        auth_type: Some(auth_config::AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+            cosigner_pubkeys,
+        })),
+    }
+}
+
+pub fn create_router(state: AppState) -> axum::Router {
+    use crate::api::http;
+
+    axum::Router::new()
+        .route("/configure", axum::routing::post(http::configure))
+        .route("/push_delta", axum::routing::post(http::push_delta))
+        .route("/get_delta", axum::routing::get(http::get_delta))
+        .route("/get_delta_head", axum::routing::get(http::get_delta_head))
+        .route("/get_state", axum::routing::get(http::get_state))
+        .with_state(state)
+}
+
+pub fn load_fixture_account() -> (AccountId, String, serde_json::Value) {
+    let fixture_json: serde_json::Value =
+        serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+            .expect("Failed to parse fixture JSON");
+
+    let account_id_hex = fixture_json["account_id"]
+        .as_str()
+        .expect("No account_id in fixture")
+        .to_string();
+
+    let account_id = AccountId::from_hex(&account_id_hex).expect("Invalid account ID in fixture");
+
+    (account_id, account_id_hex, fixture_json)
+}
+
+pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
+    let (account_id, account_id_hex, fixture_json) = load_fixture_account();
+    let fixture_string =
+        serde_json::to_string(&fixture_json).expect("Failed to serialize fixture JSON");
+    (account_id, account_id_hex, fixture_string)
+}
+
+pub fn get_test_account_id() -> (AccountId, String) {
+    let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
+    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+    (account_id, account_id_hex.to_string())
+}
+
+pub fn load_fixture_delta(delta_num: u8) -> serde_json::Value {
+    let fixture_contents = match delta_num {
+        1 => crate::testing::fixtures::DELTA_1_JSON,
+        2 => crate::testing::fixtures::DELTA_2_JSON,
+        3 => crate::testing::fixtures::DELTA_3_JSON,
+        _ => panic!("Invalid delta number: {}", delta_num),
+    };
+
+    serde_json::from_str(fixture_contents).expect("Failed to parse delta fixture")
+}
+
+// load_fixture_delta_old removed - use load_fixture_delta(1) instead
+
+pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
+    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+
+    let delta = AccountDelta::new(
+        account_id,
+        AccountStorageDelta::default(),
+        AccountVaultDelta::default(),
+        Felt::ZERO,
+    )
+    .expect("Valid empty delta");
+
+    delta.to_json()
+}
+
+pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String) {
+    let secret_key = SecretKey::new();
+    let public_key = secret_key.public_key();
+
+    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+    let account_id_felts: [Felt; 2] = account_id.into();
+
+    let message_elements = vec![
+        account_id_felts[0],
+        account_id_felts[1],
+        Felt::ZERO,
+        Felt::ZERO,
+    ];
+
+    let digest = Rpo256::hash_elements(&message_elements);
+    let message: Word = digest;
+
+    let signature = secret_key.sign(message);
+
+    let pubkey_word: Word = public_key.into();
+    let pubkey_hex = format!("0x{}", hex::encode(pubkey_word.to_bytes()));
+    let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+
+    (account_id_hex.to_string(), pubkey_hex, signature_hex)
+}
+
+pub async fn update_mock_on_chain_commitment(
+    state: &AppState,
+    account_id: String,
+    commitment: String,
+) {
+    let mut network_client = state.network_client.lock().await;
+
+    let ptr = &mut *network_client as *mut dyn NetworkClient as *mut IntegrationMockNetworkClient;
+    unsafe {
+        (*ptr).register_account(account_id, commitment);
+    }
+}

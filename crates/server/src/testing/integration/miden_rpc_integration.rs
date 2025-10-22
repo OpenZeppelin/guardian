@@ -1,6 +1,6 @@
+use crate::network::miden::MidenNetworkClient;
+use crate::network::{NetworkClient, NetworkType};
 use miden_objects::account::AccountId;
-use server::network::miden::MidenNetworkClient;
-use server::network::{NetworkClient, NetworkType};
 
 /// Integration test for fetching account commitment from Miden testnet
 /// To run: cargo test --package private-state-manager-server --test miden_rpc_integration_test

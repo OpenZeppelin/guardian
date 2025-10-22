@@ -1,4 +1,5 @@
 use crate::canonicalization::CanonicalizationMode;
+use crate::clock::Clock;
 use crate::network::NetworkClient;
 use crate::storage::{MetadataStore, StorageRegistry};
 use std::sync::Arc;
@@ -10,4 +11,5 @@ pub struct AppState {
     pub metadata: Arc<dyn MetadataStore>,
     pub network_client: Arc<Mutex<dyn NetworkClient>>,
     pub canonicalization_mode: CanonicalizationMode,
+    pub clock: Arc<dyn Clock>,
 }

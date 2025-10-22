@@ -1,7 +1,7 @@
 pub mod miden;
 
-use async_trait::async_trait;
 use crate::storage::DeltaObject;
+use async_trait::async_trait;
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Verify state matches on-chain

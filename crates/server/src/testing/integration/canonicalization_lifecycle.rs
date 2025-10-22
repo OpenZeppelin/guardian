@@ -1,10 +1,8 @@
-mod utils;
-
-use server::auth::{Auth, Credentials};
-use server::services::{ConfigureAccountParams, PushDeltaParams};
-use server::services::{configure_account, process_canonicalizations_now, push_delta};
-use server::storage::{DeltaObject, DeltaStatus, StorageType};
-use utils::test_helpers::*;
+use crate::auth::{Auth, Credentials};
+use crate::services::{ConfigureAccountParams, PushDeltaParams};
+use crate::services::{configure_account, process_canonicalizations_now, push_delta};
+use crate::storage::{DeltaObject, DeltaStatus, StorageType};
+use crate::testing::helpers::*;
 
 /// Test canonicalization lifecycle - delta is discarded when on-chain doesn't match
 #[tokio::test]

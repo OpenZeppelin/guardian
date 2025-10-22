@@ -38,8 +38,7 @@ pub async fn configure_account(
             .map_err(PsmError::NetworkError)?
     };
 
-    // Create initial account state
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = state.clock.now_rfc3339();
     let account_state = AccountState {
         account_id: params.account_id.clone(),
         state_json: params.initial_state,
@@ -76,4 +75,126 @@ pub async fn configure_account(
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canonicalization::CanonicalizationMode;
+    use crate::storage::{StorageBackend, StorageRegistry};
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn create_test_app_state(
+        network_client: MockNetworkClient,
+        storage_backend: MockStorageBackend,
+        metadata_store: MockMetadataStore,
+    ) -> AppState {
+        let mut backends = HashMap::new();
+        backends.insert(
+            StorageType::Filesystem,
+            Arc::new(storage_backend) as Arc<dyn StorageBackend>,
+        );
+
+        AppState {
+            storage: StorageRegistry::new(backends),
+            metadata: Arc::new(metadata_store),
+            network_client: Arc::new(Mutex::new(network_client)),
+            canonicalization_mode: CanonicalizationMode::Optimistic,
+            clock: Arc::new(crate::clock::test::MockClock::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_success() {
+        let network_client =
+            MockNetworkClient::new().with_verify_state(Ok("commitment_hash_123".to_string()));
+
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let params = ConfigureAccountParams {
+            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            auth: crate::auth::Auth::MidenFalconRpo {
+                cosigner_pubkeys: vec!["pubkey1".to_string()],
+            },
+            initial_state: serde_json::json!({"balance": 100}),
+            storage_type: StorageType::Filesystem,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert_eq!(result.account_id, "0x123456789abcdef123456789abcdef");
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_already_exists() {
+        let existing_metadata = AccountMetadata {
+            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            auth: crate::auth::Auth::MidenFalconRpo {
+                cosigner_pubkeys: vec!["pubkey1".to_string()],
+            },
+            storage_type: StorageType::Filesystem,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        let network_client = MockNetworkClient::new();
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(Some(existing_metadata)));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let params = ConfigureAccountParams {
+            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            auth: crate::auth::Auth::MidenFalconRpo {
+                cosigner_pubkeys: vec!["pubkey1".to_string()],
+            },
+            initial_state: serde_json::json!({"balance": 100}),
+            storage_type: StorageType::Filesystem,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PsmError::AccountAlreadyExists(_) => {}
+            e => panic!("Expected AccountAlreadyExists error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_network_error() {
+        let network_client = MockNetworkClient::new()
+            .with_verify_state(Err("Network connection failed".to_string()));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let params = ConfigureAccountParams {
+            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            auth: crate::auth::Auth::MidenFalconRpo {
+                cosigner_pubkeys: vec!["pubkey1".to_string()],
+            },
+            initial_state: serde_json::json!({"balance": 100}),
+            storage_type: StorageType::Filesystem,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PsmError::NetworkError(_) => {}
+            e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
 }

@@ -33,7 +33,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let new_commitment =
         calculate_new_commitment(state, &current_state, &params.delta.delta_payload).await?;
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = state.clock.now_rfc3339();
 
     match &state.canonicalization_mode {
         CanonicalizationMode::Enabled(_) => {

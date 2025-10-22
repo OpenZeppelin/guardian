@@ -17,6 +17,7 @@ use crate::api::http::{
     configure, get_delta, get_delta_head, get_delta_since, get_state, push_delta,
 };
 use crate::canonicalization::CanonicalizationMode;
+use crate::clock::SystemClock;
 use crate::logging::LoggingConfig;
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
@@ -280,6 +281,7 @@ impl ServerBuilder {
             metadata,
             network_client: Arc::new(Mutex::new(network_client)),
             canonicalization_mode: self.canonicalization_mode,
+            clock: Arc::new(SystemClock),
         };
 
         Ok(ServerHandle {

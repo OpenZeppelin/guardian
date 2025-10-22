@@ -1,11 +1,12 @@
-mod utils;
-use utils::test_helpers::*;
+use crate::testing::helpers::*;
+use crate::testing::helpers::{
+    load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
+};
 
-use server::api::grpc::state_manager::state_manager_server::StateManager;
-use server::api::grpc::state_manager::{
+use crate::api::grpc::state_manager::state_manager_server::StateManager;
+use crate::api::grpc::state_manager::{
     ConfigureRequest, GetDeltaRequest, GetDeltaSinceRequest, PushDeltaRequest,
 };
-use utils::test_helpers::{load_fixture_account_grpc as load_fixture_account, load_fixture_delta};
 
 #[tokio::test]
 async fn test_grpc_configure_and_push_delta_with_auth() {
