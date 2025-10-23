@@ -103,14 +103,67 @@ trait API {
 }
 ```
 
-### Ack
+### Metadata
 
-Ack acts as the component that generates proofs of stored deltas, as a security measure, clients integrating Private State Manager will require this ack proof in order to perform some network operation, like submitting a transaction.
+Metadata is a component that stores the configuration and metadata of the accounts hosted by the private state manager. It's also responsible for validating the authentication credentials.
 
-Ack can be implemented in different ways, but the most practical implementation is to use asymetric cryptography, in the future we might include support to other primitives, like ZK proofs.
+Account metadata is stored in a key-value store, the key is the account ID and the value is the AccountMetadata object.
 
 ```rust
-pub trait Ack {
+trait AccountMetadataStore {
+  // Get the metadata of an account
+  fn get(&self, account_id: &str) -> Result<AccountMetadata>;
+
+  // Store the metadata of an account
+  fn set(&self, account_id: &str, metadata: AccountMetadata) -> Result<()>;
+
+  // List all account IDs
+  fn list(&self) -> Result<Vec<String>>;
+
+  // Update the authentication configuration of an account
+  fn update_auth(&self, account_id: &str, auth: Auth) -> Result<()>;
+}
+
+pub struct AccountMetadata {
+    // The account ID
+    pub account_id: String,
+
+    // The authentication configuration
+    pub auth: Auth,
+
+    // The storage type
+    pub storage_type: StorageType,
+
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+### Auth
+
+Auth is the authentication configuration of an account, it's used to verify the authenticity of the requests made to the server, supporting extensions to multiple types of Credentials, like public/private keys, JWT, etc. At the moment, the only supported authentication scheme is the Miden Falcon RPO signature scheme.
+
+`cosigner_pubkeys` is a list of public keys that are authorized to sign requests on behalf of the account, and it should match the cosigners of the account in Miden network.
+
+```rust
+pub enum Auth {
+    // Miden Falcon RPO signature scheme
+    MidenFalconRpo { cosigner_pubkeys: Vec<String> },
+}
+```
+
+### Acknowledger
+
+Acknowledger acts as the component that generates proofs of stored deltas, as a security measure, clients integrating Private State Manager will require this ack proof in order to perform some network operation, like submitting a transaction.
+
+Acknowledger can be extended to support multiple schemes, but the most practical implementation is to use asymetric cryptography, in the future we might include support to other primitives, like ZK proofs.
+
+```rust
+pub enum Acknowledger {
+    FilesystemMidenFalconRpo(MidenFalconRpoSigner),
+}
+
+pub trait Acknowledger {
     // Initial implementations will use asymetric
     // cryptography, extensible to multiple schemes.
     pub fn pubkey(&self) -> String;
@@ -118,5 +171,17 @@ pub trait Ack {
     // Receives a delta with no acknowledgement and
     // returns it with an acknowledgement in it.
     pub fn ack_delta(&self, delta: &DeltaObject) -> Result<DeltaObject>;
+}
+```
+
+### Network 
+
+Network is the component that handles the communication with the blockchain or system that holds the canonical state, it's responsible for verifying the state and deltas validity, and for implementing the custom logic for applying the deltas to the state.
+
+Each networks might have different ways to apply deltas to state or to verify validity, so we abstract the implementation details and provide a common interface for all networks.
+
+```rust
+trait NetworkClient {
+
 }
 ```

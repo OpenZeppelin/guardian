@@ -1,5 +1,7 @@
+use crate::metadata::MetadataStore;
+use crate::metadata::auth::Auth;
 use crate::network::NetworkClient;
-use crate::storage::{AccountState, MetadataStore, StorageBackend};
+use crate::storage::{AccountState, StorageBackend};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -14,7 +16,7 @@ pub struct MockNetworkClient {
     pub apply_delta_responses: Arc<StdMutex<Vec<StdResult<(serde_json::Value, String), String>>>>,
     pub is_canonical_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub should_update_auth_responses:
-        Arc<StdMutex<Vec<StdResult<Option<crate::auth::Auth>, String>>>>,
+        Arc<StdMutex<Vec<StdResult<Option<Auth>, String>>>>,
 }
 
 impl MockNetworkClient {
@@ -55,7 +57,7 @@ impl MockNetworkClient {
 
     pub fn with_should_update_auth(
         self,
-        response: StdResult<Option<crate::auth::Auth>, String>,
+        response: StdResult<Option<Auth>, String>,
     ) -> Self {
         self.should_update_auth_responses
             .lock()
@@ -146,7 +148,7 @@ impl NetworkClient for MockNetworkClient {
     async fn should_update_auth(
         &mut self,
         _state_json: &serde_json::Value,
-    ) -> StdResult<Option<crate::auth::Auth>, String> {
+    ) -> StdResult<Option<Auth>, String> {
         self.should_update_auth_responses
             .lock()
             .unwrap()
@@ -282,10 +284,10 @@ impl StorageBackend for MockStorageBackend {
 #[derive(Clone, Default)]
 pub struct MockMetadataStore {
     pub get_responses:
-        Arc<StdMutex<Vec<StdResult<Option<crate::storage::AccountMetadata>, String>>>>,
+        Arc<StdMutex<Vec<StdResult<Option<crate::metadata::AccountMetadata>, String>>>>,
     pub get_calls: Arc<StdMutex<Vec<String>>>,
     pub set_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
-    pub set_calls: Arc<StdMutex<Vec<crate::storage::AccountMetadata>>>,
+    pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
     pub list_responses: Arc<StdMutex<Vec<StdResult<Vec<String>, String>>>>,
 }
 
@@ -296,7 +298,7 @@ impl MockMetadataStore {
 
     pub fn with_get(
         self,
-        response: StdResult<Option<crate::storage::AccountMetadata>, String>,
+        response: StdResult<Option<crate::metadata::AccountMetadata>, String>,
     ) -> Self {
         self.get_responses.lock().unwrap().push(response);
         self
@@ -316,7 +318,7 @@ impl MockMetadataStore {
         self.get_calls.lock().unwrap().clone()
     }
 
-    pub fn get_set_calls(&self) -> Vec<crate::storage::AccountMetadata> {
+    pub fn get_set_calls(&self) -> Vec<crate::metadata::AccountMetadata> {
         self.set_calls.lock().unwrap().clone()
     }
 }
@@ -326,12 +328,12 @@ impl MetadataStore for MockMetadataStore {
     async fn get(
         &self,
         account_id: &str,
-    ) -> StdResult<Option<crate::storage::AccountMetadata>, String> {
+    ) -> StdResult<Option<crate::metadata::AccountMetadata>, String> {
         self.get_calls.lock().unwrap().push(account_id.to_string());
         self.get_responses.lock().unwrap().pop().unwrap_or(Ok(None))
     }
 
-    async fn set(&self, metadata: crate::storage::AccountMetadata) -> StdResult<(), String> {
+    async fn set(&self, metadata: crate::metadata::AccountMetadata) -> StdResult<(), String> {
         self.set_calls.lock().unwrap().push(metadata);
         self.set_responses.lock().unwrap().pop().unwrap_or(Ok(()))
     }

@@ -1,4 +1,4 @@
-use crate::auth::{Auth, AuthHeader};
+use crate::metadata::auth::{Auth, AuthHeader};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetDeltaSinceParams, GetStateParams,
     PushDeltaParams,

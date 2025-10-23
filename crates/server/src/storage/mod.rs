@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::Auth;
 use crate::storage::filesystem::FilesystemService;
 
 pub mod filesystem;
@@ -31,16 +30,6 @@ impl std::fmt::Display for StorageType {
             StorageType::Filesystem => write!(f, "Filesystem"),
         }
     }
-}
-
-/// Metadata for a single account
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AccountMetadata {
-    pub account_id: String,
-    pub auth: Auth,
-    pub storage_type: StorageType,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 /// Account state object
@@ -191,19 +180,6 @@ pub trait StorageBackend: Send + Sync {
 
     /// List all deltas for an account
     async fn list_deltas(&self, account_id: &str) -> Result<Vec<String>, String>;
-}
-
-/// Metadata store trait for managing account metadata
-#[async_trait]
-pub trait MetadataStore: Send + Sync {
-    /// Get metadata for a specific account
-    async fn get(&self, account_id: &str) -> Result<Option<AccountMetadata>, String>;
-
-    /// Store or update metadata for an account
-    async fn set(&self, metadata: AccountMetadata) -> Result<(), String>;
-
-    /// List all account IDs
-    async fn list(&self) -> Result<Vec<String>, String>;
 }
 
 /// Storage registry that maps storage types to their backend implementations

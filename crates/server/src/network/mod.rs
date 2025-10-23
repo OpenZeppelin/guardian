@@ -1,7 +1,9 @@
 pub mod miden;
 
+use crate::metadata::auth::Auth;
 use crate::storage::DeltaObject;
 use async_trait::async_trait;
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Verify state matches on-chain
@@ -45,7 +47,7 @@ pub trait NetworkClient: Send + Sync {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
-    ) -> Result<Option<crate::auth::Auth>, String>;
+    ) -> Result<Option<Auth>, String>;
 }
 
 /// Network type

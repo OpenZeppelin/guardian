@@ -1,7 +1,8 @@
-use crate::auth::Auth;
 use crate::error::{PsmError, Result};
+use crate::metadata::AccountMetadata;
+use crate::metadata::auth::Auth;
 use crate::state::AppState;
-use crate::storage::{AccountMetadata, AccountState, StorageType};
+use crate::storage::{AccountState, StorageType};
 
 #[derive(Debug, Clone)]
 pub struct ConfigureAccountParams {
@@ -128,7 +129,7 @@ mod tests {
 
         let params = ConfigureAccountParams {
             account_id: "0x123456789abcdef123456789abcdef".to_string(),
-            auth: crate::auth::Auth::MidenFalconRpo {
+            auth: Auth::MidenFalconRpo {
                 cosigner_pubkeys: vec!["pubkey1".to_string()],
             },
             initial_state: serde_json::json!({"balance": 100}),
@@ -146,7 +147,7 @@ mod tests {
     async fn test_configure_account_already_exists() {
         let existing_metadata = AccountMetadata {
             account_id: "0x123456789abcdef123456789abcdef".to_string(),
-            auth: crate::auth::Auth::MidenFalconRpo {
+            auth: Auth::MidenFalconRpo {
                 cosigner_pubkeys: vec!["pubkey1".to_string()],
             },
             storage_type: StorageType::Filesystem,
@@ -162,7 +163,7 @@ mod tests {
 
         let params = ConfigureAccountParams {
             account_id: "0x123456789abcdef123456789abcdef".to_string(),
-            auth: crate::auth::Auth::MidenFalconRpo {
+            auth: Auth::MidenFalconRpo {
                 cosigner_pubkeys: vec!["pubkey1".to_string()],
             },
             initial_state: serde_json::json!({"balance": 100}),
@@ -190,7 +191,7 @@ mod tests {
 
         let params = ConfigureAccountParams {
             account_id: "0x123456789abcdef123456789abcdef".to_string(),
-            auth: crate::auth::Auth::MidenFalconRpo {
+            auth: Auth::MidenFalconRpo {
                 cosigner_pubkeys: vec!["pubkey1".to_string()],
             },
             initial_state: serde_json::json!({"balance": 100}),

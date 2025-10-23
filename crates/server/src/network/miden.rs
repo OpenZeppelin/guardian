@@ -1,4 +1,4 @@
-use crate::auth::Auth;
+use crate::metadata::auth::Auth;
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_objects::account::{Account, AccountDelta, AccountId};

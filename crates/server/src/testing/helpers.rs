@@ -11,9 +11,11 @@ use private_state_manager_shared::{FromJson, ToJson};
 
 use crate::ack::{Acknowledger, MidenFalconRpoSigner};
 use crate::api::grpc::StateManagerService;
+use crate::metadata::auth::Auth;
+use crate::metadata::filesystem::FilesystemMetadataStore;
 use crate::network::{NetworkClient, NetworkType};
 use crate::state::AppState;
-use crate::storage::filesystem::{FilesystemMetadataStore, FilesystemService};
+use crate::storage::filesystem::FilesystemService;
 use crate::storage::{StorageBackend, StorageRegistry, StorageType};
 
 pub use crate::api::grpc::state_manager::*;
@@ -104,7 +106,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
-    ) -> Result<Option<crate::auth::Auth>, String> {
+    ) -> Result<Option<Auth>, String> {
         self.miden_client.should_update_auth(state_json).await
     }
 }

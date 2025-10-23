@@ -1,7 +1,8 @@
-use crate::auth::Credentials;
 use crate::error::{PsmError, Result};
+use crate::metadata::AccountMetadata;
+use crate::metadata::auth::Credentials;
 use crate::state::AppState;
-use crate::storage::{AccountMetadata, StorageBackend};
+use crate::storage::StorageBackend;
 use std::sync::Arc;
 
 mod configure_account;

@@ -18,9 +18,10 @@ use crate::canonicalization::CanonicalizationConfig;
 use crate::ack::Acknowledger;
 use crate::clock::SystemClock;
 use crate::logging::LoggingConfig;
+use crate::metadata::MetadataStore;
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
-use crate::storage::{MetadataStore, StorageRegistry};
+use crate::storage::StorageRegistry;
 
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
@@ -106,7 +107,7 @@ impl ServerBuilder {
     /// # Example
     /// ```no_run
     /// use server::builder::ServerBuilder;
-    /// use server::storage::filesystem::FilesystemMetadataStore;
+    /// use server::metadata::filesystem::FilesystemMetadataStore;
     /// use std::sync::Arc;
     /// use std::path::PathBuf;
     ///
@@ -257,7 +258,8 @@ impl ServerBuilder {
     /// ```no_run
     /// use server::builder::ServerBuilder;
     /// use server::network::NetworkType;
-    /// use server::storage::filesystem::{FilesystemService, FilesystemMetadataStore};
+    /// use server::storage::filesystem::FilesystemService;
+    /// use server::metadata::filesystem::FilesystemMetadataStore;
     /// use server::storage::{StorageBackend, StorageRegistry, StorageType};
     /// use std::collections::HashMap;
     /// use std::sync::Arc;

@@ -1,4 +1,4 @@
-use crate::auth::{Auth, Credentials};
+use crate::metadata::auth::{Auth, Credentials};
 use crate::services::{ConfigureAccountParams, PushDeltaParams};
 use crate::services::{configure_account, process_canonicalizations_now, push_delta};
 use crate::storage::{DeltaObject, DeltaStatus, StorageType};

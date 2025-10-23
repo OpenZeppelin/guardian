@@ -1,4 +1,3 @@
-use crate::auth;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::error::{PsmError, Result};
 use crate::state::AppState;
@@ -212,8 +211,11 @@ impl DeltasProcessorBase {
                 "Syncing cosigner public keys from on-chain storage"
             );
 
-            auth::update_credentials(&*self.state.metadata, &delta.account_id, new_auth, &now)
-                .await?;
+            self.state
+                .metadata
+                .update_auth(&delta.account_id, new_auth, &now)
+                .await
+                .map_err(|e| PsmError::StorageError(format!("Failed to update auth: {e}")))?;
 
             tracing::debug!(
                 account_id = %delta.account_id,
