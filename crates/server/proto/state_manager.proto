@@ -43,6 +43,7 @@ message ConfigureRequest {
 message ConfigureResponse {
   bool success = 1;
   string message = 2;
+  string ack_pubkey = 3;
 }
 
 // Push delta request

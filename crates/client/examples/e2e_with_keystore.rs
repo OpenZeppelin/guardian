@@ -8,7 +8,8 @@ use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, Word};
 use private_state_manager_client::{
-    Auth, AuthConfig, ClientResult, FalconRpoSigner, MidenFalconRpoAuth, PsmClient,
+    verify_commitment_signature, Auth, AuthConfig, ClientResult, FalconRpoSigner,
+    MidenFalconRpoAuth, PsmClient,
 };
 use private_state_manager_shared::ToJson;
 use rand_chacha::ChaCha20Rng;
@@ -102,13 +103,20 @@ async fn main() -> ClientResult<()> {
 
     let initial_state = account.to_json();
 
-    match client
+    let server_ack_pubkey = match client
         .configure(&account_id, auth_config, initial_state, "Filesystem")
         .await
     {
-        Ok(response) => println!("  ✓ {}", response.message),
-        Err(e) => println!("  ✗ Configuration failed: {}", e),
-    }
+        Ok(response) => {
+            println!("  ✓ {}", response.message);
+            println!("  Server ack pubkey: {}", response.ack_pubkey);
+            response.ack_pubkey
+        }
+        Err(e) => {
+            println!("  ✗ Configuration failed: {}", e);
+            return Ok(());
+        }
+    };
     println!();
 
     println!("5. Creating and pushing a delta adding a 4th approver...");
@@ -140,6 +148,18 @@ async fn main() -> ClientResult<()> {
                 println!("    New commitment: {}", delta.new_commitment);
                 if !delta.ack_sig.is_empty() {
                     println!("    Server ack signature: {}...", &delta.ack_sig[0..20]);
+
+                    // Verify the server's signature
+                    println!("    Verifying server signature...");
+                    match verify_commitment_signature(
+                        &delta.new_commitment,
+                        &server_ack_pubkey,
+                        &delta.ack_sig,
+                    ) {
+                        Ok(true) => println!("    ✓ Server signature is VALID"),
+                        Ok(false) => println!("    ✗ Server signature is INVALID"),
+                        Err(e) => println!("    ✗ Signature verification error: {}", e),
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-use crate::metadata::auth::Auth;
+use crate::metadata::auth::{Auth, Credentials};
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_objects::account::{Account, AccountDelta, AccountId};
@@ -155,6 +155,56 @@ impl NetworkClient for MidenNetworkClient {
         AccountId::from_hex(account_id)
             .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
         Ok(())
+    }
+
+    fn validate_credential(
+        &self,
+        state_json: &serde_json::Value,
+        credential: &Credentials,
+    ) -> Result<(), String> {
+
+        let account = Account::from_json(state_json)?;
+
+        let (credential_pubkey, _signature) = credential
+            .as_signature()
+            .ok_or_else(|| "Invalid credential type".to_string())?;
+
+        // Try slot 0 first (single signer)
+        let slot_0_result = account.storage().get_item(0);
+        if let Ok(slot_0_value) = slot_0_result {
+            if slot_0_value != Word::default() {
+                let stored_pubkey_hex = format!("0x{}", hex::encode(slot_0_value.to_bytes()));
+                if &stored_pubkey_hex == credential_pubkey {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Try slot 1 (mapping of cosigners)
+        let key_zero = Word::from([0u32, 0, 0, 0]);
+        let first_entry = account.storage().get_map_item(1, key_zero);
+
+        if first_entry.is_ok() && first_entry.as_ref().unwrap() != &Word::default() {
+            let mut index = 0u32;
+            loop {
+                let key = Word::from([index, 0, 0, 0]);
+                match account.storage().get_map_item(1, key) {
+                    Ok(value) if value != Word::default() => {
+                        let stored_pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
+                        if &stored_pubkey_hex == credential_pubkey {
+                            return Ok(());
+                        }
+                        index += 1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        Err(format!(
+            "Credential public key '{}' not found in account storage",
+            credential_pubkey
+        ))
     }
 
     async fn should_update_auth(

@@ -1,6 +1,6 @@
 pub mod miden;
 
-use crate::metadata::auth::Auth;
+use crate::metadata::auth::{Auth, Credentials};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -42,6 +42,14 @@ pub trait NetworkClient: Send + Sync {
 
     /// Validate account ID format
     fn validate_account_id(&self, account_id: &str) -> Result<(), String>;
+
+    /// Validate that the credential (public key) is authorized for the account
+    /// Checks storage slot 0 (single signer) or slot 1 (mapping of cosigners)
+    fn validate_credential(
+        &self,
+        state_json: &serde_json::Value,
+        credential: &Credentials,
+    ) -> Result<(), String>;
 
     /// Determine if account auth should be updated given the state
     async fn should_update_auth(

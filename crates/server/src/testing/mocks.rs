@@ -1,5 +1,5 @@
 use crate::metadata::MetadataStore;
-use crate::metadata::auth::Auth;
+use crate::metadata::auth::{Auth, Credentials};
 use crate::network::NetworkClient;
 use crate::storage::{AccountState, StorageBackend};
 use async_trait::async_trait;
@@ -13,6 +13,7 @@ pub struct MockNetworkClient {
     pub verify_state_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
+    pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<StdResult<(serde_json::Value, String), String>>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<StdResult<Option<Auth>, String>>>>,
@@ -30,6 +31,11 @@ impl MockNetworkClient {
 
     pub fn with_get_state_commitment(self, response: StdResult<String, String>) -> Self {
         self.get_state_commitment_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_validate_credential(self, response: StdResult<(), String>) -> Self {
+        self.validate_credential_responses.lock().unwrap().push(response);
         self
     }
 
@@ -133,6 +139,18 @@ impl NetworkClient for MockNetworkClient {
 
     fn validate_account_id(&self, _account_id: &str) -> StdResult<(), String> {
         Ok(())
+    }
+
+    fn validate_credential(
+        &self,
+        _state_json: &serde_json::Value,
+        _credential: &Credentials,
+    ) -> StdResult<(), String> {
+        self.validate_credential_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
     }
 
     async fn should_update_auth(

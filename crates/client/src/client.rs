@@ -62,12 +62,14 @@ impl PsmClient {
     ) -> ClientResult<ConfigureResponse> {
         let initial_state_json = serde_json::to_string(&initial_state)?;
 
-        let request = tonic::Request::new(ConfigureRequest {
+        let mut request = tonic::Request::new(ConfigureRequest {
             account_id: account_id.to_string(),
             auth: Some(auth),
             initial_state: initial_state_json,
             storage_type: storage_type.into(),
         });
+
+        self.add_auth_metadata(&mut request, account_id)?;
 
         let response = self.client.configure(request).await?;
         let inner = response.into_inner();

@@ -1,6 +1,6 @@
 use crate::error::{PsmError, Result};
 use crate::metadata::AccountMetadata;
-use crate::metadata::auth::Auth;
+use crate::metadata::auth::{Auth, Credentials};
 use crate::state::AppState;
 use crate::storage::{AccountState, StorageType};
 
@@ -10,11 +10,13 @@ pub struct ConfigureAccountParams {
     pub auth: Auth,
     pub initial_state: serde_json::Value,
     pub storage_type: StorageType,
+    pub credential: Credentials,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConfigureAccountResult {
     pub account_id: String,
+    pub ack_pubkey: String,
 }
 
 /// Configure a new account
@@ -23,6 +25,11 @@ pub async fn configure_account(
     params: ConfigureAccountParams,
 ) -> Result<ConfigureAccountResult> {
     tracing::info!("Configuring account: {}", params.account_id);
+
+    params
+        .auth
+        .verify(&params.account_id, &params.credential)
+        .map_err(|e| PsmError::AuthenticationFailed(format!("Signature verification failed: {e}")))?;
 
     let existing =
         state.metadata.get(&params.account_id).await.map_err(|e| {
@@ -33,9 +40,12 @@ pub async fn configure_account(
         return Err(PsmError::AccountAlreadyExists(params.account_id.clone()));
     }
 
-    // Get commitment from state (validates structure and returns hex commitment)
     let commitment = {
         let client = state.network_client.lock().await;
+        client
+            .validate_credential(&params.initial_state, &params.credential)
+            .map_err(|e| PsmError::NetworkError(format!("Failed to validate credential: {e}")))?;
+    
         client
             .get_state_commitment(&params.account_id, &params.initial_state)
             .map_err(PsmError::NetworkError)?
@@ -77,6 +87,7 @@ pub async fn configure_account(
 
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
+        ack_pubkey: state.ack.pubkey(),
     })
 }
 
@@ -119,8 +130,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_configure_account_success() {
-        let network_client =
-            MockNetworkClient::new().with_get_state_commitment(Ok("0x1234".to_string()));
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let (_account_id, pubkey_hex, signature_hex) = generate_falcon_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x1234".to_string()));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
 
@@ -132,28 +149,38 @@ mod tests {
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
 
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex);
+
         let params = ConfigureAccountParams {
-            account_id: "0x069cde0ebf59f29063051ad8a3d32d".to_string(),
+            account_id: account_id_hex.to_string(),
             auth: Auth::MidenFalconRpo {
-                cosigner_pubkeys: vec!["pubkey1".to_string()],
+                cosigner_pubkeys: vec![pubkey_hex],
             },
             initial_state,
             storage_type: StorageType::Filesystem,
+            credential,
         };
 
         let result = configure_account(&state, params).await;
 
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert_eq!(result.account_id, "0x069cde0ebf59f29063051ad8a3d32d");
+        assert_eq!(result.account_id, account_id_hex);
+        assert!(!result.ack_pubkey.is_empty(), "ack_pubkey should not be empty");
+        assert!(result.ack_pubkey.starts_with("0x"), "ack_pubkey should be hex format");
     }
 
     #[tokio::test]
     async fn test_configure_account_already_exists() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let (_account_id, pubkey_hex, signature_hex) = generate_falcon_signature(account_id_hex);
+
         let existing_metadata = AccountMetadata {
-            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            account_id: account_id_hex.to_string(),
             auth: Auth::MidenFalconRpo {
-                cosigner_pubkeys: vec!["pubkey1".to_string()],
+                cosigner_pubkeys: vec![pubkey_hex.clone()],
             },
             storage_type: StorageType::Filesystem,
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -166,13 +193,16 @@ mod tests {
 
         let state = create_test_app_state(network_client, storage_backend, metadata_store);
 
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex);
+
         let params = ConfigureAccountParams {
-            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            account_id: account_id_hex.to_string(),
             auth: Auth::MidenFalconRpo {
-                cosigner_pubkeys: vec!["pubkey1".to_string()],
+                cosigner_pubkeys: vec![pubkey_hex],
             },
             initial_state: serde_json::json!({"balance": 100}),
             storage_type: StorageType::Filesystem,
+            credential,
         };
 
         let result = configure_account(&state, params).await;
@@ -186,7 +216,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_configure_account_network_error() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let (_account_id, pubkey_hex, signature_hex) = generate_falcon_signature(account_id_hex);
+
         let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
             .with_get_state_commitment(Err("Network connection failed".to_string()));
 
         let storage_backend = MockStorageBackend::new();
@@ -194,13 +230,16 @@ mod tests {
 
         let state = create_test_app_state(network_client, storage_backend, metadata_store);
 
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex);
+
         let params = ConfigureAccountParams {
-            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            account_id: account_id_hex.to_string(),
             auth: Auth::MidenFalconRpo {
-                cosigner_pubkeys: vec!["pubkey1".to_string()],
+                cosigner_pubkeys: vec![pubkey_hex],
             },
             initial_state: serde_json::json!({"balance": 100}),
             storage_type: StorageType::Filesystem,
+            credential,
         };
 
         let result = configure_account(&state, params).await;

@@ -28,6 +28,11 @@ impl StateManager for StateManagerService {
         &self,
         request: Request<ConfigureRequest>,
     ) -> Result<Response<ConfigureResponse>, Status> {
+        // Extract credentials from metadata
+        let credential = request
+            .metadata()
+            .extract_credentials()?;
+
         let req = request.into_inner();
 
         // Parse auth from proto AuthConfig
@@ -51,6 +56,7 @@ impl StateManager for StateManagerService {
             auth,
             initial_state,
             storage_type,
+            credential,
         };
 
         // Call service layer
@@ -58,10 +64,12 @@ impl StateManager for StateManagerService {
             Ok(response) => Ok(Response::new(ConfigureResponse {
                 success: true,
                 message: format!("Account '{}' configured successfully", response.account_id),
+                ack_pubkey: response.ack_pubkey,
             })),
             Err(e) => Ok(Response::new(ConfigureResponse {
                 success: false,
                 message: e.to_string(),
+                ack_pubkey: String::new(),
             })),
         }
     }

@@ -114,6 +114,14 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.validate_account_id(account_id)
     }
 
+    fn validate_credential(
+        &self,
+        state_json: &serde_json::Value,
+        credential: &crate::metadata::auth::Credentials,
+    ) -> Result<(), String> {
+        self.miden_client.validate_credential(state_json, credential)
+    }
+
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,

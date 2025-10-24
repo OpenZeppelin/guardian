@@ -1,4 +1,4 @@
-use crate::metadata::auth::{Auth, AuthHeader};
+use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetDeltaSinceParams, GetStateParams,
     PushDeltaParams,
@@ -23,6 +23,8 @@ impl From<ConfigureRequest> for ConfigureAccountParams {
             auth: req.auth,
             initial_state: req.initial_state,
             storage_type: req.storage_type,
+            // Credential will be set from AuthHeader
+            credential: Credentials::signature(String::new(), String::new()),
         }
     }
 }
@@ -43,6 +45,7 @@ pub struct StateQuery {
 pub struct ConfigureResponse {
     pub success: bool,
     pub message: String,
+    pub ack_pubkey: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -53,9 +56,11 @@ pub struct ErrorResponse {
 
 pub async fn configure(
     State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
     Json(payload): Json<ConfigureRequest>,
 ) -> (StatusCode, Json<ConfigureResponse>) {
-    let params = ConfigureAccountParams::from(payload);
+    let mut params = ConfigureAccountParams::from(payload);
+    params.credential = credentials;
 
     match services::configure_account(&state, params).await {
         Ok(response) => (
@@ -63,6 +68,7 @@ pub async fn configure(
             Json(ConfigureResponse {
                 success: true,
                 message: format!("Account '{}' configured successfully", response.account_id),
+                ack_pubkey: Some(response.ack_pubkey),
             }),
         ),
         Err(e) => (
@@ -70,6 +76,7 @@ pub async fn configure(
             Json(ConfigureResponse {
                 success: false,
                 message: e.to_string(),
+                ack_pubkey: None,
             }),
         ),
     }
