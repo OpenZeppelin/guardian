@@ -30,12 +30,18 @@ impl MockNetworkClient {
     }
 
     pub fn with_get_state_commitment(self, response: StdResult<String, String>) -> Self {
-        self.get_state_commitment_responses.lock().unwrap().push(response);
+        self.get_state_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
     pub fn with_validate_credential(self, response: StdResult<(), String>) -> Self {
-        self.validate_credential_responses.lock().unwrap().push(response);
+        self.validate_credential_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 

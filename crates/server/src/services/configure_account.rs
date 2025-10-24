@@ -42,12 +42,14 @@ pub async fn configure_account(
         client
             .validate_credential(&params.initial_state, &params.credential)
             .map_err(|e| PsmError::NetworkError(format!("Failed to validate credential: {e}")))?;
-        
+
         // Verifies the credential authorization.
         params
             .auth
             .verify(&params.account_id, &params.credential)
-            .map_err(|e| PsmError::AuthenticationFailed(format!("Signature verification failed: {e}")))?;
+            .map_err(|e| {
+                PsmError::AuthenticationFailed(format!("Signature verification failed: {e}"))
+            })?;
 
         // calculates the commitment of the account state.
         client
@@ -170,8 +172,14 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert_eq!(result.account_id, account_id_hex);
-        assert!(!result.ack_pubkey.is_empty(), "ack_pubkey should not be empty");
-        assert!(result.ack_pubkey.starts_with("0x"), "ack_pubkey should be hex format");
+        assert!(
+            !result.ack_pubkey.is_empty(),
+            "ack_pubkey should not be empty"
+        );
+        assert!(
+            result.ack_pubkey.starts_with("0x"),
+            "ack_pubkey should be hex format"
+        );
     }
 
     #[tokio::test]

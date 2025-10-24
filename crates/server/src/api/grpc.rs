@@ -29,9 +29,7 @@ impl StateManager for StateManagerService {
         request: Request<ConfigureRequest>,
     ) -> Result<Response<ConfigureResponse>, Status> {
         // Extract credentials from metadata
-        let credential = request
-            .metadata()
-            .extract_credentials()?;
+        let credential = request.metadata().extract_credentials()?;
 
         let req = request.into_inner();
 

@@ -6,6 +6,7 @@
 //! - Authentication methods (MidenFalconRpo, EthereumECDSA, etc.)
 //! - API protocols (HTTP, gRPC)
 
+pub mod canonicalization;
 pub mod clock;
 pub mod handle;
 pub mod logging;

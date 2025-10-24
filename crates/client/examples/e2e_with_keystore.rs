@@ -8,8 +8,8 @@ use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, Word};
 use private_state_manager_client::{
-    verify_commitment_signature, Auth, AuthConfig, ClientResult, FalconRpoSigner,
-    MidenFalconRpoAuth, PsmClient,
+    Auth, AuthConfig, ClientResult, FalconRpoSigner, MidenFalconRpoAuth, PsmClient,
+    verify_commitment_signature,
 };
 use private_state_manager_shared::ToJson;
 use rand_chacha::ChaCha20Rng;

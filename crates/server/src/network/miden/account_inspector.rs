@@ -1,6 +1,6 @@
+use miden_objects::Word;
 use miden_objects::account::Account;
 use miden_objects::utils::Serializable;
-use miden_objects::Word;
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -97,7 +97,10 @@ mod tests {
 
         let pubkey = inspector.extract_slot_0_pubkey();
         assert!(pubkey.is_some(), "Expected pubkey in slot 0");
-        assert!(pubkey.unwrap().starts_with("0x"), "Pubkey should be hex format");
+        assert!(
+            pubkey.unwrap().starts_with("0x"),
+            "Pubkey should be hex format"
+        );
     }
 
     #[test]
@@ -126,7 +129,9 @@ mod tests {
         let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
         let inspector = MidenAccountInspector::new(&account);
 
-        let pubkey = inspector.extract_slot_0_pubkey().expect("Expected pubkey in slot 0");
+        let pubkey = inspector
+            .extract_slot_0_pubkey()
+            .expect("Expected pubkey in slot 0");
 
         assert!(
             inspector.pubkey_exists(&pubkey),
