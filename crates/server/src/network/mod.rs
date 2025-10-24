@@ -5,12 +5,19 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
-    /// Verify state matches on-chain and return commitment
+    /// Get state commitment in hex format from JSON
+    fn get_state_commitment(
+        &self,
+        account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> Result<String, String>;
+
+    /// Verify state commitment matches on-chain state
     async fn verify_state(
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<String, String>;
+    ) -> Result<(), String>;
 
     /// Verify delta is valid for given state
     fn verify_delta(

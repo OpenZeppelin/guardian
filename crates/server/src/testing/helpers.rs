@@ -41,11 +41,27 @@ impl IntegrationMockNetworkClient {
 
 #[async_trait]
 impl NetworkClient for IntegrationMockNetworkClient {
+    fn get_state_commitment(
+        &self,
+        _account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> Result<String, String> {
+        use miden_objects::account::Account;
+
+        let account = Account::from_json(state_json)
+            .map_err(|e| format!("Failed to deserialize account: {e}"))?;
+
+        let local_commitment = account.commitment();
+        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
+
+        Ok(local_commitment_hex)
+    }
+
     async fn verify_state(
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<String, String> {
+    ) -> Result<(), String> {
         use miden_objects::account::Account;
 
         let account = Account::from_json(state_json)
@@ -60,12 +76,12 @@ impl NetworkClient for IntegrationMockNetworkClient {
                     "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
                 ));
             }
-            Ok(on_chain_commitment.clone())
         } else {
             self.initial_commitments
                 .insert(account_id.to_string(), local_commitment_hex.clone());
-            Ok(local_commitment_hex)
         }
+
+        Ok(())
     }
 
     fn verify_delta(

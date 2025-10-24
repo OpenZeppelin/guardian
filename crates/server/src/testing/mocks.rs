@@ -9,8 +9,10 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 #[derive(Clone, Default)]
 pub struct MockNetworkClient {
-    pub verify_state_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
+    pub verify_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_state_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
+    pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
+    pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<StdResult<(serde_json::Value, String), String>>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<StdResult<Option<Auth>, String>>>>,
@@ -21,8 +23,13 @@ impl MockNetworkClient {
         Self::default()
     }
 
-    pub fn with_verify_state(self, response: StdResult<String, String>) -> Self {
+    pub fn with_verify_state(self, response: StdResult<(), String>) -> Self {
         self.verify_state_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_get_state_commitment(self, response: StdResult<String, String>) -> Self {
+        self.get_state_commitment_responses.lock().unwrap().push(response);
         self
     }
 
@@ -50,15 +57,36 @@ impl MockNetworkClient {
     pub fn get_verify_state_calls(&self) -> Vec<(String, serde_json::Value)> {
         self.verify_state_calls.lock().unwrap().clone()
     }
+
+    pub fn get_state_commitment_calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.get_state_commitment_calls.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl NetworkClient for MockNetworkClient {
+    fn get_state_commitment(
+        &self,
+        account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> StdResult<String, String> {
+        self.get_state_commitment_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), state_json.clone()));
+
+        self.get_state_commitment_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok("mock_commitment".to_string()))
+    }
+
     async fn verify_state(
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> StdResult<String, String> {
+    ) -> StdResult<(), String> {
         self.verify_state_calls
             .lock()
             .unwrap()
@@ -68,7 +96,7 @@ impl NetworkClient for MockNetworkClient {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Ok("mock_commitment".to_string()))
+            .unwrap_or_else(|| Ok(()))
     }
 
     fn verify_delta(

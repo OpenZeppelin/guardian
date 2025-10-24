@@ -40,13 +40,32 @@ impl MidenNetworkClient {
 
 #[async_trait]
 impl NetworkClient for MidenNetworkClient {
-    async fn verify_state(
-        &mut self,
+    fn get_state_commitment(
+        &self,
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<String, String> {
         let account_id = AccountId::from_hex(account_id)
             .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+
+        let account = Self::construct_account_from_json(&account_id, state_json)?;
+        let local_commitment = account.commitment();
+        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
+
+        Ok(local_commitment_hex)
+    }
+
+    async fn verify_state(
+        &mut self,
+        account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> Result<(), String> {
+        let account_id = AccountId::from_hex(account_id)
+            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+
+        let account = Self::construct_account_from_json(&account_id, state_json)?;
+        let local_commitment = account.commitment();
+        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         let on_chain_commitment = self
             .client
@@ -56,18 +75,13 @@ impl NetworkClient for MidenNetworkClient {
                 format!("Failed to verify account '{account_id}' on Miden network: {e}")
             })?;
 
-        let account = Self::construct_account_from_json(&account_id, state_json)?;
-
-        let local_commitment = account.commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
-
         if local_commitment_hex != on_chain_commitment {
             return Err(format!(
                 "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
             ));
         }
 
-        Ok(on_chain_commitment)
+        Ok(())
     }
 
     fn verify_delta(
@@ -198,16 +212,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verify_account_invalid_state_json() {
+    async fn test_get_state_commitment_invalid_state_json() {
         let network = NetworkType::MidenTestnet;
-        let mut client = MidenNetworkClient::from_network(network)
+        let client = MidenNetworkClient::from_network(network)
             .await
             .expect("Failed to create client");
 
         let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client.verify_state(account_id_hex, &state_json).await;
+        let result = client.get_state_commitment(account_id_hex, &state_json);
         assert!(
             result.is_err(),
             "Should fail with invalid state JSON format"
@@ -219,16 +233,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verify_account_invalid_format() {
+    async fn test_get_state_commitment_invalid_format() {
         let network = NetworkType::MidenTestnet;
-        let mut client = MidenNetworkClient::from_network(network)
+        let client = MidenNetworkClient::from_network(network)
             .await
             .expect("Failed to create client");
 
         let invalid_account_id = "not_a_valid_hex";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client.verify_state(invalid_account_id, &state_json).await;
+        let result = client.get_state_commitment(invalid_account_id, &state_json);
         assert!(result.is_err(), "Should fail with invalid account ID");
         assert!(
             result

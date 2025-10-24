@@ -33,11 +33,11 @@ pub async fn configure_account(
         return Err(PsmError::AccountAlreadyExists(params.account_id.clone()));
     }
 
+    // Get commitment from state (validates structure and returns hex commitment)
     let commitment = {
-        let mut client = state.network_client.lock().await;
+        let client = state.network_client.lock().await;
         client
-            .verify_state(&params.account_id, &params.initial_state)
-            .await
+            .get_state_commitment(&params.account_id, &params.initial_state)
             .map_err(PsmError::NetworkError)?
     };
 
@@ -120,7 +120,7 @@ mod tests {
     #[tokio::test]
     async fn test_configure_account_success() {
         let network_client =
-            MockNetworkClient::new().with_verify_state(Ok("commitment_hash_123".to_string()));
+            MockNetworkClient::new().with_get_state_commitment(Ok("0x1234".to_string()));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
 
@@ -128,12 +128,16 @@ mod tests {
 
         let state = create_test_app_state(network_client, storage_backend, metadata_store);
 
+        // Use a valid account JSON fixture
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+
         let params = ConfigureAccountParams {
-            account_id: "0x123456789abcdef123456789abcdef".to_string(),
+            account_id: "0x069cde0ebf59f29063051ad8a3d32d".to_string(),
             auth: Auth::MidenFalconRpo {
                 cosigner_pubkeys: vec!["pubkey1".to_string()],
             },
-            initial_state: serde_json::json!({"balance": 100}),
+            initial_state,
             storage_type: StorageType::Filesystem,
         };
 
@@ -141,7 +145,7 @@ mod tests {
 
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert_eq!(result.account_id, "0x123456789abcdef123456789abcdef");
+        assert_eq!(result.account_id, "0x069cde0ebf59f29063051ad8a3d32d");
     }
 
     #[tokio::test]
@@ -183,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn test_configure_account_network_error() {
         let network_client = MockNetworkClient::new()
-            .with_verify_state(Err("Network connection failed".to_string()));
+            .with_get_state_commitment(Err("Network connection failed".to_string()));
 
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));

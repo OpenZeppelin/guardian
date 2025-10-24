@@ -168,8 +168,9 @@ impl DeltasProcessorBase {
         };
 
         match verify_result {
-            Ok(on_chain_commitment) if delta.new_commitment == on_chain_commitment => {
-                self.canonicalize_verified_delta(delta, new_state_json, on_chain_commitment)
+            Ok(()) => {
+                let new_commitment = delta.new_commitment.clone();
+                self.canonicalize_verified_delta(delta, new_state_json, new_commitment)
                     .await
             }
             _ => self.discard_mismatched_delta(delta).await,
