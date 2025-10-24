@@ -45,6 +45,16 @@ pub enum Auth {
 }
 ```
 
+Credentials are provided per request:
+
+- HTTP headers: `x-pubkey`, `x-signature`
+- gRPC metadata: `x-pubkey`, `x-signature`
+
+Verification rules:
+
+- The `x-pubkey` MUST be present in `cosigner_pubkeys` for the account.
+- The signature is over the RPO256 digest of the `account_id` (not the full payload).
+
 ## Acknowledger
 
 ```rust
@@ -58,15 +68,23 @@ pub trait Acknowledger {
 }
 ```
 
+For Miden Falcon RPO, the server signs the RPO256 digest of `new_commitment` and returns the signature as `ack_sig` (hex). The server's acknowledgment public key is returned during `configure` as `ack_pubkey`.
+
 ## Network
 
 ```rust
 trait NetworkClient {
+  fn get_state_commitment(
+    &self,
+    account_id: &str,
+    state_json: &serde_json::Value,
+  ) -> Result<String, String>;
+
   async fn verify_state(
     &mut self,
     account_id: &str,
     state_json: &serde_json::Value,
-  ) -> Result<String, String>;
+  ) -> Result<(), String>;
 
   fn verify_delta(
     &self,
@@ -87,6 +105,12 @@ trait NetworkClient {
   ) -> Result<serde_json::Value, String>;
 
   fn validate_account_id(&self, account_id: &str) -> Result<(), String>;
+
+  fn validate_credential(
+    &self,
+    state_json: &serde_json::Value,
+    credential: &Credentials,
+  ) -> Result<(), String>;
 
   async fn should_update_auth(
     &mut self,

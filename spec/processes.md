@@ -20,11 +20,12 @@ sequenceDiagram
   participant ST as Storage
   participant M as Metadata
   C->>S: POST /configure {account_id, auth, initial_state, storage_type}
-  S->>N: verify_state(account_id, initial_state)
-  N-->>S: on_chain_commitment
+  S->>N: validate_credential(initial_state, credential)
+  S->>A: auth.verify(account_id, credential)
+  S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
   S->>M: set(account_id, auth, storage_type, timestamps)
-  S-->>C: 200 {account_id}
+  S-->>C: 200 {account_id, ack_pubkey}
 ```
 
 #### push_delta
@@ -45,7 +46,7 @@ sequenceDiagram
   else no pending candidate
     S->>N: verify_delta(prev_commitment, prev_state, payload)
     S->>N: apply_delta(prev_state, payload)\n(new_state_json, new_commitment)
-    S->>S: ack_delta(delta) -> ack_sig
+    S->>S: ack_delta(delta.new_commitment) -> ack_sig
     alt canonicalization enabled
       S->>ST: submit_delta(candidate)
     else optimistic mode
