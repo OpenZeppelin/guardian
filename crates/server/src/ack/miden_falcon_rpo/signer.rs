@@ -1,6 +1,6 @@
-use miden_keystore::{FilesystemKeyStore, KeyStore};
 use crate::error::{MidenFalconRpoError, PsmError};
 use crate::storage::DeltaObject;
+use miden_keystore::{FilesystemKeyStore, KeyStore};
 use miden_objects::{
     Felt, Word,
     crypto::dsa::rpo_falcon512::{PublicKey, Signature},

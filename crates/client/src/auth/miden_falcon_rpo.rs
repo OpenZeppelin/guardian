@@ -4,12 +4,12 @@ use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
 
-pub struct Signer {
+pub struct FalconRpoSigner {
     secret_key: SecretKey,
     public_key: PublicKey,
 }
 
-impl Signer {
+impl FalconRpoSigner {
     pub fn new(secret_key: SecretKey) -> Self {
         let public_key = secret_key.public_key();
         Self {
@@ -64,14 +64,10 @@ pub fn verify_commitment_signature(
 fn commitment_to_digest(commitment_hex: &str) -> Result<Word, String> {
     let commitment_hex = commitment_hex.strip_prefix("0x").unwrap_or(commitment_hex);
 
-    let bytes = hex::decode(commitment_hex)
-        .map_err(|e| format!("Invalid commitment hex: {e}"))?;
+    let bytes = hex::decode(commitment_hex).map_err(|e| format!("Invalid commitment hex: {e}"))?;
 
     if bytes.len() != 32 {
-        return Err(format!(
-            "Commitment must be 32 bytes, got {}",
-            bytes.len()
-        ));
+        return Err(format!("Commitment must be 32 bytes, got {}", bytes.len()));
     }
 
     let mut felts = Vec::new();
@@ -79,10 +75,7 @@ fn commitment_to_digest(commitment_hex: &str) -> Result<Word, String> {
         let mut arr = [0u8; 8];
         arr[..chunk.len()].copy_from_slice(chunk);
         let value = u64::from_le_bytes(arr);
-        felts.push(
-            Felt::try_from(value)
-                .map_err(|e| format!("Invalid field element: {e}"))?,
-        );
+        felts.push(Felt::try_from(value).map_err(|e| format!("Invalid field element: {e}"))?);
     }
 
     let message_elements = vec![felts[0], felts[1], felts[2], felts[3]];
@@ -109,8 +102,7 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
         ));
     }
 
-    Signature::read_from_bytes(&bytes)
-        .map_err(|e| format!("Failed to deserialize signature: {e}"))
+    Signature::read_from_bytes(&bytes).map_err(|e| format!("Failed to deserialize signature: {e}"))
 }
 
 #[cfg(test)]
@@ -118,9 +110,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_signer_creates_valid_signature() {
+    fn test_falcon_signer_creates_valid_signature() {
         let secret_key = SecretKey::new();
-        let signer = Signer::new(secret_key);
+        let signer = FalconRpoSigner::new(secret_key);
 
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
         let signature_hex = signer.sign_account_id(&account_id);
@@ -132,7 +124,7 @@ mod tests {
     #[test]
     fn test_pubkey_hex_format() {
         let secret_key = SecretKey::new();
-        let signer = Signer::new(secret_key);
+        let signer = FalconRpoSigner::new(secret_key);
         let pubkey_hex = signer.public_key_hex();
 
         assert!(pubkey_hex.starts_with("0x"));

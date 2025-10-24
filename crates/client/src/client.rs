@@ -1,3 +1,4 @@
+use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
 use crate::proto::state_manager_client::StateManagerClient;
 use crate::proto::{
@@ -5,28 +6,24 @@ use crate::proto::{
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetStateRequest, GetStateResponse,
     PushDeltaRequest, PushDeltaResponse,
 };
-use crate::signature::Signer;
 use miden_objects::account::AccountId;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
 pub struct PsmClient {
     client: StateManagerClient<Channel>,
-    signer: Option<Signer>,
+    auth: Option<Auth>,
 }
 
 impl PsmClient {
     pub async fn connect(endpoint: impl Into<String>) -> ClientResult<Self> {
         let endpoint = endpoint.into();
         let client = StateManagerClient::connect(endpoint).await?;
-        Ok(Self {
-            client,
-            signer: None,
-        })
+        Ok(Self { client, auth: None })
     }
 
-    pub fn with_signer(mut self, signer: Signer) -> Self {
-        self.signer = Some(signer);
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = Some(auth);
         self
     }
 
@@ -35,9 +32,9 @@ impl PsmClient {
         request: &mut tonic::Request<impl std::fmt::Debug>,
         account_id: &AccountId,
     ) -> ClientResult<()> {
-        if let Some(signer) = &self.signer {
-            let pubkey_hex = signer.public_key_hex();
-            let signature_hex = signer.sign_account_id(account_id);
+        if let Some(auth) = &self.auth {
+            let pubkey_hex = auth.public_key_hex();
+            let signature_hex = auth.sign_account_id(account_id);
 
             let pubkey_metadata = MetadataValue::try_from(&pubkey_hex)
                 .map_err(|e| ClientError::InvalidResponse(format!("Invalid pubkey: {e}")))?;

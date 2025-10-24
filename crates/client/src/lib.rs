@@ -7,9 +7,8 @@ mod proto {
 pub mod auth;
 mod client;
 mod error;
-pub mod signature;
 
+pub use auth::{Auth, FalconRpoSigner, verify_commitment_signature};
 pub use client::PsmClient;
 pub use error::{ClientError, ClientResult};
 pub use proto::*;
-pub use signature::{verify_commitment_signature, Signer};

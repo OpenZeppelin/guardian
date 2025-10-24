@@ -16,10 +16,7 @@ pub struct GetStateResult {
 }
 
 pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetStateResult> {
-    tracing::info!(
-        "Getting state: account_id={}",
-        params.account_id
-    );
+    tracing::info!("Getting state: account_id={}", params.account_id);
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
 

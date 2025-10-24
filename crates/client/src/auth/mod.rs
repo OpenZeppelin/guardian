@@ -1,0 +1,40 @@
+pub mod miden_falcon_rpo;
+
+pub use miden_falcon_rpo::{FalconRpoSigner, verify_commitment_signature};
+use miden_objects::account::AccountId;
+
+pub enum Auth {
+    FalconRpoSigner(FalconRpoSigner),
+}
+
+impl Auth {
+    pub fn public_key_hex(&self) -> String {
+        match self {
+            Auth::FalconRpoSigner(signer) => signer.public_key_hex(),
+        }
+    }
+
+    pub fn sign_account_id(&self, account_id: &AccountId) -> String {
+        match self {
+            Auth::FalconRpoSigner(signer) => signer.sign_account_id(account_id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+
+    #[test]
+    fn test_auth_enum_falcon_signer() {
+        let secret_key = SecretKey::new();
+        let auth = Auth::FalconRpoSigner(FalconRpoSigner::new(secret_key));
+
+        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let signature_hex = auth.sign_account_id(&account_id);
+
+        assert!(signature_hex.starts_with("0x"));
+        assert_eq!(signature_hex.len(), 2 + (1563 * 2));
+    }
+}

@@ -22,10 +22,7 @@ pub async fn configure_account(
     state: &AppState,
     params: ConfigureAccountParams,
 ) -> Result<ConfigureAccountResult> {
-    tracing::info!(
-        "Configuring account: {}",
-        params.account_id
-    );
+    tracing::info!("Configuring account: {}", params.account_id);
 
     let existing =
         state.metadata.get(&params.account_id).await.map_err(|e| {

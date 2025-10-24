@@ -1,6 +1,6 @@
+use miden_objects::Word;
 use miden_objects::crypto::dsa::rpo_falcon512::{SecretKey, Signature};
 use miden_objects::utils::{Deserializable, Serializable};
-use miden_objects::Word;
 use rand::{RngCore, SeedableRng};
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -153,7 +153,8 @@ mod tests {
     #[test]
     fn test_add_and_get_key() {
         let temp_dir = TempDir::new().unwrap();
-        let keystore = FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
+        let keystore =
+            FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
 
         let secret_key = SecretKey::new();
         let pub_key: Word = secret_key.public_key().into();
@@ -167,7 +168,8 @@ mod tests {
     #[test]
     fn test_generate_key() {
         let temp_dir = TempDir::new().unwrap();
-        let keystore = FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
+        let keystore =
+            FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
 
         let pub_key = keystore.generate_key().unwrap();
         let retrieved_key = keystore.get_key(pub_key).unwrap();
@@ -179,7 +181,8 @@ mod tests {
     #[test]
     fn test_sign() {
         let temp_dir = TempDir::new().unwrap();
-        let keystore = FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
+        let keystore =
+            FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
 
         let pub_key = keystore.generate_key().unwrap();
         let message = Word::from([1u32, 2, 3, 4]);
