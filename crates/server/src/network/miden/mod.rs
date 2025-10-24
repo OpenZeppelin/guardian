@@ -1,8 +1,10 @@
+pub mod account_inspector;
+
 use crate::metadata::auth::{Auth, Credentials};
+use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_objects::account::{Account, AccountDelta, AccountId};
-use miden_objects::{Word, utils::Serializable};
 use miden_rpc_client::MidenRpcClient;
 use private_state_manager_shared::{FromJson, ToJson};
 
@@ -162,49 +164,21 @@ impl NetworkClient for MidenNetworkClient {
         state_json: &serde_json::Value,
         credential: &Credentials,
     ) -> Result<(), String> {
-
         let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
 
         let (credential_pubkey, _signature) = credential
             .as_signature()
             .ok_or_else(|| "Invalid credential type".to_string())?;
 
-        // Try slot 0 first (single signer)
-        let slot_0_result = account.storage().get_item(0);
-        if let Ok(slot_0_value) = slot_0_result {
-            if slot_0_value != Word::default() {
-                let stored_pubkey_hex = format!("0x{}", hex::encode(slot_0_value.to_bytes()));
-                if &stored_pubkey_hex == credential_pubkey {
-                    return Ok(());
-                }
-            }
+        if inspector.pubkey_exists(credential_pubkey) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Credential public key '{}' not found in account storage",
+                credential_pubkey
+            ))
         }
-
-        // Try slot 1 (mapping of cosigners)
-        let key_zero = Word::from([0u32, 0, 0, 0]);
-        let first_entry = account.storage().get_map_item(1, key_zero);
-
-        if first_entry.is_ok() && first_entry.as_ref().unwrap() != &Word::default() {
-            let mut index = 0u32;
-            loop {
-                let key = Word::from([index, 0, 0, 0]);
-                match account.storage().get_map_item(1, key) {
-                    Ok(value) if value != Word::default() => {
-                        let stored_pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
-                        if &stored_pubkey_hex == credential_pubkey {
-                            return Ok(());
-                        }
-                        index += 1;
-                    }
-                    _ => break,
-                }
-            }
-        }
-
-        Err(format!(
-            "Credential public key '{}' not found in account storage",
-            credential_pubkey
-        ))
     }
 
     async fn should_update_auth(
@@ -212,27 +186,9 @@ impl NetworkClient for MidenNetworkClient {
         state_json: &serde_json::Value,
     ) -> Result<Option<Auth>, String> {
         let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
 
-        let key_zero = Word::from([0u32, 0, 0, 0]);
-        let first_entry = account.storage().get_map_item(1, key_zero);
-
-        if first_entry.is_err() || first_entry.as_ref().unwrap() == &Word::default() {
-            return Ok(None);
-        }
-
-        let mut pubkeys = Vec::new();
-        let mut index = 0u32;
-        loop {
-            let key = Word::from([index, 0, 0, 0]);
-            match account.storage().get_map_item(1, key) {
-                Ok(value) if value != Word::default() => {
-                    let pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
-                    pubkeys.push(pubkey_hex);
-                    index += 1;
-                }
-                _ => break,
-            }
-        }
+        let pubkeys = inspector.extract_slot_1_pubkeys();
 
         if pubkeys.is_empty() {
             Ok(None)

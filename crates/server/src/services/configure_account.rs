@@ -26,11 +26,6 @@ pub async fn configure_account(
 ) -> Result<ConfigureAccountResult> {
     tracing::info!("Configuring account: {}", params.account_id);
 
-    params
-        .auth
-        .verify(&params.account_id, &params.credential)
-        .map_err(|e| PsmError::AuthenticationFailed(format!("Signature verification failed: {e}")))?;
-
     let existing =
         state.metadata.get(&params.account_id).await.map_err(|e| {
             PsmError::StorageError(format!("Failed to check existing account: {e}"))
@@ -42,10 +37,19 @@ pub async fn configure_account(
 
     let commitment = {
         let client = state.network_client.lock().await;
+
+        // Validates that the credential is valid for the account state.
         client
             .validate_credential(&params.initial_state, &params.credential)
             .map_err(|e| PsmError::NetworkError(format!("Failed to validate credential: {e}")))?;
-    
+        
+        // Verifies the credential authorization.
+        params
+            .auth
+            .verify(&params.account_id, &params.credential)
+            .map_err(|e| PsmError::AuthenticationFailed(format!("Signature verification failed: {e}")))?;
+
+        // calculates the commitment of the account state.
         client
             .get_state_commitment(&params.account_id, &params.initial_state)
             .map_err(PsmError::NetworkError)?
