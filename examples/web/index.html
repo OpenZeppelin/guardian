@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PSM E2E Demo</title>
+    <style>
+      body {
+        font-family: 'Monaco', 'Courier New', monospace;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background: #1e1e1e;
+        color: #d4d4d4;
+      }
+      h1 {
+        color: #4ec9b0;
+      }
+      #output {
+        background: #252526;
+        border: 1px solid #3e3e42;
+        border-radius: 4px;
+        padding: 16px;
+        min-height: 400px;
+        font-size: 14px;
+        line-height: 1.6;
+        overflow-y: auto;
+        white-space: pre-wrap;
+      }
+      button {
+        background: #0e639c;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+        margin-right: 10px;
+      }
+      button:hover {
+        background: #1177bb;
+      }
+      button:disabled {
+        background: #3e3e42;
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+      .success {
+        color: #4ec9b0;
+      }
+      .error {
+        color: #f48771;
+      }
+      .info {
+        color: #569cd6;
+      }
+      .warning {
+        color: #dcdcaa;
+      }
+      #controls {
+        margin-bottom: 20px;
+      }
+      input {
+        background: #3c3c3c;
+        border: 1px solid #3e3e42;
+        color: #d4d4d4;
+        padding: 8px;
+        border-radius: 4px;
+        width: 300px;
+        margin-right: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🔐 Private State Manager - E2E Demo</h1>
+
+    <div id="controls">
+      <input type="text" id="endpoint" value="http://localhost:3000" placeholder="PSM Endpoint" />
+      <input type="text" id="midenRpc" value="https://rpc.testnet.miden.io:443" placeholder="Miden RPC URL" />
+      <button id="runBtn">Run E2E Test</button>
+      <button id="clearBtn">Clear Output</button>
+    </div>
+
+    <div id="output">Ready to run E2E test. Click 'Run E2E Test' to begin.</div>
+
+    <script type="module" src="/e2e_web.ts"></script>
+  </body>
+</html>

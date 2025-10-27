@@ -1,0 +1,20 @@
+{
+  "name": "psm-web-example",
+  "version": "0.1.0",
+  "description": "Web example for Private State Manager",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@demox-labs/miden-sdk": "latest",
+    "axios": "^1.7.7",
+    "vite": "^7.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.23",
+    "typescript": "^5.6.3"
+  }
+}
