@@ -2014,6 +2014,7 @@ dependencies = [
  "tonic-build",
  "tonic-reflection",
  "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "uuid",

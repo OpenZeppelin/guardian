@@ -1,5 +1,6 @@
 use axum::{Router, routing::get, routing::post};
 use tonic::transport::Server;
+use tower_http::cors::CorsLayer;
 
 use crate::api::grpc::StateManagerService;
 use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
@@ -11,6 +12,7 @@ use crate::state::AppState;
 /// Provides methods to run the server with the configured settings.
 pub struct ServerHandle {
     pub(crate) app_state: AppState,
+    pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) http_enabled: bool,
     pub(crate) http_port: u16,
     pub(crate) grpc_enabled: bool,
@@ -44,9 +46,10 @@ impl ServerHandle {
         if self.http_enabled {
             let state = self.app_state.clone();
             let port = self.http_port;
+            let cors_layer = self.cors_layer.clone();
 
             let task = tokio::spawn(async move {
-                let app = Router::new()
+                let mut app = Router::new()
                     .route("/", get(root))
                     .route("/delta", post(push_delta))
                     .route("/delta", get(get_delta))
@@ -54,6 +57,10 @@ impl ServerHandle {
                     .route("/configure", post(configure))
                     .route("/state", get(get_state))
                     .with_state(state);
+
+                if let Some(cors) = cors_layer {
+                    app = app.layer(cors);
+                }
 
                 let addr = format!("0.0.0.0:{port}");
                 let listener = tokio::net::TcpListener::bind(&addr)

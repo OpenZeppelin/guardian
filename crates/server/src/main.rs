@@ -10,6 +10,7 @@ use server::storage::StorageRegistry;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
 async fn main() {
@@ -38,6 +39,11 @@ async fn main() {
     let signer = MidenFalconRpoSigner::new(keystore_path).expect("Failed to initialize signer");
     let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
 
+    let cors_layer = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(NetworkType::MidenTestnet)
@@ -47,6 +53,7 @@ async fn main() {
         .ack(ack)
         .http(true, 3000)
         .grpc(true, 50051)
+        .cors(cors_layer)
         .build()
         .await
         .expect("Failed to build server")

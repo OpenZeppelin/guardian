@@ -32,6 +32,7 @@ pub struct ServerBuilder {
     ack: Option<Acknowledger>,
     canonicalization: Option<CanonicalizationConfig>,
     logging_config: Option<LoggingConfig>,
+    cors_layer: Option<tower_http::cors::CorsLayer>,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -48,6 +49,7 @@ impl ServerBuilder {
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
             logging_config: None,
+            cors_layer: None,
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -247,6 +249,30 @@ impl ServerBuilder {
         self
     }
 
+    /// Configure CORS for HTTP server
+    ///
+    /// # Arguments
+    /// * `cors_layer` - The CORS layer to use for HTTP requests
+    ///
+    /// # Example
+    /// ```no_run
+    /// use server::builder::ServerBuilder;
+    /// use tower_http::cors::{CorsLayer, Any};
+    ///
+    /// // Allow all origins (useful for development)
+    /// let cors = CorsLayer::new()
+    ///     .allow_origin(Any)
+    ///     .allow_methods(Any)
+    ///     .allow_headers(Any);
+    ///
+    /// let builder = ServerBuilder::new()
+    ///     .cors(cors);
+    /// ```
+    pub fn cors(mut self, cors_layer: tower_http::cors::CorsLayer) -> Self {
+        self.cors_layer = Some(cors_layer);
+        self
+    }
+
     /// Build the server handle
     ///
     /// Validates that all required components are configured and returns
@@ -323,6 +349,7 @@ impl ServerBuilder {
 
         Ok(ServerHandle {
             app_state,
+            cors_layer: self.cors_layer,
             http_enabled: self.http_enabled,
             http_port: self.http_port,
             grpc_enabled: self.grpc_enabled,

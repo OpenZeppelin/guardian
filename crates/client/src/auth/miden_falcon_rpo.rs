@@ -1,9 +1,9 @@
 use miden_objects::account::AccountId;
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
 use miden_objects::crypto::hash::rpo::Rpo256;
+use miden_objects::utils::Deserializable;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
-use miden_objects::utils::Deserializable;
 
 pub struct FalconRpoSigner {
     secret_key: SecretKey,
@@ -45,7 +45,7 @@ impl IntoWord for AccountId {
             Felt::ZERO,
             Felt::ZERO,
         ];
-    
+
         Rpo256::hash_elements(&message_elements)
     }
 }
@@ -82,12 +82,13 @@ impl HexIntoWord for &str {
     fn hex_into_word(&self) -> Result<Word, String> {
         let commitment_hex = self.strip_prefix("0x").unwrap_or(&self);
 
-        let bytes = hex::decode(commitment_hex).map_err(|e| format!("Invalid commitment hex: {e}"))?;
-    
+        let bytes =
+            hex::decode(commitment_hex).map_err(|e| format!("Invalid commitment hex: {e}"))?;
+
         if bytes.len() != 32 {
             return Err(format!("Commitment must be 32 bytes, got {}", bytes.len()));
         }
-    
+
         let mut felts = Vec::new();
         for chunk in bytes.chunks(8) {
             let mut arr = [0u8; 8];
@@ -95,7 +96,7 @@ impl HexIntoWord for &str {
             let value = u64::from_le_bytes(arr);
             felts.push(Felt::try_from(value).map_err(|e| format!("Invalid field element: {e}"))?);
         }
-    
+
         let message_elements = vec![felts[0], felts[1], felts[2], felts[3]];
         let digest = Rpo256::hash_elements(&message_elements);
         Ok(digest)
@@ -121,7 +122,7 @@ impl HexIntoSignature for &str {
     fn hex_into_signature(&self) -> Result<Signature, String> {
         let hex_str = self.strip_prefix("0x").unwrap_or(&self);
         let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid signature hex: {e}"))?;
-    
+
         const EXPECTED_SIG_LEN: usize = 1563;
         if bytes.len() != EXPECTED_SIG_LEN {
             return Err(format!(
@@ -129,8 +130,9 @@ impl HexIntoSignature for &str {
                 bytes.len()
             ));
         }
-    
-        Signature::read_from_bytes(&bytes).map_err(|e| format!("Failed to deserialize signature: {e}"))
+
+        Signature::read_from_bytes(&bytes)
+            .map_err(|e| format!("Failed to deserialize signature: {e}"))
     }
 }
 

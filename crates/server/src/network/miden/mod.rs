@@ -174,7 +174,9 @@ impl NetworkClient for MidenNetworkClient {
         if inspector.pubkey_exists(credential_pubkey) {
             Ok(())
         } else {
-            Err(format!("Credential public key '{credential_pubkey}' not found in account storage"))
+            Err(format!(
+                "Credential public key '{credential_pubkey}' not found in account storage"
+            ))
         }
     }
 
