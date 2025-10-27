@@ -3,6 +3,7 @@ use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature}
 use miden_objects::crypto::hash::rpo::Rpo256;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
+use miden_objects::utils::Deserializable;
 
 pub struct FalconRpoSigner {
     secret_key: SecretKey,
@@ -24,29 +25,41 @@ impl FalconRpoSigner {
     }
 
     pub fn sign_account_id(&self, account_id: &AccountId) -> String {
-        let message = account_id_to_digest(account_id);
+        let message = account_id.into_word();
         let signature = self.secret_key.sign(message);
-        signature_to_hex(&signature)
+        signature.into_hex()
     }
 }
 
-fn account_id_to_digest(account_id: &AccountId) -> Word {
-    let account_id_felts: [Felt; 2] = (*account_id).into();
-
-    let message_elements = vec![
-        account_id_felts[0],
-        account_id_felts[1],
-        Felt::ZERO,
-        Felt::ZERO,
-    ];
-
-    Rpo256::hash_elements(&message_elements)
+pub trait IntoWord {
+    fn into_word(&self) -> Word;
 }
 
-fn signature_to_hex(signature: &Signature) -> String {
-    use miden_objects::utils::Serializable;
-    let signature_bytes = signature.to_bytes();
-    format!("0x{}", hex::encode(&signature_bytes))
+impl IntoWord for AccountId {
+    fn into_word(&self) -> Word {
+        let account_id_felts: [Felt; 2] = (*self).into();
+
+        let message_elements = vec![
+            account_id_felts[0],
+            account_id_felts[1],
+            Felt::ZERO,
+            Felt::ZERO,
+        ];
+    
+        Rpo256::hash_elements(&message_elements)
+    }
+}
+
+pub trait IntoHex {
+    fn into_hex(&self) -> String;
+}
+
+impl IntoHex for Signature {
+    fn into_hex(&self) -> String {
+        use miden_objects::utils::Serializable;
+        let signature_bytes = self.to_bytes();
+        format!("0x{}", hex::encode(&signature_bytes))
+    }
 }
 
 pub fn verify_commitment_signature(
@@ -54,55 +67,71 @@ pub fn verify_commitment_signature(
     server_pubkey_hex: &str,
     signature_hex: &str,
 ) -> Result<bool, String> {
-    let message = commitment_to_digest(commitment_hex)?;
-    let pubkey = parse_public_key(server_pubkey_hex)?;
-    let signature = parse_signature(signature_hex)?;
+    let message = commitment_hex.hex_into_word()?;
+    let pubkey = server_pubkey_hex.hex_into_public_key()?;
+    let signature = signature_hex.hex_into_signature()?;
 
     Ok(pubkey.verify(message, &signature))
 }
 
-fn commitment_to_digest(commitment_hex: &str) -> Result<Word, String> {
-    let commitment_hex = commitment_hex.strip_prefix("0x").unwrap_or(commitment_hex);
-
-    let bytes = hex::decode(commitment_hex).map_err(|e| format!("Invalid commitment hex: {e}"))?;
-
-    if bytes.len() != 32 {
-        return Err(format!("Commitment must be 32 bytes, got {}", bytes.len()));
-    }
-
-    let mut felts = Vec::new();
-    for chunk in bytes.chunks(8) {
-        let mut arr = [0u8; 8];
-        arr[..chunk.len()].copy_from_slice(chunk);
-        let value = u64::from_le_bytes(arr);
-        felts.push(Felt::try_from(value).map_err(|e| format!("Invalid field element: {e}"))?);
-    }
-
-    let message_elements = vec![felts[0], felts[1], felts[2], felts[3]];
-    let digest = Rpo256::hash_elements(&message_elements);
-    Ok(digest)
+pub trait HexIntoWord {
+    fn hex_into_word(&self) -> Result<Word, String>;
 }
 
-fn parse_public_key(hex_str: &str) -> Result<PublicKey, String> {
-    let word = Word::try_from(hex_str).map_err(|e| format!("Invalid public key hex: {e}"))?;
-    Ok(PublicKey::new(word))
+impl HexIntoWord for &str {
+    fn hex_into_word(&self) -> Result<Word, String> {
+        let commitment_hex = self.strip_prefix("0x").unwrap_or(&self);
+
+        let bytes = hex::decode(commitment_hex).map_err(|e| format!("Invalid commitment hex: {e}"))?;
+    
+        if bytes.len() != 32 {
+            return Err(format!("Commitment must be 32 bytes, got {}", bytes.len()));
+        }
+    
+        let mut felts = Vec::new();
+        for chunk in bytes.chunks(8) {
+            let mut arr = [0u8; 8];
+            arr[..chunk.len()].copy_from_slice(chunk);
+            let value = u64::from_le_bytes(arr);
+            felts.push(Felt::try_from(value).map_err(|e| format!("Invalid field element: {e}"))?);
+        }
+    
+        let message_elements = vec![felts[0], felts[1], felts[2], felts[3]];
+        let digest = Rpo256::hash_elements(&message_elements);
+        Ok(digest)
+    }
 }
 
-fn parse_signature(hex_str: &str) -> Result<Signature, String> {
-    use miden_objects::utils::Deserializable;
+pub trait HexIntoPublicKey {
+    fn hex_into_public_key(&self) -> Result<PublicKey, String>;
+}
 
-    let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid signature hex: {e}"))?;
-
-    const EXPECTED_SIG_LEN: usize = 1563;
-    if bytes.len() != EXPECTED_SIG_LEN {
-        return Err(format!(
-            "Signature must be exactly {EXPECTED_SIG_LEN} bytes, got {} bytes",
-            bytes.len()
-        ));
+impl HexIntoPublicKey for &str {
+    fn hex_into_public_key(&self) -> Result<PublicKey, String> {
+        let word = Word::try_from(*self).map_err(|e| format!("Invalid public key hex: {e}"))?;
+        Ok(PublicKey::new(word))
     }
+}
 
-    Signature::read_from_bytes(&bytes).map_err(|e| format!("Failed to deserialize signature: {e}"))
+pub trait HexIntoSignature {
+    fn hex_into_signature(&self) -> Result<Signature, String>;
+}
+
+impl HexIntoSignature for &str {
+    fn hex_into_signature(&self) -> Result<Signature, String> {
+        let hex_str = self.strip_prefix("0x").unwrap_or(&self);
+        let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid signature hex: {e}"))?;
+    
+        const EXPECTED_SIG_LEN: usize = 1563;
+        if bytes.len() != EXPECTED_SIG_LEN {
+            return Err(format!(
+                "Signature must be exactly {EXPECTED_SIG_LEN} bytes, got {} bytes",
+                bytes.len()
+            ));
+        }
+    
+        Signature::read_from_bytes(&bytes).map_err(|e| format!("Failed to deserialize signature: {e}"))
+    }
 }
 
 #[cfg(test)]

@@ -87,6 +87,6 @@ The server signs the `new_commitment` (the resulting commitment after applying t
 ### Example
 
 ```bash
-cargo run --package private-state-manager-client --example e2e_with_keystore
+cargo run --package private-state-manager-client --example e2e
 ```
  

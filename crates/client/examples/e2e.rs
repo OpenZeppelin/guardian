@@ -81,7 +81,7 @@ async fn main() -> ClientResult<()> {
             println!("\nTo run this example:");
             println!("  1. Start your PSM server");
             println!("  2. Set PSM_ENDPOINT if needed");
-            println!("  3. Re-run: cargo run --example e2e_with_keystore\n");
+            println!("  3. Re-run: cargo run --example e2e\n");
             return Ok(());
         }
     };
