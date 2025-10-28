@@ -63,7 +63,7 @@ impl<R: RngCore + SeedableRng + Send + Sync> FilesystemKeyStore<R> {
 impl<R: RngCore + Send + Sync> KeyStore for FilesystemKeyStore<R> {
     fn add_key(&self, key: &SecretKey) -> Result<()> {
         let pub_key = key.public_key();
-        let pub_key_word: Word = pub_key.into();
+        let pub_key_word: Word = pub_key.to_commitment();
         let filename = hash_pub_key(pub_key_word);
         let file_path = self.keys_directory.join(&filename);
 
@@ -130,7 +130,7 @@ impl<R: RngCore + Send + Sync> KeyStore for FilesystemKeyStore<R> {
 
     fn generate_key(&self) -> Result<Word> {
         let secret_key = SecretKey::new();
-        let pub_key: Word = secret_key.public_key().into();
+        let pub_key: Word = secret_key.public_key().to_commitment();
 
         self.add_key(&secret_key)?;
 
@@ -157,7 +157,7 @@ mod tests {
             FilesystemKeyStore::<ChaCha20Rng>::new(temp_dir.path().to_path_buf()).unwrap();
 
         let secret_key = SecretKey::new();
-        let pub_key: Word = secret_key.public_key().into();
+        let pub_key: Word = secret_key.public_key().to_commitment();
 
         keystore.add_key(&secret_key).unwrap();
         let retrieved_key = keystore.get_key(pub_key).unwrap();
@@ -174,7 +174,7 @@ mod tests {
         let pub_key = keystore.generate_key().unwrap();
         let retrieved_key = keystore.get_key(pub_key).unwrap();
 
-        let retrieved_pubkey: Word = retrieved_key.public_key().into();
+        let retrieved_pubkey: Word = retrieved_key.public_key().to_commitment();
         assert_eq!(retrieved_pubkey, pub_key);
     }
 
@@ -189,8 +189,8 @@ mod tests {
 
         let signature = keystore.sign(pub_key, message).unwrap();
 
-        use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
-        let public_key = PublicKey::new(pub_key);
+        let secret_key = keystore.get_key(pub_key).unwrap();
+        let public_key = secret_key.public_key();
         assert!(public_key.verify(message, &signature));
     }
 

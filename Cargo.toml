@@ -6,6 +6,9 @@ members = [
     "crates/miden-rpc-client",
     "crates/miden-keystore",
 ]
+exclude = [
+    "examples/rust",
+]
 resolver = "2"
 
 [workspace.package]

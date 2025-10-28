@@ -1,9 +1,12 @@
-use miden_lib::account::{auth::AuthRpoFalcon512Multisig, wallets::BasicWallet};
+use miden_lib::account::{
+    auth::{AuthRpoFalcon512Multisig, AuthRpoFalcon512MultisigConfig},
+    wallets::BasicWallet,
+};
 use miden_objects::{
     Felt, Word,
     account::delta::{AccountStorageDelta, AccountVaultDelta},
-    account::{Account, AccountBuilder, AccountDelta},
-    crypto::dsa::rpo_falcon512::PublicKey,
+    account::{Account, AccountBuilder, AccountDelta, PublicKeyCommitment},
+    crypto::dsa::rpo_falcon512::SecretKey,
 };
 use private_state_manager_shared::{FromJson, ToJson};
 use std::fs;
@@ -11,16 +14,22 @@ use std::fs;
 #[tokio::test]
 #[ignore] // Run manually with: cargo test --test generate_fixtures generate_multisig_fixtures -- --ignored
 async fn generate_multisig_fixtures() {
-    let pub_key_1 = PublicKey::new(Word::from([1u32, 0, 0, 0]));
-    let pub_key_2 = PublicKey::new(Word::from([2u32, 0, 0, 0]));
-    let pub_key_3 = PublicKey::new(Word::from([3u32, 0, 0, 0]));
+    // Generate real keys for testing
+    let secret_key_1 = SecretKey::new();
+    let secret_key_2 = SecretKey::new();
+    let secret_key_3 = SecretKey::new();
+    let pub_key_1 = PublicKeyCommitment::from(secret_key_1.public_key().to_commitment());
+    let pub_key_2 = PublicKeyCommitment::from(secret_key_2.public_key().to_commitment());
+    let pub_key_3 = PublicKeyCommitment::from(secret_key_3.public_key().to_commitment());
     let approvers = vec![pub_key_1, pub_key_2, pub_key_3];
     let threshold = 2u32;
 
-    let multisig_component = AuthRpoFalcon512Multisig::new(threshold, approvers.clone())
-        .expect("multisig component creation failed");
+    let config = AuthRpoFalcon512MultisigConfig::new(approvers.clone(), threshold)
+        .expect("multisig config creation failed");
+    let multisig_component =
+        AuthRpoFalcon512Multisig::new(config).expect("multisig component creation failed");
 
-    let (account, _) = AccountBuilder::new([0xff; 32])
+    let account = AccountBuilder::new([0xff; 32])
         .with_auth_component(multisig_component)
         .with_component(BasicWallet)
         .build()
@@ -43,7 +52,8 @@ async fn generate_multisig_fixtures() {
     }
 
     let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
+        .join("src")
+        .join("testing")
         .join("fixtures")
         .join("account.json");
 
@@ -61,9 +71,11 @@ async fn generate_multisig_fixtures() {
     )];
 
     // Delta 1: Add 4th approver
-    let pub_key_4 = PublicKey::new(Word::from([4u32, 0, 0, 0]));
+    let secret_key_4 = SecretKey::new();
+    let pub_key_4 = secret_key_4.public_key();
+    let pub_key_4_commitment = pub_key_4.to_commitment();
     let mut storage_delta_1 = AccountStorageDelta::default();
-    storage_delta_1.set_map_item(1, Word::from([3u32, 0, 0, 0]), Word::from(pub_key_4));
+    storage_delta_1.set_map_item(1, Word::from([3u32, 0, 0, 0]), pub_key_4_commitment);
     storage_delta_1.set_item(0, Word::from([threshold, 4u32, 0, 0]));
 
     let delta_1 = AccountDelta::new(
@@ -82,7 +94,7 @@ async fn generate_multisig_fixtures() {
     current_commitment = account_state.commitment();
 
     println!("\nDelta 1 - Added 4th approver:");
-    println!("  New approver: {}", Word::from(pub_key_4));
+    println!("  New approver: {}", pub_key_4_commitment);
     println!(
         "  Commitment: 0x{}",
         hex::encode(current_commitment.as_bytes())
@@ -98,7 +110,8 @@ async fn generate_multisig_fixtures() {
 
     fs::write(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
+            .join("src")
+            .join("testing")
             .join("fixtures")
             .join("delta_1.json"),
         serde_json::to_string_pretty(&delta_1_fixture).unwrap(),
@@ -111,9 +124,11 @@ async fn generate_multisig_fixtures() {
     ));
 
     // Delta 2: Add 5th approver
-    let pub_key_5 = PublicKey::new(Word::from([5u32, 0, 0, 0]));
+    let secret_key_5 = SecretKey::new();
+    let pub_key_5 = secret_key_5.public_key();
+    let pub_key_5_commitment = pub_key_5.to_commitment();
     let mut storage_delta_2 = AccountStorageDelta::default();
-    storage_delta_2.set_map_item(1, Word::from([4u32, 0, 0, 0]), Word::from(pub_key_5));
+    storage_delta_2.set_map_item(1, Word::from([4u32, 0, 0, 0]), pub_key_5_commitment);
     storage_delta_2.set_item(0, Word::from([threshold, 5u32, 0, 0]));
 
     let delta_2 = AccountDelta::new(
@@ -131,7 +146,7 @@ async fn generate_multisig_fixtures() {
     current_commitment = account_state.commitment();
 
     println!("\nDelta 2 - Added 5th approver:");
-    println!("  New approver: {}", Word::from(pub_key_5));
+    println!("  New approver: {}", pub_key_5_commitment);
     println!(
         "  Commitment: 0x{}",
         hex::encode(current_commitment.as_bytes())
@@ -147,7 +162,8 @@ async fn generate_multisig_fixtures() {
 
     fs::write(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
+            .join("src")
+            .join("testing")
             .join("fixtures")
             .join("delta_2.json"),
         serde_json::to_string_pretty(&delta_2_fixture).unwrap(),
@@ -194,7 +210,8 @@ async fn generate_multisig_fixtures() {
 
     fs::write(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
+            .join("src")
+            .join("testing")
             .join("fixtures")
             .join("delta_3.json"),
         serde_json::to_string_pretty(&delta_3_fixture).unwrap(),
@@ -218,7 +235,8 @@ async fn generate_multisig_fixtures() {
 
     fs::write(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
+            .join("src")
+            .join("testing")
             .join("fixtures")
             .join("commitments.json"),
         serde_json::to_string_pretty(&commitments_map).unwrap(),

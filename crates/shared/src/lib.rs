@@ -3,6 +3,7 @@ use miden_objects::account::{Account, AccountDelta};
 use miden_objects::utils::serde::{Deserializable, Serializable};
 
 pub mod auth;
+pub mod hex;
 
 pub trait ToJson {
     fn to_json(&self) -> serde_json::Value;
@@ -68,14 +69,19 @@ impl FromJson for AccountDelta {
 mod tests {
     use super::*;
     use miden_lib::account::{auth::AuthRpoFalcon512, wallets::BasicWallet};
-    use miden_objects::{account::AccountBuilder, crypto::dsa::rpo_falcon512::PublicKey};
+    use miden_objects::{
+        account::{AccountBuilder, PublicKeyCommitment},
+        crypto::dsa::rpo_falcon512::SecretKey,
+    };
 
     #[test]
     fn test_account_json_round_trip() {
         // Create a test account
-        let public_key = PublicKey::new([true; 4].into());
-        let (account, _) = AccountBuilder::new([0xff; 32])
-            .with_auth_component(AuthRpoFalcon512::new(public_key))
+        let secret_key = SecretKey::new();
+        let public_key_commitment =
+            PublicKeyCommitment::from(secret_key.public_key().to_commitment());
+        let account = AccountBuilder::new([0xff; 32])
+            .with_auth_component(AuthRpoFalcon512::new(public_key_commitment))
             .with_component(BasicWallet)
             .build()
             .unwrap();

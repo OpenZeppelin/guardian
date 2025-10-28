@@ -75,6 +75,7 @@ impl MidenRpcClient {
     ) -> Result<block_producer::SubmitProvenTransactionResponse, String> {
         let request = transaction::ProvenTransaction {
             transaction: proven_tx_bytes,
+            transaction_inputs: None,
         };
 
         let response = self

@@ -1,9 +1,8 @@
 use miden_objects::account::AccountId;
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
 use miden_objects::crypto::hash::rpo::Rpo256;
-use miden_objects::utils::Deserializable;
-use miden_objects::utils::Serializable;
 use miden_objects::{Felt, FieldElement, Word};
+use private_state_manager_shared::hex::{FromHex, IntoHex};
 
 pub struct FalconRpoSigner {
     secret_key: SecretKey,
@@ -20,8 +19,7 @@ impl FalconRpoSigner {
     }
 
     pub fn public_key_hex(&self) -> String {
-        let pubkey_word: Word = self.public_key.into();
-        format!("0x{}", hex::encode(pubkey_word.to_bytes()))
+        (&self.public_key).into_hex()
     }
 
     pub fn sign_account_id(&self, account_id: &AccountId) -> String {
@@ -50,26 +48,14 @@ impl IntoWord for AccountId {
     }
 }
 
-pub trait IntoHex {
-    fn into_hex(self) -> String;
-}
-
-impl IntoHex for Signature {
-    fn into_hex(self) -> String {
-        use miden_objects::utils::Serializable;
-        let signature_bytes = self.to_bytes();
-        format!("0x{}", hex::encode(&signature_bytes))
-    }
-}
-
 pub fn verify_commitment_signature(
     commitment_hex: &str,
     server_pubkey_hex: &str,
     signature_hex: &str,
 ) -> Result<bool, String> {
     let message = commitment_hex.hex_into_word()?;
-    let pubkey = server_pubkey_hex.hex_into_public_key()?;
-    let signature = signature_hex.hex_into_signature()?;
+    let pubkey = PublicKey::from_hex(server_pubkey_hex)?;
+    let signature = Signature::from_hex(signature_hex)?;
 
     Ok(pubkey.verify(message, &signature))
 }
@@ -103,62 +89,95 @@ impl HexIntoWord for &str {
     }
 }
 
-pub trait HexIntoPublicKey {
-    fn hex_into_public_key(self) -> Result<PublicKey, String>;
-}
-
-impl HexIntoPublicKey for &str {
-    fn hex_into_public_key(self) -> Result<PublicKey, String> {
-        let word = Word::try_from(self).map_err(|e| format!("Invalid public key hex: {e}"))?;
-        Ok(PublicKey::new(word))
-    }
-}
-
-pub trait HexIntoSignature {
-    fn hex_into_signature(self) -> Result<Signature, String>;
-}
-
-impl HexIntoSignature for &str {
-    fn hex_into_signature(self) -> Result<Signature, String> {
-        let hex_str = self.strip_prefix("0x").unwrap_or(self);
-        let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid signature hex: {e}"))?;
-
-        const EXPECTED_SIG_LEN: usize = 1563;
-        if bytes.len() != EXPECTED_SIG_LEN {
-            return Err(format!(
-                "Signature must be exactly {EXPECTED_SIG_LEN} bytes, got {} bytes",
-                bytes.len()
-            ));
-        }
-
-        Signature::read_from_bytes(&bytes)
-            .map_err(|e| format!("Failed to deserialize signature: {e}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_falcon_signer_creates_valid_signature() {
+        use miden_objects::utils::Deserializable;
+
         let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
         let signer = FalconRpoSigner::new(secret_key);
 
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
         let signature_hex = signer.sign_account_id(&account_id);
 
+        // Verify signature format
         assert!(signature_hex.starts_with("0x"));
-        assert_eq!(signature_hex.len(), 2 + (1563 * 2));
+
+        // Verify the signature is valid
+        let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
+        let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
+
+        // Create the message digest that was signed (using the same method as sign_account_id)
+        let message = account_id.into_word();
+
+        // Verify signature with public key
+        assert!(
+            public_key.verify(message, &signature),
+            "Signature verification failed"
+        );
     }
 
     #[test]
-    fn test_pubkey_hex_format() {
+    fn test_public_key_from_hex_roundtrip() {
         let secret_key = SecretKey::new();
-        let signer = FalconRpoSigner::new(secret_key);
-        let pubkey_hex = signer.public_key_hex();
+        let original_pubkey = secret_key.public_key();
 
-        assert!(pubkey_hex.starts_with("0x"));
-        assert_eq!(pubkey_hex.len(), 2 + (32 * 2));
+        // Convert to hex
+        let hex = original_pubkey.into_hex();
+
+        // Parse back from hex
+        let parsed_pubkey = PublicKey::from_hex(&hex).expect("Failed to parse public key from hex");
+
+        // Verify they produce the same hex representation
+        let parsed_hex = parsed_pubkey.into_hex();
+        assert_eq!(
+            hex, parsed_hex,
+            "Roundtrip should produce identical public key"
+        );
+    }
+
+    #[test]
+    fn test_signature_from_hex_roundtrip() {
+        let secret_key = SecretKey::new();
+        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let message = account_id.into_word();
+        let original_sig = secret_key.sign(message);
+
+        // Convert to hex
+        let hex = original_sig.into_hex();
+
+        // Parse back from hex
+        let parsed_sig = Signature::from_hex(&hex).expect("Failed to parse signature from hex");
+
+        // Verify they produce the same hex representation
+        let parsed_hex = parsed_sig.into_hex();
+        assert_eq!(
+            hex, parsed_hex,
+            "Roundtrip should produce identical signature"
+        );
+    }
+
+    #[test]
+    fn test_from_hex_without_prefix() {
+        let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
+        let hex_with_prefix = public_key.into_hex();
+
+        // Remove 0x prefix
+        let hex_without_prefix = hex_with_prefix.strip_prefix("0x").unwrap();
+
+        // Both should parse successfully
+        let pubkey1 = PublicKey::from_hex(&hex_with_prefix).unwrap();
+        let pubkey2 = PublicKey::from_hex(hex_without_prefix).unwrap();
+
+        assert_eq!(
+            pubkey1.into_hex(),
+            pubkey2.into_hex(),
+            "Parsing with and without 0x prefix should produce same result"
+        );
     }
 }

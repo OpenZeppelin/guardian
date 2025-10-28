@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-miden-objects = "0.11.4"
-miden-node-proto = "0.11.2"
+miden-objects = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-objects", branch = "next" }
+miden-node-proto = { git = "https://github.com/0xMiden/miden-node.git", package = "miden-node-proto", branch = "next" }
 tonic = { version = "0.13", features = ["tls-native-roots", "tls-ring", "transport"] }
 tokio = { version = "1.47", features = ["rt-multi-thread"] }
 hex = "0.4"

@@ -1,14 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
-use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-use miden_objects::crypto::hash::rpo::Rpo256;
-use miden_objects::utils::Serializable;
-use miden_objects::{Felt, FieldElement, Word};
-use private_state_manager_shared::{FromJson, ToJson};
-
 use crate::ack::{Acknowledger, MidenFalconRpoSigner};
 use crate::api::grpc::StateManagerService;
 use crate::metadata::auth::Auth;
@@ -17,6 +9,14 @@ use crate::network::{NetworkClient, NetworkType};
 use crate::state::AppState;
 use crate::storage::filesystem::FilesystemService;
 use crate::storage::{StorageBackend, StorageRegistry, StorageType};
+use async_trait::async_trait;
+use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
+use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+use miden_objects::crypto::hash::rpo::Rpo256;
+use miden_objects::utils::Serializable;
+use miden_objects::{Felt, FieldElement, Word};
+use private_state_manager_shared::hex::IntoHex;
+use private_state_manager_shared::{FromJson, ToJson};
 
 pub use crate::api::grpc::state_manager::*;
 pub use tonic::{Request, metadata::MetadataValue};
@@ -286,8 +286,7 @@ pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, Strin
 
     let signature = secret_key.sign(message);
 
-    let pubkey_word: Word = public_key.into();
-    let pubkey_hex = format!("0x{}", hex::encode(pubkey_word.to_bytes()));
+    let pubkey_hex = public_key.into_hex();
     let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
 
     (account_id_hex.to_string(), pubkey_hex, signature_hex)

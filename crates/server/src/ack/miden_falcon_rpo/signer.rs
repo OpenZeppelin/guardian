@@ -7,6 +7,7 @@ use miden_objects::{
     crypto::hash::rpo::Rpo256,
     utils::Serializable,
 };
+use private_state_manager_shared::hex::IntoHex;
 use rand_chacha::ChaCha20Rng;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,9 +45,7 @@ impl MidenFalconRpoSigner {
     }
 
     pub(crate) fn pubkey_hex(&self) -> String {
-        let pubkey = self.pubkey();
-        let pubkey_word: Word = pubkey.into();
-        format!("0x{}", hex::encode(pubkey_word.to_bytes()))
+        self.pubkey().into_hex()
     }
 
     pub(crate) fn ack_delta(&self, mut delta: DeltaObject) -> crate::ack::Result<DeltaObject> {
