@@ -5,6 +5,8 @@ use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_objects::account::{Account, AccountDelta, AccountId};
+use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
+use miden_objects::utils::{Deserializable, Serializable};
 use miden_rpc_client::MidenRpcClient;
 use private_state_manager_shared::{FromJson, ToJson};
 
@@ -167,15 +169,25 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let (credential_pubkey, _signature) = credential
+        let (credential_pubkey_hex, _signature) = credential
             .as_signature()
             .ok_or_else(|| "Invalid credential type".to_string())?;
 
-        if inspector.pubkey_exists(credential_pubkey) {
+        let pubkey_bytes = hex::decode(&credential_pubkey_hex[2..])
+            .map_err(|e| format!("Failed to decode credential pubkey: {e}"))?;
+        let pubkey = PublicKey::read_from_bytes(&pubkey_bytes)
+            .map_err(|e| format!("Failed to deserialize credential pubkey: {e}"))?;
+
+        // Compute the commitment to match against storage
+        let commitment = pubkey.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+
+        if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
         } else {
             Err(format!(
-                "Credential public key '{credential_pubkey}' not found in account storage"
+                "Credential public key commitment '{}...' not found in account storage",
+                &commitment_hex[..18]
             ))
         }
     }

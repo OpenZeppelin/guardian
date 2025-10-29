@@ -1,0 +1,38 @@
+use.miden::account
+use.miden::tx
+use.std::crypto::dsa::rpo_falcon512
+
+const.PSM_SELECTOR_SLOT=4
+const.PSM_PUBLIC_KEY_MAP_SLOT=5
+const.AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
+
+#! Verify PSM signature (always required when selector is ON)
+#! Inputs:  [MSG]
+#! Outputs: [MSG]
+export.verify_psm_signature
+    push.PSM_SELECTOR_SLOT
+    exec.account::get_item
+    drop drop drop
+
+    push.1 eq
+    if.true
+        push.1
+        push.PSM_PUBLIC_KEY_MAP_SLOT
+        exec.::miden::auth::rpo_falcon512::verify_signatures
+        push.1 neq
+        if.true
+            emit.AUTH_UNAUTHORIZED_EVENT
+            push.0 assert.err="invalid PSM signature"
+        end
+    else
+        push.0 drop
+    end
+end
+
+#! Main auth procedure
+#! Inputs:  [TX_SUMMARY_COMMITMENT]
+#! Outputs: []
+export.auth__
+    exec.verify_psm_signature
+    dropw dropw
+end

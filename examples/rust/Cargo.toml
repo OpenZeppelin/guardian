@@ -4,16 +4,32 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "e2e"
-path = "src/e2e.rs"
+name = "main"
+path = "src/main.rs"
+
+[lib]
+name = "psm_rust_example"
+path = "src/lib.rs"
 
 [dependencies]
 private-state-manager-client = { path = "../../crates/client" }
 private-state-manager-shared = { path = "../../crates/shared" }
 miden-keystore = { path = "../../crates/miden-keystore" }
-miden-objects = "0.11.4"
-miden-lib = "0.11.4"
+miden-rpc-client = { path = "../../crates/miden-rpc-client" }
+
+miden-objects = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-objects", branch = "next" }
+miden-lib = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-lib", branch = "next" }
+
+# For MasmRunner
+miden-vm = { version = "0.11", default-features = false }
+miden-stdlib = { version = "0.11" }
+miden-processor = { version = "0.11" }
+miden-prover = { version = "0.11" }
+anyhow = "1.0"
+
 tokio = { version = "1.42", features = ["full"] }
 hex = "0.4"
 tempfile = "3.15"
 rand_chacha = "0.9"
+base64 = "0.22"
+serde_json = "1.0"
