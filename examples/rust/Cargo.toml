@@ -7,25 +7,13 @@ edition = "2021"
 name = "main"
 path = "src/main.rs"
 
-[lib]
-name = "psm_rust_example"
-path = "src/lib.rs"
-
 [dependencies]
 private-state-manager-client = { path = "../../crates/client" }
 private-state-manager-shared = { path = "../../crates/shared" }
-miden-keystore = { path = "../../crates/miden-keystore" }
-miden-rpc-client = { path = "../../crates/miden-rpc-client" }
 
-miden-objects = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-objects", branch = "next" }
-miden-lib = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-lib", branch = "next" }
-
-# For MasmRunner
-miden-vm = { version = "0.11", default-features = false }
-miden-stdlib = { version = "0.11" }
-miden-processor = { version = "0.11" }
-miden-prover = { version = "0.11" }
-anyhow = "1.0"
+# Miden client for transaction execution and proving
+miden-client = { git = "https://github.com/0xMiden/miden-client.git", branch = "next", features = ["tonic"] }
+miden-client-sqlite-store = { git = "https://github.com/0xMiden/miden-client.git", branch = "next", package = "miden-client-sqlite-store" }
 
 tokio = { version = "1.42", features = ["full"] }
 hex = "0.4"

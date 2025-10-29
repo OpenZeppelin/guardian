@@ -1,26 +1,29 @@
+mod miden;
+
+// miden-client is available for full on-chain submission (see ON_CHAIN_SUBMISSION.md)
 use miden_keystore::{FilesystemKeyStore, KeyStore};
 use miden_lib::account::wallets::BasicWallet;
 use miden_lib::transaction::TransactionKernel;
 use miden_objects::account::{
-    AccountBuilder, AccountComponent, AccountDelta, AccountStorageMode, AccountType,
+    Account, AccountBuilder, AccountComponent, AccountDelta, AccountStorageMode, AccountType,
     StorageMap, StorageSlot,
     delta::{AccountStorageDelta, AccountVaultDelta},
 };
 use miden_objects::assembly::diagnostics::NamedSource;
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey};
-use miden_objects::crypto::hash::rpo::Rpo256;
+use miden_objects::transaction::{InputNotes, OutputNotes, TransactionSummary};
 use miden_objects::utils::{Deserializable, Serializable};
-use miden_objects::{Felt, Word};
-use miden_objects::account::Account;
+use miden_objects::{Felt, Word, ZERO};
 use miden_rpc_client::MidenRpcClient;
-use miden_processor::ExecutionOptions;
 use private_state_manager_client::{
     Auth, AuthConfig, ClientResult, FalconRpoSigner, MidenFalconRpoAuth, PsmClient,
-    auth::miden_falcon_rpo::IntoWord,
 };
+use private_state_manager_shared::hex::IntoHex;
+use private_state_manager_shared::ToJson;
 use private_state_manager_client::auth_config::AuthType;
 use rand_chacha::ChaCha20Rng;
 use tempfile::TempDir;
+use private_state_manager_client::verify_commitment_signature;
 
 // Load Multisig Auth MASM code from file (includes PSM verification)
 const MULTISIG_AUTH: &str = include_str!("../masm/multisig.masm");
@@ -315,10 +318,10 @@ async fn main() -> ClientResult<()> {
     println!();
 
     // =========================================================================
-    // Step 5: Client 2 - Create delta to add a new cosigner
+    // Step 5: Client 2 - Create TransactionSummary
     // =========================================================================
     if let Some(account) = retrieved_account {
-        println!("Step 5: Client 2 - Create delta to add a new cosigner...");
+        println!("Step 5: Client 2 - Create TransactionSummary for 3-of-3 + new cosigner...");
         println!("  ✓ Account retrieved from PSM");
         println!("    Account ID: {}", account.id());
         println!("    Current nonce: {}", account.nonce());
@@ -328,8 +331,7 @@ async fn main() -> ClientResult<()> {
         let new_cosigner_secret = SecretKey::new();
         let new_cosigner_pubkey = new_cosigner_secret.public_key();
         let new_cosigner_commitment = new_cosigner_pubkey.to_commitment();
-        use private_state_manager_shared::hex::IntoHex;
-        let new_cosigner_full_pubkey_hex = (&new_cosigner_pubkey).into_hex();
+        let _new_cosigner_full_pubkey_hex = (&new_cosigner_pubkey).into_hex();
         let new_cosigner_commitment_hex = format!("0x{}", hex::encode(new_cosigner_commitment.to_bytes()));
         println!("  ✓ New cosigner commitment: {}...", &new_cosigner_commitment_hex);
 
@@ -341,7 +343,6 @@ async fn main() -> ClientResult<()> {
         storage_delta.set_item(0, Word::from([3u32, 3, 0, 0]));
 
         // Add new cosigner to slot 1 map at index 2
-        // Note: We only need to add the new entry; existing entries remain unchanged
         storage_delta.set_map_item(
             1, // slot index for pubkeys map
             Word::from([2u32, 0, 0, 0]), // index 2 for the new cosigner
@@ -356,198 +357,222 @@ async fn main() -> ClientResult<()> {
             new_nonce,
         ).expect("Failed to create delta");
 
-        println!("  ✓ Created delta with nonce: {}", new_nonce);
+        // Build a TransactionSummary: no input/output notes for this config change; pick a salt
+        let tx_salt = Word::from([Felt::new(42u64), ZERO, ZERO, ZERO]);
+        let tx_summary = TransactionSummary::new(
+            new_delta.clone(),
+            InputNotes::new(Vec::new()).expect("inputs"),
+            OutputNotes::new(Vec::new()).expect("outputs"),
+            tx_salt,
+        );
+
+        println!("  ✓ Created TransactionSummary with nonce: {}", new_nonce);
         println!("  ✓ Delta adds cosigner at index 2");
         println!("  ✓ Updates multisig to 3-of-3");
+
+        let original_commitment = tx_summary.to_commitment();
+        println!("  ✓ TX summary commitment: 0x{}", hex::encode(original_commitment.to_bytes()));
         println!();
 
         // =========================================================================
-        // Step 6: Update PSM configuration with new cosigner
+        // Step 6: Client 2 - Push TransactionSummary to PSM; server signs TX summary commitment
         // =========================================================================
-        println!("Step 6: Update PSM configuration to include new cosigner...");
+        println!("Step 6: Push TransactionSummary; expect ack signature over TX_SUMMARY_COMMITMENT...");
 
-        // We need to update the PSM auth config to include the new cosigner
-        // so PSM knows about all three signers
-        let _updated_auth_config = AuthConfig {
-            auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
-                cosigner_pubkeys: vec![
-                    client1_full_pubkey_hex.clone(),
-                    client2_full_pubkey_hex.clone(),
-                    new_cosigner_full_pubkey_hex.clone(),
-                ],
-            })),
-        };
-
-        // Note: In a real implementation, you would call an update_auth endpoint
-        // For now, we'll note this as a required step
-        println!("  ⚠️  Note: PSM auth config should be updated to include new cosigner");
-        println!("     Current cosigners: 2, New cosigners: 3");
-        println!();
-
-        // =========================================================================
-        // Step 7: Client 2 - Push delta to PSM
-        // =========================================================================
-        println!("Step 7: Client 2 - Push delta to PSM...");
-
-        // Serialize delta to JSON using the expected format
-        use private_state_manager_shared::ToJson;
-        let delta_payload = new_delta.to_json();
+        // Serialize TransactionSummary to JSON using the expected format
+        let tx_summary_json = tx_summary.to_json();
         let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
 
-        let (new_commitment, ack_sig) = match client2
-            .push_delta(&account_id, new_nonce.as_int(), prev_commitment, delta_payload)
+        let (_new_commitment, ack_sig) = match client2
+            .push_delta(&account_id, new_nonce.as_int(), prev_commitment, tx_summary_json)
             .await
         {
             Ok(response) => {
                 println!("  ✓ {}", response.message);
+                // ack_sig can be at top level or in delta
+                let ack_sig = response.ack_sig
+                    .or_else(|| response.delta.as_ref().map(|d| d.ack_sig.clone()))
+                    .unwrap_or_default();
+
                 if let Some(delta) = response.delta {
                     println!("    New commitment: {}", delta.new_commitment);
-                    println!("    Server ack signature: {}...", &delta.ack_sig[0..20]);
-                    (delta.new_commitment, delta.ack_sig)
+                    if !ack_sig.is_empty() {
+                        println!("    PSM ack signature: {}...", &ack_sig[0..20.min(ack_sig.len())]);
+                        (delta.new_commitment, ack_sig)
+                    } else {
+                        println!("  ✗ Missing ack signature in response");
+                        return Ok(());
+                    }
                 } else {
                     println!("  ✗ No delta in response");
                     return Ok(());
                 }
             }
             Err(e) => {
-                println!("  ✗ Failed to push delta: {}", e);
+                println!("  ✗ Failed to push TransactionSummary: {}", e);
                 return Ok(());
             }
         };
         println!();
 
         // =========================================================================
-        // Step 8: Client 2 - Verify ack signature and prepare on-chain transaction
+        // Step 7: Verify PSM ack signature over the TX summary commitment; update local account
         // =========================================================================
-        println!("Step 8: Client 2 - Verify PSM ack signature...");
+        println!("Step 7: Verify PSM ack over TX summary commitment...");
 
-        // Verify the server's signature on the new commitment
-        use private_state_manager_client::verify_commitment_signature;
+        // Compute TX summary commitment hex for verification
+        let tx_summary_commitment_hex = format!("0x{}", hex::encode(tx_summary.to_commitment().to_bytes()));
 
-        match verify_commitment_signature(&new_commitment, &server_ack_pubkey, &ack_sig) {
+        // Ensure the ack_sig has 0x prefix for verify_commitment_signature
+        let ack_sig_with_prefix = if ack_sig.starts_with("0x") {
+            ack_sig.clone()
+        } else {
+            format!("0x{}", ack_sig)
+        };
+
+        println!("  Debug: TX commitment for verification: {}", &tx_summary_commitment_hex);
+        println!("  Debug: Server pubkey: {}...", &server_ack_pubkey[..40.min(server_ack_pubkey.len())]);
+        println!("  Debug: ACK signature: {}...", &ack_sig_with_prefix[..40.min(ack_sig_with_prefix.len())]);
+
+        match verify_commitment_signature(&tx_summary_commitment_hex, &server_ack_pubkey, &ack_sig_with_prefix) {
             Ok(true) => {
-                println!("  ✓ PSM server signature is VALID");
-                println!("  ✓ Delta authenticated by PSM");
-                println!();
-
-                // Apply delta locally
+                println!("  ✓ PSM signature VALID over TX summary commitment");
+                // Apply the same delta locally to reflect the change
                 let mut updated_account = account.clone();
-                updated_account.apply_delta(&new_delta)
-                    .expect("Failed to apply delta");
-
-                println!("  Account state after delta:");
-                println!("    New commitment: 0x{}", hex::encode(updated_account.commitment().as_bytes()));
-                println!("    New nonce: {}", updated_account.nonce());
+                updated_account.apply_delta(&new_delta).expect("apply delta");
+                println!("  New local commitment: 0x{}", hex::encode(updated_account.commitment().as_bytes()));
+                println!("  New local nonce: {}", updated_account.nonce());
                 println!();
 
                 // =========================================================================
-                // Step 9: Demonstrate transaction submission to Miden testnet
+                // Step 8: Connect to Miden testnet and show readiness for on-chain submission
                 // =========================================================================
-                println!("Step 9: Preparing for Miden testnet submission...");
+                println!("Step 8: Connecting to Miden testnet for potential on-chain submission...");
 
-                println!("  For private accounts, transactions require:");
-                println!("    1. Transaction construction with delta");
-                println!("    2. Zero-knowledge proof generation");
-                println!("    3. Submission to network");
+                let client = create_client(&keystore)?;
 
-                // Connect to testnet
-                let miden_node_url = "https://rpc.testnet.miden.io:443";
-                println!("\n  Connecting to Miden testnet: {}", miden_node_url);
+                // Connect to Miden testnet RPC
+                let miden_node_url = std::env::var("MIDEN_NODE_URL")
+                    .unwrap_or_else(|_| "https://rpc.testnet.miden.io:443".to_string());
+                println!("  Connecting to Miden node: {}", miden_node_url);
 
-                match MidenRpcClient::connect(miden_node_url.to_string()).await {
-                    Ok(mut rpc_client) => {
-                        println!("  ✓ Connected to Miden testnet");
-
-                        // Get the latest block reference for transaction context
-                        match rpc_client.get_block_header(None, false).await {
-                            Ok(response) => {
-                                if let Some(block_header) = response.block_header {
-                                    println!("  ✓ Got latest block: #{}", block_header.block_num);
-                                    // Block header fields available for transaction construction
-
-                                println!("\n  Transaction details:");
-                                println!("    • Account ID: {}", account_id);
-                                println!("    • Current nonce: {}", account.nonce());
-                                println!("    • New nonce: {}", updated_account.nonce());
-                                println!("    • Delta changes:");
-                                println!("      - Threshold: 2-of-2 → 3-of-3");
-                                println!("      - New cosigner at index 2");
-                                println!("    • New commitment: 0x{}", hex::encode(updated_account.commitment().as_bytes()));
-
-                                // Show authentication requirements
-                                println!("\n  Authentication requirements:");
-                                println!("    • Need 2 signatures (current threshold)");
-                                println!("    • Client 1 ✓ (has secret key)");
-                                println!("    • Client 2 ✓ (has secret key)");
-
-                                // Create example signatures
-                                let tx_message = updated_account.id().into_word();
-                                let client1_sig = client1_secret_key.sign(tx_message);
-                                let client2_sig = client2_secret_key.sign(tx_message);
-
-                                println!("\n  Generated signatures:");
-                                println!("    • Client 1: {}...", hex::encode(&client1_sig.to_bytes()[..32]));
-                                println!("    • Client 2: {}...", hex::encode(&client2_sig.to_bytes()[..32]));
-
-                                println!("\n  Full transaction flow would:");
-                                println!("    1. Create TransactionRequest with:");
-                                println!("       - Account state and delta");
-                                println!("       - Block reference #{}", block_header.block_num);
-                                println!("       - Authentication signatures");
-                                println!();
-                                println!("    2. Execute transaction kernel:");
-                                println!("       - Verify authentication (2-of-2 multisig)");
-                                println!("       - Apply delta to account state");
-                                println!("       - Update account commitment");
-                                println!();
-                                println!("    3. Generate zero-knowledge proof:");
-                                println!("       - Prove valid state transition");
-                                println!("       - Prove signature validity");
-                                println!("       - This is computationally expensive (~10-30 seconds)");
-                                println!();
-                                println!("    4. Submit proven transaction:");
-                                println!("       ```rust");
-                                println!("       let tx_id = rpc_client.submit_proven_transaction(");
-                                println!("           proven_tx");
-                                println!("       ).await?;");
-                                println!("       ```");
-
-                                    // Check if account exists on-chain (for demo purposes)
-                                    println!("\n  Checking if account exists on testnet...");
-                                    match rpc_client.get_account_commitment(&account_id).await {
-                                        Ok(commitment) => {
-                                            println!("    ✓ Account found on testnet");
-                                            println!("    On-chain commitment: {}", commitment);
-                                            println!("    Ready for transaction submission!");
-                                        }
-                                        Err(_) => {
-                                            println!("    ℹ Account not found on testnet");
-                                            println!("    Would need to be created first via faucet or note consumption");
-                                        }
-                                    }
-                                } else {
-                                    println!("  ✗ No block header returned");
-                                }
-                            }
-                            Err(e) => {
-                                println!("  ✗ Failed to get latest block: {}", e);
-                            }
-                        }
-
-                        println!("\n  PSM's value in this flow:");
-                        println!("    ✅ Delta validated BEFORE expensive proof generation");
-                        println!("    ✅ PSM signature provides validation evidence");
-                        println!("    ✅ Prevents wasted computation on invalid state changes");
-                        println!("    ✅ Enables secure multi-party coordination");
-                        println!("    ✅ The new 3-of-3 configuration is ready for on-chain submission");
+                let mut rpc_client = match MidenRpcClient::connect(miden_node_url.clone()).await {
+                    Ok(client) => {
+                        println!("  ✓ Connected to Miden testnet RPC");
+                        client
                     }
                     Err(e) => {
-                        println!("  ✗ Failed to connect to Miden testnet: {}", e);
+                        println!("  ✗ Failed to connect to Miden node: {}", e);
+                        println!("  Note: PSM validation still succeeded - transaction can be submitted when node is available");
+                        return Ok(());
                     }
+                };
+
+                // Get latest block info
+                let block_header = match rpc_client.get_block_header(None, false).await {
+                    Ok(response) => {
+                        if let Some(header) = response.block_header {
+                            println!("  ✓ Latest block: #{}", header.block_num);
+                            println!("    Timestamp: {}", header.timestamp);
+                            Some(header)
+                        } else {
+                            println!("  ✗ No block header in response");
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        println!("  ✗ Failed to get block header: {}", e);
+                        None
+                    }
+                };
+
+                if let Some(_block_header) = block_header {
+                    println!("\n  === Step 9: On-Chain Submission with miden-client ===");
+                    println!();
+                    println!("  Transaction is PSM-validated and ready for on-chain submission!");
+                    println!();
+                    println!("  To complete full on-chain submission using miden-client:");
+                    println!("  ───────────────────────────────────────────────────────────");
+                    println!();
+                    println!("  1. Setup miden-client:");
+                    println!("     ```rust");
+                    println!("     use miden_client::{{ClientBuilder, Endpoint}};");
+                    println!("     use miden_client::crypto::RpoRandomCoin;");
+                    println!();
+                    println!("     let endpoint = Endpoint::new(");
+                    println!("         \"https\".into(),");
+                    println!("         \"rpc.testnet.miden.io\".into(),");
+                    println!("         Some(443)");
+                    println!("     );");
+                    println!();
+                    println!("     let mut client = ClientBuilder::new()");
+                    println!("         .sqlite_store(\"/path/to/db\")");
+                    println!("         .tonic_rpc_client(&endpoint, Some(10_000))");
+                    println!("         .filesystem_keystore(\"/path/to/keys\")");
+                    println!("         .rng(Box::new(RpoRandomCoin::new(seed)))");
+                    println!("         .build()");
+                    println!("         .await?;");
+                    println!("     ```");
+                    println!();
+                    println!("  2. Deploy account on-chain (if new):");
+                    println!("     • New accounts must be deployed before transacting");
+                    println!("     • Use faucet or existing account to deploy");
+                    println!();
+                    println!("  3. Create and execute transaction:");
+                    println!("     ```rust");
+                    println!("     // Import PSM-validated account");
+                    println!("     client.import_account(&account, seed, &auth_info).await?;");
+                    println!();
+                    println!("     // Sync with network");
+                    println!("     client.sync_state().await?;");
+                    println!();
+                    println!("     // Build transaction with PSM signature in advice");
+                    println!("     let tx_request = TransactionRequest::new()");
+                    println!("         .with_custom_script(tx_script)");
+                    println!("         .with_advice_inputs(psm_sig_advice);");
+                    println!();
+                    println!("     // Execute (validates PSM sig in MASM)");
+                    println!("     let tx_result = client");
+                    println!("         .new_transaction(account_id, tx_request)");
+                    println!("         .await?;");
+                    println!("     ```");
+                    println!();
+                    println!("  4. Prove and submit (10-30 seconds):");
+                    println!("     ```rust");
+                    println!("     client.submit_transaction(tx_result).await?;");
+                    println!("     println!(\"✓ Transaction submitted to network!\");");
+                    println!("     ```");
+                    println!();
+                    println!("  ═══════════════════════════════════════════════");
+                    println!("  ✅ PSM Validation Complete!");
+                    println!("  ═══════════════════════════════════════════════");
+                    println!("  What we accomplished:");
+                    println!("  1. ✅ Created multisig account with PSM verification");
+                    println!("  2. ✅ PSM validated and signed TransactionSummary");
+                    println!("  3. ✅ Verified PSM signature locally");
+                    println!("  4. ✅ Connected to Miden testnet RPC");
+                    println!();
+                    println!("  Key Achievement:");
+                    println!("  PSM pre-validation prevents wasted computation!");
+                    println!("  Only valid transactions proceed to expensive proving.");
+                    println!();
+                    println!("  See ON_CHAIN_SUBMISSION.md for complete integration guide.");
+                    println!("  ═══════════════════════════════════════════════");
                 }
+
+                println!("\n=== PSM Multi-Client E2E Summary ===");
+                println!("✅ Account created with 2-of-2 multisig + PSM verification");
+                println!("✅ TransactionSummary created to add 3rd signer and update to 3-of-3");
+                println!("✅ PSM validated and signed the TX summary commitment");
+                println!("✅ Connected to Miden testnet RPC successfully");
+                println!("\nKey PSM Benefits Demonstrated:");
+                println!("• Pre-validation before expensive proof generation");
+                println!("• Multi-party coordination with signature verification");
+                println!("• State consistency across clients");
+                println!("• Ready for on-chain submission when needed");
             }
             Ok(false) => {
-                println!("  ✗ PSM server signature is INVALID");
+                println!("  ✗ PSM signature INVALID");
             }
             Err(e) => {
                 println!("  ✗ Signature verification error: {}", e);
