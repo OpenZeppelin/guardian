@@ -24,7 +24,6 @@ pub struct SessionState {
     pub account: Option<Account>,
     pub account_id: Option<AccountId>,
     pub user_secret_key: Option<SecretKey>,
-    pub user_pubkey_hex: Option<String>,
     pub user_commitment_hex: Option<String>,
     pub cosigner_commitments: Vec<String>,
     pub keystore: Arc<FilesystemKeyStore<StdRng>>,
@@ -53,7 +52,6 @@ impl SessionState {
             account: None,
             account_id: None,
             user_secret_key: None,
-            user_pubkey_hex: None,
             user_commitment_hex: None,
             cosigner_commitments: Vec::new(),
             keystore: Arc::new(keystore),
@@ -150,13 +148,6 @@ impl SessionState {
             .ok_or_else(|| "No keypair generated".to_string())
     }
 
-    pub fn get_pubkey_hex(&self) -> Result<&str, String> {
-        self.user_pubkey_hex
-            .as_ref()
-            .map(|s| s.as_str())
-            .ok_or_else(|| "No keypair generated".to_string())
-    }
-
     pub fn get_commitment_hex(&self) -> Result<&str, String> {
         self.user_commitment_hex
             .as_ref()
@@ -170,13 +161,7 @@ impl SessionState {
         self.account = Some(account);
     }
 
-    pub fn set_keypair(
-        &mut self,
-        pubkey_hex: String,
-        commitment_hex: String,
-        secret_key: SecretKey,
-    ) {
-        self.user_pubkey_hex = Some(pubkey_hex);
+    pub fn set_keypair(&mut self, commitment_hex: String, secret_key: SecretKey) {
         self.user_commitment_hex = Some(commitment_hex);
         self.user_secret_key = Some(secret_key);
     }

@@ -24,11 +24,11 @@ pub async fn action_generate_keypair(state: &mut SessionState) -> Result<(), Str
     print_waiting("Generating Falcon keypair");
 
     let keystore = state.get_keystore();
-    let (pubkey_hex, commitment_hex, secret_key) = generate_falcon_keypair(keystore)?;
+    let (commitment_hex, secret_key) = generate_falcon_keypair(keystore)?;
 
-    state.set_keypair(pubkey_hex.clone(), commitment_hex.clone(), secret_key);
+    state.set_keypair(commitment_hex.clone(), secret_key);
 
-    print_keypair_generated(&pubkey_hex, &commitment_hex);
+    print_keypair_generated(&commitment_hex);
     print_success("Keypair generated and added to keystore");
 
     Ok(())
@@ -55,45 +55,46 @@ pub async fn action_create_account(
     let mut cosigner_commitments = Vec::new();
 
     let user_commitment = state.get_commitment_hex()?;
-    let user_pubkey = state.get_pubkey_hex()?;
 
     cosigner_commitments.push(user_commitment.to_string());
 
-    println!("\nYour public key: {}", shorten_hex(user_pubkey));
-    println!(
-        "Your commitment (derived): {}",
-        shorten_hex(user_commitment)
-    );
-    println!(
-        "\nEnter public keys for other cosigners (commitments will be derived automatically):"
-    );
-
-    use crate::falcon::pubkey_to_commitment;
+    println!("\nYour commitment: {}", shorten_hex(user_commitment));
+    println!("\nEnter commitments for other cosigners:");
 
     for i in 1..num_cosigners {
-        let pubkey = prompt_input(editor, &format!("  Cosigner {} public key: ", i + 1))?;
+        let commitment = prompt_input(editor, &format!("  Cosigner {} commitment: ", i + 1))?;
 
-        // Validate public key format
-        hex::decode(pubkey.strip_prefix("0x").unwrap_or(&pubkey))
-            .map_err(|_| format!("Invalid public key hex for cosigner {}", i + 1))?;
+        // Validate commitment format (should be 32 bytes = 64 hex chars + optional 0x prefix)
+        let commitment_stripped = commitment.strip_prefix("0x").unwrap_or(&commitment);
+        if commitment_stripped.len() != 64 {
+            return Err(format!(
+                "Invalid commitment length for cosigner {}: expected 64 hex chars, got {}",
+                i + 1,
+                commitment_stripped.len()
+            ));
+        }
 
-        // Derive commitment from public key
-        let commitment = pubkey_to_commitment(&pubkey)?;
+        hex::decode(commitment_stripped)
+            .map_err(|_| format!("Invalid commitment hex for cosigner {}", i + 1))?;
 
-        println!("    Derived commitment: {}", shorten_hex(&commitment));
+        let commitment_with_prefix = if commitment.starts_with("0x") {
+            commitment
+        } else {
+            format!("0x{}", commitment)
+        };
 
-        cosigner_commitments.push(commitment);
+        cosigner_commitments.push(commitment_with_prefix);
     }
 
     let psm_client = state.get_psm_client_mut()?;
-    print_waiting("Fetching PSM server public key");
+    print_waiting("Fetching PSM server commitment");
 
-    let psm_pubkey_hex = psm_client
+    let psm_commitment_hex = psm_client
         .get_pubkey()
         .await
-        .map_err(|e| format!("Failed to get PSM pubkey: {}", e))?;
+        .map_err(|e| format!("Failed to get PSM commitment: {}", e))?;
 
-    println!("PSM Public Key: {}", shorten_hex(&psm_pubkey_hex));
+    println!("PSM Commitment: {}", shorten_hex(&psm_commitment_hex));
 
     print_waiting("Creating multisig account");
 
@@ -103,7 +104,7 @@ pub async fn action_create_account(
 
     let cosigner_refs: Vec<&str> = cosigner_commitments.iter().map(|s| s.as_str()).collect();
     let account =
-        create_multisig_psm_account(threshold, &cosigner_refs, &psm_pubkey_hex, init_seed);
+        create_multisig_psm_account(threshold, &cosigner_refs, &psm_commitment_hex, init_seed);
 
     print_waiting("Adding account to Miden client");
 
@@ -285,19 +286,28 @@ pub async fn action_add_cosigner(
 
     let prev_commitment = format!("0x{}", hex::encode(account.commitment().to_bytes()));
 
-    // Step 1: Prompt for new cosigner public key (derive commitment)
-    print_info("Enter the new cosigner's public key:");
-    let new_cosigner_pubkey_hex = prompt_input(editor, "  New cosigner public key: ")?;
+    // Step 1: Prompt for new cosigner commitment
+    print_info("Enter the new cosigner's commitment:");
+    let new_cosigner_commitment_hex = prompt_input(editor, "  New cosigner commitment: ")?;
 
-    // Derive commitment from public key
-    use crate::falcon::pubkey_to_commitment;
-    let new_cosigner_commitment_hex = pubkey_to_commitment(&new_cosigner_pubkey_hex)?;
+    // Validate commitment format
+    let commitment_stripped = new_cosigner_commitment_hex
+        .strip_prefix("0x")
+        .unwrap_or(&new_cosigner_commitment_hex);
+    if commitment_stripped.len() != 64 {
+        return Err(format!(
+            "Invalid commitment length: expected 64 hex chars, got {}",
+            commitment_stripped.len()
+        ));
+    }
+
+    let new_cosigner_commitment_hex = if new_cosigner_commitment_hex.starts_with("0x") {
+        new_cosigner_commitment_hex
+    } else {
+        format!("0x{}", new_cosigner_commitment_hex)
+    };
+
     let new_cosigner_commitment = commitment_from_hex(&new_cosigner_commitment_hex)?;
-
-    println!(
-        "  Derived commitment: {}",
-        shorten_hex(&new_cosigner_commitment_hex)
-    );
 
     // Get current cosigner commitments from storage
     let storage = account.storage();
@@ -412,9 +422,8 @@ pub async fn action_add_cosigner(
     let user_signature_raw = user_secret_key.sign(tx_summary_commitment);
     let user_commitment_hex = state.get_commitment_hex()?;
 
-    // Convert to AccountSignature and then to hex
-    let user_signature = AccountSignature::from(user_signature_raw);
-    let user_signature_hex = format!("0x{}", hex::encode(user_signature.to_bytes()));
+    // Store raw RpoFalconSignature (not AccountSignature) to avoid extra enum discriminant byte
+    let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
 
     use crate::pending_tx::PendingTransaction;
     use miden_client::Serializable;
@@ -434,15 +443,11 @@ pub async fn action_add_cosigner(
     // Only existing commitments need to sign (NOT the new cosigner being added)
     let signers_required_hex = existing_commitments_hex.clone();
 
-    // Store the new cosigner's public key for later use in configure_auth
-    let signer_pubkeys_hex = vec![new_cosigner_pubkey_hex];
-
     let pending_tx = PendingTransaction {
         tx_summary_json,
         tx_summary_commitment_hex: tx_summary_commitment_hex.clone(),
         new_threshold,
         signer_commitments_hex,
-        signer_pubkeys_hex, // Just the NEW cosigner's pubkey (we'll get existing ones from PSM later)
         signers_required_hex,
         salt_hex,
         psm_commitment_hex,
@@ -520,10 +525,9 @@ pub async fn action_sign_transaction(state: &mut SessionState) -> Result<(), Str
     let tx_summary_commitment = pending_tx.tx_summary_commitment();
     let user_signature_raw = user_secret_key.sign(tx_summary_commitment);
 
-    // Convert to AccountSignature and then to hex
+    // Store raw RpoFalconSignature (not AccountSignature) to avoid extra enum discriminant byte
     use miden_client::Serializable;
-    let user_signature = AccountSignature::from(user_signature_raw);
-    let user_signature_hex = format!("0x{}", hex::encode(user_signature.to_bytes()));
+    let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
 
     // Add signature to pending transaction
     state
@@ -630,10 +634,10 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let tx_summary_commitment_hex = &pending_tx.tx_summary_commitment_hex;
 
     // Add PSM signature
-    let psm_pubkey_hex = psm_client
+    let psm_commitment_hex = psm_client
         .get_pubkey()
         .await
-        .map_err(|e| format!("Failed to get PSM pubkey: {}", e))?;
+        .map_err(|e| format!("Failed to get PSM commitment: {}", e))?;
 
     let ack_sig_with_prefix = if ack_sig.starts_with("0x") {
         ack_sig.clone()
@@ -644,7 +648,7 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     // Verify PSM signature
     verify_commitment_signature(
         tx_summary_commitment_hex,
-        &psm_pubkey_hex,
+        &psm_commitment_hex,
         &ack_sig_with_prefix,
     )
     .map_err(|e| format!("PSM signature verification failed: {}", e))?;
@@ -750,37 +754,7 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let updated_account = miden_objects::account::Account::from_json(&state_json)
         .map_err(|e| format!("Failed to parse account: {}", e))?;
     let inspector = AccountInspector::new(&updated_account);
-    let updated_commitments = inspector.extract_cosigner_commitments();
-
-    // Build complete pubkey list: we only have the NEW cosigner's pubkey
-    // For a production system, we should retrieve this from PSM metadata or store it locally
-    // For the demo, we'll note that configure_auth will fail if we don't have all pubkeys
-
-    print_info(&format!(
-        "Note: This is a demo limitation - we only have the new cosigner's public key"
-    ));
-    print_info(&format!(
-        "In production, retrieve all public keys from PSM metadata or local storage"
-    ));
-    print_info(&format!("Skipping PSM auth config update for now"));
-
-    // TODO: Implement proper public key retrieval from PSM or local storage
-    // For now, comment out the configure_auth call
-    //
-    // use private_state_manager_client::{AuthConfig, MidenFalconRpoAuth};
-    // let auth_config = AuthConfig {
-    //     auth_type: Some(private_state_manager_client::auth_config::AuthType::MidenFalconRpo(
-    //         MidenFalconRpoAuth {
-    //             cosigner_pubkeys: all_cosigner_pubkeys,
-    //         }
-    //     )),
-    // };
-    //
-    // psm_client.configure_auth(&account_id, auth_config)
-    //     .await
-    //     .map_err(|e| format!("Failed to update PSM auth config: {}", e))?;
-    //
-    // print_success("PSM authentication configuration updated successfully");
+    let _updated_commitments = inspector.extract_cosigner_commitments();
 
     // Clear pending transaction
     state

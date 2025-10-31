@@ -10,9 +10,8 @@ pub struct PendingTransaction {
     pub tx_summary_json: String,
     pub tx_summary_commitment_hex: String,
     pub new_threshold: u64,
-    pub signer_commitments_hex: Vec<String>, // ALL commitments for final tx (including new cosigner)
-    pub signer_pubkeys_hex: Vec<String>, // ALL public keys (matching signer_commitments_hex order)
-    pub signers_required_hex: Vec<String>, // Only EXISTING commitments that need to sign
+    pub signer_commitments_hex: Vec<String>,
+    pub signers_required_hex: Vec<String>, 
     pub salt_hex: String,
     pub psm_commitment_hex: String,
     pub current_nonce: u64,

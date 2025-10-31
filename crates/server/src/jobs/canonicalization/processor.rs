@@ -119,6 +119,12 @@ impl DeltasProcessorBase {
 
         let candidates = filter.filter(&all_deltas);
 
+        tracing::info!(
+            account_id = %account_id,
+            candidates = candidates.len(),
+            "Processing delta candidates"
+        );
+
         for delta in candidates {
             let nonce = delta.nonce;
             if let Err(e) = self.process_candidate(delta).await {

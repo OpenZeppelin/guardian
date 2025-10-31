@@ -334,7 +334,7 @@ impl ServerBuilder {
             .map_err(|e| format!("Failed to create network client: {e}"))?;
 
         tracing::info!(
-            server_pubkey = %ack.pubkey(),
+            server_commitment = %ack.commitment(),
             "Server acknowledgement key initialized"
         );
 

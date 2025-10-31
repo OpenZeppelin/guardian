@@ -39,7 +39,7 @@ pub fn print_account_info(account: &Account) {
     print_section("Account Information");
     println!(
         "  Account ID:     {}",
-        shorten_hex(&account.id().to_string())
+        &account.id().to_hex()
     );
     println!("  Account Type:   {:?}", account.account_type());
     println!("  Nonce:          {}", account.nonce());
@@ -67,9 +67,25 @@ pub fn print_storage_overview(account: &Account) {
         Err(_) => println!("  Slot 0: Not set"),
     }
 
-    match storage.get_item(1) {
-        Ok(_) => println!("  Slot 1: Cosigner Public Keys (map)"),
-        Err(_) => println!("  Slot 1: Not set"),
+    println!("  Slot 1: Cosigner Commitments");
+
+    // Read the multisig config to know how many cosigners to look for
+    if let Ok(config_word) = storage.get_item(0) {
+        let num_cosigners = config_word[1].as_int();
+
+        for i in 0..num_cosigners {
+            match storage.get_map_item(1, Word::from([i as u32, 0, 0, 0])) {
+                Ok(commitment_word) => {
+                    let hex = format_word_as_hex(&commitment_word);
+                    println!("    [{}] {}", i, shorten_hex(&hex));
+                }
+                Err(_) => {
+                    println!("    [{}] (not set)", i);
+                }
+            }
+        }
+    } else {
+        println!("    (map not accessible)");
     }
 
     println!("  Slot 2: Executed Transactions (map)");
@@ -83,12 +99,12 @@ pub fn print_storage_overview(account: &Account) {
         Err(_) => println!("  Slot 4: Not set"),
     }
 
-    match storage.get_item(5) {
+    match storage.get_map_item(5, Word::from([0u32, 0, 0, 0])) {
         Ok(word) => {
             let hex = format_word_as_hex(&word);
-            println!("  Slot 5: PSM Public Key ({})", shorten_hex(&hex));
+            println!("  Slot 5: PSM Commitment ({})", shorten_hex(&hex));
         }
-        Err(_) => println!("  Slot 5: Not set"),
+        Err(_) => println!("  Slot 5: PSM Commitment (not set)"),
     }
 }
 
@@ -114,11 +130,11 @@ pub fn print_connection_status(psm_connected: bool, miden_connected: bool) {
     println!("  Miden Node:   {}", miden_status);
 }
 
-pub fn print_keypair_generated(pubkey_hex: &str, commitment_hex: &str) {
+pub fn print_keypair_generated(commitment_hex: &str) {
     print_section("Keypair Generated");
-    print_full_hex("  Public Key", pubkey_hex);
     print_full_hex("  Commitment", commitment_hex);
-    println!("\n  Note: Save these values for later reference");
+    println!("\n  Note: Save this commitment for later reference");
+    println!("  Share this commitment with other cosigners when creating multisig accounts");
 }
 
 pub fn print_menu_header() {
