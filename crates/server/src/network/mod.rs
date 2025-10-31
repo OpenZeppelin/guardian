@@ -1,6 +1,6 @@
 pub mod miden;
 
-use crate::metadata::auth::{Auth, Credentials};
+use crate::metadata::auth::Credentials;
 use async_trait::async_trait;
 
 #[async_trait]
@@ -50,12 +50,6 @@ pub trait NetworkClient: Send + Sync {
         state_json: &serde_json::Value,
         credential: &Credentials,
     ) -> Result<(), String>;
-
-    /// Determine if account auth should be updated given the state
-    async fn should_update_auth(
-        &mut self,
-        state_json: &serde_json::Value,
-    ) -> Result<Option<Auth>, String>;
 }
 
 /// Network type

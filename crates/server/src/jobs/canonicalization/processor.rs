@@ -224,31 +224,8 @@ impl DeltasProcessorBase {
             .await
             .map_err(|e| PsmError::StorageError(format!("Failed to update account state: {e}")))?;
 
-        let new_auth = {
-            let mut client = self.state.network_client.lock().await;
-            client
-                .should_update_auth(&new_state_json)
-                .await
-                .map_err(|e| PsmError::StorageError(format!("Failed to check auth update: {e}")))?
-        };
-
-        if let Some(new_auth) = new_auth {
-            tracing::debug!(
-                account_id = %delta.account_id,
-                "Syncing cosigner public keys from on-chain storage"
-            );
-
-            self.state
-                .metadata
-                .update_auth(&delta.account_id, new_auth, &now)
-                .await
-                .map_err(|e| PsmError::StorageError(format!("Failed to update auth: {e}")))?;
-
-            tracing::debug!(
-                account_id = %delta.account_id,
-                "Metadata cosigner public keys synced with storage"
-            );
-        }
+        // Note: Auth config updates must be done explicitly via configure_account
+        // to avoid side-effects and ensure proper validation
 
         let mut canonical_delta = delta.clone();
         canonical_delta.status = DeltaStatus::canonical(now);

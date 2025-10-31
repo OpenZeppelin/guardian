@@ -39,6 +39,10 @@ async fn main() {
     let signer = MidenFalconRpoSigner::new(keystore_path).expect("Failed to initialize signer");
     let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
 
+    // Canonicalization config for local development 
+    // with 30 seconds check interval and 60 seconds delay
+    let canonicalization_config = CanonicalizationConfig::new(60, 30);
+
     let cors_layer = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -47,7 +51,7 @@ async fn main() {
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(NetworkType::MidenLocal)
-        .with_canonicalization(Some(CanonicalizationConfig::default()))
+        .with_canonicalization(Some(canonicalization_config))
         .storage(storage_registry)
         .metadata(Arc::new(metadata))
         .ack(ack)

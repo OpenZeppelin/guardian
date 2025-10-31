@@ -18,7 +18,6 @@ pub struct MockNetworkClient {
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<StdResult<(serde_json::Value, String), String>>>>,
-    pub should_update_auth_responses: Arc<StdMutex<Vec<StdResult<Option<Auth>, String>>>>,
 }
 
 impl MockNetworkClient {
@@ -57,14 +56,6 @@ impl MockNetworkClient {
         response: StdResult<(serde_json::Value, String), String>,
     ) -> Self {
         self.apply_delta_responses.lock().unwrap().push(response);
-        self
-    }
-
-    pub fn with_should_update_auth(self, response: StdResult<Option<Auth>, String>) -> Self {
-        self.should_update_auth_responses
-            .lock()
-            .unwrap()
-            .push(response);
         self
     }
 
@@ -159,17 +150,6 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
-    }
-
-    async fn should_update_auth(
-        &mut self,
-        _state_json: &serde_json::Value,
-    ) -> StdResult<Option<Auth>, String> {
-        self.should_update_auth_responses
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap_or(Ok(None))
     }
 }
 

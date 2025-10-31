@@ -123,13 +123,6 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client
             .validate_credential(state_json, credential)
     }
-
-    async fn should_update_auth(
-        &mut self,
-        state_json: &serde_json::Value,
-    ) -> Result<Option<Auth>, String> {
-        self.miden_client.should_update_auth(state_json).await
-    }
 }
 
 pub async fn create_test_app_state() -> AppState {

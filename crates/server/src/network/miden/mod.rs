@@ -1,6 +1,6 @@
 pub mod account_inspector;
 
-use crate::metadata::auth::{Auth, Credentials};
+use crate::metadata::auth::Credentials;
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
@@ -215,24 +215,6 @@ impl NetworkClient for MidenNetworkClient {
                 "Credential public key commitment '{}...' not found in account storage",
                 &commitment_hex[..18]
             ))
-        }
-    }
-
-    async fn should_update_auth(
-        &mut self,
-        state_json: &serde_json::Value,
-    ) -> Result<Option<Auth>, String> {
-        let account = Account::from_json(state_json)?;
-        let inspector = MidenAccountInspector::new(&account);
-
-        let pubkeys = inspector.extract_slot_1_pubkeys();
-
-        if pubkeys.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Auth::MidenFalconRpo {
-                cosigner_pubkeys: pubkeys,
-            }))
         }
     }
 }
