@@ -15,7 +15,7 @@ use crate::display::{
     shorten_hex,
 };
 use crate::falcon::generate_falcon_keypair;
-use crate::helpers::{add_account_and_sync, commitment_from_hex};
+use crate::helpers::commitment_from_hex;
 use crate::menu::prompt_input;
 use crate::multisig::create_multisig_psm_account;
 use crate::state::SessionState;
@@ -108,10 +108,9 @@ pub async fn action_create_account(
 
     print_waiting("Adding account to Miden client");
 
-    let miden_client = state.get_miden_client_mut()?;
-    add_account_and_sync(miden_client, &account).await?;
-
     let account_id = account.id();
+    let miden_client = state.get_miden_client_mut()?;
+    miden_client.add_account(&account, false).await.map_err(|e| e.to_string())?;
     state.set_account(account);
     state.cosigner_commitments = cosigner_commitments;
 
@@ -222,7 +221,7 @@ pub async fn action_pull_from_psm(
     print_waiting("Adding account to Miden client");
 
     let miden_client = state.get_miden_client_mut()?;
-    add_account_and_sync(miden_client, &account).await?;
+    miden_client.add_account(&account, false).await.map_err(|e| e.to_string())?;
 
     // Extract commitments from account storage so they're available for add_cosigner
     use crate::account_inspector::AccountInspector;
@@ -383,6 +382,9 @@ pub async fn action_add_cosigner(
     print_waiting("Simulating transaction to get summary");
 
     let miden_client = state.get_miden_client_mut()?;
+
+    miden_client.sync_state().await.map_err(|e| format!("Failed to sync client state: {}", e))?;
+
     let tx_summary = match miden_client
         .new_transaction(account_id, tx_request.clone())
         .await
@@ -694,14 +696,6 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     ));
 
     // Step 3: Build final transaction and execute on-chain
-    print_waiting("Syncing client state before proving");
-
-    let miden_client = state.get_miden_client_mut()?;
-    miden_client
-        .sync_state()
-        .await
-        .map_err(|e| format!("Failed to sync client state: {}", e))?;
-
     print_waiting("Building final transaction request");
 
     use crate::multisig::build_update_signers_transaction_request;
@@ -716,7 +710,8 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     )
     .map_err(|e| format!("Failed to build final transaction request: {}", e))?;
 
-    print_waiting("Proving transaction locally");
+    print_waiting("Executing transaction locally");
+    let miden_client = state.get_miden_client_mut()?;
     let tx_result = miden_client
         .new_transaction(account_id, final_tx_request)
         .await
@@ -725,11 +720,11 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let new_nonce = tx_result.account_delta().nonce_delta().as_int();
 
     print_success(&format!(
-        "✓ Transaction proven! New nonce: {}",
+        "✓ Transaction executed! New nonce: {}",
         new_nonce
     ));
 
-    print_waiting("Submitting transaction to Miden node");
+    print_waiting("Poving and submitting transaction to Miden node");
     miden_client.submit_transaction(tx_result.clone()).await.map_err(|e| format!("Failed to submit transaction: {}", e))?;
 
     print_success("✓ Transaction submitted to Miden node!");
