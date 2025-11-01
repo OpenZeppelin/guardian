@@ -39,15 +39,39 @@ impl CandidateFilter for TimeBasedFilter {
 impl TimeBasedFilter {
     fn is_ready_candidate(&self, delta: &DeltaObject) -> bool {
         if !delta.status.is_candidate() {
+            tracing::debug!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                status = ?delta.status,
+                "Delta not in candidate status"
+            );
             return false;
         }
 
         let candidate_at_str = delta.status.timestamp();
         if let Ok(candidate_at) = DateTime::parse_from_rfc3339(candidate_at_str) {
             let elapsed = self.now.signed_duration_since(candidate_at);
-            return elapsed.num_seconds() >= self.config.delay_seconds as i64;
+            let is_ready = elapsed.num_seconds() >= self.config.delay_seconds as i64;
+
+            tracing::debug!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                candidate_at = %candidate_at_str,
+                elapsed_seconds = elapsed.num_seconds(),
+                delay_seconds = self.config.delay_seconds,
+                is_ready = is_ready,
+                "Candidate eligibility check"
+            );
+
+            return is_ready;
         }
 
+        tracing::warn!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            timestamp = %candidate_at_str,
+            "Failed to parse candidate timestamp"
+        );
         false
     }
 }
@@ -117,10 +141,17 @@ impl DeltasProcessorBase {
             .await
             .map_err(|e| PsmError::StorageError(format!("Failed to pull deltas: {e}")))?;
 
+        tracing::debug!(
+            account_id = %account_id,
+            total_deltas = all_deltas.len(),
+            "Pulled deltas from storage"
+        );
+
         let candidates = filter.filter(&all_deltas);
 
         tracing::info!(
             account_id = %account_id,
+            total_deltas = all_deltas.len(),
             candidates = candidates.len(),
             "Processing delta candidates"
         );

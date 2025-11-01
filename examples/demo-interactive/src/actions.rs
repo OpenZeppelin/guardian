@@ -694,6 +694,14 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     ));
 
     // Step 3: Build final transaction and execute on-chain
+    print_waiting("Syncing client state before proving");
+
+    let miden_client = state.get_miden_client_mut()?;
+    miden_client
+        .sync_state()
+        .await
+        .map_err(|e| format!("Failed to sync client state: {}", e))?;
+
     print_waiting("Building final transaction request");
 
     use crate::multisig::build_update_signers_transaction_request;
@@ -708,9 +716,7 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     )
     .map_err(|e| format!("Failed to build final transaction request: {}", e))?;
 
-    print_waiting("Executing transaction on-chain");
-
-    let miden_client = state.get_miden_client_mut()?;
+    print_waiting("Proving transaction locally");
     let tx_result = miden_client
         .new_transaction(account_id, final_tx_request)
         .await
@@ -719,42 +725,28 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let new_nonce = tx_result.account_delta().nonce_delta().as_int();
 
     print_success(&format!(
-        "✓ Transaction finalized! New nonce: {}",
+        "✓ Transaction proven! New nonce: {}",
         new_nonce
     ));
+
+    print_waiting("Submitting transaction to Miden node");
+    miden_client.submit_transaction(tx_result.clone()).await.map_err(|e| format!("Failed to submit transaction: {}", e))?;
+
+    print_success("✓ Transaction submitted to Miden node!");
+
     print_info(&format!(
         "New configuration: {}-of-{}",
         pending_tx.new_threshold,
         pending_tx.signer_commitments_hex.len()
     ));
 
-    // Step 4: Update PSM auth configuration with new cosigner list
-    print_waiting("Updating PSM authentication configuration");
+    // Apply the account delta to update local state
+    print_waiting("Updating local account state");
 
-    // First, get current public keys from PSM metadata
-    let psm_client = state.get_psm_client_mut()?;
-    let state_response = psm_client
-        .get_state(&account_id)
-        .await
-        .map_err(|e| format!("Failed to get PSM state: {}", e))?;
+    let current_account = state.get_account_mut()?;
+    current_account.apply_delta(tx_result.account_delta()).map_err(|e| format!("Failed to apply account delta: {}", e))?;
 
-    // Extract current public keys from PSM response (if available in metadata)
-    // Note: PSM doesn't expose metadata in get_state, so we'll need to build the list ourselves
-    // For now, we'll use a simpler approach: extract all commitments from the updated account state
-    // and match them with the public keys we have
-
-    // Parse the updated account state from PSM
-    let state_json: serde_json::Value =
-        serde_json::from_str(&state_response.state.unwrap().state_json)
-            .map_err(|e| format!("Failed to parse state JSON: {}", e))?;
-
-    // Extract updated commitments from storage slot 1
-    use crate::account_inspector::AccountInspector;
-    use private_state_manager_shared::FromJson;
-    let updated_account = miden_objects::account::Account::from_json(&state_json)
-        .map_err(|e| format!("Failed to parse account: {}", e))?;
-    let inspector = AccountInspector::new(&updated_account);
-    let _updated_commitments = inspector.extract_cosigner_commitments();
+    print_success("Local account state updated");
 
     // Clear pending transaction
     state
@@ -763,7 +755,6 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
         .map_err(|e| format!("Failed to clear pending transaction: {}", e))?;
 
     print_info("Pending transaction cleared");
-    print_info("Note: Use 'Pull deltas from PSM' or sync with node to get updated account state");
 
     Ok(())
 }

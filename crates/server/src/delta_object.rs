@@ -113,3 +113,36 @@ impl<'de> Deserialize<'de> for DeltaObject {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_delta_status_deserialization() {
+        let json = r#"{"status":"candidate","timestamp":"2025-10-31T21:03:57.489548+00:00"}"#;
+        let status: DeltaStatus = serde_json::from_str(json).unwrap();
+        assert!(status.is_candidate());
+        assert_eq!(status.timestamp(), "2025-10-31T21:03:57.489548+00:00");
+    }
+
+    #[test]
+    fn test_delta_object_deserialization() {
+        let json = r#"{
+            "account_id": "0x2f02fa4c9e787b101bf02bc266db39",
+            "nonce": 0,
+            "prev_commitment": "0xdc2820847638d1f15f174ea0657e3228e5b7774be44be1e608e4c64d92eaaaeb",
+            "new_commitment": "0x8fa68eabc9817e17900a7f1f705c1ecdeef6ab64c15ca1b66447272fb8fa49b2",
+            "delta_payload": {},
+            "ack_sig": null,
+            "status": {
+                "status": "candidate",
+                "timestamp": "2025-10-31T21:03:57.489548+00:00"
+            }
+        }"#;
+        
+        let delta: DeltaObject = serde_json::from_str(json).unwrap();
+        assert_eq!(delta.nonce, 0);
+        assert!(delta.status.is_candidate());
+    }
+}
