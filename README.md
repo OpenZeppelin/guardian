@@ -10,8 +10,10 @@ See the [Specification](spec/index.md) for an overview of the system design. It 
 
 - **[crates/server](crates/server/README.md)** - Server for managing private account states and deltas
   - Reproducible builds for binary verification and TEE deployment
-- **crates/client** - Client side SDK
-- **crates/shared** - Shared types and utilities
+- **[crates/client](crates/client/README.md)** - Client SDK for interacting with the PSM server
+- **[crates/shared](crates/shared/README.md)** - Shared types and utilities
+- **[crates/miden-rpc-client](crates/miden-rpc-client/README.md)** - Lightweight wrapper around Miden node RPC API - inspired in `miden-client` implementation.
+- **[crates/miden-keystore](crates/miden-keystore/README.md)** - Keystore implementation for Miden cryptographic keys - inspired in `miden-client` implementation.
 
 ### Quick Start
 
