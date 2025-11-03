@@ -1,6 +1,7 @@
 use miden_client::ClientError;
 use miden_objects::account::Signature as AccountSignature;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
+use miden_objects::utils::Serializable;
 use miden_objects::{Felt, Word};
 use private_state_manager_client::{
     verify_commitment_signature, AuthConfig, MidenFalconRpoAuth, ToJson,
@@ -15,7 +16,7 @@ use crate::display::{
     shorten_hex,
 };
 use crate::falcon::generate_falcon_keypair;
-use crate::helpers::{add_account_and_sync, commitment_from_hex};
+use crate::helpers::commitment_from_hex;
 use crate::menu::prompt_input;
 use crate::multisig::create_multisig_psm_account;
 use crate::state::SessionState;
@@ -108,10 +109,15 @@ pub async fn action_create_account(
 
     print_waiting("Adding account to Miden client");
 
-    let miden_client = state.get_miden_client_mut()?;
-    add_account_and_sync(miden_client, &account).await?;
-
     let account_id = account.id();
+    let miden_client = state.get_miden_client_mut()?;
+    miden_client
+        .add_account(&account, false)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    miden_client.sync_state().await.map_err(|e| format!("Failed to sync client state: {}", e))?;
+
     state.set_account(account);
     state.cosigner_commitments = cosigner_commitments;
 
@@ -222,7 +228,10 @@ pub async fn action_pull_from_psm(
     print_waiting("Adding account to Miden client");
 
     let miden_client = state.get_miden_client_mut()?;
-    add_account_and_sync(miden_client, &account).await?;
+    miden_client
+        .add_account(&account, false)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Extract commitments from account storage so they're available for add_cosigner
     use crate::account_inspector::AccountInspector;
@@ -284,7 +293,7 @@ pub async fn action_add_cosigner(
     let account_id = account.id();
     let current_nonce = account.nonce().as_int();
 
-    let prev_commitment = format!("0x{}", hex::encode(account.commitment().to_bytes()));
+    let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
 
     // Step 1: Prompt for new cosigner commitment
     print_info("Enter the new cosigner's commitment:");
@@ -383,6 +392,12 @@ pub async fn action_add_cosigner(
     print_waiting("Simulating transaction to get summary");
 
     let miden_client = state.get_miden_client_mut()?;
+
+    miden_client
+        .sync_state()
+        .await
+        .map_err(|e| format!("Failed to sync client state: {}", e))?;
+
     let tx_summary = match miden_client
         .new_transaction(account_id, tx_request.clone())
         .await
@@ -407,7 +422,7 @@ pub async fn action_add_cosigner(
     let tx_summary_json = serde_json::to_string(&tx_summary.to_json())
         .map_err(|e| format!("Failed to serialize tx summary: {}", e))?;
     let tx_summary_commitment = tx_summary.to_commitment();
-    let tx_summary_commitment_hex = format!("0x{}", hex::encode(tx_summary_commitment.to_bytes()));
+    let tx_summary_commitment_hex = format!("0x{}", hex::encode(tx_summary_commitment.as_bytes()));
 
     // Get PSM commitment for later
     let psm_client = state.get_psm_client_mut()?;
@@ -708,8 +723,7 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     )
     .map_err(|e| format!("Failed to build final transaction request: {}", e))?;
 
-    print_waiting("Executing transaction on-chain");
-
+    print_waiting("Executing transaction locally");
     let miden_client = state.get_miden_client_mut()?;
     let tx_result = miden_client
         .new_transaction(account_id, final_tx_request)
@@ -718,43 +732,31 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
 
     let new_nonce = tx_result.account_delta().nonce_delta().as_int();
 
-    print_success(&format!(
-        "✓ Transaction finalized! New nonce: {}",
-        new_nonce
-    ));
+    print_success(&format!("✓ Transaction executed! New nonce: {}", new_nonce));
+
+    print_waiting("Proving and submitting transaction to Miden node");
+    miden_client
+        .submit_transaction(tx_result.clone())
+        .await
+        .map_err(|e| format!("Failed to submit transaction: {}", e))?;
+
+    print_success("✓ Transaction submitted to Miden node!");
+
     print_info(&format!(
         "New configuration: {}-of-{}",
         pending_tx.new_threshold,
         pending_tx.signer_commitments_hex.len()
     ));
 
-    // Step 4: Update PSM auth configuration with new cosigner list
-    print_waiting("Updating PSM authentication configuration");
+    // Apply the account delta to update local state
+    print_waiting("Updating local account state");
 
-    // First, get current public keys from PSM metadata
-    let psm_client = state.get_psm_client_mut()?;
-    let state_response = psm_client
-        .get_state(&account_id)
-        .await
-        .map_err(|e| format!("Failed to get PSM state: {}", e))?;
+    let current_account = state.get_account_mut()?;
+    current_account
+        .apply_delta(tx_result.account_delta())
+        .map_err(|e| format!("Failed to apply account delta: {}", e))?;
 
-    // Extract current public keys from PSM response (if available in metadata)
-    // Note: PSM doesn't expose metadata in get_state, so we'll need to build the list ourselves
-    // For now, we'll use a simpler approach: extract all commitments from the updated account state
-    // and match them with the public keys we have
-
-    // Parse the updated account state from PSM
-    let state_json: serde_json::Value =
-        serde_json::from_str(&state_response.state.unwrap().state_json)
-            .map_err(|e| format!("Failed to parse state JSON: {}", e))?;
-
-    // Extract updated commitments from storage slot 1
-    use crate::account_inspector::AccountInspector;
-    use private_state_manager_shared::FromJson;
-    let updated_account = miden_objects::account::Account::from_json(&state_json)
-        .map_err(|e| format!("Failed to parse account: {}", e))?;
-    let inspector = AccountInspector::new(&updated_account);
-    let _updated_commitments = inspector.extract_cosigner_commitments();
+    print_success("Local account state updated");
 
     // Clear pending transaction
     state
@@ -763,7 +765,6 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
         .map_err(|e| format!("Failed to clear pending transaction: {}", e))?;
 
     print_info("Pending transaction cleared");
-    print_info("Note: Use 'Pull deltas from PSM' or sync with node to get updated account state");
 
     Ok(())
 }

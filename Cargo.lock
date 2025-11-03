@@ -2881,7 +2881,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "psm-demo-interactive"
+name = "psm-demo"
 version = "0.1.0"
 dependencies = [
  "base64",

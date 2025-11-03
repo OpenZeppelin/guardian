@@ -91,7 +91,17 @@ pub fn create_multisig_psm_account(
     let slot_1 = StorageSlot::Map(client_pubkeys_map);
 
     let slot_2 = StorageSlot::Map(StorageMap::new());
-    let slot_3 = StorageSlot::Map(StorageMap::new());
+
+    let mut proc_thresholds_map = StorageMap::new();
+    // Seed with a sentinel so the map’s root differs from the empty-map root used elsewhere.
+    // The sentinel key/value sit outside the real procedure-root space and never get read.
+    proc_thresholds_map
+        .insert(
+            Word::from([u32::MAX, u32::MAX, u32::MAX, u32::MAX]),
+            Word::from([1u32, 0, 0, 0]),
+        )
+        .expect("procedure threshold sentinel");
+    let slot_3 = StorageSlot::Map(proc_thresholds_map);
     let slot_4 = StorageSlot::Value(Word::from([1u32, 0, 0, 0]));
 
     let mut psm_key_map = StorageMap::new();

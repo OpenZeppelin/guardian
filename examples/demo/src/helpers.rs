@@ -1,10 +1,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use miden_client::account::Account;
 use miden_client::crypto::RpoRandomCoin;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
-use miden_client::{Client, ClientError, Deserializable, ExecutionOptions, Serializable, Word};
+use miden_client::{Client, Deserializable, ExecutionOptions, Serializable, Word};
 use miden_client_sqlite_store::SqliteStore;
 use miden_objects::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
@@ -51,15 +50,6 @@ pub async fn create_miden_client(
     )
     .await
     .map_err(|err| format!("Failed to create Miden client: {err}"))
-}
-
-pub async fn add_account_and_sync(
-    client: &mut Client<()>,
-    account: &Account,
-) -> Result<(), ClientError> {
-    client.add_account(account, false).await?;
-    client.sync_state().await?;
-    Ok(())
 }
 
 pub fn format_word_as_hex(word: &Word) -> String {

@@ -116,8 +116,15 @@ pub fn create_multisig_psm_account(
     // Slot 2: Executed transactions map (empty)
     let slot_2 = StorageSlot::Map(StorageMap::new());
 
-    // Slot 3: Procedure thresholds map (empty)
-    let slot_3 = StorageSlot::Map(StorageMap::new());
+    // Slot 3: Procedure thresholds map seeded with sentinel so the root differs from slot 2
+    let mut proc_thresholds_map = StorageMap::new();
+    proc_thresholds_map
+        .insert(
+            Word::from([u32::MAX, u32::MAX, u32::MAX, u32::MAX]),
+            Word::from([1u32, 0, 0, 0]),
+        )
+        .expect("procedure threshold sentinel");
+    let slot_3 = StorageSlot::Map(proc_thresholds_map);
 
     // Slot 4: PSM selector [1,0,0,0] = ON
     let slot_4 = StorageSlot::Value(Word::from([1u32, 0, 0, 0]));

@@ -137,6 +137,12 @@ impl SessionState {
             .ok_or_else(|| "No account loaded".to_string())
     }
 
+    pub fn get_account_mut(&mut self) -> Result<&mut Account, String> {
+        self.account
+            .as_mut()
+            .ok_or_else(|| "No account loaded".to_string())
+    }
+
     pub fn get_account_id(&self) -> Result<AccountId, String> {
         self.account_id
             .ok_or_else(|| "No account ID set".to_string())

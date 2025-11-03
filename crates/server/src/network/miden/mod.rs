@@ -118,10 +118,35 @@ impl NetworkClient for MidenNetworkClient {
     ) -> Result<(serde_json::Value, String), String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let mut account = Account::from_json(prev_state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
+
+        let has_multisig_psm = inspector.has_multisig_psm_auth();
 
         account
             .apply_delta(&tx_summary.account_delta())
             .map_err(|e| format!("Failed to apply delta to account: {e}"))?;
+
+        if has_multisig_psm {
+            const EXECUTED_TXS_SLOT: u8 = 2;
+            const IS_EXECUTED_FLAG: [u32; 4] = [1, 0, 0, 0];
+
+            let tx_commitment = tx_summary.to_commitment();
+            let tx_commitment_word = tx_commitment.into();
+            let flag_word = miden_objects::Word::from(IS_EXECUTED_FLAG);
+
+            account
+                .storage_mut()
+                .set_map_item(EXECUTED_TXS_SLOT, tx_commitment_word, flag_word)
+                .map_err(|e| {
+                    format!("Failed to apply replay protection storage update: {e}")
+                })?;
+
+            tracing::info!(
+                account_id = %account.id().to_hex(),
+                tx_commitment = %format!("0x{}", hex::encode(tx_commitment.as_bytes())),
+                "Applied replay protection adjustment for multisig+PSM account"
+            );
+        }
 
         let new_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
         let new_state_json = account.to_json();
