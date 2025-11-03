@@ -3,6 +3,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![CLA Assistant](https://github.com/OpenZeppelin/private-state-manager/actions/workflows/cla.yml/badge.svg)](https://github.com/OpenZeppelin/private-state-manager/actions/workflows/cla.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/private-state-manager/badge)](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/private-state-manager)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11427/badge)](https://www.bestpractices.dev/projects/11427)
 
 Warning: This is a work in progress.
 
