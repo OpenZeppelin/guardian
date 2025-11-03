@@ -22,7 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
-tonic-reflection = "0.13"
+tonic-reflection = "0.14"
 prost = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
