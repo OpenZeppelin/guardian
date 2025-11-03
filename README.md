@@ -37,7 +37,15 @@ See the [Server README](crates/server/README.md) for detailed API documentation 
 
 ### Running
 
+#### Running with Cargo
+
+```bash
+cargo run --bin server
+```
+
 #### Running with Docker Compose
+
+WARNING: Using docker needs to set dependencies to specific versions to ensure reproducibility, otherwise it won't work. In developer environments we prefer pointing miden deps to `next` branch for keeping up to date with the latest changes.
 
 1. Copy `.env.example` to `.env`
 
