@@ -21,7 +21,7 @@ updates:
     schedule:
       interval: monthly
     groups:
-      doocker-deps:
+      docker-deps:
         patterns:
           - '*'
     commit-message:
@@ -33,7 +33,7 @@ updates:
     schedule:
       interval: monthly
     groups:
-      doocker-compose-deps:
+      docker-compose-deps:
         patterns:
           - '*'
     commit-message:
