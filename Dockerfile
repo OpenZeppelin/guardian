@@ -1,7 +1,7 @@
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.88@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 as builder
+FROM rust:1.89-bookworm@sha256:ea6c9bb3b27d84cdae28b291b93addb9b9d97fb83ddb2e514e1b67965a75575c as builder
 
 # Install protobuf compiler (pinned to specific version)
 RUN apt-get update && apt-get install -y \
@@ -18,8 +18,8 @@ ENV RUSTFLAGS="--remap-path-prefix /app=. --remap-path-prefix $HOME=~"
 COPY Cargo.toml Cargo.lock ./
 COPY rust-toolchain.toml ./
 
-# Copy all crates
 COPY crates ./crates
+COPY examples ./examples
 
 # Build for release (only server)
 RUN cargo build --release --package private-state-manager-server --bin server
