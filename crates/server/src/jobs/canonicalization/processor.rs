@@ -211,7 +211,16 @@ impl DeltasProcessorBase {
                 self.canonicalize_verified_delta(delta, new_state_json, new_commitment)
                     .await
             }
-            _ => self.discard_mismatched_delta(delta).await,
+            Err(e) => {
+                tracing::error!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %e,
+                    "Failed to verify delta"
+                );
+
+                Ok(())
+            }
         }
     }
 

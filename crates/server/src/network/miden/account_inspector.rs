@@ -79,6 +79,18 @@ impl<'a> MidenAccountInspector<'a> {
         let slot_1_pubkeys = self.extract_slot_1_pubkeys();
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
+
+    /// Check if the account uses multisig+PSM authentication
+    /// Returns true if slot 4 (PSM_SELECTOR_SLOT) is enabled (value = 1)
+    pub fn has_multisig_psm_auth(&self) -> bool {
+        const PSM_SELECTOR_SLOT: u8 = 4;
+
+        if let Ok(psm_selector) = self.account.storage().get_item(PSM_SELECTOR_SLOT) {
+            psm_selector == Word::from([1u32, 0, 0, 0])
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

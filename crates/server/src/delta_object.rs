@@ -140,7 +140,7 @@ mod tests {
                 "timestamp": "2025-10-31T21:03:57.489548+00:00"
             }
         }"#;
-        
+
         let delta: DeltaObject = serde_json::from_str(json).unwrap();
         assert_eq!(delta.nonce, 0);
         assert!(delta.status.is_candidate());

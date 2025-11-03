@@ -1,6 +1,7 @@
 use miden_client::ClientError;
 use miden_objects::account::Signature as AccountSignature;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
+use miden_objects::utils::Serializable;
 use miden_objects::{Felt, Word};
 use private_state_manager_client::{
     verify_commitment_signature, AuthConfig, MidenFalconRpoAuth, ToJson,
@@ -110,7 +111,13 @@ pub async fn action_create_account(
 
     let account_id = account.id();
     let miden_client = state.get_miden_client_mut()?;
-    miden_client.add_account(&account, false).await.map_err(|e| e.to_string())?;
+    miden_client
+        .add_account(&account, false)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    miden_client.sync_state().await.map_err(|e| format!("Failed to sync client state: {}", e))?;
+
     state.set_account(account);
     state.cosigner_commitments = cosigner_commitments;
 
@@ -221,7 +228,10 @@ pub async fn action_pull_from_psm(
     print_waiting("Adding account to Miden client");
 
     let miden_client = state.get_miden_client_mut()?;
-    miden_client.add_account(&account, false).await.map_err(|e| e.to_string())?;
+    miden_client
+        .add_account(&account, false)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Extract commitments from account storage so they're available for add_cosigner
     use crate::account_inspector::AccountInspector;
@@ -283,7 +293,7 @@ pub async fn action_add_cosigner(
     let account_id = account.id();
     let current_nonce = account.nonce().as_int();
 
-    let prev_commitment = format!("0x{}", hex::encode(account.commitment().to_bytes()));
+    let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
 
     // Step 1: Prompt for new cosigner commitment
     print_info("Enter the new cosigner's commitment:");
@@ -383,7 +393,10 @@ pub async fn action_add_cosigner(
 
     let miden_client = state.get_miden_client_mut()?;
 
-    miden_client.sync_state().await.map_err(|e| format!("Failed to sync client state: {}", e))?;
+    miden_client
+        .sync_state()
+        .await
+        .map_err(|e| format!("Failed to sync client state: {}", e))?;
 
     let tx_summary = match miden_client
         .new_transaction(account_id, tx_request.clone())
@@ -409,7 +422,7 @@ pub async fn action_add_cosigner(
     let tx_summary_json = serde_json::to_string(&tx_summary.to_json())
         .map_err(|e| format!("Failed to serialize tx summary: {}", e))?;
     let tx_summary_commitment = tx_summary.to_commitment();
-    let tx_summary_commitment_hex = format!("0x{}", hex::encode(tx_summary_commitment.to_bytes()));
+    let tx_summary_commitment_hex = format!("0x{}", hex::encode(tx_summary_commitment.as_bytes()));
 
     // Get PSM commitment for later
     let psm_client = state.get_psm_client_mut()?;
@@ -719,13 +732,13 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
 
     let new_nonce = tx_result.account_delta().nonce_delta().as_int();
 
-    print_success(&format!(
-        "✓ Transaction executed! New nonce: {}",
-        new_nonce
-    ));
+    print_success(&format!("✓ Transaction executed! New nonce: {}", new_nonce));
 
-    print_waiting("Poving and submitting transaction to Miden node");
-    miden_client.submit_transaction(tx_result.clone()).await.map_err(|e| format!("Failed to submit transaction: {}", e))?;
+    print_waiting("Proving and submitting transaction to Miden node");
+    miden_client
+        .submit_transaction(tx_result.clone())
+        .await
+        .map_err(|e| format!("Failed to submit transaction: {}", e))?;
 
     print_success("✓ Transaction submitted to Miden node!");
 
@@ -739,7 +752,9 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     print_waiting("Updating local account state");
 
     let current_account = state.get_account_mut()?;
-    current_account.apply_delta(tx_result.account_delta()).map_err(|e| format!("Failed to apply account delta: {}", e))?;
+    current_account
+        .apply_delta(tx_result.account_delta())
+        .map_err(|e| format!("Failed to apply account delta: {}", e))?;
 
     print_success("Local account state updated");
 

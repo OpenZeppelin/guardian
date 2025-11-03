@@ -37,10 +37,7 @@ pub fn print_info(message: &str) {
 
 pub fn print_account_info(account: &Account) {
     print_section("Account Information");
-    println!(
-        "  Account ID:     {}",
-        &account.id().to_hex()
-    );
+    println!("  Account ID:     {}", &account.id().to_hex());
     println!("  Account Type:   {:?}", account.account_type());
     println!("  Nonce:          {}", account.nonce());
 }
