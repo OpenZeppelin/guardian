@@ -67,28 +67,12 @@ In most networks, the nonce is an incremental counter that serves as a protectio
 
 ## Basic principles
 
-- Both State and Deltas are represented as generic JSON objects and completely agnostic of the underlying data model.
-- The state should never be forked or corrupted, each delta is validated against the previous state and (optionally) the network state.
-- The state must be protected against **external users**, only the account shareholders should be able to access the state.
-- The state must be protected against **internal users**, the state should be modified only applying valid deltas, that (optionally) can be verified against the network.
-- The state must be protected against the **Private State Manager server operator**, it will support running the server in a secure enclave, doing TLS termination inside the enclave + encrypted storage.
-- The implementation is very extensible in different dimensions:
- - The Network against which the state is validated (Miden, Ethereum, Bitcoin, etc.)
- - The underlying storage (filesystem, database, etc.)
- - The requests authentication (public/private keys, JWT etc.)
- - The acknowledgement (ack) signature scheme (falcon, ed25519, etc.)
+- Represent state and deltas as append-only, canonical records.
+- Preserve integrity: avoid forks, each delta references the prior commitment and is validated against prior state and, when applicable, external consensus layer.
+- Preserve privacy: only authorized account participants can read or mutate state.
+- Be consistent across interfaces: the same semantics apply regardless of the transport (HTTP or gRPC).
+- Be extensible: network, storage, authentication, and acknowledgement concerns are pluggable without changing core semantics.
 
-## Goals and non-goals
-
-- Goals
-  - Provide private, append-only, canonical state sync across devices.
-  - Support pluggable networks, storage backends, auth, and ack schemes.
-  - Offer consistent behavior across HTTP and gRPC APIs.
-  - Ensure robust integrity guarantees (no-fork, authenticated deltas).
-- Non-goals
-  - Arbitrary conflict resolution outside network rules.
-  - General-purpose database semantics (transactions, secondary indexes).
-  - Exposing private state to untrusted parties.
 
 ## Related documents
 
