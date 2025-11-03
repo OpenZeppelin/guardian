@@ -309,6 +309,7 @@ impl DeltasProcessorBase {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn discard_mismatched_delta(&self, delta: DeltaObject) -> Result<()> {
         tracing::warn!(
             account_id = %delta.account_id,

@@ -93,6 +93,7 @@ impl SessionState {
         self.user_secret_key.is_some()
     }
 
+    #[allow(dead_code)]
     pub fn get_psm_client(&self) -> Result<&PsmClient, String> {
         self.psm_client
             .as_ref()
@@ -119,6 +120,7 @@ impl SessionState {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_miden_client(&self) -> Result<&Client<()>, String> {
         self.miden_client
             .as_ref()
@@ -172,6 +174,7 @@ impl SessionState {
         self.user_secret_key = Some(secret_key);
     }
 
+    #[allow(dead_code)]
     pub fn get_data_dir(&self) -> PathBuf {
         self.temp_dir.path().to_path_buf()
     }

@@ -205,6 +205,7 @@ pub fn build_signature_advice_entry(
     (key, values)
 }
 
+#[allow(dead_code)]
 pub async fn execute_transaction_for_summary<AUTH>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
