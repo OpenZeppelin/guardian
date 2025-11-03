@@ -8,6 +8,13 @@ members = [
     "examples/rust",
     "examples/demo",
 ]
+default-members = [
+    "crates/shared",
+    "crates/client",
+    "crates/server",
+    "crates/miden-rpc-client",
+    "crates/miden-keystore",
+]
 resolver = "2"
 
 [workspace.package]
