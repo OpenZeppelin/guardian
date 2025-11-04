@@ -27,9 +27,13 @@ impl Auth {
             Auth::MidenFalconRpo {
                 cosigner_commitments,
             } => {
-                let (_pubkey, signature) = credentials
-                    .as_signature()
-                    .ok_or_else(|| "MidenFalconRpo requires signature credentials".to_string())?;
+                let (_pubkey, signature) = credentials.as_signature().ok_or_else(|| {
+                    tracing::error!(
+                        account_id = %account_id,
+                        "MidenFalconRpo requires signature credentials but got different type"
+                    );
+                    "MidenFalconRpo requires signature credentials".to_string()
+                })?;
 
                 miden_falcon_rpo::verify_request_signature(
                     account_id,
@@ -51,7 +55,10 @@ impl TryFrom<crate::api::grpc::state_manager::AuthConfig> for Auth {
             Some(auth_config::AuthType::MidenFalconRpo(miden_auth)) => Ok(Auth::MidenFalconRpo {
                 cosigner_commitments: miden_auth.cosigner_commitments,
             }),
-            None => Err("Auth type not specified".to_string()),
+            None => {
+                tracing::error!("Auth type not specified in AuthConfig");
+                Err("Auth type not specified".to_string())
+            }
         }
     }
 }

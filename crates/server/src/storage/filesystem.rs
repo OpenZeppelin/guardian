@@ -156,11 +156,10 @@ impl StorageBackend for FilesystemService {
         for filename in deltas_filenames {
             if let Some(nonce_str) = filename.strip_suffix(".json")
                 && let Ok(nonce) = nonce_str.parse::<u64>()
+                && nonce >= from_nonce
             {
-                if nonce >= from_nonce {
-                    let delta = self.pull_delta(account_id, nonce).await?;
-                    deltas.push(delta);
-                }
+                let delta = self.pull_delta(account_id, nonce).await?;
+                deltas.push(delta);
             }
         }
 

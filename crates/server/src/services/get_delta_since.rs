@@ -16,14 +16,18 @@ pub struct GetDeltaSinceResult {
     pub merged_delta: DeltaObject,
 }
 
+#[tracing::instrument(
+    skip(state, params),
+    fields(account_id = %params.account_id, from_nonce = params.from_nonce)
+)]
 pub async fn get_delta_since(
     state: &AppState,
     params: GetDeltaSinceParams,
 ) -> Result<GetDeltaSinceResult> {
     tracing::info!(
-        "Getting delta since: account_id={}, from_nonce={}",
-        params.account_id,
-        params.from_nonce
+        account_id = %params.account_id,
+        from_nonce = params.from_nonce,
+        "Getting delta since"
     );
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;

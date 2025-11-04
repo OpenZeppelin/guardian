@@ -33,6 +33,11 @@ impl MidenNetworkClient {
         let account = Account::from_json(state_json)?;
 
         if &account.id() != account_id {
+            tracing::error!(
+                expected = %account_id.to_hex(),
+                actual = %account.id().to_hex(),
+                "Account ID mismatch in state JSON"
+            );
             return Err(format!(
                 "Account ID mismatch: expected {}, got {}",
                 account_id.to_hex(),
@@ -51,8 +56,14 @@ impl NetworkClient for MidenNetworkClient {
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<String, String> {
-        let account_id = AccountId::from_hex(account_id)
-            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+        let account_id = AccountId::from_hex(account_id).map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Invalid Miden account ID format in get_state_commitment"
+            );
+            format!("Invalid Miden account ID format: {e}")
+        })?;
 
         let account = Self::construct_account_from_json(&account_id, state_json)?;
         let local_commitment = account.commitment();
@@ -66,8 +77,14 @@ impl NetworkClient for MidenNetworkClient {
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<(), String> {
-        let account_id = AccountId::from_hex(account_id)
-            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+        let account_id = AccountId::from_hex(account_id).map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Invalid Miden account ID format in verify_state"
+            );
+            format!("Invalid Miden account ID format: {e}")
+        })?;
 
         let account = Self::construct_account_from_json(&account_id, state_json)?;
         let local_commitment = account.commitment();
@@ -78,10 +95,21 @@ impl NetworkClient for MidenNetworkClient {
             .get_account_commitment(&account_id)
             .await
             .map_err(|e| {
+                tracing::error!(
+                    account_id = %account_id.to_hex(),
+                    error = %e,
+                    "Failed to fetch account commitment from Miden network"
+                );
                 format!("Failed to verify account '{account_id}' on Miden network: {e}")
             })?;
 
         if local_commitment_hex != on_chain_commitment {
+            tracing::error!(
+                account_id = %account_id.to_hex(),
+                local = %local_commitment_hex,
+                on_chain = %on_chain_commitment,
+                "Commitment mismatch during state verification"
+            );
             return Err(format!(
                 "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
             ));
@@ -103,6 +131,11 @@ impl NetworkClient for MidenNetworkClient {
         let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
 
         if current_commitment_hex != prev_commitment {
+            tracing::error!(
+                delta_prev_commitment = %prev_commitment,
+                state_commitment = %current_commitment_hex,
+                "Previous commitment mismatch in verify_delta"
+            );
             return Err(format!(
                 "Previous commitment mismatch: delta specifies {prev_commitment}, but current state has {current_commitment_hex}"
             ));
@@ -123,25 +156,36 @@ impl NetworkClient for MidenNetworkClient {
         let has_multisig_psm = inspector.has_multisig_psm_auth();
 
         account
-            .apply_delta(&tx_summary.account_delta())
-            .map_err(|e| format!("Failed to apply delta to account: {e}"))?;
+            .apply_delta(tx_summary.account_delta())
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %account.id().to_hex(),
+                    error = %e,
+                    "Failed to apply delta to account"
+                );
+                format!("Failed to apply delta to account: {e}")
+            })?;
 
         if has_multisig_psm {
             const EXECUTED_TXS_SLOT: u8 = 2;
             const IS_EXECUTED_FLAG: [u32; 4] = [1, 0, 0, 0];
 
             let tx_commitment = tx_summary.to_commitment();
-            let tx_commitment_word = tx_commitment.into();
             let flag_word = miden_objects::Word::from(IS_EXECUTED_FLAG);
 
             account
                 .storage_mut()
-                .set_map_item(EXECUTED_TXS_SLOT, tx_commitment_word, flag_word)
+                .set_map_item(EXECUTED_TXS_SLOT, tx_commitment, flag_word)
                 .map_err(|e| {
+                    tracing::error!(
+                        account_id = %account.id().to_hex(),
+                        error = %e,
+                        "Failed to apply replay protection storage update"
+                    );
                     format!("Failed to apply replay protection storage update: {e}")
                 })?;
 
-            tracing::info!(
+            tracing::debug!(
                 account_id = %account.id().to_hex(),
                 tx_commitment = %format!("0x{}", hex::encode(tx_commitment.as_bytes())),
                 "Applied replay protection adjustment for multisig+PSM account"
@@ -159,6 +203,7 @@ impl NetworkClient for MidenNetworkClient {
         delta_payloads: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         if delta_payloads.is_empty() {
+            tracing::error!("Attempted to merge empty delta list");
             return Err("Cannot merge empty delta list".to_string());
         }
 
@@ -168,6 +213,7 @@ impl NetworkClient for MidenNetworkClient {
             .collect::<Result<Vec<_>, _>>()?;
 
         if tx_summaries.is_empty() {
+            tracing::error!("No valid deltas to merge after parsing");
             return Err("No valid deltas to merge".to_string());
         }
 
@@ -182,14 +228,30 @@ impl NetworkClient for MidenNetworkClient {
             all_output_notes.extend(tx_summary.output_notes().iter().cloned());
             merged_account_delta
                 .merge(tx_summary.account_delta().clone())
-                .map_err(|e| format!("Failed to merge account deltas: {e}"))?;
+                .map_err(|e| {
+                    tracing::error!(
+                        error = %e,
+                        "Failed to merge account deltas"
+                    );
+                    format!("Failed to merge account deltas: {e}")
+                })?;
         }
 
         // Create aggregated InputNotes and OutputNotes
-        let aggregated_input_notes = InputNotes::new(all_input_notes)
-            .map_err(|e| format!("Failed to create aggregated input notes: {e}"))?;
-        let aggregated_output_notes = OutputNotes::new(all_output_notes)
-            .map_err(|e| format!("Failed to create aggregated output notes: {e}"))?;
+        let aggregated_input_notes = InputNotes::new(all_input_notes).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                "Failed to create aggregated input notes"
+            );
+            format!("Failed to create aggregated input notes: {e}")
+        })?;
+        let aggregated_output_notes = OutputNotes::new(all_output_notes).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                "Failed to create aggregated output notes"
+            );
+            format!("Failed to create aggregated output notes: {e}")
+        })?;
 
         // Use the salt from the last TransactionSummary
         // TODO: Maybe we should use a 0 salt to prevent confusions.
@@ -207,8 +269,14 @@ impl NetworkClient for MidenNetworkClient {
     }
 
     fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
-        AccountId::from_hex(account_id)
-            .map_err(|e| format!("Invalid Miden account ID format: {e}"))?;
+        AccountId::from_hex(account_id).map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Invalid Miden account ID format in validate_account_id"
+            );
+            format!("Invalid Miden account ID format: {e}")
+        })?;
         Ok(())
     }
 
@@ -220,14 +288,26 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let (credential_pubkey_hex, _signature) = credential
-            .as_signature()
-            .ok_or_else(|| "Invalid credential type".to_string())?;
+        let (credential_pubkey_hex, _signature) = credential.as_signature().ok_or_else(|| {
+            tracing::error!("Invalid credential type - expected signature");
+            "Invalid credential type".to_string()
+        })?;
 
-        let pubkey_bytes = hex::decode(&credential_pubkey_hex[2..])
-            .map_err(|e| format!("Failed to decode credential pubkey: {e}"))?;
-        let pubkey = PublicKey::read_from_bytes(&pubkey_bytes)
-            .map_err(|e| format!("Failed to deserialize credential pubkey: {e}"))?;
+        let pubkey_bytes = hex::decode(&credential_pubkey_hex[2..]).map_err(|e| {
+            tracing::error!(
+                pubkey = %credential_pubkey_hex,
+                error = %e,
+                "Failed to decode credential pubkey"
+            );
+            format!("Failed to decode credential pubkey: {e}")
+        })?;
+        let pubkey = PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                "Failed to deserialize credential pubkey"
+            );
+            format!("Failed to deserialize credential pubkey: {e}")
+        })?;
 
         // Compute the commitment to match against storage
         let commitment = pubkey.to_commitment();
@@ -236,6 +316,10 @@ impl NetworkClient for MidenNetworkClient {
         if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
         } else {
+            tracing::error!(
+                commitment = %commitment_hex,
+                "Credential public key commitment not found in account storage"
+            );
             Err(format!(
                 "Credential public key commitment '{}...' not found in account storage",
                 &commitment_hex[..18]

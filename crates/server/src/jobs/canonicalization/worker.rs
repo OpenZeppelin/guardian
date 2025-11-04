@@ -27,7 +27,7 @@ async fn run_worker(state: AppState) {
     loop {
         interval_timer.tick().await;
 
-        tracing::info!("Running canonicalization check");
+        tracing::debug!("Running canonicalization check");
 
         if let Err(e) = processor.process_all_accounts().await {
             tracing::error!(error = %e, "Canonicalization worker error");
