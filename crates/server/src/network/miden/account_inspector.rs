@@ -1,5 +1,5 @@
 use miden_objects::Word;
-use miden_objects::account::Account;
+use miden_objects::account::{Account, StorageSlot};
 use miden_objects::utils::Serializable;
 
 pub struct MidenAccountInspector<'a> {
@@ -80,16 +80,19 @@ impl<'a> MidenAccountInspector<'a> {
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account uses multisig+PSM authentication
-    /// Returns true if slot 4 (PSM_SELECTOR_SLOT) is enabled (value = 1)
-    pub fn has_multisig_psm_auth(&self) -> bool {
-        const PSM_SELECTOR_SLOT: u8 = 4;
+    /// Check if the account uses multisig executed transactions map
+    /// Returns true if slot 2 (EXECUTED_TXS_SLOT) is enabled (contains a map)
+    /// TODO: This is not robust enough! We should check for a metadata slot instead.
+    pub fn has_multisig_auth(&self) -> bool {
+        const EXECUTED_TXS_SLOT: usize = 2;
 
-        if let Ok(psm_selector) = self.account.storage().get_item(PSM_SELECTOR_SLOT) {
-            psm_selector == Word::from([1u32, 0, 0, 0])
-        } else {
-            false
-        }
+        matches!(
+            self.account
+                .storage()
+                .slots()
+                .get(EXECUTED_TXS_SLOT),
+            Some(StorageSlot::Map(_))
+        )
     }
 }
 
