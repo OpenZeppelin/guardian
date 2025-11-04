@@ -1700,13 +1700,13 @@ dependencies = [
  "miden-testing",
  "miden-tx",
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-build",
- "prost-types 0.13.5",
+ "prost-types",
  "protox 0.7.2",
  "rand 0.9.2",
  "thiserror 2.0.17",
- "tonic 0.13.1",
+ "tonic",
  "tonic-build",
  "tonic-health",
  "tonic-web-wasm-client",
@@ -1913,11 +1913,11 @@ dependencies = [
  "miden-node-utils",
  "miden-objects",
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-build",
  "protox 0.8.0",
  "thiserror 2.0.17",
- "tonic 0.13.1",
+ "tonic",
  "tonic-build",
  "url",
 ]
@@ -1929,7 +1929,7 @@ source = "git+https://github.com/0xMiden/miden-node.git?branch=next#80cb4a078997
 dependencies = [
  "fs-err",
  "miette",
- "prost 0.13.5",
+ "prost",
  "protox 0.8.0",
  "tonic-build",
 ]
@@ -1952,7 +1952,7 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "thiserror 2.0.17",
- "tonic 0.13.1",
+ "tonic",
  "tower-http",
  "tracing",
  "tracing-opentelemetry",
@@ -1967,7 +1967,7 @@ source = "git+https://github.com/0xMiden/miden-note-transport#bb1075155be757601d
 dependencies = [
  "fs-err",
  "miette",
- "prost 0.13.5",
+ "prost",
  "protox 0.8.0",
  "tonic-build",
 ]
@@ -2037,12 +2037,12 @@ dependencies = [
  "miden-objects",
  "miden-tx",
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-build",
  "protox 0.8.0",
  "thiserror 2.0.17",
  "tokio",
- "tonic 0.13.1",
+ "tonic",
  "tonic-build",
  "tonic-web-wasm-client",
 ]
@@ -2055,7 +2055,7 @@ dependencies = [
  "miden-node-proto",
  "miden-objects",
  "tokio",
- "tonic 0.13.1",
+ "tonic",
 ]
 
 [[package]]
@@ -2423,10 +2423,10 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "prost 0.13.5",
+ "prost",
  "thiserror 2.0.17",
  "tokio",
- "tonic 0.13.1",
+ "tonic",
 ]
 
 [[package]]
@@ -2437,8 +2437,8 @@ checksum = "2e046fd7660710fe5a05e8748e70d9058dc15c94ba914e7c4faa7c728f0e8ddc"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost 0.13.5",
- "tonic 0.13.1",
+ "prost",
+ "tonic",
 ]
 
 [[package]]
@@ -2660,14 +2660,14 @@ dependencies = [
  "miden-objects",
  "miden-rpc-client",
  "private-state-manager-shared",
- "prost 0.13.5",
+ "prost",
  "rand_chacha 0.9.0",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
- "tonic 0.13.1",
+ "tonic",
  "tonic-build",
 ]
 
@@ -2684,13 +2684,13 @@ dependencies = [
  "miden-objects",
  "miden-rpc-client",
  "private-state-manager-shared",
- "prost 0.13.5",
+ "prost",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
  "serde",
  "serde_json",
  "tokio",
- "tonic 0.13.1",
+ "tonic",
  "tonic-build",
  "tonic-reflection",
  "tower",
@@ -2756,17 +2756,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
 dependencies = [
  "bytes",
- "prost-derive 0.13.5",
-]
-
-[[package]]
-name = "prost"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7231bd9b3d3d33c86b58adbac74b5ec0ad9f496b19d22801d773636feaa95f3d"
-dependencies = [
- "bytes",
- "prost-derive 0.14.1",
+ "prost-derive",
 ]
 
 [[package]]
@@ -2782,8 +2772,8 @@ dependencies = [
  "once_cell",
  "petgraph",
  "prettyplease",
- "prost 0.13.5",
- "prost-types 0.13.5",
+ "prost",
+ "prost-types",
  "regex",
  "syn",
  "tempfile",
@@ -2803,19 +2793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prost-derive"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
-dependencies = [
- "anyhow",
- "itertools",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "prost-reflect"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2824,8 +2801,8 @@ dependencies = [
  "logos 0.14.4",
  "miette",
  "once_cell",
- "prost 0.13.5",
- "prost-types 0.13.5",
+ "prost",
+ "prost-types",
 ]
 
 [[package]]
@@ -2836,8 +2813,8 @@ checksum = "37587d5a8a1b3dc9863403d084fc2254b91ab75a702207098837950767e2260b"
 dependencies = [
  "logos 0.15.1",
  "miette",
- "prost 0.13.5",
- "prost-types 0.13.5",
+ "prost",
+ "prost-types",
 ]
 
 [[package]]
@@ -2846,16 +2823,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
 dependencies = [
- "prost 0.13.5",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9b4db3d6da204ed77bb26ba83b6122a73aeb2e87e25fbf7ad2e84c4ccbf8f72"
-dependencies = [
- "prost 0.14.1",
+ "prost",
 ]
 
 [[package]]
@@ -2866,9 +2834,9 @@ checksum = "6f352af331bf637b8ecc720f7c87bf903d2571fa2e14a66e9b2558846864b54a"
 dependencies = [
  "bytes",
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-reflect 0.14.7",
- "prost-types 0.13.5",
+ "prost-types",
  "protox-parse 0.7.0",
  "thiserror 1.0.69",
 ]
@@ -2881,9 +2849,9 @@ checksum = "424c2bd294b69c49b949f3619362bc3c5d28298cd1163b6d1a62df37c16461aa"
 dependencies = [
  "bytes",
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-reflect 0.15.3",
- "prost-types 0.13.5",
+ "prost-types",
  "protox-parse 0.8.0",
  "thiserror 2.0.17",
 ]
@@ -2896,7 +2864,7 @@ checksum = "a3a462d115462c080ae000c29a47f0b3985737e5d3a995fcdbcaa5c782068dde"
 dependencies = [
  "logos 0.14.4",
  "miette",
- "prost-types 0.13.5",
+ "prost-types",
  "thiserror 1.0.69",
 ]
 
@@ -2908,7 +2876,7 @@ checksum = "57927f9dbeeffcce7192404deee6157a640cbb3fe8ac11eabbe571565949ab75"
 dependencies = [
  "logos 0.15.1",
  "miette",
- "prost-types 0.13.5",
+ "prost-types",
  "thiserror 2.0.17",
 ]
 
@@ -3965,34 +3933,13 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "prost 0.13.5",
+ "prost",
  "rustls-native-certs",
  "socket2 0.5.10",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
  "tower",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tonic"
-version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb7613188ce9f7df5bfe185db26c5814347d110db17920415cf2fbcad85e7203"
-dependencies = [
- "async-trait",
- "base64",
- "bytes",
- "http",
- "http-body",
- "http-body-util",
- "percent-encoding",
- "pin-project",
- "sync_wrapper",
- "tokio-stream",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -4007,7 +3954,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "prost-build",
- "prost-types 0.13.5",
+ "prost-types",
  "quote",
  "syn",
 ]
@@ -4018,35 +3965,23 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb87334d340313fefa513b6e60794d44a86d5f039b523229c99c323e4e19ca4b"
 dependencies = [
- "prost 0.13.5",
+ "prost",
  "tokio",
  "tokio-stream",
- "tonic 0.13.1",
-]
-
-[[package]]
-name = "tonic-prost"
-version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66bd50ad6ce1252d87ef024b3d64fe4c3cf54a86fb9ef4c631fdd0ded7aeaa67"
-dependencies = [
- "bytes",
- "prost 0.14.1",
- "tonic 0.14.2",
+ "tonic",
 ]
 
 [[package]]
 name = "tonic-reflection"
-version = "0.14.2"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34da53e8387581d66db16ff01f98a70b426b091fdf76856e289d5c1bd386ed7b"
+checksum = "f9687bd5bfeafebdded2356950f278bba8226f0b32109537c4253406e09aafe1"
 dependencies = [
- "prost 0.14.1",
- "prost-types 0.14.1",
+ "prost",
+ "prost-types",
  "tokio",
  "tokio-stream",
- "tonic 0.14.2",
- "tonic-prost",
+ "tonic",
 ]
 
 [[package]]
@@ -4066,7 +4001,7 @@ dependencies = [
  "js-sys",
  "pin-project",
  "thiserror 2.0.17",
- "tonic 0.13.1",
+ "tonic",
  "tower-service",
  "wasm-bindgen",
  "wasm-bindgen-futures",
