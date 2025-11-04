@@ -21,16 +21,24 @@ pub struct ConfigureAccountResult {
 }
 
 /// Configure a new account
+#[tracing::instrument(
+    skip(state, params),
+    fields(account_id = %params.account_id)
+)]
 pub async fn configure_account(
     state: &AppState,
     params: ConfigureAccountParams,
 ) -> Result<ConfigureAccountResult> {
-    tracing::info!("Configuring account: {}", params.account_id);
+    tracing::info!(account_id = %params.account_id, "Configuring account");
 
-    let existing =
-        state.metadata.get(&params.account_id).await.map_err(|e| {
-            PsmError::StorageError(format!("Failed to check existing account: {e}"))
-        })?;
+    let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
+        tracing::error!(
+            account_id = %params.account_id,
+            error = %e,
+            "Failed to check existing account in configure_account"
+        );
+        PsmError::StorageError(format!("Failed to check existing account: {e}"))
+    })?;
 
     if existing.is_some() {
         return Err(PsmError::AccountAlreadyExists(params.account_id.clone()));
@@ -42,13 +50,25 @@ pub async fn configure_account(
         // Validates that the credential is valid for the account state.
         client
             .validate_credential(&params.initial_state, &params.credential)
-            .map_err(|e| PsmError::NetworkError(format!("Failed to validate credential: {e}")))?;
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Failed to validate credential"
+                );
+                PsmError::NetworkError(format!("Failed to validate credential: {e}"))
+            })?;
 
         // Verifies the credential authorization.
         params
             .auth
             .verify(&params.account_id, &params.credential)
             .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Signature verification failed in configure_account"
+                );
                 PsmError::AuthenticationFailed(format!("Signature verification failed: {e}"))
             })?;
 
@@ -75,7 +95,14 @@ pub async fn configure_account(
     storage_backend
         .submit_state(&account_state)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to submit initial state: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %params.account_id,
+                error = %e,
+                "Failed to submit initial state"
+            );
+            PsmError::StorageError(format!("Failed to submit initial state: {e}"))
+        })?;
 
     // Create and store metadata
     let metadata_entry = AccountMetadata {
@@ -86,11 +113,14 @@ pub async fn configure_account(
         updated_at: account_state.updated_at.clone(),
     };
 
-    state
-        .metadata
-        .set(metadata_entry)
-        .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to store metadata: {e}")))?;
+    state.metadata.set(metadata_entry).await.map_err(|e| {
+        tracing::error!(
+            account_id = %params.account_id,
+            error = %e,
+            "Failed to store metadata"
+        );
+        PsmError::StorageError(format!("Failed to store metadata: {e}"))
+    })?;
 
     Ok(ConfigureAccountResult {
         account_id: params.account_id,

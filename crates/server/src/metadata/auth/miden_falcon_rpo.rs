@@ -27,6 +27,12 @@ pub fn verify_request_signature(
 
     // Check if this commitment is in the authorized list
     if !authorized_commitments.contains(&sig_commitment_hex) {
+        tracing::error!(
+            account_id = %account_id,
+            sig_commitment = %sig_commitment_hex,
+            authorized_count = authorized_commitments.len(),
+            "Signature verification failed: public key commitment not authorized"
+        );
         return Err(format!(
             "Signature verification failed: public key commitment '{}...' not authorized",
             &sig_commitment_hex[..18]
@@ -37,6 +43,11 @@ pub fn verify_request_signature(
     if public_key.verify(message, &sig) {
         Ok(())
     } else {
+        tracing::error!(
+            account_id = %account_id,
+            sig_commitment = %sig_commitment_hex,
+            "Signature verification failed: invalid signature"
+        );
         Err("Signature verification failed: invalid signature".to_string())
     }
 }
@@ -50,8 +61,14 @@ pub fn verify_request_signature(
 /// # Arguments
 /// * `account_id_hex` - The account ID in hex format (e.g., "0x1234...")
 fn account_id_to_digest(account_id_hex: &str) -> Result<Word, String> {
-    let account_id =
-        AccountId::from_hex(account_id_hex).map_err(|e| format!("Invalid account ID hex: {e}"))?;
+    let account_id = AccountId::from_hex(account_id_hex).map_err(|e| {
+        tracing::error!(
+            account_id = %account_id_hex,
+            error = %e,
+            "Invalid account ID hex in account_id_to_digest"
+        );
+        format!("Invalid account ID hex: {e}")
+    })?;
 
     // Convert AccountId to its field element representation [prefix, suffix]
     let account_id_felts: [Felt; 2] = account_id.into();
@@ -72,8 +89,21 @@ fn account_id_to_digest(account_id_hex: &str) -> Result<Word, String> {
 /// Parse a hex-encoded signature
 fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     let hex_str = hex_str.trim_start_matches("0x");
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid signature hex: {e}"))?;
-    Signature::read_from_bytes(&bytes).map_err(|e| format!("Failed to deserialize signature: {e}"))
+    let bytes = hex::decode(hex_str).map_err(|e| {
+        tracing::error!(
+            signature = %hex_str,
+            error = %e,
+            "Invalid signature hex"
+        );
+        format!("Invalid signature hex: {e}")
+    })?;
+    Signature::read_from_bytes(&bytes).map_err(|e| {
+        tracing::error!(
+            error = %e,
+            "Failed to deserialize signature"
+        );
+        format!("Failed to deserialize signature: {e}")
+    })
 }
 
 #[cfg(test)]

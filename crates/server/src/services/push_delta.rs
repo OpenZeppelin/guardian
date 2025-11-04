@@ -16,8 +16,12 @@ pub struct PushDeltaResult {
     pub delta: DeltaObject,
 }
 
+#[tracing::instrument(
+    skip(state, params),
+    fields(account_id = %params.delta.account_id)
+)]
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
-    tracing::info!("Pushing delta: account_id={}", params.delta.account_id);
+    tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
 
@@ -25,14 +29,28 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         .backend
         .pull_state(&params.delta.account_id)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to fetch account state: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %params.delta.account_id,
+                error = %e,
+                "Failed to fetch account state in push_delta"
+            );
+            PsmError::StorageError(format!("Failed to fetch account state: {e}"))
+        })?;
 
     // Check for pending candidates before accepting new delta
     let all_deltas = resolved
         .backend
         .pull_deltas_after(&params.delta.account_id, 0)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to check deltas: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %params.delta.account_id,
+                error = %e,
+                "Failed to check deltas in push_delta"
+            );
+            PsmError::StorageError(format!("Failed to check deltas: {e}"))
+        })?;
 
     if all_deltas.iter().any(|d| d.status.is_candidate()) {
         return Err(PsmError::ConflictPendingDelta);
@@ -71,7 +89,15 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             .backend
             .submit_delta(&result_delta)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to submit delta: {e}")))?;
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.delta.account_id,
+                    nonce = result_delta.nonce,
+                    error = %e,
+                    "Failed to submit candidate delta"
+                );
+                PsmError::StorageError(format!("Failed to submit delta: {e}"))
+            })?;
     } else {
         result_delta.status = DeltaStatus::canonical(now.clone());
 
@@ -87,12 +113,27 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             .backend
             .submit_state(&new_state)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to update state: {e}")))?;
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.delta.account_id,
+                    error = %e,
+                    "Failed to update state in optimistic mode"
+                );
+                PsmError::StorageError(format!("Failed to update state: {e}"))
+            })?;
         resolved
             .backend
             .submit_delta(&result_delta)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to submit delta: {e}")))?;
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.delta.account_id,
+                    nonce = result_delta.nonce,
+                    error = %e,
+                    "Failed to submit canonical delta in optimistic mode"
+                );
+                PsmError::StorageError(format!("Failed to submit delta: {e}"))
+            })?;
     }
 
     Ok(PushDeltaResult {

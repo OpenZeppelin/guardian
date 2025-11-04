@@ -116,7 +116,10 @@ pub async fn action_create_account(
         .await
         .map_err(|e| e.to_string())?;
 
-    miden_client.sync_state().await.map_err(|e| format!("Failed to sync client state: {}", e))?;
+    miden_client
+        .sync_state()
+        .await
+        .map_err(|e| format!("Failed to sync client state: {}", e))?;
 
     state.set_account(account);
     state.cosigner_commitments = cosigner_commitments;

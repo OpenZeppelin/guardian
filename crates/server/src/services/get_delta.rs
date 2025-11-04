@@ -17,12 +17,12 @@ pub struct GetDeltaResult {
 }
 
 /// Get a specific delta
+#[tracing::instrument(
+    skip(state, params),
+    fields(account_id = %params.account_id, nonce = params.nonce)
+)]
 pub async fn get_delta(state: &AppState, params: GetDeltaParams) -> Result<GetDeltaResult> {
-    tracing::info!(
-        "Getting delta: account_id={}, nonce={}",
-        params.account_id,
-        params.nonce
-    );
+    tracing::info!(account_id = %params.account_id, nonce = params.nonce, "Getting delta");
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
 

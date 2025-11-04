@@ -26,6 +26,7 @@ pub struct ResolvedAccount {
     pub backend: Arc<dyn StorageBackend>,
 }
 
+#[tracing::instrument(skip(state, creds), fields(account_id = %account_id))]
 pub async fn resolve_account(
     state: &AppState,
     account_id: &str,
@@ -35,13 +36,24 @@ pub async fn resolve_account(
         .metadata
         .get(account_id)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to check account: {e}")))?
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to check account in resolve_account"
+            );
+            PsmError::StorageError(format!("Failed to check account: {e}"))
+        })?
         .ok_or_else(|| PsmError::AccountNotFound(account_id.to_string()))?;
 
-    metadata
-        .auth
-        .verify(account_id, creds)
-        .map_err(PsmError::AuthenticationFailed)?;
+    metadata.auth.verify(account_id, creds).map_err(|e| {
+        tracing::warn!(
+            account_id = %account_id,
+            error = %e,
+            "Authentication failed in resolve_account"
+        );
+        PsmError::AuthenticationFailed(e)
+    })?;
 
     let backend = state
         .storage
