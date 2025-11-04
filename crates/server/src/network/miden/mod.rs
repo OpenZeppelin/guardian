@@ -156,7 +156,7 @@ impl NetworkClient for MidenNetworkClient {
         let has_multisig_psm = inspector.has_multisig_psm_auth();
 
         account
-            .apply_delta(&tx_summary.account_delta())
+            .apply_delta(tx_summary.account_delta())
             .map_err(|e| {
                 tracing::error!(
                     account_id = %account.id().to_hex(),
@@ -171,12 +171,11 @@ impl NetworkClient for MidenNetworkClient {
             const IS_EXECUTED_FLAG: [u32; 4] = [1, 0, 0, 0];
 
             let tx_commitment = tx_summary.to_commitment();
-            let tx_commitment_word = tx_commitment.into();
             let flag_word = miden_objects::Word::from(IS_EXECUTED_FLAG);
 
             account
                 .storage_mut()
-                .set_map_item(EXECUTED_TXS_SLOT, tx_commitment_word, flag_word)
+                .set_map_item(EXECUTED_TXS_SLOT, tx_commitment, flag_word)
                 .map_err(|e| {
                     tracing::error!(
                         account_id = %account.id().to_hex(),
