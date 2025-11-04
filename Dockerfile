@@ -1,7 +1,7 @@
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.89-bookworm@sha256:ea6c9bb3b27d84cdae28b291b93addb9b9d97fb83ddb2e514e1b67965a75575c as builder
+FROM rust:1.91-bookworm@sha256:b5efaabfd787a695d2e46b37d3d9c54040e11f4c10bc2e714bbadbfcc0cd6c39 as builder
 
 # Install protobuf compiler (pinned to specific version)
 RUN apt-get update && apt-get install -y \
@@ -25,7 +25,7 @@ COPY examples ./examples
 RUN cargo build --release --package private-state-manager-server --bin server
 
 # Runtime stage
-FROM debian:bookworm-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0
+FROM debian:bookworm-slim@sha256:4d9b5b6cf5f643fdf2887eab79f2f916363704184ab270bf4a5c1d65102d03d2
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
