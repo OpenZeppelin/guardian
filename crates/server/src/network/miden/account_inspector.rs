@@ -87,10 +87,7 @@ impl<'a> MidenAccountInspector<'a> {
         const EXECUTED_TXS_SLOT: usize = 2;
 
         matches!(
-            self.account
-                .storage()
-                .slots()
-                .get(EXECUTED_TXS_SLOT),
+            self.account.storage().slots().get(EXECUTED_TXS_SLOT),
             Some(StorageSlot::Map(_))
         )
     }
