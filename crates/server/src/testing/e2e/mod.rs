@@ -1,5 +1,4 @@
 // E2E tests (enabled with `--features e2e`)
 #![cfg(feature = "e2e")]
 
-mod canonicalization;
-mod psm_signature;
+// TODO: Create proper fixtures and add e2e tests

@@ -167,11 +167,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_configure_account_success() {
-        use crate::testing::helpers::{generate_falcon_signature, pubkey_hex_to_commitment_hex};
+        use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (_account_id, pubkey_hex, signature_hex) = generate_falcon_signature(account_id_hex);
-        let commitment_hex = pubkey_hex_to_commitment_hex(&pubkey_hex);
+        let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(account_id_hex);
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
@@ -216,11 +215,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_configure_account_already_exists() {
-        use crate::testing::helpers::{generate_falcon_signature, pubkey_hex_to_commitment_hex};
+        use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (_account_id, pubkey_hex, signature_hex) = generate_falcon_signature(account_id_hex);
-        let commitment_hex = pubkey_hex_to_commitment_hex(&pubkey_hex);
+        let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(account_id_hex);
 
         let existing_metadata = AccountMetadata {
             account_id: account_id_hex.to_string(),
@@ -261,11 +259,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_configure_account_network_error() {
-        use crate::testing::helpers::{generate_falcon_signature, pubkey_hex_to_commitment_hex};
+        use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (_account_id, pubkey_hex, signature_hex) = generate_falcon_signature(account_id_hex);
-        let commitment_hex = pubkey_hex_to_commitment_hex(&pubkey_hex);
+        let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(account_id_hex);
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
