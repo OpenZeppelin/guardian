@@ -45,7 +45,7 @@ pub mod test {
 
         pub fn advance_secs(&self, seconds: i64) {
             let mut time = self.time.lock().unwrap();
-            *time = *time + chrono::Duration::seconds(seconds);
+            *time += chrono::Duration::seconds(seconds);
         }
     }
 

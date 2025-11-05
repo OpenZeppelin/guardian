@@ -8,6 +8,11 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex as StdMutex};
 
 type StdResult<T, E> = std::result::Result<T, E>;
+type ApplyDeltaResult = StdResult<(serde_json::Value, String), String>;
+type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
+type PullDeltasResult = StdResult<Vec<DeltaObject>, String>;
+type GetMetadataResult = StdResult<Option<crate::metadata::AccountMetadata>, String>;
+type ListResult = StdResult<Vec<String>, String>;
 
 #[derive(Clone, Default)]
 pub struct MockNetworkClient {
@@ -17,8 +22,8 @@ pub struct MockNetworkClient {
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
-    pub apply_delta_responses: Arc<StdMutex<Vec<StdResult<(serde_json::Value, String), String>>>>,
-    pub should_update_auth_responses: Arc<StdMutex<Vec<StdResult<Option<Auth>, String>>>>,
+    pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
+    pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
 }
 
 impl MockNetworkClient {
@@ -181,7 +186,7 @@ pub struct MockStorageBackend {
     pub submit_delta_calls: Arc<StdMutex<Vec<DeltaObject>>>,
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
-    pub pull_deltas_after_responses: Arc<StdMutex<Vec<StdResult<Vec<DeltaObject>, String>>>>,
+    pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
 }
 
 impl MockStorageBackend {
@@ -277,12 +282,11 @@ impl StorageBackend for MockStorageBackend {
 
 #[derive(Clone, Default)]
 pub struct MockMetadataStore {
-    pub get_responses:
-        Arc<StdMutex<Vec<StdResult<Option<crate::metadata::AccountMetadata>, String>>>>,
+    pub get_responses: Arc<StdMutex<Vec<GetMetadataResult>>>,
     pub get_calls: Arc<StdMutex<Vec<String>>>,
     pub set_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
-    pub list_responses: Arc<StdMutex<Vec<StdResult<Vec<String>, String>>>>,
+    pub list_responses: Arc<StdMutex<Vec<ListResult>>>,
 }
 
 impl MockMetadataStore {
