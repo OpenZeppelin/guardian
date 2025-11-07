@@ -45,6 +45,7 @@ pub trait StorageBackend: Send + Sync {
     async fn pull_delta_proposal(&self, account_id: &str, commitment: &str) -> Result<DeltaObject, String>;
     async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String>;
     async fn update_delta_proposal(&self, commitment: &str, proposal: &DeltaObject) -> Result<(), String>;
+    async fn delete_delta_proposal(&self, account_id: &str, commitment: &str) -> Result<(), String>;
 }
 
 /// Storage registry that maps storage types to their backend implementations

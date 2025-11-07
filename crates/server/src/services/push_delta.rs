@@ -72,7 +72,15 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 proposal_id = %id,
                 "Deleting matching proposal as delta is being executed"
             );
-            // TODO: Add delete_delta_proposal method to StorageBackend
+            // Delete the proposal since the delta is now being executed
+            if let Err(e) = resolved.backend.delete_delta_proposal(&params.delta.account_id, id).await {
+                tracing::warn!(
+                    account_id = %params.delta.account_id,
+                    proposal_id = %id,
+                    error = %e,
+                    "Failed to delete proposal, but continuing with delta execution"
+                );
+            }
         }
     }
 

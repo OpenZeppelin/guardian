@@ -274,4 +274,20 @@ impl StorageBackend for FilesystemService {
         // For filesystem, update is the same as submit
         self.submit_delta_proposal(commitment, proposal).await
     }
+
+    async fn delete_delta_proposal(&self, account_id: &str, commitment: &str) -> Result<(), String> {
+        let path = self.get_delta_proposal_path(account_id, commitment);
+
+        // Check if the file exists
+        if !path.exists() {
+            return Ok(()); // Already deleted or doesn't exist
+        }
+
+        // Delete the proposal file
+        fs::remove_file(&path)
+            .await
+            .map_err(|e| format!("Failed to delete proposal file: {e}"))?;
+
+        Ok(())
+    }
 }
