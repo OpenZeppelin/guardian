@@ -7,18 +7,24 @@ use std::sync::Arc;
 
 mod configure_account;
 mod get_delta;
+mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
 mod push_delta;
+mod push_delta_proposal;
+mod sign_delta_proposal;
 
 pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
 };
 pub use configure_account::{ConfigureAccountParams, ConfigureAccountResult, configure_account};
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
+pub use get_delta_proposals::{GetDeltaProposalsParams, GetDeltaProposalsResult, get_delta_proposals};
 pub use get_delta_since::{GetDeltaSinceParams, GetDeltaSinceResult, get_delta_since};
 pub use get_state::{GetStateParams, GetStateResult, get_state};
 pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
+pub use push_delta_proposal::{PushDeltaProposalParams, PushDeltaProposalResult, push_delta_proposal};
+pub use sign_delta_proposal::{SignDeltaProposalParams, SignDeltaProposalResult, sign_delta_proposal};
 
 #[derive(Clone)]
 pub struct ResolvedAccount {

@@ -1,10 +1,13 @@
-use axum::{Router, routing::get, routing::post};
+use axum::{Router, routing::get, routing::post, routing::put};
 use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
 use crate::api::grpc::StateManagerService;
 use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
-use crate::api::http::{configure, get_delta, get_delta_since, get_pubkey, get_state, push_delta};
+use crate::api::http::{
+    configure, get_delta, get_delta_proposals, get_delta_since, get_pubkey, get_state,
+    push_delta, push_delta_proposal, sign_delta_proposal,
+};
 use crate::state::AppState;
 
 /// Handle for a configured server instance
@@ -54,6 +57,9 @@ impl ServerHandle {
                     .route("/delta", post(push_delta))
                     .route("/delta", get(get_delta))
                     .route("/delta/since", get(get_delta_since))
+                    .route("/delta/proposal", post(push_delta_proposal))
+                    .route("/delta/proposal", get(get_delta_proposals))
+                    .route("/delta/proposal", put(sign_delta_proposal))
                     .route("/configure", post(configure))
                     .route("/state", get(get_state))
                     .route("/pubkey", get(get_pubkey))

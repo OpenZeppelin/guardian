@@ -207,9 +207,17 @@ impl DeltasProcessorBase {
 
         match verify_result {
             Ok(()) => {
-                let new_commitment = delta.new_commitment.clone();
-                self.canonicalize_verified_delta(delta, new_state_json, new_commitment)
-                    .await
+                if let Some(new_commitment) = delta.new_commitment.clone() {
+                    self.canonicalize_verified_delta(delta, new_state_json, new_commitment)
+                        .await
+                } else {
+                    tracing::error!(
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        "Delta has no new_commitment, cannot canonicalize"
+                    );
+                    Ok(())
+                }
             }
             Err(e) => {
                 tracing::error!(

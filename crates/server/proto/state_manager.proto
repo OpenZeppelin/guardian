@@ -21,6 +21,15 @@ service StateManager {
 
   // Get server's public key
   rpc GetPubkey(GetPubkeyRequest) returns (GetPubkeyResponse);
+
+  // Submit a delta proposal
+  rpc PushDeltaProposal(PushDeltaProposalRequest) returns (PushDeltaProposalResponse);
+
+  // Get all delta proposals
+  rpc GetDeltaProposals(GetDeltaProposalsRequest) returns (GetDeltaProposalsResponse);
+
+  // Sign a delta proposal
+  rpc SignDeltaProposal(SignDeltaProposalRequest) returns (SignDeltaProposalResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -126,4 +135,43 @@ message GetPubkeyRequest {}
 
 message GetPubkeyResponse {
   string pubkey = 1;
+}
+
+// Push delta proposal request
+message PushDeltaProposalRequest {
+  string account_id = 1;
+  uint64 nonce = 2;
+  string delta_payload = 3; // JSON string
+}
+
+message PushDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  DeltaObject delta = 3;
+  string commitment = 4;
+}
+
+// Get delta proposals request
+message GetDeltaProposalsRequest {
+  string account_id = 1;
+}
+
+message GetDeltaProposalsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated DeltaObject proposals = 3;
+}
+
+// Sign delta proposal request
+message SignDeltaProposalRequest {
+  string account_id = 1;
+  string commitment = 2;
+  string signature_scheme = 3;
+  string signature = 4;
+}
+
+message SignDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  DeltaObject delta = 3;
 }

@@ -69,6 +69,16 @@ impl FilesystemService {
             .join(format!("{nonce}.json"))
     }
 
+    /// Get the path for a delta proposal file
+    fn get_delta_proposal_path(&self, account_id: &str, commitment: &str) -> PathBuf {
+        // Remove 0x prefix if present
+        let clean_commitment = commitment.strip_prefix("0x").unwrap_or(commitment);
+        self.app_path
+            .join(account_id)
+            .join("proposals")
+            .join(format!("{clean_commitment}.json"))
+    }
+
     async fn list_delta_filenames(&self, account_id: &str) -> Result<Vec<String>, String> {
         let deltas_dir = self.app_path.join(account_id).join("deltas");
 
@@ -96,6 +106,36 @@ impl FilesystemService {
         deltas.sort_by_key(|name| name.trim_end_matches(".json").parse::<u64>().unwrap_or(0));
 
         Ok(deltas)
+    }
+
+    async fn list_proposal_filenames(&self, account_id: &str) -> Result<Vec<String>, String> {
+        let proposals_dir = self.app_path.join(account_id).join("proposals");
+
+        if !proposals_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = fs::read_dir(&proposals_dir)
+            .await
+            .map_err(|e| format!("Failed to read proposals directory: {e}"))?;
+
+        let mut proposals = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("Failed to read directory entry: {e}"))?
+        {
+            if let Some(name) = entry.file_name().to_str()
+                && name.ends_with(".json")
+            {
+                proposals.push(name.to_string());
+            }
+        }
+
+        // Sort alphabetically by filename (works for hex commitments)
+        proposals.sort();
+
+        Ok(proposals)
     }
 }
 
@@ -167,5 +207,71 @@ impl StorageBackend for FilesystemService {
         deltas.sort_by_key(|d| d.nonce);
 
         Ok(deltas)
+    }
+
+    // Delta proposal methods - stored separately from executed deltas
+    async fn submit_delta_proposal(&self, commitment: &str, proposal: &DeltaObject) -> Result<(), String> {
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment);
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
+        }
+
+        // Write to temp file first
+        let temp_path = path.with_extension("tmp");
+        let json = serde_json::to_string_pretty(&proposal)
+            .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
+
+        fs::write(&temp_path, json)
+            .await
+            .map_err(|e| format!("Failed to write proposal file: {e}"))?;
+
+        // Atomic rename
+        fs::rename(&temp_path, &path)
+            .await
+            .map_err(|e| format!("Failed to finalize proposal file: {e}"))?;
+
+        Ok(())
+    }
+
+    async fn pull_delta_proposal(&self, account_id: &str, commitment: &str) -> Result<DeltaObject, String> {
+        let path = self.get_delta_proposal_path(account_id, commitment);
+
+        let json = fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Failed to read proposal file: {e}"))?;
+
+        let proposal: DeltaObject = serde_json::from_str(&json)
+            .map_err(|e| format!("Failed to parse proposal: {e}"))?;
+
+        Ok(proposal)
+    }
+
+    async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let proposal_filenames = self.list_proposal_filenames(account_id).await?;
+
+        let mut proposals = Vec::new();
+        for filename in proposal_filenames {
+            if let Some(commitment) = filename.strip_suffix(".json") {
+                match self.pull_delta_proposal(account_id, commitment).await {
+                    Ok(proposal) => proposals.push(proposal),
+                    Err(e) => {
+                        // Log error but continue loading other proposals
+                        tracing::warn!("Failed to load proposal {}: {}", filename, e);
+                    }
+                }
+            }
+        }
+
+        // Proposals will be sorted and filtered by the service layer
+        Ok(proposals)
+    }
+
+    async fn update_delta_proposal(&self, commitment: &str, proposal: &DeltaObject) -> Result<(), String> {
+        // For filesystem, update is the same as submit
+        self.submit_delta_proposal(commitment, proposal).await
     }
 }

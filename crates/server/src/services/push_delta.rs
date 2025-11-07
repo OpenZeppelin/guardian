@@ -56,6 +56,26 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         return Err(PsmError::ConflictPendingDelta);
     }
 
+    // Compute the proposal ID for this delta to check if there's a matching proposal
+    let proposal_id = {
+        let client = state.network_client.lock().await;
+        client
+            .delta_proposal_id(&params.delta.account_id, params.delta.nonce, &params.delta.delta_payload)
+            .ok() // Ignore error - if we can't compute it, we can't delete it
+    };
+
+    // If there's a matching proposal, delete it since we're now executing the delta
+    if let Some(ref id) = proposal_id {
+        if let Ok(_existing_proposal) = resolved.backend.pull_delta_proposal(&params.delta.account_id, id).await {
+            tracing::info!(
+                account_id = %params.delta.account_id,
+                proposal_id = %id,
+                "Deleting matching proposal as delta is being executed"
+            );
+            // TODO: Add delete_delta_proposal method to StorageBackend
+        }
+    }
+
     if params.delta.prev_commitment != current_state.commitment {
         return Err(PsmError::CommitmentMismatch {
             expected: current_state.commitment.clone(),
@@ -78,7 +98,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     };
 
     let mut result_delta = params.delta.clone();
-    result_delta.new_commitment = new_commitment;
+    result_delta.new_commitment = Some(new_commitment.clone());
     result_delta = state.ack.ack_delta(result_delta)?;
 
     let now = state.clock.now_rfc3339();
@@ -103,7 +123,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
 
         let new_state = StateObject {
             account_id: result_delta.account_id.clone(),
-            commitment: result_delta.new_commitment.clone(),
+            commitment: new_commitment.clone(),
             state_json: new_state_json,
             created_at: current_state.created_at.clone(),
             updated_at: now,

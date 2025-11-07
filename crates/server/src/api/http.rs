@@ -1,8 +1,8 @@
 use crate::delta_object::DeltaObject;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetDeltaSinceParams, GetStateParams,
-    PushDeltaParams,
+    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalsParams, GetDeltaSinceParams,
+    GetStateParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -40,6 +40,26 @@ pub struct DeltaQuery {
 #[derive(Deserialize)]
 pub struct StateQuery {
     pub account_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct ProposalQuery {
+    pub account_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct DeltaProposalRequest {
+    pub account_id: String,
+    pub nonce: u64,
+    pub delta_payload: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+pub struct SignProposalRequest {
+    pub account_id: String,
+    pub commitment: String,
+    pub signature_scheme: String,
+    pub signature: String,
 }
 
 // Response types
@@ -179,7 +199,99 @@ pub struct PubkeyResponse {
     pub pubkey: String,
 }
 
+#[derive(Serialize)]
+pub struct ProposalsResponse {
+    pub proposals: Vec<DeltaObject>,
+}
+
+#[derive(Serialize)]
+pub struct DeltaProposalResponse {
+    pub delta: DeltaObject,
+    pub commitment: String,
+}
+
 pub async fn get_pubkey(State(state): State<AppState>) -> (StatusCode, Json<PubkeyResponse>) {
     let pubkey = state.ack.commitment();
     (StatusCode::OK, Json(PubkeyResponse { pubkey }))
+}
+
+pub async fn push_delta_proposal(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<DeltaProposalRequest>,
+) -> (StatusCode, Json<DeltaProposalResponse>) {
+    let params = PushDeltaProposalParams {
+        account_id: payload.account_id,
+        nonce: payload.nonce,
+        delta_payload: payload.delta_payload,
+        credentials,
+    };
+
+    match services::push_delta_proposal(&state, params).await {
+        Ok(response) => (StatusCode::OK, Json(DeltaProposalResponse {
+            delta: response.delta,
+            commitment: response.commitment,
+        })),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(DeltaProposalResponse {
+                delta: DeltaObject {
+                    account_id: e.to_string(),
+                    ..Default::default()
+                },
+                commitment: String::new(),
+            }),
+        ),
+    }
+}
+
+pub async fn get_delta_proposals(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<ProposalQuery>,
+) -> (StatusCode, Json<ProposalsResponse>) {
+    let params = GetDeltaProposalsParams {
+        account_id: query.account_id,
+        credentials,
+    };
+
+    match services::get_delta_proposals(&state, params).await {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(ProposalsResponse {
+                proposals: response.proposals,
+            }),
+        ),
+        Err(_e) => (
+            StatusCode::OK,
+            Json(ProposalsResponse {
+                proposals: Vec::new(),
+            }),
+        ),
+    }
+}
+
+pub async fn sign_delta_proposal(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<SignProposalRequest>,
+) -> (StatusCode, Json<DeltaObject>) {
+    let params = SignDeltaProposalParams {
+        account_id: payload.account_id,
+        commitment: payload.commitment,
+        signature_scheme: payload.signature_scheme,
+        signature: payload.signature,
+        credentials,
+    };
+
+    match services::sign_delta_proposal(&state, params).await {
+        Ok(response) => (StatusCode::OK, Json(response.delta)),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(DeltaObject {
+                account_id: e.to_string(),
+                ..Default::default()
+            }),
+        ),
+    }
 }

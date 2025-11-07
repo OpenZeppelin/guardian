@@ -40,6 +40,14 @@ pub trait NetworkClient: Send + Sync {
         delta_payloads: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, String>;
 
+    /// Get delta proposal ID
+    fn delta_proposal_id(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        delta_payload: &serde_json::Value,
+    ) -> Result<String, String>;
+
     /// Validate account ID format
     fn validate_account_id(&self, account_id: &str) -> Result<(), String>;
 

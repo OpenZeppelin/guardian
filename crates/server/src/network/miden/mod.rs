@@ -276,6 +276,19 @@ impl NetworkClient for MidenNetworkClient {
         Ok(merged_tx_summary.to_json())
     }
 
+    fn delta_proposal_id(
+        &self,
+        _account_id: &str,
+        _nonce: u64,
+        delta_payload: &serde_json::Value,
+    ) -> Result<String, String> {
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
+        let commitment = tx_summary.to_commitment();
+
+        let proposal_id = format!("0x{}", hex::encode(commitment.as_bytes()));
+        Ok(proposal_id)
+    }
+
     fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
         AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(

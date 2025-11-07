@@ -1,15 +1,48 @@
 use serde::{Deserialize, Serialize};
 
+/// Signature type for delta proposals
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "scheme", rename_all = "snake_case")]
+pub enum ProposalSignature {
+    Falcon {
+        // Falcon signature contains the public key commitment
+        signature: String,
+    },
+    // Future signature schemes can be added here
+    // Each scheme can have its own structure based on its requirements
+}
+
+/// Cosigner signature entry for delta proposals
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CosignerSignature {
+    pub signature: ProposalSignature,
+    pub timestamp: String,
+    pub signer_id: String,
+}
+
 /// Delta status state machine
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DeltaStatus {
+    Pending {
+        timestamp: String,
+        proposer_id: String, // Could be pubkey commitment or other identifier
+        cosigner_sigs: Vec<CosignerSignature>,
+    },
     Candidate { timestamp: String },
     Canonical { timestamp: String },
     Discarded { timestamp: String },
 }
 
 impl DeltaStatus {
+    pub fn pending(timestamp: String, proposer_id: String) -> Self {
+        Self::Pending {
+            timestamp,
+            proposer_id,
+            cosigner_sigs: Vec::new(),
+        }
+    }
+
     pub fn candidate(timestamp: String) -> Self {
         Self::Candidate { timestamp }
     }
@@ -20,6 +53,10 @@ impl DeltaStatus {
 
     pub fn discarded(timestamp: String) -> Self {
         Self::Discarded { timestamp }
+    }
+
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending { .. })
     }
 
     pub fn is_candidate(&self) -> bool {
@@ -36,6 +73,7 @@ impl DeltaStatus {
 
     pub fn timestamp(&self) -> &str {
         match self {
+            Self::Pending { timestamp, .. } => timestamp,
             Self::Candidate { timestamp } => timestamp,
             Self::Canonical { timestamp } => timestamp,
             Self::Discarded { timestamp } => timestamp,
@@ -57,8 +95,8 @@ pub struct DeltaObject {
     pub account_id: String,
     pub nonce: u64,
     pub prev_commitment: String,
-    #[serde(default)]
-    pub new_commitment: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_commitment: Option<String>,
     pub delta_payload: serde_json::Value,
     pub ack_sig: Option<String>,
     pub status: DeltaStatus,
@@ -74,8 +112,7 @@ impl<'de> Deserialize<'de> for DeltaObject {
             account_id: String,
             nonce: u64,
             prev_commitment: String,
-            #[serde(default)]
-            new_commitment: String,
+            new_commitment: Option<String>,
             delta_payload: serde_json::Value,
             ack_sig: Option<String>,
             #[serde(default)]

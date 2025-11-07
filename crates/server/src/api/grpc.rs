@@ -1,7 +1,8 @@
 use crate::delta_object::DeltaObject;
 use crate::metadata::auth::{Auth, ExtractCredentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetStateParams, PushDeltaParams,
+    self, ConfigureAccountParams, GetDeltaParams,
+    GetStateParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use crate::storage::StorageType;
@@ -90,7 +91,7 @@ impl StateManager for StateManagerService {
             account_id: req.account_id,
             nonce: req.nonce,
             prev_commitment: req.prev_commitment,
-            new_commitment: String::new(),
+            new_commitment: None,
             delta_payload,
             ack_sig: None,
             status: Default::default(),
@@ -214,11 +215,101 @@ impl StateManager for StateManagerService {
         let pubkey = self.app_state.ack.commitment();
         Ok(Response::new(GetPubkeyResponse { pubkey }))
     }
+
+    async fn push_delta_proposal(
+        &self,
+        request: Request<PushDeltaProposalRequest>,
+    ) -> Result<Response<PushDeltaProposalResponse>, Status> {
+        let credentials = request.metadata().extract_credentials()?;
+        let data = request.into_inner();
+
+        let params = services::PushDeltaProposalParams {
+            account_id: data.account_id,
+            nonce: data.nonce,
+            delta_payload: serde_json::from_str(&data.delta_payload)
+                .map_err(|e| Status::invalid_argument(format!("Invalid delta payload: {e}")))?,
+            credentials,
+        };
+
+        match services::push_delta_proposal(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(PushDeltaProposalResponse {
+                success: true,
+                message: "Delta proposal submitted successfully".to_string(),
+                delta: Some(delta_to_proto(&response.delta)),
+                commitment: response.commitment,
+            })),
+            Err(e) => Ok(Response::new(PushDeltaProposalResponse {
+                success: false,
+                message: e.to_string(),
+                delta: None,
+                commitment: String::new(),
+            })),
+        }
+    }
+
+    async fn get_delta_proposals(
+        &self,
+        request: Request<GetDeltaProposalsRequest>,
+    ) -> Result<Response<GetDeltaProposalsResponse>, Status> {
+        let credentials = request.metadata().extract_credentials()?;
+        let data = request.into_inner();
+
+        let params = services::GetDeltaProposalsParams {
+            account_id: data.account_id,
+            credentials,
+        };
+
+        match services::get_delta_proposals(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(GetDeltaProposalsResponse {
+                success: true,
+                message: "Delta proposals retrieved successfully".to_string(),
+                proposals: response.proposals.iter().map(delta_to_proto).collect(),
+            })),
+            Err(e) => Ok(Response::new(GetDeltaProposalsResponse {
+                success: false,
+                message: e.to_string(),
+                proposals: vec![],
+            })),
+        }
+    }
+
+    async fn sign_delta_proposal(
+        &self,
+        request: Request<SignDeltaProposalRequest>,
+    ) -> Result<Response<SignDeltaProposalResponse>, Status> {
+        let credentials = request.metadata().extract_credentials()?;
+        let data = request.into_inner();
+
+        let params = services::SignDeltaProposalParams {
+            account_id: data.account_id,
+            commitment: data.commitment,
+            signature_scheme: data.signature_scheme,
+            signature: data.signature,
+            credentials,
+        };
+
+        match services::sign_delta_proposal(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(SignDeltaProposalResponse {
+                success: true,
+                message: "Delta proposal signed successfully".to_string(),
+                delta: Some(delta_to_proto(&response.delta)),
+            })),
+            Err(e) => Ok(Response::new(SignDeltaProposalResponse {
+                success: false,
+                message: e.to_string(),
+                delta: None,
+            })),
+        }
+    }
 }
 
 // Helper functions to convert between internal types and protobuf types
 fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
     let (candidate_at, canonical_at, discarded_at) = match &delta.status {
+        crate::delta_object::DeltaStatus::Pending { timestamp, .. } => {
+            // Pending deltas are treated as candidates for proto compatibility
+            (Some(timestamp.clone()), None, None)
+        }
         crate::delta_object::DeltaStatus::Candidate { timestamp } => {
             (Some(timestamp.clone()), None, None)
         }
@@ -234,7 +325,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         account_id: delta.account_id.clone(),
         nonce: delta.nonce,
         prev_commitment: delta.prev_commitment.clone(),
-        new_commitment: delta.new_commitment.clone(),
+        new_commitment: delta.new_commitment.clone().unwrap_or_default(),
         delta_payload: delta.delta_payload.to_string(),
         ack_sig: delta.ack_sig.clone().unwrap_or_default(),
         candidate_at: candidate_at.unwrap_or_default(),
