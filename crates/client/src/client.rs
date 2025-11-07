@@ -5,6 +5,9 @@ use crate::proto::{
     AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
     GetStateResponse, PushDeltaRequest, PushDeltaResponse,
+    PushDeltaProposalRequest, PushDeltaProposalResponse,
+    GetDeltaProposalsRequest, GetDeltaProposalsResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use miden_objects::account::AccountId;
 use tonic::metadata::MetadataValue;
@@ -175,5 +178,80 @@ impl PsmClient {
         let response = self.client.get_pubkey(request).await?;
         let inner = response.into_inner();
         Ok(inner.pubkey)
+    }
+
+    /// Push a delta proposal
+    pub async fn push_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        nonce: u64,
+        delta_payload: impl serde::Serialize,
+    ) -> ClientResult<PushDeltaProposalResponse> {
+        let delta_payload_json = serde_json::to_string(&delta_payload)?;
+
+        let mut request = tonic::Request::new(PushDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            nonce,
+            delta_payload: delta_payload_json,
+        });
+
+        self.add_auth_metadata(&mut request, account_id)?;
+
+        let response = self.client.push_delta_proposal(request).await?;
+        let inner = response.into_inner();
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Get all delta proposals for an account
+    pub async fn get_delta_proposals(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<GetDeltaProposalsResponse> {
+        let mut request = tonic::Request::new(GetDeltaProposalsRequest {
+            account_id: account_id.to_string(),
+        });
+
+        self.add_auth_metadata(&mut request, account_id)?;
+
+        let response = self.client.get_delta_proposals(request).await?;
+        let inner = response.into_inner();
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Sign a delta proposal
+    pub async fn sign_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        commitment: impl Into<String>,
+        signature_scheme: impl Into<String>,
+        signature: impl Into<String>,
+    ) -> ClientResult<SignDeltaProposalResponse> {
+        let mut request = tonic::Request::new(SignDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            commitment: commitment.into(),
+            signature_scheme: signature_scheme.into(),
+            signature: signature.into(),
+        });
+
+        self.add_auth_metadata(&mut request, account_id)?;
+
+        let response = self.client.sign_delta_proposal(request).await?;
+        let inner = response.into_inner();
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
     }
 }
