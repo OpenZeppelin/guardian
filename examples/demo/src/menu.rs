@@ -11,8 +11,9 @@ pub enum MenuAction {
     PullFromPsm,
     PullDeltasFromPsm,
     AddCosigner,
-    SignTransaction,
-    FinalizePendingTransaction,
+    ViewProposals,
+    SignProposal,
+    FinalizeProposal,
     ShowAccount,
     ShowStatus,
     Quit,
@@ -45,13 +46,18 @@ pub fn print_menu(state: &SessionState) {
     print_menu_option("6", "Add cosigner (update to N+1)", state.has_account());
     print_menu_option(
         "7",
-        "Sign pending transaction",
-        state.has_account() && state.pending_tx_store.has_pending(),
+        "View pending proposals",
+        state.has_account() && state.is_psm_connected(),
     );
     print_menu_option(
         "8",
-        "Finalize pending transaction",
-        state.has_account() && state.pending_tx_store.has_pending(),
+        "Sign a proposal",
+        state.has_account() && state.is_psm_connected(),
+    );
+    print_menu_option(
+        "9",
+        "Finalize a proposal",
+        state.has_account() && state.is_psm_connected(),
     );
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
@@ -79,11 +85,14 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
             Some(MenuAction::PullDeltasFromPsm)
         }
         "6" if state.has_account() => Some(MenuAction::AddCosigner),
-        "7" if state.has_account() && state.pending_tx_store.has_pending() => {
-            Some(MenuAction::SignTransaction)
+        "7" if state.has_account() && state.is_psm_connected() => {
+            Some(MenuAction::ViewProposals)
         }
-        "8" if state.has_account() && state.pending_tx_store.has_pending() => {
-            Some(MenuAction::FinalizePendingTransaction)
+        "8" if state.has_account() && state.is_psm_connected() => {
+            Some(MenuAction::SignProposal)
+        }
+        "9" if state.has_account() && state.is_psm_connected() => {
+            Some(MenuAction::FinalizeProposal)
         }
         "s" if state.has_account() => Some(MenuAction::ShowAccount),
         "c" => Some(MenuAction::ShowStatus),

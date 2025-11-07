@@ -14,7 +14,6 @@ use tempfile::TempDir;
 use private_state_manager_client::{Auth, FalconRpoSigner, PsmClient};
 
 use crate::helpers::create_miden_client;
-use crate::pending_tx::PendingTxStore;
 
 pub struct SessionState {
     pub psm_endpoint: String,
@@ -28,7 +27,6 @@ pub struct SessionState {
     pub cosigner_commitments: Vec<String>,
     pub keystore: Arc<FilesystemKeyStore<StdRng>>,
     pub temp_dir: Arc<TempDir>,
-    pub pending_tx_store: PendingTxStore,
 }
 
 impl SessionState {
@@ -39,10 +37,6 @@ impl SessionState {
         let keystore_path = temp_dir.path().join("keystore");
         let keystore = FilesystemKeyStore::new(keystore_path)
             .map_err(|e| format!("Failed to create keystore: {}", e))?;
-
-        // Use /tmp for pending transactions so they're shared across terminals
-        let pending_tx_path = PathBuf::from("/tmp/psm-demo-pending-tx");
-        let pending_tx_store = PendingTxStore::new(pending_tx_path);
 
         Ok(SessionState {
             psm_endpoint,
@@ -56,7 +50,6 @@ impl SessionState {
             cosigner_commitments: Vec::new(),
             keystore: Arc::new(keystore),
             temp_dir: Arc::new(temp_dir),
-            pending_tx_store,
         })
     }
 

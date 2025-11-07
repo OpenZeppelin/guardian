@@ -6,6 +6,7 @@ use crate::services::{
 };
 use crate::state::AppState;
 use crate::storage::StorageType;
+use crate::delta_object::DeltaStatus;
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code
@@ -307,7 +308,6 @@ impl StateManager for StateManagerService {
 fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
     let (candidate_at, canonical_at, discarded_at) = match &delta.status {
         crate::delta_object::DeltaStatus::Pending { timestamp, .. } => {
-            // Pending deltas are treated as candidates for proto compatibility
             (Some(timestamp.clone()), None, None)
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp } => {
@@ -321,6 +321,55 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         }
     };
 
+    // Build the new status field
+    let proto_status = match &delta.status {
+        crate::delta_object::DeltaStatus::Pending {
+            timestamp,
+            proposer_id,
+            cosigner_sigs,
+        } => {
+            let proto_cosigner_sigs = cosigner_sigs
+                .iter()
+                .map(|sig| state_manager::CosignerSignature {
+                    signer_id: sig.signer_id.clone(),
+                    signature: serde_json::to_string(&sig.signature).unwrap_or_default(),
+                    timestamp: sig.timestamp.clone(),
+                })
+                .collect();
+
+            Some(state_manager::DeltaStatus {
+                status: Some(state_manager::delta_status::Status::Pending(
+                    state_manager::PendingStatus {
+                        timestamp: timestamp.clone(),
+                        proposer_id: proposer_id.clone(),
+                        cosigner_sigs: proto_cosigner_sigs,
+                    },
+                )),
+            })
+        }
+        crate::delta_object::DeltaStatus::Candidate { timestamp } => {
+            Some(state_manager::DeltaStatus {
+                status: Some(state_manager::delta_status::Status::CandidateAt(
+                    timestamp.clone(),
+                )),
+            })
+        }
+        crate::delta_object::DeltaStatus::Canonical { timestamp } => {
+            Some(state_manager::DeltaStatus {
+                status: Some(state_manager::delta_status::Status::CanonicalAt(
+                    timestamp.clone(),
+                )),
+            })
+        }
+        crate::delta_object::DeltaStatus::Discarded { timestamp } => {
+            Some(state_manager::DeltaStatus {
+                status: Some(state_manager::delta_status::Status::DiscardedAt(
+                    timestamp.clone(),
+                )),
+            })
+        }
+    };
+
     state_manager::DeltaObject {
         account_id: delta.account_id.clone(),
         nonce: delta.nonce,
@@ -331,6 +380,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         candidate_at: candidate_at.unwrap_or_default(),
         canonical_at,
         discarded_at,
+        status: proto_status,
     }
 }
 

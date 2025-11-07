@@ -5,7 +5,7 @@ mod falcon;
 mod helpers;
 mod menu;
 mod multisig;
-mod pending_tx;
+mod proposals;
 mod state;
 
 use miden_client::rpc::Endpoint;
@@ -15,6 +15,7 @@ use actions::{
     action_add_cosigner, action_configure_psm, action_create_account,
     action_finalize_pending_transaction, action_generate_keypair, action_pull_deltas_from_psm,
     action_pull_from_psm, action_show_account, action_show_status, action_sign_transaction,
+    action_view_proposals,
 };
 use display::{print_banner, print_error, print_section, print_success, print_waiting};
 use menu::{handle_invalid_choice, parse_menu_choice, MenuAction};
@@ -120,8 +121,15 @@ async fn handle_action(action: MenuAction, state: &mut SessionState) -> Result<(
                 DefaultEditor::new().map_err(|e| format!("Failed to create editor: {}", e))?;
             action_add_cosigner(state, &mut editor).await
         }
-        MenuAction::SignTransaction => action_sign_transaction(state).await,
-        MenuAction::FinalizePendingTransaction => action_finalize_pending_transaction(state).await,
+        MenuAction::ViewProposals => action_view_proposals(state).await,
+        MenuAction::SignProposal => {
+            let mut editor =
+                DefaultEditor::new().map_err(|e| format!("Failed to create editor: {}", e))?;
+            action_sign_transaction(state, &mut editor).await
+        }
+        MenuAction::FinalizeProposal => {
+            action_finalize_pending_transaction(state).await
+        }
         MenuAction::ShowAccount => action_show_account(state).await,
         MenuAction::ShowStatus => action_show_status(state).await,
         MenuAction::Quit => {

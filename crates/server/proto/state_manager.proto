@@ -108,6 +108,30 @@ message GetStateResponse {
   AccountState state = 3;
 }
 
+// Delta status
+message DeltaStatus {
+  oneof status {
+    PendingStatus pending = 1;
+    string candidate_at = 2;
+    string canonical_at = 3;
+    string discarded_at = 4;
+  }
+}
+
+// Pending status with cosigner signatures
+message PendingStatus {
+  string timestamp = 1;
+  string proposer_id = 2;
+  repeated CosignerSignature cosigner_sigs = 3;
+}
+
+// Cosigner signature
+message CosignerSignature {
+  string signer_id = 1;
+  string signature = 2; // JSON string of ProposalSignature
+  string timestamp = 3;
+}
+
 // Delta object
 message DeltaObject {
   string account_id = 1;
@@ -119,6 +143,7 @@ message DeltaObject {
   string candidate_at = 7;
   optional string canonical_at = 8;
   optional string discarded_at = 9;
+  optional DeltaStatus status = 10;
 }
 
 // Account state
