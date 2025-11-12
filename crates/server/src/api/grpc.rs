@@ -6,7 +6,6 @@ use crate::services::{
 };
 use crate::state::AppState;
 use crate::storage::StorageType;
-use crate::delta_object::DeltaStatus;
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code
@@ -20,6 +19,8 @@ pub mod state_manager {
 
 use state_manager::state_manager_server::StateManager;
 use state_manager::*;
+
+use state_manager::DeltaStatus as DeltaStatusGrpc;
 
 pub struct StateManagerService {
     pub app_state: AppState,
@@ -337,7 +338,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
                 })
                 .collect();
 
-            Some(state_manager::DeltaStatus {
+            Some(DeltaStatusGrpc {
                 status: Some(state_manager::delta_status::Status::Pending(
                     state_manager::PendingStatus {
                         timestamp: timestamp.clone(),
@@ -348,21 +349,21 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp } => {
-            Some(state_manager::DeltaStatus {
+            Some(DeltaStatusGrpc {
                 status: Some(state_manager::delta_status::Status::CandidateAt(
                     timestamp.clone(),
                 )),
             })
         }
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
-            Some(state_manager::DeltaStatus {
+            Some(DeltaStatusGrpc {
                 status: Some(state_manager::delta_status::Status::CanonicalAt(
                     timestamp.clone(),
                 )),
             })
         }
         crate::delta_object::DeltaStatus::Discarded { timestamp } => {
-            Some(state_manager::DeltaStatus {
+            Some(DeltaStatusGrpc {
                 status: Some(state_manager::delta_status::Status::DiscardedAt(
                     timestamp.clone(),
                 )),

@@ -176,6 +176,15 @@ impl NetworkClient for MockNetworkClient {
             .pop()
             .unwrap_or(Ok(None))
     }
+
+    fn delta_proposal_id(
+        &self,
+        _account_id: &str,
+        _nonce: u64,
+        _delta_payload: &serde_json::Value,
+    ) -> Result<String, String> {
+        Ok("mock_proposal_id".to_string())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -277,6 +286,26 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn submit_delta_proposal(&self, _commitment: &str, _proposal: &DeltaObject) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn pull_delta_proposal(&self, _account_id: &str, _commitment: &str) -> Result<DeltaObject, String> {
+        Err("Mock: No proposal found".to_string())
+    }
+
+    async fn pull_all_delta_proposals(&self, _account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        Ok(vec![])
+    }
+
+    async fn update_delta_proposal(&self, _commitment: &str, _proposal: &DeltaObject) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn delete_delta_proposal(&self, _account_id: &str, _commitment: &str) -> Result<(), String> {
+        Ok(())
     }
 }
 

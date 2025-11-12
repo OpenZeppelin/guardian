@@ -111,6 +111,16 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.merge_deltas(delta_payloads)
     }
 
+    fn delta_proposal_id(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        delta_payload: &serde_json::Value,
+    ) -> Result<String, String> {
+        self.miden_client
+            .delta_proposal_id(account_id, nonce, delta_payload)
+    }
+
     fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
         self.miden_client.validate_account_id(account_id)
     }

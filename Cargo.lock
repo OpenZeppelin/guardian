@@ -2679,6 +2679,7 @@ dependencies = [
  "axum",
  "chrono",
  "hex",
+ "miden-client",
  "miden-keystore",
  "miden-lib",
  "miden-objects",

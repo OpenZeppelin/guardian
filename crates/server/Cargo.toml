@@ -34,6 +34,9 @@ private-state-manager-shared = { path = "../shared" }
 miden-keystore = { path = "../miden-keystore" }
 miden-rpc-client = { path = "../miden-rpc-client" }
 
+# Optional dependencies for e2e tests
+miden-client = { workspace = true, features = ["testing"], optional = true }
+
 [build-dependencies]
 tonic-build = { workspace = true }
 
@@ -45,4 +48,4 @@ miden-lib = { workspace = true }
 [features]
 default = []
 integration = []
-e2e = []
+e2e = ["miden-client"]
