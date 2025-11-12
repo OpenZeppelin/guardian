@@ -1,8 +1,7 @@
 use crate::delta_object::DeltaObject;
 use crate::metadata::auth::{Auth, ExtractCredentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams,
-    GetStateParams, PushDeltaParams,
+    self, ConfigureAccountParams, GetDeltaParams, GetStateParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use crate::storage::StorageType;
@@ -348,27 +347,21 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
                 )),
             })
         }
-        crate::delta_object::DeltaStatus::Candidate { timestamp } => {
-            Some(DeltaStatusGrpc {
-                status: Some(state_manager::delta_status::Status::CandidateAt(
-                    timestamp.clone(),
-                )),
-            })
-        }
-        crate::delta_object::DeltaStatus::Canonical { timestamp } => {
-            Some(DeltaStatusGrpc {
-                status: Some(state_manager::delta_status::Status::CanonicalAt(
-                    timestamp.clone(),
-                )),
-            })
-        }
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => {
-            Some(DeltaStatusGrpc {
-                status: Some(state_manager::delta_status::Status::DiscardedAt(
-                    timestamp.clone(),
-                )),
-            })
-        }
+        crate::delta_object::DeltaStatus::Candidate { timestamp } => Some(DeltaStatusGrpc {
+            status: Some(state_manager::delta_status::Status::CandidateAt(
+                timestamp.clone(),
+            )),
+        }),
+        crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
+            status: Some(state_manager::delta_status::Status::CanonicalAt(
+                timestamp.clone(),
+            )),
+        }),
+        crate::delta_object::DeltaStatus::Discarded { timestamp } => Some(DeltaStatusGrpc {
+            status: Some(state_manager::delta_status::Status::DiscardedAt(
+                timestamp.clone(),
+            )),
+        }),
     };
 
     state_manager::DeltaObject {

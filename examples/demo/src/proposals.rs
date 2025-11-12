@@ -1,6 +1,6 @@
+use miden_objects::transaction::TransactionSummary;
 use private_state_manager_client::DeltaObject;
 use private_state_manager_shared::FromJson;
-use miden_objects::transaction::TransactionSummary;
 use serde_json::Value;
 
 /// Extract proposal metadata from a delta object
@@ -10,9 +10,7 @@ pub fn extract_proposal_metadata(delta: &DeltaObject) -> ProposalMetadata {
             return ProposalMetadata {
                 proposal_type: "update_signers".to_string(),
                 tx_summary: Some(tx_summary.clone()),
-                new_threshold: payload_json
-                    .get("new_threshold")
-                    .and_then(|v| v.as_u64()),
+                new_threshold: payload_json.get("new_threshold").and_then(|v| v.as_u64()),
                 signer_commitments_hex: payload_json
                     .get("signer_commitments_hex")
                     .and_then(|v| v.as_array())
@@ -99,7 +97,6 @@ impl ProposalMetadata {
     }
 }
 
-
 /// Count signatures in a pending proposal
 pub fn count_signatures(delta: &DeltaObject) -> usize {
     if let Some(ref status) = delta.status {
@@ -119,7 +116,10 @@ pub fn has_signer_signed(delta: &DeltaObject, signer_id: &str) -> bool {
         if let Some(ref status_oneof) = status.status {
             use private_state_manager_client::delta_status::Status;
             if let Status::Pending(ref pending) = status_oneof {
-                return pending.cosigner_sigs.iter().any(|sig| sig.signer_id == signer_id);
+                return pending
+                    .cosigner_sigs
+                    .iter()
+                    .any(|sig| sig.signer_id == signer_id);
             }
         }
     }
@@ -132,7 +132,11 @@ pub fn get_signers(delta: &DeltaObject) -> Vec<String> {
         if let Some(ref status_oneof) = status.status {
             use private_state_manager_client::delta_status::Status;
             if let Status::Pending(ref pending) = status_oneof {
-                return pending.cosigner_sigs.iter().map(|sig| sig.signer_id.clone()).collect();
+                return pending
+                    .cosigner_sigs
+                    .iter()
+                    .map(|sig| sig.signer_id.clone())
+                    .collect();
             }
         }
     }

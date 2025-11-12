@@ -288,23 +288,42 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
-    async fn submit_delta_proposal(&self, _commitment: &str, _proposal: &DeltaObject) -> Result<(), String> {
+    async fn submit_delta_proposal(
+        &self,
+        _commitment: &str,
+        _proposal: &DeltaObject,
+    ) -> Result<(), String> {
         Ok(())
     }
 
-    async fn pull_delta_proposal(&self, _account_id: &str, _commitment: &str) -> Result<DeltaObject, String> {
+    async fn pull_delta_proposal(
+        &self,
+        _account_id: &str,
+        _commitment: &str,
+    ) -> Result<DeltaObject, String> {
         Err("Mock: No proposal found".to_string())
     }
 
-    async fn pull_all_delta_proposals(&self, _account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_all_delta_proposals(
+        &self,
+        _account_id: &str,
+    ) -> Result<Vec<DeltaObject>, String> {
         Ok(vec![])
     }
 
-    async fn update_delta_proposal(&self, _commitment: &str, _proposal: &DeltaObject) -> Result<(), String> {
+    async fn update_delta_proposal(
+        &self,
+        _commitment: &str,
+        _proposal: &DeltaObject,
+    ) -> Result<(), String> {
         Ok(())
     }
 
-    async fn delete_delta_proposal(&self, _account_id: &str, _commitment: &str) -> Result<(), String> {
+    async fn delete_delta_proposal(
+        &self,
+        _account_id: &str,
+        _commitment: &str,
+    ) -> Result<(), String> {
         Ok(())
     }
 }

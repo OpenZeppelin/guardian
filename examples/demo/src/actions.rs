@@ -37,7 +37,7 @@ pub async fn action_generate_keypair(state: &mut SessionState) -> Result<(), Str
 }
 
 pub async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
-    use crate::proposals::{extract_proposal_metadata, count_signatures, get_signers};
+    use crate::proposals::{count_signatures, extract_proposal_metadata, get_signers};
 
     print_section("View Pending Proposals");
 
@@ -84,7 +84,10 @@ pub async fn action_view_proposals(state: &mut SessionState) -> Result<(), Strin
                 let current_signers = metadata.signers_required_hex.len();
                 let new_signers = metadata.signer_commitments_hex.len();
 
-                println!("      Current config: {}-of-{}", current_threshold, current_signers);
+                println!(
+                    "      Current config: {}-of-{}",
+                    current_threshold, current_signers
+                );
                 println!("      New config:     {}-of-{}", new_threshold, new_signers);
             }
         }
@@ -194,7 +197,6 @@ pub async fn action_create_account(
     Ok(())
 }
 
-
 pub async fn action_configure_psm(state: &mut SessionState) -> Result<(), String> {
     print_section("Configure Account in PSM");
 
@@ -243,7 +245,6 @@ pub async fn action_configure_psm(state: &mut SessionState) -> Result<(), String
 
     Ok(())
 }
-
 
 pub async fn action_pull_from_psm(
     state: &mut SessionState,
@@ -314,7 +315,6 @@ pub async fn action_pull_from_psm(
     Ok(())
 }
 
-
 pub async fn action_pull_deltas_from_psm(state: &mut SessionState) -> Result<(), String> {
     print_section("Pull Deltas from PSM");
 
@@ -348,7 +348,6 @@ pub async fn action_pull_deltas_from_psm(state: &mut SessionState) -> Result<(),
 
     Ok(())
 }
-
 
 pub async fn action_add_cosigner(
     state: &mut SessionState,
@@ -516,7 +515,10 @@ pub async fn action_add_cosigner(
         .map_err(|e| format!("Failed to push proposal to PSM: {}", e))?;
 
     if !proposal_response.success {
-        return Err(format!("Failed to create proposal: {}", proposal_response.message));
+        return Err(format!(
+            "Failed to create proposal: {}",
+            proposal_response.message
+        ));
     }
 
     let proposal_commitment = proposal_response.commitment;
@@ -543,7 +545,10 @@ pub async fn action_add_cosigner(
         .map_err(|e| format!("Failed to sign proposal: {}", e))?;
 
     if !sign_response.success {
-        return Err(format!("Failed to sign proposal: {}", sign_response.message));
+        return Err(format!(
+            "Failed to sign proposal: {}",
+            sign_response.message
+        ));
     }
 
     print_success(&format!(
@@ -566,12 +571,13 @@ pub async fn action_add_cosigner(
     Ok(())
 }
 
-
 pub async fn action_sign_transaction(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
 ) -> Result<(), String> {
-    use crate::proposals::{extract_proposal_metadata, has_signer_signed, count_signatures, ProposalMetadata};
+    use crate::proposals::{
+        count_signatures, extract_proposal_metadata, has_signer_signed, ProposalMetadata,
+    };
     use miden_client::Serializable;
 
     print_section("Sign a Proposal");
@@ -611,7 +617,11 @@ pub async fn action_sign_transaction(
 
         println!("  [{}] Proposal (nonce: {})", idx + 1, proposal.nonce);
         println!("      Type: {}", metadata.proposal_type);
-        println!("      Signatures: {}/{}", signature_count, metadata.signers_required_hex.len());
+        println!(
+            "      Signatures: {}/{}",
+            signature_count,
+            metadata.signers_required_hex.len()
+        );
 
         // We don't have timestamp and proposer info in the current client protocol
         // This would need to be added to the proto or stored in delta_payload
@@ -627,7 +637,8 @@ pub async fn action_sign_transaction(
 
     // Prompt for selection
     let selection = prompt_input(editor, "Select proposal to sign (number): ")?;
-    let idx = selection.parse::<usize>()
+    let idx = selection
+        .parse::<usize>()
         .map_err(|_| "Invalid selection".to_string())?
         .checked_sub(1)
         .ok_or("Invalid selection (use 1-based index)".to_string())?;
@@ -638,7 +649,8 @@ pub async fn action_sign_transaction(
 
     let selected_proposal = &proposals[idx];
     let (_metadata, tx_commitment) = &proposal_info[idx];
-    let tx_commitment = tx_commitment.as_ref()
+    let tx_commitment = tx_commitment
+        .as_ref()
         .ok_or("Could not extract transaction commitment from proposal".to_string())?;
 
     // Check if already signed by this user
@@ -663,17 +675,15 @@ pub async fn action_sign_transaction(
 
     // Sign the proposal on the server
     let sign_response = psm_client
-        .sign_delta_proposal(
-            &account_id,
-            &proposal_id,
-            "falcon",
-            &user_signature_hex,
-        )
+        .sign_delta_proposal(&account_id, &proposal_id, "falcon", &user_signature_hex)
         .await
         .map_err(|e| format!("Failed to sign proposal: {}", e))?;
 
     if !sign_response.success {
-        return Err(format!("Failed to sign proposal: {}", sign_response.message));
+        return Err(format!(
+            "Failed to sign proposal: {}",
+            sign_response.message
+        ));
     }
 
     print_success(&format!(
@@ -766,7 +776,10 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let metadata = extract_proposal_metadata(proposal);
     let signature_count = count_signatures(proposal);
 
-    print_info(&format!("\nFinalizing proposal (nonce: {})", proposal.nonce));
+    print_info(&format!(
+        "\nFinalizing proposal (nonce: {})",
+        proposal.nonce
+    ));
     print_info(&format!("Type: {}", metadata.proposal_type));
     print_info(&format!("Signatures collected: {}", signature_count));
 
@@ -828,10 +841,8 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
             use private_state_manager_client::delta_status::Status;
             if let Status::Pending(ref pending) = status_oneof {
                 for cosigner_sig in &pending.cosigner_sigs {
-                    let sig_json: serde_json::Value =
-                        serde_json::from_str(&cosigner_sig.signature).map_err(|e| {
-                            format!("Failed to parse cosigner signature JSON: {}", e)
-                        })?;
+                    let sig_json: serde_json::Value = serde_json::from_str(&cosigner_sig.signature)
+                        .map_err(|e| format!("Failed to parse cosigner signature JSON: {}", e))?;
 
                     let sig_hex = sig_json
                         .get("signature")
@@ -922,7 +933,6 @@ pub async fn action_show_account(state: &SessionState) -> Result<(), String> {
     Ok(())
 }
 
-
 pub async fn action_show_status(state: &SessionState) -> Result<(), String> {
     print_connection_status(state.is_psm_connected(), state.is_miden_connected());
 
@@ -945,4 +955,3 @@ pub async fn action_show_status(state: &SessionState) -> Result<(), String> {
 
     Ok(())
 }
-

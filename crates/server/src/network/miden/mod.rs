@@ -367,7 +367,7 @@ impl NetworkClient for MidenNetworkClient {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
 

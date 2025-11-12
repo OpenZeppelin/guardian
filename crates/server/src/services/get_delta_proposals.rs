@@ -1,8 +1,8 @@
+use crate::builder::state::AppState;
 use crate::delta_object::DeltaObject;
 use crate::error::Result;
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
-use crate::builder::state::AppState;
 
 #[derive(Debug, Clone)]
 pub struct GetDeltaProposalsParams {

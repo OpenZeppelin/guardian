@@ -1,8 +1,8 @@
+use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
-use crate::builder::state::AppState;
 
 #[derive(Debug, Clone)]
 pub struct SignDeltaProposalParams {
@@ -49,12 +49,16 @@ pub async fn sign_delta_proposal(
             timestamp,
             proposer_id,
             cosigner_sigs,
-        } => (timestamp.clone(), proposer_id.clone(), cosigner_sigs.clone()),
+        } => (
+            timestamp.clone(),
+            proposer_id.clone(),
+            cosigner_sigs.clone(),
+        ),
         _ => {
             return Err(PsmError::ProposalNotFound {
                 account_id: account_id.clone(),
                 commitment: commitment.clone(),
-            })
+            });
         }
     };
 
@@ -75,7 +79,7 @@ pub async fn sign_delta_proposal(
             return Err(PsmError::InvalidProposalSignature(format!(
                 "Unknown signature scheme: {}",
                 signature_scheme
-            )))
+            )));
         }
     };
 

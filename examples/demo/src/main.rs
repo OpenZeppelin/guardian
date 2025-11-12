@@ -127,9 +127,7 @@ async fn handle_action(action: MenuAction, state: &mut SessionState) -> Result<(
                 DefaultEditor::new().map_err(|e| format!("Failed to create editor: {}", e))?;
             action_sign_transaction(state, &mut editor).await
         }
-        MenuAction::FinalizeProposal => {
-            action_finalize_pending_transaction(state).await
-        }
+        MenuAction::FinalizeProposal => action_finalize_pending_transaction(state).await,
         MenuAction::ShowAccount => action_show_account(state).await,
         MenuAction::ShowStatus => action_show_status(state).await,
         MenuAction::Quit => {

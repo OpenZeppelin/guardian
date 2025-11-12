@@ -29,9 +29,15 @@ pub enum DeltaStatus {
         proposer_id: String, // Could be pubkey commitment or other identifier
         cosigner_sigs: Vec<CosignerSignature>,
     },
-    Candidate { timestamp: String },
-    Canonical { timestamp: String },
-    Discarded { timestamp: String },
+    Candidate {
+        timestamp: String,
+    },
+    Canonical {
+        timestamp: String,
+    },
+    Discarded {
+        timestamp: String,
+    },
 }
 
 impl DeltaStatus {
@@ -151,7 +157,7 @@ impl<'de> Deserialize<'de> for DeltaObject {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
 

@@ -128,7 +128,7 @@ pub async fn configure_account(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
     use crate::ack::{Acknowledger, MidenFalconRpoSigner};

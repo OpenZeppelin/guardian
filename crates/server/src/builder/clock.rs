@@ -15,7 +15,7 @@ impl Clock for SystemClock {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 pub mod test {
     use super::*;
     use std::sync::{Arc, Mutex};

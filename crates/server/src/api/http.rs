@@ -228,10 +228,13 @@ pub async fn push_delta_proposal(
     };
 
     match services::push_delta_proposal(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(DeltaProposalResponse {
-            delta: response.delta,
-            commitment: response.commitment,
-        })),
+        Ok(response) => (
+            StatusCode::OK,
+            Json(DeltaProposalResponse {
+                delta: response.delta,
+                commitment: response.commitment,
+            }),
+        ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(DeltaProposalResponse {

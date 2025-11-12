@@ -11,11 +11,17 @@ pub enum PsmError {
     AccountAlreadyExists(String),
     InvalidAccountId(String),
     StateNotFound(String),
-    DeltaNotFound { account_id: String, nonce: u64 },
+    DeltaNotFound {
+        account_id: String,
+        nonce: u64,
+    },
     InvalidDelta(String),
     ConflictPendingDelta,
     ConflictPendingProposal,
-    CommitmentMismatch { expected: String, actual: String },
+    CommitmentMismatch {
+        expected: String,
+        actual: String,
+    },
     InvalidCommitment(String),
     AuthenticationFailed(String),
     AuthorizationFailed(String),
@@ -24,10 +30,18 @@ pub enum PsmError {
     NetworkError(String),
     SigningError(String),
     ConfigurationError(String),
-    ProposalNotFound { account_id: String, commitment: String },
-    ProposalAlreadySigned { signer_id: String },
+    ProposalNotFound {
+        account_id: String,
+        commitment: String,
+    },
+    ProposalAlreadySigned {
+        signer_id: String,
+    },
     InvalidProposalSignature(String),
-    InsufficientSignatures { required: usize, got: usize },
+    InsufficientSignatures {
+        required: usize,
+        got: usize,
+    },
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -118,10 +132,7 @@ impl fmt::Display for PsmError {
                 )
             }
             PsmError::ConflictPendingProposal => {
-                write!(
-                    f,
-                    "Cannot push new delta: there are pending proposals"
-                )
+                write!(f, "Cannot push new delta: there are pending proposals")
             }
             PsmError::CommitmentMismatch { expected, actual } => {
                 write!(f, "Commitment mismatch: expected {expected}, got {actual}")
@@ -134,7 +145,10 @@ impl fmt::Display for PsmError {
             PsmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
             PsmError::SigningError(msg) => write!(f, "Signing error: {msg}"),
             PsmError::ConfigurationError(msg) => write!(f, "Configuration error: {msg}"),
-            PsmError::ProposalNotFound { account_id, commitment } => {
+            PsmError::ProposalNotFound {
+                account_id,
+                commitment,
+            } => {
                 write!(
                     f,
                     "Proposal not found for account '{account_id}' with commitment '{commitment}'"
@@ -147,10 +161,7 @@ impl fmt::Display for PsmError {
                 write!(f, "Invalid proposal signature: {msg}")
             }
             PsmError::InsufficientSignatures { required, got } => {
-                write!(
-                    f,
-                    "Insufficient signatures: required {required}, got {got}"
-                )
+                write!(f, "Insufficient signatures: required {required}, got {got}")
             }
         }
     }

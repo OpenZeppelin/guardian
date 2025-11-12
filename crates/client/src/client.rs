@@ -2,11 +2,10 @@ use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
 use crate::proto::state_manager_client::StateManagerClient;
 use crate::proto::{
-    AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaRequest, GetDeltaResponse,
-    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, PushDeltaRequest, PushDeltaResponse,
-    PushDeltaProposalRequest, PushDeltaProposalResponse,
-    GetDeltaProposalsRequest, GetDeltaProposalsResponse,
+    AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaProposalsRequest,
+    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
+    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
+    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
     SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use miden_objects::account::AccountId;

@@ -106,7 +106,7 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
     use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;

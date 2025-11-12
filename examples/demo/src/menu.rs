@@ -85,12 +85,8 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
             Some(MenuAction::PullDeltasFromPsm)
         }
         "6" if state.has_account() => Some(MenuAction::AddCosigner),
-        "7" if state.has_account() && state.is_psm_connected() => {
-            Some(MenuAction::ViewProposals)
-        }
-        "8" if state.has_account() && state.is_psm_connected() => {
-            Some(MenuAction::SignProposal)
-        }
+        "7" if state.has_account() && state.is_psm_connected() => Some(MenuAction::ViewProposals),
+        "8" if state.has_account() && state.is_psm_connected() => Some(MenuAction::SignProposal),
         "9" if state.has_account() && state.is_psm_connected() => {
             Some(MenuAction::FinalizeProposal)
         }

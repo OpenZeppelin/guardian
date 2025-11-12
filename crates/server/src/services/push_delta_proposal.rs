@@ -1,9 +1,9 @@
+use crate::builder::state::AppState;
 use crate::delta_object::DeltaObject;
+use crate::delta_object::DeltaStatus;
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
-use crate::builder::state::AppState;
-use crate::delta_object::DeltaStatus;
 
 #[derive(Debug, Clone)]
 pub struct PushDeltaProposalParams {
@@ -45,13 +45,17 @@ pub async fn push_delta_proposal(
     let commitment = {
         let client = state.network_client.lock().await;
         client
-            .verify_delta(&current_state.commitment, &current_state.state_json, &delta_payload)
+            .verify_delta(
+                &current_state.commitment,
+                &current_state.state_json,
+                &delta_payload,
+            )
             .map_err(PsmError::InvalidDelta)?;
 
         // Compute the delta proposal ID
         client
             .delta_proposal_id(&account_id, nonce, &delta_payload)
-            .map_err(|e| PsmError::InvalidDelta(e))?
+            .map_err(PsmError::InvalidDelta)?
     };
 
     // Extract proposer ID from credentials

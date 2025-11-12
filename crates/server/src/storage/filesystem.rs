@@ -210,7 +210,11 @@ impl StorageBackend for FilesystemService {
     }
 
     // Delta proposal methods - stored separately from executed deltas
-    async fn submit_delta_proposal(&self, commitment: &str, proposal: &DeltaObject) -> Result<(), String> {
+    async fn submit_delta_proposal(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+    ) -> Result<(), String> {
         let path = self.get_delta_proposal_path(&proposal.account_id, commitment);
 
         // Create parent directory if it doesn't exist
@@ -237,15 +241,19 @@ impl StorageBackend for FilesystemService {
         Ok(())
     }
 
-    async fn pull_delta_proposal(&self, account_id: &str, commitment: &str) -> Result<DeltaObject, String> {
+    async fn pull_delta_proposal(
+        &self,
+        account_id: &str,
+        commitment: &str,
+    ) -> Result<DeltaObject, String> {
         let path = self.get_delta_proposal_path(account_id, commitment);
 
         let json = fs::read_to_string(&path)
             .await
             .map_err(|e| format!("Failed to read proposal file: {e}"))?;
 
-        let proposal: DeltaObject = serde_json::from_str(&json)
-            .map_err(|e| format!("Failed to parse proposal: {e}"))?;
+        let proposal: DeltaObject =
+            serde_json::from_str(&json).map_err(|e| format!("Failed to parse proposal: {e}"))?;
 
         Ok(proposal)
     }
@@ -270,12 +278,20 @@ impl StorageBackend for FilesystemService {
         Ok(proposals)
     }
 
-    async fn update_delta_proposal(&self, commitment: &str, proposal: &DeltaObject) -> Result<(), String> {
+    async fn update_delta_proposal(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+    ) -> Result<(), String> {
         // For filesystem, update is the same as submit
         self.submit_delta_proposal(commitment, proposal).await
     }
 
-    async fn delete_delta_proposal(&self, account_id: &str, commitment: &str) -> Result<(), String> {
+    async fn delete_delta_proposal(
+        &self,
+        account_id: &str,
+        commitment: &str,
+    ) -> Result<(), String> {
         let path = self.get_delta_proposal_path(account_id, commitment);
 
         // Check if the file exists
