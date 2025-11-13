@@ -2,9 +2,45 @@ use base64::Engine;
 use miden_objects::account::Account;
 use miden_objects::transaction::TransactionSummary;
 use miden_objects::utils::serde::{Deserializable, Serializable};
+use serde::{Deserialize, Serialize};
 
 pub mod auth;
 pub mod hex;
+
+/// Delta payload structure containing transaction summary and signatures
+/// This is the standard format for delta_payload in proposals
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeltaPayload {
+    pub tx_summary: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<DeltaSignature>,
+}
+
+impl DeltaPayload {
+    pub fn new(tx_summary: serde_json::Value) -> Self {
+        Self {
+            tx_summary,
+            signatures: Vec::new(),
+        }
+    }
+
+    pub fn with_signature(mut self, signature: DeltaSignature) -> Self {
+        self.signatures.push(signature);
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("DeltaPayload should always serialize")
+    }
+}
+
+/// Signature entry in delta payload
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeltaSignature {
+    pub signer_id: String,
+    pub signature: String,
+    pub signature_scheme: String,
+}
 
 pub trait ToJson {
     fn to_json(&self) -> serde_json::Value;

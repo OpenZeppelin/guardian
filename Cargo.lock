@@ -2710,6 +2710,7 @@ dependencies = [
  "miden-lib",
  "miden-objects",
  "rand 0.8.5",
+ "serde",
  "serde_json",
 ]
 

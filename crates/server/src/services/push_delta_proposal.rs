@@ -1,9 +1,9 @@
 use crate::builder::state::AppState;
-use crate::delta_object::DeltaObject;
-use crate::delta_object::DeltaStatus;
+use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct PushDeltaProposalParams {
@@ -40,6 +40,17 @@ pub async fn push_delta_proposal(
         .await
         .map_err(|_| PsmError::StateNotFound(account_id.clone()))?;
 
+    // Extract tx_summary and signatures from delta_payload
+    let tx_summary = delta_payload
+        .get("tx_summary")
+        .ok_or_else(|| PsmError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
+
+    let signatures = delta_payload
+        .get("signatures")
+        .and_then(|s| s.as_array())
+        .cloned()
+        .unwrap_or_default();
+
     // Validate delta using network client (check validity but don't apply)
     // and compute the delta commitment
     let commitment = {
@@ -48,13 +59,13 @@ pub async fn push_delta_proposal(
             .verify_delta(
                 &current_state.commitment,
                 &current_state.state_json,
-                &delta_payload,
+                tx_summary,
             )
             .map_err(PsmError::InvalidDelta)?;
 
-        // Compute the delta proposal ID
+        // Compute the delta proposal ID from the tx_summary
         client
-            .delta_proposal_id(&account_id, nonce, &delta_payload)
+            .delta_proposal_id(&account_id, nonce, tx_summary)
             .map_err(PsmError::InvalidDelta)?
     };
 
@@ -63,16 +74,55 @@ pub async fn push_delta_proposal(
         Credentials::Signature { pubkey, .. } => pubkey.clone(),
     };
 
-    // Create delta object with Pending status
+    // Parse cosigner signatures from the payload and add timestamp
+    let signature_timestamp = state.clock.now_rfc3339();
+    let mut cosigner_sigs = Vec::new();
+    for sig_value in signatures {
+        if let (Some(signer_id), Some(signature), Some(scheme)) = (
+            sig_value.get("signer_id").and_then(|v| v.as_str()),
+            sig_value.get("signature").and_then(|v| v.as_str()),
+            sig_value.get("signature_scheme").and_then(|v| v.as_str()),
+        ) {
+            let proposal_signature = match scheme {
+                "falcon" => ProposalSignature::Falcon {
+                    signature: signature.to_string(),
+                },
+                _ => continue, // Skip unknown schemes
+            };
+
+            cosigner_sigs.push(CosignerSignature {
+                signature: proposal_signature,
+                timestamp: signature_timestamp.clone(),
+                signer_id: signer_id.to_string(),
+            });
+        }
+    }
+    let cosigner_ids: Vec<String> = cosigner_sigs
+        .iter()
+        .map(|sig| sig.signer_id.clone())
+        .collect();
+    info!(
+        account_id = %account_id,
+        nonce,
+        proposer_id = %proposer_id,
+        signer_ids = ?cosigner_ids,
+        "push_delta_proposal received"
+    );
+
+    // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
         account_id: account_id.clone(),
         nonce,
-        prev_commitment: current_state.commitment.clone(), // Use actual state commitment for validation
+        prev_commitment: current_state.commitment.clone(),
         new_commitment: None,
         delta_payload,
         ack_sig: None,
-        status: DeltaStatus::pending(timestamp, proposer_id),
+        status: DeltaStatus::Pending {
+            timestamp,
+            proposer_id,
+            cosigner_sigs,
+        },
     };
 
     // Store the delta proposal in the proposals directory using the commitment as ID
@@ -81,6 +131,17 @@ pub async fn push_delta_proposal(
         .submit_delta_proposal(&commitment, &delta_proposal)
         .await
         .map_err(PsmError::StorageError)?;
+    let stored_signer_count = match &delta_proposal.status {
+        DeltaStatus::Pending { cosigner_sigs, .. } => cosigner_sigs.len(),
+        _ => 0,
+    };
+    info!(
+        account_id = %account_id,
+        nonce,
+        commitment = %commitment,
+        signer_count = stored_signer_count,
+        "push_delta_proposal stored"
+    );
 
     Ok(PushDeltaProposalResult {
         delta: delta_proposal.clone(),

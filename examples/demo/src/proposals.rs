@@ -4,35 +4,45 @@ use private_state_manager_shared::FromJson;
 use serde_json::Value;
 
 /// Extract proposal metadata from a delta object
+/// The delta_payload now contains { "tx_summary": {...}, "signatures": [...], "metadata": {...} }
 pub fn extract_proposal_metadata(delta: &DeltaObject) -> ProposalMetadata {
     if let Ok(payload_json) = serde_json::from_str::<Value>(&delta.delta_payload) {
         if let Some(tx_summary) = payload_json.get("tx_summary") {
+            // Extract metadata if present
+            let metadata_obj = payload_json.get("metadata");
+
+            let new_threshold = metadata_obj
+                .and_then(|m| m.get("new_threshold"))
+                .and_then(|v| v.as_u64());
+
+            let signer_commitments_hex: Vec<String> = metadata_obj
+                .and_then(|m| m.get("signer_commitments_hex"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let salt_hex = metadata_obj
+                .and_then(|m| m.get("salt_hex"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let proposal_type = if new_threshold.is_some() {
+                "update_signers".to_string()
+            } else {
+                "transaction".to_string()
+            };
+
             return ProposalMetadata {
-                proposal_type: "update_signers".to_string(),
+                proposal_type,
                 tx_summary: Some(tx_summary.clone()),
-                new_threshold: payload_json.get("new_threshold").and_then(|v| v.as_u64()),
-                signer_commitments_hex: payload_json
-                    .get("signer_commitments_hex")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                signers_required_hex: payload_json
-                    .get("signers_required_hex")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                salt_hex: payload_json
-                    .get("salt_hex")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
+                new_threshold,
+                signer_commitments_hex: signer_commitments_hex.clone(),
+                signers_required_hex: signer_commitments_hex,
+                salt_hex,
             };
         }
     }

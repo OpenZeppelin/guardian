@@ -1,6 +1,6 @@
 use miden_client::ClientError;
 use miden_objects::account::Signature as AccountSignature;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
+use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, Signature as RpoFalconSignature};
 use miden_objects::transaction::TransactionSummary;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, Word};
@@ -8,8 +8,10 @@ use private_state_manager_client::{
     verify_commitment_signature, AuthConfig, FromJson, MidenFalconRpoAuth, ToJson,
 };
 use private_state_manager_shared::hex::FromHex;
+use private_state_manager_shared::{DeltaPayload, DeltaSignature};
 use rand::RngCore;
 use rustyline::DefaultEditor;
+use std::collections::HashSet;
 
 use crate::display::{
     print_account_info, print_connection_status, print_full_hex, print_info,
@@ -17,10 +19,17 @@ use crate::display::{
     shorten_hex,
 };
 use crate::falcon::generate_falcon_keypair;
-use crate::helpers::commitment_from_hex;
+use crate::helpers::{commitment_from_hex, format_word_as_hex};
 use crate::menu::prompt_input;
 use crate::multisig::create_multisig_psm_account;
 use crate::state::SessionState;
+
+fn pubkey_commitment_hex(pubkey_hex: &str) -> Option<String> {
+    PublicKey::from_hex(pubkey_hex).ok().map(|pk| {
+        let commitment = pk.to_commitment();
+        format!("0x{}", hex::encode(commitment.to_bytes()))
+    })
+}
 
 pub async fn action_generate_keypair(state: &mut SessionState) -> Result<(), String> {
     print_waiting("Generating Falcon keypair");
@@ -64,9 +73,16 @@ pub async fn action_view_proposals(state: &mut SessionState) -> Result<(), Strin
         let metadata = extract_proposal_metadata(proposal);
         let signature_count = count_signatures(proposal);
         let signers = get_signers(proposal);
+        let tx_commitment = metadata.get_tx_commitment();
 
         println!("  [{}] Proposal (nonce: {})", idx + 1, proposal.nonce);
         println!("      Type: {}", metadata.proposal_type);
+
+        // Show the full proposal ID (transaction commitment)
+        if let Some(ref commitment) = tx_commitment {
+            print_full_hex("      Proposal ID", commitment);
+        }
+
         println!("      Signatures: {}", signature_count);
 
         // Show signer list if any
@@ -77,20 +93,6 @@ pub async fn action_view_proposals(state: &mut SessionState) -> Result<(), Strin
             }
         }
 
-        // Show the proposal details based on type
-        if metadata.proposal_type == "add_cosigner" {
-            if let Some(new_threshold) = metadata.new_threshold {
-                let current_threshold = new_threshold - 1;
-                let current_signers = metadata.signers_required_hex.len();
-                let new_signers = metadata.signer_commitments_hex.len();
-
-                println!(
-                    "      Current config: {}-of-{}",
-                    current_threshold, current_signers
-                );
-                println!("      New config:     {}-of-{}", new_threshold, new_signers);
-            }
-        }
         println!();
     }
 
@@ -401,7 +403,7 @@ pub async fn action_add_cosigner(
     ));
     print_info(&format!(
         "New config will be: {}-of-{}",
-        current_threshold + 1,
+        current_threshold,
         current_num_cosigners + 1
     ));
 
@@ -422,6 +424,13 @@ pub async fn action_add_cosigner(
         "Extracted {} existing commitments from account storage",
         existing_commitments_hex.len()
     ));
+    for (idx, commitment) in existing_commitments_hex.iter().enumerate() {
+        println!(
+            "DEBUG: existing commitment [{}] {}",
+            idx,
+            shorten_hex(commitment)
+        );
+    }
 
     let mut signer_commitments: Vec<Word> = existing_commitments_hex
         .iter()
@@ -430,14 +439,17 @@ pub async fn action_add_cosigner(
 
     // Add the new cosigner
     signer_commitments.push(new_cosigner_commitment);
+    println!(
+        "DEBUG: Added new commitment {}. Total signer commitments: {}",
+        shorten_hex(&new_cosigner_commitment_hex),
+        signer_commitments.len()
+    );
 
     // Update stored commitments for future use
     state.cosigner_commitments = existing_commitments_hex.clone();
     state
         .cosigner_commitments
         .push(new_cosigner_commitment_hex.clone());
-
-    let new_threshold = current_threshold + 1;
 
     // Step 2: Build and simulate transaction
     print_waiting("Building update_signers transaction");
@@ -450,7 +462,7 @@ pub async fn action_add_cosigner(
     ]);
 
     let (tx_request, _config_hash) = build_update_signers_transaction_request(
-        new_threshold,
+        current_threshold,
         &signer_commitments,
         salt,
         vec![], // No signatures yet - this is for simulation
@@ -485,30 +497,93 @@ pub async fn action_add_cosigner(
     };
 
     // Step 3: Push proposal to PSM server and automatically sign with own key
-    print_waiting("Pushing proposal to PSM server");
-
-    // Store multisig metadata alongside TransactionSummary for later finalization
-    let signer_commitments_hex: Vec<String> = signer_commitments
-        .iter()
-        .map(|w| format!("0x{}", hex::encode(w.as_bytes())))
-        .collect();
-
-    let salt_hex = format!("0x{}", hex::encode(salt.as_bytes()));
-
-    let delta_payload = serde_json::json!({
-        "tx_summary": tx_summary.to_json(),
-        "new_threshold": new_threshold,
-        "signer_commitments_hex": signer_commitments_hex,
-        "signers_required_hex": signer_commitments_hex.clone(),
-        "salt_hex": salt_hex,
-    });
+    print_waiting("Pushing proposal to PSM server and signing with your key");
 
     // Get values from state before borrowing psm_client mutably
     let user_secret_key = state.get_secret_key()?.clone();
     let user_commitment_hex = state.get_commitment_hex()?.to_string();
+    let auth_pubkey_hex = {
+        let psm_client = state.get_psm_client_mut()?;
+        psm_client.auth_pubkey_hex().map_err(|e| e.to_string())?
+    };
+    let auth_commitment_hex = pubkey_commitment_hex(&auth_pubkey_hex);
+    println!(
+        "DEBUG: push_delta_proposal auth signer pubkey {} (commitment {})",
+        shorten_hex(&auth_pubkey_hex),
+        auth_commitment_hex
+            .as_ref()
+            .map(|c| shorten_hex(c))
+            .unwrap_or_else(|| "<invalid>".to_string())
+    );
+    println!(
+        "DEBUG: Current state.cosigner_commitments {:?}",
+        state.cosigner_commitments
+    );
 
-    // Push the proposal to PSM server
+    // Compute the proposal commitment from the tx_summary
+    // This is what cosigners will sign
+    let tx_summary_commitment = tx_summary.to_commitment();
+    let proposal_commitment = format!("0x{}", hex::encode(tx_summary_commitment.as_bytes()));
+
+    // Sign the proposal commitment with the user's key
+    let user_signature_raw = user_secret_key.sign(tx_summary_commitment);
+    let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
+    println!(
+        "DEBUG: Pushing proposal signed by {}, signature {}",
+        shorten_hex(&user_commitment_hex),
+        shorten_hex(&user_signature_hex)
+    );
+
+    // Convert salt and signer commitments to hex for storage
+    let salt_hex = format_word_as_hex(&salt);
+    let signer_commitments_hex: Vec<String> = signer_commitments
+        .iter()
+        .map(|w| format_word_as_hex(w))
+        .collect();
+
+    // Create delta payload with the proposer's signature and metadata
+    let mut delta_payload_value = DeltaPayload::new(tx_summary.to_json())
+        .with_signature(DeltaSignature {
+            signer_id: user_commitment_hex.clone(),
+            signature: user_signature_hex,
+            signature_scheme: "falcon".to_string(),
+        })
+        .to_json();
+
+    // Add metadata for finalization
+    if let Some(obj) = delta_payload_value.as_object_mut() {
+        obj.insert(
+            "metadata".to_string(),
+            serde_json::json!({
+                "new_threshold": current_threshold,
+                "signer_commitments_hex": signer_commitments_hex,
+                "salt_hex": salt_hex,
+            }),
+        );
+    }
+    println!(
+        "DEBUG: Stored metadata signer commitments {:?}",
+        delta_payload_value["metadata"]["signer_commitments_hex"]
+    );
+    println!(
+        "DEBUG: Stored metadata salt {:?}",
+        delta_payload_value["metadata"]["salt_hex"]
+    );
+
+    let delta_payload = delta_payload_value;
+
+    // Push the proposal to PSM server with the signature
     let psm_client = state.get_psm_client_mut()?;
+    let actual_auth_pubkey_hex = psm_client.auth_pubkey_hex().map_err(|e| e.to_string())?;
+    let actual_auth_commitment_hex = pubkey_commitment_hex(&actual_auth_pubkey_hex);
+    println!(
+        "DEBUG: push_delta_proposal actual auth signer pubkey {} (commitment {})",
+        shorten_hex(&actual_auth_pubkey_hex),
+        actual_auth_commitment_hex
+            .as_ref()
+            .map(|c| shorten_hex(c))
+            .unwrap_or_else(|| "<invalid>".to_string())
+    );
     let proposal_response = psm_client
         .push_delta_proposal(&account_id, current_nonce, &delta_payload)
         .await
@@ -521,36 +596,8 @@ pub async fn action_add_cosigner(
         ));
     }
 
-    let proposal_commitment = proposal_response.commitment;
     print_success("Proposal created on PSM server");
     print_full_hex("\nProposal ID (Commitment)", &proposal_commitment);
-
-    // Automatically sign with own key
-    print_waiting("Signing proposal with your key");
-
-    // Sign the proposal commitment
-    let commitment_word = commitment_from_hex(&proposal_commitment)?;
-    let user_signature_raw = user_secret_key.sign(commitment_word);
-    let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
-
-    // Sign the proposal on the server
-    let sign_response = psm_client
-        .sign_delta_proposal(
-            &account_id,
-            &proposal_commitment,
-            "falcon",
-            &user_signature_hex,
-        )
-        .await
-        .map_err(|e| format!("Failed to sign proposal: {}", e))?;
-
-    if !sign_response.success {
-        return Err(format!(
-            "Failed to sign proposal: {}",
-            sign_response.message
-        ));
-    }
-
     print_success(&format!(
         "Automatically signed with your key ({})",
         shorten_hex(&user_commitment_hex)
@@ -584,6 +631,27 @@ pub async fn action_sign_transaction(
 
     let account = state.get_account()?;
     let account_id = account.id();
+
+    print_waiting("Configuring PSM authentication for current signer");
+    state.configure_psm_auth()?;
+    print_success("Configured PSM auth with current signer key");
+    let sign_auth_pubkey_hex = {
+        let psm_client = state.get_psm_client_mut()?;
+        psm_client.auth_pubkey_hex().map_err(|e| e.to_string())?
+    };
+    let sign_auth_commitment_hex = pubkey_commitment_hex(&sign_auth_pubkey_hex);
+    println!(
+        "DEBUG: sign_delta_proposal auth signer pubkey {} (commitment {})",
+        shorten_hex(&sign_auth_pubkey_hex),
+        sign_auth_commitment_hex
+            .as_ref()
+            .map(|c| shorten_hex(c))
+            .unwrap_or_else(|| "<invalid>".to_string())
+    );
+    println!(
+        "DEBUG: state.cosigner_commitments {:?}",
+        state.cosigner_commitments
+    );
 
     // Get values from state before borrowing psm_client mutably
     let user_secret_key = state.get_secret_key()?.clone();
@@ -648,12 +716,36 @@ pub async fn action_sign_transaction(
     }
 
     let selected_proposal = &proposals[idx];
-    let (_metadata, tx_commitment) = &proposal_info[idx];
+    let (metadata, tx_commitment) = &proposal_info[idx];
     let tx_commitment = tx_commitment
         .as_ref()
         .ok_or("Could not extract transaction commitment from proposal".to_string())?;
 
     // Check if already signed by this user
+    if !metadata
+        .signer_commitments_hex
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(&user_commitment_hex))
+    {
+        println!(
+            "DEBUG: Attempted to sign with {}, but expected commitments are {:?}",
+            user_commitment_hex, metadata.signer_commitments_hex
+        );
+        return Err(format!(
+            "Your key ({}) is not part of this proposal's signer set",
+            shorten_hex(&user_commitment_hex)
+        ));
+    }
+
+    println!(
+        "DEBUG: Signing proposal as {}",
+        shorten_hex(&user_commitment_hex)
+    );
+    println!(
+        "DEBUG: Proposal expects signers: {:?}",
+        metadata.signer_commitments_hex
+    );
+
     if has_signer_signed(selected_proposal, &user_commitment_hex) {
         print_info(&format!(
             "You have already signed this proposal (commitment: {})",
@@ -667,11 +759,19 @@ pub async fn action_sign_transaction(
 
     print_info(&format!("\nProposal ID: {}", shorten_hex(&proposal_id)));
     print_waiting("Signing proposal with your key");
+    println!(
+        "DEBUG: Attempting to sign commitment {}",
+        shorten_hex(&proposal_id)
+    );
 
     // Parse the TX commitment to Word for signing
     let commitment_word = commitment_from_hex(&proposal_id)?;
     let user_signature_raw = user_secret_key.sign(commitment_word);
     let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
+    println!(
+        "DEBUG: Signing request body with signature {}",
+        shorten_hex(&user_signature_hex)
+    );
 
     // Sign the proposal on the server
     let sign_response = psm_client
@@ -693,6 +793,10 @@ pub async fn action_sign_transaction(
 
     // Check updated signature count
     if let Some(updated_delta) = sign_response.delta {
+        println!(
+            "DEBUG: Server returned signer list {:?}",
+            extract_proposal_metadata(&updated_delta).signer_commitments_hex
+        );
         let updated_metadata = extract_proposal_metadata(&updated_delta);
         let updated_sig_count = count_signatures(&updated_delta);
 
@@ -720,7 +824,23 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     print_section("Finalize Proposal");
 
     state.configure_psm_auth()?;
-
+    let finalize_auth_pubkey = {
+        let psm_client = state.get_psm_client_mut()?;
+        psm_client.auth_pubkey_hex().map_err(|e| e.to_string())?
+    };
+    let finalize_auth_commitment = pubkey_commitment_hex(&finalize_auth_pubkey);
+    println!(
+        "DEBUG: finalize auth signer pubkey {} (commitment {})",
+        shorten_hex(&finalize_auth_pubkey),
+        finalize_auth_commitment
+            .as_ref()
+            .map(|c| shorten_hex(c))
+            .unwrap_or_else(|| "<invalid>".to_string())
+    );
+    println!(
+        "DEBUG: state.cosigner_commitments before finalize {:?}",
+        state.cosigner_commitments
+    );
     let account = state.get_account()?;
     let account_id = account.id();
 
@@ -776,12 +896,22 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let metadata = extract_proposal_metadata(proposal);
     let signature_count = count_signatures(proposal);
 
+    println!(
+        "Metadata threshold={}, commitments={:?}",
+        metadata.new_threshold.unwrap_or(0),
+        metadata.signer_commitments_hex
+    );
+
     print_info(&format!(
         "\nFinalizing proposal (nonce: {})",
         proposal.nonce
     ));
     print_info(&format!("Type: {}", metadata.proposal_type));
     print_info(&format!("Signatures collected: {}", signature_count));
+    println!(
+        "DEBUG: Required commitments for finalization: {:?}",
+        metadata.signer_commitments_hex
+    );
 
     let delta_payload_json = proposal.delta_payload.as_ref();
     let payload_wrapper: serde_json::Value = serde_json::from_str(delta_payload_json)
@@ -798,49 +928,21 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     let tx_summary_commitment_hex = format!("0x{}", hex::encode(tx_summary_commitment.as_bytes()));
 
     let mut signature_advice = Vec::new();
+    let required_commitments: HashSet<String> =
+        metadata.signer_commitments_hex.iter().cloned().collect();
+    let mut added_signers: HashSet<String> = HashSet::new();
 
-    let ack_sig: &str = proposal.ack_sig.as_ref();
+    print_info("Building signature advice from cosigner signatures");
 
-    if ack_sig.is_empty() {
-        return Err("PSM ack signature is empty".to_string());
-    }
-
-    print_info("Building signature advice from collected signatures");
-
-    let psm_commitment_hex = psm_client
-        .get_pubkey()
-        .await
-        .map_err(|e| format!("Failed to get PSM commitment: {}", e))?;
-
-    let ack_sig_with_prefix = if ack_sig.starts_with("0x") {
-        ack_sig.to_string()
-    } else {
-        format!("0x{}", ack_sig)
-    };
-
-    verify_commitment_signature(
-        &tx_summary_commitment_hex,
-        &psm_commitment_hex,
-        &ack_sig_with_prefix,
-    )
-    .map_err(|e| format!("PSM signature verification failed: {}", e))?;
-
-    let ack_signature = RpoFalconSignature::from_hex(&ack_sig_with_prefix)
-        .map_err(|e| format!("Failed to parse PSM signature: {}", e))?;
-
-    let psm_commitment = commitment_from_hex(&psm_commitment_hex)?;
-    signature_advice.push(build_signature_advice_entry(
-        psm_commitment,
-        tx_summary_commitment,
-        &AccountSignature::from(ack_signature),
-    ));
-
-    let signers = get_signers(proposal);
+    // Add cosigner signatures
     if let Some(ref status) = proposal.status {
         if let Some(ref status_oneof) = status.status {
             use private_state_manager_client::delta_status::Status;
             if let Status::Pending(ref pending) = status_oneof {
-                for cosigner_sig in &pending.cosigner_sigs {
+                println!("Pending cosigner signatures:");
+                for (idx, cosigner_sig) in pending.cosigner_sigs.iter().enumerate() {
+                    println!("  signer_id={}", shorten_hex(&cosigner_sig.signer_id));
+
                     let sig_json: serde_json::Value = serde_json::from_str(&cosigner_sig.signature)
                         .map_err(|e| format!("Failed to parse cosigner signature JSON: {}", e))?;
 
@@ -848,6 +950,37 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
                         .get("signature")
                         .and_then(|v| v.as_str())
                         .ok_or("Missing signature field")?;
+
+                    match verify_commitment_signature(
+                        &tx_summary_commitment_hex,
+                        &cosigner_sig.signer_id,
+                        sig_hex,
+                    ) {
+                        Ok(true) => println!("    ✔ signature {} is valid", idx + 1),
+                        Ok(false) => println!("    ✗ signature {} is INVALID", idx + 1),
+                        Err(err) => {
+                            println!("    ! verification error for signature {}: {err}", idx + 1)
+                        }
+                    }
+
+                    if !required_commitments
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(&cosigner_sig.signer_id))
+                    {
+                        println!(
+                            "    ! skipping signature {}: signer not part of expected commitments",
+                            idx + 1
+                        );
+                        continue;
+                    }
+
+                    if !added_signers.insert(cosigner_sig.signer_id.clone()) {
+                        println!(
+                            "    ! skipping signature {}: signer already processed",
+                            idx + 1
+                        );
+                        continue;
+                    }
 
                     let sig = RpoFalconSignature::from_hex(sig_hex)
                         .map_err(|e| format!("Invalid cosigner signature: {}", e))?;
@@ -858,16 +991,87 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
                         tx_summary_commitment,
                         &AccountSignature::from(sig),
                     ));
+                    println!(
+                        "DEBUG: Added cosigner {} to advice (total now {})",
+                        shorten_hex(&cosigner_sig.signer_id),
+                        signature_advice.len()
+                    );
                 }
             }
         }
     }
 
     print_success(&format!(
-        "Built signature advice with {} signatures (PSM + {} cosigners)",
-        signature_advice.len(),
-        signers.len()
+        "Built signature advice with {} cosigner signatures",
+        signature_advice.len()
     ));
+    for (idx, (key, _values)) in signature_advice.iter().enumerate() {
+        println!(
+            "DEBUG: Advice entry [{}] key {}",
+            idx,
+            format_word_as_hex(key)
+        );
+    }
+
+    // Push delta to PSM to get ack signature BEFORE building transaction
+    print_waiting("Pushing delta to PSM for acknowledgment");
+    let push_response = {
+        let psm_client = state.get_psm_client_mut()?;
+        psm_client
+            .push_delta(
+                &account_id,
+                proposal.nonce,
+                proposal.prev_commitment.clone(),
+                &tx_summary.to_json(),
+            )
+            .await
+            .map_err(|e| format!("Failed to push delta to PSM: {}", e))?
+    };
+
+    if !push_response.success {
+        return Err(format!("PSM rejected delta: {}", push_response.message));
+    }
+
+    let ack_sig = push_response
+        .ack_sig
+        .ok_or("PSM did not return acknowledgment signature")?;
+
+    print_success("✓ Received PSM acknowledgment signature");
+
+    // Add PSM's ack signature to signature advice
+    let psm_commitment_hex = {
+        let psm_client = state.get_psm_client_mut()?;
+        psm_client
+            .get_pubkey()
+            .await
+            .map_err(|e| format!("Failed to get PSM commitment: {}", e))?
+    };
+
+    let ack_sig_with_prefix = if ack_sig.starts_with("0x") {
+        ack_sig.clone()
+    } else {
+        format!("0x{}", ack_sig)
+    };
+
+    let ack_signature = RpoFalconSignature::from_hex(&ack_sig_with_prefix)
+        .map_err(|e| format!("Failed to parse PSM ack signature: {}", e))?;
+
+    let psm_commitment = commitment_from_hex(&psm_commitment_hex)?;
+    signature_advice.push(build_signature_advice_entry(
+        psm_commitment,
+        tx_summary_commitment,
+        &AccountSignature::from(ack_signature),
+    ));
+
+    print_success(&format!(
+        "Built complete signature advice with {} signatures (PSM + {} cosigners)",
+        signature_advice.len(),
+        signature_advice.len() - 1
+    ));
+    println!(
+        "DEBUG: Final advice entry count (including PSM): {}",
+        signature_advice.len()
+    );
 
     print_waiting("Building final transaction request");
 
@@ -888,23 +1092,37 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     .map_err(|e| format!("Failed to build final transaction request: {}", e))?;
 
     print_waiting("Executing transaction locally");
-    let miden_client = state.get_miden_client_mut()?;
-    let tx_result = miden_client
-        .new_transaction(account_id, final_tx_request)
-        .await
-        .map_err(|e| format!("Transaction execution failed: {}", e))?;
+    let tx_result = {
+        let miden_client = state.get_miden_client_mut()?;
+        match miden_client
+            .new_transaction(account_id, final_tx_request)
+            .await
+        {
+            Ok(result) => result,
+            Err(ClientError::TransactionExecutorError(tx_err)) => {
+                return Err(format!("Transaction execution failed:\n{tx_err}"));
+            }
+            Err(err) => return Err(format!("Transaction execution failed: {err}")),
+        }
+    };
 
     let new_nonce = tx_result.account_delta().nonce_delta().as_int();
 
-    print_success(&format!("✓ Transaction executed! New nonce: {}", new_nonce));
+    print_success(&format!(
+        "✓ Transaction executed locally! New nonce: {}",
+        new_nonce
+    ));
 
     print_waiting("Proving and submitting transaction to Miden node");
-    miden_client
-        .submit_transaction(tx_result.clone())
-        .await
-        .map_err(|e| format!("Failed to submit transaction: {}", e))?;
+    {
+        let miden_client = state.get_miden_client_mut()?;
+        miden_client
+            .submit_transaction(tx_result.clone())
+            .await
+            .map_err(|e| format!("Failed to submit transaction: {}", e))?
+    };
 
-    print_success("✓ Transaction submitted to Miden node!");
+    print_success("✓ Transaction proven and submitted to Miden node!");
 
     print_info(&format!(
         "New configuration: {}-of-{}",

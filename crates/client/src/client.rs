@@ -29,6 +29,15 @@ impl PsmClient {
         self
     }
 
+    pub fn auth_pubkey_hex(&self) -> Result<String, ClientError> {
+        self.auth
+            .as_ref()
+            .map(|auth| auth.public_key_hex())
+            .ok_or_else(|| {
+                ClientError::InvalidResponse("PSM client has no auth configured".to_string())
+            })
+    }
+
     fn add_auth_metadata(
         &self,
         request: &mut tonic::Request<impl std::fmt::Debug>,

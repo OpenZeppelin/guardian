@@ -30,7 +30,7 @@ pub async fn create_miden_client(
     let exec_options = ExecutionOptions::new(
         Some(MAX_TX_EXECUTION_CYCLES),
         MIN_TX_EXECUTION_CYCLES,
-        false,
+        true,
         true,
     )
     .map_err(|err| format!("Failed to build execution options: {err}"))?;
