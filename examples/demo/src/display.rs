@@ -42,11 +42,6 @@ pub fn print_account_info(account: &Account) {
     println!("  Nonce:          {}", account.nonce());
 }
 
-pub fn print_storage_slot(index: usize, word: &Word, description: &str) {
-    let hex = format_word_as_hex(word);
-    println!("  Slot {}: {} - {}", index, shorten_hex(&hex), description);
-}
-
 pub fn print_storage_overview(account: &Account) {
     print_section("Storage Overview");
 

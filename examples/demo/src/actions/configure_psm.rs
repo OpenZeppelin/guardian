@@ -1,8 +1,6 @@
 use base64::Engine;
 use miden_client::Serializable;
-use private_state_manager_client::{
-    AuthConfig, MidenFalconRpoAuth,
-};
+use private_state_manager_client::{AuthConfig, MidenFalconRpoAuth};
 
 use crate::display::{print_full_hex, print_section, print_success, print_waiting};
 use crate::state::SessionState;
@@ -36,7 +34,6 @@ pub async fn action_configure_psm(state: &mut SessionState) -> Result<(), String
         "account_id": account_id.to_string(),
     });
 
-    print_waiting("Configuring PSM authentication");
     state.configure_psm_auth()?;
 
     print_waiting("Configuring account in PSM");

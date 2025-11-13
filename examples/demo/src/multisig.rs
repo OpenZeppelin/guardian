@@ -80,11 +80,9 @@ pub fn create_multisig_psm_account(
     let mut client_pubkeys_map = StorageMap::new();
     for (i, commitment_hex) in cosigner_commitments.iter().enumerate() {
         let pubkey_bytes = hex::decode(&commitment_hex[2..])
-            .expect(&format!("Failed to decode cosigner {} pubkey", i));
-        let commitment_word = Word::read_from_bytes(&pubkey_bytes).expect(&format!(
-            "Failed to convert cosigner {} commitment to Word",
-            i
-        ));
+            .unwrap_or_else(|_| panic!("Failed to decode cosigner {} pubkey", i));
+        let commitment_word = Word::read_from_bytes(&pubkey_bytes)
+            .unwrap_or_else(|_| panic!("Failed to convert cosigner {} commitment to Word", i));
 
         let _ = client_pubkeys_map.insert(Word::from([i as u32, 0, 0, 0]), commitment_word);
     }
@@ -144,7 +142,7 @@ pub fn build_multisig_config_advice(
     }
 
     let digest = Hasher::hash_elements(&payload);
-    let config_hash: Word = digest.into();
+    let config_hash: Word = digest;
     (config_hash, payload)
 }
 
@@ -182,7 +180,7 @@ where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
     let (config_hash, config_values) = build_multisig_config_advice(threshold, signer_commitments);
-    let script = build_update_signers_script().map_err(|err| MultisigError::Assembly(err))?;
+    let script = build_update_signers_script().map_err(MultisigError::Assembly)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)

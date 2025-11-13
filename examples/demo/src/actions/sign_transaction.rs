@@ -9,8 +9,6 @@ use crate::proposals::{
 };
 use crate::state::SessionState;
 
-use super::generate_keypair::pubkey_commitment_hex;
-
 pub async fn action_sign_transaction(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -20,26 +18,7 @@ pub async fn action_sign_transaction(
     let account = state.get_account()?;
     let account_id = account.id();
 
-    print_waiting("Configuring PSM authentication for current signer");
     state.configure_psm_auth()?;
-    print_success("Configured PSM auth with current signer key");
-    let sign_auth_pubkey_hex = {
-        let psm_client = state.get_psm_client_mut()?;
-        psm_client.auth_pubkey_hex().map_err(|e| e.to_string())?
-    };
-    let sign_auth_commitment_hex = pubkey_commitment_hex(&sign_auth_pubkey_hex);
-    println!(
-        "DEBUG: sign_delta_proposal auth signer pubkey {} (commitment {})",
-        shorten_hex(&sign_auth_pubkey_hex),
-        sign_auth_commitment_hex
-            .as_ref()
-            .map(|c| shorten_hex(c))
-            .unwrap_or_else(|| "<invalid>".to_string())
-    );
-    println!(
-        "DEBUG: state.cosigner_commitments {:?}",
-        state.cosigner_commitments
-    );
 
     let user_secret_key = state.get_secret_key()?.clone();
     let user_commitment_hex = state.get_commitment_hex()?.to_string();
@@ -105,24 +84,11 @@ pub async fn action_sign_transaction(
         .iter()
         .any(|c| c.eq_ignore_ascii_case(&user_commitment_hex))
     {
-        println!(
-            "DEBUG: Attempted to sign with {}, but expected commitments are {:?}",
-            user_commitment_hex, metadata.signer_commitments_hex
-        );
         return Err(format!(
             "Your key ({}) is not part of this proposal's signer set",
             shorten_hex(&user_commitment_hex)
         ));
     }
-
-    println!(
-        "DEBUG: Signing proposal as {}",
-        shorten_hex(&user_commitment_hex)
-    );
-    println!(
-        "DEBUG: Proposal expects signers: {:?}",
-        metadata.signer_commitments_hex
-    );
 
     if has_signer_signed(selected_proposal, &user_commitment_hex) {
         print_info(&format!(
@@ -134,20 +100,11 @@ pub async fn action_sign_transaction(
 
     let proposal_id = tx_commitment.clone();
 
-    print_info(&format!("\nProposal ID: {}", shorten_hex(&proposal_id)));
     print_waiting("Signing proposal with your key");
-    println!(
-        "DEBUG: Attempting to sign commitment {}",
-        shorten_hex(&proposal_id)
-    );
 
     let commitment_word = commitment_from_hex(&proposal_id)?;
     let user_signature_raw = user_secret_key.sign(commitment_word);
     let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
-    println!(
-        "DEBUG: Signing request body with signature {}",
-        shorten_hex(&user_signature_hex)
-    );
 
     let sign_response = psm_client
         .sign_delta_proposal(&account_id, &proposal_id, "falcon", &user_signature_hex)
@@ -162,15 +119,11 @@ pub async fn action_sign_transaction(
     }
 
     print_success(&format!(
-        "Successfully signed proposal with your key ({})",
+        "Signed proposal with key {}",
         shorten_hex(&user_commitment_hex)
     ));
 
     if let Some(updated_delta) = sign_response.delta {
-        println!(
-            "DEBUG: Server returned signer list {:?}",
-            extract_proposal_metadata(&updated_delta).signer_commitments_hex
-        );
         let updated_metadata = extract_proposal_metadata(&updated_delta);
         let updated_sig_count = count_signatures(&updated_delta);
 

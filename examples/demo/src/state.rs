@@ -151,8 +151,7 @@ impl SessionState {
 
     pub fn get_commitment_hex(&self) -> Result<&str, String> {
         self.user_commitment_hex
-            .as_ref()
-            .map(|s| s.as_str())
+            .as_deref()
             .ok_or_else(|| "No keypair generated".to_string())
     }
 

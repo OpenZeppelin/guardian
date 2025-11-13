@@ -19,7 +19,6 @@ pub async fn action_pull_from_psm(
     let account_id =
         AccountId::from_hex(&account_id_hex).map_err(|e| format!("Invalid account ID: {}", e))?;
 
-    print_waiting("Configuring PSM authentication");
     state.configure_psm_auth()?;
 
     print_waiting("Fetching account from PSM");
@@ -29,8 +28,6 @@ pub async fn action_pull_from_psm(
         .get_state(&account_id)
         .await
         .map_err(|e| format!("Failed to get account state: {}", e))?;
-
-    print_waiting("Deserializing account data");
 
     let state_json = account_state_response
         .state
@@ -50,8 +47,6 @@ pub async fn action_pull_from_psm(
 
     let account = Account::read_from_bytes(&account_bytes)
         .map_err(|e| format!("Failed to deserialize account: {}", e))?;
-
-    print_waiting("Adding account to Miden client");
 
     let miden_client = state.get_miden_client_mut()?;
     miden_client
