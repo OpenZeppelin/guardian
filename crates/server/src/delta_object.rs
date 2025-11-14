@@ -1,16 +1,5 @@
+pub use private_state_manager_shared::ProposalSignature;
 use serde::{Deserialize, Serialize};
-
-/// Signature type for delta proposals
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "scheme", rename_all = "snake_case")]
-pub enum ProposalSignature {
-    Falcon {
-        // Falcon signature contains the public key commitment
-        signature: String,
-    },
-    // Future signature schemes can be added here
-    // Each scheme can have its own structure based on its requirements
-}
 
 /// Cosigner signature entry for delta proposals
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

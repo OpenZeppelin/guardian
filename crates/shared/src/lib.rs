@@ -7,6 +7,17 @@ use serde::{Deserialize, Serialize};
 pub mod auth;
 pub mod hex;
 
+/// Signature type for delta proposals
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "scheme", rename_all = "snake_case")]
+pub enum ProposalSignature {
+    Falcon {
+        /// Hex-encoded Falcon signature
+        signature: String,
+    },
+    // Future schemes can extend this enum.
+}
+
 /// Delta payload structure containing transaction summary and signatures
 /// This is the standard format for delta_payload in proposals
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -38,8 +49,7 @@ impl DeltaPayload {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeltaSignature {
     pub signer_id: String,
-    pub signature: String,
-    pub signature_scheme: String,
+    pub signature: ProposalSignature,
 }
 
 pub trait ToJson {

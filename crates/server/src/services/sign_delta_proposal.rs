@@ -12,8 +12,7 @@ use tracing::info;
 pub struct SignDeltaProposalParams {
     pub account_id: String,
     pub commitment: String,
-    pub signature_scheme: String,
-    pub signature: String,
+    pub signature: ProposalSignature,
     pub credentials: Credentials,
 }
 
@@ -29,7 +28,6 @@ pub async fn sign_delta_proposal(
     let SignDeltaProposalParams {
         account_id,
         commitment,
-        signature_scheme,
         signature,
         credentials,
     } = params;
@@ -91,19 +89,9 @@ pub async fn sign_delta_proposal(
     }
 
     // Create the proposal signature based on scheme
-    let proposal_signature = match signature_scheme.as_str() {
-        "falcon" => ProposalSignature::Falcon { signature },
-        _ => {
-            return Err(PsmError::InvalidProposalSignature(format!(
-                "Unknown signature scheme: {}",
-                signature_scheme
-            )));
-        }
-    };
-
     // Add the new signature
     let new_signature = CosignerSignature {
-        signature: proposal_signature,
+        signature,
         timestamp: state.clock.now_rfc3339(),
         signer_id: signer_commitment_hex.clone(),
     };

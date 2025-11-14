@@ -128,8 +128,14 @@ message PendingStatus {
 // Cosigner signature
 message CosignerSignature {
   string signer_id = 1;
-  string signature = 2; // JSON string of ProposalSignature
+  ProposalSignature signature = 2;
   string timestamp = 3;
+}
+
+// Structured proposal signature (mirrors JSON representation)
+message ProposalSignature {
+  string scheme = 1;
+  string signature = 2;
 }
 
 // Delta object
@@ -191,8 +197,7 @@ message GetDeltaProposalsResponse {
 message SignDeltaProposalRequest {
   string account_id = 1;
   string commitment = 2;
-  string signature_scheme = 3;
-  string signature = 4;
+  ProposalSignature signature = 3;
 }
 
 message SignDeltaProposalResponse {

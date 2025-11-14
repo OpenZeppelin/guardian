@@ -1,7 +1,7 @@
 use miden_client::ClientError;
 use miden_objects::utils::Serializable;
 use miden_objects::{Felt, Word};
-use private_state_manager_shared::{DeltaPayload, DeltaSignature, ToJson};
+use private_state_manager_shared::{DeltaPayload, DeltaSignature, ProposalSignature, ToJson};
 use rustyline::DefaultEditor;
 
 use crate::account_inspector::AccountInspector;
@@ -142,8 +142,9 @@ pub async fn action_add_cosigner(
     let mut delta_payload_value = DeltaPayload::new(tx_summary.to_json())
         .with_signature(DeltaSignature {
             signer_id: user_commitment_hex.clone(),
-            signature: user_signature_hex,
-            signature_scheme: "falcon".to_string(),
+            signature: ProposalSignature::Falcon {
+                signature: user_signature_hex,
+            },
         })
         .to_json();
 

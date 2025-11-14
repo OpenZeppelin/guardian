@@ -5,10 +5,12 @@ use crate::proto::{
     AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaProposalsRequest,
     GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
     GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
+    SignDeltaProposalResponse,
 };
 use miden_objects::account::AccountId;
+use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
@@ -241,14 +243,14 @@ impl PsmClient {
         &mut self,
         account_id: &AccountId,
         commitment: impl Into<String>,
-        signature_scheme: impl Into<String>,
-        signature: impl Into<String>,
+        signature: JsonProposalSignature,
     ) -> ClientResult<SignDeltaProposalResponse> {
+        let proto_signature = Some(proto_signature_from_json(&signature));
+
         let mut request = tonic::Request::new(SignDeltaProposalRequest {
             account_id: account_id.to_string(),
             commitment: commitment.into(),
-            signature_scheme: signature_scheme.into(),
-            signature: signature.into(),
+            signature: proto_signature,
         });
 
         self.add_auth_metadata(&mut request, account_id)?;
@@ -261,5 +263,14 @@ impl PsmClient {
         }
 
         Ok(inner)
+    }
+}
+
+fn proto_signature_from_json(signature: &JsonProposalSignature) -> ProtoProposalSignature {
+    match signature {
+        JsonProposalSignature::Falcon { signature } => ProtoProposalSignature {
+            scheme: "falcon".to_string(),
+            signature: signature.clone(),
+        },
     }
 }

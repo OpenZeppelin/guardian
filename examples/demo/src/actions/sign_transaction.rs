@@ -1,4 +1,5 @@
 use miden_client::Serializable;
+use private_state_manager_shared::ProposalSignature;
 use rustyline::DefaultEditor;
 
 use crate::display::{print_info, print_section, print_success, print_waiting, shorten_hex};
@@ -107,7 +108,13 @@ pub async fn action_sign_transaction(
     let user_signature_hex = format!("0x{}", hex::encode(user_signature_raw.to_bytes()));
 
     let sign_response = psm_client
-        .sign_delta_proposal(&account_id, &proposal_id, "falcon", &user_signature_hex)
+        .sign_delta_proposal(
+            &account_id,
+            &proposal_id,
+            ProposalSignature::Falcon {
+                signature: user_signature_hex,
+            },
+        )
         .await
         .map_err(|e| format!("Failed to sign proposal: {}", e))?;
 

@@ -1,4 +1,4 @@
-use crate::delta_object::DeltaObject;
+use crate::delta_object::{DeltaObject, ProposalSignature};
 use crate::metadata::auth::{Auth, ExtractCredentials};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetStateParams, PushDeltaParams,
@@ -281,11 +281,14 @@ impl StateManager for StateManagerService {
         let credentials = request.metadata().extract_credentials()?;
         let data = request.into_inner();
 
+        let signature = data
+            .signature
+            .ok_or_else(|| Status::invalid_argument("Missing signature payload"))?;
+
         let params = services::SignDeltaProposalParams {
             account_id: data.account_id,
             commitment: data.commitment,
-            signature_scheme: data.signature_scheme,
-            signature: data.signature,
+            signature: proto_signature_to_internal(signature)?,
             credentials,
         };
 
@@ -332,7 +335,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
                 .iter()
                 .map(|sig| state_manager::CosignerSignature {
                     signer_id: sig.signer_id.clone(),
-                    signature: serde_json::to_string(&sig.signature).unwrap_or_default(),
+                    signature: Some(proposal_signature_to_proto(&sig.signature)),
                     timestamp: sig.timestamp.clone(),
                 })
                 .collect();
@@ -385,5 +388,28 @@ fn state_to_proto(state: &crate::state_object::StateObject) -> state_manager::Ac
         commitment: state.commitment.clone(),
         created_at: state.created_at.clone(),
         updated_at: state.updated_at.clone(),
+    }
+}
+
+fn proposal_signature_to_proto(signature: &ProposalSignature) -> state_manager::ProposalSignature {
+    match signature {
+        ProposalSignature::Falcon { signature } => state_manager::ProposalSignature {
+            scheme: "falcon".to_string(),
+            signature: signature.clone(),
+        },
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn proto_signature_to_internal(
+    signature: state_manager::ProposalSignature,
+) -> Result<ProposalSignature, Status> {
+    match signature.scheme.as_str() {
+        "falcon" => Ok(ProposalSignature::Falcon {
+            signature: signature.signature,
+        }),
+        other => Err(Status::invalid_argument(format!(
+            "Unknown signature scheme: {other}"
+        ))),
     }
 }

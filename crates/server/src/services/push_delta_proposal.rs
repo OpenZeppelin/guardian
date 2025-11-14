@@ -1,8 +1,9 @@
 use crate::builder::state::AppState;
-use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
+use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
+use private_state_manager_shared::DeltaSignature;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -78,24 +79,15 @@ pub async fn push_delta_proposal(
     let signature_timestamp = state.clock.now_rfc3339();
     let mut cosigner_sigs = Vec::new();
     for sig_value in signatures {
-        if let (Some(signer_id), Some(signature), Some(scheme)) = (
-            sig_value.get("signer_id").and_then(|v| v.as_str()),
-            sig_value.get("signature").and_then(|v| v.as_str()),
-            sig_value.get("signature_scheme").and_then(|v| v.as_str()),
-        ) {
-            let proposal_signature = match scheme {
-                "falcon" => ProposalSignature::Falcon {
-                    signature: signature.to_string(),
-                },
-                _ => continue, // Skip unknown schemes
-            };
+        let parsed: DeltaSignature = serde_json::from_value(sig_value).map_err(|e| {
+            PsmError::InvalidDelta(format!("Invalid signature entry in payload: {e}"))
+        })?;
 
-            cosigner_sigs.push(CosignerSignature {
-                signature: proposal_signature,
-                timestamp: signature_timestamp.clone(),
-                signer_id: signer_id.to_string(),
-            });
-        }
+        cosigner_sigs.push(CosignerSignature {
+            signature: parsed.signature,
+            timestamp: signature_timestamp.clone(),
+            signer_id: parsed.signer_id,
+        });
     }
     let cosigner_ids: Vec<String> = cosigner_sigs
         .iter()

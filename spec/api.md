@@ -17,8 +17,7 @@
   - `signatures?: DeltaSignature[]` (optional signatures collected by the proposer)
 - DeltaSignature (HTTP JSON):
   - `signer_id: string` (hex commitment of the signer’s Falcon public key)
-  - `signature: string` (hex-encoded signature)
-  - `signature_scheme: "falcon"` (other schemes MAY be added later)
+  - `signature: { scheme: "falcon", signature: string }`
 - DeltaProposal (HTTP JSON):
   - Same base fields as `DeltaObject`, but proposals are always returned with `new_commitment = null`, `ack_sig = null`, and `status = { "status": "pending", "timestamp": string, "proposer_id": string, "cosigner_sigs": CosignerSignature[] }`
 - CosignerSignature (HTTP JSON):
@@ -63,7 +62,7 @@
   - 200: `{ proposals: DeltaProposal[] }` (empty list on missing accounts or storage errors to avoid leaking existence)
 - PUT /delta/proposal
   - Headers: `x-pubkey`, `x-signature`
-  - Body: `{ account_id: string, commitment: string, signature_scheme: "falcon", signature: string }`
+  - Body: `{ account_id: string, commitment: string, signature: { scheme: "falcon", signature: string } }`
   - Behaviour: loads the pending proposal identified by `commitment`, derives the signer commitment from the caller’s pubkey, rejects duplicate signatures, and appends `{ signer_id, timestamp, signature }` to `status.pending.cosigner_sigs`
   - 200: `DeltaProposal`
   - 400: `ProposalNotFound`, `ProposalAlreadySigned`, `InvalidProposalSignature`, plus the standard auth/account errors
@@ -115,8 +114,10 @@ curl -X POST http://localhost:3000/delta/proposal \
       "signatures": [
         {
           "signer_id": "0xpubkeycommitment",
-          "signature": "0x...",
-          "signature_scheme": "falcon"
+          "signature": {
+            "scheme": "falcon",
+            "signature": "0x..."
+          }
         }
       ]
     }
@@ -129,7 +130,9 @@ curl -X PUT http://localhost:3000/delta/proposal \
   -d '{
     "account_id": "0x...",
     "commitment": "0xproposalid",
-    "signature_scheme": "falcon",
-    "signature": "0x..."
+    "signature": {
+      "scheme": "falcon",
+      "signature": "0x..."
+    }
   }'
 ```

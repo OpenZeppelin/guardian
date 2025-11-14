@@ -1,4 +1,4 @@
-use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::delta_object::{DeltaObject, DeltaStatus, ProposalSignature};
 use crate::metadata::auth::{Auth, Credentials};
 use crate::services::{
     ConfigureAccountParams, GetDeltaProposalsParams, PushDeltaParams, PushDeltaProposalParams,
@@ -80,8 +80,9 @@ async fn test_sign_delta_proposal() {
     let sign_params = SignDeltaProposalParams {
         account_id: account_id.clone(),
         commitment: commitment.clone(),
-        signature_scheme: "falcon".to_string(),
-        signature: dummy_sig,
+        signature: ProposalSignature::Falcon {
+            signature: dummy_sig,
+        },
         credentials: Credentials::signature(pubkey2_hex.clone(), signature2_hex.clone()),
     };
 
@@ -176,8 +177,9 @@ async fn test_multi_cosigner_signing_workflow() {
     let sign_params2 = SignDeltaProposalParams {
         account_id: account_id.clone(),
         commitment: commitment.clone(),
-        signature_scheme: "falcon".to_string(),
-        signature: dummy_sig.clone(),
+        signature: ProposalSignature::Falcon {
+            signature: dummy_sig.clone(),
+        },
         credentials: Credentials::signature(pubkey2_hex.clone(), signature2_hex.clone()),
     };
 
@@ -197,8 +199,9 @@ async fn test_multi_cosigner_signing_workflow() {
     let sign_params3 = SignDeltaProposalParams {
         account_id: account_id.clone(),
         commitment: commitment.clone(),
-        signature_scheme: "falcon".to_string(),
-        signature: dummy_sig,
+        signature: ProposalSignature::Falcon {
+            signature: dummy_sig,
+        },
         credentials: Credentials::signature(pubkey3_hex.clone(), signature3_hex.clone()),
     };
 

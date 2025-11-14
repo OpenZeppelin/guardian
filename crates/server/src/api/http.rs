@@ -8,6 +8,7 @@ use crate::state::AppState;
 use crate::state_object::StateObject;
 use crate::storage::StorageType;
 use axum::{Json, extract::Query, extract::State, http::StatusCode};
+use private_state_manager_shared::ProposalSignature;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -58,8 +59,7 @@ pub struct DeltaProposalRequest {
 pub struct SignProposalRequest {
     pub account_id: String,
     pub commitment: String,
-    pub signature_scheme: String,
-    pub signature: String,
+    pub signature: ProposalSignature,
 }
 
 // Response types
@@ -282,7 +282,6 @@ pub async fn sign_delta_proposal(
     let params = SignDeltaProposalParams {
         account_id: payload.account_id,
         commitment: payload.commitment,
-        signature_scheme: payload.signature_scheme,
         signature: payload.signature,
         credentials,
     };
