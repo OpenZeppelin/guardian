@@ -7,7 +7,7 @@ An interactive CLI demo for Private State Manager (PSM) with Miden multisig acco
 - **Multi-terminal Support**: Each participant runs their own instance to simulate real multi-party scenarios
 - **Interactive Menu**: User-friendly CLI with command history
 - **Multisig Workflows**: Create accounts, add cosigners, coordinate signatures
-- **PSM Integration**: Configure accounts in PSM, pull state, push deltas
+- **PSM Integration**: Configure accounts in PSM, pull state, push deltas, coordinate proposals
 - **Shortened Display**: Public keys shown in compact format (e.g., `0xABCD...WXYZ`) for better UX
 
 ## Prerequisites
@@ -57,7 +57,7 @@ The program will prompt for:
 2. **Pull Account from PSM** - Fetches the account created by Terminal 1
    - Enter the account ID shown in Terminal 1
 3. **Add Cosigner** - (Future) Update multisig to 3-of-3 by adding another party
-4. **Sign Transaction** - (Future) Sign pending transactions
+4. **Sign Proposal** - (Future) Review and sign delta proposals created by other cosigners
 
 ## Menu Options
 
@@ -66,7 +66,9 @@ The program will prompt for:
 - `[3]` Configure account in PSM - Pushes account to PSM server
 - `[4]` Pull account from PSM - Fetches account state from PSM
 - `[5]` Add cosigner - Updates multisig to N+1 configuration
-- `[6]` Sign pending transaction - Signs and executes transactions
+- `[6]` Create delta proposal - Create a proposal for other cosigners to review and sign
+- `[7]` Sign delta proposal - Add your signature to an existing proposal
+- `[8]` List delta proposals - View pending proposals for the account
 - `[s]` Show account details - Displays full account information
 - `[c]` Show connection status - Shows PSM/Miden connection status
 - `[q]` Quit - Exit the program
@@ -120,7 +122,7 @@ The demo is structured as a standalone Cargo project:
 ## Future Enhancements
 
 - Complete "Add Cosigner" workflow with transaction simulation and PSM coordination
-- Complete "Sign Transaction" flow for multi-party signing
+- Implement delta proposal workflows for multi-party coordination
 - Support for transaction nonce management
 - Delta merging and conflict resolution
 - Account state visualization

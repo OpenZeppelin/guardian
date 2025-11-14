@@ -11,7 +11,20 @@
 - StateObject (HTTP JSON):
   - `account_id: string`, `state_json: object`, `commitment: string`, `created_at: string`, `updated_at: string`
 - DeltaObject (HTTP JSON):
-  - `account_id: string`, `nonce: u64`, `prev_commitment: string`, `new_commitment: string`, `delta_payload: object`, `ack_sig?: string`, `status: { status: "candidate"|"canonical"|"discarded", timestamp: string }`
+  - `account_id: string`, `nonce: u64`, `prev_commitment: string`, `new_commitment?: string`, `delta_payload: object`, `ack_sig?: string`, `status: { status: "pending"|"candidate"|"canonical"|"discarded", ... }`
+- DeltaProposalPayload (HTTP JSON):
+  - `tx_summary: object` (base64-encoded `TransactionSummary` as produced by the network client)
+  - `signatures?: DeltaSignature[]` (optional signatures collected by the proposer)
+- DeltaSignature (HTTP JSON):
+  - `signer_id: string` (hex commitment of the signer’s Falcon public key)
+  - `signature: string` (hex-encoded signature)
+  - `signature_scheme: "falcon"` (other schemes MAY be added later)
+- DeltaProposal (HTTP JSON):
+  - Same base fields as `DeltaObject`, but proposals are always returned with `new_commitment = null`, `ack_sig = null`, and `status = { "status": "pending", "timestamp": string, "proposer_id": string, "cosigner_sigs": CosignerSignature[] }`
+- CosignerSignature (HTTP JSON):
+  - `signer_id: string`, `timestamp: string`, `signature: { scheme: "falcon", signature: string }`
+- DeltaProposalEnvelope (HTTP JSON):
+  - `{ delta: DeltaProposal, commitment: string }` where `commitment` is the stable proposal identifier derived from `(account_id, nonce, tx_summary)`
 
 ## HTTP Endpoints
 
@@ -38,6 +51,23 @@
   - 200: `StateObject`
   - 404: not found
 
+- POST /delta/proposal
+  - Headers: `x-pubkey`, `x-signature`
+  - Body: `{ account_id: string, nonce: u64, delta_payload: DeltaProposalPayload }`
+  - Behaviour: validates proposer credentials, re-validates the provided `tx_summary` against the latest persisted state, derives a proposal commitment via the network client, and persists the proposal with `status.pending`
+  - 200: `DeltaProposalEnvelope`
+  - 400: `InvalidDelta`, `AccountNotFound`, `AuthenticationFailed`
+- GET /delta/proposal?account_id=...
+  - Headers: `x-pubkey`, `x-signature`
+  - Returns only proposals whose `status` is still `pending`, ordered by nonce
+  - 200: `{ proposals: DeltaProposal[] }` (empty list on missing accounts or storage errors to avoid leaking existence)
+- PUT /delta/proposal
+  - Headers: `x-pubkey`, `x-signature`
+  - Body: `{ account_id: string, commitment: string, signature_scheme: "falcon", signature: string }`
+  - Behaviour: loads the pending proposal identified by `commitment`, derives the signer commitment from the caller’s pubkey, rejects duplicate signatures, and appends `{ signer_id, timestamp, signature }` to `status.pending.cosigner_sigs`
+  - 200: `DeltaProposal`
+  - 400: `ProposalNotFound`, `ProposalAlreadySigned`, `InvalidProposalSignature`, plus the standard auth/account errors
+
 - GET /pubkey
   - No authentication.
   - 200: `{ "pubkey": "0x..." }` exposing the acknowledgement signer commitment so clients can verify `ack_sig`.
@@ -46,7 +76,11 @@ Errors: `AccountNotFound`, `AuthenticationFailed`, `InvalidDelta`, `ConflictPend
 
 ## gRPC
 
-The gRPC surface mirrors HTTP methods and data shapes. Credentials are provided via metadata.
+The gRPC surface mirrors HTTP methods and data shapes. Credentials are provided via metadata headers. New RPCs:
+
+- `PushDeltaProposal(PushDeltaProposalRequest) -> PushDeltaProposalResponse` (returns `delta` + `commitment`)
+- `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`
+- `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 
 ## Idempotency and ordering
 
@@ -67,5 +101,35 @@ curl -X POST http://localhost:3000/configure \
     "auth": { "MidenFalconRpo": { "cosigner_commitments": ["0x..."] } },
     "initial_state": { "...": "..." },
     "storage_type": "Filesystem"
+  }'
+  
+curl -X POST http://localhost:3000/delta/proposal \
+  -H 'content-type: application/json' \
+  -H 'x-pubkey: 0x...' \
+  -H 'x-signature: 0x...' \
+  -d '{
+    "account_id": "0x...",
+    "nonce": 42,
+    "delta_payload": {
+      "tx_summary": { "data": "..." },
+      "signatures": [
+        {
+          "signer_id": "0xpubkeycommitment",
+          "signature": "0x...",
+          "signature_scheme": "falcon"
+        }
+      ]
+    }
+  }'
+
+curl -X PUT http://localhost:3000/delta/proposal \
+  -H 'content-type: application/json' \
+  -H 'x-pubkey: 0xcosigner2pubkey' \
+  -H 'x-signature: 0xcosigner2sig' \
+  -d '{
+    "account_id": "0x...",
+    "commitment": "0xproposalid",
+    "signature_scheme": "falcon",
+    "signature": "0x..."
   }'
 ```

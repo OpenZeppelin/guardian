@@ -103,6 +103,55 @@ sequenceDiagram
   S-->>C: 200 {merged_delta}
 ```
 
+#### push_delta_proposal
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server
+  participant M as Metadata
+  participant ST as Storage
+  participant N as Network
+  C->>S: POST /delta/proposal {account_id, nonce, delta_payload(tx_summary,...)}
+  S->>M: get(account_id) & verify(credentials)
+  S->>ST: pull_state(account_id)
+  S->>N: verify_delta(prev_commitment, state_json, tx_summary)
+  S->>N: delta_proposal_id(account_id, nonce, tx_summary)
+  S->>ST: submit_delta_proposal(id, pending_delta)
+  S-->>C: 200 {delta, commitment:id}
+```
+
+#### sign_delta_proposal
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server
+  participant M as Metadata
+  participant ST as Storage
+  C->>S: PUT /delta/proposal {account_id, commitment, signature,...}
+  S->>M: get(account_id) & verify(credentials)
+  S->>ST: pull_delta_proposal(account_id, commitment)
+  S->>S: ensure status.pending & signer not recorded
+  S->>ST: update_delta_proposal(commitment, append_signature)
+  S-->>C: 200 {delta_with_signatures}
+```
+
+#### get_delta_proposals
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server
+  participant M as Metadata
+  participant ST as Storage
+  C->>S: GET /delta/proposal?account_id=... {credentials}
+  S->>M: get(account_id) & verify(credentials)
+  S->>ST: pull_all_delta_proposals(account_id)
+  S->>S: filter(status.pending) & sort_by_nonce
+  S-->>C: 200 {proposals}
+```
+
 ## Canonicalization
 
 ### Modes
@@ -122,6 +171,7 @@ sequenceDiagram
     - Persist new state (atomic with delta status update when possible).
     - Optionally update auth from chain via `should_update_auth`.
     - Set delta status to `canonical`.
+    - Delete matching delta proposal identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
   - Else set delta status to `discarded`.
 
 #### Canonicalization worker (diagram)

@@ -2,7 +2,7 @@
 
 ## API
 
-The API exposes a simple interface for operating states and deltas over HTTP and gRPC. Behaviour is consistent across transports so clients can switch between them without semantic changes. See `api.md` for endpoint shapes and error semantics.
+The API exposes a simple interface for operating states and deltas over HTTP and gRPC. Behaviour is consistent across transports so clients can switch between them without semantic changes. See `api.md` for endpoint shapes and error semantics, including the multi-party delta proposal workflow (`push_delta_proposal`, `get_delta_proposal`, `sign_delta_proposal`) that allows cosigners to coordinate before submitting a canonical delta.
 
 ## Metadata
 
@@ -32,4 +32,5 @@ The API exposes a simple interface for operating states and deltas over HTTP and
 
 - Persists account snapshots and deltas.
 - Provides efficient retrieval by account and nonce, plus range queries for canonicalisation.
+- Stores pending delta proposals in a per-account namespace keyed by proposal commitment so the canonicalization worker (and optimistic flow) can delete proposals once their corresponding delta becomes canonical.
 - Backends are pluggable (e.g., filesystem, database) without altering API semantics.

@@ -57,6 +57,10 @@ Example:
 
 Is the unique identifier of an account holding a state, the private state manager can host multiple accounts and route authenticated requests to each.
 
+### Delta Proposal
+
+Multi-party accounts use delta proposals to coordinate before publishing a canonical delta. A proposal bundles a `tx_summary` (the network-validated delta payload) plus optional cosigner signatures. Proposals stay in `pending` status until enough cosigners have signed and someone promotes the payload via `push_delta`; once the corresponding delta becomes canonical, the proposal is deleted.
+
 ### Commitment
 
 Is the commitment of the state, it's a hash, nonce, or any other identifier that serves as the unique identifier of the current state of the account. It's used to cerifify that the state is not forked or corrupted. Each new delta includes a prev_commitment field that references the commitment of the base state in which the delta is applied.
@@ -78,6 +82,7 @@ In most networks, the nonce is an incremental counter that serves as a protectio
 
 - API (HTTP/gRPC): [api.md](./api.md)
 - Processes and canonicalization: [processes.md](./processes.md)
+- Delta proposal workflow: detailed across [api.md](./api.md) and [processes.md](./processes.md)
 
 ## Components
 
