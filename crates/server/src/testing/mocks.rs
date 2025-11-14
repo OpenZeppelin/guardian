@@ -196,6 +196,16 @@ pub struct MockStorageBackend {
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub submit_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub submit_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
+    pub pull_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
+    pub pull_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
+    pub pull_all_delta_proposals_responses: Arc<StdMutex<Vec<StdResult<Vec<DeltaObject>, String>>>>,
+    pub pull_all_delta_proposals_calls: Arc<StdMutex<Vec<String>>>,
+    pub update_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub update_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
+    pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
 }
 
 impl MockStorageBackend {
@@ -237,6 +247,69 @@ impl MockStorageBackend {
 
     pub fn get_submit_delta_calls(&self) -> Vec<DeltaObject> {
         self.submit_delta_calls.lock().unwrap().clone()
+    }
+
+    pub fn with_submit_delta_proposal(self, response: StdResult<(), String>) -> Self {
+        self.submit_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_pull_delta_proposal(self, response: StdResult<DeltaObject, String>) -> Self {
+        self.pull_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_pull_all_delta_proposals(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.pull_all_delta_proposals_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_update_delta_proposal(self, response: StdResult<(), String>) -> Self {
+        self.update_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_delete_delta_proposal(self, response: StdResult<(), String>) -> Self {
+        self.delete_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_submit_delta_proposal_calls(&self) -> Vec<(String, DeltaObject)> {
+        self.submit_delta_proposal_calls.lock().unwrap().clone()
+    }
+
+    pub fn get_pull_delta_proposal_calls(&self) -> Vec<(String, String)> {
+        self.pull_delta_proposal_calls.lock().unwrap().clone()
+    }
+
+    pub fn get_pull_all_delta_proposals_calls(&self) -> Vec<String> {
+        self.pull_all_delta_proposals_calls.lock().unwrap().clone()
+    }
+
+    pub fn get_update_delta_proposal_calls(&self) -> Vec<(String, DeltaObject)> {
+        self.update_delta_proposal_calls.lock().unwrap().clone()
+    }
+
+    pub fn get_delete_delta_proposal_calls(&self) -> Vec<(String, String)> {
+        self.delete_delta_proposal_calls.lock().unwrap().clone()
     }
 }
 
@@ -290,41 +363,81 @@ impl StorageBackend for MockStorageBackend {
 
     async fn submit_delta_proposal(
         &self,
-        _commitment: &str,
-        _proposal: &DeltaObject,
+        commitment: &str,
+        proposal: &DeltaObject,
     ) -> Result<(), String> {
-        Ok(())
+        self.submit_delta_proposal_calls
+            .lock()
+            .unwrap()
+            .push((commitment.to_string(), proposal.clone()));
+        self.submit_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
     }
 
     async fn pull_delta_proposal(
         &self,
-        _account_id: &str,
-        _commitment: &str,
+        account_id: &str,
+        commitment: &str,
     ) -> Result<DeltaObject, String> {
-        Err("Mock: No proposal found".to_string())
+        self.pull_delta_proposal_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), commitment.to_string()));
+        self.pull_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Err("Mock: No proposal found".to_string()))
     }
 
     async fn pull_all_delta_proposals(
         &self,
-        _account_id: &str,
+        account_id: &str,
     ) -> Result<Vec<DeltaObject>, String> {
-        Ok(vec![])
+        self.pull_all_delta_proposals_calls
+            .lock()
+            .unwrap()
+            .push(account_id.to_string());
+        self.pull_all_delta_proposals_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
     }
 
     async fn update_delta_proposal(
         &self,
-        _commitment: &str,
-        _proposal: &DeltaObject,
+        commitment: &str,
+        proposal: &DeltaObject,
     ) -> Result<(), String> {
-        Ok(())
+        self.update_delta_proposal_calls
+            .lock()
+            .unwrap()
+            .push((commitment.to_string(), proposal.clone()));
+        self.update_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
     }
 
     async fn delete_delta_proposal(
         &self,
-        _account_id: &str,
-        _commitment: &str,
+        account_id: &str,
+        commitment: &str,
     ) -> Result<(), String> {
-        Ok(())
+        self.delete_delta_proposal_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), commitment.to_string()));
+        self.delete_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
     }
 }
 

@@ -1,0 +1,19 @@
+{
+  "account_id": "0x7bfb0f38b0fafa103f86a805594170",
+  "nonce": 1,
+  "prev_commitment": "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392",
+  "new_commitment": null,
+  "delta_payload": {
+    "tx_summary": {
+      "data": "e/sPOLD6+hA/hqgFWUFwAAEAAgAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAQEDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABGw2qf5AhNq0enzDq/7tdX24dc62SM8kmWa/tB1GsH7gEBAQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "signatures": []
+  },
+  "ack_sig": null,
+  "status": {
+    "status": "pending",
+    "timestamp": "2024-11-14T12:00:00Z",
+    "proposer_id": "0xabcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab",
+    "cosigner_sigs": []
+  }
+}

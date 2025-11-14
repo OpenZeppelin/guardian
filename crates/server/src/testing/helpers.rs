@@ -336,3 +336,29 @@ pub async fn update_mock_on_chain_commitment(
         (*ptr).register_account(account_id, commitment);
     }
 }
+
+pub fn create_test_app_state_with_mocks(
+    storage: Arc<dyn StorageBackend>,
+    network_client: Arc<tokio::sync::Mutex<dyn NetworkClient>>,
+    metadata: Arc<dyn crate::metadata::MetadataStore>,
+) -> AppState {
+    let keystore_dir =
+        std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
+
+    let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
+    storage_backends.insert(StorageType::Filesystem, storage);
+    let storage_registry = StorageRegistry::new(storage_backends);
+
+    let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
+    let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
+
+    AppState {
+        storage: storage_registry,
+        metadata,
+        network_client,
+        ack,
+        canonicalization: None, // Use optimistic mode for unit tests
+        clock: Arc::new(crate::clock::SystemClock),
+    }
+}
