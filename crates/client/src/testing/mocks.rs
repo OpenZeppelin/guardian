@@ -15,12 +15,9 @@ use tonic::{Request, Response, Status};
 pub struct MockStateManagerService {
     get_pubkey_response: Arc<StdMutex<Option<Result<String, Status>>>>,
     configure_response: Arc<StdMutex<Option<Result<ConfigureResponse, Status>>>>,
-    push_delta_proposal_response:
-        Arc<StdMutex<Option<Result<PushDeltaProposalResponse, Status>>>>,
-    get_delta_proposals_response:
-        Arc<StdMutex<Option<Result<GetDeltaProposalsResponse, Status>>>>,
-    sign_delta_proposal_response:
-        Arc<StdMutex<Option<Result<SignDeltaProposalResponse, Status>>>>,
+    push_delta_proposal_response: Arc<StdMutex<Option<Result<PushDeltaProposalResponse, Status>>>>,
+    get_delta_proposals_response: Arc<StdMutex<Option<Result<GetDeltaProposalsResponse, Status>>>>,
+    sign_delta_proposal_response: Arc<StdMutex<Option<Result<SignDeltaProposalResponse, Status>>>>,
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,

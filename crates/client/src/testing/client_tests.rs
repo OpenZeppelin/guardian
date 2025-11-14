@@ -1,9 +1,13 @@
 use crate::auth::FalconRpoSigner;
 use crate::proto::auth_config::AuthType;
 use crate::testing::mocks::{
-    create_mock_account_state, create_mock_delta, start_mock_server, MockStateManagerService,
+    MockStateManagerService, create_mock_account_state, create_mock_delta, start_mock_server,
 };
-use crate::{Auth, ClientError, ConfigureResponse, GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse, PsmClient, PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse, AuthConfig};
+use crate::{
+    Auth, AuthConfig, ClientError, ConfigureResponse, GetDeltaProposalsResponse, GetDeltaResponse,
+    GetDeltaSinceResponse, GetStateResponse, PsmClient, PushDeltaProposalResponse,
+    PushDeltaResponse, SignDeltaProposalResponse,
+};
 use miden_objects::account::AccountId;
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
@@ -34,8 +38,8 @@ async fn test_get_pubkey_success() {
 
 #[tokio::test]
 async fn test_get_pubkey_error() {
-    let service = MockStateManagerService::default()
-        .with_get_pubkey(Err(Status::internal("Server error")));
+    let service =
+        MockStateManagerService::default().with_get_pubkey(Err(Status::internal("Server error")));
 
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = PsmClient::connect(endpoint).await.unwrap();
