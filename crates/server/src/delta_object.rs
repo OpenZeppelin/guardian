@@ -177,4 +177,149 @@ mod tests {
         assert_eq!(delta.nonce, 0);
         assert!(delta.status.is_candidate());
     }
+
+    #[test]
+    fn test_delta_status_constructors() {
+        let pending = DeltaStatus::pending("2024-01-01".to_string(), "proposer1".to_string());
+        assert!(pending.is_pending());
+        assert_eq!(pending.timestamp(), "2024-01-01");
+
+        let candidate = DeltaStatus::candidate("2024-01-02".to_string());
+        assert!(candidate.is_candidate());
+        assert_eq!(candidate.timestamp(), "2024-01-02");
+
+        let canonical = DeltaStatus::canonical("2024-01-03".to_string());
+        assert!(canonical.is_canonical());
+        assert_eq!(canonical.timestamp(), "2024-01-03");
+
+        let discarded = DeltaStatus::discarded("2024-01-04".to_string());
+        assert!(discarded.is_discarded());
+        assert_eq!(discarded.timestamp(), "2024-01-04");
+    }
+
+    #[test]
+    fn test_delta_status_is_methods() {
+        let pending = DeltaStatus::Pending {
+            timestamp: "2024-01-01".to_string(),
+            proposer_id: "p1".to_string(),
+            cosigner_sigs: vec![],
+        };
+        assert!(pending.is_pending());
+        assert!(!pending.is_candidate());
+        assert!(!pending.is_canonical());
+        assert!(!pending.is_discarded());
+
+        let candidate = DeltaStatus::Candidate {
+            timestamp: "2024-01-02".to_string(),
+        };
+        assert!(!candidate.is_pending());
+        assert!(candidate.is_candidate());
+        assert!(!candidate.is_canonical());
+        assert!(!candidate.is_discarded());
+
+        let canonical = DeltaStatus::Canonical {
+            timestamp: "2024-01-03".to_string(),
+        };
+        assert!(!canonical.is_pending());
+        assert!(!canonical.is_candidate());
+        assert!(canonical.is_canonical());
+        assert!(!canonical.is_discarded());
+
+        let discarded = DeltaStatus::Discarded {
+            timestamp: "2024-01-04".to_string(),
+        };
+        assert!(!discarded.is_pending());
+        assert!(!discarded.is_candidate());
+        assert!(!discarded.is_canonical());
+        assert!(discarded.is_discarded());
+    }
+
+    #[test]
+    fn test_delta_status_default() {
+        let status = DeltaStatus::default();
+        assert!(status.is_candidate());
+        assert_eq!(status.timestamp(), "");
+    }
+
+    #[test]
+    fn test_delta_object_deserialization_legacy_candidate_at() {
+        let json = r#"{
+            "account_id": "0x123",
+            "nonce": 1,
+            "prev_commitment": "0xabc",
+            "new_commitment": "0xdef",
+            "delta_payload": {},
+            "ack_sig": null,
+            "candidate_at": "2024-01-01T00:00:00Z"
+        }"#;
+
+        let delta: DeltaObject = serde_json::from_str(json).unwrap();
+        assert!(delta.status.is_candidate());
+        assert_eq!(delta.status.timestamp(), "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_delta_object_deserialization_legacy_canonical_at() {
+        let json = r#"{
+            "account_id": "0x123",
+            "nonce": 1,
+            "prev_commitment": "0xabc",
+            "new_commitment": "0xdef",
+            "delta_payload": {},
+            "ack_sig": null,
+            "canonical_at": "2024-01-02T00:00:00Z"
+        }"#;
+
+        let delta: DeltaObject = serde_json::from_str(json).unwrap();
+        assert!(delta.status.is_canonical());
+        assert_eq!(delta.status.timestamp(), "2024-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn test_delta_object_deserialization_legacy_discarded_at() {
+        let json = r#"{
+            "account_id": "0x123",
+            "nonce": 1,
+            "prev_commitment": "0xabc",
+            "new_commitment": null,
+            "delta_payload": {},
+            "ack_sig": null,
+            "discarded_at": "2024-01-03T00:00:00Z"
+        }"#;
+
+        let delta: DeltaObject = serde_json::from_str(json).unwrap();
+        assert!(delta.status.is_discarded());
+        assert_eq!(delta.status.timestamp(), "2024-01-03T00:00:00Z");
+    }
+
+    #[test]
+    fn test_delta_object_deserialization_no_status() {
+        let json = r#"{
+            "account_id": "0x123",
+            "nonce": 1,
+            "prev_commitment": "0xabc",
+            "new_commitment": "0xdef",
+            "delta_payload": {},
+            "ack_sig": null
+        }"#;
+
+        let delta: DeltaObject = serde_json::from_str(json).unwrap();
+        assert!(delta.status.is_candidate());
+        assert_eq!(delta.status.timestamp(), "");
+    }
+
+    #[test]
+    fn test_cosigner_signature() {
+        let sig = CosignerSignature {
+            signature: ProposalSignature::Falcon {
+                signature: "0xabc".to_string(),
+            },
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            signer_id: "signer1".to_string(),
+        };
+
+        let json = serde_json::to_string(&sig).unwrap();
+        let deserialized: CosignerSignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, sig);
+    }
 }
