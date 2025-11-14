@@ -59,7 +59,7 @@ Is the unique identifier of an account holding a state, the private state manage
 
 ### Delta Proposal
 
-Multi-party accounts use delta proposals to coordinate before publishing a canonical delta. A proposal bundles a `tx_summary` (the network-validated delta payload) plus optional cosigner signatures. Proposals stay in `pending` status until enough cosigners have signed and someone promotes the payload via `push_delta`; once the corresponding delta becomes canonical, the proposal is deleted.
+Multi-party accounts use delta proposals to coordinate before publishing a canonical delta. A proposal bundles a network-validated delta payload plus optional cosigner signatures. Proposals stay in `pending` status until enough cosigners have signed and someone promotes the payload via `push_delta`; once the corresponding delta becomes canonical, the proposal is deleted.
 
 ### Commitment
 
