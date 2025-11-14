@@ -56,45 +56,6 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         return Err(PsmError::ConflictPendingDelta);
     }
 
-    // Compute the proposal ID for this delta to check if there's a matching proposal
-    let proposal_id = {
-        let client = state.network_client.lock().await;
-        client
-            .delta_proposal_id(
-                &params.delta.account_id,
-                params.delta.nonce,
-                &params.delta.delta_payload,
-            )
-            .ok() // Ignore error - if we can't compute it, we can't delete it
-    };
-
-    // If there's a matching proposal, delete it since we're now executing the delta
-    if let Some(ref id) = proposal_id
-        && let Ok(_existing_proposal) = resolved
-            .backend
-            .pull_delta_proposal(&params.delta.account_id, id)
-            .await
-    {
-        tracing::info!(
-            account_id = %params.delta.account_id,
-            proposal_id = %id,
-            "Deleting matching proposal as delta is being executed"
-        );
-        // Delete the proposal since the delta is now being executed
-        if let Err(e) = resolved
-            .backend
-            .delete_delta_proposal(&params.delta.account_id, id)
-            .await
-        {
-            tracing::warn!(
-                account_id = %params.delta.account_id,
-                proposal_id = %id,
-                error = %e,
-                "Failed to delete proposal, but continuing with delta execution"
-            );
-        }
-    }
-
     if params.delta.prev_commitment != current_state.commitment {
         return Err(PsmError::CommitmentMismatch {
             expected: current_state.commitment.clone(),
@@ -173,6 +134,43 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 );
                 PsmError::StorageError(format!("Failed to submit delta: {e}"))
             })?;
+
+        // Delete matching proposal now that delta is canonical
+        let proposal_id = {
+            let client = state.network_client.lock().await;
+            client
+                .delta_proposal_id(
+                    &params.delta.account_id,
+                    params.delta.nonce,
+                    &params.delta.delta_payload,
+                )
+                .ok()
+        };
+
+        if let Some(ref id) = proposal_id
+            && let Ok(_existing_proposal) = resolved
+                .backend
+                .pull_delta_proposal(&params.delta.account_id, id)
+                .await
+        {
+            tracing::info!(
+                account_id = %params.delta.account_id,
+                proposal_id = %id,
+                "Deleting matching proposal as delta is now canonical"
+            );
+            if let Err(e) = resolved
+                .backend
+                .delete_delta_proposal(&params.delta.account_id, id)
+                .await
+            {
+                tracing::warn!(
+                    account_id = %params.delta.account_id,
+                    proposal_id = %id,
+                    error = %e,
+                    "Failed to delete proposal, but continuing"
+                );
+            }
+        }
     }
 
     Ok(PushDeltaResult {
