@@ -413,3 +413,299 @@ fn proto_signature_to_internal(
         ))),
     }
 }
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+    use crate::delta_object::DeltaStatus;
+    use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
+    use crate::state_object::StateObject;
+    use crate::storage::StorageType;
+    use crate::testing::fixtures;
+    use crate::testing::helpers::{create_test_app_state_with_mocks, generate_falcon_signature};
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tonic::Request;
+
+    fn create_test_state() -> (
+        AppState,
+        MockStorageBackend,
+        MockNetworkClient,
+        MockMetadataStore,
+    ) {
+        let storage = MockStorageBackend::new();
+        let network = MockNetworkClient::new();
+        let metadata = MockMetadataStore::new();
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network.clone())),
+            Arc::new(metadata.clone()),
+        );
+
+        (state, storage, network, metadata)
+    }
+
+    fn create_account_metadata(
+        account_id: String,
+        cosigner_commitments: Vec<String>,
+    ) -> AccountMetadata {
+        AccountMetadata {
+            account_id,
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments,
+            },
+            storage_type: StorageType::Filesystem,
+            created_at: "2024-11-14T12:00:00Z".to_string(),
+            updated_at: "2024-11-14T12:00:00Z".to_string(),
+        }
+    }
+
+    fn create_state_object(
+        account_id: String,
+        commitment: String,
+        state_json: serde_json::Value,
+    ) -> StateObject {
+        StateObject {
+            account_id,
+            commitment,
+            state_json,
+            created_at: "2024-11-14T12:00:00Z".to_string(),
+            updated_at: "2024-11-14T12:00:00Z".to_string(),
+        }
+    }
+
+    fn create_request_with_auth<T>(req: T, pubkey: &str, signature: &str) -> Request<T> {
+        let mut request = Request::new(req);
+        request
+            .metadata_mut()
+            .insert("x-pubkey", pubkey.parse().unwrap());
+        request
+            .metadata_mut()
+            .insert("x-signature", signature.parse().unwrap());
+        request
+    }
+
+    fn create_service(state: AppState) -> StateManagerService {
+        StateManagerService { app_state: state }
+    }
+
+    #[tokio::test]
+    async fn test_grpc_get_pubkey() {
+        let (state, _storage, _network, _metadata) = create_test_state();
+        let service = create_service(state);
+
+        let request = Request::new(state_manager::GetPubkeyRequest {});
+        let response = service.get_pubkey(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(!inner.pubkey.is_empty());
+        assert!(inner.pubkey.starts_with("0x"));
+    }
+
+    #[tokio::test]
+    async fn test_grpc_configure_success() {
+        let (state, _storage, _network, _metadata) = create_test_state();
+        let service = create_service(state);
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+
+        let request = state_manager::ConfigureRequest {
+            account_id: account_id.clone(),
+            auth: Some(state_manager::AuthConfig {
+                auth_type: Some(state_manager::auth_config::AuthType::MidenFalconRpo(
+                    state_manager::MidenFalconRpoAuth {
+                        cosigner_commitments: vec![commitment],
+                    },
+                )),
+            }),
+            initial_state: serde_json::to_string(&account_json).unwrap(),
+            storage_type: "Filesystem".to_string(),
+        };
+
+        let request = create_request_with_auth(request, &pubkey, &signature);
+        let response = service.configure(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(inner.success);
+        assert!(!inner.ack_pubkey.is_empty());
+        assert!(inner.message.contains("configured successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_grpc_push_delta_proposal_success() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let service = create_service(state);
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+
+        let _storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392".to_string(),
+            account_json,
+        )));
+
+        let request = state_manager::PushDeltaProposalRequest {
+            account_id: account_id.clone(),
+            nonce: 1,
+            delta_payload: serde_json::to_string(&serde_json::json!({
+                "tx_summary": delta_fixture["delta_payload"],
+                "signatures": []
+            }))
+            .unwrap(),
+        };
+
+        let request = create_request_with_auth(request, &pubkey, &signature);
+        let response = service.push_delta_proposal(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(inner.success);
+        assert!(inner.delta.is_some());
+        assert!(!inner.commitment.is_empty());
+        assert_eq!(inner.delta.unwrap().nonce, 1);
+    }
+
+    #[tokio::test]
+    async fn test_grpc_push_delta_proposal_missing_tx_summary() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let service = create_service(state);
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+
+        let _storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            account_json,
+        )));
+
+        let request = state_manager::PushDeltaProposalRequest {
+            account_id,
+            nonce: 1,
+            delta_payload: serde_json::to_string(&serde_json::json!({"signatures": []})).unwrap(),
+        };
+
+        let request = create_request_with_auth(request, &pubkey, &signature);
+        let response = service.push_delta_proposal(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(!inner.success);
+    }
+
+    #[tokio::test]
+    async fn test_grpc_get_delta_proposals_success() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let service = create_service(state);
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment.clone()],
+        ))));
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let pending_delta = DeltaObject {
+            account_id: account_id.clone(),
+            nonce: 1,
+            prev_commitment: "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392"
+                .to_string(),
+            new_commitment: None,
+            delta_payload: delta_fixture["delta_payload"].clone(),
+            ack_sig: None,
+            status: DeltaStatus::pending("2024-11-14T12:00:00Z".to_string(), pubkey.clone()),
+        };
+
+        let _storage = storage.with_pull_all_delta_proposals(Ok(vec![pending_delta]));
+
+        let request = state_manager::GetDeltaProposalsRequest { account_id };
+
+        let request = create_request_with_auth(request, &pubkey, &signature);
+        let response = service.get_delta_proposals(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(inner.success);
+        assert_eq!(inner.proposals.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_grpc_get_delta_proposals_empty() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let service = create_service(state);
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+
+        let _storage = storage.with_pull_all_delta_proposals(Ok(vec![]));
+
+        let request = state_manager::GetDeltaProposalsRequest { account_id };
+
+        let request = create_request_with_auth(request, &pubkey, &signature);
+        let response = service.get_delta_proposals(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(inner.success);
+        assert_eq!(inner.proposals.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_grpc_sign_delta_proposal_not_found() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let service = create_service(state);
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+
+        let _storage = storage.with_pull_delta_proposal(Err("Proposal not found".to_string()));
+
+        let dummy_sig = format!("0x{}", "a".repeat(666));
+        let request = state_manager::SignDeltaProposalRequest {
+            account_id,
+            commitment: "nonexistent_proposal".to_string(),
+            signature: Some(state_manager::ProposalSignature {
+                scheme: "falcon".to_string(),
+                signature: dummy_sig,
+            }),
+        };
+
+        let request = create_request_with_auth(request, &pubkey, &signature);
+        let response = service.sign_delta_proposal(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(!inner.success);
+    }
+}
