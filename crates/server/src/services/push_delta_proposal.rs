@@ -145,8 +145,8 @@ pub async fn push_delta_proposal(
 mod tests {
     use super::*;
     use crate::delta_object::DeltaStatus;
-    use crate::metadata::auth::Auth;
     use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
     use crate::state_object::StateObject;
     use crate::storage::StorageType;
     use crate::testing::fixtures;
@@ -208,20 +208,18 @@ mod tests {
     async fn test_push_delta_proposal_success() {
         let (state, storage, network, metadata) = create_test_state();
 
-        let account_json: serde_json::Value =
-            serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
 
-        let test_commitment =
-            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+        let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
         // Generate valid Falcon signature
         let (test_pubkey, test_commitment_hex, test_signature) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
-        let metadata = metadata.with_get(Ok(Some(create_account_metadata(
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
             vec![test_commitment_hex.clone()],
         ))));
@@ -276,14 +274,12 @@ mod tests {
     async fn test_push_delta_proposal_with_signature() {
         let (state, storage, network, metadata) = create_test_state();
 
-        let account_json: serde_json::Value =
-            serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
 
-        let test_commitment =
-            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+        let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
         // Generate valid Falcon signatures for two cosigners
         let (test_pubkey, test_commitment_hex, test_signature) =
@@ -291,12 +287,12 @@ mod tests {
         let (_, cosigner_commitment, _) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
-        let metadata = metadata.with_get(Ok(Some(create_account_metadata(
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
             vec![test_commitment_hex.clone(), cosigner_commitment.clone()],
         ))));
 
-        let storage = storage.with_pull_state(Ok(create_state_object(
+        let _storage = storage.with_pull_state(Ok(create_state_object(
             account_id.clone(),
             test_commitment.to_string(),
             account_json.clone(),
@@ -346,8 +342,7 @@ mod tests {
     async fn test_push_delta_proposal_missing_tx_summary() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_json: serde_json::Value =
-            serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
 
         let (test_pubkey, test_commitment_hex, test_signature) =
@@ -390,8 +385,7 @@ mod tests {
     async fn test_push_delta_proposal_invalid_delta() {
         let (state, storage, network, metadata) = create_test_state();
 
-        let account_json: serde_json::Value =
-            serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
