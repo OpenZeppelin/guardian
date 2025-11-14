@@ -318,11 +318,7 @@ impl DeltasProcessorBase {
         let proposal_id = {
             let client = self.state.network_client.lock().await;
             client
-                .delta_proposal_id(
-                    &delta.account_id,
-                    delta.nonce,
-                    &delta.delta_payload,
-                )
+                .delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload)
                 .ok()
         };
 

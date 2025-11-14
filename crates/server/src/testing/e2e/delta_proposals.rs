@@ -1,9 +1,9 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::auth::{Auth, Credentials};
 use crate::services::{
-    configure_account, get_delta_proposals, push_delta, push_delta_proposal, sign_delta_proposal,
     ConfigureAccountParams, GetDeltaProposalsParams, PushDeltaParams, PushDeltaProposalParams,
-    SignDeltaProposalParams,
+    SignDeltaProposalParams, configure_account, get_delta_proposals, push_delta,
+    push_delta_proposal, sign_delta_proposal,
 };
 use crate::storage::StorageType;
 use crate::testing::fixtures;
@@ -16,8 +16,7 @@ async fn test_sign_delta_proposal() {
     let account_json: serde_json::Value =
         serde_json::from_str(fixtures::ACCOUNT_JSON).expect("Failed to parse account.json");
     let commitments_json: serde_json::Value =
-        serde_json::from_str(fixtures::COMMITMENTS_JSON)
-            .expect("Failed to parse commitments.json");
+        serde_json::from_str(fixtures::COMMITMENTS_JSON).expect("Failed to parse commitments.json");
 
     let account_id = commitments_json["account_id"]
         .as_str()
@@ -93,7 +92,11 @@ async fn test_sign_delta_proposal() {
     // Verify proposal now has 1 signature (from second cosigner)
     match &sign_result.delta.status {
         DeltaStatus::Pending { cosigner_sigs, .. } => {
-            assert_eq!(cosigner_sigs.len(), 1, "Expected 1 signature after second cosigner signs");
+            assert_eq!(
+                cosigner_sigs.len(),
+                1,
+                "Expected 1 signature after second cosigner signs"
+            );
         }
         _ => panic!("Expected Pending status"),
     }
@@ -106,8 +109,7 @@ async fn test_multi_cosigner_signing_workflow() {
     let account_json: serde_json::Value =
         serde_json::from_str(fixtures::ACCOUNT_JSON).expect("Failed to parse account.json");
     let commitments_json: serde_json::Value =
-        serde_json::from_str(fixtures::COMMITMENTS_JSON)
-            .expect("Failed to parse commitments.json");
+        serde_json::from_str(fixtures::COMMITMENTS_JSON).expect("Failed to parse commitments.json");
 
     let account_id = commitments_json["account_id"]
         .as_str()
@@ -206,7 +208,11 @@ async fn test_multi_cosigner_signing_workflow() {
 
     match &sign_result3.delta.status {
         DeltaStatus::Pending { cosigner_sigs, .. } => {
-            assert_eq!(cosigner_sigs.len(), 2, "Expected 2 cosigners to have signed");
+            assert_eq!(
+                cosigner_sigs.len(),
+                2,
+                "Expected 2 cosigners to have signed"
+            );
         }
         _ => panic!("Expected Pending status"),
     }
@@ -224,7 +230,11 @@ async fn test_multi_cosigner_signing_workflow() {
     assert_eq!(proposals_result.proposals.len(), 1);
     match &proposals_result.proposals[0].status {
         DeltaStatus::Pending { cosigner_sigs, .. } => {
-            assert_eq!(cosigner_sigs.len(), 2, "Expected 2 signatures in retrieved proposal");
+            assert_eq!(
+                cosigner_sigs.len(),
+                2,
+                "Expected 2 signatures in retrieved proposal"
+            );
         }
         _ => panic!("Expected Pending status"),
     }
@@ -239,8 +249,7 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
     let account_json: serde_json::Value =
         serde_json::from_str(fixtures::ACCOUNT_JSON).expect("Failed to parse account.json");
     let commitments_json: serde_json::Value =
-        serde_json::from_str(fixtures::COMMITMENTS_JSON)
-            .expect("Failed to parse commitments.json");
+        serde_json::from_str(fixtures::COMMITMENTS_JSON).expect("Failed to parse commitments.json");
 
     let account_id = commitments_json["account_id"]
         .as_str()
@@ -303,7 +312,10 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
         nonce: 1,
         prev_commitment: proposal_result.delta.prev_commitment.clone(),
         new_commitment: None,
-        delta_payload: delta_fixture.get("delta_payload").expect("Missing delta_payload").clone(),
+        delta_payload: delta_fixture
+            .get("delta_payload")
+            .expect("Missing delta_payload")
+            .clone(),
         ack_sig: None,
         status: DeltaStatus::Pending {
             timestamp: state.clock.now_rfc3339(),
