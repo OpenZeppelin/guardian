@@ -20,7 +20,7 @@ const MULTISIG_PSM_AUTH: &str = include_str!("../masm/multisig-psm.masm");
 pub enum MultisigError {
     Assembly(String),
     TransactionRequest(TransactionRequestError),
-    Client(ClientError),
+    Client(Box<ClientError>),
     Executor(TransactionExecutorError),
     UnexpectedSuccess,
 }
@@ -52,7 +52,7 @@ impl From<TransactionRequestError> for MultisigError {
 
 impl From<ClientError> for MultisigError {
     fn from(err: ClientError) -> Self {
-        MultisigError::Client(err)
+        MultisigError::Client(Box::new(err))
     }
 }
 
@@ -218,6 +218,6 @@ where
             summary,
         ))) => Ok(*summary),
         Err(ClientError::TransactionExecutorError(err)) => Err(MultisigError::Executor(err)),
-        Err(err) => Err(MultisigError::Client(err)),
+        Err(err) => Err(MultisigError::Client(Box::new(err))),
     }
 }

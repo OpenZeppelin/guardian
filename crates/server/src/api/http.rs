@@ -714,11 +714,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_delta_since_success() {
-        let (state, storage, network, metadata) = create_test_state();
+        let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
 
-        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let _account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
