@@ -494,7 +494,7 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170";
 
         // Submit multiple proposals
-        let commitments = vec!["0xaaa", "0xbbb", "0xccc"];
+        let commitments = ["0xaaa", "0xbbb", "0xccc"];
         for (i, commitment) in commitments.iter().enumerate() {
             let proposal = create_test_delta(account_id, (i + 1) as u64);
             storage

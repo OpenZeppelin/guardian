@@ -108,7 +108,7 @@ async fn test_get_delta_proposals_empty() {
 
     // Get delta proposals
     let get_proposals_request = Request::builder()
-        .uri(&format!(
+        .uri(format!(
             "/get_delta_proposals?account_id={}",
             account_id_hex
         ))
@@ -181,7 +181,7 @@ async fn test_get_delta_proposals_with_proposals() {
 
     // Get delta proposals
     let get_proposals_request = Request::builder()
-        .uri(&format!(
+        .uri(format!(
             "/get_delta_proposals?account_id={}",
             account_id_hex
         ))

@@ -8,6 +8,9 @@ pub mod auth;
 mod client;
 mod error;
 
+#[cfg(test)]
+pub mod testing;
+
 pub use auth::{Auth, FalconRpoSigner, verify_commitment_signature};
 pub use client::PsmClient;
 pub use error::{ClientError, ClientResult};
