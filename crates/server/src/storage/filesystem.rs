@@ -307,3 +307,335 @@ impl StorageBackend for FilesystemService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::delta_object::{DeltaObject, DeltaStatus};
+    use crate::state_object::StateObject;
+    use std::env;
+
+    fn create_test_delta(account_id: &str, nonce: u64) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: "0x123".to_string(),
+            new_commitment: Some("0x456".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: Some("0xsig".to_string()),
+            status: DeltaStatus::Canonical {
+                timestamp: "2024-11-14T12:00:00Z".to_string(),
+            },
+        }
+    }
+
+    fn create_test_state(account_id: &str) -> StateObject {
+        StateObject {
+            account_id: account_id.to_string(),
+            commitment: "0x789".to_string(),
+            state_json: serde_json::json!({"test": "state"}),
+            created_at: "2024-11-14T12:00:00Z".to_string(),
+            updated_at: "2024-11-14T12:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_submit_and_pull_state() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let state = create_test_state(account_id);
+
+        // Submit state
+        storage
+            .submit_state(&state)
+            .await
+            .expect("Submit state failed");
+
+        // Pull state back
+        let pulled_state = storage
+            .pull_state(account_id)
+            .await
+            .expect("Pull state failed");
+
+        assert_eq!(pulled_state.account_id, state.account_id);
+        assert_eq!(pulled_state.commitment, state.commitment);
+        assert_eq!(pulled_state.state_json, state.state_json);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_submit_and_pull_delta() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let delta = create_test_delta(account_id, 1);
+
+        // Submit delta
+        storage
+            .submit_delta(&delta)
+            .await
+            .expect("Submit delta failed");
+
+        // Pull delta back
+        let pulled_delta = storage
+            .pull_delta(account_id, 1)
+            .await
+            .expect("Pull delta failed");
+
+        assert_eq!(pulled_delta.account_id, delta.account_id);
+        assert_eq!(pulled_delta.nonce, delta.nonce);
+        assert_eq!(pulled_delta.delta_payload, delta.delta_payload);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_deltas_after() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+
+        // Submit multiple deltas
+        for nonce in 1..=5 {
+            let delta = create_test_delta(account_id, nonce);
+            storage
+                .submit_delta(&delta)
+                .await
+                .expect("Submit delta failed");
+        }
+
+        // Pull deltas after nonce 2
+        let deltas = storage
+            .pull_deltas_after(account_id, 2)
+            .await
+            .expect("Pull deltas failed");
+
+        assert_eq!(deltas.len(), 4); // Nonces 2, 3, 4, 5
+        assert_eq!(deltas[0].nonce, 2);
+        assert_eq!(deltas[1].nonce, 3);
+        assert_eq!(deltas[2].nonce, 4);
+        assert_eq!(deltas[3].nonce, 5);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_deltas_after_empty() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+
+        // Pull deltas when none exist
+        let deltas = storage
+            .pull_deltas_after(account_id, 1)
+            .await
+            .expect("Pull deltas failed");
+
+        assert_eq!(deltas.len(), 0);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_submit_and_pull_delta_proposal() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let commitment = "0xabc123";
+        let proposal = create_test_delta(account_id, 1);
+
+        // Submit proposal
+        storage
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .expect("Submit proposal failed");
+
+        // Pull proposal back
+        let pulled_proposal = storage
+            .pull_delta_proposal(account_id, commitment)
+            .await
+            .expect("Pull proposal failed");
+
+        assert_eq!(pulled_proposal.account_id, proposal.account_id);
+        assert_eq!(pulled_proposal.nonce, proposal.nonce);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_all_delta_proposals() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+
+        // Submit multiple proposals
+        let commitments = vec!["0xaaa", "0xbbb", "0xccc"];
+        for (i, commitment) in commitments.iter().enumerate() {
+            let proposal = create_test_delta(account_id, (i + 1) as u64);
+            storage
+                .submit_delta_proposal(commitment, &proposal)
+                .await
+                .expect("Submit proposal failed");
+        }
+
+        // Pull all proposals
+        let proposals = storage
+            .pull_all_delta_proposals(account_id)
+            .await
+            .expect("Pull all proposals failed");
+
+        assert_eq!(proposals.len(), 3);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_update_delta_proposal() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let commitment = "0xabc123";
+        let mut proposal = create_test_delta(account_id, 1);
+
+        // Submit initial proposal
+        storage
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .expect("Submit proposal failed");
+
+        // Update proposal
+        proposal.delta_payload = serde_json::json!({"updated": true});
+        storage
+            .update_delta_proposal(commitment, &proposal)
+            .await
+            .expect("Update proposal failed");
+
+        // Pull updated proposal
+        let pulled_proposal = storage
+            .pull_delta_proposal(account_id, commitment)
+            .await
+            .expect("Pull proposal failed");
+
+        assert_eq!(pulled_proposal.delta_payload["updated"], true);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_delete_delta_proposal() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let commitment = "0xabc123";
+        let proposal = create_test_delta(account_id, 1);
+
+        // Submit proposal
+        storage
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .expect("Submit proposal failed");
+
+        // Verify it exists
+        storage
+            .pull_delta_proposal(account_id, commitment)
+            .await
+            .expect("Pull proposal should succeed");
+
+        // Delete proposal
+        storage
+            .delete_delta_proposal(account_id, commitment)
+            .await
+            .expect("Delete proposal failed");
+
+        // Verify it's gone
+        let result = storage.pull_delta_proposal(account_id, commitment).await;
+        assert!(result.is_err(), "Pull should fail after delete");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_proposal() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let commitment = "0xnonexistent";
+
+        // Delete nonexistent proposal should succeed (no-op)
+        let result = storage.delete_delta_proposal(account_id, commitment).await;
+        assert!(result.is_ok(), "Delete of nonexistent should succeed");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_proposal_commitment_strip_prefix() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let commitment_with_prefix = "0xabc123";
+        let commitment_without_prefix = "abc123";
+        let proposal = create_test_delta(account_id, 1);
+
+        // Submit with prefix
+        storage
+            .submit_delta_proposal(commitment_with_prefix, &proposal)
+            .await
+            .expect("Submit with prefix failed");
+
+        // Should be able to pull with or without prefix
+        let result1 = storage
+            .pull_delta_proposal(account_id, commitment_with_prefix)
+            .await;
+        let result2 = storage
+            .pull_delta_proposal(account_id, commitment_without_prefix)
+            .await;
+
+        assert!(result1.is_ok(), "Pull with prefix should work");
+        assert!(result2.is_ok(), "Pull without prefix should work");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+}

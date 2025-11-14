@@ -220,6 +220,19 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/push_delta", axum::routing::post(http::push_delta))
         .route("/get_delta", axum::routing::get(http::get_delta))
         .route("/get_state", axum::routing::get(http::get_state))
+        .route("/pubkey", axum::routing::get(http::get_pubkey))
+        .route(
+            "/push_delta_proposal",
+            axum::routing::post(http::push_delta_proposal),
+        )
+        .route(
+            "/get_delta_proposals",
+            axum::routing::get(http::get_delta_proposals),
+        )
+        .route(
+            "/sign_delta_proposal",
+            axum::routing::post(http::sign_delta_proposal),
+        )
         .with_state(state)
 }
 
