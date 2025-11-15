@@ -100,13 +100,12 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
             use private_state_manager_client::delta_status::Status;
             if let Status::Pending(ref pending) = status_oneof {
                 for cosigner_sig in pending.cosigner_sigs.iter() {
-                    let sig_json: serde_json::Value = serde_json::from_str(&cosigner_sig.signature)
-                        .map_err(|e| format!("Failed to parse cosigner signature JSON: {}", e))?;
-
-                    let sig_hex = sig_json
-                        .get("signature")
-                        .and_then(|v| v.as_str())
-                        .ok_or("Missing signature field")?;
+                    let sig_hex = cosigner_sig
+                        .signature
+                        .as_ref()
+                        .ok_or("Missing signature")?
+                        .signature
+                        .as_str();
 
                     if !required_commitments
                         .iter()
