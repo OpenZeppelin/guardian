@@ -105,6 +105,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
 
+      - name: Build (generate protobuf descriptors)
+        run: cargo build --package private-state-manager-server
+
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
