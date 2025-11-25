@@ -1,6 +1,6 @@
 use miden_objects::Word;
-use miden_objects::account::{Account, StorageSlot};
-use miden_objects::utils::Serializable;
+use miden_objects::account::Account;
+use miden_objects::utils::{Deserializable, Serializable};
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -80,22 +80,22 @@ impl<'a> MidenAccountInspector<'a> {
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account uses multisig executed transactions map
-    /// Returns true if slot 2 (EXECUTED_TXS_SLOT) is enabled (contains a map)
-    /// TODO: This is not robust enough! We should check for a metadata slot instead.
+    /// Check if the account code includes the verify_psm_signature procedure
     pub fn has_multisig_auth(&self) -> bool {
-        const EXECUTED_TXS_SLOT: usize = 2;
+        const VERIFY_PSM_SIGNATURE_HEX: &str =
+            "0506d280235f40b9218b2e2b9cd13adc776dbc139455624f50e3611c5f313506";
+        let bytes = hex::decode(VERIFY_PSM_SIGNATURE_HEX)
+            .expect("verify_psm_signature root hex must be valid");
+        let proc_root =
+            Word::read_from_bytes(&bytes).expect("failed to deserialize verify_psm_signature root");
 
-        matches!(
-            self.account.storage().slots().get(EXECUTED_TXS_SLOT),
-            Some(StorageSlot::Map(_))
-        )
+        self.account.code().has_procedure(proc_root)
     }
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
-    use super::*;
+    use super::*;   
     use private_state_manager_shared::FromJson;
 
     #[test]
@@ -153,6 +153,21 @@ mod tests {
         assert!(
             !inspector.pubkey_exists("0xdeadbeef"),
             "Random pubkey should not exist"
+        );
+    }
+
+    #[test]
+    fn test_has_multisig_auth() {
+        let fixture_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse fixture");
+
+        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
+        let inspector = MidenAccountInspector::new(&account);
+
+        assert!(
+            inspector.has_multisig_auth(),
+            "Fixture account should include verify_psm_signature procedure"
         );
     }
 }
