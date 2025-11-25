@@ -154,7 +154,7 @@ impl NetworkClient for MidenNetworkClient {
         let mut account = Account::from_json(prev_state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let has_multisig_psm = inspector.has_multisig_auth();
+        let has_psm_auth = inspector.has_psm_auth();
 
         account
             .apply_delta(tx_summary.account_delta())
@@ -167,7 +167,7 @@ impl NetworkClient for MidenNetworkClient {
                 format!("Failed to apply delta to account: {e}")
             })?;
 
-        if has_multisig_psm {
+        if has_psm_auth {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
             // This affects determinism on simulations as the simulation won't pass the authentication,
             // therefore, the transaction won't be added to the mapping.

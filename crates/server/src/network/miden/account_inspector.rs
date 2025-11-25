@@ -81,7 +81,7 @@ impl<'a> MidenAccountInspector<'a> {
     }
 
     /// Check if the account code includes the verify_psm_signature procedure
-    pub fn has_multisig_auth(&self) -> bool {
+    pub fn has_psm_auth(&self) -> bool {
         const VERIFY_PSM_SIGNATURE_HEX: &str =
             "0506d280235f40b9218b2e2b9cd13adc776dbc139455624f50e3611c5f313506";
         let bytes = hex::decode(VERIFY_PSM_SIGNATURE_HEX)
@@ -95,7 +95,7 @@ impl<'a> MidenAccountInspector<'a> {
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
-    use super::*;   
+    use super::*;
     use private_state_manager_shared::FromJson;
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_multisig_auth() {
+    fn test_has_psm_auth() {
         let fixture_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
                 .expect("Failed to parse fixture");
@@ -166,7 +166,7 @@ mod tests {
         let inspector = MidenAccountInspector::new(&account);
 
         assert!(
-            inspector.has_multisig_auth(),
+            inspector.has_psm_auth(),
             "Fixture account should include verify_psm_signature procedure"
         );
     }
