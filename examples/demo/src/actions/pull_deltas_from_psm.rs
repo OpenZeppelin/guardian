@@ -32,9 +32,8 @@ pub async fn action_pull_deltas_from_psm(state: &mut SessionState) -> Result<(),
 
         print_waiting("Applying delta to local account");
 
-        let delta_payload: serde_json::Value =
-            serde_json::from_str(&merged_delta.delta_payload)
-                .map_err(|e| format!("Failed to parse delta payload: {}", e))?;
+        let delta_payload: serde_json::Value = serde_json::from_str(&merged_delta.delta_payload)
+            .map_err(|e| format!("Failed to parse delta payload: {}", e))?;
 
         let tx_summary = TransactionSummary::from_json(&delta_payload)
             .map_err(|e| format!("Failed to deserialize transaction summary: {}", e))?;
