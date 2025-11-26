@@ -1,9 +1,9 @@
-use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::delta_object::DeltaObject;
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
+use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
 use crate::services::resolve_account;
 use crate::state::AppState;
-use crate::state_object::StateObject;
 
 #[derive(Debug, Clone)]
 pub struct PushDeltaParams {
@@ -39,9 +39,9 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         })?;
 
     // Check for pending candidates before accepting new delta
-    let all_deltas = resolved
+    let has_pending = resolved
         .backend
-        .pull_deltas_after(&params.delta.account_id, 0)
+        .has_pending_candidate(&params.delta.account_id)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -52,7 +52,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             PsmError::StorageError(format!("Failed to check deltas: {e}"))
         })?;
 
-    if all_deltas.iter().any(|d| d.status.is_candidate()) {
+    if has_pending {
         return Err(PsmError::ConflictPendingDelta);
     }
 
@@ -82,96 +82,20 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     result_delta = state.ack.ack_delta(result_delta)?;
 
     let now = state.clock.now_rfc3339();
-
-    if state.canonicalization.is_some() {
-        result_delta.status = DeltaStatus::candidate(now);
-        resolved
-            .backend
-            .submit_delta(&result_delta)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    account_id = %params.delta.account_id,
-                    nonce = result_delta.nonce,
-                    error = %e,
-                    "Failed to submit candidate delta"
-                );
-                PsmError::StorageError(format!("Failed to submit delta: {e}"))
-            })?;
-    } else {
-        result_delta.status = DeltaStatus::canonical(now.clone());
-
-        let new_state = StateObject {
-            account_id: result_delta.account_id.clone(),
-            commitment: new_commitment.clone(),
-            state_json: new_state_json,
-            created_at: current_state.created_at.clone(),
-            updated_at: now,
-        };
-
-        resolved
-            .backend
-            .submit_state(&new_state)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    account_id = %params.delta.account_id,
-                    error = %e,
-                    "Failed to update state in optimistic mode"
-                );
-                PsmError::StorageError(format!("Failed to update state: {e}"))
-            })?;
-        resolved
-            .backend
-            .submit_delta(&result_delta)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    account_id = %params.delta.account_id,
-                    nonce = result_delta.nonce,
-                    error = %e,
-                    "Failed to submit canonical delta in optimistic mode"
-                );
-                PsmError::StorageError(format!("Failed to submit delta: {e}"))
-            })?;
-
-        // Delete matching proposal now that delta is canonical
-        let proposal_id = {
-            let client = state.network_client.lock().await;
-            client
-                .delta_proposal_id(
-                    &params.delta.account_id,
-                    params.delta.nonce,
-                    &params.delta.delta_payload,
-                )
-                .ok()
-        };
-
-        if let Some(ref id) = proposal_id
-            && let Ok(_existing_proposal) = resolved
-                .backend
-                .pull_delta_proposal(&params.delta.account_id, id)
-                .await
-        {
-            tracing::info!(
-                account_id = %params.delta.account_id,
-                proposal_id = %id,
-                "Deleting matching proposal as delta is now canonical"
-            );
-            if let Err(e) = resolved
-                .backend
-                .delete_delta_proposal(&params.delta.account_id, id)
-                .await
-            {
-                tracing::warn!(
-                    account_id = %params.delta.account_id,
-                    proposal_id = %id,
-                    error = %e,
-                    "Failed to delete proposal, but continuing"
-                );
-            }
-        }
-    }
+    let commit_strategy = DeltaCommitStrategy::from_app_state(state);
+    commit_strategy
+        .commit(
+            CommitContext {
+                state,
+                resolved: &resolved,
+                current_state: &current_state,
+                now,
+            },
+            &mut result_delta,
+            new_state_json,
+            &new_commitment,
+        )
+        .await?;
 
     Ok(PushDeltaResult {
         delta: result_delta,

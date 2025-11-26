@@ -6,6 +6,7 @@ use crate::storage::StorageBackend;
 use std::sync::Arc;
 
 mod configure_account;
+mod delta_commit;
 mod get_delta;
 mod get_delta_proposals;
 mod get_delta_since;

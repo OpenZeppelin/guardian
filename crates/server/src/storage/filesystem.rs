@@ -209,6 +209,47 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
+    async fn has_pending_candidate(&self, account_id: &str) -> Result<bool, String> {
+        let deltas_filenames = self.list_delta_filenames(account_id).await?;
+        for filename in deltas_filenames {
+            if let Some(nonce_str) = filename.strip_suffix(".json")
+                && let Ok(nonce) = nonce_str.parse::<u64>()
+                && self
+                    .pull_delta(account_id, nonce)
+                    .await?
+                    .status
+                    .is_candidate()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn pull_canonical_deltas_after(
+        &self,
+        account_id: &str,
+        from_nonce: u64,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let deltas_filenames = self.list_delta_filenames(account_id).await?;
+        let mut deltas = Vec::new();
+
+        for filename in deltas_filenames {
+            if let Some(nonce_str) = filename.strip_suffix(".json")
+                && let Ok(nonce) = nonce_str.parse::<u64>()
+                && nonce >= from_nonce
+            {
+                let delta = self.pull_delta(account_id, nonce).await?;
+                if delta.status.is_canonical() {
+                    deltas.push(delta);
+                }
+            }
+        }
+
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
     // Delta proposal methods - stored separately from executed deltas
     async fn submit_delta_proposal(
         &self,
@@ -275,6 +316,26 @@ impl StorageBackend for FilesystemService {
         }
 
         // Proposals will be sorted and filtered by the service layer
+        Ok(proposals)
+    }
+
+    async fn pull_pending_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let proposal_filenames = self.list_proposal_filenames(account_id).await?;
+        let mut proposals = Vec::new();
+
+        for filename in proposal_filenames {
+            if let Some(commitment) = filename.strip_suffix(".json") {
+                match self.pull_delta_proposal(account_id, commitment).await {
+                    Ok(proposal) if proposal.status.is_pending() => proposals.push(proposal),
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to load proposal {}: {}", filename, e);
+                    }
+                }
+            }
+        }
+
+        proposals.sort_by_key(|proposal| proposal.nonce);
         Ok(proposals)
     }
 
