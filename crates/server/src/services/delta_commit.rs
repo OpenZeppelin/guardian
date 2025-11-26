@@ -125,3 +125,360 @@ impl DeltaCommitStrategy {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::delta_object::DeltaStatus;
+    use crate::metadata::AccountMetadata;
+    use crate::storage::StorageType;
+    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use std::sync::Arc;
+
+    fn create_test_delta() -> DeltaObject {
+        DeltaObject {
+            account_id: "0xtest_account_id".to_string(),
+            nonce: 1,
+            prev_commitment: "prev_commitment".to_string(),
+            new_commitment: Some("new_commitment".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: None,
+            status: DeltaStatus::default(),
+        }
+    }
+
+    fn create_test_state_object() -> StateObject {
+        StateObject {
+            account_id: "0xtest_account_id".to_string(),
+            commitment: "old_commitment".to_string(),
+            state_json: serde_json::json!({"state": "data"}),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn create_test_metadata() -> AccountMetadata {
+        AccountMetadata {
+            account_id: "0xtest_account_id".to_string(),
+            auth: crate::metadata::auth::Auth::MidenFalconRpo {
+                cosigner_commitments: vec![],
+            },
+            storage_type: StorageType::Filesystem,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_candidate_submit_delta_error() {
+        let mock_storage =
+            MockStorageBackend::new().with_submit_delta(Err("Storage unavailable".to_string()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let storage_backend = state
+            .storage
+            .get(&StorageType::Filesystem)
+            .expect("Should have filesystem backend");
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            backend: storage_backend,
+        };
+
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Candidate
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, PsmError::StorageError(_)));
+        assert!(err.to_string().contains("Storage unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_submit_state_error() {
+        let mock_storage =
+            MockStorageBackend::new().with_submit_state(Err("State storage failed".to_string()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let storage_backend = state
+            .storage
+            .get(&StorageType::Filesystem)
+            .expect("Should have filesystem backend");
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            backend: storage_backend,
+        };
+
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, PsmError::StorageError(_)));
+        assert!(err.to_string().contains("State storage failed"));
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_submit_delta_error() {
+        let mock_storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Err("Delta storage failed".to_string()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let storage_backend = state
+            .storage
+            .get(&StorageType::Filesystem)
+            .expect("Should have filesystem backend");
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            backend: storage_backend,
+        };
+
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, PsmError::StorageError(_)));
+        assert!(err.to_string().contains("Delta storage failed"));
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_delete_proposal_error_does_not_fail() {
+        // Delete proposal errors should be logged but not fail the commit
+        let mock_storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()))
+            .with_pull_delta_proposal(Ok(create_test_delta())) // Proposal exists
+            .with_delete_delta_proposal(Err("Delete failed".to_string()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let storage_backend = state
+            .storage
+            .get(&StorageType::Filesystem)
+            .expect("Should have filesystem backend");
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            backend: storage_backend,
+        };
+
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        // Should succeed even though delete failed
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_candidate_sets_correct_status() {
+        let mock_storage = MockStorageBackend::new().with_submit_delta(Ok(()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage.clone()),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let storage_backend = state
+            .storage
+            .get(&StorageType::Filesystem)
+            .expect("Should have filesystem backend");
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            backend: storage_backend,
+        };
+
+        let current_state = create_test_state_object();
+        let now = "2024-01-01T12:00:00Z".to_string();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: now.clone(),
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Candidate
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(delta.status.is_candidate());
+        assert_eq!(delta.status.timestamp(), &now);
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_sets_correct_status() {
+        let mock_storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage.clone()),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let storage_backend = state
+            .storage
+            .get(&StorageType::Filesystem)
+            .expect("Should have filesystem backend");
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            backend: storage_backend,
+        };
+
+        let current_state = create_test_state_object();
+        let now = "2024-01-01T12:00:00Z".to_string();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: now.clone(),
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(delta.status.is_canonical());
+        assert_eq!(delta.status.timestamp(), &now);
+    }
+
+    #[tokio::test]
+    async fn test_from_app_state_with_canonicalization() {
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new();
+
+        let mut state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        // Test without canonicalization (optimistic)
+        state.canonicalization = None;
+        assert!(matches!(
+            DeltaCommitStrategy::from_app_state(&state),
+            DeltaCommitStrategy::Optimistic
+        ));
+
+        // Test with canonicalization (candidate)
+        state.canonicalization = Some(crate::canonicalization::CanonicalizationConfig::default());
+        assert!(matches!(
+            DeltaCommitStrategy::from_app_state(&state),
+            DeltaCommitStrategy::Candidate
+        ));
+    }
+}
