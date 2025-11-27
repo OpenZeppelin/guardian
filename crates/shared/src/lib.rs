@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use miden_lib::account::{auth::AuthRpoFalcon512, wallets::BasicWallet};
     use miden_objects::{
-        account::{AccountBuilder, PublicKeyCommitment},
+        account::{AccountBuilder, auth::PublicKeyCommitment},
         crypto::dsa::rpo_falcon512::SecretKey,
     };
 

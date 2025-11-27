@@ -1,3 +1,4 @@
+use miden_objects::account::Account;
 use miden_objects::transaction::TransactionSummary;
 use private_state_manager_client::FromJson;
 
@@ -38,11 +39,23 @@ pub async fn action_pull_deltas_from_psm(state: &mut SessionState) -> Result<(),
         let tx_summary = TransactionSummary::from_json(&delta_payload)
             .map_err(|e| format!("Failed to deserialize transaction summary: {}", e))?;
 
-        let account = state.get_account_mut()?;
-        account
-            .apply_delta(tx_summary.account_delta())
-            .map_err(|e| format!("Failed to apply delta to account: {}", e))?;
+        let account_delta = tx_summary.account_delta();
 
+        // Check if this is a full state delta (new account deployment) or partial delta (update)
+        if account_delta.is_full_state() {
+            // For new accounts, convert the full state delta directly to an Account
+            let new_account = Account::try_from(account_delta)
+                .map_err(|e| format!("Failed to convert full state delta to account: {}", e))?;
+            state.set_account(new_account);
+        } else {
+            // For existing accounts, apply the partial delta
+            let account = state.get_account_mut()?;
+            account
+                .apply_delta(account_delta)
+                .map_err(|e| format!("Failed to apply delta to account: {}", e))?;
+        }
+
+        let account = state.get_account()?;
         print_success("Delta applied successfully");
         println!("  New nonce: {}", account.nonce().as_int());
     } else {

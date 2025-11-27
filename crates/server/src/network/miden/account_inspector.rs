@@ -1,6 +1,6 @@
 use miden_objects::Word;
 use miden_objects::account::Account;
-use miden_objects::utils::{Deserializable, Serializable};
+use miden_objects::utils::Serializable;
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -80,16 +80,18 @@ impl<'a> MidenAccountInspector<'a> {
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account code includes the verify_psm_signature procedure
+    /// Check if the account has PSM auth enabled by checking storage slot 4 (PSM_SELECTOR_SLOT)
+    ///
+    /// PSM-enabled accounts have slot 4 set to [1, 0, 0, 0] to indicate PSM verification is active.
     pub fn has_psm_auth(&self) -> bool {
-        const VERIFY_PSM_SIGNATURE_HEX: &str =
-            "0506d280235f40b9218b2e2b9cd13adc776dbc139455624f50e3611c5f313506";
-        let bytes = hex::decode(VERIFY_PSM_SIGNATURE_HEX)
-            .expect("verify_psm_signature root hex must be valid");
-        let proc_root =
-            Word::read_from_bytes(&bytes).expect("failed to deserialize verify_psm_signature root");
+        const PSM_SELECTOR_SLOT: u8 = 4;
 
-        self.account.code().has_procedure(proc_root)
+        let slot_4_result = self.account.storage().get_item(PSM_SELECTOR_SLOT);
+        if let Ok(slot_value) = slot_4_result {
+            // PSM is enabled when first element is 1
+            return slot_value[0].as_int() == 1;
+        }
+        false
     }
 }
 
@@ -167,7 +169,7 @@ mod tests {
 
         assert!(
             inspector.has_psm_auth(),
-            "Fixture account should include verify_psm_signature procedure"
+            "Fixture account should have PSM auth enabled (slot 4 = [1, 0, 0, 0])"
         );
     }
 }

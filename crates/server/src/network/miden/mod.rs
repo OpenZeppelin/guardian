@@ -151,14 +151,27 @@ impl NetworkClient for MidenNetworkClient {
         delta_payload: &serde_json::Value,
     ) -> Result<(serde_json::Value, String), String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
-        let mut account = Account::from_json(prev_state_json)?;
-        let inspector = MidenAccountInspector::new(&account);
+        let account_delta = tx_summary.account_delta();
 
-        let has_psm_auth = inspector.has_psm_auth();
-
-        account
-            .apply_delta(tx_summary.account_delta())
-            .map_err(|e| {
+        // Check if this is a full state delta (new account deployment) or partial delta (update)
+        let mut account = if account_delta.is_full_state() {
+            // For new accounts, convert the full state delta directly to an Account
+            tracing::debug!(
+                account_id = %account_delta.id().to_hex(),
+                "Processing full state delta for new account deployment"
+            );
+            Account::try_from(account_delta).map_err(|e| {
+                tracing::error!(
+                    account_id = %account_delta.id().to_hex(),
+                    error = %e,
+                    "Failed to convert full state delta to account"
+                );
+                format!("Failed to convert full state delta to account: {e}")
+            })?
+        } else {
+            // For existing accounts, apply the partial delta
+            let mut account = Account::from_json(prev_state_json)?;
+            account.apply_delta(account_delta).map_err(|e| {
                 tracing::error!(
                     account_id = %account.id().to_hex(),
                     error = %e,
@@ -166,6 +179,11 @@ impl NetworkClient for MidenNetworkClient {
                 );
                 format!("Failed to apply delta to account: {e}")
             })?;
+            account
+        };
+
+        let inspector = MidenAccountInspector::new(&account);
+        let has_psm_auth = inspector.has_psm_auth();
 
         if has_psm_auth {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
@@ -446,7 +464,7 @@ mod tests {
         // Expected commitment after applying delta_1 with PSM auth replay protection
         // The fixture account has PSM auth, so the replay protection mapping is updated
         let expected_commitment =
-            "0xbe917d18feef35920bdcd0b091eb094f47a04fa529002034468ca06d3ed02d55";
+            "0x57c1762a34e2245bba4b805436c1ff25be344275ffce6da9eae1f910124c951c";
 
         let (new_state_json, new_commitment) = client
             .apply_delta(&account_json, delta_payload)
