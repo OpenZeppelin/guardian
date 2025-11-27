@@ -194,11 +194,13 @@ mod tests {
             let mast_root = procedure.mast_root();
             let mast_root_hex = format!("0x{}", hex::encode(mast_root.as_bytes()));
             let has_proc = account.code().has_procedure(*mast_root);
-            println!("Procedure MAST root: {} (has_procedure: {})", mast_root_hex, has_proc);
+            println!(
+                "Procedure MAST root: {} (has_procedure: {})",
+                mast_root_hex, has_proc
+            );
         }
         println!("==============================\n");
 
         panic!("Check output above for procedure roots");
     }
 }
-
