@@ -24,6 +24,7 @@ miden-objects = { workspace = true }
 miden-tx = { workspace = true }
 
 tokio = { workspace = true, features = ["full"] }
+clap = { version = "4", features = ["derive"] }
 hex = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }

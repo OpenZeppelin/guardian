@@ -4,6 +4,7 @@ mod multisig;
 use std::path::Path;
 use std::sync::Arc;
 
+use clap::{Parser, ValueEnum};
 use miden_client::account::Account;
 use miden_client::crypto::RpoRandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
@@ -28,6 +29,21 @@ use private_state_manager_shared::ToJson;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use tempfile::TempDir;
+
+#[derive(Debug, Clone, ValueEnum)]
+enum Network {
+    Local,
+    Testnet,
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "psm-rust-example")]
+#[command(about = "PSM Multi-Client E2E Flow Example")]
+struct Args {
+    /// Network to connect to
+    #[arg(long, value_enum, default_value = "local")]
+    network: Network,
+}
 
 fn commitment_from_hex(hex_commitment: &str) -> Result<Word, String> {
     let trimmed = hex_commitment.strip_prefix("0x").unwrap_or(hex_commitment);
@@ -83,6 +99,8 @@ async fn add_account_and_sync(
 
 #[tokio::main]
 async fn main() -> ClientResult<()> {
+    let args = Args::parse();
+
     println!("=== PSM Multi-Client E2E Flow ===\n");
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -101,7 +119,20 @@ async fn main() -> ClientResult<()> {
     println!("  ✓ Client 2 commitment: {}...", &client2_commitment_hex);
     println!();
 
-    println!("Step 1: Connect to PSM and Miden node...");
+    let miden_endpoint = match args.network {
+        Network::Local => {
+            println!("Step 1: Connect to PSM and Miden node (local)...");
+            Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
+        }
+        Network::Testnet => {
+            println!("Step 1: Connect to PSM and Miden node (testnet)...");
+            Endpoint::new(
+                "https".to_string(),
+                "rpc.testnet.miden.io".to_string(),
+                None,
+            )
+        }
+    };
 
     let client1_signer = FalconRpoSigner::new(client1_secret_key.clone());
     let client1_auth = Auth::FalconRpoSigner(client1_signer);
@@ -128,8 +159,6 @@ async fn main() -> ClientResult<()> {
         }
     };
 
-    let miden_endpoint = Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291));
-
     let mut miden_client = match create_miden_client(temp_dir.path(), &miden_endpoint).await {
         Ok(client) => {
             println!("  ✓ Connected to Miden node");
@@ -137,7 +166,9 @@ async fn main() -> ClientResult<()> {
         }
         Err(e) => {
             println!("  ✗ Failed to create Miden client: {}", e);
-            println!("  Hint: Start Miden node on port 57291");
+            if matches!(args.network, Network::Local) {
+                println!("  Hint: Start Miden node on port 57291");
+            }
             return Ok(());
         }
     };
