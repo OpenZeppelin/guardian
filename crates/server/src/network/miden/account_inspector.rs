@@ -1,6 +1,6 @@
 use miden_objects::Word;
 use miden_objects::account::Account;
-use miden_objects::utils::Serializable;
+use miden_objects::utils::{Deserializable, Serializable};
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -80,18 +80,25 @@ impl<'a> MidenAccountInspector<'a> {
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account has PSM auth enabled by checking storage slot 4 (PSM_SELECTOR_SLOT)
+    /// Check if the account has PSM auth enabled by checking for the `auth_tx_rpo_falcon512_multisig`
+    /// procedure MAST root.
     ///
-    /// PSM-enabled accounts have slot 4 set to [1, 0, 0, 0] to indicate PSM verification is active.
+    /// PSM-enabled accounts have this procedure which includes PSM signature verification.
     pub fn has_psm_auth(&self) -> bool {
-        const PSM_SELECTOR_SLOT: u8 = 4;
+        // MAST root for auth_tx_rpo_falcon512_multisig procedure from multisig-psm.masm
+        // This is the compiled procedure that contains verify_psm_signature
+        const AUTH_TX_RPO_FALCON512_MULTISIG_HEX: &str =
+            "19cda2d87fc6bfc69cee5349a8d62b231a049ad5b174614639b6ce158d0c5403";
 
-        let slot_4_result = self.account.storage().get_item(PSM_SELECTOR_SLOT);
-        if let Ok(slot_value) = slot_4_result {
-            // PSM is enabled when first element is 1
-            return slot_value[0].as_int() == 1;
-        }
-        false
+        let Ok(bytes) = hex::decode(AUTH_TX_RPO_FALCON512_MULTISIG_HEX) else {
+            return false;
+        };
+
+        let Ok(mast_root) = Word::read_from_bytes(&bytes) else {
+            return false;
+        };
+
+        self.account.code().has_procedure(mast_root)
     }
 }
 
@@ -169,7 +176,29 @@ mod tests {
 
         assert!(
             inspector.has_psm_auth(),
-            "Fixture account should have PSM auth enabled (slot 4 = [1, 0, 0, 0])"
+            "Fixture account should have PSM auth enabled (auth_tx_rpo_falcon512_multisig procedure)"
         );
     }
+
+    #[test]
+    #[ignore]
+    fn print_account_procedure_roots() {
+        let fixture_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse fixture");
+
+        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
+
+        println!("\n=== Account Procedure Roots ===");
+        for procedure in account.code().procedures() {
+            let mast_root = procedure.mast_root();
+            let mast_root_hex = format!("0x{}", hex::encode(mast_root.as_bytes()));
+            let has_proc = account.code().has_procedure(*mast_root);
+            println!("Procedure MAST root: {} (has_procedure: {})", mast_root_hex, has_proc);
+        }
+        println!("==============================\n");
+
+        panic!("Check output above for procedure roots");
+    }
 }
+
