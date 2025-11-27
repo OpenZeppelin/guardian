@@ -480,4 +480,81 @@ mod tests {
             "New state should have data field"
         );
     }
+
+    #[tokio::test]
+    async fn test_apply_delta_full_state() {
+        use miden_lib::account::auth::NoAuth;
+        use miden_lib::account::wallets::BasicWallet;
+        use miden_objects::Felt;
+        use miden_objects::account::AccountDelta;
+        use miden_objects::account::delta::{AccountStorageDelta, AccountVaultDelta};
+        use miden_objects::account::{AccountBuilder, AccountStorageMode, AccountType};
+
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::from_network(network)
+            .await
+            .expect("Failed to create client");
+
+        // Create a simple account without PSM auth to test the full state delta path
+        // This avoids the replay protection logic which requires proper storage maps
+        let account = AccountBuilder::new([0xAB; 32])
+            .account_type(AccountType::RegularAccountUpdatableCode)
+            .storage_mode(AccountStorageMode::Public)
+            .with_component(BasicWallet)
+            .with_auth_component(NoAuth)
+            .build()
+            .expect("Failed to build account");
+
+        // Create a full state delta by using with_code() to add code to the delta
+        // This simulates a new account deployment where the full account state is included
+        // A full state delta has code attached, which distinguishes it from a partial update
+        let full_state_delta = AccountDelta::new(
+            account.id(),
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::new(1), // nonce delta
+        )
+        .expect("Failed to create delta")
+        .with_code(Some(account.code().clone()));
+
+        // Verify this is indeed a full state delta
+        assert!(
+            full_state_delta.is_full_state(),
+            "Delta should be a full state delta"
+        );
+
+        // Create a TransactionSummary with the full state delta
+        let tx_summary = TransactionSummary::new(
+            full_state_delta,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            Word::default(),
+        );
+
+        let delta_payload = tx_summary.to_json();
+
+        // For full state deltas, prev_state_json is ignored since we're creating a new account
+        let empty_prev_state = serde_json::json!({});
+
+        let (new_state_json, new_commitment) = client
+            .apply_delta(&empty_prev_state, &delta_payload)
+            .expect("apply_delta with full state should succeed");
+
+        // The new state should have a data field
+        assert!(
+            new_state_json.get("data").is_some(),
+            "New state from full delta should have data field"
+        );
+
+        // Commitment should be a valid hex string
+        assert!(
+            new_commitment.starts_with("0x"),
+            "Commitment should be hex format"
+        );
+        assert_eq!(
+            new_commitment.len(),
+            66,
+            "Commitment should be 32 bytes (64 hex chars + 0x prefix)"
+        );
+    }
 }

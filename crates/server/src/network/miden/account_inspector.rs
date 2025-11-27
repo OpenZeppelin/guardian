@@ -179,28 +179,4 @@ mod tests {
             "Fixture account should have PSM auth enabled (auth_tx_rpo_falcon512_multisig procedure)"
         );
     }
-
-    #[test]
-    #[ignore]
-    fn print_account_procedure_roots() {
-        let fixture_json: serde_json::Value =
-            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
-                .expect("Failed to parse fixture");
-
-        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
-
-        println!("\n=== Account Procedure Roots ===");
-        for procedure in account.code().procedures() {
-            let mast_root = procedure.mast_root();
-            let mast_root_hex = format!("0x{}", hex::encode(mast_root.as_bytes()));
-            let has_proc = account.code().has_procedure(*mast_root);
-            println!(
-                "Procedure MAST root: {} (has_procedure: {})",
-                mast_root_hex, has_proc
-            );
-        }
-        println!("==============================\n");
-
-        panic!("Check output above for procedure roots");
-    }
 }
