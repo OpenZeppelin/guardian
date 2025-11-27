@@ -22,7 +22,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
-tonic-reflection = "0.13"
+tonic-prost = { workspace = true }
+tonic-reflection = "0.14"
 prost = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
@@ -38,7 +39,7 @@ miden-rpc-client = { path = "../miden-rpc-client" }
 miden-client = { workspace = true, features = ["testing"], optional = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tower = "0.5"

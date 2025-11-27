@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::Serializable;
-use miden_objects::account::AuthSecretKey;
+use miden_objects::account::auth::AuthSecretKey;
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 use rand::rngs::StdRng;
 

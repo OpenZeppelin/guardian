@@ -28,7 +28,9 @@ pub fn generate_falcon_keypair(
         .expect("Key not found in keystore");
 
     // Verify the retrieved key matches
-    let AuthSecretKey::RpoFalcon512(retrieved_secret) = retrieved_key;
+    let AuthSecretKey::RpoFalcon512(retrieved_secret) = retrieved_key else {
+        panic!("Expected RpoFalcon512 key but got different variant");
+    };
     assert_eq!(
         retrieved_secret.public_key().to_commitment(),
         actual_commitment,

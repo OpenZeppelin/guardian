@@ -47,6 +47,7 @@ pub async fn create_miden_client(
         Some(20),
         Some(256),
         None,
+        None,
     )
     .await
     .map_err(|err| format!("Failed to create Miden client: {err}"))

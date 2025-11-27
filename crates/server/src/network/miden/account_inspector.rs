@@ -80,16 +80,25 @@ impl<'a> MidenAccountInspector<'a> {
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account code includes the verify_psm_signature procedure
+    /// Check if the account has PSM auth enabled by checking for the `auth_tx_rpo_falcon512_multisig`
+    /// procedure MAST root.
+    ///
+    /// PSM-enabled accounts have this procedure which includes PSM signature verification.
     pub fn has_psm_auth(&self) -> bool {
-        const VERIFY_PSM_SIGNATURE_HEX: &str =
-            "0506d280235f40b9218b2e2b9cd13adc776dbc139455624f50e3611c5f313506";
-        let bytes = hex::decode(VERIFY_PSM_SIGNATURE_HEX)
-            .expect("verify_psm_signature root hex must be valid");
-        let proc_root =
-            Word::read_from_bytes(&bytes).expect("failed to deserialize verify_psm_signature root");
+        // MAST root for auth_tx_rpo_falcon512_multisig procedure from multisig-psm.masm
+        // This is the compiled procedure that contains verify_psm_signature
+        const AUTH_TX_RPO_FALCON512_MULTISIG_HEX: &str =
+            "19cda2d87fc6bfc69cee5349a8d62b231a049ad5b174614639b6ce158d0c5403";
 
-        self.account.code().has_procedure(proc_root)
+        let Ok(bytes) = hex::decode(AUTH_TX_RPO_FALCON512_MULTISIG_HEX) else {
+            return false;
+        };
+
+        let Ok(mast_root) = Word::read_from_bytes(&bytes) else {
+            return false;
+        };
+
+        self.account.code().has_procedure(mast_root)
     }
 }
 
@@ -167,7 +176,7 @@ mod tests {
 
         assert!(
             inspector.has_psm_auth(),
-            "Fixture account should include verify_psm_signature procedure"
+            "Fixture account should have PSM auth enabled (auth_tx_rpo_falcon512_multisig procedure)"
         );
     }
 }

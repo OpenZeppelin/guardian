@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use miden_client::ClientError;
-use miden_objects::account::Signature as AccountSignature;
+use miden_objects::account::auth::Signature as AccountSignature;
+use miden_objects::account::Account;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
 use miden_objects::transaction::TransactionSummary;
 use private_state_manager_client::{FromJson, ToJson};
@@ -194,25 +195,18 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
     )
     .map_err(|e| format!("Failed to build final transaction request: {}", e))?;
 
-    let tx_result = {
+    {
         let miden_client = state.get_miden_client_mut()?;
         match miden_client
-            .new_transaction(account_id, final_tx_request)
+            .submit_new_transaction(account_id, final_tx_request)
             .await
         {
-            Ok(result) => result,
+            Ok(_tx_id) => {}
             Err(ClientError::TransactionExecutorError(tx_err)) => {
                 return Err(format!("Transaction execution failed:\n{tx_err}"));
             }
             Err(err) => return Err(format!("Transaction execution failed: {err}")),
         }
-    };
-    {
-        let miden_client = state.get_miden_client_mut()?;
-        miden_client
-            .submit_transaction(tx_result.clone())
-            .await
-            .map_err(|e| format!("Failed to submit transaction: {}", e))?
     };
 
     print_success(&format!(
@@ -221,10 +215,28 @@ pub async fn action_finalize_pending_transaction(state: &mut SessionState) -> Re
         metadata.signer_commitments_hex.len()
     ));
 
-    let current_account = state.get_account_mut()?;
-    current_account
-        .apply_delta(tx_result.account_delta())
-        .map_err(|e| format!("Failed to apply account delta: {}", e))?;
+    // Sync to get the updated account state after the transaction
+    print_waiting("Syncing state after transaction");
+    let miden_client = state.get_miden_client_mut()?;
+    miden_client
+        .sync_state()
+        .await
+        .map_err(|e| format!("Failed to sync state after transaction: {}", e))?;
+
+    // Update the local account state from the miden client
+    let account_record = miden_client
+        .get_account(account_id)
+        .await
+        .map_err(|e| format!("Failed to get updated account: {}", e))?
+        .ok_or_else(|| format!("Account {} not found after transaction", account_id))?;
+
+    let updated_account: Account = account_record.into();
+    state.set_account(updated_account);
+
+    print_success(&format!(
+        "Local account updated. New nonce: {}",
+        state.get_account()?.nonce().as_int()
+    ));
 
     Ok(())
 }

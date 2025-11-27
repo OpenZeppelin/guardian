@@ -10,8 +10,8 @@ use miden_client::transaction::{
 };
 use miden_client::{Client, ClientError, Deserializable, ScriptBuilder, Word};
 
-use miden_objects::account::{AccountId, Signature};
-use miden_objects::assembly::diagnostics::NamedSource;
+use miden_objects::account::auth::Signature;
+use miden_objects::account::AccountId;
 use miden_objects::{Felt, Hasher};
 
 const MULTISIG_PSM_AUTH: &str = include_str!("../masm/multisig-psm.masm");
@@ -147,17 +147,13 @@ pub fn build_multisig_config_advice(
 }
 
 pub fn build_update_signers_script() -> Result<TransactionScript, String> {
-    let multisig_psm_source = NamedSource::new("account_auth::multisig_psm", MULTISIG_PSM_AUTH);
-
     let multisig_psm_library = TransactionKernel::assembler()
-        .assemble_library([multisig_psm_source])
+        .assemble_library([MULTISIG_PSM_AUTH])
         .map_err(|err| format!("Failed to compile multisig+PSM library: {err}"))?;
 
     let tx_script_code = "
-        use.account_auth::multisig_psm
-
         begin
-            exec.multisig_psm::update_signers_and_threshold
+            call.::update_signers_and_threshold
         end
     ";
 
@@ -199,7 +195,7 @@ pub fn build_signature_advice_entry(
     signature: &Signature,
 ) -> (Word, Vec<Felt>) {
     let key = Hasher::merge(&[pubkey_commitment, message]);
-    let values = signature.to_prepared_signature();
+    let values = signature.to_prepared_signature(message);
     (key, values)
 }
 
@@ -212,7 +208,7 @@ pub async fn execute_transaction_for_summary<AUTH>(
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    match client.new_transaction(account_id, request).await {
+    match client.execute_transaction(account_id, request).await {
         Ok(_) => Err(MultisigError::UnexpectedSuccess),
         Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
             summary,

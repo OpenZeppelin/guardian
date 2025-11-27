@@ -151,14 +151,27 @@ impl NetworkClient for MidenNetworkClient {
         delta_payload: &serde_json::Value,
     ) -> Result<(serde_json::Value, String), String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
-        let mut account = Account::from_json(prev_state_json)?;
-        let inspector = MidenAccountInspector::new(&account);
+        let account_delta = tx_summary.account_delta();
 
-        let has_psm_auth = inspector.has_psm_auth();
-
-        account
-            .apply_delta(tx_summary.account_delta())
-            .map_err(|e| {
+        // Check if this is a full state delta (new account deployment) or partial delta (update)
+        let mut account = if account_delta.is_full_state() {
+            // For new accounts, convert the full state delta directly to an Account
+            tracing::debug!(
+                account_id = %account_delta.id().to_hex(),
+                "Processing full state delta for new account deployment"
+            );
+            Account::try_from(account_delta).map_err(|e| {
+                tracing::error!(
+                    account_id = %account_delta.id().to_hex(),
+                    error = %e,
+                    "Failed to convert full state delta to account"
+                );
+                format!("Failed to convert full state delta to account: {e}")
+            })?
+        } else {
+            // For existing accounts, apply the partial delta
+            let mut account = Account::from_json(prev_state_json)?;
+            account.apply_delta(account_delta).map_err(|e| {
                 tracing::error!(
                     account_id = %account.id().to_hex(),
                     error = %e,
@@ -166,6 +179,11 @@ impl NetworkClient for MidenNetworkClient {
                 );
                 format!("Failed to apply delta to account: {e}")
             })?;
+            account
+        };
+
+        let inspector = MidenAccountInspector::new(&account);
+        let has_psm_auth = inspector.has_psm_auth();
 
         if has_psm_auth {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
@@ -446,7 +464,7 @@ mod tests {
         // Expected commitment after applying delta_1 with PSM auth replay protection
         // The fixture account has PSM auth, so the replay protection mapping is updated
         let expected_commitment =
-            "0xbe917d18feef35920bdcd0b091eb094f47a04fa529002034468ca06d3ed02d55";
+            "0x57c1762a34e2245bba4b805436c1ff25be344275ffce6da9eae1f910124c951c";
 
         let (new_state_json, new_commitment) = client
             .apply_delta(&account_json, delta_payload)
@@ -460,6 +478,83 @@ mod tests {
         assert!(
             new_state_json.get("data").is_some(),
             "New state should have data field"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_delta_full_state() {
+        use miden_lib::account::auth::NoAuth;
+        use miden_lib::account::wallets::BasicWallet;
+        use miden_objects::Felt;
+        use miden_objects::account::AccountDelta;
+        use miden_objects::account::delta::{AccountStorageDelta, AccountVaultDelta};
+        use miden_objects::account::{AccountBuilder, AccountStorageMode, AccountType};
+
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::from_network(network)
+            .await
+            .expect("Failed to create client");
+
+        // Create a simple account without PSM auth to test the full state delta path
+        // This avoids the replay protection logic which requires proper storage maps
+        let account = AccountBuilder::new([0xAB; 32])
+            .account_type(AccountType::RegularAccountUpdatableCode)
+            .storage_mode(AccountStorageMode::Public)
+            .with_component(BasicWallet)
+            .with_auth_component(NoAuth)
+            .build()
+            .expect("Failed to build account");
+
+        // Create a full state delta by using with_code() to add code to the delta
+        // This simulates a new account deployment where the full account state is included
+        // A full state delta has code attached, which distinguishes it from a partial update
+        let full_state_delta = AccountDelta::new(
+            account.id(),
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::new(1), // nonce delta
+        )
+        .expect("Failed to create delta")
+        .with_code(Some(account.code().clone()));
+
+        // Verify this is indeed a full state delta
+        assert!(
+            full_state_delta.is_full_state(),
+            "Delta should be a full state delta"
+        );
+
+        // Create a TransactionSummary with the full state delta
+        let tx_summary = TransactionSummary::new(
+            full_state_delta,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            Word::default(),
+        );
+
+        let delta_payload = tx_summary.to_json();
+
+        // For full state deltas, prev_state_json is ignored since we're creating a new account
+        let empty_prev_state = serde_json::json!({});
+
+        let (new_state_json, new_commitment) = client
+            .apply_delta(&empty_prev_state, &delta_payload)
+            .expect("apply_delta with full state should succeed");
+
+        // The new state should have a data field
+        assert!(
+            new_state_json.get("data").is_some(),
+            "New state from full delta should have data field"
+        );
+
+        // Commitment should be a valid hex string
+        assert!(
+            new_commitment.starts_with("0x"),
+            "Commitment should be hex format"
+        );
+        assert_eq!(
+            new_commitment.len(),
+            66,
+            "Commitment should be 32 bytes (64 hex chars + 0x prefix)"
         );
     }
 }

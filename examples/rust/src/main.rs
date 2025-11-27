@@ -14,7 +14,7 @@ use miden_client::{
 use miden_client_sqlite_store::SqliteStore;
 use miden_objects::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
-use miden_objects::account::Signature as AccountSignature;
+use miden_objects::account::auth::Signature as AccountSignature;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RawFalconSignature;
 
 use private_state_manager_client::auth_config::AuthType;
@@ -66,6 +66,7 @@ async fn create_miden_client(data_dir: &Path, endpoint: &Endpoint) -> Result<Cli
         Some(20),
         Some(256),
         None,
+        None, // prover
     )
     .await
     .map_err(|err| format!("Failed to create Miden client: {err}"))
@@ -140,11 +141,40 @@ async fn main() -> ClientResult<()> {
             return Ok(());
         }
     };
+
+    // Check for kernel version mismatch between client library and node
+    use miden_client::transaction::TransactionKernel;
+    let grpc_client_check = GrpcClient::new(&miden_endpoint, 10_000);
+    if let Ok((block_header, _)) = grpc_client_check
+        .get_block_header_by_number(None, false)
+        .await
+    {
+        let node_kernel = block_header.tx_kernel_commitment();
+        let client_kernel: Word = TransactionKernel.to_commitment();
+        if node_kernel != client_kernel {
+            println!("  ✗ Kernel version mismatch!");
+            println!(
+                "    Node kernel:   0x{}",
+                hex::encode(node_kernel.as_bytes())
+            );
+            println!(
+                "    Client kernel: 0x{}",
+                hex::encode(client_kernel.as_bytes())
+            );
+            println!(
+                "    The Miden node is running a different kernel version than the client library."
+            );
+            println!("    Please ensure both use the same miden-lib version (currently: 0.12.4).");
+            return Ok(());
+        }
+    }
+
     println!();
 
     println!("Step 2: Creating multisig PSM account...");
 
-    let init_seed = [0xff; 32];
+    // Use random seed to avoid conflicts with existing accounts
+    let init_seed: [u8; 32] = rand::random();
     let account = multisig::create_multisig_psm_account(
         &client1_commitment_hex,
         &client2_commitment_hex,
@@ -277,7 +307,10 @@ async fn main() -> ClientResult<()> {
             }
         };
 
-        let tx_summary = match miden_client.new_transaction(account.id(), tx_request).await {
+        let tx_summary = match miden_client
+            .execute_transaction(account.id(), tx_request)
+            .await
+        {
             Err(ClientError::TransactionExecutorError(
                 miden_client::transaction::TransactionExecutorError::Unauthorized(tx_summary),
             )) => {
@@ -289,7 +322,7 @@ async fn main() -> ClientResult<()> {
                 return Ok(());
             }
             Err(e) => {
-                println!("  ✗ Simulation failed: {}", e);
+                println!("  ✗ Simulation failed: {:?}", e);
                 return Ok(());
             }
         };
@@ -370,22 +403,23 @@ async fn main() -> ClientResult<()> {
                 let cosigner2_signature =
                     AccountSignature::from(client2_secret_key.sign(tx_message));
 
-                let mut signature_advice = Vec::new();
-                signature_advice.push(multisig::build_signature_advice_entry(
-                    server_commitment,
-                    tx_message,
-                    &ack_signature,
-                ));
-                signature_advice.push(multisig::build_signature_advice_entry(
-                    signer_commitments[0],
-                    tx_message,
-                    &cosigner1_signature,
-                ));
-                signature_advice.push(multisig::build_signature_advice_entry(
-                    signer_commitments[1],
-                    tx_message,
-                    &cosigner2_signature,
-                ));
+                let signature_advice = vec![
+                    multisig::build_signature_advice_entry(
+                        server_commitment,
+                        tx_message,
+                        &ack_signature,
+                    ),
+                    multisig::build_signature_advice_entry(
+                        signer_commitments[0],
+                        tx_message,
+                        &cosigner1_signature,
+                    ),
+                    multisig::build_signature_advice_entry(
+                        signer_commitments[1],
+                        tx_message,
+                        &cosigner2_signature,
+                    ),
+                ];
 
                 let (final_tx_request, _final_config_hash) =
                     match multisig::build_update_signers_transaction_request(
@@ -402,7 +436,7 @@ async fn main() -> ClientResult<()> {
                     };
 
                 let tx_result = match miden_client
-                    .new_transaction(account.id(), final_tx_request)
+                    .execute_transaction(account.id(), final_tx_request)
                     .await
                 {
                     Ok(result) => result,

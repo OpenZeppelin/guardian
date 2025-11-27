@@ -112,7 +112,7 @@ pub async fn action_add_cosigner(
         .map_err(|e| format!("Failed to sync client state: {}", e))?;
 
     let tx_summary = match miden_client
-        .new_transaction(account_id, tx_request.clone())
+        .execute_transaction(account_id, tx_request.clone())
         .await
     {
         Err(ClientError::TransactionExecutorError(
@@ -121,8 +121,11 @@ pub async fn action_add_cosigner(
         Ok(_) => {
             return Err("Expected Unauthorized error but transaction succeeded".to_string());
         }
+        Err(ClientError::TransactionExecutorError(tx_err)) => {
+            return Err(format!("Simulation failed (executor): {}", tx_err));
+        }
         Err(e) => {
-            return Err(format!("Simulation failed: {}", e));
+            return Err(format!("Simulation failed: {:?}", e));
         }
     };
 

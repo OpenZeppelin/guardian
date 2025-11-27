@@ -8,7 +8,7 @@ use miden_client::transaction::TransactionExecutorError;
 use miden_client::vm::{AdviceInputs, AdviceMap};
 use miden_client::{Deserializable, Felt, Serializable, Word};
 
-use miden_objects::account::Signature as AccountSignature;
+use miden_objects::account::auth::Signature as AccountSignature;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RawFalconSignature;
 
 use private_state_manager_client::auth_config::AuthType;
@@ -334,22 +334,23 @@ async fn main() -> ClientResult<()> {
                 let cosigner2_signature =
                     AccountSignature::from(client2_secret_key.sign(tx_message));
 
-                let mut signature_advice = Vec::new();
-                signature_advice.push(multisig::build_signature_advice_entry(
-                    server_commitment,
-                    tx_message,
-                    &ack_signature,
-                ));
-                signature_advice.push(multisig::build_signature_advice_entry(
-                    signer_commitments[0],
-                    tx_message,
-                    &cosigner1_signature,
-                ));
-                signature_advice.push(multisig::build_signature_advice_entry(
-                    signer_commitments[1],
-                    tx_message,
-                    &cosigner2_signature,
-                ));
+                let signature_advice = vec![
+                    multisig::build_signature_advice_entry(
+                        server_commitment,
+                        tx_message,
+                        &ack_signature,
+                    ),
+                    multisig::build_signature_advice_entry(
+                        signer_commitments[0],
+                        tx_message,
+                        &cosigner1_signature,
+                    ),
+                    multisig::build_signature_advice_entry(
+                        signer_commitments[1],
+                        tx_message,
+                        &cosigner2_signature,
+                    ),
+                ];
 
                 let mut final_advice_map = AdviceMap::default();
                 final_advice_map.insert(config_hash, config_values);

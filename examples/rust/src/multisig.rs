@@ -10,9 +10,8 @@ use miden_client::transaction::{
 };
 use miden_client::{Client, ClientError, Deserializable, ScriptBuilder, Word};
 
-// NamedSource is not exported by miden_client, so we import it from miden_objects (transitive dependency)
-use miden_objects::account::{AccountId, Signature};
-use miden_objects::assembly::diagnostics::NamedSource;
+use miden_objects::account::auth::Signature;
+use miden_objects::account::AccountId;
 use miden_objects::{Felt, Hasher};
 
 // Load Multisig+PSM Auth MASM code from consolidated file
@@ -148,6 +147,8 @@ pub fn create_multisig_psm_account(
     .with_supports_all_types();
 
     // Create account with both clients as cosigners
+    // Use build() for real client (includes seed for new account deployment)
+    // For MockChain tests, use build_existing() instead
     AccountBuilder::new(init_seed)
         .account_type(AccountType::RegularAccountUpdatableCode)
         .storage_mode(AccountStorageMode::Public) // Use Public mode like the test
@@ -179,27 +180,23 @@ pub fn build_multisig_config_advice(
         payload.extend_from_slice(commitment.as_elements());
     }
 
-    let digest = Hasher::hash_elements(&payload);
-    let config_hash: Word = digest.into();
+    let config_hash: Word = Hasher::hash_elements(&payload);
     (config_hash, payload)
 }
 
 #[allow(dead_code)]
 pub fn build_update_signers_script() -> Result<TransactionScript, String> {
     // Compile the consolidated multisig+PSM library for use in transaction scripts
-    let multisig_psm_source = NamedSource::new("account_auth::multisig_psm", MULTISIG_PSM_AUTH);
-
-    // Compile as a library so it can be linked to transaction scripts
+    // Pass source code directly (like miden-lib build.rs does) to avoid namespace issues
     let multisig_psm_library = TransactionKernel::assembler()
-        .assemble_library([multisig_psm_source])
+        .assemble_library([MULTISIG_PSM_AUTH])
         .map_err(|err| format!("Failed to compile multisig+PSM library: {err}"))?;
 
     // Build the transaction script that calls update_signers_and_threshold
+    // Use call.:: syntax for dynamically linked library procedure calls (v0.12+)
     let tx_script_code = "
-        use.account_auth::multisig_psm
-
         begin
-            exec.multisig_psm::update_signers_and_threshold
+            call.::update_signers_and_threshold
         end
     ";
 
@@ -212,7 +209,7 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
     Ok(tx_script)
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::result_large_err)]
 /// Builds a `TransactionRequest` that executes `update_signers_and_threshold` using the
 /// provided multisig configuration. Returns the request together with the advice map key
 /// (`MULTISIG_CONFIG_HASH`) so it can be reused elsewhere (e.g. for signature lookups).
@@ -226,7 +223,7 @@ where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
     let (config_hash, config_values) = build_multisig_config_advice(threshold, signer_commitments);
-    let script = build_update_signers_script().map_err(|err| MultisigError::Assembly(err))?;
+    let script = build_update_signers_script().map_err(MultisigError::Assembly)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
@@ -246,7 +243,7 @@ pub fn build_signature_advice_entry(
     signature: &Signature,
 ) -> (Word, Vec<Felt>) {
     let key = Hasher::merge(&[pubkey_commitment, message]);
-    let values = signature.to_prepared_signature();
+    let values = signature.to_prepared_signature(message);
     (key, values)
 }
 
@@ -262,7 +259,7 @@ pub async fn execute_transaction_for_summary<AUTH>(
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    match client.new_transaction(account_id, request).await {
+    match client.execute_transaction(account_id, request).await {
         Ok(_) => Err(MultisigError::UnexpectedSuccess),
         Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
             summary,

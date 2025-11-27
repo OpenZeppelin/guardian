@@ -38,9 +38,11 @@ incremental = false   # Disable incremental compilation for reproducibility
 serde = "1.0.228"
 serde_json = "1.0.145"
 tokio = "1.47.1"
-tonic = "0.13.0"
-prost = "0.13.4"
-tonic-build = "0.13.0"
+tonic = "0.14.2"
+prost = "0.14.1"
+tonic-build = "0.14.1"
+tonic-prost-build = "0.14.2"
+tonic-prost = "0.14.2"
 thiserror = "2.0.9"
 hex = "0.4.3"
 base64 = "0.22"
@@ -52,9 +54,9 @@ assert_matches = "1.5"
 rstest = "0.26"
 
 # Miden
-miden-objects = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-objects", branch = "next" }
-miden-lib = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-lib", branch = "next" }
-miden-tx = { git = "https://github.com/0xMiden/miden-base.git", package = "miden-tx", branch = "next" }
-miden-node-proto = { git = "https://github.com/0xMiden/miden-node.git", package = "miden-node-proto", branch = "next" }
-miden-client = { git = "https://github.com/0xMiden/miden-client.git", branch = "next" }
-miden-client-sqlite-store = { git = "https://github.com/0xMiden/miden-client.git", branch = "next", package = "miden-client-sqlite-store" }
+miden-objects = "0.12.4"
+miden-lib = "0.12.4"
+miden-tx = "0.12.4"
+miden-node-proto = "0.12.3"
+miden-client = "0.12.3"
+miden-client-sqlite-store = "0.12.3"
