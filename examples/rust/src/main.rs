@@ -126,7 +126,11 @@ async fn main() -> ClientResult<()> {
         }
         Network::Testnet => {
             println!("Step 1: Connect to PSM and Miden node (testnet)...");
-            Endpoint::new("https".to_string(), "rpc.testnet.miden.io".to_string(), None)
+            Endpoint::new(
+                "https".to_string(),
+                "rpc.testnet.miden.io".to_string(),
+                None,
+            )
         }
     };
 
