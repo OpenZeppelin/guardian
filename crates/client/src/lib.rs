@@ -17,4 +17,4 @@ pub use auth::{Auth, FalconRpoSigner, verify_commitment_signature};
 pub use client::PsmClient;
 pub use error::{ClientError, ClientResult};
 pub use proto::*;
-pub use transaction::{extract_tx_summary_from_delta, tx_summary_commitment_hex};
+pub use transaction::{TryIntoTxSummary, tx_summary_commitment_hex};

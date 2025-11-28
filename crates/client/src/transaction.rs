@@ -5,31 +5,35 @@ use private_state_manager_shared::hex::IntoHex;
 use crate::DeltaObject;
 use crate::error::ClientError;
 
-/// Extracts a TransactionSummary from a DeltaObject's delta_payload.
+/// Trait for extracting a TransactionSummary from delta-related types.
 ///
 /// The delta_payload can be in two formats:
 /// 1. Direct format (for push_delta): `{"data": "base64...", ...}`
 /// 2. Proposal format: `{"tx_summary": {"data": "base64..."}, "signatures": [...]}`
-///
-/// This function handles both formats automatically.
-pub fn extract_tx_summary_from_delta(
-    delta: &DeltaObject,
-) -> Result<TransactionSummary, ClientError> {
-    // Parse the delta_payload string as JSON
-    let payload_json: serde_json::Value = serde_json::from_str(&delta.delta_payload)
-        .map_err(|e| ClientError::InvalidResponse(format!("Invalid delta_payload JSON: {e}")))?;
+pub trait TryIntoTxSummary {
+    fn try_into_tx_summary(&self) -> Result<TransactionSummary, ClientError>;
+}
 
-    // Try proposal format first (has tx_summary field)
-    if let Some(tx_summary_json) = payload_json.get("tx_summary") {
-        return TransactionSummary::from_json(tx_summary_json).map_err(|e| {
-            ClientError::InvalidResponse(format!("Failed to deserialize tx_summary: {e}"))
-        });
+impl TryIntoTxSummary for DeltaObject {
+    fn try_into_tx_summary(&self) -> Result<TransactionSummary, ClientError> {
+        // Parse the delta_payload string as JSON
+        let payload_json: serde_json::Value = serde_json::from_str(&self.delta_payload)
+            .map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid delta_payload JSON: {e}"))
+            })?;
+
+        // Try proposal format first (has tx_summary field)
+        if let Some(tx_summary_json) = payload_json.get("tx_summary") {
+            return TransactionSummary::from_json(tx_summary_json).map_err(|e| {
+                ClientError::InvalidResponse(format!("Failed to deserialize tx_summary: {e}"))
+            });
+        }
+
+        // Fall back to direct format
+        TransactionSummary::from_json(&payload_json).map_err(|e| {
+            ClientError::InvalidResponse(format!("Failed to deserialize delta_payload: {e}"))
+        })
     }
-
-    // Fall back to direct format
-    TransactionSummary::from_json(&payload_json).map_err(|e| {
-        ClientError::InvalidResponse(format!("Failed to deserialize delta_payload: {e}"))
-    })
 }
 
 /// Returns the commitment of a TransactionSummary as a hex string with 0x prefix.
@@ -85,7 +89,7 @@ mod tests {
             status: None,
         };
 
-        let extracted = extract_tx_summary_from_delta(&delta).expect("should extract");
+        let extracted = delta.try_into_tx_summary().expect("should extract");
         assert_eq!(tx_summary.to_commitment(), extracted.to_commitment());
     }
 
@@ -112,7 +116,7 @@ mod tests {
             status: None,
         };
 
-        let extracted = extract_tx_summary_from_delta(&delta).expect("should extract");
+        let extracted = delta.try_into_tx_summary().expect("should extract");
         assert_eq!(tx_summary.to_commitment(), extracted.to_commitment());
     }
 
