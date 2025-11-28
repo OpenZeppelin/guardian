@@ -13,8 +13,8 @@ pub trait TryIntoTxSummary {
 impl TryIntoTxSummary for DeltaObject {
     fn try_into_tx_summary(&self) -> Result<TransactionSummary, ClientError> {
         // Parse the delta_payload string as JSON
-        let payload_json: serde_json::Value = serde_json::from_str(&self.delta_payload)
-            .map_err(|e| {
+        let payload_json: serde_json::Value =
+            serde_json::from_str(&self.delta_payload).map_err(|e| {
                 ClientError::InvalidResponse(format!("Invalid delta_payload JSON: {e}"))
             })?;
 
