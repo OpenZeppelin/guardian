@@ -1,19 +1,28 @@
+//! Authentication types for PSM client requests.
+
 pub mod miden_falcon_rpo;
 
 pub use miden_falcon_rpo::{FalconRpoSigner, verify_commitment_signature};
 use miden_objects::account::AccountId;
 
+/// Authentication provider for PSM requests.
+///
+/// Wraps different signing implementations that can authenticate requests
+/// to the PSM server.
 pub enum Auth {
+    /// Falcon-based authentication using RPO hashing.
     FalconRpoSigner(FalconRpoSigner),
 }
 
 impl Auth {
+    /// Returns the hex-encoded public key for this authentication provider.
     pub fn public_key_hex(&self) -> String {
         match self {
             Auth::FalconRpoSigner(signer) => signer.public_key_hex(),
         }
     }
 
+    /// Signs an account ID and returns the hex-encoded signature.
     pub fn sign_account_id(&self, account_id: &AccountId) -> String {
         match self {
             Auth::FalconRpoSigner(signer) => signer.sign_account_id(account_id),

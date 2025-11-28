@@ -1,3 +1,5 @@
+//! Falcon signature-based authentication using RPO hashing.
+
 use miden_objects::account::AccountId;
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
 use miden_objects::crypto::hash::rpo::Rpo256;
@@ -5,12 +7,17 @@ use miden_objects::utils::{Deserializable, Serializable};
 use miden_objects::{Felt, FieldElement, Word};
 use private_state_manager_shared::hex::{FromHex, IntoHex};
 
+/// A signer that uses Falcon signatures with RPO hashing.
+///
+/// This is the primary authentication mechanism for PSM requests,
+/// compatible with Miden's native signature scheme.
 pub struct FalconRpoSigner {
     secret_key: SecretKey,
     public_key: PublicKey,
 }
 
 impl FalconRpoSigner {
+    /// Creates a new signer from a Falcon secret key.
     pub fn new(secret_key: SecretKey) -> Self {
         let public_key = secret_key.public_key();
         Self {
@@ -19,10 +26,12 @@ impl FalconRpoSigner {
         }
     }
 
+    /// Returns the hex-encoded public key.
     pub fn public_key_hex(&self) -> String {
         (&self.public_key).into_hex()
     }
 
+    /// Signs an account ID and returns the hex-encoded signature.
     pub fn sign_account_id(&self, account_id: &AccountId) -> String {
         let message = account_id.into_word();
         let signature = self.secret_key.sign(message);
@@ -30,7 +39,9 @@ impl FalconRpoSigner {
     }
 }
 
+/// Trait for converting types to a [`Word`] for signing.
 pub trait IntoWord {
+    /// Converts this value into a Word suitable for signing.
     fn into_word(self) -> Word;
 }
 
@@ -49,7 +60,10 @@ impl IntoWord for AccountId {
     }
 }
 
-/// Verify a signature using commitment-based authentication
+/// Verifies a signature using commitment-based authentication.
+///
+/// This function verifies that a signature was created by a key whose
+/// commitment matches the expected server commitment.
 pub fn verify_commitment_signature(
     commitment_hex: &str,
     server_commitment_hex: &str,
@@ -74,7 +88,9 @@ pub fn verify_commitment_signature(
     Ok(pubkey.verify(message, &signature))
 }
 
+/// Trait for parsing hex strings into [`Word`] values.
 pub trait HexIntoWord {
+    /// Parses this hex string into a Word.
     fn hex_into_word(self) -> Result<Word, String>;
 }
 

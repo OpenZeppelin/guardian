@@ -14,23 +14,39 @@ use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
+/// A client for interacting with Private State Manager (PSM) servers.
+///
+/// `PsmClient` provides methods for managing off-chain account state, including:
+/// - Account configuration
+/// - Delta (state change) management
+/// - Multi-party proposal workflows
+///
+/// All methods that interact with account data require authentication via [`Auth`].
 pub struct PsmClient {
     client: StateManagerClient<Channel>,
     auth: Option<Auth>,
 }
 
 impl PsmClient {
+    /// Creates a new client connected to the specified PSM server endpoint.
+    ///
+    /// # Arguments
+    /// * `endpoint` - The gRPC endpoint URL (e.g., "http://localhost:50051")
     pub async fn connect(endpoint: impl Into<String>) -> ClientResult<Self> {
         let endpoint = endpoint.into();
         let client = StateManagerClient::connect(endpoint).await?;
         Ok(Self { client, auth: None })
     }
 
+    /// Configures authentication for this client.
+    ///
+    /// Authentication is required for all account operations.
     pub fn with_auth(mut self, auth: Auth) -> Self {
         self.auth = Some(auth);
         self
     }
 
+    /// Returns the hex-encoded public key of the configured auth, if any.
     pub fn auth_pubkey_hex(&self) -> Result<String, ClientError> {
         self.auth
             .as_ref()
@@ -94,6 +110,9 @@ impl PsmClient {
         Ok(inner)
     }
 
+    /// Pushes a delta (state change) to the PSM server.
+    ///
+    /// This makes the delta canonical and triggers the canonicalization workflow.
     pub async fn push_delta(
         &mut self,
         account_id: &AccountId,
@@ -122,6 +141,7 @@ impl PsmClient {
         Ok(inner)
     }
 
+    /// Retrieves a specific delta by nonce.
     pub async fn get_delta(
         &mut self,
         account_id: &AccountId,
@@ -144,6 +164,7 @@ impl PsmClient {
         Ok(inner)
     }
 
+    /// Retrieves all deltas starting from a given nonce.
     pub async fn get_delta_since(
         &mut self,
         account_id: &AccountId,
@@ -166,6 +187,7 @@ impl PsmClient {
         Ok(inner)
     }
 
+    /// Retrieves the current state for an account.
     pub async fn get_state(&mut self, account_id: &AccountId) -> ClientResult<GetStateResponse> {
         let mut request = tonic::Request::new(GetStateRequest {
             account_id: account_id.to_string(),
@@ -183,6 +205,7 @@ impl PsmClient {
         Ok(inner)
     }
 
+    /// Retrieves the PSM server's public key (commitment hex).
     pub async fn get_pubkey(&mut self) -> ClientResult<String> {
         let request = tonic::Request::new(GetPubkeyRequest {});
         let response = self.client.get_pubkey(request).await?;
