@@ -6,10 +6,6 @@ use crate::DeltaObject;
 use crate::error::ClientError;
 
 /// Trait for extracting a TransactionSummary from delta-related types.
-///
-/// The delta_payload can be in two formats:
-/// 1. Direct format (for push_delta): `{"data": "base64...", ...}`
-/// 2. Proposal format: `{"tx_summary": {"data": "base64..."}, "signatures": [...]}`
 pub trait TryIntoTxSummary {
     fn try_into_tx_summary(&self) -> Result<TransactionSummary, ClientError>;
 }
