@@ -1,3 +1,4 @@
+use miden_objects::Word;
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, Signature};
 use miden_objects::utils::{Deserializable, Serializable};
 
@@ -56,6 +57,27 @@ impl FromHex for Signature {
 
         Signature::read_from_bytes(&bytes)
             .map_err(|e| format!("Failed to deserialize signature: {e}"))
+    }
+}
+
+impl IntoHex for Word {
+    fn into_hex(self) -> String {
+        format!("0x{}", hex::encode(self.as_bytes()))
+    }
+}
+
+impl IntoHex for &Word {
+    fn into_hex(self) -> String {
+        format!("0x{}", hex::encode(self.as_bytes()))
+    }
+}
+
+impl FromHex for Word {
+    fn from_hex(hex: &str) -> Result<Self, String> {
+        let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
+        let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid word hex: {e}"))?;
+
+        Word::read_from_bytes(&bytes).map_err(|e| format!("Failed to deserialize word: {e}"))
     }
 }
 
@@ -145,5 +167,41 @@ mod tests {
         let result = Signature::from_hex("0x1234");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("1524 bytes"));
+    }
+
+    #[test]
+    fn test_word_into_hex() {
+        let word = Word::from([1u32, 2, 3, 4]);
+        let hex = word.into_hex();
+        assert!(hex.starts_with("0x"));
+        // Word is 32 bytes (4 x 8-byte Felt values)
+        assert_eq!(hex.len(), 2 + (32 * 2));
+    }
+
+    #[test]
+    fn test_word_from_hex_roundtrip() {
+        let original = Word::from([0xdeadbeefu32, 0xcafebabe, 0x12345678, 0x87654321]);
+        let hex = original.into_hex();
+        let parsed = Word::from_hex(&hex).expect("Failed to parse word");
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_word_from_hex_without_prefix() {
+        let word = Word::from([1u32, 2, 3, 4]);
+        let hex_with_prefix = word.into_hex();
+        let hex_without_prefix = hex_with_prefix.strip_prefix("0x").unwrap();
+
+        let word1 = Word::from_hex(&hex_with_prefix).unwrap();
+        let word2 = Word::from_hex(hex_without_prefix).unwrap();
+        assert_eq!(word1, word2);
+    }
+
+    #[test]
+    fn test_word_reference_into_hex() {
+        let word = Word::from([1u32, 2, 3, 4]);
+        let hex1 = (&word).into_hex();
+        let hex2 = word.into_hex();
+        assert_eq!(hex1, hex2);
     }
 }
