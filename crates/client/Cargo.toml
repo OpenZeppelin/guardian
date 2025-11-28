@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Client library for Private State Manager"
+include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "LICENSE", "README.md"]
 
 [dependencies]
 private-state-manager-shared = { version = "0.1.0", path = "../shared" }
