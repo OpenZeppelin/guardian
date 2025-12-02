@@ -1,20 +1,16 @@
 use std::fmt;
 
-use miden_client::account::component::{AccountComponent, BasicWallet};
-use miden_client::account::{
-    Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot,
-};
+use miden_client::account::Account;
 use miden_client::transaction::{
-    TransactionAuthenticator, TransactionExecutorError, TransactionKernel, TransactionRequest,
+    TransactionAuthenticator, TransactionExecutorError, TransactionRequest,
     TransactionRequestBuilder, TransactionRequestError, TransactionScript, TransactionSummary,
 };
 use miden_client::{Client, ClientError, Deserializable, ScriptBuilder, Word};
-
+use miden_confidential_contracts::masm_builder::get_multisig_library;
+use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_objects::account::auth::Signature;
 use miden_objects::account::AccountId;
 use miden_objects::{Felt, Hasher};
-
-const MULTISIG_PSM_AUTH: &str = include_str!("../masm/multisig-psm.masm");
 
 #[derive(Debug)]
 pub enum MultisigError {
@@ -62,6 +58,13 @@ impl From<TransactionExecutorError> for MultisigError {
     }
 }
 
+/// Creates a MultisigPsm account using the contracts crate's API.
+///
+/// # Arguments
+/// * `threshold` - Minimum number of signatures required
+/// * `cosigner_commitments` - Hex-encoded public key commitments (with 0x prefix)
+/// * `psm_server_pubkey_hex` - Hex-encoded PSM server public key commitment (with 0x prefix)
+/// * `init_seed` - Seed for account ID derivation
 pub fn create_multisig_psm_account(
     threshold: u64,
     cosigner_commitments: &[&str],
@@ -70,57 +73,26 @@ pub fn create_multisig_psm_account(
 ) -> Account {
     let psm_pubkey_bytes =
         hex::decode(&psm_server_pubkey_hex[2..]).expect("Failed to decode PSM pubkey");
-    let psm_commitment_word =
+    let psm_commitment =
         Word::read_from_bytes(&psm_pubkey_bytes).expect("Failed to convert PSM commitment to Word");
 
-    let num_cosigners = cosigner_commitments.len() as u64;
+    let signer_commitments: Vec<Word> = cosigner_commitments
+        .iter()
+        .enumerate()
+        .map(|(i, commitment_hex)| {
+            let pubkey_bytes = hex::decode(&commitment_hex[2..])
+                .unwrap_or_else(|_| panic!("Failed to decode cosigner {} pubkey", i));
+            Word::read_from_bytes(&pubkey_bytes)
+                .unwrap_or_else(|_| panic!("Failed to convert cosigner {} commitment to Word", i))
+        })
+        .collect();
 
-    let slot_0 = StorageSlot::Value(Word::from([threshold as u32, num_cosigners as u32, 0, 0]));
+    let config = MultisigPsmConfig::new(threshold as u32, signer_commitments, psm_commitment);
 
-    let mut client_pubkeys_map = StorageMap::new();
-    for (i, commitment_hex) in cosigner_commitments.iter().enumerate() {
-        let pubkey_bytes = hex::decode(&commitment_hex[2..])
-            .unwrap_or_else(|_| panic!("Failed to decode cosigner {} pubkey", i));
-        let commitment_word = Word::read_from_bytes(&pubkey_bytes)
-            .unwrap_or_else(|_| panic!("Failed to convert cosigner {} commitment to Word", i));
-
-        let _ = client_pubkeys_map.insert(Word::from([i as u32, 0, 0, 0]), commitment_word);
-    }
-    let slot_1 = StorageSlot::Map(client_pubkeys_map);
-
-    let slot_2 = StorageSlot::Map(StorageMap::new());
-
-    let mut proc_thresholds_map = StorageMap::new();
-    // Seed with a sentinel so the map’s root differs from the empty-map root used elsewhere.
-    // The sentinel key/value sit outside the real procedure-root space and never get read.
-    proc_thresholds_map
-        .insert(
-            Word::from([u32::MAX, u32::MAX, u32::MAX, u32::MAX]),
-            Word::from([1u32, 0, 0, 0]),
-        )
-        .expect("procedure threshold sentinel");
-    let slot_3 = StorageSlot::Map(proc_thresholds_map);
-    let slot_4 = StorageSlot::Value(Word::from([1u32, 0, 0, 0]));
-
-    let mut psm_key_map = StorageMap::new();
-    let _ = psm_key_map.insert(Word::from([0u32, 0, 0, 0]), psm_commitment_word);
-    let slot_5 = StorageSlot::Map(psm_key_map);
-
-    let auth_component = AccountComponent::compile(
-        MULTISIG_PSM_AUTH.to_string(),
-        TransactionKernel::assembler(),
-        vec![slot_0, slot_1, slot_2, slot_3, slot_4, slot_5],
-    )
-    .expect("Failed to compile multisig+PSM auth component")
-    .with_supports_all_types();
-
-    AccountBuilder::new(init_seed)
-        .account_type(AccountType::RegularAccountUpdatableCode)
-        .storage_mode(AccountStorageMode::Public)
-        .with_auth_component(auth_component)
-        .with_component(BasicWallet)
+    MultisigPsmBuilder::new(config)
+        .with_seed(init_seed)
         .build()
-        .expect("Failed to build account")
+        .expect("Failed to build MultisigPsm account")
 }
 
 pub fn build_multisig_config_advice(
@@ -147,9 +119,8 @@ pub fn build_multisig_config_advice(
 }
 
 pub fn build_update_signers_script() -> Result<TransactionScript, String> {
-    let multisig_psm_library = TransactionKernel::assembler()
-        .assemble_library([MULTISIG_PSM_AUTH])
-        .map_err(|err| format!("Failed to compile multisig+PSM library: {err}"))?;
+    let multisig_library =
+        get_multisig_library().map_err(|err| format!("Failed to get multisig library: {err}"))?;
 
     let tx_script_code = "
         begin
@@ -158,8 +129,8 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
     ";
 
     let tx_script = ScriptBuilder::new(true)
-        .with_dynamically_linked_library(&multisig_psm_library)
-        .map_err(|err| format!("Failed to link multisig+PSM library: {err}"))?
+        .with_dynamically_linked_library(&multisig_library)
+        .map_err(|err| format!("Failed to link multisig library: {err}"))?
         .compile_tx_script(tx_script_code)
         .map_err(|err| format!("Failed to compile transaction script: {err}"))?;
 

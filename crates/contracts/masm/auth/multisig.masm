@@ -1,11 +1,14 @@
-# Multi-Signature RPO Falcon 512 Authentication Component with PSM Integration
+# Multi-Signature RPO Falcon 512 Authentication Component
 #
-# This component combines multisig authentication with Private State Manager (PSM) verification.
+# This component provides multi-signature authentication for accounts.
+# It integrates with the PSM component for optional PSM signature verification.
 
 use miden::active_account
 use miden::native_account
 use miden::auth
+use openzeppelin::psm
 
+# Type definitions for v0.12 syntax
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # CONSTANTS
@@ -18,12 +21,12 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 
 # Storage Layout Constants
 #
-# ┌───────────────────────────────┬──────────┬──────────────┬───────────────────┬──────────────┬─────────────────┐
-# │ THRESHOLD & APPROVERS CONFIG  │ PUB KEYS │ EXECUTED TXS │  PROC THRESHOLDS  │ PSM SELECTOR │ PSM PUBLIC KEYS │
-# │           (slot)              │   (map)  │    (map)     │       (map)       │    (slot)    │      (map)      │
-# ├───────────────────────────────┼──────────┼──────────────┼───────────────────┼──────────────┼─────────────────┤
-# │              0                │    1     │      2       │         3         │       4      │        5        │
-# └───────────────────────────────┴──────────┴──────────────┴───────────────────┴──────────────┴─────────────────┘
+# +-------------------------------+----------+--------------+-------------------+
+# | THRESHOLD & APPROVERS CONFIG  | PUB KEYS | EXECUTED TXS |  PROC THRESHOLDS  |
+# |           (slot)              |   (map)  |    (map)     |       (map)       |
+# +-------------------------------+----------+--------------+-------------------+
+# |              0                |    1     |      2       |         3         |
+# +-------------------------------+----------+--------------+-------------------+
 
 # The slot in this component's storage layout where the default signature threshold and
 # number of approvers are stored as:
@@ -43,12 +46,6 @@ const EXECUTED_TXS_SLOT = 2
 # Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
 const PROC_THRESHOLD_ROOTS_SLOT = 3
 
-# PSM selector slot - determines if PSM verification is enabled
-const PSM_SELECTOR_SLOT = 4
-
-# PSM public key map slot - stores PSM server public keys
-const PSM_PUBLIC_KEY_MAP_SLOT = 5
-
 # Executed Transaction Flag Constant
 const IS_EXECUTED_FLAG = [1, 0, 0, 0]
 
@@ -58,32 +55,6 @@ const ERR_TX_ALREADY_EXECUTED = "failed to approve multisig transaction as it wa
 const ERR_MALFORMED_MULTISIG_CONFIG = "number of approvers must be equal to or greater than threshold"
 
 const ERR_ZERO_IN_MULTISIG_CONFIG = "number of approvers or threshold must not be zero"
-
-# PSM PROCEDURES
-# =================================================================================================
-
-#! Verify PSM signature (always required when selector is ON)
-#! Inputs:  [MSG]
-#! Outputs: [MSG]
-proc verify_psm_signature(msg: BeWord)
-    push.PSM_SELECTOR_SLOT
-    exec.active_account::get_initial_item
-    drop drop drop
-
-    push.1 eq
-    if.true
-        push.1
-        push.PSM_PUBLIC_KEY_MAP_SLOT
-        exec.::miden::auth::rpo_falcon512::verify_signatures
-        push.1 neq
-        if.true
-            emit.AUTH_UNAUTHORIZED_EVENT
-            push.0 assert.err="invalid PSM signature"
-        end
-    else
-        push.0 drop
-    end
-end
 
 # MULTISIG PROCEDURES
 # =================================================================================================
@@ -362,7 +333,7 @@ end
 #! 2. Verifying signatures from multiple required signers against their public keys
 #! 3. Ensuring the minimum threshold of valid signatures is met
 #! 4. Implementing replay protection by tracking executed transactions
-#! 5. Verifying PSM signature if PSM selector is enabled
+#! 5. Verifying PSM signature if PSM selector is enabled (via PSM component)
 #!
 #! Inputs:
 #!   Operand stack: [SALT]
@@ -444,7 +415,7 @@ pub proc auth_tx_rpo_falcon512_multisig.1(salt: BeWord)
 
     # ------ Verifying PSM Signature ------
     # => [TX_SUMMARY_COMMITMENT]
-    exec.verify_psm_signature
+    call.psm::verify_psm_signature
 
     # ------ Writing executed transaction MSG to map ------
     # => [TX_SUMMARY_COMMITMENT]

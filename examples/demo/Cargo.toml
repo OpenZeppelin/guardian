@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 private-state-manager-client = { path = "../../crates/client" }
 private-state-manager-shared = { path = "../../crates/shared" }
+miden-confidential-contracts = { path = "../../crates/contracts" }
 
 miden-client = { workspace = true, features = ["tonic", "testing"] }
 miden-client-sqlite-store = { workspace = true }

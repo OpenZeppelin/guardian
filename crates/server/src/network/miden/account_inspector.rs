@@ -1,6 +1,6 @@
 use miden_objects::Word;
 use miden_objects::account::Account;
-use miden_objects::utils::{Deserializable, Serializable};
+use miden_objects::utils::Serializable;
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -80,25 +80,21 @@ impl<'a> MidenAccountInspector<'a> {
         slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account has PSM auth enabled by checking for the `auth_tx_rpo_falcon512_multisig`
-    /// procedure MAST root.
+    /// Check if the account has PSM auth enabled by checking the PSM selector storage slot.
     ///
-    /// PSM-enabled accounts have this procedure which includes PSM signature verification.
+    /// PSM-enabled accounts have the PSM component which stores a selector at slot 4
+    /// (offset from the multisig component's 4 slots). PSM_ON = [1, 0, 0, 0].
     pub fn has_psm_auth(&self) -> bool {
-        // MAST root for auth_tx_rpo_falcon512_multisig procedure from multisig-psm.masm
-        // This is the compiled procedure that contains verify_psm_signature
-        const AUTH_TX_RPO_FALCON512_MULTISIG_HEX: &str =
-            "19cda2d87fc6bfc69cee5349a8d62b231a049ad5b174614639b6ce158d0c5403";
+        // PSM selector slot (slot 0 in PSM component, offset to slot 4 when combined with multisig)
+        const PSM_SELECTOR_SLOT: u8 = 4;
 
-        let Ok(bytes) = hex::decode(AUTH_TX_RPO_FALCON512_MULTISIG_HEX) else {
+        let Ok(selector_value) = self.account.storage().get_item(PSM_SELECTOR_SLOT) else {
             return false;
         };
 
-        let Ok(mast_root) = Word::read_from_bytes(&bytes) else {
-            return false;
-        };
-
-        self.account.code().has_procedure(mast_root)
+        // PSM_ON value indicating PSM is enabled
+        let psm_on = Word::from([1u32, 0, 0, 0]);
+        selector_value == psm_on
     }
 }
 

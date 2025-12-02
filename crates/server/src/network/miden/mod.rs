@@ -461,10 +461,10 @@ mod tests {
             .get("delta_payload")
             .expect("delta_payload field missing");
 
-        // Expected commitment after applying delta_1 with PSM auth replay protection
-        // The fixture account has PSM auth, so the replay protection mapping is updated
+        // Expected commitment after applying delta_1
+        // This should match the new_commitment from the delta_1.json fixture
         let expected_commitment =
-            "0x57c1762a34e2245bba4b805436c1ff25be344275ffce6da9eae1f910124c951c";
+            "0x67813bfda51b0e81e1a6e585c0185618d62c8fed2a89da815a7ca6c37d457861";
 
         let (new_state_json, new_commitment) = client
             .apply_delta(&account_json, delta_payload)

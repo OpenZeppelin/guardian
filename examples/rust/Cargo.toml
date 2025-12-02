@@ -15,6 +15,7 @@ path = "src/main_mockchain.rs"
 [dependencies]
 private-state-manager-client = { path = "../../crates/client" }
 private-state-manager-shared = { path = "../../crates/shared" }
+miden-confidential-contracts = { path = "../../crates/contracts" }
 
 # Miden client for transaction execution and proving
 miden-client = { workspace = true, features = ["tonic", "testing"] }

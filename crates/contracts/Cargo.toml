@@ -1,0 +1,30 @@
+[package]
+name = "miden-confidential-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+default-run = "miden-confidential-contracts"
+
+[dependencies]
+miden-lib = { workspace = true }
+miden-objects = { workspace = true }
+miden-tx = { workspace = true }
+miden-testing = { workspace = true }
+
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
+
+[dev-dependencies]
+miden-client = { workspace = true, features = ["testing", "tonic"] }
+miden-client-tools = { workspace = true }
+miden-crypto = { workspace = true, features = ["executable"] }
+
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+assert_matches = { workspace = true }

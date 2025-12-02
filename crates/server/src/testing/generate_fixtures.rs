@@ -1,11 +1,8 @@
 #[cfg(feature = "e2e")]
 mod fixtures {
-    use miden_client::account::component::{AccountComponent, BasicWallet};
-    use miden_client::account::{
-        Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot,
-    };
-    use miden_client::transaction::TransactionKernel;
+    use miden_client::account::Account;
     use miden_client::{Deserializable, Serializable, Word};
+    use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
     use miden_objects::account::AccountDelta;
     use miden_objects::account::delta::{AccountStorageDelta, AccountVaultDelta};
     use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
@@ -13,8 +10,6 @@ mod fixtures {
     use miden_objects::{Felt, Word as MidenWord, ZERO};
     use private_state_manager_shared::{FromJson, ToJson};
     use std::fs;
-
-    const MULTISIG_PSM_AUTH: &str = include_str!("fixtures/multisig-psm.masm");
 
     fn create_multisig_psm_account(
         threshold: u64,
@@ -24,55 +19,27 @@ mod fixtures {
     ) -> Account {
         let psm_pubkey_bytes =
             hex::decode(&psm_server_pubkey_hex[2..]).expect("Failed to decode PSM pubkey");
-        let psm_commitment_word = Word::read_from_bytes(&psm_pubkey_bytes)
+        let psm_commitment = Word::read_from_bytes(&psm_pubkey_bytes)
             .expect("Failed to convert PSM commitment to Word");
 
-        let num_cosigners = cosigner_commitments.len() as u64;
+        let signer_commitments: Vec<Word> = cosigner_commitments
+            .iter()
+            .enumerate()
+            .map(|(i, commitment_hex)| {
+                let pubkey_bytes = hex::decode(&commitment_hex[2..])
+                    .unwrap_or_else(|_| panic!("Failed to decode cosigner {} pubkey", i));
+                Word::read_from_bytes(&pubkey_bytes).unwrap_or_else(|_| {
+                    panic!("Failed to convert cosigner {} commitment to Word", i)
+                })
+            })
+            .collect();
 
-        let slot_0 = StorageSlot::Value(Word::from([threshold as u32, num_cosigners as u32, 0, 0]));
+        let config = MultisigPsmConfig::new(threshold as u32, signer_commitments, psm_commitment);
 
-        let mut client_pubkeys_map = StorageMap::new();
-        for (i, commitment_hex) in cosigner_commitments.iter().enumerate() {
-            let pubkey_bytes = hex::decode(&commitment_hex[2..])
-                .unwrap_or_else(|_| panic!("Failed to decode cosigner {} pubkey", i));
-            let commitment_word = Word::read_from_bytes(&pubkey_bytes)
-                .unwrap_or_else(|_| panic!("Failed to convert cosigner {} commitment to Word", i));
-
-            let _ = client_pubkeys_map.insert(Word::from([i as u32, 0, 0, 0]), commitment_word);
-        }
-        let slot_1 = StorageSlot::Map(client_pubkeys_map);
-
-        let slot_2 = StorageSlot::Map(StorageMap::new());
-
-        let mut proc_thresholds_map = StorageMap::new();
-        proc_thresholds_map
-            .insert(
-                Word::from([u32::MAX, u32::MAX, u32::MAX, u32::MAX]),
-                Word::from([1u32, 0, 0, 0]),
-            )
-            .expect("procedure threshold sentinel");
-        let slot_3 = StorageSlot::Map(proc_thresholds_map);
-        let slot_4 = StorageSlot::Value(Word::from([1u32, 0, 0, 0]));
-
-        let mut psm_key_map = StorageMap::new();
-        let _ = psm_key_map.insert(Word::from([0u32, 0, 0, 0]), psm_commitment_word);
-        let slot_5 = StorageSlot::Map(psm_key_map);
-
-        let auth_component = AccountComponent::compile(
-            MULTISIG_PSM_AUTH.to_string(),
-            TransactionKernel::assembler(),
-            vec![slot_0, slot_1, slot_2, slot_3, slot_4, slot_5],
-        )
-        .expect("Failed to compile multisig+PSM auth component")
-        .with_supports_all_types();
-
-        AccountBuilder::new(init_seed)
-            .account_type(AccountType::RegularAccountUpdatableCode)
-            .storage_mode(AccountStorageMode::Public)
-            .with_auth_component(auth_component)
-            .with_component(BasicWallet)
+        MultisigPsmBuilder::new(config)
+            .with_seed(init_seed)
             .build()
-            .expect("Failed to build account")
+            .expect("Failed to build MultisigPsm account")
     }
 
     #[tokio::test]
@@ -179,24 +146,37 @@ mod fixtures {
         )
         .expect("Failed to create delta 1");
 
-        let mut account_state: Account =
-            Account::from_json(&account_json).expect("Failed to deserialize");
-        let prev_commitment_1 = current_commitment;
-        account_state
-            .apply_delta(&delta_1)
-            .expect("Failed to apply delta 1");
-        current_commitment = account_state.commitment();
-
-        println!(
-            "  New commitment: 0x{}",
-            hex::encode(current_commitment.as_bytes())
-        );
-
         let tx_summary_1 = TransactionSummary::new(
             delta_1,
             InputNotes::new(Vec::new()).unwrap(),
             OutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+        );
+
+        let mut account_state: Account =
+            Account::from_json(&account_json).expect("Failed to deserialize");
+        let prev_commitment_1 = current_commitment;
+        account_state
+            .apply_delta(tx_summary_1.account_delta())
+            .expect("Failed to apply delta 1");
+
+        // Apply replay protection (matches what apply_delta does for PSM accounts)
+        const EXECUTED_TXS_SLOT: u8 = 2;
+        let tx_commitment_1 = tx_summary_1.to_commitment();
+        account_state
+            .storage_mut()
+            .set_map_item(
+                EXECUTED_TXS_SLOT,
+                tx_commitment_1,
+                MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
+            )
+            .expect("Failed to apply replay protection");
+
+        current_commitment = account_state.commitment();
+
+        println!(
+            "  New commitment: 0x{}",
+            hex::encode(current_commitment.as_bytes())
         );
 
         let delta_1_fixture = serde_json::json!({
@@ -251,22 +231,34 @@ mod fixtures {
         )
         .expect("Failed to create delta 2");
 
-        let prev_commitment_2 = current_commitment;
-        account_state
-            .apply_delta(&delta_2)
-            .expect("Failed to apply delta 2");
-        current_commitment = account_state.commitment();
-
-        println!(
-            "  New commitment: 0x{}",
-            hex::encode(current_commitment.as_bytes())
-        );
-
         let tx_summary_2 = TransactionSummary::new(
             delta_2,
             InputNotes::new(Vec::new()).unwrap(),
             OutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+        );
+
+        let prev_commitment_2 = current_commitment;
+        account_state
+            .apply_delta(tx_summary_2.account_delta())
+            .expect("Failed to apply delta 2");
+
+        // Apply replay protection
+        let tx_commitment_2 = tx_summary_2.to_commitment();
+        account_state
+            .storage_mut()
+            .set_map_item(
+                EXECUTED_TXS_SLOT,
+                tx_commitment_2,
+                MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
+            )
+            .expect("Failed to apply replay protection");
+
+        current_commitment = account_state.commitment();
+
+        println!(
+            "  New commitment: 0x{}",
+            hex::encode(current_commitment.as_bytes())
         );
 
         let delta_2_fixture = serde_json::json!({
@@ -307,23 +299,35 @@ mod fixtures {
         )
         .expect("Failed to create delta 3");
 
+        let tx_summary_3 = TransactionSummary::new(
+            delta_3,
+            InputNotes::new(Vec::new()).unwrap(),
+            OutputNotes::new(Vec::new()).unwrap(),
+            MidenWord::from([ZERO; 4]),
+        );
+
         let prev_commitment_3 = current_commitment;
         account_state
-            .apply_delta(&delta_3)
+            .apply_delta(tx_summary_3.account_delta())
             .expect("Failed to apply delta 3");
+
+        // Apply replay protection
+        let tx_commitment_3 = tx_summary_3.to_commitment();
+        account_state
+            .storage_mut()
+            .set_map_item(
+                EXECUTED_TXS_SLOT,
+                tx_commitment_3,
+                MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
+            )
+            .expect("Failed to apply replay protection");
+
         current_commitment = account_state.commitment();
 
         println!("  New threshold: 3/5");
         println!(
             "  New commitment: 0x{}",
             hex::encode(current_commitment.as_bytes())
-        );
-
-        let tx_summary_3 = TransactionSummary::new(
-            delta_3,
-            InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
-            MidenWord::from([ZERO; 4]),
         );
 
         let delta_3_fixture = serde_json::json!({
