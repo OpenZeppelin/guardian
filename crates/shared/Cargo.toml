@@ -14,7 +14,7 @@ miden-objects = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }
-rand = "0.8"
+rand = "0.9"
 hex = { workspace = true }
 
 [dev-dependencies]
