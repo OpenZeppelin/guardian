@@ -20,6 +20,7 @@ comment:
 
 ignore:
   - "examples/**"
+  - "crates/contracts/**"
   - "tests/**"
   - "**/testing/**"
   - "**/tests.rs"
