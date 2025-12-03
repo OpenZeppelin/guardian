@@ -54,9 +54,9 @@ fn setup_keys_and_authenticators(
     }
 
     // Create authenticators for required signers
-    for i in 0..threshold {
+    for secret_key in secret_keys.iter().take(threshold) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(secret_keys[i].clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(secret_key.clone())]);
         authenticators.push(authenticator);
     }
 
@@ -560,9 +560,9 @@ async fn test_multisig_update_signers() -> anyhow::Result<()> {
     // Now test creating a note with the new signers
     // Setup authenticators for the new signers (we need 3 out of 4 for threshold 3)
     let mut new_authenticators = Vec::new();
-    for i in 0..3 {
+    for secret_key in _new_secret_keys.iter().take(3) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(_new_secret_keys[i].clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(secret_key.clone())]);
         new_authenticators.push(authenticator);
     }
 
