@@ -80,10 +80,7 @@ pub async fn action_execute_proposal(state: &mut SessionState) -> Result<(), Str
     let account = client
         .account()
         .ok_or_else(|| "No account loaded".to_string())?;
-    print_success(&format!(
-        "Account synced. New nonce: {}",
-        account.nonce()
-    ));
+    print_success(&format!("Account synced. New nonce: {}", account.nonce()));
 
     Ok(())
 }

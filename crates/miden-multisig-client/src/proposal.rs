@@ -293,7 +293,7 @@ fn determine_transaction_type(
             .find(|candidate| !current_signers.iter().any(|c| c == *candidate))
         {
             return TransactionType::AddCosigner {
-                new_commitment: new_commitment.clone(),
+                new_commitment: *new_commitment,
             };
         }
     } else if proposed_signers.len() < current_signers.len() {
@@ -302,7 +302,7 @@ fn determine_transaction_type(
             .find(|candidate| !proposed_signers.iter().any(|c| c == *candidate))
         {
             return TransactionType::RemoveCosigner {
-                commitment: removed_commitment.clone(),
+                commitment: *removed_commitment,
             };
         }
     } else if proposed_threshold != current_threshold {
