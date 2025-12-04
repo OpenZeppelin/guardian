@@ -1,8 +1,10 @@
 //! Transaction building and execution for multisig operations.
 
-pub mod configure;
-pub mod p2id;
-pub mod switch_psm;
+mod builder;
+mod p2id;
+mod switch_psm;
+
+pub use builder::ProposalBuilder;
 
 use miden_client::transaction::{
     TransactionExecutorError, TransactionRequest, TransactionRequestBuilder, TransactionScript,

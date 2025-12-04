@@ -80,6 +80,7 @@ pub use keystore::{KeyManager, PsmKeyStore, commitment_from_hex};
 
 // Proposals
 pub use proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
+pub use transaction::ProposalBuilder;
 
 // Errors
 pub use error::{MultisigError, Result};

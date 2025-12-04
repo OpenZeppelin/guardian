@@ -16,9 +16,7 @@ use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
 use crate::sync::sync_miden_state;
-use crate::transaction::configure::{
-    create_add_cosigner_proposal, create_remove_cosigner_proposal,
-};
+use crate::transaction::ProposalBuilder;
 
 /// Main client for interacting with multisig accounts.
 ///
@@ -586,67 +584,20 @@ impl MultisigClient {
         &mut self,
         transaction_type: crate::proposal::TransactionType,
     ) -> Result<Proposal> {
-        use crate::proposal::TransactionType;
-
         // Sync with the network before executing transaction
         self.sync().await?;
 
         let account = self.require_account()?.clone();
         let mut psm_client = self.create_authenticated_psm_client().await?;
 
-        match transaction_type {
-            TransactionType::AddCosigner { new_commitment } => {
-                create_add_cosigner_proposal(
-                    &mut self.miden_client,
-                    &mut psm_client,
-                    &account,
-                    new_commitment,
-                    self.key_manager.as_ref(),
-                )
-                .await
-            }
-            TransactionType::RemoveCosigner { commitment } => {
-                create_remove_cosigner_proposal(
-                    &mut self.miden_client,
-                    &mut psm_client,
-                    &account,
-                    commitment,
-                    self.key_manager.as_ref(),
-                )
-                .await
-            }
-            TransactionType::P2ID {
-                recipient: _,
-                faucet_id: _,
-                amount: _,
-            } => {
-                // Implementation will be completed in Phase 5
-                Err(MultisigError::InvalidConfig(
-                    "P2ID transfers not yet implemented".to_string(),
-                ))
-            }
-            TransactionType::SwitchPsm {
-                new_endpoint: _,
-                new_commitment: _,
-            } => {
-                // Implementation will be completed in Phase 5
-                Err(MultisigError::InvalidConfig(
-                    "PSM switching not yet implemented".to_string(),
-                ))
-            }
-            TransactionType::UpdateSigners {
-                new_threshold: _,
-                signer_commitments: _,
-            } => {
-                // Generic update_signers - use AddCosigner/RemoveCosigner for convenience
-                Err(MultisigError::InvalidConfig(
-                    "Use AddCosigner or RemoveCosigner for signer updates".to_string(),
-                ))
-            }
-            TransactionType::Unknown => Err(MultisigError::InvalidConfig(
-                "Unknown transaction type".to_string(),
-            )),
-        }
+        ProposalBuilder::new(transaction_type)
+            .build(
+                &mut self.miden_client,
+                &mut psm_client,
+                &account,
+                self.key_manager.as_ref(),
+            )
+            .await
     }
 
     // =========================================================================
