@@ -3,8 +3,8 @@
 //! Functions for building transactions that modify the multisig configuration
 //! (signers, threshold, etc.).
 
-use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
 use miden_client::ScriptBuilder;
+use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
 use miden_confidential_contracts::masm_builder::get_multisig_library;
 use miden_objects::account::auth::Signature;
 use miden_objects::{Felt, Hasher, Word};

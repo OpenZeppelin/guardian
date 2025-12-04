@@ -175,11 +175,11 @@ impl Proposal {
 
         // Count signatures from delta status
         let (signatures_collected, signers) = count_signatures_from_delta(delta);
-        let threshold_for_status =
-            new_threshold.map(|t| t as usize).unwrap_or(current_threshold as usize);
+        let threshold_for_status = new_threshold
+            .map(|t| t as usize)
+            .unwrap_or(current_threshold as usize);
 
-        let status =
-            if signatures_collected >= threshold_for_status && threshold_for_status > 0 {
+        let status = if signatures_collected >= threshold_for_status && threshold_for_status > 0 {
             ProposalStatus::Ready
         } else {
             ProposalStatus::Pending {
@@ -288,20 +288,18 @@ fn determine_transaction_type(
     proposed_signers: &[Word],
 ) -> TransactionType {
     if proposed_signers.len() > current_signers.len() {
-        if let Some(new_commitment) =
-            proposed_signers
-                .iter()
-                .find(|candidate| !current_signers.iter().any(|c| c == *candidate))
+        if let Some(new_commitment) = proposed_signers
+            .iter()
+            .find(|candidate| !current_signers.iter().any(|c| c == *candidate))
         {
             return TransactionType::AddCosigner {
                 new_commitment: new_commitment.clone(),
             };
         }
     } else if proposed_signers.len() < current_signers.len() {
-        if let Some(removed_commitment) =
-            current_signers
-                .iter()
-                .find(|candidate| !proposed_signers.iter().any(|c| c == *candidate))
+        if let Some(removed_commitment) = current_signers
+            .iter()
+            .find(|candidate| !proposed_signers.iter().any(|c| c == *candidate))
         {
             return TransactionType::RemoveCosigner {
                 commitment: removed_commitment.clone(),

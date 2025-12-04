@@ -128,7 +128,11 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
-            .with_signer_metadata(new_threshold, signer_commitments_hex.clone(), word_to_hex(&salt));
+            .with_signer_metadata(
+                new_threshold,
+                signer_commitments_hex.clone(),
+                word_to_hex(&salt),
+            );
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
@@ -218,7 +222,11 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
-            .with_signer_metadata(new_threshold, signer_commitments_hex.clone(), word_to_hex(&salt));
+            .with_signer_metadata(
+                new_threshold,
+                signer_commitments_hex.clone(),
+                word_to_hex(&salt),
+            );
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;

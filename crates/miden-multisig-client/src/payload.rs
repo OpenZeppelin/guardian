@@ -53,7 +53,11 @@ impl ProposalPayload {
     }
 
     /// Adds the proposer's signature.
-    pub fn with_signature(mut self, key_manager: &dyn KeyManager, message: miden_objects::Word) -> Self {
+    pub fn with_signature(
+        mut self,
+        key_manager: &dyn KeyManager,
+        message: miden_objects::Word,
+    ) -> Self {
         let signature_hex = key_manager.sign_hex(message);
         self.signatures.push(DeltaSignature {
             signer_id: key_manager.commitment_hex(),

@@ -4,9 +4,7 @@ mod builder;
 mod configuration;
 
 pub use builder::ProposalBuilder;
-pub use configuration::{
-    build_signature_advice_entry, build_update_signers_transaction_request,
-};
+pub use configuration::{build_signature_advice_entry, build_update_signers_transaction_request};
 
 use miden_client::transaction::{TransactionExecutorError, TransactionRequest, TransactionSummary};
 use miden_client::{Client, ClientError};
