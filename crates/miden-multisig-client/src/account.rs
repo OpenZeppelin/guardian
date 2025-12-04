@@ -145,8 +145,6 @@ impl MultisigAccount {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: Full tests require creating actual multisig accounts which needs
     // the miden-confidential-contracts crate. Integration tests will cover this.
 }
