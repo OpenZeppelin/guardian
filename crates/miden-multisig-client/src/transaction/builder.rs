@@ -154,6 +154,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: Vec::new(),
+            required_signatures: Some(current_threshold as usize),
+            collected_signatures: Some(1),
         };
 
         // Build the payload using ProposalPayload
@@ -252,6 +254,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: Vec::new(),
+            required_signatures: Some(current_threshold as usize),
+            collected_signatures: Some(1),
         };
 
         // Build the payload using ProposalPayload
@@ -306,9 +310,8 @@ impl ProposalBuilder {
         let current_threshold = account.threshold()?;
 
         // Create the fungible asset
-        let asset = FungibleAsset::new(faucet_id, amount).map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
-        })?;
+        let asset = FungibleAsset::new(faucet_id, amount)
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to create asset: {}", e)))?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
@@ -338,6 +341,8 @@ impl ProposalBuilder {
             faucet_id_hex: Some(faucet_id.to_string()),
             amount: Some(amount),
             note_ids_hex: Vec::new(),
+            required_signatures: Some(current_threshold as usize),
+            collected_signatures: Some(1),
         };
 
         // Build the payload using ProposalPayload
@@ -393,11 +398,8 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the consume notes transaction request (no signatures for proposal)
-        let tx_request = build_consume_notes_transaction_request(
-            note_ids.clone(),
-            salt,
-            std::iter::empty(),
-        )?;
+        let tx_request =
+            build_consume_notes_transaction_request(note_ids.clone(), salt, std::iter::empty())?;
 
         // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
@@ -417,6 +419,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: note_ids_hex.clone(),
+            required_signatures: Some(current_threshold as usize),
+            collected_signatures: Some(1),
         };
 
         // Build the payload using ProposalPayload

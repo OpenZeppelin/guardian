@@ -5,11 +5,11 @@
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_lib::account::interface::AccountInterface;
 use miden_lib::note::create_p2id_note;
-use miden_objects::{Felt, Word};
 use miden_objects::account::{Account, AccountId};
 use miden_objects::asset::Asset;
 use miden_objects::crypto::rand::RpoRandomCoin;
 use miden_objects::note::NoteType;
+use miden_objects::{Felt, Word};
 
 use crate::error::{MultisigError, Result};
 
@@ -48,7 +48,9 @@ where
         Default::default(),
         &mut rng,
     )
-    .map_err(|e| MultisigError::TransactionExecution(format!("failed to create P2ID note: {}", e)))?;
+    .map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to create P2ID note: {}", e))
+    })?;
 
     // Build the send notes script using AccountInterface
     let account_interface = AccountInterface::from(sender_account);

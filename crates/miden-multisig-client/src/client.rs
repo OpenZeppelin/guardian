@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use base64::Engine;
 use miden_client::account::Account;
 use miden_client::note::NoteRelevance;
-use miden_client::store::NoteFilter;
 use miden_client::{Client, Deserializable, Serializable};
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_objects::Word;
@@ -498,7 +497,7 @@ impl MultisigClient {
         ));
 
         // Build the final transaction request with all signatures
-        let salt = proposal.metadata.salt();
+        let salt = proposal.metadata.salt()?;
 
         let final_tx_request = match &proposal.transaction_type {
             TransactionType::P2ID {
@@ -527,7 +526,7 @@ impl MultisigClient {
             }
             _ => {
                 // Signer update transactions (AddCosigner, RemoveCosigner, UpdateSigners)
-                let signer_commitments = proposal.metadata.signer_commitments();
+                let signer_commitments = proposal.metadata.signer_commitments()?;
                 let new_threshold = proposal
                     .metadata
                     .new_threshold
@@ -643,16 +642,18 @@ impl MultisigClient {
             .miden_client
             .get_consumable_notes(Some(account_id))
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to get consumable notes: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
+            })?;
 
         // Convert to our wrapper type, filtering for notes consumable "Now"
         let notes = consumable
             .into_iter()
             .filter_map(|(record, relevances)| {
                 // Only include notes consumable "Now" by our account
-                let can_consume_now = relevances.iter().any(|(id, rel)| {
-                    *id == account_id && matches!(rel, NoteRelevance::Now)
-                });
+                let can_consume_now = relevances
+                    .iter()
+                    .any(|(id, rel)| *id == account_id && matches!(rel, NoteRelevance::Now));
                 if can_consume_now {
                     Some(ConsumableNote {
                         id: record.id(),
@@ -669,18 +670,21 @@ impl MultisigClient {
 
     /// Returns a list of all committed notes (not just consumable).
     pub async fn list_committed_notes(&mut self) -> Result<Vec<ConsumableNote>> {
+        let account_id = self.require_account()?.id();
+
         // Sync first to get latest notes
         self.sync().await?;
 
         let notes = self
             .miden_client
-            .get_input_notes(NoteFilter::Committed)
+            .get_consumable_notes(Some(account_id))
             .await
             .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
 
         let result = notes
             .into_iter()
-            .map(|record| ConsumableNote {
+            .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
+            .map(|(record, _)| ConsumableNote {
                 id: record.id(),
                 assets: record.assets().iter().cloned().collect(),
             })

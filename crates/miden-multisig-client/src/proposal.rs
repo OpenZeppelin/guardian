@@ -92,19 +92,24 @@ pub struct ProposalMetadata {
     // Note consumption fields
     /// Note IDs to consume as hex strings.
     pub note_ids_hex: Vec<String>,
+
+    /// Cached signature threshold for this proposal.
+    pub required_signatures: Option<usize>,
+    /// Cached signatures collected count (e.g., initial proposer signature).
+    pub collected_signatures: Option<usize>,
 }
 
 impl ProposalMetadata {
     /// Converts salt hex to Word.
-    pub fn salt(&self) -> Word {
-        self.salt_hex
-            .as_ref()
-            .map(|s| hex_to_word(s))
-            .unwrap_or_else(|| Word::from([Felt::new(0); 4]))
+    pub fn salt(&self) -> Result<Word> {
+        match &self.salt_hex {
+            Some(value) => hex_to_word(value),
+            None => Ok(Word::from([Felt::new(0); 4])),
+        }
     }
 
     /// Converts signer commitments to Words.
-    pub fn signer_commitments(&self) -> Vec<Word> {
+    pub fn signer_commitments(&self) -> Result<Vec<Word>> {
         self.signer_commitments_hex
             .iter()
             .map(|h| hex_to_word(h))
@@ -112,10 +117,10 @@ impl ProposalMetadata {
     }
 
     /// Converts note ID hex strings to NoteIds.
-    pub fn note_ids(&self) -> Vec<NoteId> {
+    pub fn note_ids(&self) -> Result<Vec<NoteId>> {
         self.note_ids_hex
             .iter()
-            .map(|hex| NoteId::from(hex_to_word(hex)))
+            .map(|hex| Ok(NoteId::from(hex_to_word(hex)?)))
             .collect()
     }
 }
@@ -202,7 +207,12 @@ impl Proposal {
             })
             .unwrap_or_default();
 
-        let metadata = ProposalMetadata {
+        let parsed_note_ids: Vec<NoteId> = note_ids_hex
+            .iter()
+            .map(|hex| Ok(NoteId::from(hex_to_word(hex)?)))
+            .collect::<Result<_>>()?;
+
+        let mut metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary_json.clone()),
             new_threshold,
             signer_commitments_hex: signer_commitments_hex.clone(),
@@ -211,23 +221,23 @@ impl Proposal {
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
             note_ids_hex: note_ids_hex.clone(),
+            required_signatures: Some(current_threshold as usize),
+            collected_signatures: None,
         };
 
         // Determine transaction type
-        let transaction_type = if !note_ids_hex.is_empty() {
-            // Note consumption
-            let note_ids = metadata.note_ids();
-            TransactionType::ConsumeNotes { note_ids }
+        let transaction_type = if !parsed_note_ids.is_empty() {
+            TransactionType::ConsumeNotes {
+                note_ids: parsed_note_ids,
+            }
         } else if let (Some(recipient_str), Some(faucet_str), Some(amt)) =
             (&recipient_hex, &faucet_id_hex, amount)
         {
             // This is a P2ID transfer
-            let recipient = AccountId::from_hex(recipient_str).map_err(|e| {
-                MultisigError::InvalidConfig(format!("invalid recipient: {}", e))
-            })?;
-            let faucet_id = AccountId::from_hex(faucet_str).map_err(|e| {
-                MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e))
-            })?;
+            let recipient = AccountId::from_hex(recipient_str)
+                .map_err(|e| MultisigError::InvalidConfig(format!("invalid recipient: {}", e)))?;
+            let faucet_id = AccountId::from_hex(faucet_str)
+                .map_err(|e| MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e)))?;
             TransactionType::P2ID {
                 recipient,
                 faucet_id,
@@ -235,7 +245,7 @@ impl Proposal {
             }
         } else if let Some(threshold) = new_threshold {
             // Signer update transaction
-            let proposed_signers = metadata.signer_commitments();
+            let proposed_signers = metadata.signer_commitments()?;
             determine_transaction_type(
                 threshold as u32,
                 current_threshold,
@@ -251,6 +261,7 @@ impl Proposal {
         // since the on-chain code verifies against the currently stored config.
         let (signatures_collected, signers) = count_signatures_from_delta(delta);
         let signatures_required = current_threshold as usize;
+        metadata.collected_signatures = Some(signatures_collected);
 
         let status = if signatures_collected >= signatures_required && signatures_required > 0 {
             ProposalStatus::Ready
@@ -281,12 +292,16 @@ impl Proposal {
         tx_summary: TransactionSummary,
         nonce: u64,
         transaction_type: TransactionType,
-        metadata: ProposalMetadata,
+        mut metadata: ProposalMetadata,
     ) -> Self {
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));
 
         let signatures_required = metadata.signer_commitments_hex.len();
+        metadata
+            .required_signatures
+            .get_or_insert(signatures_required);
+        metadata.collected_signatures.get_or_insert(0);
 
         Self {
             id,
@@ -319,8 +334,11 @@ impl Proposal {
                 signatures_collected,
                 ..
             } => *signatures_collected,
-            ProposalStatus::Ready => self.metadata.signer_commitments_hex.len(),
-            ProposalStatus::Finalized => self.metadata.signer_commitments_hex.len(),
+            ProposalStatus::Ready | ProposalStatus::Finalized => self
+                .metadata
+                .collected_signatures
+                .or(self.metadata.required_signatures)
+                .unwrap_or(self.metadata.signer_commitments_hex.len()),
         }
     }
 
@@ -331,7 +349,10 @@ impl Proposal {
                 signatures_required,
                 ..
             } => *signatures_required,
-            _ => self.metadata.signer_commitments_hex.len(),
+            _ => self
+                .metadata
+                .required_signatures
+                .unwrap_or(self.metadata.signer_commitments_hex.len()),
         }
     }
 }
@@ -392,20 +413,27 @@ fn determine_transaction_type(
 }
 
 /// Converts a hex string to Word.
-fn hex_to_word(hex: &str) -> Word {
+fn hex_to_word(hex: &str) -> Result<Word> {
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    let bytes = hex::decode(hex).unwrap_or_else(|_| vec![0u8; 32]);
+    let bytes = hex::decode(hex).map_err(|e| {
+        MultisigError::InvalidConfig(format!("invalid hex string '{}': {}", hex, e))
+    })?;
+
+    if bytes.len() != 32 {
+        return Err(MultisigError::InvalidConfig(format!(
+            "invalid word length for '{}': expected 32 bytes, got {}",
+            hex,
+            bytes.len()
+        )));
+    }
+
     let mut word = [0u64; 4];
     for (i, chunk) in bytes.chunks(8).enumerate() {
-        if i >= 4 {
-            break;
-        }
         let mut arr = [0u8; 8];
-        let len = chunk.len().min(8);
-        arr[..len].copy_from_slice(&chunk[..len]);
+        arr.copy_from_slice(chunk);
         word[i] = u64::from_le_bytes(arr);
     }
-    Word::from(word.map(Felt::new))
+    Ok(Word::from(word.map(Felt::new)))
 }
 
 /// Converts a Word to bytes.
@@ -422,7 +450,7 @@ mod tests {
     #[test]
     fn test_hex_to_word_roundtrip() {
         let original = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-        let word = hex_to_word(original);
+        let word = hex_to_word(original).expect("hex should decode");
         let bytes = word_to_bytes(&word);
         let result = format!("0x{}", hex::encode(bytes));
         assert_eq!(original, result);

@@ -1,4 +1,4 @@
-use miden_multisig_client::{Asset, NoteId, TransactionType, commitment_from_hex};
+use miden_multisig_client::{commitment_from_hex, Asset, NoteId, TransactionType};
 use miden_objects::account::AccountId;
 use rustyline::DefaultEditor;
 
@@ -163,8 +163,8 @@ async fn create_p2id_proposal(
     print_info("Enter the faucet/asset ID:");
     let faucet_hex = prompt_input(editor, "  Faucet ID: ")?;
 
-    let faucet_id = AccountId::from_hex(&faucet_hex)
-        .map_err(|e| format!("Invalid faucet ID: {}", e))?;
+    let faucet_id =
+        AccountId::from_hex(&faucet_hex).map_err(|e| format!("Invalid faucet ID: {}", e))?;
 
     // Prompt for amount
     print_info("Enter the amount to transfer:");
@@ -285,10 +285,7 @@ async fn create_consume_notes_proposal(
 
     // Confirm
     println!();
-    print_info(&format!(
-        "Selected {} note(s) to consume",
-        note_ids.len()
-    ));
+    print_info(&format!("Selected {} note(s) to consume", note_ids.len()));
     let confirm = prompt_input(editor, "Confirm? (y/n): ")?;
     if confirm.to_lowercase() != "y" {
         print_info("Cancelled");
