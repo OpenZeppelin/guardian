@@ -276,6 +276,9 @@ impl MultisigClient {
 
         let mut psm_client = self.create_authenticated_psm_client().await?;
 
+        let current_threshold = account.threshold()?;
+        let current_signers = account.cosigner_commitments();
+
         let response = psm_client
             .get_delta_proposals(&account_id)
             .await
@@ -284,7 +287,7 @@ impl MultisigClient {
         let proposals = response
             .proposals
             .iter()
-            .filter_map(|delta| Proposal::from_delta_object(delta).ok())
+            .filter_map(|delta| Proposal::from(delta, current_threshold, &current_signers).ok())
             .collect();
 
         Ok(proposals)

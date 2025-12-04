@@ -116,7 +116,11 @@ pub struct Proposal {
 
 impl Proposal {
     /// Creates a Proposal from a PSM DeltaObject.
-    pub fn from_delta_object(delta: &DeltaObject) -> Result<Self> {
+    pub fn from(
+        delta: &DeltaObject,
+        current_threshold: u32,
+        current_signers: &[Word],
+    ) -> Result<Self> {
         let payload_json: Value = serde_json::from_str(&delta.delta_payload)?;
 
         let tx_summary_json = payload_json.get("tx_summary").ok_or_else(|| {
@@ -157,27 +161,30 @@ impl Proposal {
         };
 
         // Determine transaction type
+        let proposed_signers = metadata.signer_commitments();
         let transaction_type = if let Some(threshold) = new_threshold {
-            TransactionType::UpdateSigners {
-                new_threshold: threshold as u32,
-                signer_commitments: metadata.signer_commitments(),
-            }
+            determine_transaction_type(
+                threshold as u32,
+                current_threshold,
+                current_signers,
+                &proposed_signers,
+            )
         } else {
             TransactionType::Unknown
         };
 
         // Count signatures from delta status
         let (signatures_collected, signers) = count_signatures_from_delta(delta);
-        // Use the threshold as signatures required (not the number of signers)
-        let signatures_required =
-            new_threshold.unwrap_or(signer_commitments_hex.len() as u64) as usize;
+        let threshold_for_status =
+            new_threshold.map(|t| t as usize).unwrap_or(current_threshold as usize);
 
-        let status = if signatures_collected >= signatures_required && signatures_required > 0 {
+        let status =
+            if signatures_collected >= threshold_for_status && threshold_for_status > 0 {
             ProposalStatus::Ready
         } else {
             ProposalStatus::Pending {
                 signatures_collected,
-                signatures_required,
+                signatures_required: threshold_for_status,
                 signers,
             }
         };
@@ -272,6 +279,45 @@ fn count_signatures_from_delta(delta: &DeltaObject) -> (usize, Vec<String>) {
         }
     }
     (0, Vec::new())
+}
+
+fn determine_transaction_type(
+    proposed_threshold: u32,
+    current_threshold: u32,
+    current_signers: &[Word],
+    proposed_signers: &[Word],
+) -> TransactionType {
+    if proposed_signers.len() > current_signers.len() {
+        if let Some(new_commitment) =
+            proposed_signers
+                .iter()
+                .find(|candidate| !current_signers.iter().any(|c| c == *candidate))
+        {
+            return TransactionType::AddCosigner {
+                new_commitment: new_commitment.clone(),
+            };
+        }
+    } else if proposed_signers.len() < current_signers.len() {
+        if let Some(removed_commitment) =
+            current_signers
+                .iter()
+                .find(|candidate| !proposed_signers.iter().any(|c| c == *candidate))
+        {
+            return TransactionType::RemoveCosigner {
+                commitment: removed_commitment.clone(),
+            };
+        }
+    } else if proposed_threshold != current_threshold {
+        return TransactionType::UpdateSigners {
+            new_threshold: proposed_threshold,
+            signer_commitments: proposed_signers.to_vec(),
+        };
+    }
+
+    TransactionType::UpdateSigners {
+        new_threshold: proposed_threshold,
+        signer_commitments: proposed_signers.to_vec(),
+    }
 }
 
 /// Converts a hex string to Word.

@@ -236,7 +236,7 @@ impl ProposalBuilder {
             },
             status: ProposalStatus::Pending {
                 signatures_collected: 1,
-                signatures_required: current_threshold as usize,
+                signatures_required: new_threshold as usize,
                 signers: vec![key_manager.commitment_hex()],
             },
             tx_summary,
