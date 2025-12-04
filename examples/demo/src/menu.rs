@@ -11,6 +11,7 @@ pub enum MenuAction {
     ViewProposals,
     SignProposal,
     ExecuteProposal,
+    ListNotes,
     ShowAccount,
     ShowStatus,
     Quit,
@@ -24,6 +25,7 @@ pub fn print_menu(state: &SessionState) {
     print_menu_option("4", "View pending proposals", state.has_account());
     print_menu_option("5", "Sign a proposal", state.has_account());
     print_menu_option("6", "Execute a proposal", state.has_account());
+    print_menu_option("7", "List consumable notes", state.has_account());
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
     print_menu_option("q", "Quit", true);
@@ -48,6 +50,7 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
         "4" if state.has_account() => Some(MenuAction::ViewProposals),
         "5" if state.has_account() => Some(MenuAction::SignProposal),
         "6" if state.has_account() => Some(MenuAction::ExecuteProposal),
+        "7" if state.has_account() => Some(MenuAction::ListNotes),
         "s" if state.has_account() => Some(MenuAction::ShowAccount),
         "c" => Some(MenuAction::ShowStatus),
         "q" => Some(MenuAction::Quit),

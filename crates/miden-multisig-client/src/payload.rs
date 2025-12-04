@@ -21,6 +21,22 @@ pub struct ProposalMetadataPayload {
     /// Salt used for transaction authentication.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub salt_hex: Option<String>,
+
+    // Payment (P2ID) fields
+    /// Recipient account ID as hex string (for P2ID transfers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_hex: Option<String>,
+    /// Faucet ID as hex string (for P2ID transfers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub faucet_id_hex: Option<String>,
+    /// Amount to transfer (for P2ID transfers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
+
+    // Note consumption fields
+    /// Note IDs to consume as hex strings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_ids_hex: Vec<String>,
 }
 
 /// Complete payload for a multisig transaction proposal.
@@ -79,6 +95,39 @@ impl ProposalPayload {
             new_threshold: Some(new_threshold),
             signer_commitments_hex,
             salt_hex: Some(salt_hex),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Sets the metadata for P2ID payment transfers.
+    pub fn with_payment_metadata(
+        mut self,
+        recipient_hex: String,
+        faucet_id_hex: String,
+        amount: u64,
+        salt_hex: String,
+    ) -> Self {
+        self.metadata = Some(ProposalMetadataPayload {
+            recipient_hex: Some(recipient_hex),
+            faucet_id_hex: Some(faucet_id_hex),
+            amount: Some(amount),
+            salt_hex: Some(salt_hex),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Sets the metadata for note consumption transactions.
+    pub fn with_note_consumption_metadata(
+        mut self,
+        note_ids_hex: &[String],
+        salt_hex: String,
+    ) -> Self {
+        self.metadata = Some(ProposalMetadataPayload {
+            note_ids_hex: note_ids_hex.to_vec(),
+            salt_hex: Some(salt_hex),
+            ..Default::default()
         });
         self
     }

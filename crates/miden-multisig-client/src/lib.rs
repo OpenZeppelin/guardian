@@ -68,7 +68,7 @@ mod transaction;
 
 // Main client
 pub use builder::MultisigClientBuilder;
-pub use client::MultisigClient;
+pub use client::{ConsumableNote, MultisigClient};
 
 // Configuration
 pub use config::{MultisigConfig, PsmConfig};
@@ -91,4 +91,6 @@ pub use error::{MultisigError, Result};
 pub use miden_client::rpc::Endpoint;
 pub use miden_objects::Word;
 pub use miden_objects::account::AccountId;
+pub use miden_objects::asset::Asset;
 pub use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+pub use miden_objects::note::NoteId;

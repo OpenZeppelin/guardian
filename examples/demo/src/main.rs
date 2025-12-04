@@ -7,8 +7,9 @@ use miden_client::rpc::Endpoint;
 use rustyline::DefaultEditor;
 
 use actions::{
-    action_create_account, action_create_proposal, action_execute_proposal, action_show_account,
-    action_show_status, action_sign_transaction, action_sync_account, action_view_proposals,
+    action_create_account, action_create_proposal, action_execute_proposal, action_list_notes,
+    action_show_account, action_show_status, action_sign_transaction, action_sync_account,
+    action_view_proposals,
 };
 use display::{
     print_banner, print_error, print_full_hex, print_section, print_success, print_waiting,
@@ -102,6 +103,7 @@ async fn handle_action(
         MenuAction::ViewProposals => action_view_proposals(state).await,
         MenuAction::SignProposal => action_sign_transaction(state, editor).await,
         MenuAction::ExecuteProposal => action_execute_proposal(state).await,
+        MenuAction::ListNotes => action_list_notes(state).await,
         MenuAction::ShowAccount => action_show_account(state).await,
         MenuAction::ShowStatus => action_show_status(state).await,
         MenuAction::Quit => {

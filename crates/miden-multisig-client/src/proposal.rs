@@ -1,6 +1,7 @@
 //! Proposal types and utilities for multisig transactions.
 
 use miden_objects::account::AccountId;
+use miden_objects::note::NoteId;
 use miden_objects::transaction::TransactionSummary;
 use miden_objects::{Felt, Word};
 use private_state_manager_client::DeltaObject;
@@ -48,6 +49,8 @@ pub enum TransactionType {
         faucet_id: AccountId,
         amount: u64,
     },
+    /// Consume notes sent to this account.
+    ConsumeNotes { note_ids: Vec<NoteId> },
     /// Add a new cosigner to the multisig.
     AddCosigner { new_commitment: Word },
     /// Remove an existing cosigner from the multisig.
@@ -77,6 +80,18 @@ pub struct ProposalMetadata {
     pub signer_commitments_hex: Vec<String>,
     /// Salt used for transaction authentication.
     pub salt_hex: Option<String>,
+
+    // Payment (P2ID) fields
+    /// Recipient account ID as hex string.
+    pub recipient_hex: Option<String>,
+    /// Faucet ID as hex string.
+    pub faucet_id_hex: Option<String>,
+    /// Amount to transfer.
+    pub amount: Option<u64>,
+
+    // Note consumption fields
+    /// Note IDs to consume as hex strings.
+    pub note_ids_hex: Vec<String>,
 }
 
 impl ProposalMetadata {
@@ -93,6 +108,14 @@ impl ProposalMetadata {
         self.signer_commitments_hex
             .iter()
             .map(|h| hex_to_word(h))
+            .collect()
+    }
+
+    /// Converts note ID hex strings to NoteIds.
+    pub fn note_ids(&self) -> Vec<NoteId> {
+        self.note_ids_hex
+            .iter()
+            .map(|hex| NoteId::from(hex_to_word(hex)))
             .collect()
     }
 }
@@ -153,16 +176,66 @@ impl Proposal {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Extract P2ID fields
+        let recipient_hex = metadata_obj
+            .and_then(|m| m.get("recipient_hex"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let faucet_id_hex = metadata_obj
+            .and_then(|m| m.get("faucet_id_hex"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let amount = metadata_obj
+            .and_then(|m| m.get("amount"))
+            .and_then(|v| v.as_u64());
+
+        // Extract note consumption fields
+        let note_ids_hex: Vec<String> = metadata_obj
+            .and_then(|m| m.get("note_ids_hex"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary_json.clone()),
             new_threshold,
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex,
+            recipient_hex: recipient_hex.clone(),
+            faucet_id_hex: faucet_id_hex.clone(),
+            amount,
+            note_ids_hex: note_ids_hex.clone(),
         };
 
         // Determine transaction type
-        let proposed_signers = metadata.signer_commitments();
-        let transaction_type = if let Some(threshold) = new_threshold {
+        let transaction_type = if !note_ids_hex.is_empty() {
+            // Note consumption
+            let note_ids = metadata.note_ids();
+            TransactionType::ConsumeNotes { note_ids }
+        } else if let (Some(recipient_str), Some(faucet_str), Some(amt)) =
+            (&recipient_hex, &faucet_id_hex, amount)
+        {
+            // This is a P2ID transfer
+            let recipient = AccountId::from_hex(recipient_str).map_err(|e| {
+                MultisigError::InvalidConfig(format!("invalid recipient: {}", e))
+            })?;
+            let faucet_id = AccountId::from_hex(faucet_str).map_err(|e| {
+                MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e))
+            })?;
+            TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount: amt,
+            }
+        } else if let Some(threshold) = new_threshold {
+            // Signer update transaction
+            let proposed_signers = metadata.signer_commitments();
             determine_transaction_type(
                 threshold as u32,
                 current_threshold,

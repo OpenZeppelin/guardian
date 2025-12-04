@@ -1,20 +1,31 @@
 //! Main MultisigClient implementation.
 
+use std::collections::HashSet;
+
 use base64::Engine;
 use miden_client::account::Account;
+use miden_client::note::NoteRelevance;
+use miden_client::store::NoteFilter;
 use miden_client::{Client, Deserializable, Serializable};
+use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_objects::Word;
 use miden_objects::account::AccountId;
+use miden_objects::account::auth::Signature as AccountSignature;
+use miden_objects::asset::{Asset, FungibleAsset};
+use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
+use miden_objects::note::NoteId;
+use private_state_manager_client::delta_status::Status;
 use private_state_manager_client::{
     Auth, AuthConfig, FalconRpoSigner, MidenFalconRpoAuth, PsmClient, auth_config::AuthType,
 };
-use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::hex::FromHex;
+use private_state_manager_shared::{ProposalSignature, ToJson};
 
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
 use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
-use crate::proposal::Proposal;
+use crate::proposal::{Proposal, ProposalStatus, TransactionType};
 use crate::sync::sync_miden_state;
 use crate::transaction::ProposalBuilder;
 
@@ -151,8 +162,6 @@ impl MultisigClient {
             .map_err(MultisigError::HexDecode)?;
 
         // Create the multisig account
-        use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-
         let psm_config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment);
 
         // Generate a random seed for account ID
@@ -350,12 +359,6 @@ impl MultisigClient {
     /// 4. Execute the transaction on-chain
     /// 5. Sync and update local account state
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
-        use miden_objects::account::auth::Signature as AccountSignature;
-        use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
-        use private_state_manager_shared::ToJson;
-        use private_state_manager_shared::hex::FromHex;
-        use std::collections::HashSet;
-
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
@@ -377,7 +380,7 @@ impl MultisigClient {
         // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {
             let (collected, required) = match &proposal.status {
-                crate::proposal::ProposalStatus::Pending {
+                ProposalStatus::Pending {
                     signatures_collected,
                     signatures_required,
                     ..
@@ -409,43 +412,41 @@ impl MultisigClient {
 
         if let Some(ref status) = raw_proposal.status
             && let Some(ref status_oneof) = status.status
+            && let Status::Pending(pending) = status_oneof
         {
-            use private_state_manager_client::delta_status::Status;
-            if let Status::Pending(pending) = status_oneof {
-                for cosigner_sig in pending.cosigner_sigs.iter() {
-                    let sig_hex = cosigner_sig
-                        .signature
-                        .as_ref()
-                        .ok_or_else(|| MultisigError::Signature("missing signature".to_string()))?
-                        .signature
-                        .as_str();
+            for cosigner_sig in pending.cosigner_sigs.iter() {
+                let sig_hex = cosigner_sig
+                    .signature
+                    .as_ref()
+                    .ok_or_else(|| MultisigError::Signature("missing signature".to_string()))?
+                    .signature
+                    .as_str();
 
-                    // Only include signatures from required signers
-                    if !required_commitments
-                        .iter()
-                        .any(|c| c.eq_ignore_ascii_case(&cosigner_sig.signer_id))
-                    {
-                        continue;
-                    }
-
-                    // Skip duplicates
-                    if !added_signers.insert(cosigner_sig.signer_id.clone()) {
-                        continue;
-                    }
-
-                    let sig = RpoFalconSignature::from_hex(sig_hex).map_err(|e| {
-                        MultisigError::Signature(format!("invalid cosigner signature: {}", e))
-                    })?;
-
-                    let commitment = crate::keystore::commitment_from_hex(&cosigner_sig.signer_id)
-                        .map_err(MultisigError::HexDecode)?;
-
-                    signature_advice.push(crate::transaction::build_signature_advice_entry(
-                        commitment,
-                        tx_summary_commitment,
-                        &AccountSignature::from(sig),
-                    ));
+                // Only include signatures from required signers
+                if !required_commitments
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(&cosigner_sig.signer_id))
+                {
+                    continue;
                 }
+
+                // Skip duplicates
+                if !added_signers.insert(cosigner_sig.signer_id.clone()) {
+                    continue;
+                }
+
+                let sig = RpoFalconSignature::from_hex(sig_hex).map_err(|e| {
+                    MultisigError::Signature(format!("invalid cosigner signature: {}", e))
+                })?;
+
+                let commitment = crate::keystore::commitment_from_hex(&cosigner_sig.signer_id)
+                    .map_err(MultisigError::HexDecode)?;
+
+                signature_advice.push(crate::transaction::build_signature_advice_entry(
+                    commitment,
+                    tx_summary_commitment,
+                    &AccountSignature::from(sig),
+                ));
             }
         }
 
@@ -498,18 +499,50 @@ impl MultisigClient {
 
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt();
-        let signer_commitments = proposal.metadata.signer_commitments();
-        let new_threshold = proposal
-            .metadata
-            .new_threshold
-            .ok_or_else(|| MultisigError::MissingConfig("new_threshold".to_string()))?;
 
-        let (final_tx_request, _) = crate::transaction::build_update_signers_transaction_request(
-            new_threshold,
-            &signer_commitments,
-            salt,
-            signature_advice,
-        )?;
+        let final_tx_request = match &proposal.transaction_type {
+            TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount,
+            } => {
+                let asset = FungibleAsset::new(*faucet_id, *amount).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
+                })?;
+
+                crate::transaction::build_p2id_transaction_request(
+                    account.inner(),
+                    *recipient,
+                    vec![asset.into()],
+                    salt,
+                    signature_advice,
+                )?
+            }
+            TransactionType::ConsumeNotes { note_ids } => {
+                crate::transaction::build_consume_notes_transaction_request(
+                    note_ids.clone(),
+                    salt,
+                    signature_advice,
+                )?
+            }
+            _ => {
+                // Signer update transactions (AddCosigner, RemoveCosigner, UpdateSigners)
+                let signer_commitments = proposal.metadata.signer_commitments();
+                let new_threshold = proposal
+                    .metadata
+                    .new_threshold
+                    .ok_or_else(|| MultisigError::MissingConfig("new_threshold".to_string()))?;
+
+                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
+                    new_threshold,
+                    &signer_commitments,
+                    salt,
+                    signature_advice,
+                )?;
+
+                tx_request
+            }
+        };
 
         // Execute the transaction on-chain
         self.miden_client
@@ -566,7 +599,7 @@ impl MultisigClient {
     /// ```
     pub async fn propose_transaction(
         &mut self,
-        transaction_type: crate::proposal::TransactionType,
+        transaction_type: TransactionType,
     ) -> Result<Proposal> {
         // Sync with the network before executing transaction
         self.sync().await?;
@@ -595,4 +628,73 @@ impl MultisigClient {
         self.pull_account(account_id).await?;
         Ok(())
     }
+
+    /// Lists notes that can be consumed by the current account.
+    ///
+    /// Returns a list of notes that are committed on-chain and can be consumed
+    /// immediately by the multisig account.
+    pub async fn list_consumable_notes(&mut self) -> Result<Vec<ConsumableNote>> {
+        let account_id = self.require_account()?.id();
+
+        // Sync first to get latest notes
+        self.sync().await?;
+
+        let consumable = self
+            .miden_client
+            .get_consumable_notes(Some(account_id))
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get consumable notes: {}", e)))?;
+
+        // Convert to our wrapper type, filtering for notes consumable "Now"
+        let notes = consumable
+            .into_iter()
+            .filter_map(|(record, relevances)| {
+                // Only include notes consumable "Now" by our account
+                let can_consume_now = relevances.iter().any(|(id, rel)| {
+                    *id == account_id && matches!(rel, NoteRelevance::Now)
+                });
+                if can_consume_now {
+                    Some(ConsumableNote {
+                        id: record.id(),
+                        assets: record.assets().iter().cloned().collect(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(notes)
+    }
+
+    /// Returns a list of all committed notes (not just consumable).
+    pub async fn list_committed_notes(&mut self) -> Result<Vec<ConsumableNote>> {
+        // Sync first to get latest notes
+        self.sync().await?;
+
+        let notes = self
+            .miden_client
+            .get_input_notes(NoteFilter::Committed)
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+
+        let result = notes
+            .into_iter()
+            .map(|record| ConsumableNote {
+                id: record.id(),
+                assets: record.assets().iter().cloned().collect(),
+            })
+            .collect();
+
+        Ok(result)
+    }
+}
+
+/// A wrapper type for a consumable note with simplified information.
+#[derive(Debug, Clone)]
+pub struct ConsumableNote {
+    /// The note ID.
+    pub id: NoteId,
+    /// Assets contained in the note.
+    pub assets: Vec<Asset>,
 }

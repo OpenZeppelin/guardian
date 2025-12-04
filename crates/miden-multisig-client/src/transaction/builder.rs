@@ -2,6 +2,9 @@
 
 use miden_client::Client;
 use miden_objects::Word;
+use miden_objects::account::AccountId;
+use miden_objects::asset::FungibleAsset;
+use miden_objects::note::NoteId;
 use private_state_manager_client::PsmClient;
 use private_state_manager_shared::ToJson;
 
@@ -12,6 +15,7 @@ use crate::payload::ProposalPayload;
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
 
 use super::{
+    build_consume_notes_transaction_request, build_p2id_transaction_request,
     build_update_signers_transaction_request, execute_for_summary, generate_salt, word_to_hex,
 };
 
@@ -65,9 +69,32 @@ impl ProposalBuilder {
                 )
                 .await
             }
-            TransactionType::P2ID { .. } => Err(MultisigError::InvalidConfig(
-                "P2ID transfers not yet implemented".to_string(),
-            )),
+            TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount,
+            } => {
+                self.build_p2id(
+                    miden_client,
+                    psm_client,
+                    account,
+                    recipient,
+                    faucet_id,
+                    amount,
+                    key_manager,
+                )
+                .await
+            }
+            TransactionType::ConsumeNotes { ref note_ids } => {
+                self.build_consume_notes(
+                    miden_client,
+                    psm_client,
+                    account,
+                    note_ids.clone(),
+                    key_manager,
+                )
+                .await
+            }
             TransactionType::SwitchPsm { .. } => Err(MultisigError::InvalidConfig(
                 "PSM switching not yet implemented".to_string(),
             )),
@@ -123,6 +150,10 @@ impl ProposalBuilder {
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex: Some(word_to_hex(&salt)),
+            recipient_hex: None,
+            faucet_id_hex: None,
+            amount: None,
+            note_ids_hex: Vec::new(),
         };
 
         // Build the payload using ProposalPayload
@@ -217,6 +248,10 @@ impl ProposalBuilder {
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex: Some(word_to_hex(&salt)),
+            recipient_hex: None,
+            faucet_id_hex: None,
+            amount: None,
+            note_ids_hex: Vec::new(),
         };
 
         // Build the payload using ProposalPayload
@@ -246,6 +281,163 @@ impl ProposalBuilder {
                 signatures_collected: 1,
                 // Use current_threshold for required signatures since on-chain code
                 // verifies against the current config
+                signatures_required: current_threshold as usize,
+                signers: vec![key_manager.commitment_hex()],
+            },
+            tx_summary,
+            metadata,
+        };
+
+        Ok(proposal)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn build_p2id(
+        &self,
+        miden_client: &mut Client<()>,
+        psm_client: &mut PsmClient,
+        account: &MultisigAccount,
+        recipient: AccountId,
+        faucet_id: AccountId,
+        amount: u64,
+        key_manager: &dyn KeyManager,
+    ) -> Result<Proposal> {
+        let account_id = account.id();
+        let current_threshold = account.threshold()?;
+
+        // Create the fungible asset
+        let asset = FungibleAsset::new(faucet_id, amount).map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
+        })?;
+
+        // Generate salt for replay protection
+        let salt = generate_salt();
+
+        // Build the P2ID transaction request (no signature advice needed for proposal)
+        let tx_request = build_p2id_transaction_request(
+            account.inner(),
+            recipient,
+            vec![asset.into()],
+            salt,
+            std::iter::empty(),
+        )?;
+
+        // Execute to get the TransactionSummary
+        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+
+        // Sign the transaction summary commitment
+        let tx_commitment = tx_summary.to_commitment();
+
+        // Build proposal metadata
+        let metadata = ProposalMetadata {
+            tx_summary_json: Some(tx_summary.to_json()),
+            new_threshold: None,
+            signer_commitments_hex: Vec::new(),
+            salt_hex: Some(word_to_hex(&salt)),
+            recipient_hex: Some(recipient.to_string()),
+            faucet_id_hex: Some(faucet_id.to_string()),
+            amount: Some(amount),
+            note_ids_hex: Vec::new(),
+        };
+
+        // Build the payload using ProposalPayload
+        let payload = ProposalPayload::new(&tx_summary)
+            .with_signature(key_manager, tx_commitment)
+            .with_payment_metadata(
+                recipient.to_string(),
+                faucet_id.to_string(),
+                amount,
+                word_to_hex(&salt),
+            );
+
+        // Push proposal to PSM
+        let nonce = account.nonce() + 1;
+        let response = psm_client
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
+            .await
+            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+
+        // Build the Proposal
+        let proposal = Proposal {
+            id: response.commitment,
+            nonce,
+            transaction_type: TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount,
+            },
+            status: ProposalStatus::Pending {
+                signatures_collected: 1,
+                signatures_required: current_threshold as usize,
+                signers: vec![key_manager.commitment_hex()],
+            },
+            tx_summary,
+            metadata,
+        };
+
+        Ok(proposal)
+    }
+
+    async fn build_consume_notes(
+        &self,
+        miden_client: &mut Client<()>,
+        psm_client: &mut PsmClient,
+        account: &MultisigAccount,
+        note_ids: Vec<NoteId>,
+        key_manager: &dyn KeyManager,
+    ) -> Result<Proposal> {
+        let account_id = account.id();
+        let current_threshold = account.threshold()?;
+
+        // Generate salt for replay protection
+        let salt = generate_salt();
+
+        // Build the consume notes transaction request (no signatures for proposal)
+        let tx_request = build_consume_notes_transaction_request(
+            note_ids.clone(),
+            salt,
+            std::iter::empty(),
+        )?;
+
+        // Execute to get the TransactionSummary
+        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+
+        // Sign the transaction summary commitment
+        let tx_commitment = tx_summary.to_commitment();
+
+        // Build proposal metadata
+        let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
+
+        let metadata = ProposalMetadata {
+            tx_summary_json: Some(tx_summary.to_json()),
+            new_threshold: None,
+            signer_commitments_hex: Vec::new(),
+            salt_hex: Some(word_to_hex(&salt)),
+            recipient_hex: None,
+            faucet_id_hex: None,
+            amount: None,
+            note_ids_hex: note_ids_hex.clone(),
+        };
+
+        // Build the payload using ProposalPayload
+        let payload = ProposalPayload::new(&tx_summary)
+            .with_signature(key_manager, tx_commitment)
+            .with_note_consumption_metadata(&note_ids_hex, word_to_hex(&salt));
+
+        // Push proposal to PSM
+        let nonce = account.nonce() + 1;
+        let response = psm_client
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
+            .await
+            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+
+        // Build the Proposal
+        let proposal = Proposal {
+            id: response.commitment,
+            nonce,
+            transaction_type: TransactionType::ConsumeNotes { note_ids },
+            status: ProposalStatus::Pending {
+                signatures_collected: 1,
                 signatures_required: current_threshold as usize,
                 signers: vec![key_manager.commitment_hex()],
             },

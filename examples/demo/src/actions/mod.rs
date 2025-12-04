@@ -2,6 +2,7 @@
 mod create_account;
 mod create_proposal;
 mod execute_proposal;
+mod list_notes;
 mod show_account;
 mod show_status;
 mod sign_transaction;
@@ -11,6 +12,7 @@ mod view_proposals;
 pub use create_account::action_create_account;
 pub use create_proposal::action_create_proposal;
 pub use execute_proposal::action_execute_proposal;
+pub use list_notes::action_list_notes;
 pub use show_account::action_show_account;
 pub use show_status::action_show_status;
 pub use sign_transaction::action_sign_transaction;

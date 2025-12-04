@@ -1,7 +1,10 @@
-use miden_multisig_client::{commitment_from_hex, TransactionType};
+use miden_multisig_client::{Asset, NoteId, TransactionType, commitment_from_hex};
+use miden_objects::account::AccountId;
 use rustyline::DefaultEditor;
 
-use crate::display::{print_error, print_info, print_section, print_success, shorten_hex};
+use crate::display::{
+    print_error, print_info, print_section, print_success, print_waiting, shorten_hex,
+};
 use crate::menu::prompt_input;
 use crate::state::SessionState;
 
@@ -27,6 +30,8 @@ pub async fn action_create_proposal(
     println!("  Select proposal type:");
     println!("    [1] Add cosigner (update to N+1)");
     println!("    [2] Remove cosigner (update to N-1)");
+    println!("    [3] Transfer assets (P2ID)");
+    println!("    [4] Consume notes");
     println!("    [b] Back to main menu");
     println!();
 
@@ -37,6 +42,8 @@ pub async fn action_create_proposal(
         "2" => {
             create_remove_cosigner_proposal(state, editor, threshold, current_num_cosigners).await
         }
+        "3" => create_p2id_proposal(state, editor, threshold).await,
+        "4" => create_consume_notes_proposal(state, editor, threshold).await,
         "b" | "B" => {
             print_info("Returning to main menu");
             Ok(())
@@ -132,6 +139,167 @@ async fn create_remove_cosigner_proposal(
         .propose_transaction(TransactionType::RemoveCosigner { commitment })
         .await
         .map_err(|e| format!("Failed to create remove_cosigner proposal: {}", e))?;
+
+    print_proposal_success(client.user_commitment_hex(), &proposal.id, threshold);
+
+    Ok(())
+}
+
+async fn create_p2id_proposal(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+    threshold: u32,
+) -> Result<(), String> {
+    print_section("Transfer Assets (P2ID)");
+
+    // Prompt for recipient account ID
+    print_info("Enter the recipient account ID:");
+    let recipient_hex = prompt_input(editor, "  Recipient account ID: ")?;
+
+    let recipient = AccountId::from_hex(&recipient_hex)
+        .map_err(|e| format!("Invalid recipient account ID: {}", e))?;
+
+    // Prompt for faucet ID
+    print_info("Enter the faucet/asset ID:");
+    let faucet_hex = prompt_input(editor, "  Faucet ID: ")?;
+
+    let faucet_id = AccountId::from_hex(&faucet_hex)
+        .map_err(|e| format!("Invalid faucet ID: {}", e))?;
+
+    // Prompt for amount
+    print_info("Enter the amount to transfer:");
+    let amount_str = prompt_input(editor, "  Amount: ")?;
+
+    let amount: u64 = amount_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("Invalid amount: {}", e))?;
+
+    // Confirm the transfer details
+    println!();
+    print_info("Transfer details:");
+    print_info(&format!("  Recipient: {}", shorten_hex(&recipient_hex)));
+    print_info(&format!("  Faucet:    {}", shorten_hex(&faucet_hex)));
+    print_info(&format!("  Amount:    {}", amount));
+    println!();
+
+    let confirm = prompt_input(editor, "Confirm transfer? (y/n): ")?;
+    if confirm.to_lowercase() != "y" {
+        print_info("Transfer cancelled");
+        return Ok(());
+    }
+
+    let client = state.get_client_mut()?;
+
+    let proposal = client
+        .propose_transaction(TransactionType::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+        })
+        .await
+        .map_err(|e| format!("Failed to create P2ID proposal: {}", e))?;
+
+    print_proposal_success(client.user_commitment_hex(), &proposal.id, threshold);
+
+    Ok(())
+}
+
+async fn create_consume_notes_proposal(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+    threshold: u32,
+) -> Result<(), String> {
+    print_section("Consume Notes");
+
+    let client = state.get_client_mut()?;
+
+    // List available notes
+    print_waiting("Fetching consumable notes...");
+    let notes = client
+        .list_consumable_notes()
+        .await
+        .map_err(|e| format!("Failed to list notes: {}", e))?;
+
+    if notes.is_empty() {
+        print_info("No consumable notes available");
+        print_info("(Notes must be committed on-chain to be consumable)");
+        return Ok(());
+    }
+
+    println!();
+    print_info(&format!("Found {} consumable note(s):", notes.len()));
+    println!();
+
+    // Display notes for selection
+    for (idx, note) in notes.iter().enumerate() {
+        let note_id_hex = note.id.to_hex();
+        println!("  [{}] Note ID: {}", idx + 1, shorten_hex(&note_id_hex));
+
+        if !note.assets.is_empty() {
+            for asset in &note.assets {
+                match asset {
+                    Asset::Fungible(fungible) => {
+                        println!(
+                            "      - {} tokens (faucet: {})",
+                            fungible.amount(),
+                            shorten_hex(&fungible.faucet_id().to_hex())
+                        );
+                    }
+                    Asset::NonFungible(nft) => {
+                        println!(
+                            "      - NFT (faucet prefix: {})",
+                            shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                        );
+                    }
+                }
+            }
+        }
+    }
+    println!();
+
+    // Prompt for selection (comma-separated indices)
+    print_info("Enter the note numbers to consume (comma-separated, e.g., 1,2,3):");
+    let selection = prompt_input(editor, "  Notes to consume: ")?;
+
+    // Parse selection
+    let indices: Vec<usize> = selection
+        .split(',')
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .collect();
+
+    if indices.is_empty() {
+        print_error("No valid note numbers entered");
+        return Ok(());
+    }
+
+    let note_ids: Vec<NoteId> = indices
+        .iter()
+        .filter_map(|&i| notes.get(i.saturating_sub(1)).map(|n| n.id))
+        .collect();
+
+    if note_ids.is_empty() {
+        print_error("No valid notes selected (check note numbers)");
+        return Ok(());
+    }
+
+    // Confirm
+    println!();
+    print_info(&format!(
+        "Selected {} note(s) to consume",
+        note_ids.len()
+    ));
+    let confirm = prompt_input(editor, "Confirm? (y/n): ")?;
+    if confirm.to_lowercase() != "y" {
+        print_info("Cancelled");
+        return Ok(());
+    }
+
+    // Create proposal
+    let proposal = client
+        .propose_transaction(TransactionType::ConsumeNotes { note_ids })
+        .await
+        .map_err(|e| format!("Failed to create consume notes proposal: {}", e))?;
 
     print_proposal_success(client.user_commitment_hex(), &proposal.id, threshold);
 
