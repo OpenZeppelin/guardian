@@ -93,15 +93,6 @@ impl MultisigClientBuilder {
     }
 
     /// Builds the MultisigClient.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Miden endpoint is not configured
-    /// - PSM endpoint is not configured
-    /// - Account directory is not configured
-    /// - Key manager is not configured
-    /// - Failed to create the miden-client
     pub async fn build(self) -> Result<MultisigClient> {
         let miden_endpoint = self
             .miden_endpoint

@@ -91,10 +91,6 @@ impl MultisigClient {
         self.account.is_some()
     }
 
-    // =========================================================================
-    // Utilities
-    // =========================================================================
-
     /// Returns the user's public key commitment as a Word.
     pub fn user_commitment(&self) -> Word {
         self.key_manager.commitment()
@@ -109,10 +105,6 @@ impl MultisigClient {
     pub fn key_manager(&self) -> &dyn KeyManager {
         self.key_manager.as_ref()
     }
-
-    // =========================================================================
-    // PSM Client Management
-    // =========================================================================
 
     /// Creates a PSM client (unauthenticated).
     async fn create_psm_client(&self) -> Result<PsmClient> {
@@ -132,10 +124,6 @@ impl MultisigClient {
 
         Ok(client.with_auth(auth))
     }
-
-    // =========================================================================
-    // Account Management
-    // =========================================================================
 
     /// Creates a new multisig account.
     ///
@@ -280,10 +268,6 @@ impl MultisigClient {
             .as_ref()
             .ok_or_else(|| MultisigError::MissingConfig("no account loaded".to_string()))
     }
-
-    // =========================================================================
-    // Proposal Management
-    // =========================================================================
 
     /// Lists pending proposals for the current account.
     pub async fn list_proposals(&mut self) -> Result<Vec<Proposal>> {
@@ -556,10 +540,6 @@ impl MultisigClient {
         Ok(())
     }
 
-    // =========================================================================
-    // Transactions
-    // =========================================================================
-
     /// Creates a proposal for a transaction.
     ///
     /// This is the primary API for creating multisig transaction proposals.
@@ -599,10 +579,6 @@ impl MultisigClient {
             )
             .await
     }
-
-    // =========================================================================
-    // Synchronization
-    // =========================================================================
 
     /// Syncs state with the Miden network.
     pub async fn sync(&mut self) -> Result<()> {

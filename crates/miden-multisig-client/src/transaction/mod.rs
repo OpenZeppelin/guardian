@@ -2,8 +2,6 @@
 
 mod builder;
 mod configuration;
-mod p2id;
-mod switch_psm;
 
 pub use builder::ProposalBuilder;
 pub use configuration::{
