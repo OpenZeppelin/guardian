@@ -1,0 +1,67 @@
+//! Configuration types for the multisig client.
+
+use miden_objects::Word;
+
+/// Configuration for connecting to a PSM server.
+#[derive(Debug, Clone)]
+pub struct PsmConfig {
+    /// The gRPC endpoint URL (e.g., "http://localhost:50051").
+    pub endpoint: String,
+}
+
+impl PsmConfig {
+    /// Creates a new PSM configuration with the given endpoint.
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+        }
+    }
+}
+
+/// Configuration for creating a new multisig account.
+#[derive(Debug, Clone)]
+pub struct MultisigConfig {
+    /// Minimum number of signatures required to authorize a transaction.
+    pub threshold: u32,
+    /// Public key commitments of all signers.
+    pub signer_commitments: Vec<Word>,
+    /// PSM server configuration.
+    pub psm_config: PsmConfig,
+}
+
+impl MultisigConfig {
+    /// Creates a new multisig configuration.
+    ///
+    /// # Arguments
+    /// * `threshold` - Minimum number of signatures required
+    /// * `signer_commitments` - Public key commitments of all signers
+    /// * `psm_config` - PSM server configuration
+    pub fn new(threshold: u32, signer_commitments: Vec<Word>, psm_config: PsmConfig) -> Self {
+        Self {
+            threshold,
+            signer_commitments,
+            psm_config,
+        }
+    }
+
+    /// Validates the configuration.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.threshold == 0 {
+            return Err("threshold must be greater than 0".to_string());
+        }
+        if self.signer_commitments.is_empty() {
+            return Err("at least one signer commitment is required".to_string());
+        }
+        if self.threshold > self.signer_commitments.len() as u32 {
+            return Err(format!(
+                "threshold ({}) cannot exceed number of signers ({})",
+                self.threshold,
+                self.signer_commitments.len()
+            ));
+        }
+        if self.psm_config.endpoint.is_empty() {
+            return Err("PSM endpoint is required".to_string());
+        }
+        Ok(())
+    }
+}

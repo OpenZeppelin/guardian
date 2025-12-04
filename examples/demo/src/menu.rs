@@ -5,15 +5,12 @@ use crate::display::{print_error, print_menu_header, print_menu_option};
 use crate::state::SessionState;
 
 pub enum MenuAction {
-    GenerateKeypair,
     CreateAccount,
-    ConfigurePsm,
-    PullFromPsm,
-    PullDeltasFromPsm,
+    SyncAccount,
     AddCosigner,
     ViewProposals,
     SignProposal,
-    FinalizeProposal,
+    ExecuteProposal,
     ShowAccount,
     ShowStatus,
     Quit,
@@ -21,44 +18,12 @@ pub enum MenuAction {
 
 pub fn print_menu(state: &SessionState) {
     print_menu_header();
-
-    print_menu_option("1", "Generate keypair", !state.has_keypair());
-    print_menu_option(
-        "2",
-        "Create multisig account",
-        state.has_keypair() && !state.has_account(),
-    );
-    print_menu_option(
-        "3",
-        "Configure account in PSM",
-        state.has_account() && state.is_psm_connected(),
-    );
-    print_menu_option(
-        "4",
-        "Pull account from PSM",
-        !state.has_account() && state.is_psm_connected(),
-    );
-    print_menu_option(
-        "5",
-        "Pull deltas from PSM",
-        state.has_account() && state.is_psm_connected(),
-    );
-    print_menu_option("6", "Add cosigner (update to N+1)", state.has_account());
-    print_menu_option(
-        "7",
-        "View pending proposals",
-        state.has_account() && state.is_psm_connected(),
-    );
-    print_menu_option(
-        "8",
-        "Sign a proposal",
-        state.has_account() && state.is_psm_connected(),
-    );
-    print_menu_option(
-        "9",
-        "Finalize a proposal",
-        state.has_account() && state.is_psm_connected(),
-    );
+    print_menu_option("1", "Create multisig account", !state.has_account());
+    print_menu_option("2", "Sync account", true);
+    print_menu_option("3", "Add cosigner (update to N+1)", state.has_account());
+    print_menu_option("4", "View pending proposals", state.has_account());
+    print_menu_option("5", "Sign a proposal", state.has_account());
+    print_menu_option("6", "Execute a proposal", state.has_account());
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
     print_menu_option("q", "Quit", true);
@@ -77,19 +42,12 @@ pub fn get_user_choice(editor: &mut DefaultEditor) -> Result<String, ReadlineErr
 
 pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuAction> {
     match choice {
-        "1" if !state.has_keypair() => Some(MenuAction::GenerateKeypair),
-        "2" if state.has_keypair() && !state.has_account() => Some(MenuAction::CreateAccount),
-        "3" if state.has_account() && state.is_psm_connected() => Some(MenuAction::ConfigurePsm),
-        "4" if !state.has_account() && state.is_psm_connected() => Some(MenuAction::PullFromPsm),
-        "5" if state.has_account() && state.is_psm_connected() => {
-            Some(MenuAction::PullDeltasFromPsm)
-        }
-        "6" if state.has_account() => Some(MenuAction::AddCosigner),
-        "7" if state.has_account() && state.is_psm_connected() => Some(MenuAction::ViewProposals),
-        "8" if state.has_account() && state.is_psm_connected() => Some(MenuAction::SignProposal),
-        "9" if state.has_account() && state.is_psm_connected() => {
-            Some(MenuAction::FinalizeProposal)
-        }
+        "1" if !state.has_account() => Some(MenuAction::CreateAccount),
+        "2" => Some(MenuAction::SyncAccount),
+        "3" if state.has_account() => Some(MenuAction::AddCosigner),
+        "4" if state.has_account() => Some(MenuAction::ViewProposals),
+        "5" if state.has_account() => Some(MenuAction::SignProposal),
+        "6" if state.has_account() => Some(MenuAction::ExecuteProposal),
         "s" if state.has_account() => Some(MenuAction::ShowAccount),
         "c" => Some(MenuAction::ShowStatus),
         "q" => Some(MenuAction::Quit),

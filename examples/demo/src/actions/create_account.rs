@@ -1,9 +1,8 @@
-use rand::RngCore;
+use miden_multisig_client::commitment_from_hex;
 use rustyline::DefaultEditor;
 
 use crate::display::{print_section, print_success, print_waiting, shorten_hex};
 use crate::menu::prompt_input;
-use crate::multisig::create_multisig_psm_account;
 use crate::state::SessionState;
 
 pub async fn action_create_account(
@@ -12,7 +11,7 @@ pub async fn action_create_account(
 ) -> Result<(), String> {
     print_section("Create Multisig Account");
 
-    let threshold: u64 = prompt_input(editor, "Enter threshold (e.g., 2): ")?
+    let threshold: u32 = prompt_input(editor, "Enter threshold (e.g., 2): ")?
         .parse()
         .map_err(|_| "Invalid threshold")?;
 
@@ -24,13 +23,12 @@ pub async fn action_create_account(
         return Err("Number of cosigners must be >= threshold".to_string());
     }
 
-    let mut cosigner_commitments = Vec::new();
+    let mut cosigner_commitment_hexes = Vec::new();
 
-    let user_commitment = state.get_commitment_hex()?;
+    let user_commitment_hex = state.user_commitment_hex()?;
+    cosigner_commitment_hexes.push(user_commitment_hex.clone());
 
-    cosigner_commitments.push(user_commitment.to_string());
-
-    println!("\nYour commitment: {}", shorten_hex(user_commitment));
+    println!("\nYour commitment: {}", shorten_hex(&user_commitment_hex));
     println!("\nEnter commitments for other cosigners:");
 
     for i in 1..num_cosigners {
@@ -54,50 +52,41 @@ pub async fn action_create_account(
             format!("0x{}", commitment)
         };
 
-        cosigner_commitments.push(commitment_with_prefix);
+        cosigner_commitment_hexes.push(commitment_with_prefix);
     }
 
-    let psm_client = state.get_psm_client_mut()?;
-    print_waiting("Fetching PSM server commitment");
-
-    let psm_commitment_hex = psm_client
-        .get_pubkey()
-        .await
-        .map_err(|e| format!("Failed to get PSM commitment: {}", e))?;
-
-    println!("PSM Commitment: {}", shorten_hex(&psm_commitment_hex));
+    // Convert hex strings to Words
+    let signer_commitments: Vec<_> = cosigner_commitment_hexes
+        .iter()
+        .map(|hex| commitment_from_hex(hex))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse commitment: {}", e))?;
 
     print_waiting("Creating multisig account");
 
-    let mut rng = state.create_rng();
-    let mut init_seed = [0u8; 32];
-    rng.fill_bytes(&mut init_seed);
-
-    let cosigner_refs: Vec<&str> = cosigner_commitments.iter().map(|s| s.as_str()).collect();
-    let account =
-        create_multisig_psm_account(threshold, &cosigner_refs, &psm_commitment_hex, init_seed);
-
-    print_waiting("Adding account to Miden client");
+    let client = state.get_client_mut()?;
+    let account = client
+        .create_account(threshold, signer_commitments)
+        .await
+        .map_err(|e| format!("Failed to create account: {}", e))?;
 
     let account_id = account.id();
-    let miden_client = state.get_miden_client_mut()?;
-    miden_client
-        .add_account(&account, false)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    miden_client
-        .sync_state()
-        .await
-        .map_err(|e| format!("Failed to sync client state: {}", e))?;
-
-    state.set_account(account);
-    state.cosigner_commitments = cosigner_commitments;
 
     print_success(&format!(
         "Account created: {}",
         shorten_hex(&account_id.to_string())
     ));
+
+    // Automatically configure account in PSM
+    print_waiting("Configuring account in PSM");
+
+    let client = state.get_client_mut()?;
+    client
+        .push_account()
+        .await
+        .map_err(|e| format!("PSM configuration failed: {}", e))?;
+
+    print_success("Account configured in PSM");
 
     Ok(())
 }

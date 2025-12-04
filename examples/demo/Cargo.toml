@@ -5,21 +5,13 @@ edition = "2021"
 publish = false
 
 [dependencies]
-private-state-manager-client = { path = "../../crates/client" }
-private-state-manager-shared = { path = "../../crates/shared" }
-miden-confidential-contracts = { path = "../../crates/contracts" }
+miden-multisig-client = { path = "../../crates/miden-multisig-client" }
 
 miden-client = { workspace = true, features = ["tonic", "testing"] }
-miden-client-sqlite-store = { workspace = true }
 miden-objects = { workspace = true }
-miden-tx = { workspace = true }
 
 tokio = { workspace = true, features = ["full"] }
 hex = { workspace = true }
 tempfile = { workspace = true }
-rand = { workspace = true }
-rand_chacha = { workspace = true }
-base64 = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 rustyline = "13.0"

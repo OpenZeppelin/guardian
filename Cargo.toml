@@ -6,6 +6,7 @@ members = [
     "crates/miden-rpc-client",
     "crates/miden-keystore",
     "crates/contracts",
+    "crates/miden-multisig-client",
     "examples/rust",
     "examples/demo",
 ]
@@ -16,6 +17,7 @@ default-members = [
     "crates/miden-rpc-client",
     "crates/miden-keystore",
     "crates/contracts",
+    "crates/miden-multisig-client",
 ]
 resolver = "2"
 
