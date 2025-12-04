@@ -144,7 +144,7 @@ impl ProposalBuilder {
             transaction_type: TransactionType::AddCosigner { new_commitment },
             status: ProposalStatus::Pending {
                 signatures_collected: 1,
-                signatures_required: current_signers.len() - 1, // threshold of original signers
+                signatures_required: current_threshold as usize,
                 signers: vec![key_manager.commitment_hex()],
             },
             tx_summary,
