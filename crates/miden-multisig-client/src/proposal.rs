@@ -174,17 +174,17 @@ impl Proposal {
         };
 
         // Count signatures from delta status
+        // For signer updates, we need the CURRENT threshold to determine required signatures,
+        // since the on-chain code verifies against the currently stored config.
         let (signatures_collected, signers) = count_signatures_from_delta(delta);
-        let threshold_for_status = new_threshold
-            .map(|t| t as usize)
-            .unwrap_or(current_threshold as usize);
+        let signatures_required = current_threshold as usize;
 
-        let status = if signatures_collected >= threshold_for_status && threshold_for_status > 0 {
+        let status = if signatures_collected >= signatures_required && signatures_required > 0 {
             ProposalStatus::Ready
         } else {
             ProposalStatus::Pending {
                 signatures_collected,
-                signatures_required: threshold_for_status,
+                signatures_required,
                 signers,
             }
         };

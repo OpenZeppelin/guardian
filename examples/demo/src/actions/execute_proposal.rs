@@ -71,11 +71,17 @@ pub async fn action_execute_proposal(state: &mut SessionState) -> Result<(), Str
 
     print_success("Transaction executed successfully!");
 
+    print_waiting("Syncing account from PSM");
+    client
+        .sync_account()
+        .await
+        .map_err(|e| format!("Failed to sync account: {}", e))?;
+
     let account = client
         .account()
         .ok_or_else(|| "No account loaded".to_string())?;
     print_success(&format!(
-        "Local account updated. New nonce: {}",
+        "Account synced. New nonce: {}",
         account.nonce()
     ));
 

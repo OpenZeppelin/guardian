@@ -7,7 +7,7 @@ use miden_client::rpc::Endpoint;
 use rustyline::DefaultEditor;
 
 use actions::{
-    action_add_cosigner, action_create_account, action_execute_proposal, action_show_account,
+    action_create_account, action_create_proposal, action_execute_proposal, action_show_account,
     action_show_status, action_sign_transaction, action_sync_account, action_view_proposals,
 };
 use display::{
@@ -98,7 +98,7 @@ async fn handle_action(
     match action {
         MenuAction::CreateAccount => action_create_account(state, editor).await,
         MenuAction::SyncAccount => action_sync_account(state, editor).await,
-        MenuAction::AddCosigner => action_add_cosigner(state, editor).await,
+        MenuAction::CreateProposal => action_create_proposal(state, editor).await,
         MenuAction::ViewProposals => action_view_proposals(state).await,
         MenuAction::SignProposal => action_sign_transaction(state, editor).await,
         MenuAction::ExecuteProposal => action_execute_proposal(state).await,

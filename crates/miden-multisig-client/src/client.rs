@@ -400,13 +400,11 @@ impl MultisigClient {
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         // Build signature advice from cosigner signatures
+        // Important: Use CURRENT account signers for validation, not proposal's new signers.
+        // The on-chain MASM verifies signatures against the currently stored public keys.
         let mut signature_advice = Vec::new();
-        let required_commitments: HashSet<String> = proposal
-            .metadata
-            .signer_commitments_hex
-            .iter()
-            .cloned()
-            .collect();
+        let required_commitments: HashSet<String> =
+            account.cosigner_commitments_hex().into_iter().collect();
         let mut added_signers: HashSet<String> = HashSet::new();
 
         if let Some(ref status) = raw_proposal.status
@@ -518,7 +516,10 @@ impl MultisigClient {
             .submit_new_transaction(account_id, final_tx_request)
             .await
             .map_err(|e| {
-                MultisigError::TransactionExecution(format!("transaction execution failed: {}", e))
+                MultisigError::TransactionExecution(format!(
+                    "transaction execution failed: {:?}",
+                    e
+                ))
             })?;
 
         // Sync with network to get the updated account state

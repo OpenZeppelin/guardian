@@ -244,7 +244,9 @@ impl ProposalBuilder {
             },
             status: ProposalStatus::Pending {
                 signatures_collected: 1,
-                signatures_required: new_threshold as usize,
+                // Use current_threshold for required signatures since on-chain code
+                // verifies against the current config
+                signatures_required: current_threshold as usize,
                 signers: vec![key_manager.commitment_hex()],
             },
             tx_summary,
