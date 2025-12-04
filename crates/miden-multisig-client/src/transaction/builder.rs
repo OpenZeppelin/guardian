@@ -3,11 +3,12 @@
 use miden_client::Client;
 use miden_objects::Word;
 use private_state_manager_client::PsmClient;
-use private_state_manager_shared::{DeltaSignature, ProposalSignature, ToJson};
+use private_state_manager_shared::ToJson;
 
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
+use crate::payload::ProposalPayload;
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
 
 use super::{
@@ -113,7 +114,6 @@ impl ProposalBuilder {
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
-        let signature_hex = key_manager.sign_hex(tx_commitment);
 
         // Build proposal metadata
         let signer_commitments_hex: Vec<String> = current_signers.iter().map(word_to_hex).collect();
@@ -125,29 +125,15 @@ impl ProposalBuilder {
             salt_hex: Some(word_to_hex(&salt)),
         };
 
-        // Build signature using proper types for correct serialization
-        let delta_signature = DeltaSignature {
-            signer_id: key_manager.commitment_hex(),
-            signature: ProposalSignature::Falcon {
-                signature: signature_hex,
-            },
-        };
-
-        // Build the delta payload for PSM
-        let delta_payload = serde_json::json!({
-            "tx_summary": tx_summary.to_json(),
-            "signatures": [delta_signature],
-            "metadata": {
-                "new_threshold": new_threshold,
-                "signer_commitments_hex": signer_commitments_hex,
-                "salt_hex": word_to_hex(&salt),
-            }
-        });
+        // Build the payload using ProposalPayload
+        let payload = ProposalPayload::new(&tx_summary)
+            .with_signature(key_manager, tx_commitment)
+            .with_signer_metadata(new_threshold, signer_commitments_hex.clone(), word_to_hex(&salt));
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
-            .push_delta_proposal(&account_id, nonce, &delta_payload)
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
@@ -218,7 +204,6 @@ impl ProposalBuilder {
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
-        let signature_hex = key_manager.sign_hex(tx_commitment);
 
         // Build proposal metadata
         let signer_commitments_hex: Vec<String> = new_signers.iter().map(word_to_hex).collect();
@@ -230,29 +215,15 @@ impl ProposalBuilder {
             salt_hex: Some(word_to_hex(&salt)),
         };
 
-        // Build signature using proper types for correct serialization
-        let delta_signature = DeltaSignature {
-            signer_id: key_manager.commitment_hex(),
-            signature: ProposalSignature::Falcon {
-                signature: signature_hex,
-            },
-        };
-
-        // Build the delta payload for PSM
-        let delta_payload = serde_json::json!({
-            "tx_summary": tx_summary.to_json(),
-            "signatures": [delta_signature],
-            "metadata": {
-                "new_threshold": new_threshold,
-                "signer_commitments_hex": signer_commitments_hex,
-                "salt_hex": word_to_hex(&salt),
-            }
-        });
+        // Build the payload using ProposalPayload
+        let payload = ProposalPayload::new(&tx_summary)
+            .with_signature(key_manager, tx_commitment)
+            .with_signer_metadata(new_threshold, signer_commitments_hex.clone(), word_to_hex(&salt));
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
-            .push_delta_proposal(&account_id, nonce, &delta_payload)
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 

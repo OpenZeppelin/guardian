@@ -61,6 +61,7 @@ mod client;
 mod config;
 mod error;
 mod keystore;
+mod payload;
 mod proposal;
 mod sync;
 mod transaction;
@@ -79,6 +80,7 @@ pub use account::MultisigAccount;
 pub use keystore::{KeyManager, PsmKeyStore, commitment_from_hex};
 
 // Proposals
+pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
 pub use transaction::ProposalBuilder;
 
