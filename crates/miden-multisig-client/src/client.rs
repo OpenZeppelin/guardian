@@ -12,23 +12,36 @@ use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsm
 use miden_objects::Word;
 use miden_objects::account::AccountId;
 use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::asset::{Asset, FungibleAsset};
+use miden_objects::asset::Asset;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
 use miden_objects::note::NoteId;
 use private_state_manager_client::delta_status::Status;
 use private_state_manager_client::{
     Auth, AuthConfig, FalconRpoSigner, MidenFalconRpoAuth, PsmClient, auth_config::AuthType,
 };
+use private_state_manager_shared::ProposalSignature;
 use private_state_manager_shared::hex::FromHex;
-use private_state_manager_shared::{ProposalSignature, ToJson};
 
 use crate::account::MultisigAccount;
 use crate::builder::{MultisigClientBuilder, create_miden_client};
 use crate::error::{MultisigError, Result};
+use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
-use crate::proposal::{Proposal, ProposalStatus, TransactionType};
+use crate::proposal::{Proposal, TransactionType};
 use crate::sync::sync_miden_state;
 use crate::transaction::ProposalBuilder;
+
+/// Result of a proposal creation attempt.
+///
+/// When creating a proposal, it may either succeed online (via PSM) or
+/// fall back to offline mode if PSM is unavailable.
+#[derive(Debug)]
+pub enum ProposalResult {
+    /// Proposal successfully created on PSM and ready for cosigners to sign.
+    Online(Box<Proposal>),
+    /// Proposal created offline (PSM unavailable). Share with cosigners via file.
+    Offline(Box<ExportedProposal>),
+}
 
 /// Main client for interacting with multisig accounts.
 ///
@@ -57,7 +70,7 @@ use crate::transaction::ProposalBuilder;
 pub struct MultisigClient {
     miden_client: Client<()>,
     key_manager: Box<dyn KeyManager>,
-    /// PSM server endpoint.
+    /// Private State Manager server endpoint.
     psm_endpoint: String,
     /// The multisig account managed by this client.
     account: Option<MultisigAccount>,
@@ -368,6 +381,10 @@ impl MultisigClient {
     /// 4. Execute the transaction on-chain
     /// 5. Sync and update local account state
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
+        use crate::execution::{
+            SignatureInput, build_final_transaction_request, collect_signature_advice,
+        };
+
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
@@ -388,14 +405,7 @@ impl MultisigClient {
 
         // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {
-            let (collected, required) = match &proposal.status {
-                ProposalStatus::Pending {
-                    signatures_collected,
-                    signatures_required,
-                    ..
-                } => (*signatures_collected, *signatures_required),
-                _ => (0, 0),
-            };
+            let (collected, required) = proposal.signature_counts();
             return Err(MultisigError::ProposalNotReady {
                 collected,
                 required,
@@ -411,53 +421,48 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        // Build signature advice from cosigner signatures
-        // Important: Use CURRENT account signers for validation, not proposal's new signers.
-        // The on-chain MASM verifies signatures against the currently stored public keys.
-        let mut signature_advice = Vec::new();
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
-        let mut added_signers: HashSet<String> = HashSet::new();
-
-        if let Some(ref status) = raw_proposal.status
+        // Extract signatures from PSM delta status into SignatureInput format
+        // We fail explicitly if any cosigner entry is missing its signature data,
+        // rather than silently skipping corrupt entries.
+        let signature_inputs: Vec<SignatureInput> = if let Some(ref status) = raw_proposal.status
             && let Some(ref status_oneof) = status.status
             && let Status::Pending(pending) = status_oneof
         {
-            for cosigner_sig in pending.cosigner_sigs.iter() {
-                let sig_hex = cosigner_sig
-                    .signature
-                    .as_ref()
-                    .ok_or_else(|| MultisigError::Signature("missing signature".to_string()))?
-                    .signature
-                    .as_str();
+            pending
+                .cosigner_sigs
+                .iter()
+                .map(|cosigner_sig| {
+                    let sig_hex = cosigner_sig
+                        .signature
+                        .as_ref()
+                        .ok_or_else(|| {
+                            MultisigError::Signature(format!(
+                                "missing signature for cosigner {}",
+                                cosigner_sig.signer_id
+                            ))
+                        })?
+                        .signature
+                        .clone();
+                    Ok(SignatureInput {
+                        signer_commitment: cosigner_sig.signer_id.clone(),
+                        signature_hex: sig_hex,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
-                // Only include signatures from required signers
-                if !required_commitments
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(&cosigner_sig.signer_id))
-                {
-                    continue;
-                }
-
-                // Skip duplicates
-                if !added_signers.insert(cosigner_sig.signer_id.clone()) {
-                    continue;
-                }
-
-                let sig = RpoFalconSignature::from_hex(sig_hex).map_err(|e| {
-                    MultisigError::Signature(format!("invalid cosigner signature: {}", e))
-                })?;
-
-                let commitment = crate::keystore::commitment_from_hex(&cosigner_sig.signer_id)
-                    .map_err(MultisigError::HexDecode)?;
-
-                signature_advice.push(crate::transaction::build_signature_advice_entry(
-                    commitment,
-                    tx_summary_commitment,
-                    &AccountSignature::from(sig),
-                ));
-            }
-        }
+        // Build signature advice from cosigner signatures
+        // Important: Use CURRENT account signers for validation, not proposal's new signers.
+        // The on-chain MASM verifies signatures against the currently stored public keys.
+        let required_commitments: HashSet<String> =
+            account.cosigner_commitments_hex().into_iter().collect();
+        let mut signature_advice = collect_signature_advice(
+            signature_inputs,
+            &required_commitments,
+            tx_summary_commitment,
+        )?;
 
         // SwitchPsm does NOT require PSM signature - skip push_delta for this transaction type
         let is_switch_psm = matches!(
@@ -466,167 +471,46 @@ impl MultisigClient {
         );
 
         if !is_switch_psm {
-            // Get current account commitment
-            let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
-
-            // Push delta to PSM to get acknowledgment signature
-            let mut psm_client = self.create_authenticated_psm_client().await?;
-            let delta_payload = proposal.tx_summary.to_json();
-
-            let push_response = psm_client
-                .push_delta(
-                    &account_id,
+            // Get PSM ack signature and add to advice
+            let psm_advice = self
+                .get_psm_ack_signature(
+                    &account,
                     proposal.nonce,
-                    &prev_commitment,
-                    &delta_payload,
+                    &proposal.tx_summary,
+                    tx_summary_commitment,
                 )
-                .await
-                .map_err(|e| MultisigError::PsmServer(format!("failed to push delta: {}", e)))?;
-
-            // Get PSM ack signature
-            let ack_sig = push_response.ack_sig.ok_or_else(|| {
-                MultisigError::PsmServer("PSM did not return acknowledgment signature".to_string())
-            })?;
-
-            // Get PSM's pubkey commitment
-            let psm_commitment_hex = psm_client.get_pubkey().await.map_err(|e| {
-                MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
-            })?;
-
-            // Add 0x prefix if needed
-            let ack_sig_with_prefix = if ack_sig.starts_with("0x") {
-                ack_sig.clone()
-            } else {
-                format!("0x{}", ack_sig)
-            };
-
-            let ack_signature =
-                RpoFalconSignature::from_hex(&ack_sig_with_prefix).map_err(|e| {
-                    MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
-                })?;
-
-            let psm_commitment = crate::keystore::commitment_from_hex(&psm_commitment_hex)
-                .map_err(MultisigError::HexDecode)?;
-
-            signature_advice.push(crate::transaction::build_signature_advice_entry(
-                psm_commitment,
-                tx_summary_commitment,
-                &AccountSignature::from(ack_signature),
-            ));
+                .await?;
+            signature_advice.push(psm_advice);
         }
 
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
-        let final_tx_request = match &proposal.transaction_type {
-            TransactionType::P2ID {
-                recipient,
-                faucet_id,
-                amount,
-            } => {
-                let asset = FungibleAsset::new(*faucet_id, *amount).map_err(|e| {
-                    MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
-                })?;
-
-                crate::transaction::build_p2id_transaction_request(
-                    account.inner(),
-                    *recipient,
-                    vec![asset.into()],
-                    salt,
-                    signature_advice,
-                )?
-            }
-            TransactionType::ConsumeNotes { note_ids } => {
-                crate::transaction::build_consume_notes_transaction_request(
-                    note_ids.clone(),
-                    salt,
-                    signature_advice,
-                )?
-            }
-            TransactionType::SwitchPsm { new_commitment, .. } => {
-                crate::transaction::build_update_psm_transaction_request(
-                    *new_commitment,
-                    salt,
-                    signature_advice,
-                )?
-            }
-            _ => {
-                // Signer update transactions (AddCosigner, RemoveCosigner, UpdateSigners)
-                let signer_commitments = proposal.metadata.signer_commitments()?;
-                let new_threshold = proposal
-                    .metadata
-                    .new_threshold
-                    .ok_or_else(|| MultisigError::MissingConfig("new_threshold".to_string()))?;
-
-                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
-                    new_threshold,
-                    &signer_commitments,
-                    salt,
-                    signature_advice,
-                )?;
-
-                tx_request
-            }
+        // For signer-update transactions, we must propagate parse errors for signer commitments
+        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
+        let signer_commitments = if matches!(
+            &proposal.transaction_type,
+            TransactionType::AddCosigner { .. }
+                | TransactionType::RemoveCosigner { .. }
+                | TransactionType::UpdateSigners { .. }
+        ) {
+            Some(proposal.metadata.signer_commitments()?)
+        } else {
+            proposal.metadata.signer_commitments().ok()
         };
 
-        // Capture the new PSM endpoint if this is a SwitchPsm transaction
-        let new_psm_endpoint =
-            if let TransactionType::SwitchPsm { new_endpoint, .. } = &proposal.transaction_type {
-                Some(new_endpoint.clone())
-            } else {
-                None
-            };
+        let final_tx_request = build_final_transaction_request(
+            &proposal.transaction_type,
+            account.inner(),
+            salt,
+            signature_advice,
+            proposal.metadata.new_threshold,
+            signer_commitments.as_deref(),
+        )?;
 
-        // Execute the transaction on-chain
-        self.miden_client
-            .submit_new_transaction(account_id, final_tx_request)
+        // Execute and finalize
+        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!(
-                    "transaction execution failed: {:?}",
-                    e
-                ))
-            })?;
-
-        // Sync with network to get the updated account state
-        self.sync().await?;
-
-        // Update local account cache from miden-client
-        let account_record = self
-            .miden_client
-            .get_account(account_id)
-            .await
-            .map_err(|e| {
-                MultisigError::MidenClient(format!("failed to get updated account: {}", e))
-            })?
-            .ok_or_else(|| {
-                MultisigError::MissingConfig("account not found after sync".to_string())
-            })?;
-
-        let updated_account: Account = account_record.into();
-
-        // Update PSM endpoint if this was a SwitchPsm transaction, then register on new PSM
-        if let Some(endpoint) = new_psm_endpoint {
-            self.psm_endpoint = endpoint;
-
-            // Update local account with new PSM endpoint
-            let multisig_account =
-                MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
-            self.account = Some(multisig_account);
-
-            // Register the updated account on the new PSM server
-            self.push_account().await.map_err(|e| {
-                MultisigError::PsmServer(format!(
-                    "transaction executed successfully but failed to register on new PSM: {}",
-                    e
-                ))
-            })?;
-        } else {
-            let multisig_account = MultisigAccount::new(updated_account, &self.psm_endpoint);
-            self.account = Some(multisig_account);
-        }
-
-        Ok(())
     }
 
     /// Creates a proposal for a transaction.
@@ -667,6 +551,54 @@ impl MultisigClient {
                 self.key_manager.as_ref(),
             )
             .await
+    }
+
+    /// Proposes a transaction with automatic fallback to offline mode.
+    ///
+    /// First attempts to create the proposal via PSM. If PSM is unavailable
+    /// (connection error), automatically falls back to offline proposal creation.
+    ///
+    /// This is useful when you want to attempt online coordination but have a
+    /// graceful fallback path for offline sharing.
+    ///
+    /// # Returns
+    ///
+    /// - `ProposalResult::Online(Proposal)` if PSM succeeded
+    /// - `ProposalResult::Offline(ExportedProposal)` if PSM failed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use miden_multisig_client::{TransactionType, ProposalResult};
+    ///
+    /// let result = client.propose_with_fallback(
+    ///     TransactionType::add_cosigner(new_commitment)
+    /// ).await?;
+    ///
+    /// match result {
+    ///     ProposalResult::Online(proposal) => {
+    ///         println!("Proposal {} created on PSM", proposal.id);
+    ///     }
+    ///     ProposalResult::Offline(exported) => {
+    ///         println!("PSM unavailable, share this file with cosigners:");
+    ///         std::fs::write("proposal.json", exported.to_json()?)?;
+    ///     }
+    /// }
+    /// ```
+    pub async fn propose_with_fallback(
+        &mut self,
+        transaction_type: TransactionType,
+    ) -> Result<ProposalResult> {
+        // Try online first
+        match self.propose_transaction(transaction_type.clone()).await {
+            Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
+            Err(MultisigError::PsmConnection(_) | MultisigError::PsmServer(_)) => {
+                // PSM unavailable, fall back to offline
+                let exported = self.create_proposal_offline(transaction_type).await?;
+                Ok(ProposalResult::Offline(Box::new(exported)))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Creates a proposal offline without pushing to PSM.
@@ -864,11 +796,6 @@ impl MultisigClient {
 
                 (tx_request, metadata)
             }
-            TransactionType::Unknown => {
-                return Err(MultisigError::InvalidConfig(
-                    "Unknown transaction type".to_string(),
-                ));
-            }
         };
 
         // Execute to get the TransactionSummary
@@ -899,7 +826,6 @@ impl MultisigClient {
             TransactionType::RemoveCosigner { .. } => "RemoveCosigner",
             TransactionType::SwitchPsm { .. } => "SwitchPsm",
             TransactionType::UpdateSigners { .. } => "UpdateSigners",
-            TransactionType::Unknown => "Unknown",
         };
 
         // Create exported proposal with our signature
@@ -1134,6 +1060,176 @@ impl MultisigClient {
         Ok(result)
     }
 
+    /// Lists consumable notes filtered by the given criteria.
+    ///
+    /// This is a convenience method that combines `list_consumable_notes` with
+    /// filtering. Use this to find notes from a specific faucet or above a
+    /// minimum amount.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use miden_multisig_client::NoteFilter;
+    ///
+    /// // Find notes from a specific faucet with at least 1000 tokens
+    /// let filter = NoteFilter {
+    ///     faucet_id: Some(my_faucet_id),
+    ///     min_amount: Some(1000),
+    /// };
+    /// let notes = client.list_consumable_notes_filtered(filter).await?;
+    /// ```
+    pub async fn list_consumable_notes_filtered(
+        &mut self,
+        filter: NoteFilter,
+    ) -> Result<Vec<ConsumableNote>> {
+        // Validate filter configuration
+        filter.validate()?;
+
+        let notes = self.list_consumable_notes().await?;
+
+        let filtered = notes
+            .into_iter()
+            .filter(|note| {
+                // Filter by faucet
+                if let Some(faucet_id) = filter.faucet_id {
+                    if !note.has_faucet(faucet_id) {
+                        return false;
+                    }
+                    // Filter by minimum amount (faucet_id is guaranteed to be set if min_amount is)
+                    if let Some(min) = filter.min_amount
+                        && note.amount_for_faucet(faucet_id) < min
+                    {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
+    // ==================== Internal Helpers ====================
+
+    /// Gets the PSM acknowledgment signature for a transaction.
+    ///
+    /// This pushes the delta to PSM and retrieves the server's signature.
+    async fn get_psm_ack_signature(
+        &mut self,
+        account: &MultisigAccount,
+        nonce: u64,
+        tx_summary: &miden_client::transaction::TransactionSummary,
+        tx_summary_commitment: miden_objects::Word,
+    ) -> Result<crate::execution::SignatureAdvice> {
+        use private_state_manager_shared::ToJson;
+
+        let account_id = account.id();
+        let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+
+        // Push delta to PSM to get acknowledgment signature
+        let mut psm_client = self.create_authenticated_psm_client().await?;
+        let delta_payload = tx_summary.to_json();
+
+        let push_response = psm_client
+            .push_delta(&account_id, nonce, &prev_commitment, &delta_payload)
+            .await
+            .map_err(|e| MultisigError::PsmServer(format!("failed to push delta: {}", e)))?;
+
+        // Get PSM ack signature
+        let ack_sig = push_response.ack_sig.ok_or_else(|| {
+            MultisigError::PsmServer("PSM did not return acknowledgment signature".to_string())
+        })?;
+
+        // Get PSM's pubkey commitment
+        let psm_commitment_hex = psm_client.get_pubkey().await.map_err(|e| {
+            MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
+        })?;
+
+        // Parse and build advice entry
+        let ack_sig_with_prefix = crate::keystore::ensure_hex_prefix(&ack_sig);
+        let ack_signature = RpoFalconSignature::from_hex(&ack_sig_with_prefix).map_err(|e| {
+            MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
+        })?;
+
+        let psm_commitment = crate::keystore::commitment_from_hex(&psm_commitment_hex)
+            .map_err(MultisigError::HexDecode)?;
+
+        Ok(crate::transaction::build_signature_advice_entry(
+            psm_commitment,
+            tx_summary_commitment,
+            &AccountSignature::from(ack_signature),
+        ))
+    }
+
+    /// Finalizes a transaction by executing it on-chain and updating local state.
+    ///
+    /// This handles the common post-execution logic for all proposal types.
+    async fn finalize_transaction(
+        &mut self,
+        account_id: AccountId,
+        tx_request: miden_client::transaction::TransactionRequest,
+        transaction_type: &TransactionType,
+    ) -> Result<()> {
+        // Capture the new PSM endpoint if this is a SwitchPsm transaction
+        let new_psm_endpoint =
+            if let TransactionType::SwitchPsm { new_endpoint, .. } = transaction_type {
+                Some(new_endpoint.clone())
+            } else {
+                None
+            };
+
+        // Execute the transaction on-chain
+        self.miden_client
+            .submit_new_transaction(account_id, tx_request)
+            .await
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!(
+                    "transaction execution failed: {:?}",
+                    e
+                ))
+            })?;
+
+        // Sync with network to get the updated account state
+        self.sync().await?;
+
+        // Update local account cache from miden-client
+        let account_record = self
+            .miden_client
+            .get_account(account_id)
+            .await
+            .map_err(|e| {
+                MultisigError::MidenClient(format!("failed to get updated account: {}", e))
+            })?
+            .ok_or_else(|| {
+                MultisigError::MissingConfig("account not found after sync".to_string())
+            })?;
+
+        let updated_account: Account = account_record.into();
+
+        // Update PSM endpoint if this was a SwitchPsm transaction, then register on new PSM
+        if let Some(endpoint) = new_psm_endpoint {
+            self.psm_endpoint = endpoint;
+
+            // Update local account with new PSM endpoint
+            let multisig_account =
+                MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
+            self.account = Some(multisig_account);
+
+            // Register the updated account on the new PSM server
+            self.push_account().await.map_err(|e| {
+                MultisigError::PsmServer(format!(
+                    "transaction executed successfully but failed to register on new PSM: {}",
+                    e
+                ))
+            })?;
+        } else {
+            let multisig_account = MultisigAccount::new(updated_account, &self.psm_endpoint);
+            self.account = Some(multisig_account);
+        }
+
+        Ok(())
+    }
+
     // ==================== Export/Import Methods ====================
 
     /// Exports a proposal to a file for offline sharing.
@@ -1346,12 +1442,11 @@ impl MultisigClient {
         &mut self,
         exported: &crate::export::ExportedProposal,
     ) -> Result<()> {
-        use miden_objects::account::auth::Signature as AccountSignature;
-        use miden_objects::asset::FungibleAsset;
-        use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
+        use crate::execution::{
+            SignatureInput, build_final_transaction_request, collect_signature_advice,
+        };
         use miden_objects::transaction::TransactionSummary;
         use private_state_manager_shared::FromJson;
-        use private_state_manager_shared::hex::FromHex;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
@@ -1371,38 +1466,24 @@ impl MultisigClient {
         })?;
         let tx_summary_commitment = tx_summary.to_commitment();
 
-        // Build signature advice from exported signatures
-        let required_commitments: std::collections::HashSet<String> =
+        // Convert exported signatures to SignatureInput format
+        let signature_inputs: Vec<SignatureInput> = exported
+            .signatures
+            .iter()
+            .map(|sig| SignatureInput {
+                signer_commitment: sig.signer_commitment.clone(),
+                signature_hex: sig.signature.clone(),
+            })
+            .collect();
+
+        // Build signature advice from cosigner signatures
+        let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
-        let mut signature_advice = Vec::new();
-
-        for sig in &exported.signatures {
-            // Only include signatures from required signers
-            if !required_commitments
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(&sig.signer_commitment))
-            {
-                continue;
-            }
-
-            let sig_hex = if sig.signature.starts_with("0x") {
-                sig.signature.clone()
-            } else {
-                format!("0x{}", sig.signature)
-            };
-
-            let rpo_sig = RpoFalconSignature::from_hex(&sig_hex)
-                .map_err(|e| MultisigError::Signature(format!("invalid signature: {}", e)))?;
-
-            let commitment = crate::keystore::commitment_from_hex(&sig.signer_commitment)
-                .map_err(MultisigError::HexDecode)?;
-
-            signature_advice.push(crate::transaction::build_signature_advice_entry(
-                commitment,
-                tx_summary_commitment,
-                &AccountSignature::from(rpo_sig),
-            ));
-        }
+        let mut signature_advice = collect_signature_advice(
+            signature_inputs,
+            &required_commitments,
+            tx_summary_commitment,
+        )?;
 
         // SwitchPsm does NOT require PSM signature
         let is_switch_psm = matches!(
@@ -1411,165 +1492,41 @@ impl MultisigClient {
         );
 
         if !is_switch_psm {
-            // For offline execution, we need PSM ack signature
-            // Get current account commitment
-            let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
-
-            // Push delta to PSM to get acknowledgment signature
-            let mut psm_client = self.create_authenticated_psm_client().await?;
-            let delta_payload = tx_summary.to_json();
-
-            let push_response = psm_client
-                .push_delta(
-                    &account_id,
-                    proposal.nonce,
-                    &prev_commitment,
-                    &delta_payload,
-                )
-                .await
-                .map_err(|e| MultisigError::PsmServer(format!("failed to push delta: {}", e)))?;
-
-            // Get PSM ack signature
-            let ack_sig = push_response.ack_sig.ok_or_else(|| {
-                MultisigError::PsmServer("PSM did not return acknowledgment signature".to_string())
-            })?;
-
-            // Get PSM's pubkey commitment
-            let psm_commitment_hex = psm_client.get_pubkey().await.map_err(|e| {
-                MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
-            })?;
-
-            let ack_sig_with_prefix = if ack_sig.starts_with("0x") {
-                ack_sig.clone()
-            } else {
-                format!("0x{}", ack_sig)
-            };
-
-            let ack_signature =
-                RpoFalconSignature::from_hex(&ack_sig_with_prefix).map_err(|e| {
-                    MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
-                })?;
-
-            let psm_commitment = crate::keystore::commitment_from_hex(&psm_commitment_hex)
-                .map_err(MultisigError::HexDecode)?;
-
-            signature_advice.push(crate::transaction::build_signature_advice_entry(
-                psm_commitment,
-                tx_summary_commitment,
-                &AccountSignature::from(ack_signature),
-            ));
+            // Get PSM ack signature and add to advice
+            let psm_advice = self
+                .get_psm_ack_signature(&account, proposal.nonce, &tx_summary, tx_summary_commitment)
+                .await?;
+            signature_advice.push(psm_advice);
         }
 
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
-        let final_tx_request = match &proposal.transaction_type {
-            TransactionType::P2ID {
-                recipient,
-                faucet_id,
-                amount,
-            } => {
-                let asset = FungibleAsset::new(*faucet_id, *amount).map_err(|e| {
-                    MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
-                })?;
-
-                crate::transaction::build_p2id_transaction_request(
-                    account.inner(),
-                    *recipient,
-                    vec![asset.into()],
-                    salt,
-                    signature_advice,
-                )?
-            }
-            TransactionType::ConsumeNotes { note_ids } => {
-                crate::transaction::build_consume_notes_transaction_request(
-                    note_ids.clone(),
-                    salt,
-                    signature_advice,
-                )?
-            }
-            TransactionType::SwitchPsm { new_commitment, .. } => {
-                crate::transaction::build_update_psm_transaction_request(
-                    *new_commitment,
-                    salt,
-                    signature_advice,
-                )?
-            }
-            _ => {
-                // Signer update transactions
-                let signer_commitments = proposal.metadata.signer_commitments()?;
-                let new_threshold = proposal
-                    .metadata
-                    .new_threshold
-                    .ok_or_else(|| MultisigError::MissingConfig("new_threshold".to_string()))?;
-
-                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
-                    new_threshold,
-                    &signer_commitments,
-                    salt,
-                    signature_advice,
-                )?;
-
-                tx_request
-            }
+        // For signer-update transactions, we must propagate parse errors for signer commitments
+        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
+        let signer_commitments = if matches!(
+            &proposal.transaction_type,
+            TransactionType::AddCosigner { .. }
+                | TransactionType::RemoveCosigner { .. }
+                | TransactionType::UpdateSigners { .. }
+        ) {
+            Some(proposal.metadata.signer_commitments()?)
+        } else {
+            proposal.metadata.signer_commitments().ok()
         };
 
-        // Capture the new PSM endpoint if this is a SwitchPsm transaction
-        let new_psm_endpoint =
-            if let TransactionType::SwitchPsm { new_endpoint, .. } = &proposal.transaction_type {
-                Some(new_endpoint.clone())
-            } else {
-                None
-            };
+        let final_tx_request = build_final_transaction_request(
+            &proposal.transaction_type,
+            account.inner(),
+            salt,
+            signature_advice,
+            proposal.metadata.new_threshold,
+            signer_commitments.as_deref(),
+        )?;
 
-        // Execute the transaction on-chain
-        self.miden_client
-            .submit_new_transaction(account_id, final_tx_request)
+        // Execute and finalize
+        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!(
-                    "transaction execution failed: {:?}",
-                    e
-                ))
-            })?;
-
-        // Sync with network to get the updated account state
-        self.sync().await?;
-
-        // Update local account cache from miden-client
-        let account_record = self
-            .miden_client
-            .get_account(account_id)
-            .await
-            .map_err(|e| {
-                MultisigError::MidenClient(format!("failed to get updated account: {}", e))
-            })?
-            .ok_or_else(|| {
-                MultisigError::MissingConfig("account not found after sync".to_string())
-            })?;
-
-        let updated_account: Account = account_record.into();
-
-        // Update PSM endpoint if this was a SwitchPsm transaction
-        if let Some(endpoint) = new_psm_endpoint {
-            self.psm_endpoint = endpoint;
-            let multisig_account =
-                MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
-            self.account = Some(multisig_account);
-
-            // Register the updated account on the new PSM server
-            self.push_account().await.map_err(|e| {
-                MultisigError::PsmServer(format!(
-                    "transaction executed successfully but failed to register on new PSM: {}",
-                    e
-                ))
-            })?;
-        } else {
-            let multisig_account = MultisigAccount::new(updated_account, &self.psm_endpoint);
-            self.account = Some(multisig_account);
-        }
-
-        Ok(())
     }
 }
 
@@ -1580,4 +1537,73 @@ pub struct ConsumableNote {
     pub id: NoteId,
     /// Assets contained in the note.
     pub assets: Vec<Asset>,
+}
+
+impl ConsumableNote {
+    /// Returns the total amount of a specific fungible asset in this note.
+    pub fn amount_for_faucet(&self, faucet_id: AccountId) -> u64 {
+        self.assets
+            .iter()
+            .filter_map(|asset| match asset {
+                Asset::Fungible(fungible) if fungible.faucet_id() == faucet_id => {
+                    Some(fungible.amount())
+                }
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Returns true if this note contains fungible assets from the specified faucet.
+    pub fn has_faucet(&self, faucet_id: AccountId) -> bool {
+        self.assets.iter().any(|asset| match asset {
+            Asset::Fungible(fungible) => fungible.faucet_id() == faucet_id,
+            Asset::NonFungible(_) => false,
+        })
+    }
+}
+
+/// Filter criteria for listing consumable notes.
+///
+/// # Validation
+///
+/// - `min_amount` requires `faucet_id` to be set (amount is per-faucet)
+/// - Use `validate()` to check filter validity before use
+#[derive(Debug, Clone, Default)]
+pub struct NoteFilter {
+    /// Only include notes containing assets from this faucet.
+    pub faucet_id: Option<AccountId>,
+    /// Only include notes with at least this amount (for the specified faucet).
+    /// Requires `faucet_id` to be set.
+    pub min_amount: Option<u64>,
+}
+
+impl NoteFilter {
+    /// Creates a new filter for notes from a specific faucet.
+    pub fn by_faucet(faucet_id: AccountId) -> Self {
+        Self {
+            faucet_id: Some(faucet_id),
+            min_amount: None,
+        }
+    }
+
+    /// Creates a new filter for notes from a specific faucet with minimum amount.
+    pub fn by_faucet_min_amount(faucet_id: AccountId, min_amount: u64) -> Self {
+        Self {
+            faucet_id: Some(faucet_id),
+            min_amount: Some(min_amount),
+        }
+    }
+
+    /// Validates the filter configuration.
+    ///
+    /// Returns an error if `min_amount` is set without `faucet_id`,
+    /// since amount filtering requires a specific faucet to check against.
+    pub fn validate(&self) -> Result<()> {
+        if self.min_amount.is_some() && self.faucet_id.is_none() {
+            return Err(MultisigError::InvalidFilter(
+                "min_amount requires faucet_id to be set".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }

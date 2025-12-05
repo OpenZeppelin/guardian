@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use miden_multisig_client::{
-    commitment_from_hex, Asset, ExportedProposal, NoteId, ProposalStatus, TransactionType,
+    commitment_from_hex, ensure_hex_prefix, Asset, ExportedProposal, NoteId, ProposalStatus,
+    TransactionType,
 };
 use miden_objects::account::AccountId;
 use rustyline::DefaultEditor;
@@ -179,20 +180,14 @@ async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
     println!();
 
     for (idx, proposal) in proposals.iter().enumerate() {
+        let (collected, required) = proposal.signature_counts();
+
         println!("  [{}] Proposal", idx + 1);
         println!("      Type: {:?}", proposal.transaction_type);
         print_full_hex("      Proposal ID", &proposal.id);
+        println!("      Signatures: {}/{}", collected, required);
 
-        if let ProposalStatus::Pending {
-            signatures_collected,
-            signatures_required,
-            signers,
-        } = &proposal.status
-        {
-            println!(
-                "      Signatures: {}/{}",
-                signatures_collected, signatures_required
-            );
+        if let ProposalStatus::Pending { signers, .. } = &proposal.status {
             if !signers.is_empty() {
                 println!("      Signers:");
                 for signer in signers {
@@ -228,20 +223,11 @@ async fn action_sign_proposal(
 
     println!("\nPending Proposals:");
     for (idx, proposal) in proposals.iter().enumerate() {
+        let (collected, required) = proposal.signature_counts();
+
         println!("  [{}] {}", idx + 1, shorten_hex(&proposal.id));
         println!("      Type: {:?}", proposal.transaction_type);
-
-        if let ProposalStatus::Pending {
-            signatures_collected,
-            signatures_required,
-            ..
-        } = &proposal.status
-        {
-            println!(
-                "      Signatures: {}/{}",
-                signatures_collected, signatures_required
-            );
-        }
+        println!("      Signatures: {}/{}", collected, required);
     }
 
     let selection = prompt_input(editor, "\nSelect proposal to sign (number): ")?;
@@ -270,20 +256,11 @@ async fn action_sign_proposal(
         shorten_hex(&client.user_commitment_hex())
     ));
 
-    if let ProposalStatus::Pending {
-        signatures_collected,
-        signatures_required,
-        ..
-    } = &updated.status
-    {
-        print_info(&format!(
-            "Signatures: {}/{}",
-            signatures_collected, signatures_required
-        ));
+    let (collected, required) = updated.signature_counts();
+    print_info(&format!("Signatures: {}/{}", collected, required));
 
-        if signatures_collected >= signatures_required {
-            print_success("All signatures collected! Ready to execute with [4].");
-        }
+    if updated.signatures_needed() == 0 {
+        print_success("All signatures collected! Ready to execute with [4].");
     }
 
     Ok(())
@@ -311,35 +288,16 @@ async fn action_execute_proposal(
 
     println!("\nPending Proposals:");
     for (idx, proposal) in proposals.iter().enumerate() {
-        let ready = if let ProposalStatus::Pending {
-            signatures_collected,
-            signatures_required,
-            ..
-        } = &proposal.status
-        {
-            if signatures_collected >= signatures_required {
-                " ✓ READY"
-            } else {
-                ""
-            }
+        let (collected, required) = proposal.signature_counts();
+        let ready = if proposal.signatures_needed() == 0 {
+            " ✓ READY"
         } else {
             ""
         };
 
         println!("  [{}] {}{}", idx + 1, shorten_hex(&proposal.id), ready);
         println!("      Type: {:?}", proposal.transaction_type);
-
-        if let ProposalStatus::Pending {
-            signatures_collected,
-            signatures_required,
-            ..
-        } = &proposal.status
-        {
-            println!(
-                "      Signatures: {}/{}",
-                signatures_collected, signatures_required
-            );
-        }
+        println!("      Signatures: {}/{}", collected, required);
     }
 
     let selection = prompt_input(editor, "\nSelect proposal to execute (number): ")?;
@@ -398,20 +356,11 @@ async fn action_export_proposal(
 
     println!("\nPending Proposals:");
     for (idx, proposal) in proposals.iter().enumerate() {
+        let (collected, required) = proposal.signature_counts();
+
         println!("  [{}] {}", idx + 1, shorten_hex(&proposal.id));
         println!("      Type: {:?}", proposal.transaction_type);
-
-        if let ProposalStatus::Pending {
-            signatures_collected,
-            signatures_required,
-            ..
-        } = &proposal.status
-        {
-            println!(
-                "      Signatures: {}/{}",
-                signatures_collected, signatures_required
-            );
-        }
+        println!("      Signatures: {}/{}", collected, required);
     }
 
     let choice = prompt_input(editor, "\nSelect proposal to export (number): ")?;
@@ -703,10 +652,10 @@ fn prompt_add_cosigner(editor: &mut DefaultEditor) -> Result<TransactionType, St
         return Err("Commitment is required".to_string());
     }
 
-    let new_commitment = commitment_from_hex(&normalize_hex(&hex))
+    let new_commitment = commitment_from_hex(&ensure_hex_prefix(&hex))
         .map_err(|e| format!("Invalid commitment: {}", e))?;
 
-    Ok(TransactionType::AddCosigner { new_commitment })
+    Ok(TransactionType::add_cosigner(new_commitment))
 }
 
 fn prompt_remove_cosigner(
@@ -736,7 +685,7 @@ fn prompt_remove_cosigner(
     }
 
     let commitment = cosigners[idx - 1];
-    Ok(TransactionType::RemoveCosigner { commitment })
+    Ok(TransactionType::remove_cosigner(commitment))
 }
 
 fn prompt_p2id(editor: &mut DefaultEditor) -> Result<TransactionType, String> {
@@ -767,11 +716,7 @@ fn prompt_p2id(editor: &mut DefaultEditor) -> Result<TransactionType, String> {
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::P2ID {
-        recipient,
-        faucet_id,
-        amount,
-    })
+    Ok(TransactionType::transfer(recipient, faucet_id, amount))
 }
 
 async fn prompt_consume_notes(
@@ -837,7 +782,7 @@ async fn prompt_consume_notes(
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::ConsumeNotes { note_ids })
+    Ok(TransactionType::consume_notes(note_ids))
 }
 
 fn prompt_switch_psm(
@@ -858,7 +803,7 @@ fn prompt_switch_psm(
         return Err("Pubkey commitment is required".to_string());
     }
 
-    let new_commitment = commitment_from_hex(&normalize_hex(&pubkey_hex))
+    let new_commitment = commitment_from_hex(&ensure_hex_prefix(&pubkey_hex))
         .map_err(|e| format!("Invalid pubkey: {}", e))?;
 
     println!("\nPSM switch details:");
@@ -872,46 +817,32 @@ fn prompt_switch_psm(
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::SwitchPsm {
-        new_endpoint,
-        new_commitment,
-    })
-}
-
-fn normalize_hex(input: &str) -> String {
-    if input.starts_with("0x") {
-        input.to_string()
-    } else {
-        format!("0x{}", input)
-    }
+    Ok(TransactionType::switch_psm(new_endpoint, new_commitment))
 }
 
 /// Print details of an exported proposal.
 fn print_proposal_details(proposal: &ExportedProposal) {
+    let (collected, required) = proposal.signature_counts();
+
     println!("\nProposal Details:");
     println!("  ID:           {}", shorten_hex(&proposal.id));
     println!("  Account:      {}", shorten_hex(&proposal.account_id));
     println!("  Type:         {}", proposal.transaction_type);
     println!("  Nonce:        {}", proposal.nonce);
-    println!(
-        "  Signatures:   {}/{}",
-        proposal.signatures_collected(),
-        proposal.signatures_required
-    );
+    println!("  Signatures:   {}/{}", collected, required);
 
-    if proposal.is_ready() {
+    let needed = proposal.signatures_needed();
+    if needed == 0 {
         println!("  Status:       ✓ Ready for execution");
     } else {
-        println!(
-            "  Status:       Pending ({} more needed)",
-            proposal.signatures_required - proposal.signatures_collected()
-        );
+        println!("  Status:       Pending ({} more needed)", needed);
     }
 
-    if !proposal.signatures.is_empty() {
+    let signers = proposal.signed_by();
+    if !signers.is_empty() {
         println!("  Signers:");
-        for sig in &proposal.signatures {
-            println!("    - {}", shorten_hex(&sig.signer_commitment));
+        for signer in signers {
+            println!("    - {}", shorten_hex(signer));
         }
     }
 }

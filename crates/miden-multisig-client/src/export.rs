@@ -134,7 +134,6 @@ impl ExportedProposal {
             TransactionType::RemoveCosigner { .. } => "RemoveCosigner",
             TransactionType::SwitchPsm { .. } => "SwitchPsm",
             TransactionType::UpdateSigners { .. } => "UpdateSigners",
-            TransactionType::Unknown => "Unknown",
         };
 
         let signatures_required = proposal.signatures_required();
@@ -315,7 +314,7 @@ impl ExportedProposal {
                     signer_commitments,
                 })
             }
-            _ => Ok(TransactionType::Unknown),
+            other => Err(MultisigError::UnknownTransactionType(other.to_string())),
         }
     }
 
@@ -327,6 +326,33 @@ impl ExportedProposal {
     /// Returns true if the proposal has enough signatures for execution.
     pub fn is_ready(&self) -> bool {
         self.signatures.len() >= self.signatures_required
+    }
+
+    /// Returns (collected, required) signature counts.
+    pub fn signature_counts(&self) -> (usize, usize) {
+        (self.signatures.len(), self.signatures_required)
+    }
+
+    /// Returns the number of additional signatures needed for finalization.
+    /// Returns 0 if the proposal is ready.
+    pub fn signatures_needed(&self) -> usize {
+        self.signatures_required
+            .saturating_sub(self.signatures.len())
+    }
+
+    /// Checks if a signer (by commitment hex) has already signed this proposal.
+    pub fn has_signed(&self, commitment_hex: &str) -> bool {
+        self.signatures
+            .iter()
+            .any(|s| s.signer_commitment.eq_ignore_ascii_case(commitment_hex))
+    }
+
+    /// Returns the commitment hex strings of all signers who have signed.
+    pub fn signed_by(&self) -> Vec<&str> {
+        self.signatures
+            .iter()
+            .map(|s| s.signer_commitment.as_str())
+            .collect()
     }
 
     /// Adds a signature to the proposal.
@@ -511,5 +537,90 @@ mod tests {
 
         let result = ExportedProposal::from_json(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signature_counts() {
+        let mut proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: "0x123".to_string(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 3,
+            metadata: ExportedMetadata::default(),
+        };
+
+        assert_eq!(proposal.signature_counts(), (0, 3));
+        assert_eq!(proposal.signatures_needed(), 3);
+
+        proposal.signatures.push(ExportedSignature {
+            signer_commitment: "0xsigner1".to_string(),
+            signature: "0xsig1".to_string(),
+        });
+
+        assert_eq!(proposal.signature_counts(), (1, 3));
+        assert_eq!(proposal.signatures_needed(), 2);
+    }
+
+    #[test]
+    fn test_has_signed() {
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: "0x123".to_string(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![
+                ExportedSignature {
+                    signer_commitment: "0xSigner1".to_string(),
+                    signature: "0xsig1".to_string(),
+                },
+                ExportedSignature {
+                    signer_commitment: "0xsigner2".to_string(),
+                    signature: "0xsig2".to_string(),
+                },
+            ],
+            signatures_required: 3,
+            metadata: ExportedMetadata::default(),
+        };
+
+        // Test case-insensitive matching
+        assert!(proposal.has_signed("0xsigner1"));
+        assert!(proposal.has_signed("0xSIGNER1"));
+        assert!(proposal.has_signed("0xSigner2"));
+        assert!(!proposal.has_signed("0xsigner3"));
+    }
+
+    #[test]
+    fn test_signed_by() {
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: "0x123".to_string(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![
+                ExportedSignature {
+                    signer_commitment: "0xsigner1".to_string(),
+                    signature: "0xsig1".to_string(),
+                },
+                ExportedSignature {
+                    signer_commitment: "0xsigner2".to_string(),
+                    signature: "0xsig2".to_string(),
+                },
+            ],
+            signatures_required: 3,
+            metadata: ExportedMetadata::default(),
+        };
+
+        let signers = proposal.signed_by();
+        assert_eq!(signers.len(), 2);
+        assert!(signers.contains(&"0xsigner1"));
+        assert!(signers.contains(&"0xsigner2"));
     }
 }

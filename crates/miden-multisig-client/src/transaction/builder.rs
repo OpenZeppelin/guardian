@@ -113,9 +113,6 @@ impl ProposalBuilder {
             TransactionType::UpdateSigners { .. } => Err(MultisigError::InvalidConfig(
                 "Use AddCosigner or RemoveCosigner for signer updates".to_string(),
             )),
-            TransactionType::Unknown => Err(MultisigError::InvalidConfig(
-                "Unknown transaction type".to_string(),
-            )),
         }
     }
 

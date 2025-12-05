@@ -65,8 +65,48 @@ pub enum TransactionType {
         new_threshold: u32,
         signer_commitments: Vec<Word>,
     },
-    /// Unknown transaction type.
-    Unknown,
+}
+
+impl TransactionType {
+    /// Creates a P2ID transfer transaction.
+    pub fn transfer(recipient: AccountId, faucet_id: AccountId, amount: u64) -> Self {
+        Self::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+        }
+    }
+
+    /// Creates a ConsumeNotes transaction.
+    pub fn consume_notes(note_ids: Vec<NoteId>) -> Self {
+        Self::ConsumeNotes { note_ids }
+    }
+
+    /// Creates an AddCosigner transaction.
+    pub fn add_cosigner(new_commitment: Word) -> Self {
+        Self::AddCosigner { new_commitment }
+    }
+
+    /// Creates a RemoveCosigner transaction.
+    pub fn remove_cosigner(commitment: Word) -> Self {
+        Self::RemoveCosigner { commitment }
+    }
+
+    /// Creates a SwitchPsm transaction.
+    pub fn switch_psm(new_endpoint: impl Into<String>, new_commitment: Word) -> Self {
+        Self::SwitchPsm {
+            new_endpoint: new_endpoint.into(),
+            new_commitment,
+        }
+    }
+
+    /// Creates an UpdateSigners transaction.
+    pub fn update_signers(new_threshold: u32, signer_commitments: Vec<Word>) -> Self {
+        Self::UpdateSigners {
+            new_threshold,
+            signer_commitments,
+        }
+    }
 }
 
 /// Metadata needed to reconstruct and finalize a proposal.
@@ -280,7 +320,9 @@ impl Proposal {
                 &proposed_signers,
             )
         } else {
-            TransactionType::Unknown
+            return Err(MultisigError::UnknownTransactionType(
+                "could not determine transaction type from proposal metadata".to_string(),
+            ));
         };
 
         // Count signatures from delta status
@@ -382,6 +424,39 @@ impl Proposal {
                 .unwrap_or(self.metadata.signer_commitments_hex.len()),
         }
     }
+
+    /// Returns (collected, required) signature counts.
+    pub fn signature_counts(&self) -> (usize, usize) {
+        (self.signatures_collected(), self.signatures_required())
+    }
+
+    /// Returns the number of additional signatures needed for finalization.
+    /// Returns 0 if the proposal is ready.
+    pub fn signatures_needed(&self) -> usize {
+        self.signatures_required()
+            .saturating_sub(self.signatures_collected())
+    }
+
+    /// Returns the commitment hex strings of signers who haven't signed yet.
+    ///
+    /// Returns an empty list if the proposal is Ready or Finalized (no missing signers).
+    pub fn missing_signers(&self) -> Vec<String> {
+        match &self.status {
+            ProposalStatus::Pending { signers, .. } => {
+                let signed: std::collections::HashSet<_> =
+                    signers.iter().map(|s| s.to_lowercase()).collect();
+
+                self.metadata
+                    .signer_commitments_hex
+                    .iter()
+                    .filter(|c| !signed.contains(&c.to_lowercase()))
+                    .cloned()
+                    .collect()
+            }
+            // Ready/Finalized proposals have no missing signers
+            ProposalStatus::Ready | ProposalStatus::Finalized => Vec::new(),
+        }
+    }
 }
 
 /// Counts signatures from a DeltaObject's status.
@@ -473,6 +548,28 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miden_objects::FieldElement;
+    use miden_objects::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_objects::transaction::{InputNotes, OutputNotes};
+
+    fn create_test_tx_summary() -> TransactionSummary {
+        // Use a minimal valid account ID
+        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .expect("Valid empty delta");
+
+        TransactionSummary::new(
+            delta,
+            InputNotes::new(Vec::new()).unwrap(),
+            OutputNotes::new(Vec::new()).unwrap(),
+            Word::default(),
+        )
+    }
 
     #[test]
     fn test_hex_to_word_roundtrip() {
@@ -496,5 +593,170 @@ mod tests {
         let ready = ProposalStatus::Ready;
         assert!(ready.is_ready());
         assert!(!ready.is_pending());
+    }
+
+    #[test]
+    fn test_transaction_type_transfer() {
+        // Use valid Miden AccountId format
+        let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let faucet_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594171").unwrap();
+        let amount = 1000u64;
+
+        let tx = TransactionType::transfer(recipient, faucet_id, amount);
+
+        assert_eq!(
+            tx,
+            TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount
+            }
+        );
+    }
+
+    #[test]
+    fn test_transaction_type_consume_notes() {
+        let note_id = NoteId::from(Word::default());
+        let tx = TransactionType::consume_notes(vec![note_id]);
+
+        assert_eq!(
+            tx,
+            TransactionType::ConsumeNotes {
+                note_ids: vec![note_id]
+            }
+        );
+    }
+
+    #[test]
+    fn test_transaction_type_add_cosigner() {
+        let commitment = Word::default();
+        let tx = TransactionType::add_cosigner(commitment);
+
+        assert_eq!(
+            tx,
+            TransactionType::AddCosigner {
+                new_commitment: commitment
+            }
+        );
+    }
+
+    #[test]
+    fn test_transaction_type_remove_cosigner() {
+        let commitment = Word::default();
+        let tx = TransactionType::remove_cosigner(commitment);
+
+        assert_eq!(tx, TransactionType::RemoveCosigner { commitment });
+    }
+
+    #[test]
+    fn test_transaction_type_switch_psm() {
+        let endpoint = "http://new-psm.example.com";
+        let commitment = Word::default();
+
+        let tx = TransactionType::switch_psm(endpoint, commitment);
+
+        assert_eq!(
+            tx,
+            TransactionType::SwitchPsm {
+                new_endpoint: endpoint.to_string(),
+                new_commitment: commitment
+            }
+        );
+    }
+
+    #[test]
+    fn test_transaction_type_update_signers() {
+        let threshold = 2u32;
+        let signers = vec![Word::default()];
+
+        let tx = TransactionType::update_signers(threshold, signers.clone());
+
+        assert_eq!(
+            tx,
+            TransactionType::UpdateSigners {
+                new_threshold: threshold,
+                signer_commitments: signers
+            }
+        );
+    }
+
+    #[test]
+    fn test_proposal_signature_counts() {
+        let pending = ProposalStatus::Pending {
+            signatures_collected: 1,
+            signatures_required: 3,
+            signers: vec!["0xabc".to_string()],
+        };
+
+        let proposal = Proposal {
+            id: "0x123".to_string(),
+            nonce: 1,
+            transaction_type: TransactionType::add_cosigner(Word::default()),
+            status: pending,
+            tx_summary: create_test_tx_summary(),
+            metadata: ProposalMetadata {
+                signer_commitments_hex: vec![
+                    "0xabc".to_string(),
+                    "0xdef".to_string(),
+                    "0x123".to_string(),
+                ],
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(proposal.signature_counts(), (1, 3));
+        assert_eq!(proposal.signatures_needed(), 2);
+    }
+
+    #[test]
+    fn test_proposal_missing_signers() {
+        let pending = ProposalStatus::Pending {
+            signatures_collected: 1,
+            signatures_required: 3,
+            signers: vec!["0xABC".to_string()], // uppercase to test case-insensitivity
+        };
+
+        let proposal = Proposal {
+            id: "0x123".to_string(),
+            nonce: 1,
+            transaction_type: TransactionType::add_cosigner(Word::default()),
+            status: pending,
+            tx_summary: create_test_tx_summary(),
+            metadata: ProposalMetadata {
+                signer_commitments_hex: vec![
+                    "0xabc".to_string(), // lowercase
+                    "0xdef".to_string(),
+                    "0x456".to_string(),
+                ],
+                ..Default::default()
+            },
+        };
+
+        let missing = proposal.missing_signers();
+        assert_eq!(missing.len(), 2);
+        assert!(missing.contains(&"0xdef".to_string()));
+        assert!(missing.contains(&"0x456".to_string()));
+        // 0xabc should NOT be in missing (already signed)
+        assert!(!missing.contains(&"0xabc".to_string()));
+    }
+
+    #[test]
+    fn test_proposal_signatures_needed_when_ready() {
+        let ready = ProposalStatus::Ready;
+
+        let proposal = Proposal {
+            id: "0x123".to_string(),
+            nonce: 1,
+            transaction_type: TransactionType::add_cosigner(Word::default()),
+            status: ready,
+            tx_summary: create_test_tx_summary(),
+            metadata: ProposalMetadata {
+                required_signatures: Some(2),
+                collected_signatures: Some(2),
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(proposal.signatures_needed(), 0);
     }
 }

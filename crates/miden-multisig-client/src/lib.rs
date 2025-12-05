@@ -60,6 +60,7 @@ mod builder;
 mod client;
 mod config;
 mod error;
+mod execution;
 mod export;
 mod keystore;
 mod payload;
@@ -69,7 +70,7 @@ mod transaction;
 
 // Main client
 pub use builder::MultisigClientBuilder;
-pub use client::{ConsumableNote, MultisigClient};
+pub use client::{ConsumableNote, MultisigClient, NoteFilter, ProposalResult};
 
 // Configuration
 pub use config::{MultisigConfig, PsmConfig};
@@ -77,8 +78,16 @@ pub use config::{MultisigConfig, PsmConfig};
 // Account types
 pub use account::MultisigAccount;
 
-// Key management
-pub use keystore::{KeyManager, PsmKeyStore, commitment_from_hex};
+// Key management and hex utilities
+pub use keystore::{
+    KeyManager,
+    PsmKeyStore,
+    // Hex utilities
+    commitment_from_hex,
+    ensure_hex_prefix,
+    strip_hex_prefix,
+    validate_commitment_hex,
+};
 
 // Proposals
 pub use payload::{ProposalMetadataPayload, ProposalPayload};

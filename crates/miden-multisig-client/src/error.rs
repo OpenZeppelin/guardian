@@ -80,6 +80,14 @@ pub enum MultisigError {
     /// Transaction unexpected success (expected Unauthorized).
     #[error("transaction executed successfully when failure was expected")]
     UnexpectedSuccess,
+
+    /// Unknown transaction type encountered during parsing.
+    #[error("unknown transaction type: {0}")]
+    UnknownTransactionType(String),
+
+    /// Invalid filter configuration.
+    #[error("invalid filter: {0}")]
+    InvalidFilter(String),
 }
 
 impl From<private_state_manager_client::ClientError> for MultisigError {

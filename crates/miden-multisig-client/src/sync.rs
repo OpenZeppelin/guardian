@@ -12,7 +12,8 @@ use crate::error::{MultisigError, Result};
 /// This function wraps the sync call with panic handling for the miden-client v0.12.x
 /// issue where partial MMR state corruption can cause panics during sync.
 pub async fn sync_miden_state(client: &mut Client<()>) -> Result<()> {
-    // WORKAROUND: miden-client v0.12.x can panic during sync_state() when the local
+    // WORKAROUND: https://github.com/0xMiden/crypto/issues/693#issuecomment-3617553447
+    // miden-client v0.12.x can panic during sync_state() when the local
     // partial MMR state becomes inconsistent. This happens in miden-crypto's
     // partial_mmr.rs with the assertion "if there is an odd element, a merge is required".
     //
