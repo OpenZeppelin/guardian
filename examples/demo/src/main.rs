@@ -28,9 +28,16 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         psm_endpoint
     };
 
-    let miden_input = prompt_input(editor, "Miden Node endpoint [https://rpc.testnet.miden.io:443]: ")?;
+    let miden_input = prompt_input(
+        editor,
+        "Miden Node endpoint [https://rpc.testnet.miden.io:443]: ",
+    )?;
     let miden_endpoint = if miden_input.is_empty() {
-        Endpoint::new("https".to_string(), "rpc.testnet.miden.io".to_string(), None)
+        Endpoint::new(
+            "https".to_string(),
+            "rpc.testnet.miden.io".to_string(),
+            None,
+        )
     } else {
         parse_miden_endpoint(&miden_input)?
     };

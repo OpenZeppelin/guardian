@@ -262,8 +262,7 @@ impl Proposal {
                 faucet_id,
                 amount: amt,
             }
-        } else if let (Some(pubkey_hex), Some(endpoint)) =
-            (&new_psm_pubkey_hex, &new_psm_endpoint)
+        } else if let (Some(pubkey_hex), Some(endpoint)) = (&new_psm_pubkey_hex, &new_psm_endpoint)
         {
             // PSM switch transaction
             let new_commitment = hex_to_word(pubkey_hex)?;

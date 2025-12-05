@@ -517,7 +517,11 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
-            .with_psm_update_metadata(word_to_hex(&new_psm_pubkey), new_psm_endpoint.clone(), word_to_hex(&salt));
+            .with_psm_update_metadata(
+                word_to_hex(&new_psm_pubkey),
+                new_psm_endpoint.clone(),
+                word_to_hex(&salt),
+            );
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;

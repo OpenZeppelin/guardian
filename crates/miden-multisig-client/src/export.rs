@@ -251,10 +251,12 @@ impl ExportedProposal {
                     .amount
                     .ok_or_else(|| MultisigError::MissingConfig("amount".to_string()))?;
 
-                let recipient = AccountId::from_hex(recipient_hex)
-                    .map_err(|e| MultisigError::InvalidConfig(format!("invalid recipient: {}", e)))?;
-                let faucet_id = AccountId::from_hex(faucet_id_hex)
-                    .map_err(|e| MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e)))?;
+                let recipient = AccountId::from_hex(recipient_hex).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid recipient: {}", e))
+                })?;
+                let faucet_id = AccountId::from_hex(faucet_id_hex).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e))
+                })?;
 
                 Ok(TransactionType::P2ID {
                     recipient,
@@ -288,10 +290,9 @@ impl ExportedProposal {
                 })
             }
             "SwitchPsm" => {
-                let pubkey_hex = metadata
-                    .new_psm_pubkey_hex
-                    .as_ref()
-                    .ok_or_else(|| MultisigError::MissingConfig("new_psm_pubkey_hex".to_string()))?;
+                let pubkey_hex = metadata.new_psm_pubkey_hex.as_ref().ok_or_else(|| {
+                    MultisigError::MissingConfig("new_psm_pubkey_hex".to_string())
+                })?;
                 let endpoint = metadata
                     .new_psm_endpoint
                     .as_ref()
@@ -333,11 +334,10 @@ impl ExportedProposal {
     /// Returns an error if the signer has already signed.
     pub fn add_signature(&mut self, signature: ExportedSignature) -> Result<()> {
         // Check if already signed
-        if self
-            .signatures
-            .iter()
-            .any(|s| s.signer_commitment.eq_ignore_ascii_case(&signature.signer_commitment))
-        {
+        if self.signatures.iter().any(|s| {
+            s.signer_commitment
+                .eq_ignore_ascii_case(&signature.signer_commitment)
+        }) {
             return Err(MultisigError::AlreadySigned);
         }
 

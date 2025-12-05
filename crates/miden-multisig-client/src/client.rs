@@ -450,7 +450,10 @@ impl MultisigClient {
         }
 
         // SwitchPsm does NOT require PSM signature - skip push_delta for this transaction type
-        let is_switch_psm = matches!(&proposal.transaction_type, TransactionType::SwitchPsm { .. });
+        let is_switch_psm = matches!(
+            &proposal.transaction_type,
+            TransactionType::SwitchPsm { .. }
+        );
 
         if !is_switch_psm {
             // Get current account commitment
@@ -557,13 +560,12 @@ impl MultisigClient {
         };
 
         // Capture the new PSM endpoint if this is a SwitchPsm transaction
-        let new_psm_endpoint = if let TransactionType::SwitchPsm { new_endpoint, .. } =
-            &proposal.transaction_type
-        {
-            Some(new_endpoint.clone())
-        } else {
-            None
-        };
+        let new_psm_endpoint =
+            if let TransactionType::SwitchPsm { new_endpoint, .. } = &proposal.transaction_type {
+                Some(new_endpoint.clone())
+            } else {
+                None
+            };
 
         // Execute the transaction on-chain
         self.miden_client
@@ -598,7 +600,8 @@ impl MultisigClient {
             self.psm_endpoint = endpoint;
 
             // Update local account with new PSM endpoint
-            let multisig_account = MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
+            let multisig_account =
+                MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
             self.account = Some(multisig_account);
 
             // Register the updated account on the new PSM server
@@ -681,7 +684,9 @@ impl MultisigClient {
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<crate::export::ExportedProposal> {
-        use crate::export::{ExportedMetadata, ExportedProposal, ExportedSignature, EXPORT_VERSION};
+        use crate::export::{
+            EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature,
+        };
         use miden_objects::asset::FungibleAsset;
         use private_state_manager_shared::ToJson;
 
@@ -1061,9 +1066,8 @@ impl MultisigClient {
     ) -> Result<()> {
         let exported = self.export_proposal_to_exported(proposal_id).await?;
         let json = exported.to_json()?;
-        std::fs::write(path, json).map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to write file: {}", e))
-        })?;
+        std::fs::write(path, json)
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to write file: {}", e)))?;
         Ok(())
     }
 
@@ -1126,8 +1130,8 @@ impl MultisigClient {
             }
         }
 
-        let exported = ExportedProposal::from_proposal(proposal, account_id)
-            .with_signatures(signatures);
+        let exported =
+            ExportedProposal::from_proposal(proposal, account_id).with_signatures(signatures);
 
         Ok(exported)
     }
@@ -1147,9 +1151,8 @@ impl MultisigClient {
         &self,
         path: &std::path::Path,
     ) -> Result<crate::export::ExportedProposal> {
-        let json = std::fs::read_to_string(path).map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to read file: {}", e))
-        })?;
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to read file: {}", e)))?;
         self.import_proposal_from_string(&json)
     }
 
@@ -1213,11 +1216,10 @@ impl MultisigClient {
 
         // Check if already signed
         let user_commitment_hex = self.key_manager.commitment_hex();
-        if proposal
-            .signatures
-            .iter()
-            .any(|s| s.signer_commitment.eq_ignore_ascii_case(&user_commitment_hex))
-        {
+        if proposal.signatures.iter().any(|s| {
+            s.signer_commitment
+                .eq_ignore_ascii_case(&user_commitment_hex)
+        }) {
             return Err(MultisigError::AlreadySigned);
         }
 
@@ -1302,9 +1304,8 @@ impl MultisigClient {
                 format!("0x{}", sig.signature)
             };
 
-            let rpo_sig = RpoFalconSignature::from_hex(&sig_hex).map_err(|e| {
-                MultisigError::Signature(format!("invalid signature: {}", e))
-            })?;
+            let rpo_sig = RpoFalconSignature::from_hex(&sig_hex)
+                .map_err(|e| MultisigError::Signature(format!("invalid signature: {}", e)))?;
 
             let commitment = crate::keystore::commitment_from_hex(&sig.signer_commitment)
                 .map_err(MultisigError::HexDecode)?;
@@ -1317,7 +1318,10 @@ impl MultisigClient {
         }
 
         // SwitchPsm does NOT require PSM signature
-        let is_switch_psm = matches!(&proposal.transaction_type, TransactionType::SwitchPsm { .. });
+        let is_switch_psm = matches!(
+            &proposal.transaction_type,
+            TransactionType::SwitchPsm { .. }
+        );
 
         if !is_switch_psm {
             // For offline execution, we need PSM ack signature
@@ -1424,13 +1428,12 @@ impl MultisigClient {
         };
 
         // Capture the new PSM endpoint if this is a SwitchPsm transaction
-        let new_psm_endpoint = if let TransactionType::SwitchPsm { new_endpoint, .. } =
-            &proposal.transaction_type
-        {
-            Some(new_endpoint.clone())
-        } else {
-            None
-        };
+        let new_psm_endpoint =
+            if let TransactionType::SwitchPsm { new_endpoint, .. } = &proposal.transaction_type {
+                Some(new_endpoint.clone())
+            } else {
+                None
+            };
 
         // Execute the transaction on-chain
         self.miden_client
@@ -1463,7 +1466,8 @@ impl MultisigClient {
         // Update PSM endpoint if this was a SwitchPsm transaction
         if let Some(endpoint) = new_psm_endpoint {
             self.psm_endpoint = endpoint;
-            let multisig_account = MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
+            let multisig_account =
+                MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
             self.account = Some(multisig_account);
 
             // Register the updated account on the new PSM server

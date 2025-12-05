@@ -86,7 +86,7 @@ pub use proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
 pub use transaction::ProposalBuilder;
 
 // Export/Import
-pub use export::{ExportedMetadata, ExportedProposal, ExportedSignature, EXPORT_VERSION};
+pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
 
 // Errors
 pub use error::{MultisigError, Result};

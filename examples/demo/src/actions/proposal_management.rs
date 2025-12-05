@@ -567,7 +567,9 @@ async fn sign_imported_proposal(
         let path = prompt_input(editor, &format!("File path [{}]: ", default_path))?;
         let path = if path.is_empty() { default_path } else { path };
 
-        let json = proposal.to_json().map_err(|e| format!("Serialize error: {}", e))?;
+        let json = proposal
+            .to_json()
+            .map_err(|e| format!("Serialize error: {}", e))?;
         std::fs::write(&path, json).map_err(|e| format!("Write error: {}", e))?;
         print_success(&format!("Saved to: {}", path));
     }
@@ -640,7 +642,9 @@ fn save_imported_proposal(
     let path = prompt_input(editor, &format!("File path [{}]: ", default_path))?;
     let path = if path.is_empty() { default_path } else { path };
 
-    let json = proposal.to_json().map_err(|e| format!("Serialize error: {}", e))?;
+    let json = proposal
+        .to_json()
+        .map_err(|e| format!("Serialize error: {}", e))?;
     std::fs::write(&path, json).map_err(|e| format!("Write error: {}", e))?;
 
     print_success(&format!("Proposal saved to: {}", path));
@@ -674,7 +678,9 @@ async fn create_proposal_offline(
     let path = prompt_input(editor, &format!("\nSave to file [{}]: ", default_path))?;
     let path = if path.is_empty() { default_path } else { path };
 
-    let json = proposal.to_json().map_err(|e| format!("Serialize error: {}", e))?;
+    let json = proposal
+        .to_json()
+        .map_err(|e| format!("Serialize error: {}", e))?;
     std::fs::write(&path, json).map_err(|e| format!("Write error: {}", e))?;
 
     print_success(&format!("Proposal saved to: {}", path));
@@ -736,17 +742,20 @@ fn prompt_remove_cosigner(
 fn prompt_p2id(editor: &mut DefaultEditor) -> Result<TransactionType, String> {
     print_info("Enter the recipient account ID:");
     let recipient_hex = prompt_input(editor, "  Recipient account ID: ")?;
-    let recipient = AccountId::from_hex(&recipient_hex)
-        .map_err(|e| format!("Invalid recipient: {}", e))?;
+    let recipient =
+        AccountId::from_hex(&recipient_hex).map_err(|e| format!("Invalid recipient: {}", e))?;
 
     print_info("Enter the faucet/asset ID:");
     let faucet_hex = prompt_input(editor, "  Faucet ID: ")?;
-    let faucet_id = AccountId::from_hex(&faucet_hex)
-        .map_err(|e| format!("Invalid faucet: {}", e))?;
+    let faucet_id =
+        AccountId::from_hex(&faucet_hex).map_err(|e| format!("Invalid faucet: {}", e))?;
 
     print_info("Enter the amount:");
     let amount_str = prompt_input(editor, "  Amount: ")?;
-    let amount: u64 = amount_str.trim().parse().map_err(|e| format!("Invalid amount: {}", e))?;
+    let amount: u64 = amount_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("Invalid amount: {}", e))?;
 
     println!("\nTransfer details:");
     println!("  Recipient: {}", shorten_hex(&recipient_hex));
