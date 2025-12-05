@@ -24,6 +24,7 @@ miden-lib = { workspace = true }
 
 # Async
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }

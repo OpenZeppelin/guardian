@@ -29,6 +29,10 @@ pub enum MultisigError {
     #[error("miden client error: {0}")]
     MidenClient(String),
 
+    /// Sync panicked due to corrupted local state (miden-client v0.12.x workaround).
+    #[error("sync panicked (corrupted local state): {0}")]
+    SyncPanicked(String),
+
     /// Transaction execution failed.
     #[error("transaction execution failed: {0}")]
     TransactionExecution(String),

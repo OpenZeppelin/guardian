@@ -1,10 +1,12 @@
 //! Main MultisigClient implementation.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use base64::Engine;
 use miden_client::account::Account;
 use miden_client::note::NoteRelevance;
+use miden_client::rpc::Endpoint;
 use miden_client::{Client, Deserializable, Serializable};
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_objects::Word;
@@ -21,7 +23,7 @@ use private_state_manager_shared::hex::FromHex;
 use private_state_manager_shared::{ProposalSignature, ToJson};
 
 use crate::account::MultisigAccount;
-use crate::builder::MultisigClientBuilder;
+use crate::builder::{MultisigClientBuilder, create_miden_client};
 use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
 use crate::proposal::{Proposal, ProposalStatus, TransactionType};
@@ -59,6 +61,10 @@ pub struct MultisigClient {
     psm_endpoint: String,
     /// The multisig account managed by this client.
     account: Option<MultisigAccount>,
+    /// Account directory for miden-client storage (for recovery).
+    account_dir: PathBuf,
+    /// Miden node endpoint (for recovery).
+    miden_endpoint: Endpoint,
 }
 
 impl MultisigClient {
@@ -72,12 +78,16 @@ impl MultisigClient {
         miden_client: Client<()>,
         key_manager: Box<dyn KeyManager>,
         psm_endpoint: String,
+        account_dir: PathBuf,
+        miden_endpoint: Endpoint,
     ) -> Self {
         Self {
             miden_client,
             key_manager,
             psm_endpoint,
             account: None,
+            account_dir,
+            miden_endpoint,
         }
     }
 
@@ -912,8 +922,85 @@ impl MultisigClient {
     }
 
     /// Syncs state with the Miden network.
+    ///
+    /// If sync panics due to corrupted local state (a known issue in miden-client v0.12.x
+    /// with partial MMR data), this method will automatically reset the local database
+    /// and retry once. Regular sync errors (network, timeout, etc.) are propagated without
+    /// resetting.
     pub async fn sync(&mut self) -> Result<()> {
-        sync_miden_state(&mut self.miden_client).await
+        match sync_miden_state(&mut self.miden_client).await {
+            Ok(()) => Ok(()),
+            Err(MultisigError::SyncPanicked(msg)) => {
+                // WORKAROUND: miden-client v0.12.x can panic on sync when the local
+                // MMR state becomes inconsistent (e.g., "if there is an odd element, a merge
+                // is required" panic in partial_mmr.rs). This can happen after certain
+                // transaction patterns. We recover by clearing the local state and re-syncing.
+                //
+                // This is safe because:
+                // 1. On-chain state is the source of truth
+                // 2. Account data can be re-fetched from the network
+                // 3. The account itself is not stored in the SQLite DB (we keep it in memory)
+                //
+                // Only panics trigger recovery - regular errors (network, timeout) are
+                // propagated so the caller can handle them appropriately.
+                //
+                // TODO: Remove this workaround when miden-client is updated with a fix.
+                eprintln!(
+                    "Sync panicked ({}), attempting recovery by resetting local state...",
+                    msg
+                );
+                self.reset_miden_client().await?;
+                sync_miden_state(&mut self.miden_client).await
+            }
+            Err(e) => Err(e), // Propagate regular errors without reset
+        }
+    }
+
+    /// Resets the miden-client by clearing the SQLite database and recreating the client.
+    ///
+    /// WORKAROUND: This is a recovery mechanism for miden-client v0.12.x issues where
+    /// the local partial MMR state can become corrupted, causing sync to panic.
+    ///
+    /// This preserves:
+    /// - The in-memory account state (re-added to the new client)
+    /// - PSM connection and credentials
+    /// - All key material
+    ///
+    /// After reset, sync will fetch notes from the network again.
+    async fn reset_miden_client(&mut self) -> Result<()> {
+        let store_path = self.account_dir.join("miden-client.sqlite");
+        let backup_path = self.account_dir.join("miden-client.sqlite.corrupt");
+
+        // Rename the corrupt DB file to free up the original path.
+        // This works even with open file handles on Unix (the old client still
+        // holds the renamed file). On Windows rename may fail, but we try anyway.
+        if store_path.exists() {
+            let _ = std::fs::rename(&store_path, &backup_path);
+        }
+
+        // Create new client with fresh DB at original path
+        self.miden_client = create_miden_client(&self.account_dir, &self.miden_endpoint).await?;
+
+        // Clean up old files (best effort - may fail on Windows with open handles)
+        let _ = std::fs::remove_file(&backup_path);
+        let _ = std::fs::remove_file(self.account_dir.join("miden-client.sqlite-wal"));
+        let _ = std::fs::remove_file(self.account_dir.join("miden-client.sqlite-shm"));
+
+        // Re-add the account to the new miden-client so sync can discover notes for it
+        if let Some(account) = &self.account {
+            self.miden_client
+                .add_account(account.inner(), true) // true = imported
+                .await
+                .map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to re-add account after reset: {}",
+                        e
+                    ))
+                })?;
+        }
+
+        eprintln!("Local state reset successfully. Re-syncing...");
+        Ok(())
     }
 
     /// Syncs account state from PSM and updates the local cache.

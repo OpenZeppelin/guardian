@@ -115,12 +115,18 @@ impl MultisigClientBuilder {
 
         let miden_client = create_miden_client(&account_dir, &miden_endpoint).await?;
 
-        Ok(MultisigClient::new(miden_client, key_manager, psm_endpoint))
+        Ok(MultisigClient::new(
+            miden_client,
+            key_manager,
+            psm_endpoint,
+            account_dir,
+            miden_endpoint,
+        ))
     }
 }
 
 /// Creates a miden-client instance with SQLite storage.
-async fn create_miden_client(
+pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
 ) -> Result<Client<()>> {
