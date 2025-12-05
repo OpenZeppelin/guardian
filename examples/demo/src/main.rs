@@ -7,9 +7,8 @@ use miden_client::rpc::Endpoint;
 use rustyline::DefaultEditor;
 
 use actions::{
-    action_create_account, action_create_proposal, action_execute_proposal, action_list_notes,
-    action_show_account, action_show_status, action_sign_transaction, action_sync_account,
-    action_view_proposals,
+    action_create_account, action_list_notes, action_proposal_management, action_show_account,
+    action_show_status, action_sync_account,
 };
 use display::{
     print_banner, print_error, print_full_hex, print_section, print_success, print_waiting,
@@ -29,9 +28,9 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         psm_endpoint
     };
 
-    let miden_input = prompt_input(editor, "Miden Node endpoint [http://localhost:57291]: ")?;
+    let miden_input = prompt_input(editor, "Miden Node endpoint [https://rpc.testnet.miden.io:443]: ")?;
     let miden_endpoint = if miden_input.is_empty() {
-        Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
+        Endpoint::new("https".to_string(), "rpc.testnet.miden.io".to_string(), None)
     } else {
         parse_miden_endpoint(&miden_input)?
     };
@@ -39,11 +38,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!("\n  PSM Server: {}", psm_endpoint);
     println!(
         "  Miden Node: {}://{}{}",
-        if matches!(miden_endpoint.port(), Some(443)) {
-            "https"
-        } else {
-            "http"
-        },
+        miden_endpoint.protocol(),
         miden_endpoint.host(),
         miden_endpoint
             .port()
@@ -99,11 +94,8 @@ async fn handle_action(
     match action {
         MenuAction::CreateAccount => action_create_account(state, editor).await,
         MenuAction::SyncAccount => action_sync_account(state, editor).await,
-        MenuAction::CreateProposal => action_create_proposal(state, editor).await,
-        MenuAction::ViewProposals => action_view_proposals(state).await,
-        MenuAction::SignProposal => action_sign_transaction(state, editor).await,
-        MenuAction::ExecuteProposal => action_execute_proposal(state).await,
         MenuAction::ListNotes => action_list_notes(state).await,
+        MenuAction::ProposalManagement => action_proposal_management(state, editor).await,
         MenuAction::ShowAccount => action_show_account(state).await,
         MenuAction::ShowStatus => action_show_status(state).await,
         MenuAction::Quit => {

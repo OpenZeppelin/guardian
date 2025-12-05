@@ -60,6 +60,7 @@ mod builder;
 mod client;
 mod config;
 mod error;
+mod export;
 mod keystore;
 mod payload;
 mod proposal;
@@ -83,6 +84,9 @@ pub use keystore::{KeyManager, PsmKeyStore, commitment_from_hex};
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
 pub use transaction::ProposalBuilder;
+
+// Export/Import
+pub use export::{ExportedMetadata, ExportedProposal, ExportedSignature, EXPORT_VERSION};
 
 // Errors
 pub use error::{MultisigError, Result};

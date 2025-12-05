@@ -37,6 +37,14 @@ pub struct ProposalMetadataPayload {
     /// Note IDs to consume as hex strings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,
+
+    // PSM update fields
+    /// New PSM public key commitment as hex string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_psm_pubkey_hex: Option<String>,
+    /// New PSM endpoint URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_psm_endpoint: Option<String>,
 }
 
 /// Complete payload for a multisig transaction proposal.
@@ -132,6 +140,22 @@ impl ProposalPayload {
         self
     }
 
+    /// Sets the metadata for PSM update transactions.
+    pub fn with_psm_update_metadata(
+        mut self,
+        new_psm_pubkey_hex: String,
+        new_psm_endpoint: String,
+        salt_hex: String,
+    ) -> Self {
+        self.metadata = Some(ProposalMetadataPayload {
+            new_psm_pubkey_hex: Some(new_psm_pubkey_hex),
+            new_psm_endpoint: Some(new_psm_endpoint),
+            salt_hex: Some(salt_hex),
+            ..Default::default()
+        });
+        self
+    }
+
     /// Converts to JSON value for sending to PSM.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("ProposalPayload should always serialize")
@@ -156,6 +180,7 @@ mod tests {
                 new_threshold: Some(2),
                 signer_commitments_hex: vec!["0xabc".to_string(), "0xdef".to_string()],
                 salt_hex: Some("0x456".to_string()),
+                ..Default::default()
             }),
         };
 

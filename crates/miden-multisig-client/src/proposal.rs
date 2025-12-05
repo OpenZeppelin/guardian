@@ -93,6 +93,12 @@ pub struct ProposalMetadata {
     /// Note IDs to consume as hex strings.
     pub note_ids_hex: Vec<String>,
 
+    // PSM update fields
+    /// New PSM public key commitment as hex string.
+    pub new_psm_pubkey_hex: Option<String>,
+    /// New PSM endpoint URL.
+    pub new_psm_endpoint: Option<String>,
+
     /// Cached signature threshold for this proposal.
     pub required_signatures: Option<usize>,
     /// Cached signatures collected count (e.g., initial proposer signature).
@@ -212,6 +218,17 @@ impl Proposal {
             .map(|hex| Ok(NoteId::from(hex_to_word(hex)?)))
             .collect::<Result<_>>()?;
 
+        // Extract PSM update fields
+        let new_psm_pubkey_hex = metadata_obj
+            .and_then(|m| m.get("new_psm_pubkey_hex"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let new_psm_endpoint = metadata_obj
+            .and_then(|m| m.get("new_psm_endpoint"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let mut metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary_json.clone()),
             new_threshold,
@@ -221,6 +238,8 @@ impl Proposal {
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
             note_ids_hex: note_ids_hex.clone(),
+            new_psm_pubkey_hex: new_psm_pubkey_hex.clone(),
+            new_psm_endpoint: new_psm_endpoint.clone(),
             required_signatures: Some(current_threshold as usize),
             collected_signatures: None,
         };
@@ -242,6 +261,15 @@ impl Proposal {
                 recipient,
                 faucet_id,
                 amount: amt,
+            }
+        } else if let (Some(pubkey_hex), Some(endpoint)) =
+            (&new_psm_pubkey_hex, &new_psm_endpoint)
+        {
+            // PSM switch transaction
+            let new_commitment = hex_to_word(pubkey_hex)?;
+            TransactionType::SwitchPsm {
+                new_endpoint: endpoint.clone(),
+                new_commitment,
             }
         } else if let Some(threshold) = new_threshold {
             // Signer update transaction

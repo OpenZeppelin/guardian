@@ -16,15 +16,18 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 #     * PSM_ON  => exactly one valid PSM signature is required.
 #     * PSM_OFF => PSM signature is skipped for that call.
 #
-# - `verify_psm_signature` reads the selector from initial storage state.
-#   This means changes made during the same transaction won't affect the check.
-#
-# - `enable_psm` / `disable_psm` procedures allow explicit control over PSM state.
+# - `verify_psm_signature` *always* writes PSM_ON back to `PSM_SELECTOR_SLOT`
+#   at the end. This means:
+#     * After `update_psm_public_key` runs, the next transaction will see
+#       selector = OFF and will NOT require a PSM signature.
+#     * That same call to `verify_psm_signature` will set the selector to ON,
+#       so all subsequent transactions WILL require a valid PSM signature
+#       until the key is rotated again.
 #
 # - `update_psm_public_key`:
-#     * Installs a new PSM public key in the map at `PSM_PUBLIC_KEY_MAP_SLOT`.
+#     * Temporarily disables the PSM selector (PSM_OFF),
+#     * Installs a new PSM public key in the map at `PSM_PUBLIC_KEY_MAP_SLOT`,
 #     * Does not itself perform any signature checks.
-#     * To update the key without requiring PSM signature, ensure selector is OFF.
 #
 # Storage Layout
 # --------------------------------------------------------------------------------
@@ -44,6 +47,14 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 #     * A map from a fixed key [0, 0, 0, 0] to the single PSM public key:
 #         [0, 0, 0, 0] => PSM_PUBLIC_KEY
 #     * PSM_PUBLIC_KEY is a RPO Falcon 512 public key represented as a word.
+#
+# Events
+# --------------------------------------------------------------------------------
+# - AUTH_UNAUTHORIZED_EVENT:
+#     * Emitted when the PSM signature is missing or invalid while the selector
+#       is ON.
+#     * Message emitted: "invalid PSM signature".
+#
 
 # CONSTANTS
 # =================================================================================================
@@ -68,7 +79,9 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 # PSM PROCEDURES
 # =================================================================================================
 
-#! Enable PSM verification by setting the selector to ON.
+
+#! Conditionally verify a "PSM" signature against a stored public key hash.
+#! The condition is controlled by the selector at PSM_SELECTOR_SLOT specified above.
 #!
 #! Operand stack inputs: []
 #! Outputs: []
@@ -76,7 +89,7 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 #! Notes:
 #! - Sets PSM_SELECTOR_SLOT to PSM_ON (1)
 #! - After this, transactions will require PSM signature verification
-pub proc enable_psm
+proc enable_psm
     push.PSM_ON
     # => [PSM_ON]
 
@@ -98,7 +111,7 @@ end
 #! Notes:
 #! - Sets PSM_SELECTOR_SLOT to PSM_OFF (0)
 #! - After this, transactions will NOT require PSM signature verification
-pub proc disable_psm
+proc disable_psm
     push.PSM_OFF
     # => [PSM_OFF]
 
@@ -124,6 +137,9 @@ end
 #! - To update the key without requiring PSM signature, ensure
 #!   PSM_SELECTOR_SLOT = 0 (OFF) before calling this.
 pub proc update_psm_public_key
+    # ------ Disable the PSM selector ------
+    exec.disable_psm
+
     # ------ Update the PSM public key ------
     adv_loadw
     # => [PUB_KEY]
@@ -157,20 +173,55 @@ end
 #! - Selector value is read from initial storage state
 pub proc verify_psm_signature(msg: BeWord)
     push.PSM_SELECTOR_SLOT
-    exec.active_account::get_initial_item
-    drop drop drop
-    # => [selector, MSG]
+    # => [PSM_SELECTOR_SLOT, MSG]
 
-    push.1 eq
+    # Not the initial item!
+    # But the current item updated by disable procedure
+    exec.active_account::get_item
+    # => [0, 0, 0, psm_selector, MSG]
+
+    drop drop drop
+    # => [psm_selector, MSG]
+
+    push.1
+    # => [1, psm_selector, MSG]
+
+    eq # is_equal
+    # [is_equal, MSG]
+
+    # ------ Conditionally verify the PSM signature ------
     if.true
+        # => [MSG]
         push.1
+        # [num_approvers, MSG]
+
         push.PSM_PUBLIC_KEY_MAP_SLOT
+        # => [PSM_PUBLIC_KEY_MAP_SLOT, num_approvers, MSG]
+
         exec.::miden::auth::rpo_falcon512::verify_signatures
-        push.1 neq
+        # => [num_verified_signatures, MSG]
+
+        push.1
+        # => [1, num_verified_signatures, MSG]
+
+        neq
+        # => [is_unauthorized, MSG]
+        # If signatures are non-existent the tx will fail here.
         if.true
             emit.AUTH_UNAUTHORIZED_EVENT
             push.0 assert.err="invalid PSM signature"
         end
+    else
+        # Return MSG
+        # => [MSG]
+        push.0
+        # => [0, MSG]
+
+        drop
+        # => [MSG]
     end
     # => [MSG]
+
+    # ------ Enable the PSM selector ------
+    exec.enable_psm
 end

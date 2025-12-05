@@ -533,7 +533,7 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
     // Initialize with PSM selector = OFF so key update doesn't require PSM signature
     // This is the expected flow: disable PSM, update key, then enable PSM in a follow-up tx
     let multisig_account =
-        create_multisig_account_with_psm(2, &public_keys, psm_public_key.clone(), false)?;
+        create_multisig_account_with_psm(2, &public_keys, psm_public_key.clone(), true)?;
 
     // SECTION 1: Execute a transaction script to update PSM public key
     // ================================================================================
@@ -574,11 +574,12 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
     let psm_library = get_psm_library()?;
 
     // Use call.:: syntax for dynamically linked library procedure calls (v0.12+)
-    // This script updates the PSM key and then enables PSM verification
+    // This script only calls update_psm_public_key.
+    // Note: enable_psm is now a private procedure and is automatically called
+    // by verify_psm_signature at the end of transaction authentication.
     let tx_script_code = r#"
     begin
         call.::update_psm_public_key
-        call.::enable_psm
     end
     "#;
 

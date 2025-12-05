@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::MultisigClient;
+use miden_multisig_client::{ExportedProposal, MultisigClient};
 use tempfile::TempDir;
 
 /// Simplified session state using the MultisigClient SDK.
 pub struct SessionState {
     pub client: Option<MultisigClient>,
     pub account_directory: Arc<TempDir>,
+    /// Imported proposal for offline workflow.
+    pub imported_proposal: Option<ExportedProposal>,
 }
 
 impl SessionState {
@@ -18,6 +20,7 @@ impl SessionState {
         Ok(SessionState {
             client: None,
             account_directory: Arc::new(account_directory),
+            imported_proposal: None,
         })
     }
 
@@ -63,5 +66,20 @@ impl SessionState {
 
     pub fn user_commitment_hex(&self) -> Result<String, String> {
         self.get_client().map(|c| c.user_commitment_hex())
+    }
+
+    /// Sets the imported proposal.
+    pub fn set_imported_proposal(&mut self, proposal: ExportedProposal) {
+        self.imported_proposal = Some(proposal);
+    }
+
+    /// Gets a reference to the imported proposal.
+    pub fn get_imported_proposal(&self) -> Option<&ExportedProposal> {
+        self.imported_proposal.as_ref()
+    }
+
+    /// Takes ownership of the imported proposal.
+    pub fn take_imported_proposal(&mut self) -> Option<ExportedProposal> {
+        self.imported_proposal.take()
     }
 }
