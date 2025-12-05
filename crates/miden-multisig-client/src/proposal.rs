@@ -759,4 +759,135 @@ mod tests {
 
         assert_eq!(proposal.signatures_needed(), 0);
     }
+
+    // ==================== determine_transaction_type tests ====================
+
+    fn word_from_u64(v: u64) -> Word {
+        [Felt::new(v), Felt::ZERO, Felt::ZERO, Felt::ZERO].into()
+    }
+
+    #[test]
+    fn test_determine_add_cosigner() {
+        let current = vec![word_from_u64(1), word_from_u64(2)];
+        let proposed = vec![word_from_u64(1), word_from_u64(2), word_from_u64(3)];
+
+        let result = determine_transaction_type(2, 2, &current, &proposed);
+
+        match result {
+            TransactionType::AddCosigner { new_commitment } => {
+                assert_eq!(new_commitment, word_from_u64(3));
+            }
+            _ => panic!("expected AddCosigner, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_determine_remove_cosigner() {
+        let current = vec![word_from_u64(1), word_from_u64(2), word_from_u64(3)];
+        let proposed = vec![word_from_u64(1), word_from_u64(3)];
+
+        let result = determine_transaction_type(2, 2, &current, &proposed);
+
+        match result {
+            TransactionType::RemoveCosigner { commitment } => {
+                assert_eq!(commitment, word_from_u64(2));
+            }
+            _ => panic!("expected RemoveCosigner, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_determine_update_signers_threshold_change() {
+        let signers = vec![word_from_u64(1), word_from_u64(2)];
+
+        let result = determine_transaction_type(3, 2, &signers, &signers);
+
+        match result {
+            TransactionType::UpdateSigners { new_threshold, .. } => {
+                assert_eq!(new_threshold, 3);
+            }
+            _ => panic!("expected UpdateSigners, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_determine_no_change_returns_update_signers() {
+        let signers = vec![word_from_u64(1), word_from_u64(2)];
+
+        // Same threshold, same signers → falls through to UpdateSigners
+        let result = determine_transaction_type(2, 2, &signers, &signers);
+
+        match result {
+            TransactionType::UpdateSigners {
+                new_threshold,
+                signer_commitments,
+            } => {
+                assert_eq!(new_threshold, 2);
+                assert_eq!(signer_commitments.len(), 2);
+            }
+            _ => panic!("expected UpdateSigners, got {:?}", result),
+        }
+    }
+
+    // ==================== ProposalMetadata parser tests ====================
+
+    #[test]
+    fn test_metadata_salt_valid() {
+        let metadata = ProposalMetadata {
+            salt_hex: Some(
+                "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let salt = metadata.salt().expect("salt should parse");
+        // Verify it's not the default Word
+        assert_ne!(salt, Word::default());
+    }
+
+    #[test]
+    fn test_metadata_salt_none_returns_default() {
+        let metadata = ProposalMetadata::default();
+
+        let salt = metadata.salt().expect("salt should return default");
+        assert_eq!(salt, Word::default());
+    }
+
+    #[test]
+    fn test_metadata_signer_commitments_valid() {
+        let hex1 = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+        let hex2 = "0x2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40";
+
+        let metadata = ProposalMetadata {
+            signer_commitments_hex: vec![hex1.to_string(), hex2.to_string()],
+            ..Default::default()
+        };
+
+        let commitments = metadata.signer_commitments().expect("should parse");
+        assert_eq!(commitments.len(), 2);
+    }
+
+    #[test]
+    fn test_metadata_signer_commitments_invalid_hex() {
+        let metadata = ProposalMetadata {
+            signer_commitments_hex: vec!["not_valid_hex".to_string()],
+            ..Default::default()
+        };
+
+        assert!(metadata.signer_commitments().is_err());
+    }
+
+    #[test]
+    fn test_metadata_note_ids_valid() {
+        // NoteId is 32 bytes = 64 hex chars
+        let note_hex = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+
+        let metadata = ProposalMetadata {
+            note_ids_hex: vec![note_hex.to_string()],
+            ..Default::default()
+        };
+
+        let note_ids = metadata.note_ids().expect("should parse");
+        assert_eq!(note_ids.len(), 1);
+    }
 }

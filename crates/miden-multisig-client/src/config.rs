@@ -65,3 +65,48 @@ impl MultisigConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miden_objects::Word;
+
+    fn dummy_word() -> Word {
+        Word::default()
+    }
+
+    #[test]
+    fn test_validate_threshold_zero() {
+        let config = MultisigConfig::new(0, vec![dummy_word()], PsmConfig::new("http://psm:50051"));
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("threshold"));
+    }
+
+    #[test]
+    fn test_validate_empty_commitments() {
+        let config = MultisigConfig::new(1, vec![], PsmConfig::new("http://psm:50051"));
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("signer"));
+    }
+
+    #[test]
+    fn test_validate_threshold_exceeds_signers() {
+        let config = MultisigConfig::new(
+            3,
+            vec![dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        );
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("exceed"));
+    }
+
+    #[test]
+    fn test_validate_valid_config() {
+        let config = MultisigConfig::new(
+            2,
+            vec![dummy_word(), dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        );
+        assert!(config.validate().is_ok());
+    }
+}

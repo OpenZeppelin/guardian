@@ -623,4 +623,192 @@ mod tests {
         assert!(signers.contains(&"0xsigner1"));
         assert!(signers.contains(&"0xsigner2"));
     }
+
+    // Helper for valid account ID (15 bytes = 30 hex chars)
+    fn valid_account_id() -> String {
+        "0x7bfb0f38b0fafa103f86a805594170".to_string()
+    }
+
+    fn valid_faucet_id() -> String {
+        "0x7bfb0f38b0fafa103f86a805594171".to_string()
+    }
+
+    // Helper for valid 32-byte hex (Word)
+    fn valid_word_hex() -> String {
+        "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
+    }
+
+    // Helper for valid note ID hex (32 bytes)
+    fn valid_note_id_hex() -> String {
+        "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
+    }
+
+    #[test]
+    fn test_parse_transaction_type_p2id() {
+        let metadata = ProposalMetadata {
+            recipient_hex: Some(valid_account_id()),
+            faucet_id_hex: Some(valid_faucet_id()),
+            amount: Some(1000),
+            ..Default::default()
+        };
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "P2ID".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                recipient_hex: metadata.recipient_hex.clone(),
+                faucet_id_hex: metadata.faucet_id_hex.clone(),
+                amount: metadata.amount,
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let tx_type = result.unwrap();
+        assert!(matches!(
+            tx_type,
+            TransactionType::P2ID { amount: 1000, .. }
+        ));
+    }
+
+    #[test]
+    fn test_parse_transaction_type_consume_notes() {
+        let metadata = ProposalMetadata {
+            note_ids_hex: vec![valid_note_id_hex()],
+            ..Default::default()
+        };
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "ConsumeNotes".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                note_ids_hex: metadata.note_ids_hex.clone(),
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_ok());
+        let tx_type = result.unwrap();
+        assert!(matches!(tx_type, TransactionType::ConsumeNotes { .. }));
+    }
+
+    #[test]
+    fn test_parse_transaction_type_add_cosigner() {
+        let metadata = ProposalMetadata {
+            signer_commitments_hex: vec![valid_word_hex()],
+            ..Default::default()
+        };
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "AddCosigner".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                signer_commitments_hex: metadata.signer_commitments_hex.clone(),
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_ok());
+        let tx_type = result.unwrap();
+        assert!(matches!(tx_type, TransactionType::AddCosigner { .. }));
+    }
+
+    #[test]
+    fn test_parse_transaction_type_switch_psm() {
+        let metadata = ProposalMetadata {
+            new_psm_pubkey_hex: Some(valid_word_hex()),
+            new_psm_endpoint: Some("http://new-psm:50051".to_string()),
+            ..Default::default()
+        };
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "SwitchPsm".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                new_psm_pubkey_hex: metadata.new_psm_pubkey_hex.clone(),
+                new_psm_endpoint: metadata.new_psm_endpoint.clone(),
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_ok());
+        let tx_type = result.unwrap();
+        match tx_type {
+            TransactionType::SwitchPsm { new_endpoint, .. } => {
+                assert_eq!(new_endpoint, "http://new-psm:50051");
+            }
+            _ => panic!("expected SwitchPsm"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transaction_type_invalid() {
+        let metadata = ProposalMetadata::default();
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "InvalidType".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata::default(),
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, MultisigError::UnknownTransactionType(_)));
+    }
+
+    #[test]
+    fn test_hex_to_word_valid() {
+        let hex = valid_word_hex();
+        let result = hex_to_word(&hex);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_hex_to_word_invalid_length() {
+        let hex = "0x1234"; // Too short
+        let result = hex_to_word(hex);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hex_to_word_invalid_chars() {
+        let hex = "0xGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG";
+        let result = hex_to_word(hex);
+        assert!(result.is_err());
+    }
 }
