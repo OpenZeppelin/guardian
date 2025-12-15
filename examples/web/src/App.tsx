@@ -1,37 +1,21 @@
 import { useEffect, useState, useCallback } from 'react';
 
-// Import our PSM client
 import {
   PsmHttpClient,
   type StateObject,
   type ConfigureRequest,
-} from '@openzeppelin/psm-client';
-
-// Import multisig module
-import {
   createMultisigAccount,
-  type MidenSdkTypes,
   type MultisigConfig,
-  // Keystore
   generateKey,
   loadKeys,
   deleteKey,
   getKey,
   type KeyEntry,
-  type KeystoreSdkTypes,
-  // Signer
   createSigner,
-  type SignerSdkTypes,
-} from './multisig';
+  clearIndexedDB,
+} from '@openzeppelin/multisig-client';
 
-// Import Miden SDK types
-import type { WebClient, Account as AccountType } from '@demox-labs/miden-sdk';
-
-// Import Miden client wrapper
-import { createMidenClient, clearIndexedDB } from './lib/miden-client';
-
-// Combined SDK types for account building, keystore, and signing
-interface FullSdkTypes extends MidenSdkTypes, KeystoreSdkTypes, SignerSdkTypes {}
+import { WebClient } from '@demox-labs/miden-sdk';
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
 
@@ -40,12 +24,9 @@ export default function App() {
   const [psmUrl, setPsmUrl] = useState<string>(DEFAULT_PSM_URL);
   const [psmStatus, setPsmStatus] = useState<string>('Connecting...');
   const [psmPubkey, setPsmPubkey] = useState<string>('');
-  const [sdkLoaded, setSdkLoaded] = useState<boolean>(false);
+  const [clientReady, setClientReady] = useState<boolean>(false);
   const [webClient, setWebClient] = useState<WebClient | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // SDK classes (loaded dynamically)
-  const [sdk, setSdk] = useState<FullSdkTypes | null>(null);
 
   // Keystore state
   const [keys, setKeys] = useState<KeyEntry[]>([]);
@@ -56,9 +37,9 @@ export default function App() {
   const [threshold, setThreshold] = useState<number>(1);
   const [selectedSigners, setSelectedSigners] = useState<string[]>([]);
   const [externalCommitment, setExternalCommitment] = useState<string>('');
-  const [usePsmAsSigner, setUsePsmAsSigner] = useState<boolean>(false);
   const [creating, setCreating] = useState<boolean>(false);
-  const [account, setAccount] = useState<AccountType | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [account, setAccount] = useState<any>(null);
 
   // PSM sync state
   const [psmClient] = useState<PsmHttpClient>(() => new PsmHttpClient(DEFAULT_PSM_URL));
@@ -89,34 +70,25 @@ export default function App() {
     }
   }, []);
 
-  // Load Miden SDK
-  const loadMidenSdk = async () => {
+  // Load Miden SDK and create WebClient
+  const loadMidenClient = async () => {
     try {
-      // Create WebClient and get SDK from the same WASM instance
-      const { client, sdk: midenSdk } = await createMidenClient();
-      setSdk({
-        AccountBuilder: midenSdk.AccountBuilder,
-        AccountComponent: midenSdk.AccountComponent,
-        StorageSlot: midenSdk.StorageSlot,
-        StorageMap: midenSdk.StorageMap,
-        Word: midenSdk.Word,
-        AccountStorageMode: midenSdk.AccountStorageMode,
-        AccountType: midenSdk.AccountType,
-        SecretKey: midenSdk.SecretKey,
-      });
-      setSdkLoaded(true);
+      // Create WebClient
+      const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+      await client.syncState();
       setWebClient(client);
+      setClientReady(true);
     } catch (err) {
-      console.error('[loadMidenSdk] Error:', err);
+      console.error('[loadMidenClient] Error:', err);
       setError(
-        `Failed to load Miden SDK: ${err instanceof Error ? err.message : 'Unknown error'}`
+        `Failed to initialize Miden client: ${err instanceof Error ? err.message : 'Unknown error'}`
       );
     }
   };
 
   // Generate a new key
   const handleGenerateKey = () => {
-    if (!sdk || !newKeyName.trim()) {
+    if (!clientReady || !newKeyName.trim()) {
       setError('Please enter a name for the key');
       return;
     }
@@ -125,7 +97,7 @@ export default function App() {
     setError(null);
 
     try {
-      generateKey(sdk, newKeyName.trim());
+      generateKey(newKeyName.trim());
       setNewKeyName('');
       refreshKeys();
     } catch (err) {
@@ -176,11 +148,10 @@ export default function App() {
     setError(null);
   };
 
-  // Get all selected commitments
+  // Get all selected signer commitments (not including PSM which is separate)
   const getSelectedCommitments = (): string[] => {
     const commitments: string[] = [];
 
-    // Add selected local keys
     for (const keyId of selectedSigners) {
       const key = keys.find((k) => k.id === keyId);
       if (key) {
@@ -188,17 +159,12 @@ export default function App() {
       }
     }
 
-    // Add PSM pubkey if selected
-    if (usePsmAsSigner && psmPubkey) {
-      commitments.push(psmPubkey);
-    }
-
     return commitments;
   };
 
   // Create multisig account
   const handleCreateAccount = async () => {
-    if (!sdk || !webClient) {
+    if (!clientReady || !webClient) {
       setError('SDK or WebClient not initialized');
       return;
     }
@@ -231,7 +197,7 @@ export default function App() {
         psmEnabled: true,
       };
 
-      const result = await createMultisigAccount(webClient, sdk, config);
+      const result = await createMultisigAccount(webClient, config);
       setAccount(result.account);
     } catch (err) {
       console.error('Error creating account:', err);
@@ -244,7 +210,7 @@ export default function App() {
 
   // Configure account on PSM server
   const handleConfigureOnPsm = async () => {
-    if (!sdk || !account || !psmPubkey) {
+    if (!clientReady || !account || !psmPubkey) {
       setError('Account not created or PSM not connected');
       return;
     }
@@ -266,7 +232,7 @@ export default function App() {
 
     try {
       // Create signer for authentication
-      const signer = createSigner(sdk, keyEntry);
+      const signer = createSigner(keyEntry);
       psmClient.setSigner(signer);
 
       // Get all cosigner commitments (same as used in account creation)
@@ -312,7 +278,7 @@ export default function App() {
 
   // Sync state from PSM server
   const handleSyncState = async () => {
-    if (!sdk || !account) {
+    if (!clientReady || !account) {
       setError('Account not created');
       return;
     }
@@ -333,7 +299,7 @@ export default function App() {
 
     try {
       // Create signer for authentication
-      const signer = createSigner(sdk, keyEntry);
+      const signer = createSigner(keyEntry);
       psmClient.setSigner(signer);
 
       const accountId = account.id().toString();
@@ -354,12 +320,12 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadMidenSdk();
+    loadMidenClient();
     refreshKeys();
     connectToPsm(psmUrl);
   }, [refreshKeys, connectToPsm, psmUrl]);
 
-  const selectedCount = selectedSigners.length + (usePsmAsSigner ? 1 : 0);
+  const selectedCount = selectedSigners.length;
 
   return (
     <div className="app">
@@ -370,15 +336,9 @@ export default function App() {
         <h2>Status</h2>
         <div className="status-grid">
           <div className="status-item">
-            <span className="label">Miden SDK:</span>
-            <span className={`value ${sdkLoaded ? 'ok' : 'loading'}`}>
-              {sdkLoaded ? 'Loaded' : 'Loading...'}
-            </span>
-          </div>
-          <div className="status-item">
-            <span className="label">WebClient:</span>
-            <span className={`value ${webClient ? 'ok' : 'loading'}`}>
-              {webClient ? 'Ready' : 'Initializing...'}
+            <span className="label">Miden Client:</span>
+            <span className={`value ${clientReady ? 'ok' : 'loading'}`}>
+              {clientReady ? 'Ready' : 'Initializing...'}
             </span>
           </div>
           <div className="status-item">
@@ -442,12 +402,12 @@ export default function App() {
             value={newKeyName}
             onChange={(e) => setNewKeyName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleGenerateKey()}
-            disabled={!sdk || generatingKey}
+            disabled={!clientReady || generatingKey}
           />
           <button
             onClick={handleGenerateKey}
             className="btn btn-primary"
-            disabled={!sdk || generatingKey || !newKeyName.trim()}
+            disabled={!clientReady || generatingKey || !newKeyName.trim()}
           >
             {generatingKey ? 'Generating...' : 'Generate Key'}
           </button>
@@ -515,20 +475,6 @@ export default function App() {
 
           <div className="signers-selection">
             <h3>Signers</h3>
-
-            {/* PSM as signer option */}
-            {psmPubkey && (
-              <div className="signer-option">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={usePsmAsSigner}
-                    onChange={(e) => setUsePsmAsSigner(e.target.checked)}
-                  />
-                  <span>PSM Server (as cosigner)</span>
-                </label>
-              </div>
-            )}
 
             {/* Selected keys summary */}
             {selectedSigners.length > 0 && (

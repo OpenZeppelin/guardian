@@ -5,7 +5,7 @@
  * `miden-multisig-client`, using HTTP instead of gRPC.
  */
 
-import { PsmHttpClient } from './http.js';
+import { PsmHttpClient } from './transport/http.js';
 import type {
   AuthConfig,
   DeltaObject,

@@ -1,7 +1,7 @@
 {
-  "name": "@openzeppelin/psm-client",
+  "name": "@openzeppelin/multisig-client",
   "version": "0.1.0",
-  "description": "TypeScript client for Miden Private State Manager (PSM) - HTTP interface",
+  "description": "TypeScript SDK for Miden multisig accounts with PSM integration",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "masm"
   ],
   "scripts": {
     "build": "tsc",
@@ -23,7 +24,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {},
+  "peerDependencies": {
+    "@demox-labs/miden-sdk": "^0.12.5"
+  },
   "devDependencies": {
+    "@demox-labs/miden-sdk": "^0.12.5",
     "typescript": "^5.7.2"
   },
   "engines": {

@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@demox-labs/miden-sdk": "^0.12.5",
-    "@openzeppelin/psm-client": "file:../../packages/psm-client",
+    "@openzeppelin/multisig-client": "file:../../packages/multisig-client",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

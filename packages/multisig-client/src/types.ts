@@ -1,5 +1,5 @@
 /**
- * Core types for the Miden PSM client.
+ * Core types for the Miden multisig client.
  */
 
 // =============================================================================
@@ -7,9 +7,9 @@
 // =============================================================================
 
 /**
- * Represents a multisig account configuration.
+ * Represents a multisig account state.
  */
-export interface MultisigAccount {
+export interface MultisigAccountState {
   /** Account ID as hex string (0x + 30 hex chars) */
   id: string;
   /** Current nonce for the account */
@@ -18,6 +18,39 @@ export interface MultisigAccount {
   threshold: number;
   /** Public key commitments of all cosigners (0x + 64 hex chars each) */
   cosignerCommitments: string[];
+}
+
+/**
+ * @deprecated Use MultisigAccountState instead
+ */
+export type MultisigAccount = MultisigAccountState;
+
+// =============================================================================
+// Account Creation Config
+// =============================================================================
+
+/**
+ * Configuration for creating a multisig account.
+ */
+export interface MultisigConfig {
+  /** Minimum number of signatures required to authorize a transaction */
+  threshold: number;
+  /** Public key commitments of all signers (hex strings, 64 chars each) */
+  signerCommitments: string[];
+  /** PSM server public key commitment (hex string) */
+  psmCommitment: string;
+  /** Whether PSM verification is enabled (default: true) */
+  psmEnabled?: boolean;
+}
+
+/**
+ * Result of account creation.
+ */
+export interface CreateAccountResult {
+  /** The created account (from Miden SDK) */
+  account: unknown;
+  /** The account seed used for creation */
+  seed: Uint8Array;
 }
 
 // =============================================================================

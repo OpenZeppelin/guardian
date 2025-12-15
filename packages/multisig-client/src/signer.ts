@@ -1,14 +1,18 @@
 /**
  * Falcon Signer implementation for PSM client authentication.
  *
- * This implements the Signer interface from @openzeppelin/psm-client
- * using the Miden SDK's SecretKey for Falcon signatures.
+ * This implements the Signer interface using the Miden SDK's SecretKey
+ * for Falcon signatures. Mirrors the KeyManager trait from Rust.
  */
 
-import type { Word as WordType } from '@demox-labs/miden-sdk';
-import type { Signer } from '@openzeppelin/psm-client';
-import type { KeyEntry, KeystoreSdkTypes } from './keystore';
-import { loadSecretKey } from './keystore';
+import { SecretKey, Word } from '@demox-labs/miden-sdk';
+import type { Signer } from './types.js';
+import type { KeyEntry } from './keystore.js';
+import { loadSecretKey } from './keystore.js';
+
+// =============================================================================
+// Utilities
+// =============================================================================
 
 /**
  * Converts a Uint8Array to a hex string with 0x prefix.
@@ -21,23 +25,19 @@ function bytesToHex(bytes: Uint8Array): string {
   return hex;
 }
 
-/**
- * SDK types needed for signer operations (includes Word class).
- */
-export interface SignerSdkTypes extends KeystoreSdkTypes {
-  Word: typeof WordType;
-}
+// =============================================================================
+// Signer Creation
+// =============================================================================
 
 /**
  * Creates a Signer from a KeyEntry using the Miden SDK.
  *
- * @param sdk - Miden SDK types for key operations
  * @param keyEntry - The key entry from the keystore
  * @returns A Signer implementation
  */
-export function createSigner(sdk: SignerSdkTypes, keyEntry: KeyEntry): Signer {
+export function createSigner(keyEntry: KeyEntry): Signer {
   // Load the secret key from the entry
-  const secretKey = loadSecretKey(sdk, keyEntry);
+  const secretKey = loadSecretKey(keyEntry);
   const publicKey = secretKey.publicKey();
 
   // Get the commitment (used for authorization checks)
@@ -64,7 +64,7 @@ export function createSigner(sdk: SignerSdkTypes, keyEntry: KeyEntry): Signer {
       const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
       // Pad to 64 chars (32 bytes = 4 field elements)
       const cleanHex = paddedHex.slice(2).padStart(64, '0');
-      const word = sdk.Word.fromHex(cleanHex);
+      const word = Word.fromHex(cleanHex);
 
       // Sign the word
       const signature = secretKey.sign(word);
@@ -83,12 +83,52 @@ export function createSigner(sdk: SignerSdkTypes, keyEntry: KeyEntry): Signer {
       // Commitments are typically 32 bytes (64 hex chars)
       const paddedHex = commitmentHex.startsWith('0x') ? commitmentHex : `0x${commitmentHex}`;
       const cleanHex = paddedHex.slice(2).padStart(64, '0');
-      const word = sdk.Word.fromHex(cleanHex);
+      const word = Word.fromHex(cleanHex);
 
       // Sign the word
       const signature = secretKey.sign(word);
 
       // Serialize the signature to bytes and convert to hex
+      const signatureBytes = signature.serialize();
+      return bytesToHex(signatureBytes);
+    },
+  };
+}
+
+/**
+ * Creates a Signer directly from a secret key instance.
+ *
+ * @param secretKey - The secret key instance
+ * @returns A Signer implementation
+ */
+export function createSignerFromSecretKey(secretKey: SecretKey): Signer {
+  const publicKey = secretKey.publicKey();
+
+  // Get the commitment (used for authorization checks)
+  const commitment = publicKey.toCommitment().toHex();
+
+  // Get the full public key bytes for the x-pubkey header
+  const publicKeyBytes = publicKey.serialize();
+  const publicKeyHex = bytesToHex(publicKeyBytes);
+
+  return {
+    commitment,
+    publicKey: publicKeyHex,
+
+    signAccountId(accountId: string): string {
+      const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
+      const cleanHex = paddedHex.slice(2).padStart(64, '0');
+      const word = Word.fromHex(cleanHex);
+      const signature = secretKey.sign(word);
+      const signatureBytes = signature.serialize();
+      return bytesToHex(signatureBytes);
+    },
+
+    signCommitment(commitmentHex: string): string {
+      const paddedHex = commitmentHex.startsWith('0x') ? commitmentHex : `0x${commitmentHex}`;
+      const cleanHex = paddedHex.slice(2).padStart(64, '0');
+      const word = Word.fromHex(cleanHex);
+      const signature = secretKey.sign(word);
       const signatureBytes = signature.serialize();
       return bytesToHex(signatureBytes);
     },

@@ -2,11 +2,16 @@
  * Web keystore for managing Falcon keys in the browser.
  *
  * Keys are stored in localStorage and can be used for signing transactions.
+ * This module mirrors the KeyManager trait from the Rust miden-multisig-client.
  */
 
-import type { SecretKey, Word } from '@demox-labs/miden-sdk';
+import { SecretKey } from '@demox-labs/miden-sdk';
 
 const KEYSTORE_STORAGE_KEY = 'miden_keystore';
+
+// =============================================================================
+// Types
+// =============================================================================
 
 /**
  * A stored key entry in the keystore.
@@ -24,13 +29,9 @@ export interface KeyEntry {
   createdAt: number;
 }
 
-/**
- * SDK types needed for keystore operations.
- */
-export interface KeystoreSdkTypes {
-  SecretKey: typeof SecretKey;
-  Word: typeof Word;
-}
+// =============================================================================
+// Keystore Functions
+// =============================================================================
 
 /**
  * Generates a unique ID for a new key.
@@ -62,17 +63,16 @@ function saveKeys(keys: KeyEntry[]): void {
 /**
  * Generates a new Falcon key pair and stores it in the keystore.
  *
- * @param sdk - Miden SDK types
  * @param name - Human-readable name for the key
  * @returns The created key entry
  */
-export function generateKey(sdk: KeystoreSdkTypes, name: string): KeyEntry {
+export function generateKey(name: string): KeyEntry {
   // Generate a random seed for the key
   const seed = new Uint8Array(32);
   crypto.getRandomValues(seed);
 
   // Generate the Falcon secret key
-  const secretKey = sdk.SecretKey.rpoFalconWithRNG(seed);
+  const secretKey = SecretKey.rpoFalconWithRNG(seed);
 
   // Get the public key and its commitment
   const publicKey = secretKey.publicKey();
@@ -103,13 +103,12 @@ export function generateKey(sdk: KeystoreSdkTypes, name: string): KeyEntry {
 /**
  * Loads a secret key from a key entry.
  *
- * @param sdk - Miden SDK types
  * @param entry - The key entry to load
  * @returns The deserialized secret key
  */
-export function loadSecretKey(sdk: KeystoreSdkTypes, entry: KeyEntry): SecretKey {
+export function loadSecretKey(entry: KeyEntry): SecretKey {
   const bytes = Uint8Array.from(atob(entry.secretKeyBase64), (c) => c.charCodeAt(0));
-  return sdk.SecretKey.deserialize(bytes);
+  return SecretKey.deserialize(bytes);
 }
 
 /**

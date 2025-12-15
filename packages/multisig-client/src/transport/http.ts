@@ -14,7 +14,7 @@ import type {
   SignProposalRequest,
   Signer,
   StateObject,
-} from './types.js';
+} from '../types.js';
 
 /**
  * Error thrown by the PSM HTTP client.
