@@ -4,9 +4,9 @@ import {
   MultisigClient,
   FalconSigner,
   type Multisig,
-  type StateObject,
   type MultisigConfig,
-} from '@openzeppelin/multisig-client';
+} from '@openzeppelin/miden-multisig-client';
+import { type StateObject } from '@openzeppelin/psm-client';
 
 import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
 
@@ -29,12 +29,16 @@ async function clearIndexedDB(): Promise<void> {
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
 
-// In-memory key storage (not persisted across page reloads)
-interface KeyInfo {
-  id: string;
-  name: string;
+// This tab's signer info
+interface SignerInfo {
   commitment: string;
   secretKey: SecretKey;
+}
+
+// Other signers (from other tabs)
+interface OtherSigner {
+  id: string;
+  commitment: string;
 }
 
 export default function App() {
@@ -46,25 +50,18 @@ export default function App() {
   const [webClient, setWebClient] = useState<WebClient | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Key state (in-memory only)
-  const [keys, setKeys] = useState<KeyInfo[]>([]);
-  const [newKeyName, setNewKeyName] = useState<string>('');
+  // This tab's signer (single key per tab)
+  const [signer, setSigner] = useState<SignerInfo | null>(null);
   const [generatingKey, setGeneratingKey] = useState<boolean>(false);
 
-  // External commitments (for keys not in this browser)
-  interface ExternalCommitment {
-    id: string;
-    name: string;
-    commitment: string;
-  }
-  const [externalCommitments, setExternalCommitments] = useState<ExternalCommitment[]>([]);
-  const [externalCommitmentInput, setExternalCommitmentInput] = useState<string>('');
+  // Other signers' commitments (from other tabs)
+  const [otherSigners, setOtherSigners] = useState<OtherSigner[]>([]);
+  const [otherCommitmentInput, setOtherCommitmentInput] = useState<string>('');
 
   // Multisig creation state
   const [threshold, setThreshold] = useState<number>(1);
-  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
-  const [selectedExternalIds, setSelectedExternalIds] = useState<string[]>([]);
   const [creating, setCreating] = useState<boolean>(false);
+
   // Multisig state
   const [multisig, setMultisig] = useState<Multisig | null>(null);
   const [multisigClient, setMultisigClient] = useState<MultisigClient | null>(null);
@@ -75,32 +72,32 @@ export default function App() {
   const [psmState, setPsmState] = useState<StateObject | null>(null);
   const [syncingState, setSyncingState] = useState<boolean>(false);
 
-  // Selected signer key (used for creating multisig)
-  const [selectedSignerKeyId, setSelectedSignerKeyId] = useState<string>('');
-
   // Connect to PSM server (creates MultisigClient when webClient is available)
-  const connectToPsm = useCallback(async (url: string, client?: WebClient) => {
-    setPsmStatus('Connecting...');
-    try {
-      const wc = client ?? webClient;
-      if (wc) {
-        const msClient = new MultisigClient(wc, { psmEndpoint: url });
-        const pubkey = await msClient.psmClient.getPubkey();
-        setPsmPubkey(pubkey);
-        setMultisigClient(msClient);
-      } else {
-        // Fetch pubkey directly without full client if webClient not ready
-        const response = await fetch(`${url}/pubkey`);
-        const data = await response.json();
-        setPsmPubkey(data.commitment || '');
+  const connectToPsm = useCallback(
+    async (url: string, client?: WebClient) => {
+      setPsmStatus('Connecting...');
+      try {
+        const wc = client ?? webClient;
+        if (wc) {
+          const msClient = new MultisigClient(wc, { psmEndpoint: url });
+          const pubkey = await msClient.psmClient.getPubkey();
+          setPsmPubkey(pubkey);
+          setMultisigClient(msClient);
+        } else {
+          // Fetch pubkey directly without full client if webClient not ready
+          const response = await fetch(`${url}/pubkey`);
+          const data = await response.json();
+          setPsmPubkey(data.commitment || '');
+        }
+        setPsmStatus('Connected');
+        setError(null);
+      } catch {
+        setPsmStatus('Disconnected');
+        setPsmPubkey('');
       }
-      setPsmStatus('Connected');
-      setError(null);
-    } catch {
-      setPsmStatus('Disconnected');
-      setPsmPubkey('');
-    }
-  }, [webClient]);
+    },
+    [webClient]
+  );
 
   // Load Miden SDK and create WebClient
   const loadMidenClient = async () => {
@@ -119,10 +116,10 @@ export default function App() {
     }
   };
 
-  // Generate a new key (dynamic, in-memory + miden-sdk IndexedDB)
-  const handleGenerateKey = async () => {
-    if (!clientReady || !webClient || !newKeyName.trim()) {
-      setError('Please enter a name for the key');
+  // Generate this tab's signer key
+  const handleGenerateSigner = async () => {
+    if (!clientReady || !webClient) {
+      setError('Miden client not initialized');
       return;
     }
 
@@ -144,16 +141,10 @@ export default function App() {
       const publicKey = secretKey.publicKey();
       const commitment = publicKey.toCommitment().toHex();
 
-      // Add to in-memory state
-      const keyInfo: KeyInfo = {
-        id: crypto.randomUUID(),
-        name: newKeyName.trim(),
+      setSigner({
         commitment,
         secretKey,
-      };
-
-      setKeys((prev) => [...prev, keyInfo]);
-      setNewKeyName('');
+      });
     } catch (err) {
       setError(`Failed to generate key: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -161,81 +152,52 @@ export default function App() {
     }
   };
 
-  // Delete a key (removes from in-memory state only)
-  const handleDeleteKey = (keyId: string) => {
-    if (confirm('Are you sure you want to remove this key? The key will remain in IndexedDB until you reset.')) {
-      setKeys((prev) => prev.filter((k) => k.id !== keyId));
-      setSelectedKeyIds((prev) => prev.filter((id) => id !== keyId));
-      if (selectedSignerKeyId === keyId) {
-        setSelectedSignerKeyId('');
-      }
-    }
-  };
-
-  // Toggle key selection for multisig
-  const toggleKeySelection = (keyId: string) => {
-    setSelectedKeyIds((prev) =>
-      prev.includes(keyId) ? prev.filter((id) => id !== keyId) : [...prev, keyId]
-    );
-  };
-
-  // Toggle external commitment selection
-  const toggleExternalSelection = (extId: string) => {
-    setSelectedExternalIds((prev) =>
-      prev.includes(extId) ? prev.filter((id) => id !== extId) : [...prev, extId]
-    );
-  };
-
-  // Add external commitment
-  const handleAddExternalCommitment = () => {
-    const trimmed = externalCommitmentInput.trim();
+  // Add another signer's commitment (from another signer)
+  const handleAddOtherSigner = () => {
+    let trimmed = otherCommitmentInput.trim();
     if (!trimmed) {
       setError('Please enter a commitment');
       return;
     }
-    if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+
+    // Normalize: strip prefix for validation, then store with prefix for consistency
+    const withoutPrefix = trimmed.startsWith('0x') || trimmed.startsWith('0X')
+      ? trimmed.slice(2)
+      : trimmed;
+
+    if (!/^[0-9a-fA-F]{64}$/.test(withoutPrefix)) {
       setError('Commitment must be a 64-character hex string');
       return;
     }
 
-    const external: ExternalCommitment = {
-      id: `ext-${Date.now()}`,
-      name: `External: ${trimmed.slice(0, 8)}...`,
-      commitment: trimmed,
-    };
+    // Store with 0x prefix for consistency with signer.commitment
+    const normalizedCommitment = `0x${withoutPrefix.toLowerCase()}`;
 
-    setExternalCommitments((prev) => [...prev, external]);
-    setSelectedExternalIds((prev) => [...prev, external.id]);
-    setExternalCommitmentInput('');
+    // Check if it's this signer's own commitment
+    const ownCommitment = signer?.commitment.toLowerCase();
+    if (ownCommitment && normalizedCommitment === ownCommitment) {
+      setError("That's your own commitment");
+      return;
+    }
+
+    // Check for duplicates
+    if (otherSigners.some((s) => s.commitment.toLowerCase() === normalizedCommitment)) {
+      setError('This commitment has already been added');
+      return;
+    }
+
+    setOtherSigners((prev) => [...prev, { id: `other-${Date.now()}`, commitment: normalizedCommitment }]);
+    setOtherCommitmentInput('');
     setError(null);
   };
 
-  // Delete external commitment
-  const handleDeleteExternal = (extId: string) => {
-    setExternalCommitments((prev) => prev.filter((e) => e.id !== extId));
-    setSelectedExternalIds((prev) => prev.filter((id) => id !== extId));
+  // Remove another signer
+  const handleRemoveOtherSigner = (id: string) => {
+    setOtherSigners((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Get all selected signer commitments
-  const getSelectedCommitments = (): string[] => {
-    const commitments: string[] = [];
-
-    for (const keyId of selectedKeyIds) {
-      const key = keys.find((k) => k.id === keyId);
-      if (key) {
-        commitments.push(key.commitment);
-      }
-    }
-
-    for (const extId of selectedExternalIds) {
-      const ext = externalCommitments.find((e) => e.id === extId);
-      if (ext) {
-        commitments.push(ext.commitment);
-      }
-    }
-
-    return commitments;
-  };
+  // Get total signer count
+  const totalSigners = (signer ? 1 : 0) + otherSigners.length;
 
   // Create multisig account
   const handleCreateAccount = async () => {
@@ -249,26 +211,18 @@ export default function App() {
       return;
     }
 
-    if (!selectedSignerKeyId) {
-      setError('Please select a signing key first');
+    if (!signer) {
+      setError('Please generate your signer key first');
       return;
     }
 
-    const keyInfo = keys.find((k) => k.id === selectedSignerKeyId);
-    if (!keyInfo) {
-      setError('Selected key not found');
+    if (totalSigners === 0) {
+      setError('At least one signer is required');
       return;
     }
 
-    const commitments = getSelectedCommitments();
-
-    if (commitments.length === 0) {
-      setError('Please select at least one signer');
-      return;
-    }
-
-    if (threshold < 1 || threshold > commitments.length) {
-      setError(`Threshold must be between 1 and ${commitments.length}`);
+    if (threshold < 1 || threshold > totalSigners) {
+      setError(`Threshold must be between 1 and ${totalSigners}`);
       return;
     }
 
@@ -276,18 +230,21 @@ export default function App() {
     setError(null);
 
     try {
+      // Collect all signer commitments (this tab + others)
+      const signerCommitments = [signer.commitment, ...otherSigners.map((s) => s.commitment)];
+
       const config: MultisigConfig = {
         threshold,
-        signerCommitments: commitments,
+        signerCommitments,
         psmCommitment: psmPubkey,
         psmEnabled: true,
       };
 
-      // Create signer from in-memory secret key
-      const signer = new FalconSigner(keyInfo.secretKey);
+      // Create FalconSigner from this tab's secret key
+      const falconSigner = new FalconSigner(signer.secretKey);
 
-      // Create multisig account using the new API
-      const ms = await multisigClient.create(config, signer);
+      // Create multisig account
+      const ms = await multisigClient.create(config, falconSigner);
       setMultisig(ms);
     } catch (err) {
       console.error('Error creating account:', err);
@@ -309,7 +266,6 @@ export default function App() {
     setError(null);
 
     try {
-      // Use the Multisig's registerOnPsm method
       await multisig.registerOnPsm();
       setConfiguredOnPsm(true);
     } catch (err) {
@@ -352,8 +308,6 @@ export default function App() {
     loadMidenClient();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const selectedCount = selectedKeyIds.length + selectedExternalIds.length;
 
   return (
     <div className="app">
@@ -416,67 +370,86 @@ export default function App() {
         {error && <div className="error">{error}</div>}
       </section>
 
-      {/* Keys Section */}
-      <section className="keystore-section">
-        <h2>Keys</h2>
+      {/* Your Signer Section */}
+      <section className="signer-section">
+        <h2>Your Signer</h2>
         <p className="section-description">
-          Generate Falcon keys for signing. Keys are stored in the Miden SDK&apos;s IndexedDB and kept in memory for signing.
+          Generate a unique signing key. Share your commitment with other signers to create a
+          multisig.
         </p>
 
-        <div className="key-generator">
+        {!signer ? (
+          <div className="signer-generator">
+            <button
+              onClick={handleGenerateSigner}
+              className="btn btn-primary"
+              disabled={!clientReady || generatingKey}
+            >
+              {generatingKey ? 'Generating...' : 'Generate Signer Key'}
+            </button>
+          </div>
+        ) : (
+          <div className="signer-info">
+            <div className="signer-details">
+              <div>
+                <span className="label">Your Commitment:</span>
+                <code
+                  onClick={() => copyToClipboard(signer.commitment)}
+                  title="Click to copy - share with other signers"
+                  className="copyable"
+                >
+                  {signer.commitment}
+                </code>
+              </div>
+            </div>
+            <p className="hint">Copy your commitment above and share it with other signers.</p>
+          </div>
+        )}
+      </section>
+
+      {/* Other Signers Section */}
+      <section className="other-signers-section">
+        <h2>Other Signers</h2>
+        <p className="section-description">
+          Add commitments from other signers to include them in the multisig.
+        </p>
+
+        <div className="add-signer">
           <input
             type="text"
-            placeholder="Key name (e.g., 'Alice', 'My Key')"
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleGenerateKey()}
-            disabled={!clientReady || generatingKey}
+            placeholder="Paste commitment from another signer (64-char hex)"
+            value={otherCommitmentInput}
+            onChange={(e) => setOtherCommitmentInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddOtherSigner()}
           />
           <button
-            onClick={handleGenerateKey}
-            className="btn btn-primary"
-            disabled={!clientReady || generatingKey || !newKeyName.trim()}
+            className="btn"
+            onClick={handleAddOtherSigner}
+            disabled={!otherCommitmentInput.trim()}
           >
-            {generatingKey ? 'Generating...' : 'Generate Key'}
+            Add Signer
           </button>
         </div>
 
-        {keys.length > 0 && (
-          <div className="keys-list">
-            <h3>Your Keys (in-memory)</h3>
-            {keys.map((key) => (
-              <div key={key.id} className="key-item">
-                <div className="key-info">
-                  <span className="key-name">{key.name}</span>
-                  <code
-                    className="key-commitment"
-                    onClick={() => copyToClipboard(key.commitment)}
-                    title="Click to copy commitment"
-                  >
-                    {key.commitment.slice(0, 16)}...{key.commitment.slice(-8)}
-                  </code>
-                </div>
-                <div className="key-actions">
-                  <button
-                    className={`btn btn-small ${selectedKeyIds.includes(key.id) ? 'btn-selected' : ''}`}
-                    onClick={() => toggleKeySelection(key.id)}
-                  >
-                    {selectedKeyIds.includes(key.id) ? 'Selected' : 'Select'}
-                  </button>
-                  <button
-                    className="btn btn-small btn-danger"
-                    onClick={() => handleDeleteKey(key.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
+        {otherSigners.length > 0 && (
+          <div className="other-signers-list">
+            <h4>Added Signers ({otherSigners.length}):</h4>
+            {otherSigners.map((s, index) => (
+              <div key={s.id} className="other-signer-item">
+                <span className="signer-number">Signer {index + 2}</span>
+                <code onClick={() => copyToClipboard(s.commitment)} title="Click to copy">
+                  {s.commitment.slice(0, 16)}...{s.commitment.slice(-8)}
+                </code>
+                <button className="btn btn-small btn-danger" onClick={() => handleRemoveOtherSigner(s.id)}>
+                  Remove
+                </button>
               </div>
             ))}
           </div>
         )}
 
-        {keys.length === 0 && (
-          <p className="no-keys">No keys yet. Generate one above to get started.</p>
+        {otherSigners.length === 0 && (
+          <p className="no-signers">No other signers added yet.</p>
         )}
       </section>
 
@@ -485,109 +458,42 @@ export default function App() {
         <h2>Create Multisig Account</h2>
 
         <div className="multisig-config">
+          <div className="signers-summary">
+            <h4>Signers ({totalSigners} total):</h4>
+            <ul>
+              {signer && (
+                <li>
+                  <strong>You</strong>: {signer.commitment.slice(0, 8)}...
+                </li>
+              )}
+              {otherSigners.map((s, index) => (
+                <li key={s.id}>
+                  Signer {index + 2}: {s.commitment.slice(0, 8)}...
+                </li>
+              ))}
+            </ul>
+          </div>
+
           <div className="config-row">
             <label>
               <span className="label">Threshold:</span>
               <input
                 type="number"
                 min="1"
-                max={Math.max(1, selectedCount)}
+                max={Math.max(1, totalSigners)}
                 value={threshold}
                 onChange={(e) => setThreshold(Math.max(1, parseInt(e.target.value) || 1))}
               />
-              <span className="hint">of {selectedCount} signer(s)</span>
-            </label>
-          </div>
-
-          <div className="signers-selection">
-            <h3>Signers</h3>
-
-            {/* Selected keys summary */}
-            {selectedKeyIds.length > 0 && (
-              <div className="selected-signers">
-                <h4>Selected keys:</h4>
-                <ul>
-                  {selectedKeyIds.map((id) => {
-                    const key = keys.find((k) => k.id === id);
-                    return key ? <li key={id}>{key.name}</li> : null;
-                  })}
-                </ul>
-              </div>
-            )}
-
-            {/* External commitments list */}
-            {externalCommitments.length > 0 && (
-              <div className="external-commitments-list">
-                <h4>External commitments:</h4>
-                {externalCommitments.map((ext) => (
-                  <div key={ext.id} className="external-item">
-                    <code>{ext.commitment.slice(0, 16)}...{ext.commitment.slice(-8)}</code>
-                    <div className="external-actions">
-                      <button
-                        className={`btn btn-small ${selectedExternalIds.includes(ext.id) ? 'btn-selected' : ''}`}
-                        onClick={() => toggleExternalSelection(ext.id)}
-                      >
-                        {selectedExternalIds.includes(ext.id) ? 'Selected' : 'Select'}
-                      </button>
-                      <button
-                        className="btn btn-small btn-danger"
-                        onClick={() => handleDeleteExternal(ext.id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add external commitment */}
-            <div className="external-commitment">
-              <h4>Add external commitment:</h4>
-              <div className="external-input">
-                <input
-                  type="text"
-                  placeholder="64-char hex commitment"
-                  value={externalCommitmentInput}
-                  onChange={(e) => setExternalCommitmentInput(e.target.value)}
-                />
-                <button
-                  className="btn btn-small"
-                  onClick={handleAddExternalCommitment}
-                  disabled={!externalCommitmentInput.trim()}
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Signing key selector */}
-          <div className="signer-key-selector">
-            <label>
-              <span className="label">Your Signing Key:</span>
-              <select
-                value={selectedSignerKeyId}
-                onChange={(e) => setSelectedSignerKeyId(e.target.value)}
-                disabled={keys.length === 0}
-              >
-                <option value="">Select your key...</option>
-                {keys.filter(k => selectedKeyIds.includes(k.id)).map((key) => (
-                  <option key={key.id} value={key.id}>
-                    {key.name}
-                  </option>
-                ))}
-              </select>
-              <span className="hint">This key will sign PSM requests</span>
+              <span className="hint">of {totalSigners} signer(s) required to approve</span>
             </label>
           </div>
 
           <button
             onClick={handleCreateAccount}
             className="btn btn-primary btn-large"
-            disabled={!multisigClient || !psmPubkey || creating || selectedCount === 0 || !selectedSignerKeyId}
+            disabled={!multisigClient || !psmPubkey || creating || !signer || totalSigners === 0}
           >
-            {creating ? 'Creating Account...' : `Create ${threshold}-of-${selectedCount} Multisig`}
+            {creating ? 'Creating Account...' : `Create ${threshold}-of-${totalSigners} Multisig`}
           </button>
         </div>
 
@@ -603,7 +509,9 @@ export default function App() {
               </div>
               <div>
                 <span className="label">Threshold:</span>
-                <code>{multisig.threshold}-of-{multisig.signerCommitments.length}</code>
+                <code>
+                  {multisig.threshold}-of-{multisig.signerCommitments.length}
+                </code>
               </div>
               <div>
                 <span className="label">Your Commitment:</span>
@@ -620,9 +528,7 @@ export default function App() {
       {multisig && (
         <section className="psm-sync-section">
           <h2>PSM State Sync</h2>
-          <p className="section-description">
-            Register your account on PSM and sync state.
-          </p>
+          <p className="section-description">Register your account on PSM and sync state.</p>
 
           <div className="psm-actions">
             {!configuredOnPsm ? (
