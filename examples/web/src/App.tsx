@@ -1,23 +1,41 @@
 import { useEffect, useState, useCallback } from 'react';
 
 import {
-  PsmHttpClient,
+  MultisigClient,
+  FalconSigner,
+  type Multisig,
   type StateObject,
-  type ConfigureRequest,
-  createMultisigAccount,
   type MultisigConfig,
-  generateKey,
-  loadKeys,
-  deleteKey,
-  getKey,
-  type KeyEntry,
-  createSigner,
-  clearIndexedDB,
 } from '@openzeppelin/multisig-client';
 
-import { WebClient } from '@demox-labs/miden-sdk';
+import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+
+// Clear all IndexedDB databases (resets miden-sdk state)
+async function clearIndexedDB(): Promise<void> {
+  const databases = await indexedDB.databases();
+  const deletePromises = databases
+    .filter((db) => db.name)
+    .map(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const request = indexedDB.deleteDatabase(db.name!);
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+          request.onblocked = () => resolve();
+        })
+    );
+  await Promise.all(deletePromises);
+}
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
+
+// In-memory key storage (not persisted across page reloads)
+interface KeyInfo {
+  id: string;
+  name: string;
+  commitment: string;
+  secretKey: SecretKey;
+}
 
 export default function App() {
   // Connection state
@@ -28,56 +46,71 @@ export default function App() {
   const [webClient, setWebClient] = useState<WebClient | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Keystore state
-  const [keys, setKeys] = useState<KeyEntry[]>([]);
+  // Key state (in-memory only)
+  const [keys, setKeys] = useState<KeyInfo[]>([]);
   const [newKeyName, setNewKeyName] = useState<string>('');
   const [generatingKey, setGeneratingKey] = useState<boolean>(false);
 
+  // External commitments (for keys not in this browser)
+  interface ExternalCommitment {
+    id: string;
+    name: string;
+    commitment: string;
+  }
+  const [externalCommitments, setExternalCommitments] = useState<ExternalCommitment[]>([]);
+  const [externalCommitmentInput, setExternalCommitmentInput] = useState<string>('');
+
   // Multisig creation state
   const [threshold, setThreshold] = useState<number>(1);
-  const [selectedSigners, setSelectedSigners] = useState<string[]>([]);
-  const [externalCommitment, setExternalCommitment] = useState<string>('');
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
+  const [selectedExternalIds, setSelectedExternalIds] = useState<string[]>([]);
   const [creating, setCreating] = useState<boolean>(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [account, setAccount] = useState<any>(null);
+  // Multisig state
+  const [multisig, setMultisig] = useState<Multisig | null>(null);
+  const [multisigClient, setMultisigClient] = useState<MultisigClient | null>(null);
 
   // PSM sync state
-  const [psmClient] = useState<PsmHttpClient>(() => new PsmHttpClient(DEFAULT_PSM_URL));
   const [configuredOnPsm, setConfiguredOnPsm] = useState<boolean>(false);
   const [configuringPsm, setConfiguringPsm] = useState<boolean>(false);
   const [psmState, setPsmState] = useState<StateObject | null>(null);
   const [syncingState, setSyncingState] = useState<boolean>(false);
-  const [selectedSignerKey, setSelectedSignerKey] = useState<string>('');
 
-  // Refresh keys from storage
-  const refreshKeys = useCallback(() => {
-    setKeys(loadKeys());
-  }, []);
+  // Selected signer key (used for creating multisig)
+  const [selectedSignerKeyId, setSelectedSignerKeyId] = useState<string>('');
 
-  // Connect to PSM server
-  const connectToPsm = useCallback(async (url: string) => {
+  // Connect to PSM server (creates MultisigClient when webClient is available)
+  const connectToPsm = useCallback(async (url: string, client?: WebClient) => {
     setPsmStatus('Connecting...');
     try {
-      const client = new PsmHttpClient(url);
-      const pubkey = await client.getPubkey();
-      setPsmPubkey(pubkey);
+      const wc = client ?? webClient;
+      if (wc) {
+        const msClient = new MultisigClient(wc, { psmEndpoint: url });
+        const pubkey = await msClient.psmClient.getPubkey();
+        setPsmPubkey(pubkey);
+        setMultisigClient(msClient);
+      } else {
+        // Fetch pubkey directly without full client if webClient not ready
+        const response = await fetch(`${url}/pubkey`);
+        const data = await response.json();
+        setPsmPubkey(data.commitment || '');
+      }
       setPsmStatus('Connected');
       setError(null);
     } catch {
       setPsmStatus('Disconnected');
       setPsmPubkey('');
-      // Don't show error on initial auto-connect failure, just set status
     }
-  }, []);
+  }, [webClient]);
 
   // Load Miden SDK and create WebClient
   const loadMidenClient = async () => {
     try {
-      // Create WebClient
       const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
       await client.syncState();
       setWebClient(client);
       setClientReady(true);
+      // Connect to PSM with the new webClient
+      connectToPsm(psmUrl, client);
     } catch (err) {
       console.error('[loadMidenClient] Error:', err);
       setError(
@@ -86,9 +119,9 @@ export default function App() {
     }
   };
 
-  // Generate a new key
-  const handleGenerateKey = () => {
-    if (!clientReady || !newKeyName.trim()) {
+  // Generate a new key (dynamic, in-memory + miden-sdk IndexedDB)
+  const handleGenerateKey = async () => {
+    if (!clientReady || !webClient || !newKeyName.trim()) {
       setError('Please enter a name for the key');
       return;
     }
@@ -97,9 +130,30 @@ export default function App() {
     setError(null);
 
     try {
-      generateKey(newKeyName.trim());
+      // Generate a random seed
+      const seed = new Uint8Array(32);
+      crypto.getRandomValues(seed);
+
+      // Create the Falcon secret key
+      const secretKey = SecretKey.rpoFalconWithRNG(seed);
+
+      // Store in miden-sdk's IndexedDB keystore
+      await webClient.addAccountSecretKeyToWebStore(secretKey);
+
+      // Get commitment for display
+      const publicKey = secretKey.publicKey();
+      const commitment = publicKey.toCommitment().toHex();
+
+      // Add to in-memory state
+      const keyInfo: KeyInfo = {
+        id: crypto.randomUUID(),
+        name: newKeyName.trim(),
+        commitment,
+        secretKey,
+      };
+
+      setKeys((prev) => [...prev, keyInfo]);
       setNewKeyName('');
-      refreshKeys();
     } catch (err) {
       setError(`Failed to generate key: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -107,25 +161,34 @@ export default function App() {
     }
   };
 
-  // Delete a key
+  // Delete a key (removes from in-memory state only)
   const handleDeleteKey = (keyId: string) => {
-    if (confirm('Are you sure you want to delete this key? This cannot be undone.')) {
-      deleteKey(keyId);
-      setSelectedSigners((prev) => prev.filter((id) => id !== keyId));
-      refreshKeys();
+    if (confirm('Are you sure you want to remove this key? The key will remain in IndexedDB until you reset.')) {
+      setKeys((prev) => prev.filter((k) => k.id !== keyId));
+      setSelectedKeyIds((prev) => prev.filter((id) => id !== keyId));
+      if (selectedSignerKeyId === keyId) {
+        setSelectedSignerKeyId('');
+      }
     }
   };
 
-  // Toggle signer selection
-  const toggleSigner = (keyId: string) => {
-    setSelectedSigners((prev) =>
+  // Toggle key selection for multisig
+  const toggleKeySelection = (keyId: string) => {
+    setSelectedKeyIds((prev) =>
       prev.includes(keyId) ? prev.filter((id) => id !== keyId) : [...prev, keyId]
+    );
+  };
+
+  // Toggle external commitment selection
+  const toggleExternalSelection = (extId: string) => {
+    setSelectedExternalIds((prev) =>
+      prev.includes(extId) ? prev.filter((id) => id !== extId) : [...prev, extId]
     );
   };
 
   // Add external commitment
   const handleAddExternalCommitment = () => {
-    const trimmed = externalCommitment.trim();
+    const trimmed = externalCommitmentInput.trim();
     if (!trimmed) {
       setError('Please enter a commitment');
       return;
@@ -134,28 +197,40 @@ export default function App() {
       setError('Commitment must be a 64-character hex string');
       return;
     }
-    // Add as a "virtual" key entry for display
-    const virtualEntry: KeyEntry = {
-      id: `external-${Date.now()}`,
+
+    const external: ExternalCommitment = {
+      id: `ext-${Date.now()}`,
       name: `External: ${trimmed.slice(0, 8)}...`,
       commitment: trimmed,
-      secretKeyBase64: '', // No secret key for external
-      createdAt: Date.now(),
     };
-    setKeys((prev) => [...prev, virtualEntry]);
-    setSelectedSigners((prev) => [...prev, virtualEntry.id]);
-    setExternalCommitment('');
+
+    setExternalCommitments((prev) => [...prev, external]);
+    setSelectedExternalIds((prev) => [...prev, external.id]);
+    setExternalCommitmentInput('');
     setError(null);
   };
 
-  // Get all selected signer commitments (not including PSM which is separate)
+  // Delete external commitment
+  const handleDeleteExternal = (extId: string) => {
+    setExternalCommitments((prev) => prev.filter((e) => e.id !== extId));
+    setSelectedExternalIds((prev) => prev.filter((id) => id !== extId));
+  };
+
+  // Get all selected signer commitments
   const getSelectedCommitments = (): string[] => {
     const commitments: string[] = [];
 
-    for (const keyId of selectedSigners) {
+    for (const keyId of selectedKeyIds) {
       const key = keys.find((k) => k.id === keyId);
       if (key) {
         commitments.push(key.commitment);
+      }
+    }
+
+    for (const extId of selectedExternalIds) {
+      const ext = externalCommitments.find((e) => e.id === extId);
+      if (ext) {
+        commitments.push(ext.commitment);
       }
     }
 
@@ -164,13 +239,24 @@ export default function App() {
 
   // Create multisig account
   const handleCreateAccount = async () => {
-    if (!clientReady || !webClient) {
-      setError('SDK or WebClient not initialized');
+    if (!clientReady || !multisigClient) {
+      setError('Miden client not initialized');
       return;
     }
 
     if (!psmPubkey) {
       setError('Please connect to PSM server first');
+      return;
+    }
+
+    if (!selectedSignerKeyId) {
+      setError('Please select a signing key first');
+      return;
+    }
+
+    const keyInfo = keys.find((k) => k.id === selectedSignerKeyId);
+    if (!keyInfo) {
+      setError('Selected key not found');
       return;
     }
 
@@ -197,8 +283,12 @@ export default function App() {
         psmEnabled: true,
       };
 
-      const result = await createMultisigAccount(webClient, config);
-      setAccount(result.account);
+      // Create signer from in-memory secret key
+      const signer = new FalconSigner(keyInfo.secretKey);
+
+      // Create multisig account using the new API
+      const ms = await multisigClient.create(config, signer);
+      setMultisig(ms);
     } catch (err) {
       console.error('Error creating account:', err);
       const message = err instanceof Error ? err.message : String(err);
@@ -210,20 +300,8 @@ export default function App() {
 
   // Configure account on PSM server
   const handleConfigureOnPsm = async () => {
-    if (!clientReady || !account || !psmPubkey) {
+    if (!clientReady || !multisig || !psmPubkey) {
       setError('Account not created or PSM not connected');
-      return;
-    }
-
-    // Need a signer key selected for authentication
-    if (!selectedSignerKey) {
-      setError('Please select a key to sign requests');
-      return;
-    }
-
-    const keyEntry = getKey(selectedSignerKey);
-    if (!keyEntry) {
-      setError('Selected key not found');
       return;
     }
 
@@ -231,42 +309,9 @@ export default function App() {
     setError(null);
 
     try {
-      // Create signer for authentication
-      const signer = createSigner(keyEntry);
-      psmClient.setSigner(signer);
-
-      // Get all cosigner commitments (same as used in account creation)
-      const commitments = getSelectedCommitments();
-
-      // Build initial state JSON (account serialization)
-      // For now, we use a simple placeholder - in production this would be the serialized account
-      const accountId = account.id().toString();
-      const initialStateData = JSON.stringify({
-        account_id: accountId,
-        nonce: account.nonce().toString(),
-        // Add other account state as needed
-      });
-
-      const request: ConfigureRequest = {
-        account_id: accountId,
-        auth: {
-          MidenFalconRpo: {
-            cosigner_commitments: commitments,
-          },
-        },
-        initial_state: {
-          data: btoa(initialStateData), // Base64 encode
-          account_id: accountId,
-        },
-        storage_type: 'Filesystem',
-      };
-
-      const response = await psmClient.configure(request);
-      if (response.success) {
-        setConfiguredOnPsm(true);
-      } else {
-        setError(`PSM configuration failed: ${response.message}`);
-      }
+      // Use the Multisig's registerOnPsm method
+      await multisig.registerOnPsm();
+      setConfiguredOnPsm(true);
     } catch (err) {
       console.error('Error configuring on PSM:', err);
       const message = err instanceof Error ? err.message : String(err);
@@ -278,19 +323,8 @@ export default function App() {
 
   // Sync state from PSM server
   const handleSyncState = async () => {
-    if (!clientReady || !account) {
+    if (!clientReady || !multisig || !multisigClient) {
       setError('Account not created');
-      return;
-    }
-
-    if (!selectedSignerKey) {
-      setError('Please select a key to sign requests');
-      return;
-    }
-
-    const keyEntry = getKey(selectedSignerKey);
-    if (!keyEntry) {
-      setError('Selected key not found');
       return;
     }
 
@@ -298,12 +332,7 @@ export default function App() {
     setError(null);
 
     try {
-      // Create signer for authentication
-      const signer = createSigner(keyEntry);
-      psmClient.setSigner(signer);
-
-      const accountId = account.id().toString();
-      const state = await psmClient.getState(accountId);
+      const state = await multisigClient.psmClient.getState(multisig.accountId);
       setPsmState(state);
     } catch (err) {
       console.error('Error syncing state:', err);
@@ -321,11 +350,10 @@ export default function App() {
 
   useEffect(() => {
     loadMidenClient();
-    refreshKeys();
-    connectToPsm(psmUrl);
-  }, [refreshKeys, connectToPsm, psmUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const selectedCount = selectedSigners.length;
+  const selectedCount = selectedKeyIds.length + selectedExternalIds.length;
 
   return (
     <div className="app">
@@ -388,11 +416,11 @@ export default function App() {
         {error && <div className="error">{error}</div>}
       </section>
 
-      {/* Keystore Section */}
+      {/* Keys Section */}
       <section className="keystore-section">
-        <h2>Keystore</h2>
+        <h2>Keys</h2>
         <p className="section-description">
-          Generate Falcon keys for signing. Keys are stored in your browser&apos;s localStorage.
+          Generate Falcon keys for signing. Keys are stored in the Miden SDK&apos;s IndexedDB and kept in memory for signing.
         </p>
 
         <div className="key-generator">
@@ -415,7 +443,7 @@ export default function App() {
 
         {keys.length > 0 && (
           <div className="keys-list">
-            <h3>Your Keys</h3>
+            <h3>Your Keys (in-memory)</h3>
             {keys.map((key) => (
               <div key={key.id} className="key-item">
                 <div className="key-info">
@@ -429,19 +457,17 @@ export default function App() {
                   </code>
                 </div>
                 <div className="key-actions">
-                  {key.secretKeyBase64 && (
-                    <button
-                      className={`btn btn-small ${selectedSigners.includes(key.id) ? 'btn-selected' : ''}`}
-                      onClick={() => toggleSigner(key.id)}
-                    >
-                      {selectedSigners.includes(key.id) ? '✓ Selected' : 'Select'}
-                    </button>
-                  )}
+                  <button
+                    className={`btn btn-small ${selectedKeyIds.includes(key.id) ? 'btn-selected' : ''}`}
+                    onClick={() => toggleKeySelection(key.id)}
+                  >
+                    {selectedKeyIds.includes(key.id) ? 'Selected' : 'Select'}
+                  </button>
                   <button
                     className="btn btn-small btn-danger"
                     onClick={() => handleDeleteKey(key.id)}
                   >
-                    Delete
+                    Remove
                   </button>
                 </div>
               </div>
@@ -477,15 +503,41 @@ export default function App() {
             <h3>Signers</h3>
 
             {/* Selected keys summary */}
-            {selectedSigners.length > 0 && (
+            {selectedKeyIds.length > 0 && (
               <div className="selected-signers">
-                <h4>Selected from keystore:</h4>
+                <h4>Selected keys:</h4>
                 <ul>
-                  {selectedSigners.map((id) => {
+                  {selectedKeyIds.map((id) => {
                     const key = keys.find((k) => k.id === id);
                     return key ? <li key={id}>{key.name}</li> : null;
                   })}
                 </ul>
+              </div>
+            )}
+
+            {/* External commitments list */}
+            {externalCommitments.length > 0 && (
+              <div className="external-commitments-list">
+                <h4>External commitments:</h4>
+                {externalCommitments.map((ext) => (
+                  <div key={ext.id} className="external-item">
+                    <code>{ext.commitment.slice(0, 16)}...{ext.commitment.slice(-8)}</code>
+                    <div className="external-actions">
+                      <button
+                        className={`btn btn-small ${selectedExternalIds.includes(ext.id) ? 'btn-selected' : ''}`}
+                        onClick={() => toggleExternalSelection(ext.id)}
+                      >
+                        {selectedExternalIds.includes(ext.id) ? 'Selected' : 'Select'}
+                      </button>
+                      <button
+                        className="btn btn-small btn-danger"
+                        onClick={() => handleDeleteExternal(ext.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -496,13 +548,13 @@ export default function App() {
                 <input
                   type="text"
                   placeholder="64-char hex commitment"
-                  value={externalCommitment}
-                  onChange={(e) => setExternalCommitment(e.target.value)}
+                  value={externalCommitmentInput}
+                  onChange={(e) => setExternalCommitmentInput(e.target.value)}
                 />
                 <button
                   className="btn btn-small"
                   onClick={handleAddExternalCommitment}
-                  disabled={!externalCommitment.trim()}
+                  disabled={!externalCommitmentInput.trim()}
                 >
                   Add
                 </button>
@@ -510,32 +562,54 @@ export default function App() {
             </div>
           </div>
 
+          {/* Signing key selector */}
+          <div className="signer-key-selector">
+            <label>
+              <span className="label">Your Signing Key:</span>
+              <select
+                value={selectedSignerKeyId}
+                onChange={(e) => setSelectedSignerKeyId(e.target.value)}
+                disabled={keys.length === 0}
+              >
+                <option value="">Select your key...</option>
+                {keys.filter(k => selectedKeyIds.includes(k.id)).map((key) => (
+                  <option key={key.id} value={key.id}>
+                    {key.name}
+                  </option>
+                ))}
+              </select>
+              <span className="hint">This key will sign PSM requests</span>
+            </label>
+          </div>
+
           <button
             onClick={handleCreateAccount}
             className="btn btn-primary btn-large"
-            disabled={!webClient || !psmPubkey || creating || selectedCount === 0}
+            disabled={!multisigClient || !psmPubkey || creating || selectedCount === 0 || !selectedSignerKeyId}
           >
             {creating ? 'Creating Account...' : `Create ${threshold}-of-${selectedCount} Multisig`}
           </button>
         </div>
 
-        {account && (
+        {multisig && (
           <div className="account-info">
             <h3>Account Created!</h3>
             <div className="account-details">
               <div>
                 <span className="label">Account ID:</span>
-                <code onClick={() => copyToClipboard(account.id().toString())} title="Click to copy">
-                  {account.id().toString()}
+                <code onClick={() => copyToClipboard(multisig.accountId)} title="Click to copy">
+                  {multisig.accountId}
                 </code>
               </div>
               <div>
-                <span className="label">Nonce:</span>
-                <code>{account.nonce().toString()}</code>
+                <span className="label">Threshold:</span>
+                <code>{multisig.threshold}-of-{multisig.signerCommitments.length}</code>
               </div>
               <div>
-                <span className="label">Is Public:</span>
-                <code>{account.isPublic() ? 'Yes' : 'No'}</code>
+                <span className="label">Your Commitment:</span>
+                <code onClick={() => copyToClipboard(multisig.signerCommitment)} title="Click to copy">
+                  {multisig.signerCommitment.slice(0, 16)}...
+                </code>
               </div>
             </div>
           </div>
@@ -543,39 +617,19 @@ export default function App() {
       </section>
 
       {/* PSM Sync Section - only show after account is created */}
-      {account && (
+      {multisig && (
         <section className="psm-sync-section">
           <h2>PSM State Sync</h2>
           <p className="section-description">
-            Register your account on PSM and sync state. Select a key to authenticate requests.
+            Register your account on PSM and sync state.
           </p>
-
-          <div className="signer-key-selector">
-            <label>
-              <span className="label">Signing Key:</span>
-              <select
-                value={selectedSignerKey}
-                onChange={(e) => setSelectedSignerKey(e.target.value)}
-                disabled={keys.filter((k) => k.secretKeyBase64).length === 0}
-              >
-                <option value="">Select a key...</option>
-                {keys
-                  .filter((k) => k.secretKeyBase64) // Only show keys with secret keys
-                  .map((key) => (
-                    <option key={key.id} value={key.id}>
-                      {key.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          </div>
 
           <div className="psm-actions">
             {!configuredOnPsm ? (
               <button
                 onClick={handleConfigureOnPsm}
                 className="btn btn-primary"
-                disabled={configuringPsm || !selectedSignerKey || !psmPubkey}
+                disabled={configuringPsm || !psmPubkey}
               >
                 {configuringPsm ? 'Registering...' : 'Register on PSM'}
               </button>
@@ -588,7 +642,7 @@ export default function App() {
             <button
               onClick={handleSyncState}
               className="btn"
-              disabled={syncingState || !selectedSignerKey || !configuredOnPsm}
+              disabled={syncingState || !configuredOnPsm}
             >
               {syncingState ? 'Syncing...' : 'Sync State'}
             </button>

@@ -8,46 +8,49 @@
  * @example
  * ```typescript
  * import {
- *   createMultisigAccount,
- *   generateKey,
- *   createSigner,
- *   PsmHttpClient,
+ *   MultisigClient,
+ *   FalconSigner,
+ *   setMasmBaseUrl,
  * } from '@openzeppelin/multisig-client';
- * import { WebClient } from '@demox-labs/miden-sdk';
+ * import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
  *
  * // Initialize WebClient
  * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
  * await webClient.syncState();
  *
- * // Generate a key
- * const keyEntry = generateKey('My Key');
+ * // Generate a key dynamically
+ * const seed = new Uint8Array(32);
+ * crypto.getRandomValues(seed);
+ * const secretKey = SecretKey.rpoFalconWithRNG(seed);
+ *
+ * // Store in miden-sdk's keystore
+ * await webClient.addAccountSecretKeyToWebStore(secretKey);
  *
  * // Create a signer
- * const signer = createSigner(keyEntry);
+ * const signer = new FalconSigner(secretKey);
  *
- * // Create a multisig account
- * const config = { threshold: 2, signerCommitments: [...], psmCommitment: '...' };
- * const { account } = await createMultisigAccount(webClient, config);
+ * // Create multisig client
+ * const client = new MultisigClient(webClient, { psmEndpoint: 'http://localhost:3000' });
  *
- * // Use PSM client
- * const psmClient = new PsmHttpClient('http://localhost:3000');
- * psmClient.setSigner(signer);
+ * // Get PSM pubkey for config
+ * const psmCommitment = await client.psmClient.getPubkey();
+ *
+ * // Create multisig account
+ * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], psmCommitment };
+ * const multisig = await client.create(config, signer);
+ *
+ * // Register on PSM and work with proposals
+ * await multisig.registerOnPsm();
+ * await multisig.syncProposals();
  * ```
  */
-
-// =============================================================================
-// Utilities
-// =============================================================================
-
-export { clearIndexedDB } from './miden.js';
 
 // =============================================================================
 // Client Classes
 // =============================================================================
 
 export { MultisigClient, type MultisigClientConfig } from './client.js';
-export { MultisigClientBuilder } from './builder.js';
-export { MultisigAccount } from './account.js';
+export { Multisig } from './multisig.js';
 
 // =============================================================================
 // Transport Layer
@@ -56,28 +59,10 @@ export { MultisigAccount } from './account.js';
 export { PsmHttpClient, PsmHttpError } from './transport/index.js';
 
 // =============================================================================
-// Key Management
-// =============================================================================
-
-export {
-  generateKey,
-  loadKeys,
-  loadSecretKey,
-  deleteKey,
-  getKey,
-  renameKey,
-  clearKeystore,
-  type KeyEntry,
-} from './keystore.js';
-
-// =============================================================================
 // Signer
 // =============================================================================
 
-export {
-  createSigner,
-  createSignerFromSecretKey,
-} from './signer.js';
+export { FalconSigner } from './signer.js';
 
 // =============================================================================
 // Account Creation

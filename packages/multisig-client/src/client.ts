@@ -1,369 +1,99 @@
 /**
- * High-level client for Miden multisig operations via HTTP.
+ * MultisigClient - Factory for creating and loading multisig accounts.
  *
- * This is the TypeScript equivalent of the Rust `MultisigClient` from
- * `miden-multisig-client`, using HTTP instead of gRPC.
+ * This is the main entry point for the multisig SDK. It provides methods
+ * to create new multisig accounts and load existing ones.
  */
 
+import { type WebClient } from '@demox-labs/miden-sdk';
 import { PsmHttpClient } from './transport/http.js';
-import type {
-  AuthConfig,
-  DeltaObject,
-  DeltaStatus,
-  ExportedProposal,
-  FalconSignature,
-  MultisigAccount,
-  Proposal,
-  ProposalSignatureEntry,
-  ProposalStatus,
-  Signer,
-  StateObject,
-  StorageType,
-} from './types.js';
+import { Multisig } from './multisig.js';
+import { createMultisigAccount } from './account/index.js';
+import type { MultisigConfig, Signer } from './types.js';
 
 /**
- * Configuration for the MultisigClient.
+ * Configuration for MultisigClient.
  */
 export interface MultisigClientConfig {
-  /** PSM server endpoint (e.g., 'http://localhost:8080') */
-  psmEndpoint: string;
-  /** The signer for signing requests */
-  signer: Signer;
+  /** PSM server endpoint (default: 'http://localhost:3000') */
+  psmEndpoint?: string;
 }
 
 /**
- * High-level client for managing multisig accounts and proposals.
+ * Factory client for creating and loading multisig accounts.
  *
- * This client provides the same API as the Rust `MultisigClient` but uses
- * HTTP instead of gRPC for communication with the PSM server.
+ * @example
+ * ```typescript
+ * import { MultisigClient, FalconSigner } from '@openzeppelin/multisig-client';
+ * import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+ *
+ * // Initialize
+ * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+ * const secretKey = SecretKey.rpoFalconWithRNG(seed);
+ * const signer = new FalconSigner(secretKey);
+ *
+ * // Create client
+ * const client = new MultisigClient(webClient, { psmEndpoint: 'http://localhost:3000' });
+ *
+ * // Get PSM pubkey for config
+ * const psmCommitment = await client.psmClient.getPubkey();
+ *
+ * // Create multisig
+ * const config = { threshold: 2, signerCommitments: [...], psmCommitment };
+ * const multisig = await client.create(config, signer);
+ * ```
  */
 export class MultisigClient {
-  private readonly http: PsmHttpClient;
-  private readonly signer: Signer;
-  private account: MultisigAccount | null = null;
-  private proposals: Map<string, Proposal> = new Map();
+  private readonly webClient: WebClient;
+  private readonly _psmClient: PsmHttpClient;
 
-  constructor(config: MultisigClientConfig) {
-    this.http = new PsmHttpClient(config.psmEndpoint);
-    this.signer = config.signer;
-    this.http.setSigner(config.signer);
+  constructor(webClient: WebClient, config: MultisigClientConfig = {}) {
+    this.webClient = webClient;
+    this._psmClient = new PsmHttpClient(config.psmEndpoint ?? 'http://localhost:3000');
   }
 
-  // ===========================================================================
-  // Account Management
-  // ===========================================================================
-
   /**
-   * Get the current account, if one is loaded.
+   * Access the internal PSM client.
+   * Useful for getting the PSM pubkey before creating a multisig.
    */
-  getAccount(): MultisigAccount | null {
-    return this.account;
+  get psmClient(): PsmHttpClient {
+    return this._psmClient;
   }
 
   /**
-   * Get the signer's commitment.
-   */
-  getSignerCommitment(): string {
-    return this.signer.commitment;
-  }
-
-  /**
-   * Get the PSM server's public key commitment.
-   */
-  async getPsmPubkey(): Promise<string> {
-    return this.http.getPubkey();
-  }
-
-  /**
-   * Register a new multisig account on PSM.
+   * Create a new multisig account.
    *
-   * @param accountId - The account ID (must be a valid on-chain account)
-   * @param threshold - Number of signatures required
-   * @param cosignerCommitments - All cosigner public key commitments (including self)
-   * @param initialStateBase64 - Base64-encoded serialized account state
+   * @param config - Multisig configuration (threshold, signers, PSM commitment)
+   * @param signer - The signer for this client (one of the cosigners)
+   * @returns A Multisig instance wrapping the created account
    */
-  async registerAccount(
-    accountId: string,
-    threshold: number,
-    cosignerCommitments: string[],
-    initialStateBase64: string
-  ): Promise<MultisigAccount> {
-    const auth: AuthConfig = {
-      MidenFalconRpo: {
-        cosigner_commitments: cosignerCommitments,
-      },
-    };
+  async create(config: MultisigConfig, signer: Signer): Promise<Multisig> {
+    // Set the signer on PSM client for authentication
+    this._psmClient.setSigner(signer);
 
-    const response = await this.http.configure({
-      account_id: accountId,
-      auth,
-      initial_state: { data: initialStateBase64, account_id: accountId },
-      storage_type: 'Filesystem' as StorageType,
-    });
+    // Create the multisig account using the Miden SDK
+    const { account } = await createMultisigAccount(this.webClient, config);
 
-    if (!response.success) {
-      throw new Error(`Failed to register account: ${response.message}`);
-    }
-
-    this.account = {
-      id: accountId,
-      nonce: 0,
-      threshold,
-      cosignerCommitments,
-    };
-
-    return this.account;
+    // Return wrapped Multisig instance
+    return new Multisig(account, config, this._psmClient, signer);
   }
 
   /**
-   * Load an existing account from PSM.
+   * Load an existing multisig account from PSM.
    *
    * @param accountId - The account ID to load
-   * @param threshold - The account's threshold (must be known)
-   * @param cosignerCommitments - The account's cosigner commitments (must be known)
+   * @param config - Multisig configuration (must match the account)
+   * @param signer - The signer for this client
+   * @returns A Multisig instance for the loaded account
    */
-  async loadAccount(
-    accountId: string,
-    threshold: number,
-    cosignerCommitments: string[]
-  ): Promise<MultisigAccount> {
+  async load(accountId: string, config: MultisigConfig, signer: Signer): Promise<Multisig> {
+    // Set the signer on PSM client for authentication
+    this._psmClient.setSigner(signer);
+
     // Verify account exists on PSM
-    await this.http.getState(accountId);
+    await this._psmClient.getState(accountId);
 
-    this.account = {
-      id: accountId,
-      nonce: 0,
-      threshold,
-      cosignerCommitments,
-    };
-
-    // Sync proposals to get current state
-    await this.syncProposals();
-
-    return this.account;
-  }
-
-  /**
-   * Get account state from PSM.
-   */
-  async getAccountState(accountId: string): Promise<StateObject> {
-    return this.http.getState(accountId);
-  }
-
-  // ===========================================================================
-  // Proposal Management
-  // ===========================================================================
-
-  /**
-   * Create a new proposal from a TransactionSummary (base64 encoded).
-   *
-   * @param nonce - The nonce for this transaction
-   * @param txSummaryBase64 - Base64-encoded transaction summary
-   * @returns The created proposal
-   */
-  async createProposal(nonce: number, txSummaryBase64: string): Promise<Proposal> {
-    if (!this.account) {
-      throw new Error('No account loaded. Call registerAccount() or loadAccount() first.');
-    }
-
-    const response = await this.http.pushDeltaProposal({
-      account_id: this.account.id,
-      nonce,
-      delta_payload: {
-        tx_summary: { data: txSummaryBase64 },
-        signatures: [],
-      },
-    });
-
-    const proposal = this.deltaToProposal(response.delta, response.commitment);
-    this.proposals.set(proposal.id, proposal);
-
-    return proposal;
-  }
-
-  /**
-   * Sign a proposal.
-   *
-   * @param proposalId - The proposal commitment/ID
-   * @param commitmentToSign - The commitment bytes to sign (usually tx_summary hash)
-   * @returns The updated proposal
-   */
-  async signProposal(proposalId: string, commitmentToSign: string): Promise<Proposal> {
-    if (!this.account) {
-      throw new Error('No account loaded.');
-    }
-
-    const signatureHex = this.signer.signCommitment(commitmentToSign);
-
-    const signature: FalconSignature = {
-      Falcon: { signature: signatureHex },
-    };
-
-    const delta = await this.http.signDeltaProposal({
-      account_id: this.account.id,
-      commitment: proposalId,
-      signature,
-    });
-
-    const proposal = this.deltaToProposal(delta, proposalId);
-    this.proposals.set(proposal.id, proposal);
-
-    return proposal;
-  }
-
-  /**
-   * Execute a proposal that has enough signatures.
-   *
-   * @param proposalId - The proposal commitment/ID
-   */
-  async executeProposal(proposalId: string): Promise<void> {
-    if (!this.account) {
-      throw new Error('No account loaded.');
-    }
-
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) {
-      throw new Error(`Proposal not found: ${proposalId}`);
-    }
-
-    if (proposal.status.type === 'pending') {
-      throw new Error('Proposal is not ready for execution. Still pending signatures.');
-    }
-
-    // Find the delta object from PSM
-    const deltas = await this.http.getDeltaProposals(this.account.id);
-    const delta = deltas.find((d) => this.computeProposalId(d) === proposalId);
-
-    if (!delta) {
-      throw new Error(`Proposal not found on server: ${proposalId}`);
-    }
-
-    await this.http.pushDelta(delta);
-
-    // Update local state
-    const updatedProposal = this.proposals.get(proposalId);
-    if (updatedProposal) {
-      updatedProposal.status = { type: 'finalized' };
-    }
-  }
-
-  /**
-   * List all proposals for the current account.
-   */
-  async listProposals(): Promise<Proposal[]> {
-    await this.syncProposals();
-    return Array.from(this.proposals.values());
-  }
-
-  /**
-   * Sync proposals from PSM server.
-   */
-  async syncProposals(): Promise<void> {
-    if (!this.account) {
-      return;
-    }
-
-    const deltas = await this.http.getDeltaProposals(this.account.id);
-
-    for (const delta of deltas) {
-      const proposalId = this.computeProposalId(delta);
-      const proposal = this.deltaToProposal(delta, proposalId);
-      this.proposals.set(proposal.id, proposal);
-    }
-  }
-
-  // ===========================================================================
-  // Offline/Export Support
-  // ===========================================================================
-
-  /**
-   * Export a proposal for offline signing.
-   */
-  async exportProposal(proposalId: string): Promise<ExportedProposal> {
-    if (!this.account) {
-      throw new Error('No account loaded.');
-    }
-
-    const deltas = await this.http.getDeltaProposals(this.account.id);
-    const delta = deltas.find((d) => this.computeProposalId(d) === proposalId);
-
-    if (!delta) {
-      throw new Error(`Proposal not found: ${proposalId}`);
-    }
-
-    const signatures =
-      delta.status.status === 'pending'
-        ? delta.status.cosigner_sigs.map((s) => ({
-            commitment: s.signer_id,
-            signatureHex: s.signature.Falcon.signature,
-          }))
-        : [];
-
-    return {
-      accountId: delta.account_id,
-      nonce: delta.nonce,
-      commitment: proposalId,
-      txSummaryBase64: delta.delta_payload.data,
-      signatures,
-    };
-  }
-
-  // ===========================================================================
-  // Private Helpers
-  // ===========================================================================
-
-  /**
-   * Compute a proposal ID from a delta object.
-   * This should hash the delta_payload, but for now we use a placeholder.
-   */
-  private computeProposalId(delta: DeltaObject): string {
-    // In a real implementation, this would compute the RPO hash of the delta_payload
-    // For now, we use a combination of account_id and nonce as a simple identifier
-    return `${delta.account_id}:${delta.nonce}`;
-  }
-
-  /**
-   * Convert a PSM DeltaObject to our Proposal type.
-   */
-  private deltaToProposal(delta: DeltaObject, proposalId: string): Proposal {
-    const status = this.deltaStatusToProposalStatus(delta.status);
-
-    const signatures: ProposalSignatureEntry[] =
-      delta.status.status === 'pending'
-        ? delta.status.cosigner_sigs.map((s) => ({
-            signerId: s.signer_id,
-            signature: s.signature,
-            timestamp: s.timestamp,
-          }))
-        : [];
-
-    return {
-      id: proposalId,
-      accountId: delta.account_id,
-      nonce: delta.nonce,
-      status,
-      txSummary: delta.delta_payload.data,
-      signatures,
-    };
-  }
-
-  /**
-   * Convert PSM status to our ProposalStatus type.
-   */
-  private deltaStatusToProposalStatus(status: DeltaStatus): ProposalStatus {
-    switch (status.status) {
-      case 'pending':
-        return {
-          type: 'pending',
-          signaturesCollected: status.cosigner_sigs.length,
-          signaturesRequired: this.account?.threshold ?? 1,
-          signers: status.cosigner_sigs.map((s) => s.signer_id),
-        };
-      case 'candidate':
-        return { type: 'ready' };
-      case 'canonical':
-      case 'discarded':
-        return { type: 'finalized' };
-    }
+    // Return wrapped Multisig instance (null account since we're loading)
+    return new Multisig(null, config, this._psmClient, signer, accountId);
   }
 }
