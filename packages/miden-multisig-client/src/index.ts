@@ -50,7 +50,8 @@
 // =============================================================================
 
 export { MultisigClient, type MultisigClientConfig } from './client.js';
-export { Multisig } from './multisig.js';
+export { Multisig, type AccountState } from './multisig.js';
+export { AccountInspector, type DetectedMultisigConfig } from './inspector.js';
 
 // =============================================================================
 // PSM Client (re-exported from @openzeppelin/psm-client)

@@ -2,6 +2,8 @@
  * Core types for the Miden multisig client.
  */
 
+import type { Account } from '@demox-labs/miden-sdk';
+
 // Re-export PSM types that are used in multisig context
 export type {
   Signer,
@@ -67,7 +69,7 @@ export interface MultisigConfig {
  */
 export interface CreateAccountResult {
   /** The created account (from Miden SDK) */
-  account: unknown;
+  account: Account;
   /** The account seed used for creation */
   seed: Uint8Array;
 }

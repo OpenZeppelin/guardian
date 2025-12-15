@@ -3,10 +3,12 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   MultisigClient,
   FalconSigner,
+  AccountInspector,
   type Multisig,
   type MultisigConfig,
+  type AccountState,
+  type DetectedMultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
-import { type StateObject } from '@openzeppelin/psm-client';
 
 import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
 
@@ -69,8 +71,13 @@ export default function App() {
   // PSM sync state
   const [configuredOnPsm, setConfiguredOnPsm] = useState<boolean>(false);
   const [configuringPsm, setConfiguringPsm] = useState<boolean>(false);
-  const [psmState, setPsmState] = useState<StateObject | null>(null);
+  const [psmState, setPsmState] = useState<AccountState | null>(null);
   const [syncingState, setSyncingState] = useState<boolean>(false);
+
+  // Load existing account state
+  const [loadAccountIdInput, setLoadAccountIdInput] = useState<string>('');
+  const [loadingAccount, setLoadingAccount] = useState<boolean>(false);
+  const [detectedConfig, setDetectedConfig] = useState<DetectedMultisigConfig | null>(null);
 
   // Connect to PSM server (creates MultisigClient when webClient is available)
   const connectToPsm = useCallback(
@@ -277,9 +284,86 @@ export default function App() {
     }
   };
 
+  // Load existing account from PSM
+  const handleLoadFromPsm = async () => {
+    if (!clientReady || !multisigClient) {
+      setError('Miden client not initialized');
+      return;
+    }
+
+    if (!signer) {
+      setError('Please generate your signer key first');
+      return;
+    }
+
+    let accountId = loadAccountIdInput.trim();
+    if (!accountId) {
+      setError('Please enter an account ID');
+      return;
+    }
+
+    // Normalize account ID format
+    if (!accountId.startsWith('0x')) {
+      accountId = `0x${accountId}`;
+    }
+
+    setLoadingAccount(true);
+    setError(null);
+    setDetectedConfig(null);
+
+    try {
+      // Create FalconSigner from this tab's secret key
+      const falconSigner = new FalconSigner(signer.secretKey);
+
+      // First, fetch the state to inspect the account configuration
+      // We need a temporary config just to authenticate the request
+      const tempConfig: MultisigConfig = {
+        threshold: 1,
+        signerCommitments: [signer.commitment],
+        psmCommitment: psmPubkey,
+        psmEnabled: true,
+      };
+
+      // Load multisig with temp config to fetch state
+      const tempMs = await multisigClient.load(accountId, tempConfig, falconSigner);
+      const state = await tempMs.fetchState();
+
+      // Inspect the account to detect actual configuration
+      const detected = AccountInspector.fromBase64(state.stateDataBase64);
+      setDetectedConfig(detected);
+
+      // Now create the multisig with the detected configuration
+      const config: MultisigConfig = {
+        threshold: detected.threshold,
+        signerCommitments: detected.signerCommitments,
+        psmCommitment: detected.psmCommitment || psmPubkey,
+        psmEnabled: detected.psmEnabled,
+      };
+
+      // Reload with correct config
+      const ms = await multisigClient.load(accountId, config, falconSigner);
+      setMultisig(ms);
+      setConfiguredOnPsm(true); // Already registered since we're loading
+      setPsmState(state);
+
+      // Update threshold in UI to match detected
+      setThreshold(detected.threshold);
+    } catch (err) {
+      console.error('Error loading account from PSM:', err);
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('404') || message.includes('not found')) {
+        setError(`Account not found on PSM. Make sure the account has been registered first.`);
+      } else {
+        setError(`Failed to load account: ${message}`);
+      }
+    } finally {
+      setLoadingAccount(false);
+    }
+  };
+
   // Sync state from PSM server
   const handleSyncState = async () => {
-    if (!clientReady || !multisig || !multisigClient) {
+    if (!clientReady || !multisig) {
       setError('Account not created');
       return;
     }
@@ -288,7 +372,7 @@ export default function App() {
     setError(null);
 
     try {
-      const state = await multisigClient.psmClient.getState(multisig.accountId);
+      const state = await multisig.fetchState();
       setPsmState(state);
     } catch (err) {
       console.error('Error syncing state:', err);
@@ -407,99 +491,146 @@ export default function App() {
         )}
       </section>
 
-      {/* Other Signers Section */}
-      <section className="other-signers-section">
-        <h2>Other Signers</h2>
-        <p className="section-description">
-          Add commitments from other signers to include them in the multisig.
-        </p>
+      {/* Create Multisig Account Section */}
+      {!multisig && (
+        <section className="multisig-section">
+          <h2>Create Multisig Account</h2>
 
-        <div className="add-signer">
-          <input
-            type="text"
-            placeholder="Paste commitment from another signer (64-char hex)"
-            value={otherCommitmentInput}
-            onChange={(e) => setOtherCommitmentInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddOtherSigner()}
-          />
-          <button
-            className="btn"
-            onClick={handleAddOtherSigner}
-            disabled={!otherCommitmentInput.trim()}
-          >
-            Add Signer
-          </button>
-        </div>
+          {/* Step 1: Signers */}
+          <div className="multisig-step">
+            <h3>1. Configure Signers</h3>
+            <p className="section-description">
+              Add commitments from other signers to include them in the multisig.
+            </p>
 
-        {otherSigners.length > 0 && (
-          <div className="other-signers-list">
-            <h4>Added Signers ({otherSigners.length}):</h4>
-            {otherSigners.map((s, index) => (
-              <div key={s.id} className="other-signer-item">
-                <span className="signer-number">Signer {index + 2}</span>
-                <code onClick={() => copyToClipboard(s.commitment)} title="Click to copy">
-                  {s.commitment.slice(0, 16)}...{s.commitment.slice(-8)}
-                </code>
-                <button className="btn btn-small btn-danger" onClick={() => handleRemoveOtherSigner(s.id)}>
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+            <div className="signers-summary">
+              <h4>Signers ({totalSigners} total):</h4>
+              <ul>
+                {signer && (
+                  <li>
+                    <strong>You</strong>: <code>{signer.commitment.slice(0, 16)}...</code>
+                  </li>
+                )}
+                {otherSigners.map((s, index) => (
+                  <li key={s.id} className="other-signer-item">
+                    <span>Signer {index + 2}: <code>{s.commitment.slice(0, 16)}...</code></span>
+                    <button className="btn btn-small btn-danger" onClick={() => handleRemoveOtherSigner(s.id)}>
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-        {otherSigners.length === 0 && (
-          <p className="no-signers">No other signers added yet.</p>
-        )}
-      </section>
-
-      {/* Multisig Creation Section */}
-      <section className="multisig-section">
-        <h2>Create Multisig Account</h2>
-
-        <div className="multisig-config">
-          <div className="signers-summary">
-            <h4>Signers ({totalSigners} total):</h4>
-            <ul>
-              {signer && (
-                <li>
-                  <strong>You</strong>: {signer.commitment.slice(0, 8)}...
-                </li>
-              )}
-              {otherSigners.map((s, index) => (
-                <li key={s.id}>
-                  Signer {index + 2}: {s.commitment.slice(0, 8)}...
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="config-row">
-            <label>
-              <span className="label">Threshold:</span>
+            <div className="add-signer">
               <input
-                type="number"
-                min="1"
-                max={Math.max(1, totalSigners)}
-                value={threshold}
-                onChange={(e) => setThreshold(Math.max(1, parseInt(e.target.value) || 1))}
+                type="text"
+                placeholder="Paste commitment from another signer (64-char hex)"
+                value={otherCommitmentInput}
+                onChange={(e) => setOtherCommitmentInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddOtherSigner()}
               />
-              <span className="hint">of {totalSigners} signer(s) required to approve</span>
-            </label>
+              <button
+                className="btn"
+                onClick={handleAddOtherSigner}
+                disabled={!otherCommitmentInput.trim()}
+              >
+                Add Signer
+              </button>
+            </div>
           </div>
 
-          <button
-            onClick={handleCreateAccount}
-            className="btn btn-primary btn-large"
-            disabled={!multisigClient || !psmPubkey || creating || !signer || totalSigners === 0}
-          >
-            {creating ? 'Creating Account...' : `Create ${threshold}-of-${totalSigners} Multisig`}
-          </button>
-        </div>
+          {/* Step 2: Threshold */}
+          <div className="multisig-step">
+            <h3>2. Set Threshold</h3>
+            <div className="config-row">
+              <label>
+                <span className="label">Required signatures:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max={Math.max(1, totalSigners)}
+                  value={threshold}
+                  onChange={(e) => setThreshold(Math.max(1, parseInt(e.target.value) || 1))}
+                />
+                <span className="hint">of {totalSigners} signer(s) required to approve</span>
+              </label>
+            </div>
+          </div>
 
-        {multisig && (
+          {/* Step 3: Create */}
+          <div className="multisig-step">
+            <h3>3. Create Account</h3>
+            <button
+              onClick={handleCreateAccount}
+              className="btn btn-primary btn-large"
+              disabled={!multisigClient || !psmPubkey || creating || !signer || totalSigners === 0}
+            >
+              {creating ? 'Creating Account...' : `Create ${threshold}-of-${totalSigners} Multisig`}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* Load Existing Account Section */}
+      {!multisig && (
+        <section className="load-account-section">
+          <h2>Or Load Existing Account</h2>
+          <p className="section-description">
+            Load an existing multisig account from PSM. The configuration will be
+            automatically detected.
+          </p>
+
+          <div className="load-account-form">
+            <input
+              type="text"
+              placeholder="Account ID (0x...)"
+              value={loadAccountIdInput}
+              onChange={(e) => setLoadAccountIdInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleLoadFromPsm()}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={handleLoadFromPsm}
+              disabled={!multisigClient || !signer || loadingAccount || !loadAccountIdInput.trim()}
+            >
+              {loadingAccount ? 'Loading...' : 'Load from PSM'}
+            </button>
+          </div>
+
+          {detectedConfig && (
+            <div className="detected-config">
+              <h4>Detected Configuration:</h4>
+              <div className="config-details">
+                <div>
+                  <span className="label">Type:</span>
+                  <code>{detectedConfig.threshold}-of-{detectedConfig.numSigners} multisig</code>
+                </div>
+                <div>
+                  <span className="label">PSM Enabled:</span>
+                  <code>{detectedConfig.psmEnabled ? 'Yes' : 'No'}</code>
+                </div>
+                <div>
+                  <span className="label">Signers:</span>
+                  <ul>
+                    {detectedConfig.signerCommitments.map((c, i) => (
+                      <li key={i}>
+                        <code>{c.slice(0, 16)}...{c.slice(-8)}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Account Info - shown after account is created/loaded */}
+      {multisig && (
+        <section className="account-section">
+          <h2>Multisig Account</h2>
           <div className="account-info">
-            <h3>Account Created!</h3>
             <div className="account-details">
               <div>
                 <span className="label">Account ID:</span>
@@ -521,8 +652,8 @@ export default function App() {
               </div>
             </div>
           </div>
-        )}
-      </section>
+        </section>
+      )}
 
       {/* PSM Sync Section - only show after account is created */}
       {multisig && (
@@ -560,8 +691,8 @@ export default function App() {
               <div className="state-details">
                 <div>
                   <span className="label">Account ID:</span>
-                  <code onClick={() => copyToClipboard(psmState.account_id)} title="Click to copy">
-                    {psmState.account_id}
+                  <code onClick={() => copyToClipboard(psmState.accountId)} title="Click to copy">
+                    {psmState.accountId}
                   </code>
                 </div>
                 <div>
@@ -572,7 +703,7 @@ export default function App() {
                 </div>
                 <div>
                   <span className="label">Updated:</span>
-                  <code>{new Date(psmState.updated_at).toLocaleString()}</code>
+                  <code>{new Date(psmState.updatedAt).toLocaleString()}</code>
                 </div>
               </div>
             </div>

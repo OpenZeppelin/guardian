@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { PsmHttpClient, type DeltaObject, type DeltaStatus, type FalconSignature, type Signer, type StorageType, type AuthConfig } from '@openzeppelin/psm-client';
+import { PsmHttpClient, type DeltaObject, type DeltaStatus, type FalconSignature, type Signer, type StorageType, type AuthConfig, type StateObject } from '@openzeppelin/psm-client';
 import type {
   ExportedProposal,
   MultisigConfig,
@@ -13,6 +13,60 @@ import type {
   ProposalSignatureEntry,
   ProposalStatus,
 } from './types.js';
+import { Account } from '@demox-labs/miden-sdk';
+
+/**
+ * Result of fetching account state from PSM.
+ */
+export interface AccountState {
+  /** Account ID */
+  accountId: string;
+  /** Current commitment (state hash) */
+  commitment: string;
+  /** Raw state data (base64-encoded serialized account) */
+  stateDataBase64: string;
+  /** When the account was created on PSM */
+  createdAt: string;
+  /** When the account was last updated on PSM */
+  updatedAt: string;
+}
+
+/**
+ * Convert Uint8Array to base64 string.
+ */
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Converts an Account to its hex ID format.
+ */
+function accountIdToHex(account: Account): string {
+  const accountId = account.id();
+
+  // Try using toString() first - in Rust, Display trait calls to_hex()
+  const str = accountId.toString();
+
+  // If toString() returns hex format (starts with 0x), use it directly
+  if (str.startsWith('0x') || str.startsWith('0X')) {
+    return str;
+  }
+
+  // Otherwise, construct manually from prefix/suffix
+  // Based on Rust: format!("0x{:016x}{:016x}", prefix.as_u64(), suffix.as_int()).truncate(32)
+  const prefix = accountId.prefix().asInt();
+  const suffix = accountId.suffix().asInt();
+  const prefixHex = prefix.toString(16).padStart(16, '0');
+  const suffixHex = suffix.toString(16).padStart(16, '0');
+
+  // Truncate to 32 chars: 0x (2) + prefix (16) + suffix first 14 chars (14)
+  const hex = `0x${prefixHex}${suffixHex.slice(0, 14)}`;
+  return hex;
+}
 
 /**
  * Represents a multisig account with PSM integration.
@@ -30,9 +84,8 @@ import type {
  * ```
  */
 export class Multisig {
-  /** The Miden SDK Account (null if loaded from PSM) */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  readonly account: any | null;
+  /** The Miden SDK Account */
+  readonly account: Account | null;
 
   /** Number of signatures required */
   readonly threshold: number;
@@ -49,8 +102,7 @@ export class Multisig {
   private proposals: Map<string, Proposal> = new Map();
 
   constructor(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    account: any | null,
+    account: Account | null,
     config: MultisigConfig,
     psm: PsmHttpClient,
     signer: Signer,
@@ -62,7 +114,7 @@ export class Multisig {
     this.psmCommitment = config.psmCommitment;
     this.psm = psm;
     this.signer = signer;
-    this._accountId = accountId ?? account?.id().toString() ?? '';
+    this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
   }
 
   /** The account ID as a string */
@@ -76,24 +128,50 @@ export class Multisig {
   }
 
   // ===========================================================================
-  // PSM Registration
+  // PSM State Management
   // ===========================================================================
+
+  /**
+   * Fetch the current account state from PSM.
+   *
+   * @returns The account state including commitment and serialized data
+   */
+  async fetchState(): Promise<AccountState> {
+    const state: StateObject = await this.psm.getState(this._accountId);
+
+    return {
+      accountId: state.account_id,
+      commitment: state.commitment,
+      stateDataBase64: state.state_json.data,
+      createdAt: state.created_at,
+      updatedAt: state.updated_at,
+    };
+  }
 
   /**
    * Register this multisig account on the PSM server.
    *
-   * @param initialStateBase64 - Optional base64-encoded initial state.
-   *                             If not provided, a default state is created.
+   * The initial state must be the serialized Account bytes (base64-encoded).
+   * If not provided, the account's serialize() method is used.
+   *
+   * @param initialStateBase64 - Optional base64-encoded serialized Account.
+   *                             If not provided, uses this.account.serialize().
    */
   async registerOnPsm(initialStateBase64?: string): Promise<void> {
-    const stateData =
-      initialStateBase64 ??
-      btoa(
-        JSON.stringify({
-          account_id: this._accountId,
-          nonce: this.account?.nonce().toString() ?? '0',
-        })
-      );
+    if (!this.account && !initialStateBase64) {
+      throw new Error('Cannot register on PSM: no account available and no initial state provided');
+    }
+
+    // Serialize the account to bytes and base64-encode
+    let stateData: string;
+    if (initialStateBase64) {
+      stateData = initialStateBase64;
+    } else {
+      // Account is guaranteed to exist due to the check above
+      const accountBytes: Uint8Array = this.account!.serialize();
+      // Convert Uint8Array to base64
+      stateData = uint8ArrayToBase64(accountBytes);
+    }
 
     const auth: AuthConfig = {
       MidenFalconRpo: {

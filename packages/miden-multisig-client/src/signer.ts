@@ -8,10 +8,6 @@
 import { SecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@demox-labs/miden-sdk';
 import type { Signer } from './types.js';
 
-// =============================================================================
-// Utilities
-// =============================================================================
-
 /**
  * Converts a Uint8Array to a hex string with 0x prefix.
  */
@@ -22,10 +18,6 @@ function bytesToHex(bytes: Uint8Array): string {
   }
   return hex;
 }
-
-// =============================================================================
-// FalconSigner Class
-// =============================================================================
 
 /**
  * A Falcon signer that implements the Signer interface.
@@ -46,7 +38,9 @@ export class FalconSigner implements Signer {
     this.secretKey = secretKey;
     const pubKey = secretKey.publicKey();
     this.commitment = pubKey.toCommitment().toHex();
-    this.publicKey = bytesToHex(pubKey.serialize());
+    const serialized = pubKey.serialize();
+    const falconPubKey = serialized.slice(1);
+    this.publicKey = bytesToHex(falconPubKey);
   }
 
   /**
@@ -63,12 +57,8 @@ export class FalconSigner implements Signer {
     // Parse the account ID from hex
     const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
     const parsedAccountId = AccountId.fromHex(paddedHex);
-
-    // Convert AccountId to its field element representation [prefix, suffix]
     const prefix = parsedAccountId.prefix();
     const suffix = parsedAccountId.suffix();
-
-    // We use 4 elements to fill a full rate (pad with zeros)
     const feltArray = new FeltArray([
       prefix,
       suffix,
@@ -80,7 +70,8 @@ export class FalconSigner implements Signer {
     const digest = Rpo256.hashElements(feltArray);
     const signature = this.secretKey.sign(digest);
     const signatureBytes = signature.serialize();
-    return bytesToHex(signatureBytes);
+    const falconSignature = signatureBytes.slice(1);
+    return bytesToHex(falconSignature);
   }
 
   /**
@@ -90,9 +81,10 @@ export class FalconSigner implements Signer {
   signCommitment(commitmentHex: string): string {
     const paddedHex = commitmentHex.startsWith('0x') ? commitmentHex : `0x${commitmentHex}`;
     const cleanHex = paddedHex.slice(2).padStart(64, '0');
-    const word = Word.fromHex(cleanHex);
+    const word = Word.fromHex(`0x${cleanHex}`);
     const signature = this.secretKey.sign(word);
     const signatureBytes = signature.serialize();
-    return bytesToHex(signatureBytes);
+    const falconSignature = signatureBytes.slice(1);
+    return bytesToHex(falconSignature);
   }
 }
