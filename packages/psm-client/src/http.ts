@@ -8,6 +8,7 @@ import type {
   DeltaObject,
   DeltaProposalRequest,
   DeltaProposalResponse,
+  ExecutionDelta,
   ProposalsResponse,
   PubkeyResponse,
   SignProposalRequest,
@@ -111,8 +112,10 @@ export class PsmHttpClient {
 
   /**
    * Push a delta (execute a proposal).
+   * The delta_payload must be in execution format: { data: "<base64>" }
+   * (not proposal format: { tx_summary: { data }, signatures }).
    */
-  async pushDelta(delta: DeltaObject): Promise<DeltaObject> {
+  async pushDelta(delta: ExecutionDelta): Promise<DeltaObject> {
     const response = await this.fetchAuthenticated('/delta', {
       method: 'POST',
       body: JSON.stringify(delta),

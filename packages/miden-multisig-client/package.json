@@ -30,7 +30,6 @@
     "@demox-labs/miden-sdk": "^0.12.5"
   },
   "devDependencies": {
-    "@demox-labs/miden-sdk": "^0.12.5",
     "typescript": "^5.7.2"
   },
   "engines": {

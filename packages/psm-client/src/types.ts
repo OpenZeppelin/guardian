@@ -27,11 +27,11 @@ export interface Signer {
 
 /**
  * A Falcon signature wrapper.
+ * Matches Rust: #[serde(tag = "scheme", rename_all = "snake_case")]
  */
 export interface FalconSignature {
-  Falcon: {
-    signature: string;
-  };
+  scheme: 'falcon';
+  signature: string;
 }
 
 /**
@@ -67,9 +67,26 @@ export type DeltaStatus =
   | { status: 'discarded'; timestamp: string };
 
 /**
- * Delta object from PSM API.
+ * Delta object from PSM API (proposal format with tx_summary wrapper).
  */
 export interface DeltaObject {
+  account_id: string;
+  nonce: number;
+  prev_commitment: string;
+  new_commitment?: string;
+  delta_payload: {
+    tx_summary: { data: string };
+    signatures: Array<{ signer_id: string; signature: FalconSignature }>;
+  };
+  ack_sig?: string;
+  status: DeltaStatus;
+}
+
+/**
+ * Delta object for execution (push_delta expects delta_payload to be just { data: string }).
+ * This is the format the server's verify_delta/apply_delta expects.
+ */
+export interface ExecutionDelta {
   account_id: string;
   nonce: number;
   prev_commitment: string;

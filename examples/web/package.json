@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@demox-labs/miden-sdk": "^0.12.5",
+    "@demox-labs/miden-sdk": "file:./vendor/demox-labs-miden-sdk-0.12.5.tgz",
     "@openzeppelin/miden-multisig-client": "file:../../packages/miden-multisig-client",
     "@openzeppelin/psm-client": "file:../../packages/psm-client",
     "react": "^19.0.0",

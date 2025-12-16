@@ -4,13 +4,21 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
-  server: {
-    port: 3001,
-  },
   resolve: {
     alias: {
-      // Force miden-sdk to resolve to our local node_modules, not nested copies
-      '@demox-labs/miden-sdk': path.resolve(__dirname, 'node_modules/@demox-labs/miden-sdk'),
+      '@demox-labs/miden-sdk': path.resolve(__dirname, 'node_modules/@demox-labs/miden-sdk/dist/index.js'),
+      '@openzeppelin/psm-client': path.resolve(__dirname, '../../packages/psm-client/dist/index.js'),
+      '@openzeppelin/miden-multisig-client': path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
+    },
+  },
+  server: {
+    port: 3001,
+    fs: {
+      // allow serving files from workspace and parent packages
+      allow: [
+        path.resolve(__dirname, '.'), // workspace (includes vendor/)
+        path.resolve(__dirname, '../../packages'), // sibling packages
+      ],
     },
   },
   build: {
@@ -19,6 +27,8 @@ export default defineConfig({
       output: {
         inlineDynamicImports: true,
       },
+      // Place assets at root so wasm fetch is simple
+      assetFileNames: '[name][extname]',
     },
   },
   worker: {

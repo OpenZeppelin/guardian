@@ -43,6 +43,7 @@ export type {
   StorageType,
   DeltaStatus,
   DeltaObject,
+  ExecutionDelta,
   StateObject,
 
   // Request/Response types

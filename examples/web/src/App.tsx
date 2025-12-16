@@ -8,6 +8,7 @@ import {
   type MultisigConfig,
   type AccountState,
   type DetectedMultisigConfig,
+  type Proposal,
 } from '@openzeppelin/miden-multisig-client';
 
 import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
@@ -74,6 +75,13 @@ export default function App() {
   const [psmState, setPsmState] = useState<AccountState | null>(null);
   const [syncingState, setSyncingState] = useState<boolean>(false);
 
+  // Proposals
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [newSignerCommitment, setNewSignerCommitment] = useState<string>('');
+  const [creatingProposal, setCreatingProposal] = useState<boolean>(false);
+  const [signingProposal, setSigningProposal] = useState<string | null>(null);
+  const [executingProposal, setExecutingProposal] = useState<string | null>(null);
+
   // Load existing account state
   const [loadAccountIdInput, setLoadAccountIdInput] = useState<string>('');
   const [loadingAccount, setLoadingAccount] = useState<boolean>(false);
@@ -106,24 +114,19 @@ export default function App() {
     [webClient]
   );
 
-  // Load Miden SDK and create WebClient
   const loadMidenClient = async () => {
     try {
       const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
       await client.syncState();
       setWebClient(client);
       setClientReady(true);
-      // Connect to PSM with the new webClient
       connectToPsm(psmUrl, client);
     } catch (err) {
-      console.error('[loadMidenClient] Error:', err);
-      setError(
-        `Failed to initialize Miden client: ${err instanceof Error ? err.message : 'Unknown error'}`
-      );
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(`Failed to initialize Miden client: ${errorMessage}`);
     }
   };
 
-  // Generate this tab's signer key
   const handleGenerateSigner = async () => {
     if (!clientReady || !webClient) {
       setError('Miden client not initialized');
@@ -159,26 +162,26 @@ export default function App() {
     }
   };
 
+  const normalizeCommitment = (hex: string) => {
+    const trimmed = hex.trim();
+    if (!trimmed) throw new Error('Commitment is required');
+    const withoutPrefix =
+      trimmed.startsWith('0x') || trimmed.startsWith('0X') ? trimmed.slice(2) : trimmed;
+    if (!/^[0-9a-fA-F]{64}$/.test(withoutPrefix)) {
+      throw new Error('Commitment must be a 64-character hex string');
+    }
+    return `0x${withoutPrefix.toLowerCase()}`;
+  };
+
   // Add another signer's commitment (from another signer)
   const handleAddOtherSigner = () => {
-    let trimmed = otherCommitmentInput.trim();
-    if (!trimmed) {
-      setError('Please enter a commitment');
+    let normalizedCommitment: string;
+    try {
+      normalizedCommitment = normalizeCommitment(otherCommitmentInput);
+    } catch (e: any) {
+      setError(e?.message ?? 'Invalid commitment');
       return;
     }
-
-    // Normalize: strip prefix for validation, then store with prefix for consistency
-    const withoutPrefix = trimmed.startsWith('0x') || trimmed.startsWith('0X')
-      ? trimmed.slice(2)
-      : trimmed;
-
-    if (!/^[0-9a-fA-F]{64}$/.test(withoutPrefix)) {
-      setError('Commitment must be a 64-character hex string');
-      return;
-    }
-
-    // Store with 0x prefix for consistency with signer.commitment
-    const normalizedCommitment = `0x${withoutPrefix.toLowerCase()}`;
 
     // Check if it's this signer's own commitment
     const ownCommitment = signer?.commitment.toLowerCase();
@@ -198,15 +201,104 @@ export default function App() {
     setError(null);
   };
 
-  // Remove another signer
+  // Create "add signer" proposal
+  const handleCreateAddSignerProposal = async () => {
+    if (!multisig || !webClient) {
+      setError('Multisig not created/loaded');
+      return;
+    }
+    let commitment: string;
+    try {
+      commitment = normalizeCommitment(newSignerCommitment);
+    } catch (e: any) {
+      setError(e?.message ?? 'Invalid commitment');
+      return;
+    }
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createAddSignerProposal(webClient, commitment);
+      // Refresh proposals list
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      setNewSignerCommitment('');
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to create proposal');
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  const handleSyncProposals = async () => {
+    if (!multisig) {
+      setError('Multisig not created/loaded');
+      return;
+    }
+    setSyncingState(true);
+    try {
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to sync proposals');
+    } finally {
+      setSyncingState(false);
+    }
+  };
+
+  const handleSignProposal = async (proposalId: string) => {
+    if (!multisig) {
+      setError('Multisig not created/loaded');
+      return;
+    }
+    setSigningProposal(proposalId);
+    setError(null);
+    try {
+      await multisig.signProposal(proposalId);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to sign proposal');
+    } finally {
+      setSigningProposal(null);
+    }
+  };
+
+  const handleExecuteProposal = async (proposalId: string) => {
+    if (!multisig || !webClient) {
+      setError('Multisig not created/loaded or webClient not ready');
+      return;
+    }
+    setExecutingProposal(proposalId);
+    setError(null);
+    try {
+      await multisig.executeProposal(proposalId, webClient);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to execute proposal');
+    } finally {
+      setExecutingProposal(null);
+    }
+  };
+
+  const hasUserSigned = (proposal: Proposal): boolean => {
+    if (!signer) return false;
+    return proposal.signatures.some(
+      (sig) => sig.signerId.toLowerCase() === signer.commitment.toLowerCase()
+    );
+  };
+
   const handleRemoveOtherSigner = (id: string) => {
     setOtherSigners((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Get total signer count
   const totalSigners = (signer ? 1 : 0) + otherSigners.length;
 
-  // Create multisig account
   const handleCreateAccount = async () => {
     if (!clientReady || !multisigClient) {
       setError('Miden client not initialized');
@@ -237,24 +329,17 @@ export default function App() {
     setError(null);
 
     try {
-      // Collect all signer commitments (this tab + others)
       const signerCommitments = [signer.commitment, ...otherSigners.map((s) => s.commitment)];
-
       const config: MultisigConfig = {
         threshold,
         signerCommitments,
         psmCommitment: psmPubkey,
         psmEnabled: true,
       };
-
-      // Create FalconSigner from this tab's secret key
       const falconSigner = new FalconSigner(signer.secretKey);
-
-      // Create multisig account
       const ms = await multisigClient.create(config, falconSigner);
       setMultisig(ms);
     } catch (err) {
-      console.error('Error creating account:', err);
       const message = err instanceof Error ? err.message : String(err);
       setError(`Failed to create account: ${message}`);
     } finally {
@@ -262,7 +347,6 @@ export default function App() {
     }
   };
 
-  // Configure account on PSM server
   const handleConfigureOnPsm = async () => {
     if (!clientReady || !multisig || !psmPubkey) {
       setError('Account not created or PSM not connected');
@@ -276,7 +360,6 @@ export default function App() {
       await multisig.registerOnPsm();
       setConfiguredOnPsm(true);
     } catch (err) {
-      console.error('Error configuring on PSM:', err);
       const message = err instanceof Error ? err.message : String(err);
       setError(`Failed to configure on PSM: ${message}`);
     } finally {
@@ -284,7 +367,6 @@ export default function App() {
     }
   };
 
-  // Load existing account from PSM
   const handleLoadFromPsm = async () => {
     if (!clientReady || !multisigClient) {
       setError('Miden client not initialized');
@@ -302,7 +384,6 @@ export default function App() {
       return;
     }
 
-    // Normalize account ID format
     if (!accountId.startsWith('0x')) {
       accountId = `0x${accountId}`;
     }
@@ -312,11 +393,9 @@ export default function App() {
     setDetectedConfig(null);
 
     try {
-      // Create FalconSigner from this tab's secret key
       const falconSigner = new FalconSigner(signer.secretKey);
 
-      // First, fetch the state to inspect the account configuration
-      // We need a temporary config just to authenticate the request
+      // Use temporary config to fetch state for inspection
       const tempConfig: MultisigConfig = {
         threshold: 1,
         signerCommitments: [signer.commitment],
@@ -324,15 +403,12 @@ export default function App() {
         psmEnabled: true,
       };
 
-      // Load multisig with temp config to fetch state
       const tempMs = await multisigClient.load(accountId, tempConfig, falconSigner);
       const state = await tempMs.fetchState();
 
-      // Inspect the account to detect actual configuration
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
       setDetectedConfig(detected);
 
-      // Now create the multisig with the detected configuration
       const config: MultisigConfig = {
         threshold: detected.threshold,
         signerCommitments: detected.signerCommitments,
@@ -340,16 +416,12 @@ export default function App() {
         psmEnabled: detected.psmEnabled,
       };
 
-      // Reload with correct config
       const ms = await multisigClient.load(accountId, config, falconSigner);
       setMultisig(ms);
-      setConfiguredOnPsm(true); // Already registered since we're loading
+      setConfiguredOnPsm(true);
       setPsmState(state);
-
-      // Update threshold in UI to match detected
       setThreshold(detected.threshold);
     } catch (err) {
-      console.error('Error loading account from PSM:', err);
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('404') || message.includes('not found')) {
         setError(`Account not found on PSM. Make sure the account has been registered first.`);
@@ -361,7 +433,6 @@ export default function App() {
     }
   };
 
-  // Sync state from PSM server
   const handleSyncState = async () => {
     if (!clientReady || !multisig) {
       setError('Account not created');
@@ -375,7 +446,6 @@ export default function App() {
       const state = await multisig.fetchState();
       setPsmState(state);
     } catch (err) {
-      console.error('Error syncing state:', err);
       const message = err instanceof Error ? err.message : String(err);
       setError(`Failed to sync state: ${message}`);
     } finally {
@@ -383,7 +453,6 @@ export default function App() {
     }
   };
 
-  // Copy text to clipboard
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
   };
@@ -652,6 +721,121 @@ export default function App() {
               </div>
             </div>
           </div>
+        </section>
+      )}
+
+      {/* Proposals - add signer */}
+      {multisig && (
+        <section className="psm-sync-section">
+          <h2>Add Signer Proposal</h2>
+          <p className="section-description">
+            Build a proposal that updates signer set and threshold by executing the multisig
+            update_signers script to summary.
+          </p>
+          <div className="psm-actions">
+            <input
+              type="text"
+              placeholder="New signer commitment (0x...)"
+              value={newSignerCommitment}
+              onChange={(e) => setNewSignerCommitment(e.target.value)}
+              style={{ width: '100%', marginBottom: '8px' }}
+            />
+            <button onClick={handleCreateAddSignerProposal} disabled={creatingProposal || !webClient}>
+              {creatingProposal ? 'Creating...' : 'Create proposal'}
+            </button>
+            <button onClick={handleSyncProposals} disabled={syncingState}>
+              {syncingState ? 'Syncing...' : 'Sync proposals'}
+            </button>
+          </div>
+          {proposals.length > 0 && (
+            <div className="psm-state-info">
+              <h3>Proposals ({proposals.length})</h3>
+              <div className="proposals-list">
+                {proposals.map((p) => {
+                  const userSigned = hasUserSigned(p);
+                  const canSign = p.status.type === 'pending' && !userSigned;
+                  const canExecute =
+                    p.status.type === 'ready' ||
+                    (p.status.type === 'pending' && multisig && p.signatures.length >= multisig.threshold);
+                  const isSigningThis = signingProposal === p.id;
+                  const isExecutingThis = executingProposal === p.id;
+
+                  return (
+                    <div key={p.id} className="proposal-card">
+                      <div className="proposal-header">
+                        <code
+                          className="proposal-id"
+                          onClick={() => copyToClipboard(p.id)}
+                          title="Click to copy full ID"
+                        >
+                          {p.id.slice(0, 20)}...
+                        </code>
+                        <span className={`status-badge status-${p.status.type}`}>
+                          {p.status.type}
+                        </span>
+                      </div>
+
+                      <div className="proposal-details">
+                        <div>
+                          <span className="label">Nonce:</span> {p.nonce}
+                        </div>
+                        <div>
+                          <span className="label">Signatures:</span>{' '}
+                          {p.signatures.length} / {multisig?.threshold ?? '?'}
+                          {userSigned && <span className="signed-badge"> ✓ You signed</span>}
+                        </div>
+                      </div>
+
+                      {p.signatures.length > 0 && (
+                        <div className="proposal-signers">
+                          <span className="label">Signers:</span>
+                          <div className="signer-badges">
+                            {p.signatures.map((sig) => (
+                              <span
+                                key={sig.signerId}
+                                className={`signer-badge ${
+                                  signer && sig.signerId.toLowerCase() === signer.commitment.toLowerCase()
+                                    ? 'signer-badge-you'
+                                    : ''
+                                }`}
+                                title={sig.signerId}
+                              >
+                                {sig.signerId.slice(0, 8)}...
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="proposal-actions">
+                        {canSign && (
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => handleSignProposal(p.id)}
+                            disabled={isSigningThis || !!signingProposal}
+                          >
+                            {isSigningThis ? 'Signing...' : 'Sign'}
+                          </button>
+                        )}
+                        {canExecute && (
+                          <button
+                            className="btn btn-success"
+                            onClick={() => handleExecuteProposal(p.id)}
+                            disabled={isExecutingThis || !!executingProposal}
+                          >
+                            {isExecutingThis ? 'Executing...' : 'Execute'}
+                          </button>
+                        )}
+                        {!canSign && !canExecute && p.status.type === 'finalized' && (
+                          <span className="finalized-badge">Finalized</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
       )}
 

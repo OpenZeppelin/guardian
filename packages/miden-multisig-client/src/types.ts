@@ -91,8 +91,20 @@ export type ProposalStatus =
  */
 export interface ProposalSignatureEntry {
   signerId: string;
-  signature: { Falcon: { signature: string } };
+  signature: { scheme: 'falcon'; signature: string };
   timestamp: string;
+}
+
+/**
+ * Metadata needed to reconstruct and finalize a proposal.
+ */
+export interface ProposalMetadata {
+  /** Target threshold (for signer update proposals) */
+  targetThreshold?: number;
+  /** Target signer commitments (for signer update proposals) */
+  targetSignerCommitments?: string[];
+  /** Salt used for transaction authentication (hex) */
+  saltHex?: string;
 }
 
 /**
@@ -111,6 +123,8 @@ export interface Proposal {
   txSummary: string;
   /** Signatures collected so far */
   signatures: ProposalSignatureEntry[];
+  /** Metadata needed for execution (target config, salt, etc.) */
+  metadata?: ProposalMetadata;
 }
 
 /**

@@ -549,4 +549,268 @@ code:hover {
   word-break: break-all;
 }
 
+/* Proposals List */
+.proposals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
 
+.proposal-card {
+  background: white;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.proposal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.proposal-id {
+  font-size: 0.75rem;
+  background: #e9ecef;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.proposal-id:hover {
+  background: #dee2e6;
+}
+
+.status-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.status-pending {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.status-ready {
+  background: #d4edda;
+  color: #155724;
+}
+
+.status-finalized {
+  background: #cce5ff;
+  color: #004085;
+}
+
+.proposal-details {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.signed-badge {
+  color: #28a745;
+  font-weight: 500;
+}
+
+.proposal-signers {
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.signer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.signer-badge {
+  background: #e9ecef;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+.signer-badge-you {
+  background: #d4edda;
+  color: #155724;
+  font-weight: 500;
+}
+
+.proposal-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e9ecef;
+}
+
+.btn-success {
+  background: #28a745;
+}
+
+.btn-success:hover {
+  background: #1e7e34;
+}
+
+.finalized-badge {
+  color: #004085;
+  font-size: 0.875rem;
+  font-style: italic;
+}
+
+/* Signer section improvements */
+.signer-info {
+  background: white;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+}
+
+.signer-details {
+  margin-bottom: 0.5rem;
+}
+
+.signer-details code.copyable {
+  background: #e9ecef;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  word-break: break-all;
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.signer-details code.copyable:hover {
+  background: #dee2e6;
+}
+
+/* Signers summary improvements */
+.signers-summary {
+  background: white;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+  margin-bottom: 1rem;
+}
+
+.signers-summary h4 {
+  margin: 0 0 0.5rem 0;
+  color: #555;
+  font-size: 0.875rem;
+}
+
+.signers-summary ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.signers-summary li {
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.other-signer-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.add-signer {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.add-signer input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.add-signer input:focus {
+  outline: none;
+  border-color: #007bff;
+}
+
+/* Multisig steps */
+.multisig-step {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.multisig-step:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.multisig-step h3 {
+  margin: 0 0 0.75rem 0;
+  color: #333;
+  font-size: 1rem;
+}
+
+/* Load account section */
+.load-account-section {
+  margin-top: 1.5rem;
+}
+
+.load-account-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.load-account-form input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.load-account-form input:focus {
+  outline: none;
+  border-color: #007bff;
+}
+
+.detected-config {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #e7f1ff;
+  border-radius: 4px;
+}
+
+.detected-config h4 {
+  margin: 0 0 0.75rem 0;
+  color: #004085;
+}
+
+.config-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.config-details code {
+  background: #cce5ff;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.config-details ul {
+  margin: 0.25rem 0 0 0;
+  padding-left: 1rem;
+}
+
+.config-details li {
+  margin-bottom: 0.25rem;
+}

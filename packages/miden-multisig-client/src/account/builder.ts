@@ -80,6 +80,10 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.build();
 
+  // Insert the account into the WebClient's local store
+  // This is required for later executeTransaction calls to find the account
+  await webClient.newAccount(result.account, false);
+
   return {
     account: result.account,
     seed,
