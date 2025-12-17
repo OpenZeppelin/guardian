@@ -78,6 +78,7 @@ export default function App() {
   // Proposals
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [newSignerCommitment, setNewSignerCommitment] = useState<string>('');
+  const [increaseThreshold, setIncreaseThreshold] = useState<boolean>(false);
   const [creatingProposal, setCreatingProposal] = useState<boolean>(false);
   const [signingProposal, setSigningProposal] = useState<string | null>(null);
   const [executingProposal, setExecutingProposal] = useState<string | null>(null);
@@ -218,11 +219,14 @@ export default function App() {
     setCreatingProposal(true);
     setError(null);
     try {
-      const proposal = await multisig.createAddSignerProposal(webClient, commitment);
+      // If increaseThreshold is checked, set newThreshold to current + 1
+      const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
+      const proposal = await multisig.createAddSignerProposal(webClient, commitment, undefined, newThreshold);
       // Refresh proposals list
       const synced = await multisig.syncProposals();
       setProposals(synced);
       setNewSignerCommitment('');
+      setIncreaseThreshold(false);
       if (!synced.find((p) => p.id === proposal.id)) {
         setProposals([...synced, proposal]);
       }
@@ -728,7 +732,7 @@ export default function App() {
             Build a proposal that updates signer set and threshold by executing the multisig
             update_signers script to summary.
           </p>
-          <div className="psm-actions">
+          <div className="proposal-form">
             <input
               type="text"
               placeholder="New signer commitment (0x...)"
@@ -736,12 +740,24 @@ export default function App() {
               onChange={(e) => setNewSignerCommitment(e.target.value)}
               style={{ width: '100%', marginBottom: '8px' }}
             />
-            <button onClick={handleCreateAddSignerProposal} disabled={creatingProposal || !webClient}>
-              {creatingProposal ? 'Creating...' : 'Create proposal'}
-            </button>
-            <button onClick={handleSyncProposals} disabled={syncingState}>
-              {syncingState ? 'Syncing...' : 'Sync proposals'}
-            </button>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={increaseThreshold}
+                onChange={(e) => setIncreaseThreshold(e.target.checked)}
+              />
+              <span>
+                Increase threshold from {multisig.threshold} to {multisig.threshold + 1}
+              </span>
+            </label>
+            <div className="psm-actions">
+              <button onClick={handleCreateAddSignerProposal} disabled={creatingProposal || !webClient}>
+                {creatingProposal ? 'Creating...' : 'Create proposal'}
+              </button>
+              <button onClick={handleSyncProposals} disabled={syncingState}>
+                {syncingState ? 'Syncing...' : 'Sync proposals'}
+              </button>
+            </div>
           </div>
           {proposals.length > 0 && (
             <div className="psm-state-info">
