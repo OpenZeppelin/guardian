@@ -1,0 +1,39 @@
+// Normalize commitment to lowercase hex with 0x prefix
+export function normalizeCommitment(hex: string): string {
+  const trimmed = hex.trim();
+  if (!trimmed) throw new Error('Commitment is required');
+  const withoutPrefix =
+    trimmed.startsWith('0x') || trimmed.startsWith('0X') ? trimmed.slice(2) : trimmed;
+  if (!/^[0-9a-fA-F]{64}$/.test(withoutPrefix)) {
+    throw new Error('Commitment must be a 64-character hex string');
+  }
+  return `0x${withoutPrefix.toLowerCase()}`;
+}
+
+// Copy text to clipboard
+export function copyToClipboard(text: string): void {
+  navigator.clipboard.writeText(text);
+}
+
+// Clear all IndexedDB databases (resets miden-sdk state)
+export async function clearIndexedDB(): Promise<void> {
+  const databases = await indexedDB.databases();
+  const deletePromises = databases
+    .filter((db) => db.name)
+    .map(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const request = indexedDB.deleteDatabase(db.name!);
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+          request.onblocked = () => resolve();
+        })
+    );
+  await Promise.all(deletePromises);
+}
+
+// Truncate hex string for display
+export function truncateHex(hex: string, start = 16, end = 8): string {
+  if (hex.length <= start + end) return hex;
+  return `${hex.slice(0, start)}...${hex.slice(-end)}`;
+}
