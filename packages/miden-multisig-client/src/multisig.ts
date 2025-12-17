@@ -239,7 +239,7 @@ export class Multisig {
   /**
    * Sync proposals from the PSM server.
    * Computes proposal IDs client-side by deserializing the tx_summary and computing its commitment.
-   * Preserves local metadata for proposals that already exist.
+   * Reads metadata from PSM if available, or preserves local metadata for proposals that already exist.
    */
   async syncProposals(): Promise<Proposal[]> {
     const deltas = await this.psm.getDeltaProposals(this._accountId);
@@ -250,8 +250,16 @@ export class Multisig {
       const proposalId = computeCommitmentFromTxSummary(delta.delta_payload.tx_summary.data);
       const existingProposal = this.proposals.get(proposalId);
       const proposal = this.deltaToProposal(delta, proposalId);
-      // Preserve metadata from existing local proposal (not stored on PSM)
-      if (existingProposal?.metadata) {
+
+      // First try to get metadata from PSM (stored with the proposal)
+      if (delta.delta_payload.metadata) {
+        proposal.metadata = {
+          targetThreshold: delta.delta_payload.metadata.targetThreshold,
+          targetSignerCommitments: delta.delta_payload.metadata.targetSignerCommitments,
+          saltHex: delta.delta_payload.metadata.saltHex,
+        };
+      } else if (existingProposal?.metadata) {
+        // Fall back to local metadata if PSM doesn't have it (legacy proposals)
         proposal.metadata = existingProposal.metadata;
       }
       this.proposals.set(proposal.id, proposal);
@@ -275,12 +283,18 @@ export class Multisig {
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
   async createProposal(nonce: number, txSummaryBase64: string, metadata?: ProposalMetadata): Promise<Proposal> {
+    // Include metadata in the PSM request so other signers can retrieve it
     const response = await this.psm.pushDeltaProposal({
       account_id: this._accountId,
       nonce,
       delta_payload: {
         tx_summary: { data: txSummaryBase64 },
         signatures: [],
+        metadata: metadata ? {
+          targetThreshold: metadata.targetThreshold!,
+          targetSignerCommitments: metadata.targetSignerCommitments!,
+          saltHex: metadata.saltHex!,
+        } : undefined,
       },
     });
 

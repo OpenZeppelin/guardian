@@ -114,7 +114,6 @@ export class AccountInspector {
         }
       } catch {
         // Map entry might not exist
-        console.warn(`Could not read signer ${i} from storage`);
       }
     }
 
@@ -138,7 +137,6 @@ export class AccountInspector {
       }
     } catch {
       // PSM component might not be present
-      console.warn('Could not read PSM config from storage');
     }
 
     return {

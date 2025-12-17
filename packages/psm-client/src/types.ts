@@ -67,6 +67,19 @@ export type DeltaStatus =
   | { status: 'discarded'; timestamp: string };
 
 /**
+ * Proposal metadata - stored alongside the proposal to enable execution by any signer.
+ * This metadata is needed to reconstruct the transaction for execution.
+ */
+export interface ProposalMetadata {
+  /** Target threshold after the proposal is executed */
+  targetThreshold: number;
+  /** Target signer commitments after the proposal is executed */
+  targetSignerCommitments: string[];
+  /** Salt hex used in the transaction */
+  saltHex: string;
+}
+
+/**
  * Delta object from PSM API (proposal format with tx_summary wrapper).
  */
 export interface DeltaObject {
@@ -77,6 +90,7 @@ export interface DeltaObject {
   delta_payload: {
     tx_summary: { data: string };
     signatures: Array<{ signer_id: string; signature: FalconSignature }>;
+    metadata?: ProposalMetadata;
   };
   ack_sig?: string;
   status: DeltaStatus;
@@ -134,6 +148,7 @@ export interface DeltaProposalRequest {
   delta_payload: {
     tx_summary: { data: string };
     signatures: Array<{ signer_id: string; signature: FalconSignature }>;
+    metadata?: ProposalMetadata;
   };
 }
 

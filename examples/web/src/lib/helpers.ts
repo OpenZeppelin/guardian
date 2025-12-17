@@ -10,9 +10,11 @@ export function normalizeCommitment(hex: string): string {
   return `0x${withoutPrefix.toLowerCase()}`;
 }
 
-// Copy text to clipboard
-export function copyToClipboard(text: string): void {
-  navigator.clipboard.writeText(text);
+// Copy text to clipboard with optional callback
+export function copyToClipboard(text: string, onSuccess?: () => void): void {
+  navigator.clipboard.writeText(text).then(() => {
+    onSuccess?.();
+  });
 }
 
 // Clear all IndexedDB databases (resets miden-sdk state)

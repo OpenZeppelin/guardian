@@ -45,6 +45,7 @@ export type {
   DeltaObject,
   ExecutionDelta,
   StateObject,
+  ProposalMetadata,
 
   // Request/Response types
   ConfigureRequest,

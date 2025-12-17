@@ -1,3 +1,4 @@
+import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -50,7 +51,7 @@ export function ProposalCard({
       <CardContent className="pt-4 space-y-3">
         <div className="flex items-center justify-between">
           <code
-            onClick={() => copyToClipboard(proposal.id)}
+            onClick={() => copyToClipboard(proposal.id, () => toast.success('Proposal ID copied'))}
             className="text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80"
             title="Click to copy full ID"
           >
