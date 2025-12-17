@@ -71,7 +71,7 @@ export default function App() {
 
   // PSM sync state
   const [configuredOnPsm, setConfiguredOnPsm] = useState<boolean>(false);
-  const [configuringPsm, setConfiguringPsm] = useState<boolean>(false);
+  const [registeringOnPsm, setRegisteringOnPsm] = useState<boolean>(false);
   const [psmState, setPsmState] = useState<AccountState | null>(null);
   const [syncingState, setSyncingState] = useState<boolean>(false);
 
@@ -339,31 +339,23 @@ export default function App() {
       const falconSigner = new FalconSigner(signer.secretKey);
       const ms = await multisigClient.create(config, falconSigner);
       setMultisig(ms);
+
+      // Automatically register on PSM
+      setRegisteringOnPsm(true);
+      try {
+        await ms.registerOnPsm();
+        setConfiguredOnPsm(true);
+      } catch (psmErr) {
+        const psmMessage = psmErr instanceof Error ? psmErr.message : String(psmErr);
+        setError(`Account created but failed to register on PSM: ${psmMessage}`);
+      } finally {
+        setRegisteringOnPsm(false);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(`Failed to create account: ${message}`);
     } finally {
       setCreating(false);
-    }
-  };
-
-  const handleConfigureOnPsm = async () => {
-    if (!clientReady || !multisig || !psmPubkey) {
-      setError('Account not created or PSM not connected');
-      return;
-    }
-
-    setConfiguringPsm(true);
-    setError(null);
-
-    try {
-      await multisig.registerOnPsm();
-      setConfiguredOnPsm(true);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(`Failed to configure on PSM: ${message}`);
-    } finally {
-      setConfiguringPsm(false);
     }
   };
 
@@ -635,7 +627,11 @@ export default function App() {
               className="btn btn-primary btn-large"
               disabled={!multisigClient || !psmPubkey || creating || !signer || totalSigners === 0}
             >
-              {creating ? 'Creating Account...' : `Create ${threshold}-of-${totalSigners} Multisig`}
+              {creating
+                ? registeringOnPsm
+                  ? 'Registering on PSM...'
+                  : 'Creating Account...'
+                : `Create ${threshold}-of-${totalSigners} Multisig`}
             </button>
           </div>
         </section>
@@ -843,22 +839,17 @@ export default function App() {
       {multisig && (
         <section className="psm-sync-section">
           <h2>PSM State Sync</h2>
-          <p className="section-description">Register your account on PSM and sync state.</p>
 
           <div className="psm-actions">
-            {!configuredOnPsm ? (
-              <button
-                onClick={handleConfigureOnPsm}
-                className="btn btn-primary"
-                disabled={configuringPsm || !psmPubkey}
-              >
-                {configuringPsm ? 'Registering...' : 'Register on PSM'}
-              </button>
-            ) : (
-              <div className="psm-registered">
+            <div className="psm-registered">
+              {registeringOnPsm ? (
+                <span className="loading-badge">Registering on PSM...</span>
+              ) : configuredOnPsm ? (
                 <span className="success-badge">Registered on PSM</span>
-              </div>
-            )}
+              ) : (
+                <span className="error-badge">Not registered on PSM</span>
+              )}
+            </div>
 
             <button
               onClick={handleSyncState}

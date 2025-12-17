@@ -516,6 +516,24 @@ code:hover {
   font-weight: 500;
 }
 
+.loading-badge {
+  background: #fff3cd;
+  color: #856404;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.error-badge {
+  background: #f8d7da;
+  color: #721c24;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
 .psm-state-info {
   margin-top: 1rem;
   padding: 1rem;
