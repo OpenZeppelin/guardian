@@ -273,7 +273,7 @@ export default function App() {
   };
 
   const handleExecuteProposal = async (proposalId: string) => {
-    if (!multisig || !webClient) {
+    if (!multisig || !webClient || !multisigClient || !signer) {
       setError('Multisig not created/loaded or webClient not ready');
       return;
     }
@@ -281,8 +281,27 @@ export default function App() {
     setError(null);
     try {
       await multisig.executeProposal(proposalId, webClient);
-      const synced = await multisig.syncProposals();
-      setProposals(synced);
+
+      // Reload the multisig with updated state from PSM
+      const state = await multisig.fetchState();
+      const detected = AccountInspector.fromBase64(state.stateDataBase64);
+
+      const newConfig: MultisigConfig = {
+        threshold: detected.threshold,
+        signerCommitments: detected.signerCommitments,
+        psmCommitment: detected.psmCommitment || psmPubkey,
+        psmEnabled: detected.psmEnabled,
+      };
+
+      const falconSigner = new FalconSigner(signer.secretKey);
+      const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
+      setMultisig(reloadedMs);
+      setPsmState(state);
+
+      // Sync proposals and remove executed one
+      const synced = await reloadedMs.syncProposals();
+      // Filter out finalized proposals
+      setProposals(synced.filter((p) => p.status.type !== 'finalized'));
     } catch (err: any) {
       setError(err?.message ?? 'Failed to execute proposal');
     } finally {
@@ -430,7 +449,7 @@ export default function App() {
   };
 
   const handleSyncState = async () => {
-    if (!clientReady || !multisig) {
+    if (!clientReady || !multisig || !multisigClient || !signer) {
       setError('Account not created');
       return;
     }
@@ -441,6 +460,19 @@ export default function App() {
     try {
       const state = await multisig.fetchState();
       setPsmState(state);
+
+      // Reload the multisig with the latest config from PSM
+      const detected = AccountInspector.fromBase64(state.stateDataBase64);
+      const newConfig: MultisigConfig = {
+        threshold: detected.threshold,
+        signerCommitments: detected.signerCommitments,
+        psmCommitment: detected.psmCommitment || psmPubkey,
+        psmEnabled: detected.psmEnabled,
+      };
+
+      const falconSigner = new FalconSigner(signer.secretKey);
+      const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
+      setMultisig(reloadedMs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(`Failed to sync state: ${message}`);
