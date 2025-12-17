@@ -67,16 +67,25 @@ export type DeltaStatus =
   | { status: 'discarded'; timestamp: string };
 
 /**
+ * Type of configuration change a proposal represents.
+ */
+export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'custom';
+
+/**
  * Proposal metadata - stored alongside the proposal to enable execution by any signer.
  * This metadata is needed to reconstruct the transaction for execution.
  */
 export interface ProposalMetadata {
+  /** Type of proposal for UI display */
+  proposalType?: ProposalType;
   /** Target threshold after the proposal is executed */
   targetThreshold: number;
   /** Target signer commitments after the proposal is executed */
   targetSignerCommitments: string[];
   /** Salt hex used in the transaction */
   saltHex: string;
+  /** Human-readable description of the change */
+  description?: string;
 }
 
 /**

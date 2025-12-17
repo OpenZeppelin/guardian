@@ -101,6 +101,8 @@ export type {
   Proposal,
   ProposalStatus,
   ProposalSignatureEntry,
+  ProposalMetadata,
+  ProposalType,
   ExportedProposal,
 
   // Transaction types

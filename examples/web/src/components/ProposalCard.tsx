@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Proposal } from '@openzeppelin/miden-multisig-client';
+import type { Proposal, ProposalType } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface ProposalCardProps {
@@ -15,6 +15,34 @@ interface ProposalCardProps {
   executingProposal: string | null;
   onSign: (proposalId: string) => void;
   onExecute: (proposalId: string) => void;
+}
+
+function getProposalTypeLabel(type?: ProposalType): string {
+  switch (type) {
+    case 'add_signer':
+      return 'Add Signer';
+    case 'remove_signer':
+      return 'Remove Signer';
+    case 'change_threshold':
+      return 'Change Threshold';
+    case 'custom':
+      return 'Custom';
+    default:
+      return 'Unknown';
+  }
+}
+
+function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (type) {
+    case 'add_signer':
+      return 'default';
+    case 'remove_signer':
+      return 'destructive';
+    case 'change_threshold':
+      return 'secondary';
+    default:
+      return 'outline';
+  }
 }
 
 export function ProposalCard({
@@ -46,21 +74,33 @@ export function ProposalCard({
         ? 'secondary'
         : 'outline';
 
+  const proposalType = proposal.metadata?.proposalType;
+  const description = proposal.metadata?.description;
+
   return (
     <Card>
       <CardContent className="pt-4 space-y-3">
         <div className="flex items-center justify-between">
-          <code
-            onClick={() => copyToClipboard(proposal.id, () => toast.success('Proposal ID copied'))}
-            className="text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80"
-            title="Click to copy full ID"
-          >
-            {proposal.id.slice(0, 20)}...
-          </code>
+          <div className="flex items-center gap-2">
+            <Badge variant={getProposalTypeVariant(proposalType)}>
+              {getProposalTypeLabel(proposalType)}
+            </Badge>
+            <code
+              onClick={() => copyToClipboard(proposal.id, () => toast.success('Proposal ID copied'))}
+              className="text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80"
+              title="Click to copy full ID"
+            >
+              {proposal.id.slice(0, 12)}...
+            </code>
+          </div>
           <Badge variant={statusVariant} className="uppercase">
             {proposal.status.type}
           </Badge>
         </div>
+
+        {description && (
+          <p className="text-sm text-muted-foreground">{description}</p>
+        )}
 
         <div className="flex gap-4 text-sm">
           <div>

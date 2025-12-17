@@ -3,6 +3,7 @@
  */
 
 import type { Account } from '@demox-labs/miden-sdk';
+import type { ProposalType as PsmProposalType } from '@openzeppelin/psm-client';
 
 // Re-export PSM types that are used in multisig context
 export type {
@@ -14,6 +15,7 @@ export type {
   DeltaStatus,
   DeltaObject,
   StateObject,
+  ProposalType,
   ConfigureRequest,
   ConfigureResponse,
   PubkeyResponse,
@@ -22,6 +24,9 @@ export type {
   ProposalsResponse,
   SignProposalRequest,
 } from '@openzeppelin/psm-client';
+
+// Local alias for use in this file
+type ProposalType = PsmProposalType;
 
 // =============================================================================
 // Account Types
@@ -99,12 +104,16 @@ export interface ProposalSignatureEntry {
  * Metadata needed to reconstruct and finalize a proposal.
  */
 export interface ProposalMetadata {
+  /** Type of proposal for UI display */
+  proposalType?: ProposalType;
   /** Target threshold (for signer update proposals) */
   targetThreshold?: number;
   /** Target signer commitments (for signer update proposals) */
   targetSignerCommitments?: string[];
   /** Salt used for transaction authentication (hex) */
   saltHex?: string;
+  /** Human-readable description of the change */
+  description?: string;
 }
 
 /**

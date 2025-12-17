@@ -55,8 +55,6 @@ export default function App() {
 
   // Proposal state
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [newSignerCommitment, setNewSignerCommitment] = useState('');
-  const [increaseThreshold, setIncreaseThreshold] = useState(false);
   const [creatingProposal, setCreatingProposal] = useState(false);
   const [signingProposal, setSigningProposal] = useState<string | null>(null);
   const [executingProposal, setExecutingProposal] = useState<string | null>(null);
@@ -208,13 +206,14 @@ export default function App() {
     }
   };
 
-  // Sync state
-  const handleSyncState = async () => {
+  // Sync state and proposals
+  const handleSync = async () => {
     if (!multisig || !multisigClient || !signer) return;
 
     setSyncingState(true);
     setError(null);
     try {
+      // Sync state
       const state = await multisig.fetchState();
       setPsmState(state);
 
@@ -229,6 +228,10 @@ export default function App() {
       const falconSigner = new FalconSigner(signer.secretKey);
       const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
       setMultisig(reloadedMs);
+
+      // Sync proposals
+      const synced = await reloadedMs.syncProposals();
+      setProposals(synced);
     } catch (err) {
       setError(`Sync failed: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
@@ -236,31 +239,15 @@ export default function App() {
     }
   };
 
-  // Sync proposals
-  const handleSyncProposals = async () => {
-    if (!multisig) return;
-
-    setSyncingState(true);
-    try {
-      const synced = await multisig.syncProposals();
-      setProposals(synced);
-      setError(null);
-    } catch (err) {
-      setError(`Failed to sync proposals: ${err instanceof Error ? err.message : 'Unknown'}`);
-    } finally {
-      setSyncingState(false);
-    }
-  };
-
-  // Create proposal
-  const handleCreateProposal = async () => {
+  // Create add signer proposal
+  const handleCreateAddSignerProposal = async (commitment: string, increaseThreshold: boolean) => {
     if (!multisig || !webClient) return;
 
-    let commitment: string;
+    let normalizedCommitment: string;
     try {
-      commitment = normalizeCommitment(newSignerCommitment);
-    } catch (e: any) {
-      setError(e?.message ?? 'Invalid commitment');
+      normalizedCommitment = normalizeCommitment(commitment);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Invalid commitment');
       return;
     }
 
@@ -268,14 +255,55 @@ export default function App() {
     setError(null);
     try {
       const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-      const proposal = await multisig.createAddSignerProposal(webClient, commitment, undefined, newThreshold);
+      const proposal = await multisig.createAddSignerProposal(webClient, normalizedCommitment, undefined, newThreshold);
       const synced = await multisig.syncProposals();
       setProposals(synced);
-      setNewSignerCommitment('');
-      setIncreaseThreshold(false);
       if (!synced.find((p) => p.id === proposal.id)) {
         setProposals([...synced, proposal]);
       }
+      toast.success('Add signer proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create remove signer proposal
+  const handleCreateRemoveSignerProposal = async (signerToRemove: string, newThreshold?: number) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createRemoveSignerProposal(webClient, signerToRemove, undefined, newThreshold);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Remove signer proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create change threshold proposal
+  const handleCreateChangeThresholdProposal = async (newThreshold: number) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createChangeThresholdProposal(webClient, newThreshold);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Change threshold proposal created');
     } catch (err) {
       setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
@@ -371,18 +399,15 @@ export default function App() {
             signer={signer}
             psmState={psmState}
             proposals={proposals}
-            newSignerCommitment={newSignerCommitment}
-            increaseThreshold={increaseThreshold}
             creatingProposal={creatingProposal}
-            syncingState={syncingState}
+            syncing={syncingState}
             signingProposal={signingProposal}
             executingProposal={executingProposal}
             error={error}
-            onNewSignerCommitmentChange={setNewSignerCommitment}
-            onIncreaseThresholdChange={setIncreaseThreshold}
-            onCreateProposal={handleCreateProposal}
-            onSyncState={handleSyncState}
-            onSyncProposals={handleSyncProposals}
+            onCreateAddSigner={handleCreateAddSignerProposal}
+            onCreateRemoveSigner={handleCreateRemoveSignerProposal}
+            onCreateChangeThreshold={handleCreateChangeThresholdProposal}
+            onSync={handleSync}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}
             onDisconnect={handleDisconnect}

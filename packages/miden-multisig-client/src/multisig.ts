@@ -336,9 +336,118 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      proposalType: 'add_signer',
       targetThreshold,
       targetSignerCommitments,
       saltHex: salt.toHex(),
+      description: `Add signer ${newCommitment.slice(0, 10)}...`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "remove signer" proposal by executing the update_signers script to summary.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param signerToRemove - Commitment of the signer to remove (hex)
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   * @param newThreshold - Optional new threshold (defaults to min of current threshold and new signer count)
+   */
+  async createRemoveSignerProposal(
+    webClient: import('@demox-labs/miden-sdk').WebClient,
+    signerToRemove: string,
+    nonce?: number,
+    newThreshold?: number,
+  ): Promise<Proposal> {
+    // Validate signer exists
+    const normalizedRemove = signerToRemove.toLowerCase();
+    const signerExists = this.signerCommitments.some(
+      (c) => c.toLowerCase() === normalizedRemove
+    );
+    if (!signerExists) {
+      throw new Error(`Signer ${signerToRemove} is not in the current signer list`);
+    }
+
+    // Filter out the signer
+    const targetSignerCommitments = this.signerCommitments.filter(
+      (c) => c.toLowerCase() !== normalizedRemove
+    );
+
+    if (targetSignerCommitments.length === 0) {
+      throw new Error('Cannot remove the last signer');
+    }
+
+    // Auto-adjust threshold if needed
+    const targetThreshold = newThreshold ?? Math.min(this.threshold, targetSignerCommitments.length);
+
+    // Validate threshold
+    if (targetThreshold < 1 || targetThreshold > targetSignerCommitments.length) {
+      throw new Error(
+        `Invalid threshold ${targetThreshold}. Must be between 1 and ${targetSignerCommitments.length}`
+      );
+    }
+
+    const { request, salt } = await buildUpdateSignersTransactionRequest(
+      webClient,
+      targetThreshold,
+      targetSignerCommitments,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      proposalType: 'remove_signer',
+      targetThreshold,
+      targetSignerCommitments,
+      saltHex: salt.toHex(),
+      description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "change threshold" proposal without modifying signers.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param newThreshold - The new threshold value
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createChangeThresholdProposal(
+    webClient: import('@demox-labs/miden-sdk').WebClient,
+    newThreshold: number,
+    nonce?: number,
+  ): Promise<Proposal> {
+    // Validate threshold
+    if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
+      throw new Error(
+        `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
+      );
+    }
+
+    if (newThreshold === this.threshold) {
+      throw new Error('New threshold is the same as current threshold');
+    }
+
+    const { request, salt } = await buildUpdateSignersTransactionRequest(
+      webClient,
+      newThreshold,
+      this.signerCommitments,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      proposalType: 'change_threshold',
+      targetThreshold: newThreshold,
+      targetSignerCommitments: this.signerCommitments,
+      saltHex: salt.toHex(),
+      description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
     return this.createProposal(proposalNonce, summaryBase64, metadata);

@@ -4,3 +4,4 @@ export { CreateMultisigDialog } from './CreateMultisigDialog';
 export { LoadMultisigDialog } from './LoadMultisigDialog';
 export { MultisigDashboard } from './MultisigDashboard';
 export { ProposalCard } from './ProposalCard';
+export { CreateProposalForm } from './CreateProposalForm';
