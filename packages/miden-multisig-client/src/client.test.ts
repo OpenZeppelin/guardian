@@ -1,0 +1,158 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MultisigClient } from './client.js';
+import type { Signer } from './types.js';
+
+// Mock the Miden SDK
+vi.mock('@demox-labs/miden-sdk', () => ({
+  AccountId: {
+    fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
+  },
+}));
+
+// Mock the account creation module
+vi.mock('./account/index.js', () => ({
+  createMultisigAccount: vi.fn().mockResolvedValue({
+    account: {
+      id: () => ({
+        toString: () => '0x' + 'a'.repeat(30),
+        prefix: () => ({ asInt: () => BigInt(1) }),
+        suffix: () => ({ asInt: () => BigInt(2) }),
+      }),
+      serialize: () => new Uint8Array([1, 2, 3]),
+    },
+    seed: new Uint8Array([4, 5, 6]),
+  }),
+}));
+
+// Mock fetch for PSM client
+const mockFetch = vi.fn();
+vi.stubGlobal('fetch', mockFetch);
+
+describe('MultisigClient', () => {
+  let webClient: any;
+  let mockSigner: Signer;
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+
+    webClient = {
+      createScriptBuilder: vi.fn(),
+      executeTransaction: vi.fn(),
+      proveTransaction: vi.fn(),
+      submitProvenTransaction: vi.fn(),
+      applyTransaction: vi.fn(),
+      syncState: vi.fn(),
+    };
+
+    mockSigner = {
+      commitment: '0x' + '1'.repeat(64),
+      publicKey: '0x' + '2'.repeat(64),
+      signAccountId: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
+      signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
+    };
+  });
+
+  describe('constructor', () => {
+    it('should create client with default PSM endpoint', () => {
+      const client = new MultisigClient(webClient);
+      expect(client).toBeInstanceOf(MultisigClient);
+    });
+
+    it('should create client with custom PSM endpoint', () => {
+      const client = new MultisigClient(webClient, { psmEndpoint: 'http://custom:8080' });
+      expect(client).toBeInstanceOf(MultisigClient);
+    });
+  });
+
+  describe('psmClient getter', () => {
+    it('should expose PSM client for getting pubkey', () => {
+      const client = new MultisigClient(webClient);
+      expect(client.psmClient).toBeDefined();
+    });
+  });
+
+  describe('create', () => {
+    it('should create multisig and return Multisig instance', async () => {
+      const client = new MultisigClient(webClient);
+
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = await client.create(config, mockSigner);
+
+      expect(multisig).toBeDefined();
+      expect(multisig.threshold).toBe(2);
+      expect(multisig.signerCommitments).toEqual(config.signerCommitments);
+      expect(multisig.psmCommitment).toBe(config.psmCommitment);
+    });
+
+    it('should set signer on PSM client', async () => {
+      const client = new MultisigClient(webClient);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = await client.create(config, mockSigner);
+      expect(multisig.signerCommitment).toBe(mockSigner.commitment);
+    });
+  });
+
+  describe('load', () => {
+    it('should load existing multisig account', async () => {
+      const client = new MultisigClient(webClient);
+
+      // Mock getState response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const accountId = '0x' + 'd'.repeat(30);
+      const multisig = await client.load(accountId, config, mockSigner);
+
+      expect(multisig).toBeDefined();
+      expect(multisig.accountId).toBe(accountId);
+      expect(multisig.threshold).toBe(2);
+      expect(multisig.account).toBeNull(); // Loaded accounts don't have the SDK Account
+    });
+
+    it('should throw if account not found on PSM', async () => {
+      const client = new MultisigClient(webClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () => 'Account not found',
+      });
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      await expect(
+        client.load('0xnonexistent', config, mockSigner)
+      ).rejects.toThrow();
+    });
+  });
+});

@@ -1,0 +1,26 @@
+{
+  "name": "miden-multisig-web-example",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@demox-labs/miden-sdk": "file:./vendor/demox-labs-miden-sdk-0.12.5.tgz",
+    "@openzeppelin/miden-multisig-client": "file:../../packages/miden-multisig-client",
+    "@openzeppelin/psm-client": "file:../../packages/psm-client",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.8"
+  }
+}
