@@ -114,6 +114,10 @@ export interface ProposalMetadata {
   saltHex?: string;
   /** Human-readable description of the change */
   description?: string;
+  /** New PSM public key commitment (for switch_psm proposals) */
+  newPsmPubkey?: string;
+  /** New PSM endpoint URL (for switch_psm proposals) */
+  newPsmEndpoint?: string;
 }
 
 /**
@@ -137,7 +141,8 @@ export interface Proposal {
 }
 
 /**
- * Exported proposal for offline signing.
+ * Exported proposal for offline signing and side-channel sharing.
+ * Contains all data needed to sign and execute the proposal without PSM.
  */
 export interface ExportedProposal {
   accountId: string;
@@ -147,7 +152,10 @@ export interface ExportedProposal {
   signatures: Array<{
     commitment: string;
     signatureHex: string;
+    timestamp?: string;
   }>;
+  /** Metadata needed for execution (required for import/export flow) */
+  metadata?: ProposalMetadata;
 }
 
 // =============================================================================

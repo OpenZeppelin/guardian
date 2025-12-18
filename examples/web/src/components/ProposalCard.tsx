@@ -15,6 +15,8 @@ interface ProposalCardProps {
   executingProposal: string | null;
   onSign: (proposalId: string) => void;
   onExecute: (proposalId: string) => void;
+  onExport: (proposalId: string) => void;
+  onSignOffline: (proposalId: string) => void;
 }
 
 function getProposalTypeLabel(type?: ProposalType): string {
@@ -25,6 +27,8 @@ function getProposalTypeLabel(type?: ProposalType): string {
       return 'Remove Signer';
     case 'change_threshold':
       return 'Change Threshold';
+    case 'switch_psm':
+      return 'Switch PSM';
     case 'custom':
       return 'Custom';
     default:
@@ -40,6 +44,8 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
       return 'destructive';
     case 'change_threshold':
       return 'secondary';
+    case 'switch_psm':
+      return 'secondary';
     default:
       return 'outline';
   }
@@ -53,6 +59,8 @@ export function ProposalCard({
   executingProposal,
   onSign,
   onExecute,
+  onExport,
+  onSignOffline,
 }: ProposalCardProps) {
   const userSigned = signer
     ? proposal.signatures.some(
@@ -137,14 +145,23 @@ export function ProposalCard({
 
         <Separator />
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {canSign && (
-            <Button
-              onClick={() => onSign(proposal.id)}
-              disabled={isSigningThis || !!signingProposal}
-            >
-              {isSigningThis ? 'Signing...' : 'Sign'}
-            </Button>
+            <>
+              <Button
+                onClick={() => onSign(proposal.id)}
+                disabled={isSigningThis || !!signingProposal}
+              >
+                {isSigningThis ? 'Signing...' : 'Sign'}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => onSignOffline(proposal.id)}
+                title="Sign offline and copy to clipboard"
+              >
+                Sign & Copy
+              </Button>
+            </>
           )}
           {canExecute && (
             <Button
@@ -156,6 +173,14 @@ export function ProposalCard({
               {isExecutingThis ? 'Executing...' : 'Execute'}
             </Button>
           )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onExport(proposal.id)}
+            title="Export proposal JSON to clipboard"
+          >
+            Export
+          </Button>
           {!canSign && !canExecute && proposal.status.type === 'finalized' && (
             <span className="text-sm text-muted-foreground italic">Finalized</span>
           )}

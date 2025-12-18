@@ -69,7 +69,7 @@ export type DeltaStatus =
 /**
  * Type of configuration change a proposal represents.
  */
-export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'custom';
+export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'switch_psm' | 'custom';
 
 /**
  * Proposal metadata - stored alongside the proposal to enable execution by any signer.
@@ -86,6 +86,10 @@ export interface ProposalMetadata {
   saltHex: string;
   /** Human-readable description of the change */
   description?: string;
+  /** New PSM public key commitment (for switch_psm proposals) */
+  newPsmPubkey?: string;
+  /** New PSM endpoint URL (for switch_psm proposals) */
+  newPsmEndpoint?: string;
 }
 
 /**

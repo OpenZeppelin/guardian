@@ -27,6 +27,8 @@ import {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
   buildUpdateSignersTransactionRequestWithSignatures,
+  buildUpdatePsmTransactionRequest,
+  buildUpdatePsmTransactionRequestWithSignatures,
   buildSignatureAdviceEntry,
   signatureHexToBytes,
   normalizeHexWord,
@@ -253,10 +255,16 @@ export class Multisig {
 
       // First try to get metadata from PSM (stored with the proposal)
       if (delta.delta_payload.metadata) {
+        // Copy all metadata fields from PSM
         proposal.metadata = {
+          proposalType: delta.delta_payload.metadata.proposalType,
           targetThreshold: delta.delta_payload.metadata.targetThreshold,
           targetSignerCommitments: delta.delta_payload.metadata.targetSignerCommitments,
           saltHex: delta.delta_payload.metadata.saltHex,
+          description: delta.delta_payload.metadata.description,
+          // PSM-specific fields
+          newPsmPubkey: delta.delta_payload.metadata.newPsmPubkey,
+          newPsmEndpoint: delta.delta_payload.metadata.newPsmEndpoint,
         };
       } else if (existingProposal?.metadata) {
         // Fall back to local metadata if PSM doesn't have it (legacy proposals)
@@ -291,9 +299,14 @@ export class Multisig {
         tx_summary: { data: txSummaryBase64 },
         signatures: [],
         metadata: metadata ? {
+          proposalType: metadata.proposalType,
           targetThreshold: metadata.targetThreshold!,
           targetSignerCommitments: metadata.targetSignerCommitments!,
           saltHex: metadata.saltHex!,
+          description: metadata.description,
+          // PSM-specific fields
+          newPsmPubkey: metadata.newPsmPubkey,
+          newPsmEndpoint: metadata.newPsmEndpoint,
         } : undefined,
       },
     });
@@ -454,6 +467,44 @@ export class Multisig {
   }
 
   /**
+   * Create a "switch PSM" proposal to change the PSM provider.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param newPsmEndpoint - The new PSM server endpoint URL
+   * @param newPsmPubkey - The new PSM server's public key commitment (hex)
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createSwitchPsmProposal(
+    webClient: import('@demox-labs/miden-sdk').WebClient,
+    newPsmEndpoint: string,
+    newPsmPubkey: string,
+    nonce?: number,
+  ): Promise<Proposal> {
+    const { request, salt } = await buildUpdatePsmTransactionRequest(
+      webClient,
+      newPsmPubkey,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      proposalType: 'switch_psm',
+      // Keep current signer config (no change)
+      targetThreshold: this.threshold,
+      targetSignerCommitments: this.signerCommitments,
+      saltHex: salt.toHex(),
+      // PSM-specific metadata
+      newPsmPubkey,
+      newPsmEndpoint,
+      description: `Switch PSM to ${newPsmEndpoint}`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
    * Sign a proposal.
    *
    * The proposalId is the tx_summary commitment hex, which is what gets signed.
@@ -495,7 +546,7 @@ export class Multisig {
    * Execute a proposal that has enough signatures.
    *
    * This performs the full on-chain execution flow:
-   * 1. Push delta to PSM to get acknowledgment signature
+   * 1. Push delta to PSM to get acknowledgment signature (except for switch_psm)
    * 2. Build advice map with all cosigner signatures + PSM ack
    * 3. Execute, prove, submit, and apply the transaction
    *
@@ -515,26 +566,25 @@ export class Multisig {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
-    const deltas = await this.psm.getDeltaProposals(this._accountId);
-    const delta = deltas.find(
-      (d) => computeCommitmentFromTxSummary(d.delta_payload.tx_summary.data) === proposalId
-    );
+      const deltas = await this.psm.getDeltaProposals(this._accountId);
+      const delta = deltas.find(
+        (d) => computeCommitmentFromTxSummary(d.delta_payload.tx_summary.data) === proposalId
+      );
 
-    if (!delta) {
-      throw new Error(`Proposal not found on server: ${proposalId}`);
-    }
+      if (!delta) {
+        throw new Error(`Proposal not found on server: ${proposalId}`);
+      }
 
-    // Push delta to PSM to get ack signature
-    const executionDelta = {
-      ...delta,
-      delta_payload: delta.delta_payload.tx_summary,
-    };
+      const executionDelta = {
+        ...delta,
+        delta_payload: delta.delta_payload.tx_summary,
+      };
 
-    const pushResult = await this.psm.pushDelta(executionDelta);
-    const ackSigHex = pushResult.ack_sig;
-    if (!ackSigHex) {
-      throw new Error('PSM did not return acknowledgment signature');
-    }
+      const pushResult = await this.psm.pushDelta(executionDelta);
+      const ackSigHex = pushResult.ack_sig;
+      if (!ackSigHex) {
+        throw new Error('PSM did not return acknowledgment signature');
+      }
 
     // Deserialize the tx_summary to get the salt and commitment
     const txSummaryBytes = base64ToUint8Array(delta.delta_payload.tx_summary.data);
@@ -562,28 +612,28 @@ export class Multisig {
     }
 
     // Add PSM ack signature
-    const psmCommitment = Word.fromHex(normalizeHexWord(this.psmCommitment));
-    const ackSigBytes = signatureHexToBytes(ackSigHex);
-    const ackSignature = Signature.deserialize(ackSigBytes);
-    const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
-    const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
-      psmCommitment,
-      txCommitmentForAck,
-      ackSignature
-    );
-    adviceMap.insert(ackKey, new FeltArray(ackValues));
+      const psmCommitment = Word.fromHex(normalizeHexWord(this.psmCommitment));
+      const ackSigBytes = signatureHexToBytes(ackSigHex);
+      const ackSignature = Signature.deserialize(ackSigBytes);
+      const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
+      const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
+        psmCommitment,
+        txCommitmentForAck,
+        ackSignature
+      );
+      adviceMap.insert(ackKey, new FeltArray(ackValues));
 
-    if (!proposal.metadata?.targetThreshold || !proposal.metadata?.targetSignerCommitments) {
-      throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
-    }
+      if (!proposal.metadata?.targetThreshold || !proposal.metadata?.targetSignerCommitments) {
+        throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
+      }
 
     const finalRequest = await buildUpdateSignersTransactionRequestWithSignatures(
-      webClient,
-      proposal.metadata.targetThreshold,
-      proposal.metadata.targetSignerCommitments,
-      salt,
-      adviceMap,
-    );
+        webClient,
+        proposal.metadata.targetThreshold,
+        proposal.metadata.targetSignerCommitments,
+        salt,
+        adviceMap,
+      );
 
     // Execute, prove, submit, apply
     const accountId = AccountId.fromHex(this._accountId);
@@ -597,7 +647,8 @@ export class Multisig {
   }
 
   /**
-   * Export a proposal for offline signing.
+   * Export a proposal for offline signing (fetches from PSM).
+   * @deprecated Use exportProposalToJson for offline/side-channel sharing
    */
   async exportProposal(proposalId: string): Promise<ExportedProposal> {
     const deltas = await this.psm.getDeltaProposals(this._accountId);
@@ -623,6 +674,142 @@ export class Multisig {
       txSummaryBase64: delta.delta_payload.tx_summary.data,
       signatures,
     };
+  }
+
+  /**
+   * Export a proposal to JSON for side-channel sharing.
+   * This exports from local cache and includes metadata, so PSM is not required.
+   * Useful when switching PSM providers and coordination via PSM is unavailable.
+   *
+   * @param proposalId - The proposal commitment/ID
+   * @returns JSON string that can be shared and imported by other signers
+   */
+  exportProposalToJson(proposalId: string): string {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) {
+      throw new Error(`Proposal not found in local cache: ${proposalId}`);
+    }
+
+    const exported: ExportedProposal = {
+      accountId: proposal.accountId,
+      nonce: proposal.nonce,
+      commitment: proposal.id,
+      txSummaryBase64: proposal.txSummary,
+      signatures: proposal.signatures.map((s) => ({
+        commitment: s.signerId,
+        signatureHex: s.signature.signature,
+        timestamp: s.timestamp,
+      })),
+      metadata: proposal.metadata,
+    };
+
+    return JSON.stringify(exported, null, 2);
+  }
+
+  /**
+   * Import a proposal from JSON (exported via exportProposalToJson).
+   * This adds the proposal to local cache for signing/execution.
+   * Useful when receiving proposals via side-channel when PSM is unavailable.
+   *
+   * @param json - JSON string from exportProposalToJson
+   * @returns The imported proposal
+   */
+  importProposal(json: string): Proposal {
+    const exported: ExportedProposal = JSON.parse(json);
+
+    // Validate the imported proposal
+    if (!exported.accountId || !exported.txSummaryBase64 || !exported.commitment) {
+      throw new Error('Invalid proposal JSON: missing required fields');
+    }
+
+    if (exported.accountId.toLowerCase() !== this._accountId.toLowerCase()) {
+      throw new Error(`Proposal is for a different account: ${exported.accountId}`);
+    }
+
+    // Verify the commitment matches the tx_summary
+    const computedCommitment = computeCommitmentFromTxSummary(exported.txSummaryBase64);
+    if (computedCommitment !== exported.commitment) {
+      throw new Error('Invalid proposal: commitment does not match tx_summary');
+    }
+
+    // Convert to Proposal
+    const signaturesCollected = exported.signatures.length;
+    const signaturesRequired = this.threshold;
+    const status: ProposalStatus = signaturesCollected >= signaturesRequired
+      ? { type: 'ready' }
+      : {
+          type: 'pending',
+          signaturesCollected,
+          signaturesRequired,
+          signers: exported.signatures.map((s) => s.commitment),
+        };
+
+    const proposal: Proposal = {
+      id: exported.commitment,
+      accountId: exported.accountId,
+      nonce: exported.nonce,
+      status,
+      txSummary: exported.txSummaryBase64,
+      signatures: exported.signatures.map((s) => ({
+        signerId: s.commitment,
+        signature: { scheme: 'falcon' as const, signature: s.signatureHex },
+        timestamp: s.timestamp || new Date().toISOString(),
+      })),
+      metadata: exported.metadata,
+    };
+
+    // Add to local cache
+    this.proposals.set(proposal.id, proposal);
+
+    return proposal;
+  }
+
+  /**
+   * Sign an imported proposal and return updated JSON for sharing.
+   * Use this when PSM is unavailable and coordination happens via side-channel.
+   *
+   * @param proposalId - The proposal commitment/ID
+   * @returns Updated JSON string with the new signature included
+   */
+  signProposalOffline(proposalId: string): string {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    // Check if already signed
+    const alreadySigned = proposal.signatures.some(
+      (s) => s.signerId.toLowerCase() === this.signer.commitment.toLowerCase()
+    );
+    if (alreadySigned) {
+      throw new Error('You have already signed this proposal');
+    }
+
+    // Sign the commitment
+    const signatureHex = this.signer.signCommitment(proposalId);
+
+    // Add signature to local proposal
+    proposal.signatures.push({
+      signerId: this.signer.commitment,
+      signature: { scheme: 'falcon', signature: signatureHex },
+      timestamp: new Date().toISOString(),
+    });
+
+    // Update status
+    const signaturesCollected = proposal.signatures.length;
+    if (signaturesCollected >= this.threshold) {
+      proposal.status = { type: 'ready' };
+    } else if (proposal.status.type === 'pending') {
+      proposal.status = {
+        type: 'pending',
+        signaturesCollected,
+        signaturesRequired: this.threshold,
+        signers: proposal.signatures.map((s) => s.signerId),
+      };
+    }
+
+    // Return updated JSON
+    return this.exportProposalToJson(proposalId);
   }
 
   // ===========================================================================

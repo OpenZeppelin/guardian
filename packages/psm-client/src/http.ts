@@ -35,8 +35,11 @@ export class PsmHttpError extends Error {
  */
 export class PsmHttpClient {
   private signer: Signer | null = null;
+  private readonly baseUrl: string;
 
-  constructor(private readonly baseUrl: string) {}
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
 
   /**
    * Set the signer for authenticated requests.

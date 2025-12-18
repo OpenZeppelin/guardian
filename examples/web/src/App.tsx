@@ -19,6 +19,7 @@ import {
   WelcomeView,
   CreateMultisigDialog,
   LoadMultisigDialog,
+  ImportProposalDialog,
   MultisigDashboard,
 } from '@/components';
 
@@ -45,6 +46,8 @@ export default function App() {
   // Dialog state
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importJson, setImportJson] = useState('');
 
   // Operation state
   const [creating, setCreating] = useState(false);
@@ -63,22 +66,30 @@ export default function App() {
   const connectToPsm = useCallback(
     async (url: string, client?: WebClient) => {
       setPsmStatus('connecting');
+      setError(null);
       try {
         const wc = client ?? webClient;
-        if (wc) {
-          const msClient = new MultisigClient(wc, { psmEndpoint: url });
-          const pubkey = await msClient.psmClient.getPubkey();
-          setPsmPubkey(pubkey);
-          setMultisigClient(msClient);
-        } else {
+        if (!wc) {
+          // Fallback when no WebClient - just fetch pubkey
           const response = await fetch(`${url}/pubkey`);
           const data = await response.json();
           setPsmPubkey(data.pubkey || '');
+          setPsmStatus('connected');
+          return;
         }
+
+        // Create new MultisigClient with PSM endpoint
+        const msClient = new MultisigClient(wc, { psmEndpoint: url });
+        const pubkey = await msClient.psmClient.getPubkey();
+        setPsmPubkey(pubkey);
+        setMultisigClient(msClient);
         setPsmStatus('connected');
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        console.error('Failed to connect to PSM:', err);
         setPsmStatus('error');
         setPsmPubkey('');
+        setError(`Failed to connect to PSM: ${msg}`);
       }
     },
     [webClient]
@@ -218,6 +229,7 @@ export default function App() {
       setPsmState(state);
 
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
+
       const newConfig: MultisigConfig = {
         threshold: detected.threshold,
         signerCommitments: detected.signerCommitments,
@@ -330,38 +342,68 @@ export default function App() {
 
   // Execute proposal
   const handleExecuteProposal = async (proposalId: string) => {
-    if (!multisig || !webClient || !multisigClient || !signer) return;
+    if (!multisig || !webClient) return;
 
     setExecutingProposal(proposalId);
     setError(null);
     try {
       await multisig.executeProposal(proposalId, webClient);
-
-      // Immediately remove the executed proposal from UI
-      setProposals((prev) => prev.filter((p) => p.id !== proposalId));
       toast.success('Proposal executed successfully');
 
-      const state = await multisig.fetchState();
-      const detected = AccountInspector.fromBase64(state.stateDataBase64);
-      const newConfig: MultisigConfig = {
-        threshold: detected.threshold,
-        signerCommitments: detected.signerCommitments,
-        psmCommitment: detected.psmCommitment || psmPubkey,
-        psmEnabled: detected.psmEnabled,
-      };
-
-      const falconSigner = new FalconSigner(signer.secretKey);
-      const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
-      setMultisig(reloadedMs);
-      setPsmState(state);
-
-      // Sync remaining proposals (excluding any finalized ones)
-      const synced = await reloadedMs.syncProposals();
-      setProposals(synced.filter((p) => p.status.type !== 'finalized'));
+      // Sync to reload account state and proposals
+      await handleSync();
     } catch (err) {
       setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
       setExecutingProposal(null);
+    }
+  };
+
+  // Export proposal to clipboard
+  const handleExportProposal = (proposalId: string) => {
+    if (!multisig) return;
+
+    try {
+      const json = multisig.exportProposalToJson(proposalId);
+      navigator.clipboard.writeText(json);
+      toast.success('Proposal JSON copied to clipboard');
+    } catch (err) {
+      setError(`Failed to export: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  };
+
+  // Sign proposal offline and copy to clipboard
+  const handleSignProposalOffline = (proposalId: string) => {
+    if (!multisig) return;
+
+    try {
+      const json = multisig.signProposalOffline(proposalId);
+      navigator.clipboard.writeText(json);
+      // Update local proposals state
+      setProposals(multisig.listProposals());
+      toast.success('Signed! Updated proposal JSON copied to clipboard');
+    } catch (err) {
+      setError(`Failed to sign offline: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  };
+
+  // Import proposal from JSON
+  const handleImportProposal = () => {
+    setImportJson('');
+    setImportDialogOpen(true);
+  };
+
+  const handleImportProposalSubmit = () => {
+    if (!multisig || !importJson.trim()) return;
+
+    try {
+      const proposal = multisig.importProposal(importJson.trim());
+      setProposals(multisig.listProposals());
+      setImportDialogOpen(false);
+      setImportJson('');
+      toast.success(`Proposal imported: ${proposal.id.slice(0, 12)}...`);
+    } catch (err) {
+      setError(`Failed to import: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
   };
 
@@ -410,6 +452,9 @@ export default function App() {
             onSync={handleSync}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}
+            onExportProposal={handleExportProposal}
+            onSignProposalOffline={handleSignProposalOffline}
+            onImportProposal={handleImportProposal}
             onDisconnect={handleDisconnect}
           />
         ) : null}
@@ -432,6 +477,13 @@ export default function App() {
             loading={loadingAccount}
             detectedConfig={detectedConfig}
             onLoad={handleLoad}
+          />
+          <ImportProposalDialog
+            open={importDialogOpen}
+            onOpenChange={setImportDialogOpen}
+            importJson={importJson}
+            onImportJsonChange={setImportJson}
+            onImport={handleImportProposalSubmit}
           />
         </>
       )}

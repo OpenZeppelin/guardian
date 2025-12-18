@@ -212,3 +212,91 @@ export function buildSignatureAdviceEntry(
   return { key, values };
 }
 
+// =============================================================================
+// Transaction builders (update_psm_public_key)
+// =============================================================================
+
+/**
+ * Build the update_psm_public_key tx script.
+ */
+async function buildUpdatePsmScript(webClient: WebClient): Promise<TransactionScript> {
+  const psmMasm = await getPsmMasm();
+
+  const libBuilder = webClient.createScriptBuilder();
+
+  // Build and link PSM library (dynamic for FPI on-chain)
+  const psmLib = libBuilder.buildLibrary('openzeppelin::psm', psmMasm);
+  libBuilder.linkDynamicLibrary(psmLib);
+
+  // Script matches the Rust version's logic:
+  // 1. adv.push_mapval - pushes value from advice map to advice stack using script_arg as key
+  // 2. dropw - clears the key from operand stack
+  // 3. call update_psm_public_key - which reads the new key via adv_loadw
+  const scriptSource = `
+use.openzeppelin::psm
+
+begin
+    adv.push_mapval
+    dropw
+    call.psm::update_psm_public_key
+end
+  `;
+
+  return libBuilder.compileTxScript(scriptSource);
+}
+
+/**
+ * Build an update_psm_public_key TransactionRequest (no signatures; for summary only).
+ */
+export async function buildUpdatePsmTransactionRequest(
+  webClient: WebClient,
+  newPsmPubkey: string,
+  salt?: Word,
+): Promise<{ request: TransactionRequest; salt: Word }> {
+  const script = await buildUpdatePsmScript(webClient);
+  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
+
+  // The new PSM pubkey is stored in the advice map with itself as the key
+  const pubkeyWord = Word.fromHex(normalizeHexWord(newPsmPubkey));
+  const advice = new AdviceMap();
+  advice.insert(pubkeyWord, new FeltArray(pubkeyWord.toFelts()));
+
+  const txBuilder = new TransactionRequestBuilder()
+    .withCustomScript(script)
+    .withScriptArg(pubkeyWord)
+    .extendAdviceMap(advice)
+    .withAuthArg(authSalt);
+
+  return {
+    request: txBuilder.build(),
+    salt: authSalt,
+  };
+}
+
+/**
+ * Build an update_psm_public_key TransactionRequest with signature advice map.
+ * This is used for actual execution.
+ */
+export async function buildUpdatePsmTransactionRequestWithSignatures(
+  webClient: WebClient,
+  newPsmPubkey: string,
+  salt: Word,
+  signatureAdviceMap: AdviceMap,
+): Promise<TransactionRequest> {
+  const script = await buildUpdatePsmScript(webClient);
+
+  // The new PSM pubkey is stored in the advice map with itself as the key
+  const pubkeyWord = Word.fromHex(normalizeHexWord(newPsmPubkey));
+  const advice = new AdviceMap();
+  advice.insert(pubkeyWord, new FeltArray(pubkeyWord.toFelts()));
+
+  const txBuilder = new TransactionRequestBuilder()
+    .withCustomScript(script)
+    .withScriptArg(pubkeyWord)
+    .extendAdviceMap(advice)
+    .extendAdviceMap(signatureAdviceMap)
+    .withAuthArg(salt);
+
+  return txBuilder.build();
+}
+

@@ -52,7 +52,11 @@
 export { MultisigClient, type MultisigClientConfig } from './client.js';
 export { Multisig, type AccountState } from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig } from './inspector.js';
-export { executeForSummary, buildUpdateSignersTransactionRequest } from './transaction.js';
+export {
+  executeForSummary,
+  buildUpdateSignersTransactionRequest,
+  buildUpdatePsmTransactionRequest,
+} from './transaction.js';
 
 // =============================================================================
 // PSM Client (re-exported from @openzeppelin/psm-client)

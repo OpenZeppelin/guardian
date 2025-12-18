@@ -25,6 +25,9 @@ interface MultisigDashboardProps {
   onSync: () => void;
   onSignProposal: (proposalId: string) => void;
   onExecuteProposal: (proposalId: string) => void;
+  onExportProposal: (proposalId: string) => void;
+  onSignProposalOffline: (proposalId: string) => void;
+  onImportProposal: () => void;
   onDisconnect: () => void;
 }
 
@@ -44,6 +47,9 @@ export function MultisigDashboard({
   onSync,
   onSignProposal,
   onExecuteProposal,
+  onExportProposal,
+  onSignProposalOffline,
+  onImportProposal,
   onDisconnect,
 }: MultisigDashboardProps) {
   return (
@@ -90,6 +96,9 @@ export function MultisigDashboard({
             <Button variant="outline" size="sm" onClick={onSync} disabled={syncing}>
               {syncing ? 'Syncing...' : 'Sync'}
             </Button>
+            <Button variant="outline" size="sm" onClick={onImportProposal}>
+              Import Proposal
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -127,6 +136,8 @@ export function MultisigDashboard({
                 executingProposal={executingProposal}
                 onSign={onSignProposal}
                 onExecute={onExecuteProposal}
+                onExport={onExportProposal}
+                onSignOffline={onSignProposalOffline}
               />
             ))}
           </CardContent>
