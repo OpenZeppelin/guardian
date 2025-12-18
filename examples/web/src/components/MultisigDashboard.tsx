@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalForm } from './CreateProposalForm';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Multisig, Proposal, AccountState } from '@openzeppelin/miden-multisig-client';
+import type { Multisig, Proposal, AccountState, ConsumableNote } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface MultisigDashboardProps {
@@ -14,6 +14,7 @@ interface MultisigDashboardProps {
   signer: SignerInfo;
   psmState: AccountState | null;
   proposals: Proposal[];
+  consumableNotes: ConsumableNote[];
   creatingProposal: boolean;
   syncing: boolean;
   signingProposal: string | null;
@@ -22,6 +23,7 @@ interface MultisigDashboardProps {
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
+  onCreateConsumeNotes: (noteIds: string[]) => void;
   onSync: () => void;
   onSignProposal: (proposalId: string) => void;
   onExecuteProposal: (proposalId: string) => void;
@@ -36,6 +38,7 @@ export function MultisigDashboard({
   signer,
   psmState,
   proposals,
+  consumableNotes,
   creatingProposal,
   syncing,
   signingProposal,
@@ -44,6 +47,7 @@ export function MultisigDashboard({
   onCreateAddSigner,
   onCreateRemoveSigner,
   onCreateChangeThreshold,
+  onCreateConsumeNotes,
   onSync,
   onSignProposal,
   onExecuteProposal,
@@ -114,9 +118,11 @@ export function MultisigDashboard({
         currentThreshold={multisig.threshold}
         signerCommitments={multisig.signerCommitments}
         creatingProposal={creatingProposal}
+        consumableNotes={consumableNotes}
         onCreateAddSigner={onCreateAddSigner}
         onCreateRemoveSigner={onCreateRemoveSigner}
         onCreateChangeThreshold={onCreateChangeThreshold}
+        onCreateConsumeNotes={onCreateConsumeNotes}
       />
 
       {/* Proposals List */}

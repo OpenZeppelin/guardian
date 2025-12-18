@@ -9,6 +9,9 @@ import {
   AdviceMap,
   Felt,
   FeltArray,
+  NoteId,
+  NoteIdAndArgs,
+  NoteIdAndArgsArray,
   Rpo256,
   Signature,
   TransactionRequestBuilder,
@@ -158,10 +161,6 @@ export async function buildUpdateSignersTransactionRequestWithSignatures(
   return txBuilder.build();
 }
 
-// =============================================================================
-// Signature helpers (for executeProposal)
-// =============================================================================
-
 /**
  * Convert hex string to Uint8Array for signature deserialization.
  */
@@ -294,6 +293,76 @@ export async function buildUpdatePsmTransactionRequestWithSignatures(
     .withCustomScript(script)
     .withScriptArg(pubkeyWord)
     .extendAdviceMap(advice)
+    .extendAdviceMap(signatureAdviceMap)
+    .withAuthArg(salt);
+
+  return txBuilder.build();
+}
+
+/**
+ * Build a consume_notes TransactionRequest (no signatures; for summary only).
+ *
+ * Creates a transaction that will consume the specified notes, transferring their
+ * assets to the multisig account.
+ *
+ * @param noteIds - IDs of the notes to consume (hex strings)
+ * @param salt - Salt for replay protection (optional, will be generated if not provided)
+ */
+export function buildConsumeNotesTransactionRequest(
+  noteIds: string[],
+  salt?: Word,
+): { request: TransactionRequest; salt: Word } {
+  if (noteIds.length === 0) {
+    throw new Error('At least one note ID is required');
+  }
+
+  // Create NoteIdAndArgsArray from note ID strings
+  const noteIdAndArgsArray = new NoteIdAndArgsArray();
+  for (const noteIdHex of noteIds) {
+    const noteId = NoteId.fromHex(noteIdHex);
+    const noteIdAndArgs = new NoteIdAndArgs(noteId, null);
+    noteIdAndArgsArray.push(noteIdAndArgs);
+  }
+
+  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
+
+  const txBuilder = new TransactionRequestBuilder()
+    .withAuthenticatedInputNotes(noteIdAndArgsArray)
+    .withAuthArg(authSalt);
+
+  return {
+    request: txBuilder.build(),
+    salt: authSalt,
+  };
+}
+
+/**
+ * Build a consume_notes TransactionRequest with signature advice map.
+ * This is used for actual execution (not just summary).
+ *
+ * @param noteIds - IDs of the notes to consume (hex strings)
+ * @param salt - Salt for replay protection
+ * @param signatureAdviceMap - Advice map containing cosigner signatures
+ */
+export function buildConsumeNotesTransactionRequestWithSignatures(
+  noteIds: string[],
+  salt: Word,
+  signatureAdviceMap: AdviceMap,
+): TransactionRequest {
+  if (noteIds.length === 0) {
+    throw new Error('At least one note ID is required');
+  }
+
+  // Create NoteIdAndArgsArray from note ID strings
+  const noteIdAndArgsArray = new NoteIdAndArgsArray();
+  for (const noteIdHex of noteIds) {
+    const noteId = NoteId.fromHex(noteIdHex);
+    const noteIdAndArgs = new NoteIdAndArgs(noteId, null);
+    noteIdAndArgsArray.push(noteIdAndArgs);
+  }
+
+  const txBuilder = new TransactionRequestBuilder()
+    .withAuthenticatedInputNotes(noteIdAndArgsArray)
     .extendAdviceMap(signatureAdviceMap)
     .withAuthArg(salt);
 

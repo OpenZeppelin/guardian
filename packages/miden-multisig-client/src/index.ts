@@ -56,6 +56,7 @@ export {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
   buildUpdatePsmTransactionRequest,
+  buildConsumeNotesTransactionRequest,
 } from './transaction.js';
 
 // =============================================================================
@@ -111,6 +112,10 @@ export type {
 
   // Transaction types
   TransactionType,
+
+  // Note types
+  ConsumableNote,
+  NoteAsset,
 
   // Signature types
   FalconSignature,

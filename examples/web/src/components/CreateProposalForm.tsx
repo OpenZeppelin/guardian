@@ -11,25 +11,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import type { ConsumableNote } from '@openzeppelin/miden-multisig-client';
 
-type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold';
+type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes';
 
 interface CreateProposalFormProps {
   currentThreshold: number;
   signerCommitments: string[];
   creatingProposal: boolean;
+  consumableNotes: ConsumableNote[];
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
+  onCreateConsumeNotes: (noteIds: string[]) => void;
 }
 
 export function CreateProposalForm({
   currentThreshold,
   signerCommitments,
   creatingProposal,
+  consumableNotes,
   onCreateAddSigner,
   onCreateRemoveSigner,
   onCreateChangeThreshold,
+  onCreateConsumeNotes,
 }: CreateProposalFormProps) {
   const [proposalType, setProposalType] = useState<ProposalType>('add_signer');
 
@@ -43,6 +48,9 @@ export function CreateProposalForm({
 
   // Change threshold state
   const [newThreshold, setNewThreshold] = useState(currentThreshold);
+
+  // Consume notes state
+  const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([]);
 
   const handleCreate = () => {
     switch (proposalType) {
@@ -67,6 +75,12 @@ export function CreateProposalForm({
           onCreateChangeThreshold(newThreshold);
         }
         break;
+      case 'consume_notes':
+        if (selectedNoteIds.length > 0) {
+          onCreateConsumeNotes(selectedNoteIds);
+          setSelectedNoteIds([]);
+        }
+        break;
     }
   };
 
@@ -78,6 +92,8 @@ export function CreateProposalForm({
         return signerToRemove.length > 0 && signerCommitments.length > 1;
       case 'change_threshold':
         return newThreshold !== currentThreshold && newThreshold >= 1 && newThreshold <= signerCommitments.length;
+      case 'consume_notes':
+        return selectedNoteIds.length > 0;
     }
   };
 
@@ -89,7 +105,19 @@ export function CreateProposalForm({
         return 'Create a proposal to remove an existing signer from the multisig.';
       case 'change_threshold':
         return 'Create a proposal to change the required signature threshold.';
+      case 'consume_notes':
+        return 'Create a proposal to consume notes sent to the multisig account.';
     }
+  };
+
+  const toggleNoteSelection = (noteId: string) => {
+    setSelectedNoteIds((prev) =>
+      prev.includes(noteId) ? prev.filter((id) => id !== noteId) : [...prev, noteId]
+    );
+  };
+
+  const formatAmount = (amount: bigint): string => {
+    return amount.toString();
   };
 
   // Calculate what threshold would be after removing a signer
@@ -116,6 +144,7 @@ export function CreateProposalForm({
               <SelectItem value="add_signer">Add Signer</SelectItem>
               <SelectItem value="remove_signer">Remove Signer</SelectItem>
               <SelectItem value="change_threshold">Change Threshold</SelectItem>
+              <SelectItem value="consume_notes">Consume Notes</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -223,6 +252,57 @@ export function CreateProposalForm({
               <p className="text-sm text-muted-foreground">
                 Change from {currentThreshold}-of-{signerCommitments.length} to {newThreshold}-of-{signerCommitments.length}
               </p>
+            )}
+          </div>
+        )}
+
+        {/* Consume Notes Form */}
+        {proposalType === 'consume_notes' && (
+          <div className="space-y-3">
+            {consumableNotes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No consumable notes found. Sync to check for new notes.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label>Select Notes to Consume</Label>
+                  <div className="border rounded-md p-3 space-y-2 max-h-48 overflow-y-auto">
+                    {consumableNotes.map((note) => (
+                      <div
+                        key={note.id}
+                        className="flex items-center space-x-3 p-2 hover:bg-muted rounded cursor-pointer"
+                        onClick={() => toggleNoteSelection(note.id)}
+                      >
+                        <Checkbox
+                          checked={selectedNoteIds.includes(note.id)}
+                          onCheckedChange={() => toggleNoteSelection(note.id)}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-mono text-xs truncate">
+                            {note.id.slice(0, 16)}...{note.id.slice(-8)}
+                          </p>
+                          {note.assets.length > 0 && (
+                            <p className="text-xs text-muted-foreground">
+                              {note.assets.map((a, i) => (
+                                <span key={i}>
+                                  {formatAmount(a.amount)} from {a.faucetId.slice(0, 10)}...
+                                  {i < note.assets.length - 1 && ', '}
+                                </span>
+                              ))}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {selectedNoteIds.length > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    {selectedNoteIds.length} note(s) selected
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}

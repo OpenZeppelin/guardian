@@ -118,6 +118,8 @@ export interface ProposalMetadata {
   newPsmPubkey?: string;
   /** New PSM endpoint URL (for switch_psm proposals) */
   newPsmEndpoint?: string;
+  /** Note IDs to consume (for consume_notes proposals) */
+  noteIds?: string[];
 }
 
 /**
@@ -142,7 +144,6 @@ export interface Proposal {
 
 /**
  * Exported proposal for offline signing and side-channel sharing.
- * Contains all data needed to sign and execute the proposal without PSM.
  */
 export interface ExportedProposal {
   accountId: string;
@@ -169,3 +170,27 @@ export type TransactionType =
   | { type: 'p2id'; recipient: string; faucetId: string; amount: bigint }
   | { type: 'consumeNotes'; noteIds: string[] }
   | { type: 'updateSigners'; newThreshold: number; newSignerCommitments: string[] };
+
+// =============================================================================
+// Note Types
+// =============================================================================
+
+/**
+ * Represents an asset in a note.
+ */
+export interface NoteAsset {
+  /** Faucet account ID (hex string) */
+  faucetId: string;
+  /** Amount of the fungible asset */
+  amount: bigint;
+}
+
+/**
+ * A note that can be consumed by the multisig account.
+ */
+export interface ConsumableNote {
+  /** Note ID (hex string) */
+  id: string;
+  /** Assets contained in the note */
+  assets: NoteAsset[];
+}

@@ -29,6 +29,8 @@ function getProposalTypeLabel(type?: ProposalType): string {
       return 'Change Threshold';
     case 'switch_psm':
       return 'Switch PSM';
+    case 'consume_notes':
+      return 'Consume Notes';
     case 'custom':
       return 'Custom';
     default:
@@ -46,6 +48,8 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
       return 'secondary';
     case 'switch_psm':
       return 'secondary';
+    case 'consume_notes':
+      return 'default';
     default:
       return 'outline';
   }

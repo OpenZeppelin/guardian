@@ -69,7 +69,7 @@ export type DeltaStatus =
 /**
  * Type of configuration change a proposal represents.
  */
-export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'switch_psm' | 'custom';
+export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'switch_psm' | 'consume_notes' | 'custom';
 
 /**
  * Proposal metadata - stored alongside the proposal to enable execution by any signer.
@@ -90,6 +90,8 @@ export interface ProposalMetadata {
   newPsmPubkey?: string;
   /** New PSM endpoint URL (for switch_psm proposals) */
   newPsmEndpoint?: string;
+  /** Note IDs to consume (for consume_notes proposals) */
+  noteIds?: string[];
 }
 
 /**

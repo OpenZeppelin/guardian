@@ -27,6 +27,66 @@ import { normalizeCommitment } from '@/lib/helpers';
 import type { SignerInfo } from '@/types';
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
+const SIGNER_KEY_STORAGE_KEY = 'miden-multisig-signer-key';
+
+// Clear persisted signer key
+function clearPersistedKey(): void {
+  try {
+    localStorage.removeItem(SIGNER_KEY_STORAGE_KEY);
+    console.log('[Storage] Signer key cleared');
+  } catch (err) {
+    console.error('[Storage] Failed to clear signer key:', err);
+  }
+}
+
+// Helper to convert Uint8Array to base64 for localStorage
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// Helper to convert base64 back to Uint8Array
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// Save signer key to localStorage
+function saveSignerKey(secretKey: SecretKey): void {
+  try {
+    const bytes = secretKey.serialize();
+    const base64 = uint8ArrayToBase64(bytes);
+    localStorage.setItem(SIGNER_KEY_STORAGE_KEY, base64);
+    console.log('[Signer] Key saved to localStorage');
+  } catch (err) {
+    console.error('[Signer] Failed to save key to localStorage:', err);
+  }
+}
+
+// Load signer key from localStorage
+function loadSignerKey(): SecretKey | null {
+  try {
+    const base64 = localStorage.getItem(SIGNER_KEY_STORAGE_KEY);
+    if (!base64) {
+      console.log('[Signer] No key found in localStorage');
+      return null;
+    }
+    const bytes = base64ToUint8Array(base64);
+    const secretKey = SecretKey.deserialize(bytes);
+    console.log('[Signer] Key loaded from localStorage');
+    return secretKey;
+  } catch (err) {
+    console.error('[Signer] Failed to load key from localStorage:', err);
+    return null;
+  }
+}
 
 export default function App() {
   // Core state
@@ -62,9 +122,12 @@ export default function App() {
   const [signingProposal, setSigningProposal] = useState<string | null>(null);
   const [executingProposal, setExecutingProposal] = useState<string | null>(null);
 
-  // Connect to PSM server
+  // Notes state
+  const [consumableNotes, setConsumableNotes] = useState<Array<{ id: string; assets: Array<{ faucetId: string; amount: bigint }> }>>([]);
+
+  // Connect to PSM server - returns { pubkey, msClient } for init flow
   const connectToPsm = useCallback(
-    async (url: string, client?: WebClient) => {
+    async (url: string, client?: WebClient): Promise<{ pubkey: string; msClient: MultisigClient } | null> => {
       setPsmStatus('connecting');
       setError(null);
       try {
@@ -75,7 +138,7 @@ export default function App() {
           const data = await response.json();
           setPsmPubkey(data.pubkey || '');
           setPsmStatus('connected');
-          return;
+          return null;
         }
 
         // Create new MultisigClient with PSM endpoint
@@ -84,30 +147,51 @@ export default function App() {
         setPsmPubkey(pubkey);
         setMultisigClient(msClient);
         setPsmStatus('connected');
+        return { pubkey, msClient };
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
         console.error('Failed to connect to PSM:', err);
         setPsmStatus('error');
         setPsmPubkey('');
         setError(`Failed to connect to PSM: ${msg}`);
+        return null;
       }
     },
     [webClient]
   );
 
-  // Generate signer key
-  const generateSigner = useCallback(async (client: WebClient) => {
+  // Load or generate signer key - returns SignerInfo for init flow
+  const initializeSigner = useCallback(async (client: WebClient): Promise<SignerInfo | null> => {
     setGeneratingSigner(true);
     try {
-      const seed = new Uint8Array(32);
-      crypto.getRandomValues(seed);
-      const secretKey = SecretKey.rpoFalconWithRNG(seed);
-      await client.addAccountSecretKeyToWebStore(secretKey);
+      // Try to load existing key from localStorage
+      let secretKey = loadSignerKey();
+
+      if (!secretKey) {
+        // No existing key, generate a new one
+        console.log('[Signer] Generating new key...');
+        // Use undefined to let the SDK use OS RNG (crypto.getRandomValues in browser)
+        secretKey = SecretKey.rpoFalconWithRNG(undefined);
+        // Save to localStorage for future sessions
+        saveSignerKey(secretKey);
+      }
+
+      // Add to WebClient's keystore (ignore "already exists" errors on reload)
+      try {
+        await client.addAccountSecretKeyToWebStore(secretKey);
+      } catch (storeErr) {
+        // Key already exists in IndexedDB - this is expected on page reload
+        console.log('[Signer] Key already in web store (expected on reload)');
+      }
       const publicKey = secretKey.publicKey();
       const commitment = publicKey.toCommitment().toHex();
-      setSigner({ commitment, secretKey });
+      console.log('[Signer] Initialized with commitment:', commitment);
+      const signerInfo = { commitment, secretKey };
+      setSigner(signerInfo);
+      return signerInfo;
     } catch (err) {
-      setError(`Failed to generate signer: ${err instanceof Error ? err.message : 'Unknown'}`);
+      setError(`Failed to initialize signer: ${err instanceof Error ? err.message : 'Unknown'}`);
+      return null;
     } finally {
       setGeneratingSigner(false);
     }
@@ -120,8 +204,12 @@ export default function App() {
         const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
         await client.syncState();
         setWebClient(client);
+
+        // Connect to PSM and get pubkey + msClient
         await connectToPsm(psmUrl, client);
-        await generateSigner(client);
+
+        // Initialize signer (load from localStorage or generate new)
+        await initializeSigner(client);
       } catch (err) {
         setError(`Initialization failed: ${err instanceof Error ? err.message : 'Unknown'}`);
       }
@@ -204,6 +292,7 @@ export default function App() {
       const ms = await multisigClient.load(normalizedId, config, falconSigner);
       setMultisig(ms);
       setPsmState(state);
+
       setLoadDialogOpen(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown';
@@ -219,12 +308,15 @@ export default function App() {
 
   // Sync state and proposals
   const handleSync = async () => {
-    if (!multisig || !multisigClient || !signer) return;
+    if (!multisig || !multisigClient || !signer || !webClient) return;
 
     setSyncingState(true);
     setError(null);
     try {
-      // Sync state
+      // Sync miden client state first
+      await webClient.syncState();
+
+      // Sync PSM state
       const state = await multisig.fetchState();
       setPsmState(state);
 
@@ -244,6 +336,15 @@ export default function App() {
       // Sync proposals
       const synced = await reloadedMs.syncProposals();
       setProposals(synced);
+
+      // Fetch consumable notes
+      try {
+        const notes = await reloadedMs.getConsumableNotes(webClient);
+        setConsumableNotes(notes);
+      } catch (noteErr) {
+        console.warn('Failed to fetch consumable notes:', noteErr);
+        // Don't fail the whole sync if notes fetch fails
+      }
     } catch (err) {
       setError(`Sync failed: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
@@ -323,6 +424,27 @@ export default function App() {
     }
   };
 
+  // Create consume notes proposal
+  const handleCreateConsumeNotesProposal = async (noteIds: string[]) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await (multisig as any).createConsumeNotesProposal(webClient, noteIds);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Consume notes proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
   // Sign proposal
   const handleSignProposal = async (proposalId: string) => {
     if (!multisig) return;
@@ -347,12 +469,19 @@ export default function App() {
     setExecutingProposal(proposalId);
     setError(null);
     try {
+      console.log('[Execute] Starting execution for proposal:', proposalId);
+      const proposal = multisig.listProposals().find(p => p.id === proposalId);
+      console.log('[Execute] Proposal metadata:', proposal?.metadata);
+      console.log('[Execute] Proposal type:', proposal?.metadata?.proposalType);
+
       await multisig.executeProposal(proposalId, webClient);
+      console.log('[Execute] Execution completed successfully');
       toast.success('Proposal executed successfully');
 
       // Sync to reload account state and proposals
       await handleSync();
     } catch (err) {
+      console.error('[Execute] Execution failed:', err);
       setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
       setExecutingProposal(null);
@@ -415,6 +544,14 @@ export default function App() {
     setError(null);
   };
 
+  // Reset persisted key and reload
+  const handleResetData = () => {
+    clearPersistedKey();
+    toast.success('Signer key cleared. Reloading...');
+    // Reload the page to start fresh
+    setTimeout(() => window.location.reload(), 500);
+  };
+
   const ready = !!webClient && !!signer && !!multisigClient && psmStatus === 'connected';
 
   return (
@@ -434,6 +571,7 @@ export default function App() {
             ready={ready}
             onCreateClick={() => setCreateDialogOpen(true)}
             onLoadClick={() => setLoadDialogOpen(true)}
+            onResetData={handleResetData}
           />
         ) : signer ? (
           <MultisigDashboard
@@ -441,6 +579,7 @@ export default function App() {
             signer={signer}
             psmState={psmState}
             proposals={proposals}
+            consumableNotes={consumableNotes}
             creatingProposal={creatingProposal}
             syncing={syncingState}
             signingProposal={signingProposal}
@@ -449,6 +588,7 @@ export default function App() {
             onCreateAddSigner={handleCreateAddSignerProposal}
             onCreateRemoveSigner={handleCreateRemoveSignerProposal}
             onCreateChangeThreshold={handleCreateChangeThresholdProposal}
+            onCreateConsumeNotes={handleCreateConsumeNotesProposal}
             onSync={handleSync}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}

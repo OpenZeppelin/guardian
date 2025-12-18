@@ -7,13 +7,16 @@
 
 import { PsmHttpClient, type DeltaObject, type DeltaStatus, type FalconSignature, type Signer, type StorageType, type AuthConfig, type StateObject } from '@openzeppelin/psm-client';
 import type {
+  ConsumableNote,
   ExportedProposal,
   MultisigConfig,
+  NoteAsset,
   Proposal,
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalStatus,
 } from './types.js';
+import type { WebClient, TransactionRequest } from '@demox-labs/miden-sdk';
 import {
   Account,
   AccountId,
@@ -29,6 +32,8 @@ import {
   buildUpdateSignersTransactionRequestWithSignatures,
   buildUpdatePsmTransactionRequest,
   buildUpdatePsmTransactionRequestWithSignatures,
+  buildConsumeNotesTransactionRequest,
+  buildConsumeNotesTransactionRequestWithSignatures,
   buildSignatureAdviceEntry,
   signatureHexToBytes,
   normalizeHexWord,
@@ -265,6 +270,8 @@ export class Multisig {
           // PSM-specific fields
           newPsmPubkey: delta.delta_payload.metadata.newPsmPubkey,
           newPsmEndpoint: delta.delta_payload.metadata.newPsmEndpoint,
+          // Consume notes fields
+          noteIds: delta.delta_payload.metadata.noteIds,
         };
       } else if (existingProposal?.metadata) {
         // Fall back to local metadata if PSM doesn't have it (legacy proposals)
@@ -307,6 +314,8 @@ export class Multisig {
           // PSM-specific fields
           newPsmPubkey: metadata.newPsmPubkey,
           newPsmEndpoint: metadata.newPsmEndpoint,
+          // Consume notes fields
+          noteIds: metadata.noteIds,
         } : undefined,
       },
     });
@@ -330,7 +339,7 @@ export class Multisig {
    * @param newThreshold - Optional new threshold (defaults to current threshold)
    */
   async createAddSignerProposal(
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
     newCommitment: string,
     nonce?: number,
     newThreshold?: number,
@@ -368,7 +377,7 @@ export class Multisig {
    * @param newThreshold - Optional new threshold (defaults to min of current threshold and new signer count)
    */
   async createRemoveSignerProposal(
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
     signerToRemove: string,
     nonce?: number,
     newThreshold?: number,
@@ -430,7 +439,7 @@ export class Multisig {
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
   async createChangeThresholdProposal(
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
     newThreshold: number,
     nonce?: number,
   ): Promise<Proposal> {
@@ -475,7 +484,7 @@ export class Multisig {
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
   async createSwitchPsmProposal(
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
     newPsmEndpoint: string,
     newPsmPubkey: string,
     nonce?: number,
@@ -502,6 +511,87 @@ export class Multisig {
     };
 
     return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "consume notes" proposal to consume notes sent to the multisig account.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param noteIds - IDs of the notes to consume (hex strings)
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createConsumeNotesProposal(
+    webClient: WebClient,
+    noteIds: string[],
+    nonce?: number,
+  ): Promise<Proposal> {
+    if (noteIds.length === 0) {
+      throw new Error('At least one note ID is required');
+    }
+
+    const { request, salt } = buildConsumeNotesTransactionRequest(noteIds);
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      proposalType: 'consume_notes' as const,
+      noteIds,
+      saltHex: salt.toHex(),
+      description: `Consume ${noteIds.length} note(s)`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Get notes that can be consumed by this multisig account.
+   *
+   * Returns a list of notes that are committed on-chain and can be consumed
+   * immediately by the multisig account.
+   *
+   * @param webClient - Initialized Miden WebClient
+   */
+  async getConsumableNotes(
+    webClient: WebClient,
+  ): Promise<ConsumableNote[]> {
+    const accountId = AccountId.fromHex(this._accountId);
+
+    // Get consumable notes for this account
+    const consumableRecords = await webClient.getConsumableNotes(accountId);
+
+    // Convert to our simplified ConsumableNote type
+    const notes: ConsumableNote[] = [];
+    for (const record of consumableRecords) {
+      const inputNote = record.inputNoteRecord();
+      const consumability = record.noteConsumability();
+
+      // Only include notes that can be consumed now (consumableAfterBlock is undefined/null)
+      const canConsumeNow = consumability.some(
+        (c) => c.accountId().toString().toLowerCase() === this._accountId.toLowerCase() &&
+               c.consumableAfterBlock() === undefined
+      );
+
+      if (canConsumeNow) {
+        const noteId = inputNote.id().toString();
+        const details = inputNote.details();
+        const fungibleAssets = details.assets().fungibleAssets();
+
+        // Extract assets
+        const assets: NoteAsset[] = [];
+        for (const asset of fungibleAssets) {
+          assets.push({
+            faucetId: asset.faucetId().toString(),
+            amount: asset.amount(),
+          });
+        }
+
+        notes.push({ id: noteId, assets });
+      }
+    }
+
+    return notes;
   }
 
   /**
@@ -555,7 +645,7 @@ export class Multisig {
    */
   async executeProposal(
     proposalId: string,
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
   ): Promise<void> {
     const proposal = this.proposals.get(proposalId);
     if (!proposal) {
@@ -566,25 +656,25 @@ export class Multisig {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
-      const deltas = await this.psm.getDeltaProposals(this._accountId);
-      const delta = deltas.find(
-        (d) => computeCommitmentFromTxSummary(d.delta_payload.tx_summary.data) === proposalId
-      );
+    const deltas = await this.psm.getDeltaProposals(this._accountId);
+    const delta = deltas.find(
+      (d) => computeCommitmentFromTxSummary(d.delta_payload.tx_summary.data) === proposalId
+    );
 
-      if (!delta) {
-        throw new Error(`Proposal not found on server: ${proposalId}`);
-      }
+    if (!delta) {
+      throw new Error(`Proposal not found on server: ${proposalId}`);
+    }
 
-      const executionDelta = {
-        ...delta,
-        delta_payload: delta.delta_payload.tx_summary,
-      };
+    const executionDelta = {
+      ...delta,
+      delta_payload: delta.delta_payload.tx_summary,
+    };
 
-      const pushResult = await this.psm.pushDelta(executionDelta);
-      const ackSigHex = pushResult.ack_sig;
-      if (!ackSigHex) {
-        throw new Error('PSM did not return acknowledgment signature');
-      }
+    const pushResult = await this.psm.pushDelta(executionDelta);
+    const ackSigHex = pushResult.ack_sig;
+    if (!ackSigHex) {
+      throw new Error('PSM did not return acknowledgment signature');
+    }
 
     // Deserialize the tx_summary to get the salt and commitment
     const txSummaryBytes = base64ToUint8Array(delta.delta_payload.tx_summary.data);
@@ -612,28 +702,56 @@ export class Multisig {
     }
 
     // Add PSM ack signature
-      const psmCommitment = Word.fromHex(normalizeHexWord(this.psmCommitment));
-      const ackSigBytes = signatureHexToBytes(ackSigHex);
-      const ackSignature = Signature.deserialize(ackSigBytes);
-      const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
-      const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
-        psmCommitment,
-        txCommitmentForAck,
-        ackSignature
-      );
-      adviceMap.insert(ackKey, new FeltArray(ackValues));
+    const psmCommitment = Word.fromHex(normalizeHexWord(this.psmCommitment));
+    const ackSigBytes = signatureHexToBytes(ackSigHex);
+    const ackSignature = Signature.deserialize(ackSigBytes);
+    const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
+    const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
+      psmCommitment,
+      txCommitmentForAck,
+      ackSignature
+    );
+    adviceMap.insert(ackKey, new FeltArray(ackValues));
 
+    // Build the final transaction request based on proposal type
+    let finalRequest: TransactionRequest;
+
+    const proposalType = proposal.metadata?.proposalType as string | undefined;
+
+    if (proposalType === 'consume_notes') {
+      // Consume notes proposal
+      if (!proposal.metadata?.noteIds || proposal.metadata.noteIds.length === 0) {
+        throw new Error('Proposal missing noteIds. Was it created with createConsumeNotesProposal?');
+      }
+      finalRequest = buildConsumeNotesTransactionRequestWithSignatures(
+        proposal.metadata.noteIds,
+        salt,
+        adviceMap,
+      );
+    } else if (proposalType === 'switch_psm') {
+      // Switch PSM proposal
+      if (!proposal.metadata?.newPsmPubkey) {
+        throw new Error('Proposal missing newPsmPubkey. Was it created with createSwitchPsmProposal?');
+      }
+      finalRequest = await buildUpdatePsmTransactionRequestWithSignatures(
+        webClient,
+        proposal.metadata.newPsmPubkey,
+        salt,
+        adviceMap,
+      );
+    } else {
+      // Signer update proposals (add_signer, remove_signer, change_threshold)
       if (!proposal.metadata?.targetThreshold || !proposal.metadata?.targetSignerCommitments) {
         throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
       }
-
-    const finalRequest = await buildUpdateSignersTransactionRequestWithSignatures(
+      finalRequest = await buildUpdateSignersTransactionRequestWithSignatures(
         webClient,
         proposal.metadata.targetThreshold,
         proposal.metadata.targetSignerCommitments,
         salt,
         adviceMap,
       );
+    }
 
     // Execute, prove, submit, apply
     const accountId = AccountId.fromHex(this._accountId);

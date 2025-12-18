@@ -90,10 +90,30 @@ export class MultisigClient {
     // Set the signer on PSM client for authentication
     this._psmClient.setSigner(signer);
 
-    // Verify account exists on PSM
-    await this._psmClient.getState(accountId);
+    // Always pull from PSM (source of truth) and add to Miden SDK's local store
+    const stateResponse = await this._psmClient.getState(accountId);
 
-    // Return wrapped Multisig instance (null account since we're loading)
+    // The state_json.data contains base64-encoded serialized account bytes
+    const accountBase64 = stateResponse.state_json.data;
+    if (!accountBase64) {
+      throw new Error('No account data found in PSM state');
+    }
+
+    // Decode base64 to bytes
+    const binaryString = atob(accountBase64);
+    const accountBytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      accountBytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // Deserialize the account using the SDK
+    const { Account } = await import('@demox-labs/miden-sdk');
+    const account = Account.deserialize(accountBytes);
+
+    // Add to Miden SDK's local store (overwrite=true to handle reloads)
+    await this.webClient.newAccount(account, true);
+
+    // Return wrapped Multisig instance
     return new Multisig(null, config, this._psmClient, signer, accountId);
   }
 }
