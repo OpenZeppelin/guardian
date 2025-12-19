@@ -9,9 +9,15 @@ import {
   AdviceMap,
   Felt,
   FeltArray,
+  FungibleAsset,
+  Note,
+  NoteAssets,
   NoteId,
   NoteIdAndArgs,
   NoteIdAndArgsArray,
+  MidenArrays,
+  NoteType,
+  OutputNote,
   Rpo256,
   Signature,
   TransactionRequestBuilder,
@@ -19,6 +25,29 @@ import {
 } from '@demox-labs/miden-sdk';
 
 import { getMultisigMasm, getPsmMasm } from './account/masm.js';
+
+/**
+ * Convert Uint8Array to base64 string.
+ */
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Convert base64 string to Uint8Array.
+ */
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
 
 /**
  * Execute a transaction up to the Unauthorized halt and return the summary.
@@ -363,6 +392,96 @@ export function buildConsumeNotesTransactionRequestWithSignatures(
 
   const txBuilder = new TransactionRequestBuilder()
     .withAuthenticatedInputNotes(noteIdAndArgsArray)
+    .extendAdviceMap(signatureAdviceMap)
+    .withAuthArg(salt);
+
+  return txBuilder.build();
+}
+
+// =============================================================================
+// Transaction builders (P2ID - pay-to-id)
+// =============================================================================
+
+/**
+ * Build a P2ID (pay-to-id) TransactionRequest (no signatures; for summary only).
+ *
+ * Creates a transaction that sends fungible assets to a recipient account
+ * via a P2ID note.
+ * @param senderId - Account ID of the sender (multisig account, hex string)
+ * @param recipientId - Account ID of the recipient (hex string)
+ * @param faucetId - Faucet/token account ID (hex string)
+ * @param amount - Amount to send
+ * @param salt - Salt for replay protection (optional, will be generated if not provided)
+ * @returns The transaction request, salt, AND the serialized note (base64)
+ */
+export function buildP2idTransactionRequest(
+  senderId: string,
+  recipientId: string,
+  faucetId: string,
+  amount: bigint,
+  salt?: Word,
+): { request: TransactionRequest; salt: Word; noteBase64: string } {
+  const sender = AccountId.fromHex(senderId);
+  const recipient = AccountId.fromHex(recipientId);
+  const faucet = AccountId.fromHex(faucetId);
+
+  // Create fungible asset and note assets
+  const asset = new FungibleAsset(faucet, amount);
+  const noteAssets = new NoteAssets([asset]);
+
+  // Create P2ID note - this generates a random serial number!
+  const note = Note.createP2IDNote(
+    sender,
+    recipient,
+    noteAssets,
+    NoteType.Public,
+    new Felt(0n), // aux
+  );
+
+  // Serialize the note so it can be stored and reused during execution
+  const noteBytes = note.serialize();
+  const noteBase64 = uint8ArrayToBase64(noteBytes);
+
+  const outputNote = OutputNote.full(note);
+  const outputNotes = new MidenArrays.OutputNoteArray([outputNote]);
+
+  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
+
+  const txBuilder = new TransactionRequestBuilder()
+    .withOwnOutputNotes(outputNotes)
+    .withAuthArg(authSalt);
+
+  return {
+    request: txBuilder.build(),
+    salt: authSalt,
+    noteBase64,
+  };
+}
+
+/**
+ * Build a P2ID TransactionRequest with signature advice map.
+ * This is used for actual execution.
+ *
+ * @param noteBase64 - Serialized P2ID note from proposal creation (base64)
+ * @param salt - Salt for replay protection
+ * @param signatureAdviceMap - Advice map containing cosigner signatures
+ */
+export function buildP2idTransactionRequestWithSignatures(
+  noteBase64: string,
+  salt: Word,
+  signatureAdviceMap: AdviceMap,
+): TransactionRequest {
+  // Deserialize the exact same note that was created during proposal creation
+  const noteBytes = base64ToUint8Array(noteBase64);
+  const note = Note.deserialize(noteBytes);
+
+  // Wrap as output note
+  const outputNote = OutputNote.full(note);
+  const outputNotes = new MidenArrays.OutputNoteArray([outputNote]);
+
+  // Build request with signatures
+  const txBuilder = new TransactionRequestBuilder()
+    .withOwnOutputNotes(outputNotes)
     .extendAdviceMap(signatureAdviceMap)
     .withAuthArg(salt);
 

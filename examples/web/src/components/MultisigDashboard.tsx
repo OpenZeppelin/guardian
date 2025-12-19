@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalForm } from './CreateProposalForm';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Multisig, Proposal, AccountState, ConsumableNote } from '@openzeppelin/miden-multisig-client';
+import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface MultisigDashboardProps {
@@ -15,6 +15,7 @@ interface MultisigDashboardProps {
   psmState: AccountState | null;
   proposals: Proposal[];
   consumableNotes: ConsumableNote[];
+  vaultBalances: VaultBalance[];
   creatingProposal: boolean;
   syncing: boolean;
   signingProposal: string | null;
@@ -24,6 +25,7 @@ interface MultisigDashboardProps {
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
+  onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
   onSync: () => void;
   onSignProposal: (proposalId: string) => void;
   onExecuteProposal: (proposalId: string) => void;
@@ -39,6 +41,7 @@ export function MultisigDashboard({
   psmState,
   proposals,
   consumableNotes,
+  vaultBalances,
   creatingProposal,
   syncing,
   signingProposal,
@@ -48,6 +51,7 @@ export function MultisigDashboard({
   onCreateRemoveSigner,
   onCreateChangeThreshold,
   onCreateConsumeNotes,
+  onCreateP2id,
   onSync,
   onSignProposal,
   onExecuteProposal,
@@ -107,6 +111,36 @@ export function MultisigDashboard({
         </CardContent>
       </Card>
 
+      {/* Vault Balances */}
+      {vaultBalances.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Vault Balances</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {vaultBalances.map((balance) => (
+                <div
+                  key={balance.faucetId}
+                  className="flex items-center justify-between text-sm border-b pb-2 last:border-0 last:pb-0"
+                >
+                  <code
+                    onClick={() => copyToClipboard(balance.faucetId, () => toast.success('Faucet ID copied'))}
+                    className="text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80 truncate max-w-[200px]"
+                    title={balance.faucetId}
+                  >
+                    {balance.faucetId.slice(0, 10)}...{balance.faucetId.slice(-6)}
+                  </code>
+                  <Badge variant="secondary" className="font-mono">
+                    {balance.amount.toString()}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
@@ -119,10 +153,12 @@ export function MultisigDashboard({
         signerCommitments={multisig.signerCommitments}
         creatingProposal={creatingProposal}
         consumableNotes={consumableNotes}
+        vaultBalances={vaultBalances}
         onCreateAddSigner={onCreateAddSigner}
         onCreateRemoveSigner={onCreateRemoveSigner}
         onCreateChangeThreshold={onCreateChangeThreshold}
         onCreateConsumeNotes={onCreateConsumeNotes}
+        onCreateP2id={onCreateP2id}
       />
 
       {/* Proposals List */}

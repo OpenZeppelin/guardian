@@ -51,12 +51,13 @@
 
 export { MultisigClient, type MultisigClientConfig } from './client.js';
 export { Multisig, type AccountState } from './multisig.js';
-export { AccountInspector, type DetectedMultisigConfig } from './inspector.js';
+export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
   buildUpdatePsmTransactionRequest,
   buildConsumeNotesTransactionRequest,
+  buildP2idTransactionRequest,
 } from './transaction.js';
 
 // =============================================================================

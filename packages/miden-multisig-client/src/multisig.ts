@@ -34,6 +34,8 @@ import {
   buildUpdatePsmTransactionRequestWithSignatures,
   buildConsumeNotesTransactionRequest,
   buildConsumeNotesTransactionRequestWithSignatures,
+  buildP2idTransactionRequest,
+  buildP2idTransactionRequestWithSignatures,
   buildSignatureAdviceEntry,
   signatureHexToBytes,
   normalizeHexWord,
@@ -272,6 +274,11 @@ export class Multisig {
           newPsmEndpoint: delta.delta_payload.metadata.newPsmEndpoint,
           // Consume notes fields
           noteIds: delta.delta_payload.metadata.noteIds,
+          // P2ID fields
+          recipientId: delta.delta_payload.metadata.recipientId,
+          faucetId: delta.delta_payload.metadata.faucetId,
+          amount: delta.delta_payload.metadata.amount,
+          noteBase64: delta.delta_payload.metadata.noteBase64,
         };
       } else if (existingProposal?.metadata) {
         // Fall back to local metadata if PSM doesn't have it (legacy proposals)
@@ -307,8 +314,8 @@ export class Multisig {
         signatures: [],
         metadata: metadata ? {
           proposalType: metadata.proposalType,
-          targetThreshold: metadata.targetThreshold!,
-          targetSignerCommitments: metadata.targetSignerCommitments!,
+          targetThreshold: metadata.targetThreshold ?? this.threshold,
+          targetSignerCommitments: metadata.targetSignerCommitments ?? this.signerCommitments,
           saltHex: metadata.saltHex!,
           description: metadata.description,
           // PSM-specific fields
@@ -316,6 +323,11 @@ export class Multisig {
           newPsmEndpoint: metadata.newPsmEndpoint,
           // Consume notes fields
           noteIds: metadata.noteIds,
+          // P2ID fields
+          recipientId: metadata.recipientId,
+          faucetId: metadata.faucetId,
+          amount: metadata.amount,
+          noteBase64: metadata.noteBase64,
         } : undefined,
       },
     });
@@ -546,6 +558,50 @@ export class Multisig {
   }
 
   /**
+   * Create a P2ID proposal to send funds to another account.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param recipientId - Account ID of the recipient (hex string)
+   * @param faucetId - Faucet/token account ID (hex string)
+   * @param amount - Amount to send
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createP2idProposal(
+    webClient: WebClient,
+    recipientId: string,
+    faucetId: string,
+    amount: bigint,
+    nonce?: number,
+  ): Promise<Proposal> {
+    if (amount <= 0n) {
+      throw new Error('Amount must be greater than 0');
+    }
+
+    const { request, salt, noteBase64 } = buildP2idTransactionRequest(
+      this._accountId,
+      recipientId,
+      faucetId,
+      amount,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      proposalType: 'p2id',
+      saltHex: salt.toHex(),
+      recipientId,
+      faucetId,
+      amount: amount.toString(),
+      noteBase64, // Store serialized note for execution
+      description: `Send ${amount} to ${recipientId.slice(0, 10)}...`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
    * Get notes that can be consumed by this multisig account.
    *
    * Returns a list of notes that are committed on-chain and can be consumed
@@ -736,6 +792,15 @@ export class Multisig {
       finalRequest = await buildUpdatePsmTransactionRequestWithSignatures(
         webClient,
         proposal.metadata.newPsmPubkey,
+        salt,
+        adviceMap,
+      );
+    } else if (proposalType === 'p2id') {
+      if (!proposal.metadata?.noteBase64) {
+        throw new Error('Proposal missing noteBase64. Was it created with createP2idProposal?');
+      }
+      finalRequest = buildP2idTransactionRequestWithSignatures(
+        proposal.metadata.noteBase64,
         salt,
         adviceMap,
       );

@@ -8,6 +8,16 @@
 import { Account, Word } from '@demox-labs/miden-sdk';
 
 /**
+ * Vault balance for a fungible asset.
+ */
+export interface VaultBalance {
+  /** Faucet account ID (hex) */
+  faucetId: string;
+  /** Balance amount */
+  amount: bigint;
+}
+
+/**
  * Detected multisig configuration from account storage.
  */
 export interface DetectedMultisigConfig {
@@ -21,6 +31,8 @@ export interface DetectedMultisigConfig {
   psmEnabled: boolean;
   /** PSM server public key commitment (hex string, if enabled) */
   psmCommitment: string | null;
+  /** Vault balances for fungible assets */
+  vaultBalances: VaultBalance[];
 }
 
 /**
@@ -139,12 +151,28 @@ export class AccountInspector {
       // PSM component might not be present
     }
 
+    // Read vault balances
+    const vaultBalances: VaultBalance[] = [];
+    try {
+      const vault = account.vault();
+      const fungibleAssets = vault.fungibleAssets();
+      for (const asset of fungibleAssets) {
+        vaultBalances.push({
+          faucetId: asset.faucetId().toString(),
+          amount: BigInt(asset.amount()),
+        });
+      }
+    } catch {
+      // Vault might be empty or not accessible
+    }
+
     return {
       threshold,
       numSigners,
       signerCommitments,
       psmEnabled,
       psmCommitment,
+      vaultBalances,
     };
   }
 }

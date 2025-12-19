@@ -321,6 +321,7 @@ export default function App() {
       setPsmState(state);
 
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
+      setDetectedConfig(detected);
 
       const newConfig: MultisigConfig = {
         threshold: detected.threshold,
@@ -431,13 +432,34 @@ export default function App() {
     setCreatingProposal(true);
     setError(null);
     try {
-      const proposal = await (multisig as any).createConsumeNotesProposal(webClient, noteIds);
+      const proposal = await multisig.createConsumeNotesProposal(webClient, noteIds);
       const synced = await multisig.syncProposals();
       setProposals(synced);
       if (!synced.find((p) => p.id === proposal.id)) {
         setProposals([...synced, proposal]);
       }
       toast.success('Consume notes proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create P2ID (send payment) proposal
+  const handleCreateP2idProposal = async (recipientId: string, faucetId: string, amount: bigint) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createP2idProposal(webClient, recipientId, faucetId, amount);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Send payment proposal created');
     } catch (err) {
       setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
@@ -580,6 +602,7 @@ export default function App() {
             psmState={psmState}
             proposals={proposals}
             consumableNotes={consumableNotes}
+            vaultBalances={detectedConfig?.vaultBalances ?? []}
             creatingProposal={creatingProposal}
             syncing={syncingState}
             signingProposal={signingProposal}
@@ -589,6 +612,7 @@ export default function App() {
             onCreateRemoveSigner={handleCreateRemoveSignerProposal}
             onCreateChangeThreshold={handleCreateChangeThresholdProposal}
             onCreateConsumeNotes={handleCreateConsumeNotesProposal}
+            onCreateP2id={handleCreateP2idProposal}
             onSync={handleSync}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}

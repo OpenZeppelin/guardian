@@ -120,6 +120,14 @@ export interface ProposalMetadata {
   newPsmEndpoint?: string;
   /** Note IDs to consume (for consume_notes proposals) */
   noteIds?: string[];
+  /** Recipient account ID for P2ID (hex) */
+  recipientId?: string;
+  /** Faucet/token ID for P2ID (hex) */
+  faucetId?: string;
+  /** Amount to send for P2ID (string to handle bigint serialization) */
+  amount?: string;
+  /** Serialized P2ID note (base64) - must be reused for execution */
+  noteBase64?: string;
 }
 
 /**

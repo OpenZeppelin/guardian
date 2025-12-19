@@ -31,6 +31,8 @@ function getProposalTypeLabel(type?: ProposalType): string {
       return 'Switch PSM';
     case 'consume_notes':
       return 'Consume Notes';
+    case 'p2id':
+      return 'Send Payment';
     case 'custom':
       return 'Custom';
     default:
@@ -49,6 +51,8 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
     case 'switch_psm':
       return 'secondary';
     case 'consume_notes':
+      return 'default';
+    case 'p2id':
       return 'default';
     default:
       return 'outline';

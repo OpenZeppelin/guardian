@@ -11,19 +11,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { ConsumableNote } from '@openzeppelin/miden-multisig-client';
+import type { ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
 
-type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes';
+type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes' | 'p2id';
 
 interface CreateProposalFormProps {
   currentThreshold: number;
   signerCommitments: string[];
   creatingProposal: boolean;
   consumableNotes: ConsumableNote[];
+  vaultBalances: VaultBalance[];
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
+  onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
 }
 
 export function CreateProposalForm({
@@ -31,10 +33,12 @@ export function CreateProposalForm({
   signerCommitments,
   creatingProposal,
   consumableNotes,
+  vaultBalances,
   onCreateAddSigner,
   onCreateRemoveSigner,
   onCreateChangeThreshold,
   onCreateConsumeNotes,
+  onCreateP2id,
 }: CreateProposalFormProps) {
   const [proposalType, setProposalType] = useState<ProposalType>('add_signer');
 
@@ -51,6 +55,11 @@ export function CreateProposalForm({
 
   // Consume notes state
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([]);
+
+  // P2ID state
+  const [recipientId, setRecipientId] = useState('');
+  const [selectedFaucetId, setSelectedFaucetId] = useState('');
+  const [sendAmount, setSendAmount] = useState('');
 
   const handleCreate = () => {
     switch (proposalType) {
@@ -81,6 +90,17 @@ export function CreateProposalForm({
           setSelectedNoteIds([]);
         }
         break;
+      case 'p2id':
+        if (recipientId.trim() && selectedFaucetId && sendAmount) {
+          const amount = BigInt(sendAmount);
+          if (amount > 0n) {
+            onCreateP2id(recipientId.trim(), selectedFaucetId, amount);
+            setRecipientId('');
+            setSelectedFaucetId('');
+            setSendAmount('');
+          }
+        }
+        break;
     }
   };
 
@@ -94,6 +114,16 @@ export function CreateProposalForm({
         return newThreshold !== currentThreshold && newThreshold >= 1 && newThreshold <= signerCommitments.length;
       case 'consume_notes':
         return selectedNoteIds.length > 0;
+      case 'p2id': {
+        if (!recipientId.trim() || !selectedFaucetId || !sendAmount) return false;
+        try {
+          const amount = BigInt(sendAmount);
+          const balance = vaultBalances.find((b) => b.faucetId === selectedFaucetId);
+          return amount > 0n && (!balance || amount <= balance.amount);
+        } catch {
+          return false;
+        }
+      }
     }
   };
 
@@ -107,6 +137,8 @@ export function CreateProposalForm({
         return 'Create a proposal to change the required signature threshold.';
       case 'consume_notes':
         return 'Create a proposal to consume notes sent to the multisig account.';
+      case 'p2id':
+        return 'Create a proposal to send funds to another account.';
     }
   };
 
@@ -145,6 +177,7 @@ export function CreateProposalForm({
               <SelectItem value="remove_signer">Remove Signer</SelectItem>
               <SelectItem value="change_threshold">Change Threshold</SelectItem>
               <SelectItem value="consume_notes">Consume Notes</SelectItem>
+              <SelectItem value="p2id">Send Payment</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -302,6 +335,65 @@ export function CreateProposalForm({
                     {selectedNoteIds.length} note(s) selected
                   </p>
                 )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* P2ID (Send Payment) Form */}
+        {proposalType === 'p2id' && (
+          <div className="space-y-3">
+            {vaultBalances.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No assets in vault. Consume notes first to receive funds.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label>Recipient Account ID</Label>
+                  <Input
+                    placeholder="0x..."
+                    value={recipientId}
+                    onChange={(e) => setRecipientId(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Asset</Label>
+                  <Select value={selectedFaucetId} onValueChange={setSelectedFaucetId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select an asset..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {vaultBalances.map((balance) => (
+                        <SelectItem key={balance.faucetId} value={balance.faucetId}>
+                          <span className="font-mono text-xs">
+                            {balance.faucetId.slice(0, 10)}...{balance.faucetId.slice(-6)}
+                          </span>
+                          <span className="ml-2 text-muted-foreground">
+                            (Balance: {balance.amount.toString()})
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Amount</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={sendAmount}
+                    onChange={(e) => setSendAmount(e.target.value)}
+                    min="1"
+                  />
+                  {selectedFaucetId && (
+                    <p className="text-xs text-muted-foreground">
+                      Available: {vaultBalances.find((b) => b.faucetId === selectedFaucetId)?.amount.toString() ?? '0'}
+                    </p>
+                  )}
+                </div>
               </>
             )}
           </div>
