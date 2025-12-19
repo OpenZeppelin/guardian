@@ -27,66 +27,6 @@ import { normalizeCommitment } from '@/lib/helpers';
 import type { SignerInfo } from '@/types';
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
-const SIGNER_KEY_STORAGE_KEY = 'miden-multisig-signer-key';
-
-// Clear persisted signer key
-function clearPersistedKey(): void {
-  try {
-    localStorage.removeItem(SIGNER_KEY_STORAGE_KEY);
-    console.log('[Storage] Signer key cleared');
-  } catch (err) {
-    console.error('[Storage] Failed to clear signer key:', err);
-  }
-}
-
-// Helper to convert Uint8Array to base64 for localStorage
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-// Helper to convert base64 back to Uint8Array
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-// Save signer key to localStorage
-function saveSignerKey(secretKey: SecretKey): void {
-  try {
-    const bytes = secretKey.serialize();
-    const base64 = uint8ArrayToBase64(bytes);
-    localStorage.setItem(SIGNER_KEY_STORAGE_KEY, base64);
-    console.log('[Signer] Key saved to localStorage');
-  } catch (err) {
-    console.error('[Signer] Failed to save key to localStorage:', err);
-  }
-}
-
-// Load signer key from localStorage
-function loadSignerKey(): SecretKey | null {
-  try {
-    const base64 = localStorage.getItem(SIGNER_KEY_STORAGE_KEY);
-    if (!base64) {
-      console.log('[Signer] No key found in localStorage');
-      return null;
-    }
-    const bytes = base64ToUint8Array(base64);
-    const secretKey = SecretKey.deserialize(bytes);
-    console.log('[Signer] Key loaded from localStorage');
-    return secretKey;
-  } catch (err) {
-    console.error('[Signer] Failed to load key from localStorage:', err);
-    return null;
-  }
-}
 
 export default function App() {
   // Core state
@@ -160,21 +100,13 @@ export default function App() {
     [webClient]
   );
 
-  // Load or generate signer key - returns SignerInfo for init flow
+  // Generate a fresh signer
   const initializeSigner = useCallback(async (client: WebClient): Promise<SignerInfo | null> => {
     setGeneratingSigner(true);
     try {
-      // Try to load existing key from localStorage
-      let secretKey = loadSignerKey();
-
-      if (!secretKey) {
-        // No existing key, generate a new one
-        console.log('[Signer] Generating new key...');
-        // Use undefined to let the SDK use OS RNG (crypto.getRandomValues in browser)
-        secretKey = SecretKey.rpoFalconWithRNG(undefined);
-        // Save to localStorage for future sessions
-        saveSignerKey(secretKey);
-      }
+      // Always generate a fresh key (no localStorage persistence)
+      console.log('[Signer] Generating new key...');
+      const secretKey = SecretKey.rpoFalconWithRNG(undefined);
 
       // Add to WebClient's keystore (ignore "already exists" errors on reload)
       try {
@@ -566,10 +498,9 @@ export default function App() {
     setError(null);
   };
 
-  // Reset persisted key and reload
+  // Reset and reload
   const handleResetData = () => {
-    clearPersistedKey();
-    toast.success('Signer key cleared. Reloading...');
+    toast.success('Reloading with fresh signer key...');
     // Reload the page to start fresh
     setTimeout(() => window.location.reload(), 500);
   };

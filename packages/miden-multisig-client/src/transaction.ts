@@ -12,9 +12,15 @@ import {
   FungibleAsset,
   Note,
   NoteAssets,
+  NoteExecutionHint,
   NoteId,
   NoteIdAndArgs,
   NoteIdAndArgsArray,
+  NoteInputs,
+  NoteMetadata,
+  NoteRecipient,
+  NoteScript,
+  NoteTag,
   MidenArrays,
   NoteType,
   OutputNote,
@@ -27,26 +33,20 @@ import {
 import { getMultisigMasm, getPsmMasm } from './account/masm.js';
 
 /**
- * Convert Uint8Array to base64 string.
+ * Generate a random Word using crypto.getRandomValues.
  */
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-/**
- * Convert base64 string to Uint8Array.
- */
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+function randomWord(): Word {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  // Convert 32 bytes to 4 u64s
+  const view = new DataView(bytes.buffer);
+  const u64s = new BigUint64Array([
+    view.getBigUint64(0, true),
+    view.getBigUint64(8, true),
+    view.getBigUint64(16, true),
+    view.getBigUint64(24, true),
+  ]);
+  return new Word(u64s);
 }
 
 /**
@@ -148,7 +148,7 @@ export async function buildUpdateSignersTransactionRequest(
   advice.insert(configHash, payload);
 
   const script = await buildUpdateSignersScript(webClient);
-  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
+  const authSalt = salt ?? randomWord();
 
   const txBuilder = new TransactionRequestBuilder()
     .withCustomScript(script)
@@ -282,7 +282,7 @@ export async function buildUpdatePsmTransactionRequest(
   salt?: Word,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   const script = await buildUpdatePsmScript(webClient);
-  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
+  const authSalt = salt ?? randomWord();
 
   // The new PSM pubkey is stored in the advice map with itself as the key
   const pubkeyWord = Word.fromHex(normalizeHexWord(newPsmPubkey));
@@ -353,7 +353,7 @@ export function buildConsumeNotesTransactionRequest(
     noteIdAndArgsArray.push(noteIdAndArgs);
   }
 
-  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
+  const authSalt = salt ?? randomWord();
 
   const txBuilder = new TransactionRequestBuilder()
     .withAuthenticatedInputNotes(noteIdAndArgsArray)
@@ -403,6 +403,49 @@ export function buildConsumeNotesTransactionRequestWithSignatures(
 // =============================================================================
 
 /**
+ * Build a P2ID note using the salt as seed for serial number.
+ *
+ * @param sender - Sender account ID
+ * @param recipient - Recipient account ID
+ * @param noteAssets - Assets to include in the note
+ * @param noteType - Type of note (Public, Private, etc.)
+ * @param aux - Auxiliary data (usually 0)
+ * @param salt - Salt used to derive the serial number
+ */
+function buildP2idNote(
+  sender: AccountId,
+  recipient: AccountId,
+  noteAssets: NoteAssets,
+  noteType: NoteType,
+  aux: Felt,
+  salt: Word,
+): Note {
+  const serialNum = Rpo256.hashElements(new FeltArray([
+    ...salt.toFelts(),
+    new Felt(0n),
+  ]));
+
+  const noteScript = NoteScript.p2id();
+  const noteInputs = new NoteInputs(new FeltArray([
+    recipient.suffix(),
+    recipient.prefix(),
+  ]));
+
+  const noteRecipient = new NoteRecipient(serialNum, noteScript, noteInputs);
+  const noteTag = NoteTag.fromAccountId(recipient);
+
+  const noteMetadata = new NoteMetadata(
+    sender,
+    noteType,
+    noteTag,
+    NoteExecutionHint.always(),
+    aux,
+  );
+
+  return new Note(noteAssets, noteMetadata, noteRecipient);
+}
+
+/**
  * Build a P2ID (pay-to-id) TransactionRequest (no signatures; for summary only).
  *
  * Creates a transaction that sends fungible assets to a recipient account
@@ -412,7 +455,7 @@ export function buildConsumeNotesTransactionRequestWithSignatures(
  * @param faucetId - Faucet/token account ID (hex string)
  * @param amount - Amount to send
  * @param salt - Salt for replay protection (optional, will be generated if not provided)
- * @returns The transaction request, salt, AND the serialized note (base64)
+ * @returns The transaction request and salt
  */
 export function buildP2idTransactionRequest(
   senderId: string,
@@ -420,32 +463,27 @@ export function buildP2idTransactionRequest(
   faucetId: string,
   amount: bigint,
   salt?: Word,
-): { request: TransactionRequest; salt: Word; noteBase64: string } {
+): { request: TransactionRequest; salt: Word } {
   const sender = AccountId.fromHex(senderId);
   const recipient = AccountId.fromHex(recipientId);
   const faucet = AccountId.fromHex(faucetId);
+  const authSalt = salt ?? randomWord();
 
   // Create fungible asset and note assets
   const asset = new FungibleAsset(faucet, amount);
   const noteAssets = new NoteAssets([asset]);
 
-  // Create P2ID note - this generates a random serial number!
-  const note = Note.createP2IDNote(
+  const note = buildP2idNote(
     sender,
     recipient,
     noteAssets,
     NoteType.Public,
     new Felt(0n), // aux
+    authSalt,
   );
-
-  // Serialize the note so it can be stored and reused during execution
-  const noteBytes = note.serialize();
-  const noteBase64 = uint8ArrayToBase64(noteBytes);
 
   const outputNote = OutputNote.full(note);
   const outputNotes = new MidenArrays.OutputNoteArray([outputNote]);
-
-  const authSalt = salt ?? Rpo256.hashElements(new FeltArray([new Felt(BigInt(Date.now()))]));
 
   const txBuilder = new TransactionRequestBuilder()
     .withOwnOutputNotes(outputNotes)
@@ -454,7 +492,6 @@ export function buildP2idTransactionRequest(
   return {
     request: txBuilder.build(),
     salt: authSalt,
-    noteBase64,
   };
 }
 
@@ -462,18 +499,36 @@ export function buildP2idTransactionRequest(
  * Build a P2ID TransactionRequest with signature advice map.
  * This is used for actual execution.
  *
- * @param noteBase64 - Serialized P2ID note from proposal creation (base64)
- * @param salt - Salt for replay protection
+ * @param senderId - Account ID of the sender (multisig account, hex string)
+ * @param recipientId - Account ID of the recipient (hex string)
+ * @param faucetId - Faucet/token account ID (hex string)
+ * @param amount - Amount to send
+ * @param salt - Salt for replay protection (must match proposal creation)
  * @param signatureAdviceMap - Advice map containing cosigner signatures
  */
 export function buildP2idTransactionRequestWithSignatures(
-  noteBase64: string,
+  senderId: string,
+  recipientId: string,
+  faucetId: string,
+  amount: bigint,
   salt: Word,
   signatureAdviceMap: AdviceMap,
 ): TransactionRequest {
-  // Deserialize the exact same note that was created during proposal creation
-  const noteBytes = base64ToUint8Array(noteBase64);
-  const note = Note.deserialize(noteBytes);
+  const sender = AccountId.fromHex(senderId);
+  const recipient = AccountId.fromHex(recipientId);
+  const faucet = AccountId.fromHex(faucetId);
+
+  const asset = new FungibleAsset(faucet, amount);
+  const noteAssets = new NoteAssets([asset]);
+
+  const note = buildP2idNote(
+    sender,
+    recipient,
+    noteAssets,
+    NoteType.Public,
+    new Felt(0n), // aux
+    salt,
+  );
 
   // Wrap as output note
   const outputNote = OutputNote.full(note);

@@ -98,8 +98,6 @@ export interface ProposalMetadata {
   faucetId?: string;
   /** Amount to send for P2ID */
   amount?: string;
-  /** Serialized P2ID note (base64) - must be reused for execution */
-  noteBase64?: string;
 }
 
 /**

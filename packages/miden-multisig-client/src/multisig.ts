@@ -278,10 +278,8 @@ export class Multisig {
           recipientId: delta.delta_payload.metadata.recipientId,
           faucetId: delta.delta_payload.metadata.faucetId,
           amount: delta.delta_payload.metadata.amount,
-          noteBase64: delta.delta_payload.metadata.noteBase64,
         };
       } else if (existingProposal?.metadata) {
-        // Fall back to local metadata if PSM doesn't have it (legacy proposals)
         proposal.metadata = existingProposal.metadata;
       }
       this.proposals.set(proposal.id, proposal);
@@ -327,7 +325,6 @@ export class Multisig {
           recipientId: metadata.recipientId,
           faucetId: metadata.faucetId,
           amount: metadata.amount,
-          noteBase64: metadata.noteBase64,
         } : undefined,
       },
     });
@@ -577,7 +574,7 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
-    const { request, salt, noteBase64 } = buildP2idTransactionRequest(
+    const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
       recipientId,
       faucetId,
@@ -594,7 +591,6 @@ export class Multisig {
       recipientId,
       faucetId,
       amount: amount.toString(),
-      noteBase64, // Store serialized note for execution
       description: `Send ${amount} to ${recipientId.slice(0, 10)}...`,
     };
 
@@ -796,11 +792,14 @@ export class Multisig {
         adviceMap,
       );
     } else if (proposalType === 'p2id') {
-      if (!proposal.metadata?.noteBase64) {
-        throw new Error('Proposal missing noteBase64. Was it created with createP2idProposal?');
+      if (!proposal.metadata?.recipientId || !proposal.metadata?.faucetId || !proposal.metadata?.amount) {
+        throw new Error('Proposal missing P2ID metadata (recipientId, faucetId, amount). Was it created with createP2idProposal?');
       }
       finalRequest = buildP2idTransactionRequestWithSignatures(
-        proposal.metadata.noteBase64,
+        this._accountId,
+        proposal.metadata.recipientId,
+        proposal.metadata.faucetId,
+        BigInt(proposal.metadata.amount),
         salt,
         adviceMap,
       );
