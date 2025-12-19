@@ -27,6 +27,25 @@ import { normalizeCommitment } from '@/lib/helpers';
 import type { SignerInfo } from '@/types';
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
+const MIDEN_DB_NAME = 'MidenClientDB';
+
+async function clearMidenDatabase(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(MIDEN_DB_NAME);
+    request.onsuccess = () => {
+      console.log('[IndexedDB] Cleared MidenClientDB');
+      resolve();
+    };
+    request.onerror = () => {
+      console.error('[IndexedDB] Failed to clear MidenClientDB:', request.error);
+      reject(request.error);
+    };
+    request.onblocked = () => {
+      console.warn('[IndexedDB] Database deletion blocked - other connections open');
+      resolve(); // Continue anyway
+    };
+  });
+}
 
 export default function App() {
   // Core state
@@ -133,6 +152,9 @@ export default function App() {
   useEffect(() => {
     const init = async () => {
       try {
+        // Clear IndexedDB to start fresh on each page load
+        await clearMidenDatabase();
+
         const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
         await client.syncState();
         setWebClient(client);
