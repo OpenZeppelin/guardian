@@ -5,11 +5,12 @@ interface WelcomeViewProps {
   ready: boolean;
   onCreateClick: () => void;
   onLoadClick: () => void;
+  onResetData: () => void;
 }
 
-export function WelcomeView({ ready, onCreateClick, onLoadClick }: WelcomeViewProps) {
+export function WelcomeView({ ready, onCreateClick, onLoadClick, onResetData }: WelcomeViewProps) {
   return (
-    <div className="flex items-center justify-center min-h-[60vh]">
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8">
       <div className="flex gap-6">
         <Card className="w-64 hover:border-primary/50 transition-colors">
           <CardHeader className="text-center">
@@ -39,6 +40,15 @@ export function WelcomeView({ ready, onCreateClick, onLoadClick }: WelcomeViewPr
           </CardContent>
         </Card>
       </div>
+
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-muted-foreground"
+        onClick={onResetData}
+      >
+        Reset Data (Clear Key & Account)
+      </Button>
     </div>
   );
 }

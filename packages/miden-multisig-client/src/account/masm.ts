@@ -1,102 +1,96 @@
-/**
- * MASM file loading utilities.
- *
- * Provides functions to load Miden Assembly files for account components.
- */
+export class MasmLoader {
+  private baseUrl: string;
+  private embeddedMultisigMasm: string | null = null;
+  private embeddedPsmMasm: string | null = null;
 
-// Default base URL for MASM files (can be overridden)
-let masmBaseUrl = '/masm';
+  constructor(baseUrl = '/masm') {
+    this.baseUrl = baseUrl;
+  }
 
-/**
- * Sets the base URL for loading MASM files.
- * Useful when MASM files are hosted at a different location.
- *
- * @param baseUrl - The base URL (e.g., '/masm' or 'https://cdn.example.com/masm')
- */
+  setBaseUrl(baseUrl: string): void {
+    this.baseUrl = baseUrl;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  setEmbeddedMultisig(masm: string): void {
+    this.embeddedMultisigMasm = masm;
+  }
+
+  setEmbeddedPsm(masm: string): void {
+    this.embeddedPsmMasm = masm;
+  }
+
+  async load(filename: string): Promise<string> {
+    const url = `${this.baseUrl}/${filename}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to load MASM file ${filename}: ${response.statusText}`);
+    }
+    return response.text();
+  }
+
+  async loadMultisig(): Promise<string> {
+    return this.load('multisig.masm');
+  }
+
+  async loadPsm(): Promise<string> {
+    return this.load('psm.masm');
+  }
+
+  async getMultisigMasm(): Promise<string> {
+    if (this.embeddedMultisigMasm) {
+      return this.embeddedMultisigMasm;
+    }
+    return this.loadMultisig();
+  }
+
+  async getPsmMasm(): Promise<string> {
+    if (this.embeddedPsmMasm) {
+      return this.embeddedPsmMasm;
+    }
+    return this.loadPsm();
+  }
+}
+
+const defaultMasmLoader = new MasmLoader();
+
 export function setMasmBaseUrl(baseUrl: string): void {
-  masmBaseUrl = baseUrl;
+  defaultMasmLoader.setBaseUrl(baseUrl);
 }
 
-/**
- * Gets the current MASM base URL.
- */
 export function getMasmBaseUrl(): string {
-  return masmBaseUrl;
+  return defaultMasmLoader.getBaseUrl();
 }
 
-/**
- * Fetches MASM code from a file.
- *
- * @param filename - The filename to load (e.g., 'multisig.masm')
- * @returns The MASM source code
- */
 export async function loadMasmFile(filename: string): Promise<string> {
-  const url = `${masmBaseUrl}/${filename}`;
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(`Failed to load MASM file ${filename}: ${response.statusText}`);
-  }
-
-  return response.text();
+  return defaultMasmLoader.load(filename);
 }
 
-/**
- * Loads the multisig authentication component MASM.
- */
 export async function loadMultisigMasm(): Promise<string> {
-  return loadMasmFile('multisig.masm');
+  return defaultMasmLoader.loadMultisig();
 }
 
-/**
- * Loads the PSM component MASM.
- */
 export async function loadPsmMasm(): Promise<string> {
-  return loadMasmFile('psm.masm');
+  return defaultMasmLoader.loadPsm();
 }
 
-// =============================================================================
-// Embedded MASM (for bundling)
-// =============================================================================
-
-// These can be used when MASM files are bundled with the SDK
-// rather than fetched at runtime.
-
-let embeddedMultisigMasm: string | null = null;
-let embeddedPsmMasm: string | null = null;
-
-/**
- * Sets the embedded multisig MASM code.
- * Use this to bundle MASM with the SDK instead of fetching.
- */
 export function setEmbeddedMultisigMasm(masm: string): void {
-  embeddedMultisigMasm = masm;
+  defaultMasmLoader.setEmbeddedMultisig(masm);
 }
 
-/**
- * Sets the embedded PSM MASM code.
- * Use this to bundle MASM with the SDK instead of fetching.
- */
 export function setEmbeddedPsmMasm(masm: string): void {
-  embeddedPsmMasm = masm;
+  defaultMasmLoader.setEmbeddedPsm(masm);
 }
 
-/**
- * Gets the multisig MASM code, preferring embedded if available.
- */
 export async function getMultisigMasm(): Promise<string> {
-  if (embeddedMultisigMasm) {
-    return embeddedMultisigMasm;
-  }
-  return loadMultisigMasm();
+  return defaultMasmLoader.getMultisigMasm();
 }
 
-/**
- * Gets the PSM MASM code, preferring embedded if available.
- */
 export async function getPsmMasm(): Promise<string> {
-  if (embeddedPsmMasm) {
-    return embeddedPsmMasm;
-  }
-  return loadPsmMasm();
+  return defaultMasmLoader.getPsmMasm();
 }
+
+export const masmLoader = defaultMasmLoader;

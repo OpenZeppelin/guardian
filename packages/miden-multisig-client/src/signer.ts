@@ -7,17 +7,7 @@
 
 import { SecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@demox-labs/miden-sdk';
 import type { Signer } from './types.js';
-
-/**
- * Converts a Uint8Array to a hex string with 0x prefix.
- */
-function bytesToHex(bytes: Uint8Array): string {
-  let hex = '0x';
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, '0');
-  }
-  return hex;
-}
+import { bytesToHex } from './utils/encoding.js';
 
 /**
  * A Falcon signer that implements the Signer interface.

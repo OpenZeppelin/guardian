@@ -7,6 +7,17 @@ vi.mock('@demox-labs/miden-sdk', () => ({
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
+  Account: {
+    deserialize: vi.fn(() => ({
+      id: () => ({
+        toString: () => '0x' + 'd'.repeat(30),
+        prefix: () => ({ asInt: () => BigInt(1) }),
+        suffix: () => ({ asInt: () => BigInt(2) }),
+      }),
+      storage: vi.fn(),
+      vault: vi.fn(),
+    })),
+  },
 }));
 
 // Mock the account creation module
@@ -42,6 +53,7 @@ describe('MultisigClient', () => {
       submitProvenTransaction: vi.fn(),
       applyTransaction: vi.fn(),
       syncState: vi.fn(),
+      newAccount: vi.fn(),
     };
 
     mockSigner = {

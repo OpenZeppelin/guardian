@@ -6,52 +6,21 @@
  */
 
 import { Account, Word } from '@demox-labs/miden-sdk';
+import { base64ToUint8Array } from './utils/encoding.js';
+import { wordElementToBigInt, wordToHex } from './utils/word.js';
 
-/**
- * Detected multisig configuration from account storage.
- */
+export interface VaultBalance {
+  faucetId: string;
+  amount: bigint;
+}
+
 export interface DetectedMultisigConfig {
-  /** Number of signatures required to execute a transaction */
   threshold: number;
-  /** Total number of signers in the multisig */
   numSigners: number;
-  /** Public key commitments of all signers (hex strings) */
   signerCommitments: string[];
-  /** Whether PSM verification is enabled */
   psmEnabled: boolean;
-  /** PSM server public key commitment (hex string, if enabled) */
   psmCommitment: string | null;
-}
-
-/**
- * Convert base64 string to Uint8Array.
- */
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-/**
- * Convert a Word to hex string.
- */
-function wordToHex(word: Word): string {
-  return word.toHex();
-}
-
-/**
- * Extract a BigInt from a Word at a specific element index.
- * Word stores 4 x u64 values, accessed via toU64s().
- */
-function wordElementToBigInt(word: Word, index: number): bigint {
-  const u64s = word.toU64s();
-  if (index >= 0 && index < u64s.length) {
-    return u64s[index];
-  }
-  return 0n;
+  vaultBalances: VaultBalance[];
 }
 
 /**
@@ -139,12 +108,28 @@ export class AccountInspector {
       // PSM component might not be present
     }
 
+    // Read vault balances
+    const vaultBalances: VaultBalance[] = [];
+    try {
+      const vault = account.vault();
+      const fungibleAssets = vault.fungibleAssets();
+      for (const asset of fungibleAssets) {
+        vaultBalances.push({
+          faucetId: asset.faucetId().toString(),
+          amount: BigInt(asset.amount()),
+        });
+      }
+    } catch {
+      // Vault might be empty or not accessible
+    }
+
     return {
       threshold,
       numSigners,
       signerCommitments,
       psmEnabled,
       psmCommitment,
+      vaultBalances,
     };
   }
 }

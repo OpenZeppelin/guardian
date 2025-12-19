@@ -7,13 +7,17 @@
 
 import { PsmHttpClient, type DeltaObject, type DeltaStatus, type FalconSignature, type Signer, type StorageType, type AuthConfig, type StateObject } from '@openzeppelin/psm-client';
 import type {
+  ConsumableNote,
   ExportedProposal,
   MultisigConfig,
+  NoteAsset,
   Proposal,
+  ProposalKind,
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalStatus,
 } from './types.js';
+import type { WebClient, TransactionRequest } from '@demox-labs/miden-sdk';
 import {
   Account,
   AccountId,
@@ -26,11 +30,18 @@ import {
 import {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
-  buildUpdateSignersTransactionRequestWithSignatures,
-  buildSignatureAdviceEntry,
-  signatureHexToBytes,
-  normalizeHexWord,
+  buildUpdatePsmTransactionRequest,
+  buildConsumeNotesTransactionRequest,
+  buildP2idTransactionRequest,
 } from './transaction.js';
+import {
+  base64ToUint8Array,
+  uint8ArrayToBase64,
+  normalizeHexWord,
+} from './utils/encoding.js';
+import { buildSignatureAdviceEntry, signatureHexToBytes } from './utils/signature.js';
+import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
+import { fromPsmMetadata, toPsmMetadata } from './multisig/metadata.js';
 
 /**
  * Result of fetching account state from PSM.
@@ -46,67 +57,6 @@ export interface AccountState {
   createdAt: string;
   /** When the account was last updated on PSM */
   updatedAt: string;
-}
-
-/**
- * Convert Uint8Array to base64 string.
- */
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-/**
- * Convert base64 string to Uint8Array.
- */
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-/**
- * Compute the commitment hex string from a base64-encoded transaction summary.
- * This matches the Rust client's behavior: compute proposal ID client-side from tx_summary.
- */
-function computeCommitmentFromTxSummary(txSummaryBase64: string): string {
-  const bytes = base64ToUint8Array(txSummaryBase64);
-  const summary = TransactionSummary.deserialize(bytes);
-  const commitment = summary.toCommitment();
-  // Convert Word to hex string (0x prefix + 64 hex chars)
-  return commitment.toHex();
-}
-
-/**
- * Converts an Account to its hex ID format.
- */
-function accountIdToHex(account: Account): string {
-  const accountId = account.id();
-
-  // Try using toString() first - in Rust, Display trait calls to_hex()
-  const str = accountId.toString();
-
-  // If toString() returns hex format (starts with 0x), use it directly
-  if (str.startsWith('0x') || str.startsWith('0X')) {
-    return str;
-  }
-
-  // Otherwise, construct manually from prefix/suffix
-  // Based on Rust: format!("0x{:016x}{:016x}", prefix.as_u64(), suffix.as_int()).truncate(32)
-  const prefix = accountId.prefix().asInt();
-  const suffix = accountId.suffix().asInt();
-  const prefixHex = prefix.toString(16).padStart(16, '0');
-  const suffixHex = suffix.toString(16).padStart(16, '0');
-
-  // Truncate to 32 chars: 0x (2) + prefix (16) + suffix first 14 chars (14)
-  const hex = `0x${prefixHex}${suffixHex.slice(0, 14)}`;
-  return hex;
 }
 
 /**
@@ -168,10 +118,6 @@ export class Multisig {
     return this.signer.commitment;
   }
 
-  // ===========================================================================
-  // PSM State Management
-  // ===========================================================================
-
   /**
    * Fetch the current account state from PSM.
    *
@@ -232,10 +178,6 @@ export class Multisig {
     }
   }
 
-  // ===========================================================================
-  // Proposal Management
-  // ===========================================================================
-
   /**
    * Sync proposals from the PSM server.
    * Computes proposal IDs client-side by deserializing the tx_summary and computing its commitment.
@@ -251,16 +193,12 @@ export class Multisig {
       const existingProposal = this.proposals.get(proposalId);
       const proposal = this.deltaToProposal(delta, proposalId);
 
-      // First try to get metadata from PSM (stored with the proposal)
-      if (delta.delta_payload.metadata) {
-        proposal.metadata = {
-          targetThreshold: delta.delta_payload.metadata.targetThreshold,
-          targetSignerCommitments: delta.delta_payload.metadata.targetSignerCommitments,
-          saltHex: delta.delta_payload.metadata.saltHex,
-        };
-      } else if (existingProposal?.metadata) {
-        // Fall back to local metadata if PSM doesn't have it (legacy proposals)
+      // Prefer existing local metadata if available (we trust our own create calls)
+      // Fall back to PSM metadata for proposals created by other signers
+      if (existingProposal?.metadata) {
         proposal.metadata = existingProposal.metadata;
+      } else if (delta.delta_payload.metadata) {
+        proposal.metadata = fromPsmMetadata(delta.delta_payload.metadata);
       }
       this.proposals.set(proposal.id, proposal);
     }
@@ -283,23 +221,18 @@ export class Multisig {
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
   async createProposal(nonce: number, txSummaryBase64: string, metadata?: ProposalMetadata): Promise<Proposal> {
-    // Include metadata in the PSM request so other signers can retrieve it
+    const psmMetadata = metadata ? toPsmMetadata(metadata) : undefined;
     const response = await this.psm.pushDeltaProposal({
       account_id: this._accountId,
       nonce,
       delta_payload: {
         tx_summary: { data: txSummaryBase64 },
         signatures: [],
-        metadata: metadata ? {
-          targetThreshold: metadata.targetThreshold!,
-          targetSignerCommitments: metadata.targetSignerCommitments!,
-          saltHex: metadata.saltHex!,
-        } : undefined,
+        metadata: psmMetadata as any,
       },
     });
 
     const proposal = this.deltaToProposal(response.delta, response.commitment);
-    // Attach metadata if provided
     if (metadata) {
       proposal.metadata = metadata;
     }
@@ -317,7 +250,7 @@ export class Multisig {
    * @param newThreshold - Optional new threshold (defaults to current threshold)
    */
   async createAddSignerProposal(
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
     newCommitment: string,
     nonce?: number,
     newThreshold?: number,
@@ -336,12 +269,279 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      kind: 'add_signer',
       targetThreshold,
       targetSignerCommitments,
       saltHex: salt.toHex(),
+      description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
     return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "remove signer" proposal by executing the update_signers script to summary.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param signerToRemove - Commitment of the signer to remove (hex)
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   * @param newThreshold - Optional new threshold (defaults to min of current threshold and new signer count)
+   */
+  async createRemoveSignerProposal(
+    webClient: WebClient,
+    signerToRemove: string,
+    nonce?: number,
+    newThreshold?: number,
+  ): Promise<Proposal> {
+    // Validate signer exists
+    const normalizedRemove = signerToRemove.toLowerCase();
+    const signerExists = this.signerCommitments.some(
+      (c) => c.toLowerCase() === normalizedRemove
+    );
+    if (!signerExists) {
+      throw new Error(`Signer ${signerToRemove} is not in the current signer list`);
+    }
+
+    // Filter out the signer
+    const targetSignerCommitments = this.signerCommitments.filter(
+      (c) => c.toLowerCase() !== normalizedRemove
+    );
+
+    if (targetSignerCommitments.length === 0) {
+      throw new Error('Cannot remove the last signer');
+    }
+
+    // Auto-adjust threshold if needed
+    const targetThreshold = newThreshold ?? Math.min(this.threshold, targetSignerCommitments.length);
+
+    // Validate threshold
+    if (targetThreshold < 1 || targetThreshold > targetSignerCommitments.length) {
+      throw new Error(
+        `Invalid threshold ${targetThreshold}. Must be between 1 and ${targetSignerCommitments.length}`
+      );
+    }
+
+    const { request, salt } = await buildUpdateSignersTransactionRequest(
+      webClient,
+      targetThreshold,
+      targetSignerCommitments,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      kind: 'remove_signer',
+      targetThreshold,
+      targetSignerCommitments,
+      saltHex: salt.toHex(),
+      description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "change threshold" proposal without modifying signers.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param newThreshold - The new threshold value
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createChangeThresholdProposal(
+    webClient: WebClient,
+    newThreshold: number,
+    nonce?: number,
+  ): Promise<Proposal> {
+    // Validate threshold
+    if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
+      throw new Error(
+        `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
+      );
+    }
+
+    if (newThreshold === this.threshold) {
+      throw new Error('New threshold is the same as current threshold');
+    }
+
+    const { request, salt } = await buildUpdateSignersTransactionRequest(
+      webClient,
+      newThreshold,
+      this.signerCommitments,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      kind: 'change_threshold',
+      targetThreshold: newThreshold,
+      targetSignerCommitments: this.signerCommitments,
+      saltHex: salt.toHex(),
+      description: `Change threshold from ${this.threshold} to ${newThreshold}`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "switch PSM" proposal to change the PSM provider.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param newPsmEndpoint - The new PSM server endpoint URL
+   * @param newPsmPubkey - The new PSM server's public key commitment (hex)
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createSwitchPsmProposal(
+    webClient: WebClient,
+    newPsmEndpoint: string,
+    newPsmPubkey: string,
+    nonce?: number,
+  ): Promise<Proposal> {
+    const { request, salt } = await buildUpdatePsmTransactionRequest(
+      webClient,
+      newPsmPubkey,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      kind: 'switch_psm',
+      saltHex: salt.toHex(),
+      newPsmPubkey,
+      newPsmEndpoint,
+      description: `Switch PSM to ${newPsmEndpoint}`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a "consume notes" proposal to consume notes sent to the multisig account.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param noteIds - IDs of the notes to consume (hex strings)
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createConsumeNotesProposal(
+    webClient: WebClient,
+    noteIds: string[],
+    nonce?: number,
+  ): Promise<Proposal> {
+    if (noteIds.length === 0) {
+      throw new Error('At least one note ID is required');
+    }
+
+    const { request, salt } = buildConsumeNotesTransactionRequest(noteIds);
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      kind: 'consume_notes',
+      noteIds,
+      saltHex: salt.toHex(),
+      description: `Consume ${noteIds.length} note(s)`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Create a P2ID proposal to send funds to another account.
+   *
+   * @param webClient - Initialized Miden WebClient
+   * @param recipientId - Account ID of the recipient (hex string)
+   * @param faucetId - Faucet/token account ID (hex string)
+   * @param amount - Amount to send
+   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   */
+  async createP2idProposal(
+    webClient: WebClient,
+    recipientId: string,
+    faucetId: string,
+    amount: bigint,
+    nonce?: number,
+  ): Promise<Proposal> {
+    if (amount <= 0n) {
+      throw new Error('Amount must be greater than 0');
+    }
+
+    const { request, salt } = buildP2idTransactionRequest(
+      this._accountId,
+      recipientId,
+      faucetId,
+      amount,
+    );
+
+    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+
+    const metadata: ProposalMetadata = {
+      kind: 'p2id',
+      saltHex: salt.toHex(),
+      recipientId,
+      faucetId,
+      amount: amount.toString(),
+      description: `Send ${amount} to ${recipientId.slice(0, 10)}...`,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Get notes that can be consumed by this multisig account.
+   *
+   * Returns a list of notes that are committed on-chain and can be consumed
+   * immediately by the multisig account.
+   *
+   * @param webClient - Initialized Miden WebClient
+   */
+  async getConsumableNotes(
+    webClient: WebClient,
+  ): Promise<ConsumableNote[]> {
+    const accountId = AccountId.fromHex(this._accountId);
+
+    // Get consumable notes for this account
+    const consumableRecords = await webClient.getConsumableNotes(accountId);
+
+    // Convert to our simplified ConsumableNote type
+    const notes: ConsumableNote[] = [];
+    for (const record of consumableRecords) {
+      const inputNote = record.inputNoteRecord();
+      const consumability = record.noteConsumability();
+
+      // Only include notes that can be consumed now (consumableAfterBlock is undefined/null)
+      const canConsumeNow = consumability.some(
+        (c) => c.accountId().toString().toLowerCase() === this._accountId.toLowerCase() &&
+               c.consumableAfterBlock() === undefined
+      );
+
+      if (canConsumeNow) {
+        const noteId = inputNote.id().toString();
+        const details = inputNote.details();
+        const fungibleAssets = details.assets().fungibleAssets();
+
+        // Extract assets
+        const assets: NoteAsset[] = [];
+        for (const asset of fungibleAssets) {
+          assets.push({
+            faucetId: asset.faucetId().toString(),
+            amount: asset.amount(),
+          });
+        }
+
+        notes.push({ id: noteId, assets });
+      }
+    }
+
+    return notes;
   }
 
   /**
@@ -386,7 +586,7 @@ export class Multisig {
    * Execute a proposal that has enough signatures.
    *
    * This performs the full on-chain execution flow:
-   * 1. Push delta to PSM to get acknowledgment signature
+   * 1. Push delta to PSM to get acknowledgment signature (except for switch_psm)
    * 2. Build advice map with all cosigner signatures + PSM ack
    * 3. Execute, prove, submit, and apply the transaction
    *
@@ -395,7 +595,7 @@ export class Multisig {
    */
   async executeProposal(
     proposalId: string,
-    webClient: import('@demox-labs/miden-sdk').WebClient,
+    webClient: WebClient,
   ): Promise<void> {
     const proposal = this.proposals.get(proposalId);
     if (!proposal) {
@@ -415,7 +615,6 @@ export class Multisig {
       throw new Error(`Proposal not found on server: ${proposalId}`);
     }
 
-    // Push delta to PSM to get ack signature
     const executionDelta = {
       ...delta,
       delta_payload: delta.delta_payload.tx_summary,
@@ -428,10 +627,10 @@ export class Multisig {
     }
 
     // Deserialize the tx_summary to get the salt and commitment
+    // Store as hex and recreate Word objects when needed (WASM objects get consumed)
     const txSummaryBytes = base64ToUint8Array(delta.delta_payload.tx_summary.data);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
-    const salt = txSummary.salt();
-    // Store commitment as hex to recreate Word for each signature (WASM objects get consumed)
+    const saltHex = txSummary.salt().toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
 
     // Build advice map with all signatures
@@ -464,17 +663,64 @@ export class Multisig {
     );
     adviceMap.insert(ackKey, new FeltArray(ackValues));
 
-    if (!proposal.metadata?.targetThreshold || !proposal.metadata?.targetSignerCommitments) {
-      throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
+    const metadata = proposal.metadata;
+    if (!metadata) {
+      throw new Error('Proposal missing metadata kind');
     }
 
-    const finalRequest = await buildUpdateSignersTransactionRequestWithSignatures(
-      webClient,
-      proposal.metadata.targetThreshold,
-      proposal.metadata.targetSignerCommitments,
-      salt,
-      adviceMap,
-    );
+    let finalRequest: TransactionRequest;
+    switch (metadata.kind) {
+      case 'consume_notes': {
+        if (!metadata.noteIds || metadata.noteIds.length === 0) {
+          throw new Error('Proposal missing noteIds. Was it created with createConsumeNotesProposal?');
+        }
+        const { request } = buildConsumeNotesTransactionRequest(
+          metadata.noteIds,
+          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
+        );
+        finalRequest = request;
+        break;
+      }
+      case 'switch_psm': {
+        if (!metadata.newPsmPubkey) {
+          throw new Error('Proposal missing newPsmPubkey. Was it created with createSwitchPsmProposal?');
+        }
+        const { request } = await buildUpdatePsmTransactionRequest(
+          webClient,
+          metadata.newPsmPubkey,
+          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
+        );
+        finalRequest = request;
+        break;
+      }
+      case 'p2id': {
+        if (!metadata.recipientId || !metadata.faucetId || !metadata.amount) {
+          throw new Error('Proposal missing P2ID metadata (recipientId, faucetId, amount). Was it created with createP2idProposal?');
+        }
+        const { request } = buildP2idTransactionRequest(
+          this._accountId,
+          metadata.recipientId,
+          metadata.faucetId,
+          BigInt(metadata.amount),
+          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
+        );
+        finalRequest = request;
+        break;
+      }
+      default: {
+        if (metadata.targetThreshold === undefined || !metadata.targetSignerCommitments) {
+          throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
+        }
+        const { request } = await buildUpdateSignersTransactionRequest(
+          webClient,
+          metadata.targetThreshold,
+          metadata.targetSignerCommitments,
+          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
+        );
+        finalRequest = request;
+        break;
+      }
+    }
 
     // Execute, prove, submit, apply
     const accountId = AccountId.fromHex(this._accountId);
@@ -482,13 +728,16 @@ export class Multisig {
     const proven = await webClient.proveTransaction(result, null);
     const submissionHeight = await webClient.submitProvenTransaction(proven, result);
     await webClient.applyTransaction(result, submissionHeight);
-    await webClient.syncState();
+    // Note: We don't call syncState() here because applyTransaction already updated
+    // local state. Calling syncState immediately after would fail with "account nonce
+    // is too low" since the network hasn't finalized the transaction yet.
 
     proposal.status = { type: 'finalized' };
   }
 
   /**
-   * Export a proposal for offline signing.
+   * Export a proposal for offline signing (fetches from PSM).
+   * @deprecated Use exportProposalToJson for offline/side-channel sharing
    */
   async exportProposal(proposalId: string): Promise<ExportedProposal> {
     const deltas = await this.psm.getDeltaProposals(this._accountId);
@@ -516,9 +765,141 @@ export class Multisig {
     };
   }
 
-  // ===========================================================================
-  // Private Helpers
-  // ===========================================================================
+  /**
+   * Export a proposal to JSON for side-channel sharing.
+   * This exports from local cache and includes metadata, so PSM is not required.
+   * Useful when switching PSM providers and coordination via PSM is unavailable.
+   *
+   * @param proposalId - The proposal commitment/ID
+   * @returns JSON string that can be shared and imported by other signers
+   */
+  exportProposalToJson(proposalId: string): string {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) {
+      throw new Error(`Proposal not found in local cache: ${proposalId}`);
+    }
+
+    const exported: ExportedProposal = {
+      accountId: proposal.accountId,
+      nonce: proposal.nonce,
+      commitment: proposal.id,
+      txSummaryBase64: proposal.txSummary,
+      signatures: proposal.signatures.map((s) => ({
+        commitment: s.signerId,
+        signatureHex: s.signature.signature,
+        timestamp: s.timestamp,
+      })),
+      metadata: proposal.metadata,
+    };
+
+    return JSON.stringify(exported, null, 2);
+  }
+
+  /**
+   * Import a proposal from JSON (exported via exportProposalToJson).
+   * This adds the proposal to local cache for signing/execution.
+   * Useful when receiving proposals via side-channel when PSM is unavailable.
+   *
+   * @param json - JSON string from exportProposalToJson
+   * @returns The imported proposal
+   */
+  importProposal(json: string): Proposal {
+    const exported: ExportedProposal = JSON.parse(json);
+
+    // Validate the imported proposal
+    if (!exported.accountId || !exported.txSummaryBase64 || !exported.commitment) {
+      throw new Error('Invalid proposal JSON: missing required fields');
+    }
+
+    if (exported.accountId.toLowerCase() !== this._accountId.toLowerCase()) {
+      throw new Error(`Proposal is for a different account: ${exported.accountId}`);
+    }
+
+    // Verify the commitment matches the tx_summary
+    const computedCommitment = computeCommitmentFromTxSummary(exported.txSummaryBase64);
+    if (computedCommitment !== exported.commitment) {
+      throw new Error('Invalid proposal: commitment does not match tx_summary');
+    }
+
+    // Convert to Proposal
+    const signaturesCollected = exported.signatures.length;
+    const signaturesRequired = this.threshold;
+    const status: ProposalStatus = signaturesCollected >= signaturesRequired
+      ? { type: 'ready' }
+      : {
+          type: 'pending',
+          signaturesCollected,
+          signaturesRequired,
+          signers: exported.signatures.map((s) => s.commitment),
+        };
+
+    const proposal: Proposal = {
+      id: exported.commitment,
+      accountId: exported.accountId,
+      nonce: exported.nonce,
+      status,
+      txSummary: exported.txSummaryBase64,
+      signatures: exported.signatures.map((s) => ({
+        signerId: s.commitment,
+        signature: { scheme: 'falcon' as const, signature: s.signatureHex },
+        timestamp: s.timestamp || new Date().toISOString(),
+      })),
+      metadata: exported.metadata,
+    };
+
+    // Add to local cache
+    this.proposals.set(proposal.id, proposal);
+
+    return proposal;
+  }
+
+  /**
+   * Sign an imported proposal and return updated JSON for sharing.
+   * Use this when PSM is unavailable and coordination happens via side-channel.
+   *
+   * @param proposalId - The proposal commitment/ID
+   * @returns Updated JSON string with the new signature included
+   */
+  signProposalOffline(proposalId: string): string {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    // Check if already signed
+    const alreadySigned = proposal.signatures.some(
+      (s) => s.signerId.toLowerCase() === this.signer.commitment.toLowerCase()
+    );
+    if (alreadySigned) {
+      throw new Error('You have already signed this proposal');
+    }
+
+    // Sign the commitment
+    const signatureHex = this.signer.signCommitment(proposalId);
+
+    // Add signature to local proposal
+    proposal.signatures.push({
+      signerId: this.signer.commitment,
+      signature: { scheme: 'falcon', signature: signatureHex },
+      timestamp: new Date().toISOString(),
+    });
+
+    // Update status
+    const signaturesCollected = proposal.signatures.length;
+    if (signaturesCollected >= this.threshold) {
+      proposal.status = { type: 'ready' };
+    } else if (proposal.status.type === 'pending') {
+      proposal.status = {
+        type: 'pending',
+        signaturesCollected,
+        signaturesRequired: this.threshold,
+        signers: proposal.signatures.map((s) => s.signerId),
+      };
+    }
+
+    // Return updated JSON
+    return this.exportProposalToJson(proposalId);
+  }
 
   private deltaToProposal(delta: DeltaObject, proposalId: string): Proposal {
     const status = this.deltaStatusToProposalStatus(delta.status);

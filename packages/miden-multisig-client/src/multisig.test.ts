@@ -48,14 +48,35 @@ vi.mock('./transaction.js', () => ({
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
     configHash: { toHex: () => '0x' + 'e'.repeat(64) },
   }),
-  buildUpdateSignersTransactionRequestWithSignatures: vi.fn().mockResolvedValue({}),
+  buildUpdatePsmTransactionRequest: vi.fn().mockResolvedValue({
+    request: {},
+    salt: { toHex: () => '0x' + 'd'.repeat(64) },
+  }),
+  buildConsumeNotesTransactionRequest: vi.fn().mockReturnValue({
+    request: {},
+    salt: { toHex: () => '0x' + 'd'.repeat(64) },
+  }),
+  buildP2idTransactionRequest: vi.fn().mockReturnValue({
+    request: {},
+    salt: { toHex: () => '0x' + 'd'.repeat(64) },
+  }),
+}));
+
+vi.mock('./utils/signature.js', () => ({
   buildSignatureAdviceEntry: vi.fn().mockReturnValue({
     key: { toHex: () => '0x' + 'f'.repeat(64) },
     values: [1, 2, 3],
   }),
   signatureHexToBytes: vi.fn((hex: string) => new Uint8Array([0, 1, 2, 3])),
-  normalizeHexWord: vi.fn((hex: string) => '0x' + hex.replace(/^0x/i, '').padStart(64, '0')),
 }));
+
+vi.mock('./utils/encoding.js', async () => {
+  const actual = await vi.importActual<typeof import('./utils/encoding.js')>('./utils/encoding.js');
+  return {
+    ...actual,
+    normalizeHexWord: vi.fn((hex: string) => '0x' + hex.replace(/^0x/i, '').padStart(64, '0')),
+  };
+});
 
 // Mock fetch for PSM client
 const mockFetch = vi.fn();

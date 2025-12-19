@@ -10,9 +10,13 @@ export {
 export {
   buildMultisigStorageSlots,
   buildPsmStorageSlots,
+  storageLayoutBuilder,
+  StorageLayoutBuilder,
 } from './storage.js';
 
 export {
+  masmLoader,
+  MasmLoader,
   loadMasmFile,
   loadMultisigMasm,
   loadPsmMasm,

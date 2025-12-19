@@ -19,6 +19,7 @@ import {
   WelcomeView,
   CreateMultisigDialog,
   LoadMultisigDialog,
+  ImportProposalDialog,
   MultisigDashboard,
 } from '@/components';
 
@@ -26,6 +27,25 @@ import { normalizeCommitment } from '@/lib/helpers';
 import type { SignerInfo } from '@/types';
 
 const DEFAULT_PSM_URL = 'http://localhost:3000';
+const MIDEN_DB_NAME = 'MidenClientDB';
+
+async function clearMidenDatabase(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(MIDEN_DB_NAME);
+    request.onsuccess = () => {
+      console.log('[IndexedDB] Cleared MidenClientDB');
+      resolve();
+    };
+    request.onerror = () => {
+      console.error('[IndexedDB] Failed to clear MidenClientDB:', request.error);
+      reject(request.error);
+    };
+    request.onblocked = () => {
+      console.warn('[IndexedDB] Database deletion blocked - other connections open');
+      resolve(); // Continue anyway
+    };
+  });
+}
 
 export default function App() {
   // Core state
@@ -45,6 +65,8 @@ export default function App() {
   // Dialog state
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importJson, setImportJson] = useState('');
 
   // Operation state
   const [creating, setCreating] = useState(false);
@@ -55,50 +77,72 @@ export default function App() {
 
   // Proposal state
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [newSignerCommitment, setNewSignerCommitment] = useState('');
-  const [increaseThreshold, setIncreaseThreshold] = useState(false);
   const [creatingProposal, setCreatingProposal] = useState(false);
   const [signingProposal, setSigningProposal] = useState<string | null>(null);
   const [executingProposal, setExecutingProposal] = useState<string | null>(null);
 
-  // Connect to PSM server
+  // Notes state
+  const [consumableNotes, setConsumableNotes] = useState<Array<{ id: string; assets: Array<{ faucetId: string; amount: bigint }> }>>([]);
+
+  // Connect to PSM server - returns { pubkey, msClient } for init flow
   const connectToPsm = useCallback(
-    async (url: string, client?: WebClient) => {
+    async (url: string, client?: WebClient): Promise<{ pubkey: string; msClient: MultisigClient } | null> => {
       setPsmStatus('connecting');
+      setError(null);
       try {
         const wc = client ?? webClient;
-        if (wc) {
-          const msClient = new MultisigClient(wc, { psmEndpoint: url });
-          const pubkey = await msClient.psmClient.getPubkey();
-          setPsmPubkey(pubkey);
-          setMultisigClient(msClient);
-        } else {
+        if (!wc) {
+          // Fallback when no WebClient - just fetch pubkey
           const response = await fetch(`${url}/pubkey`);
           const data = await response.json();
           setPsmPubkey(data.pubkey || '');
+          setPsmStatus('connected');
+          return null;
         }
+
+        // Create new MultisigClient with PSM endpoint
+        const msClient = new MultisigClient(wc, { psmEndpoint: url });
+        const pubkey = await msClient.psmClient.getPubkey();
+        setPsmPubkey(pubkey);
+        setMultisigClient(msClient);
         setPsmStatus('connected');
-      } catch {
+        return { pubkey, msClient };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        console.error('Failed to connect to PSM:', err);
         setPsmStatus('error');
         setPsmPubkey('');
+        setError(`Failed to connect to PSM: ${msg}`);
+        return null;
       }
     },
     [webClient]
   );
 
-  // Generate signer key
-  const generateSigner = useCallback(async (client: WebClient) => {
+  // Generate a fresh signer
+  const initializeSigner = useCallback(async (client: WebClient): Promise<SignerInfo | null> => {
     setGeneratingSigner(true);
     try {
-      const seed = new Uint8Array(32);
-      crypto.getRandomValues(seed);
-      const secretKey = SecretKey.rpoFalconWithRNG(seed);
-      await client.addAccountSecretKeyToWebStore(secretKey);
+      // Always generate a fresh key (no localStorage persistence)
+      console.log('[Signer] Generating new key...');
+      const secretKey = SecretKey.rpoFalconWithRNG(undefined);
+
+      // Add to WebClient's keystore (ignore "already exists" errors on reload)
+      try {
+        await client.addAccountSecretKeyToWebStore(secretKey);
+      } catch (storeErr) {
+        // Key already exists in IndexedDB - this is expected on page reload
+        console.log('[Signer] Key already in web store (expected on reload)');
+      }
       const publicKey = secretKey.publicKey();
       const commitment = publicKey.toCommitment().toHex();
-      setSigner({ commitment, secretKey });
+      console.log('[Signer] Initialized with commitment:', commitment);
+      const signerInfo = { commitment, secretKey };
+      setSigner(signerInfo);
+      return signerInfo;
     } catch (err) {
-      setError(`Failed to generate signer: ${err instanceof Error ? err.message : 'Unknown'}`);
+      setError(`Failed to initialize signer: ${err instanceof Error ? err.message : 'Unknown'}`);
+      return null;
     } finally {
       setGeneratingSigner(false);
     }
@@ -108,11 +152,18 @@ export default function App() {
   useEffect(() => {
     const init = async () => {
       try {
+        // Clear IndexedDB to start fresh on each page load
+        await clearMidenDatabase();
+
         const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
         await client.syncState();
         setWebClient(client);
+
+        // Connect to PSM and get pubkey + msClient
         await connectToPsm(psmUrl, client);
-        await generateSigner(client);
+
+        // Initialize signer (load from localStorage or generate new)
+        await initializeSigner(client);
       } catch (err) {
         setError(`Initialization failed: ${err instanceof Error ? err.message : 'Unknown'}`);
       }
@@ -195,6 +246,7 @@ export default function App() {
       const ms = await multisigClient.load(normalizedId, config, falconSigner);
       setMultisig(ms);
       setPsmState(state);
+
       setLoadDialogOpen(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown';
@@ -208,17 +260,30 @@ export default function App() {
     }
   };
 
-  // Sync state
-  const handleSyncState = async () => {
-    if (!multisig || !multisigClient || !signer) return;
+  // Sync state and proposals
+  const handleSync = async () => {
+    if (!multisig || !multisigClient || !signer || !webClient) return;
 
     setSyncingState(true);
     setError(null);
     try {
+      // Sync miden client state first (with retry for IndexedDB race conditions)
+      try {
+        await webClient.syncState();
+      } catch (syncErr) {
+        // IndexedDB can have PrematureCommitError - retry once after a short delay
+        console.warn('First syncState attempt failed, retrying...', syncErr);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await webClient.syncState();
+      }
+
+      // Sync PSM state
       const state = await multisig.fetchState();
       setPsmState(state);
 
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
+      setDetectedConfig(detected);
+
       const newConfig: MultisigConfig = {
         threshold: detected.threshold,
         signerCommitments: detected.signerCommitments,
@@ -229,6 +294,19 @@ export default function App() {
       const falconSigner = new FalconSigner(signer.secretKey);
       const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
       setMultisig(reloadedMs);
+
+      // Sync proposals
+      const synced = await reloadedMs.syncProposals();
+      setProposals(synced);
+
+      // Fetch consumable notes
+      try {
+        const notes = await reloadedMs.getConsumableNotes(webClient);
+        setConsumableNotes(notes);
+      } catch (noteErr) {
+        console.warn('Failed to fetch consumable notes:', noteErr);
+        // Don't fail the whole sync if notes fetch fails
+      }
     } catch (err) {
       setError(`Sync failed: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
@@ -236,31 +314,15 @@ export default function App() {
     }
   };
 
-  // Sync proposals
-  const handleSyncProposals = async () => {
-    if (!multisig) return;
-
-    setSyncingState(true);
-    try {
-      const synced = await multisig.syncProposals();
-      setProposals(synced);
-      setError(null);
-    } catch (err) {
-      setError(`Failed to sync proposals: ${err instanceof Error ? err.message : 'Unknown'}`);
-    } finally {
-      setSyncingState(false);
-    }
-  };
-
-  // Create proposal
-  const handleCreateProposal = async () => {
+  // Create add signer proposal
+  const handleCreateAddSignerProposal = async (commitment: string, increaseThreshold: boolean) => {
     if (!multisig || !webClient) return;
 
-    let commitment: string;
+    let normalizedCommitment: string;
     try {
-      commitment = normalizeCommitment(newSignerCommitment);
-    } catch (e: any) {
-      setError(e?.message ?? 'Invalid commitment');
+      normalizedCommitment = normalizeCommitment(commitment);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Invalid commitment');
       return;
     }
 
@@ -268,14 +330,97 @@ export default function App() {
     setError(null);
     try {
       const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-      const proposal = await multisig.createAddSignerProposal(webClient, commitment, undefined, newThreshold);
+      const proposal = await multisig.createAddSignerProposal(webClient, normalizedCommitment, undefined, newThreshold);
       const synced = await multisig.syncProposals();
       setProposals(synced);
-      setNewSignerCommitment('');
-      setIncreaseThreshold(false);
       if (!synced.find((p) => p.id === proposal.id)) {
         setProposals([...synced, proposal]);
       }
+      toast.success('Add signer proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create remove signer proposal
+  const handleCreateRemoveSignerProposal = async (signerToRemove: string, newThreshold?: number) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createRemoveSignerProposal(webClient, signerToRemove, undefined, newThreshold);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Remove signer proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create change threshold proposal
+  const handleCreateChangeThresholdProposal = async (newThreshold: number) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createChangeThresholdProposal(webClient, newThreshold);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Change threshold proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create consume notes proposal
+  const handleCreateConsumeNotesProposal = async (noteIds: string[]) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createConsumeNotesProposal(webClient, noteIds);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Consume notes proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
+  // Create P2ID (send payment) proposal
+  const handleCreateP2idProposal = async (recipientId: string, faucetId: string, amount: bigint) => {
+    if (!multisig || !webClient) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const proposal = await multisig.createP2idProposal(webClient, recipientId, faucetId, amount);
+      const synced = await multisig.syncProposals();
+      setProposals(synced);
+      if (!synced.find((p) => p.id === proposal.id)) {
+        setProposals([...synced, proposal]);
+      }
+      toast.success('Send payment proposal created');
     } catch (err) {
       setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
@@ -302,38 +447,75 @@ export default function App() {
 
   // Execute proposal
   const handleExecuteProposal = async (proposalId: string) => {
-    if (!multisig || !webClient || !multisigClient || !signer) return;
+    if (!multisig || !webClient) return;
 
     setExecutingProposal(proposalId);
     setError(null);
     try {
-      await multisig.executeProposal(proposalId, webClient);
+      console.log('[Execute] Starting execution for proposal:', proposalId);
+      const proposal = multisig.listProposals().find(p => p.id === proposalId);
+      console.log('[Execute] Proposal metadata:', proposal?.metadata);
+      console.log('[Execute] Proposal type:', proposal?.metadata?.kind);
 
-      // Immediately remove the executed proposal from UI
-      setProposals((prev) => prev.filter((p) => p.id !== proposalId));
+      await multisig.executeProposal(proposalId, webClient);
+      console.log('[Execute] Execution completed successfully');
       toast.success('Proposal executed successfully');
 
-      const state = await multisig.fetchState();
-      const detected = AccountInspector.fromBase64(state.stateDataBase64);
-      const newConfig: MultisigConfig = {
-        threshold: detected.threshold,
-        signerCommitments: detected.signerCommitments,
-        psmCommitment: detected.psmCommitment || psmPubkey,
-        psmEnabled: detected.psmEnabled,
-      };
-
-      const falconSigner = new FalconSigner(signer.secretKey);
-      const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
-      setMultisig(reloadedMs);
-      setPsmState(state);
-
-      // Sync remaining proposals (excluding any finalized ones)
-      const synced = await reloadedMs.syncProposals();
-      setProposals(synced.filter((p) => p.status.type !== 'finalized'));
+      // Sync to reload account state and proposals
+      await handleSync();
     } catch (err) {
+      console.error('[Execute] Execution failed:', err);
       setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
       setExecutingProposal(null);
+    }
+  };
+
+  // Export proposal to clipboard
+  const handleExportProposal = (proposalId: string) => {
+    if (!multisig) return;
+
+    try {
+      const json = multisig.exportProposalToJson(proposalId);
+      navigator.clipboard.writeText(json);
+      toast.success('Proposal JSON copied to clipboard');
+    } catch (err) {
+      setError(`Failed to export: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  };
+
+  // Sign proposal offline and copy to clipboard
+  const handleSignProposalOffline = (proposalId: string) => {
+    if (!multisig) return;
+
+    try {
+      const json = multisig.signProposalOffline(proposalId);
+      navigator.clipboard.writeText(json);
+      // Update local proposals state
+      setProposals(multisig.listProposals());
+      toast.success('Signed! Updated proposal JSON copied to clipboard');
+    } catch (err) {
+      setError(`Failed to sign offline: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  };
+
+  // Import proposal from JSON
+  const handleImportProposal = () => {
+    setImportJson('');
+    setImportDialogOpen(true);
+  };
+
+  const handleImportProposalSubmit = () => {
+    if (!multisig || !importJson.trim()) return;
+
+    try {
+      const proposal = multisig.importProposal(importJson.trim());
+      setProposals(multisig.listProposals());
+      setImportDialogOpen(false);
+      setImportJson('');
+      toast.success(`Proposal imported: ${proposal.id.slice(0, 12)}...`);
+    } catch (err) {
+      setError(`Failed to import: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
   };
 
@@ -343,6 +525,13 @@ export default function App() {
     setPsmState(null);
     setProposals([]);
     setError(null);
+  };
+
+  // Reset and reload
+  const handleResetData = () => {
+    toast.success('Reloading with fresh signer key...');
+    // Reload the page to start fresh
+    setTimeout(() => window.location.reload(), 500);
   };
 
   const ready = !!webClient && !!signer && !!multisigClient && psmStatus === 'connected';
@@ -364,6 +553,7 @@ export default function App() {
             ready={ready}
             onCreateClick={() => setCreateDialogOpen(true)}
             onLoadClick={() => setLoadDialogOpen(true)}
+            onResetData={handleResetData}
           />
         ) : signer ? (
           <MultisigDashboard
@@ -371,20 +561,24 @@ export default function App() {
             signer={signer}
             psmState={psmState}
             proposals={proposals}
-            newSignerCommitment={newSignerCommitment}
-            increaseThreshold={increaseThreshold}
+            consumableNotes={consumableNotes}
+            vaultBalances={detectedConfig?.vaultBalances ?? []}
             creatingProposal={creatingProposal}
-            syncingState={syncingState}
+            syncing={syncingState}
             signingProposal={signingProposal}
             executingProposal={executingProposal}
             error={error}
-            onNewSignerCommitmentChange={setNewSignerCommitment}
-            onIncreaseThresholdChange={setIncreaseThreshold}
-            onCreateProposal={handleCreateProposal}
-            onSyncState={handleSyncState}
-            onSyncProposals={handleSyncProposals}
+            onCreateAddSigner={handleCreateAddSignerProposal}
+            onCreateRemoveSigner={handleCreateRemoveSignerProposal}
+            onCreateChangeThreshold={handleCreateChangeThresholdProposal}
+            onCreateConsumeNotes={handleCreateConsumeNotesProposal}
+            onCreateP2id={handleCreateP2idProposal}
+            onSync={handleSync}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}
+            onExportProposal={handleExportProposal}
+            onSignProposalOffline={handleSignProposalOffline}
+            onImportProposal={handleImportProposal}
             onDisconnect={handleDisconnect}
           />
         ) : null}
@@ -407,6 +601,13 @@ export default function App() {
             loading={loadingAccount}
             detectedConfig={detectedConfig}
             onLoad={handleLoad}
+          />
+          <ImportProposalDialog
+            open={importDialogOpen}
+            onOpenChange={setImportDialogOpen}
+            importJson={importJson}
+            onImportJsonChange={setImportJson}
+            onImport={handleImportProposalSubmit}
           />
         </>
       )}

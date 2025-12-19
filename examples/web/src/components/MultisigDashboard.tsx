@@ -1,14 +1,12 @@
 import { toast } from 'sonner';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ProposalCard } from './ProposalCard';
+import { CreateProposalForm } from './CreateProposalForm';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Multisig, Proposal, AccountState } from '@openzeppelin/miden-multisig-client';
+import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface MultisigDashboardProps {
@@ -16,20 +14,24 @@ interface MultisigDashboardProps {
   signer: SignerInfo;
   psmState: AccountState | null;
   proposals: Proposal[];
-  newSignerCommitment: string;
-  increaseThreshold: boolean;
+  consumableNotes: ConsumableNote[];
+  vaultBalances: VaultBalance[];
   creatingProposal: boolean;
-  syncingState: boolean;
+  syncing: boolean;
   signingProposal: string | null;
   executingProposal: string | null;
   error: string | null;
-  onNewSignerCommitmentChange: (value: string) => void;
-  onIncreaseThresholdChange: (checked: boolean) => void;
-  onCreateProposal: () => void;
-  onSyncState: () => void;
-  onSyncProposals: () => void;
+  onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
+  onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
+  onCreateChangeThreshold: (newThreshold: number) => void;
+  onCreateConsumeNotes: (noteIds: string[]) => void;
+  onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
+  onSync: () => void;
   onSignProposal: (proposalId: string) => void;
   onExecuteProposal: (proposalId: string) => void;
+  onExportProposal: (proposalId: string) => void;
+  onSignProposalOffline: (proposalId: string) => void;
+  onImportProposal: () => void;
   onDisconnect: () => void;
 }
 
@@ -38,20 +40,24 @@ export function MultisigDashboard({
   signer,
   psmState,
   proposals,
-  newSignerCommitment,
-  increaseThreshold,
+  consumableNotes,
+  vaultBalances,
   creatingProposal,
-  syncingState,
+  syncing,
   signingProposal,
   executingProposal,
   error,
-  onNewSignerCommitmentChange,
-  onIncreaseThresholdChange,
-  onCreateProposal,
-  onSyncState,
-  onSyncProposals,
+  onCreateAddSigner,
+  onCreateRemoveSigner,
+  onCreateChangeThreshold,
+  onCreateConsumeNotes,
+  onCreateP2id,
+  onSync,
   onSignProposal,
   onExecuteProposal,
+  onExportProposal,
+  onSignProposalOffline,
+  onImportProposal,
   onDisconnect,
 }: MultisigDashboardProps) {
   return (
@@ -95,15 +101,45 @@ export function MultisigDashboard({
           )}
 
           <div className="flex gap-2 pt-2">
-            <Button variant="outline" size="sm" onClick={onSyncState} disabled={syncingState}>
-              {syncingState ? 'Syncing...' : 'Sync State'}
+            <Button variant="outline" size="sm" onClick={onSync} disabled={syncing}>
+              {syncing ? 'Syncing...' : 'Sync'}
             </Button>
-            <Button variant="outline" size="sm" onClick={onSyncProposals} disabled={syncingState}>
-              Sync Proposals
+            <Button variant="outline" size="sm" onClick={onImportProposal}>
+              Import Proposal
             </Button>
           </div>
         </CardContent>
       </Card>
+
+      {/* Vault Balances */}
+      {vaultBalances.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Vault Balances</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {vaultBalances.map((balance) => (
+                <div
+                  key={balance.faucetId}
+                  className="flex items-center justify-between text-sm border-b pb-2 last:border-0 last:pb-0"
+                >
+                  <code
+                    onClick={() => copyToClipboard(balance.faucetId, () => toast.success('Faucet ID copied'))}
+                    className="text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80 truncate max-w-[200px]"
+                    title={balance.faucetId}
+                  >
+                    {balance.faucetId.slice(0, 10)}...{balance.faucetId.slice(-6)}
+                  </code>
+                  <Badge variant="secondary" className="font-mono">
+                    {balance.amount.toString()}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {error && (
         <Alert variant="destructive">
@@ -111,42 +147,19 @@ export function MultisigDashboard({
         </Alert>
       )}
 
-      {/* Create Proposal Card */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-lg">Add Signer Proposal</CardTitle>
-          <CardDescription>
-            Create a proposal to add a new signer to the multisig.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-3">
-            <Input
-              placeholder="New signer commitment (0x...)"
-              value={newSignerCommitment}
-              onChange={(e) => onNewSignerCommitmentChange(e.target.value)}
-            />
-
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="increase-threshold"
-                checked={increaseThreshold}
-                onCheckedChange={(checked) => onIncreaseThresholdChange(checked === true)}
-              />
-              <Label htmlFor="increase-threshold" className="text-sm">
-                Increase threshold to {multisig.threshold + 1}
-              </Label>
-            </div>
-
-            <Button
-              onClick={onCreateProposal}
-              disabled={creatingProposal || !newSignerCommitment.trim()}
-            >
-              {creatingProposal ? 'Creating...' : 'Create Proposal'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Create Proposal Form */}
+      <CreateProposalForm
+        currentThreshold={multisig.threshold}
+        signerCommitments={multisig.signerCommitments}
+        creatingProposal={creatingProposal}
+        consumableNotes={consumableNotes}
+        vaultBalances={vaultBalances}
+        onCreateAddSigner={onCreateAddSigner}
+        onCreateRemoveSigner={onCreateRemoveSigner}
+        onCreateChangeThreshold={onCreateChangeThreshold}
+        onCreateConsumeNotes={onCreateConsumeNotes}
+        onCreateP2id={onCreateP2id}
+      />
 
       {/* Proposals List */}
       {proposals.length > 0 && (
@@ -165,6 +178,8 @@ export function MultisigDashboard({
                 executingProposal={executingProposal}
                 onSign={onSignProposal}
                 onExecute={onExecuteProposal}
+                onExport={onExportProposal}
+                onSignOffline={onSignProposalOffline}
               />
             ))}
           </CardContent>

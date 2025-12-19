@@ -24,15 +24,16 @@ vi.mock('@demox-labs/miden-sdk', () => ({
 }));
 
 // Now import the module under test - use dynamic import to ensure mocks are in place
-let normalizeHexWord: typeof import('./transaction.js').normalizeHexWord;
-let hexToUint8Array: typeof import('./transaction.js').hexToUint8Array;
-let signatureHexToBytes: typeof import('./transaction.js').signatureHexToBytes;
+let normalizeHexWord: typeof import('./utils/encoding.js').normalizeHexWord;
+let signatureHexToBytes: typeof import('./utils/signature.js').signatureHexToBytes;
+let hexToBytes: typeof import('./utils/encoding.js').hexToBytes;
 
 beforeAll(async () => {
-  const mod = await import('./transaction.js');
-  normalizeHexWord = mod.normalizeHexWord;
-  hexToUint8Array = mod.hexToUint8Array;
-  signatureHexToBytes = mod.signatureHexToBytes;
+  const encoding = await import('./utils/encoding.js');
+  const sig = await import('./utils/signature.js');
+  normalizeHexWord = encoding.normalizeHexWord;
+  hexToBytes = encoding.hexToBytes;
+  signatureHexToBytes = sig.signatureHexToBytes;
 });
 
 describe('transaction utilities', () => {
@@ -76,34 +77,34 @@ describe('transaction utilities', () => {
     });
   });
 
-  describe('hexToUint8Array', () => {
+  describe('hexToBytes', () => {
     it('should convert hex string to Uint8Array', () => {
-      const result = hexToUint8Array('deadbeef');
+      const result = hexToBytes('deadbeef');
       expect(result).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
     });
 
     it('should handle 0x prefix', () => {
-      const result = hexToUint8Array('0xdeadbeef');
+      const result = hexToBytes('0xdeadbeef');
       expect(result).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
     });
 
     it('should handle empty string', () => {
-      const result = hexToUint8Array('');
+      const result = hexToBytes('');
       expect(result).toEqual(new Uint8Array([]));
     });
 
     it('should handle single byte', () => {
-      const result = hexToUint8Array('ff');
+      const result = hexToBytes('ff');
       expect(result).toEqual(new Uint8Array([0xff]));
     });
 
     it('should handle zeros', () => {
-      const result = hexToUint8Array('00000000');
+      const result = hexToBytes('00000000');
       expect(result).toEqual(new Uint8Array([0, 0, 0, 0]));
     });
 
     it('should handle mixed case', () => {
-      const result = hexToUint8Array('DeAdBeEf');
+      const result = hexToBytes('DeAdBeEf');
       expect(result).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
     });
   });

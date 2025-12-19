@@ -1,7 +1,3 @@
-/**
- * HTTP client for PSM server communication.
- */
-
 import type {
   ConfigureRequest,
   ConfigureResponse,
@@ -31,32 +27,26 @@ export class PsmHttpError extends Error {
 }
 
 /**
- * HTTP client for PSM server.
+ * Minimal HTTP client for PSM server.
  */
 export class PsmHttpClient {
   private signer: Signer | null = null;
+  private readonly baseUrl: string;
 
-  constructor(private readonly baseUrl: string) {}
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
 
-  /**
-   * Set the signer for authenticated requests.
-   */
   setSigner(signer: Signer): void {
     this.signer = signer;
   }
 
-  /**
-   * Get the PSM server's public key.
-   */
   async getPubkey(): Promise<string> {
     const response = await this.fetch('/pubkey', { method: 'GET' });
     const data = (await response.json()) as PubkeyResponse;
     return data.pubkey;
   }
 
-  /**
-   * Configure/register an account on PSM.
-   */
   async configure(request: ConfigureRequest): Promise<ConfigureResponse> {
     const response = await this.fetchAuthenticated('/configure', {
       method: 'POST',
@@ -65,9 +55,6 @@ export class PsmHttpClient {
     return (await response.json()) as ConfigureResponse;
   }
 
-  /**
-   * Get account state from PSM.
-   */
   async getState(accountId: string): Promise<StateObject> {
     const params = new URLSearchParams({ account_id: accountId });
     const response = await this.fetchAuthenticated(`/state?${params}`, {
@@ -76,9 +63,6 @@ export class PsmHttpClient {
     return (await response.json()) as StateObject;
   }
 
-  /**
-   * Get all delta proposals for an account.
-   */
   async getDeltaProposals(accountId: string): Promise<DeltaObject[]> {
     const params = new URLSearchParams({ account_id: accountId });
     const response = await this.fetchAuthenticated(`/delta/proposal?${params}`, {
@@ -88,9 +72,6 @@ export class PsmHttpClient {
     return data.proposals;
   }
 
-  /**
-   * Push a new delta proposal.
-   */
   async pushDeltaProposal(request: DeltaProposalRequest): Promise<DeltaProposalResponse> {
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'POST',
@@ -99,9 +80,6 @@ export class PsmHttpClient {
     return (await response.json()) as DeltaProposalResponse;
   }
 
-  /**
-   * Sign a delta proposal.
-   */
   async signDeltaProposal(request: SignProposalRequest): Promise<DeltaObject> {
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'PUT',
@@ -110,11 +88,6 @@ export class PsmHttpClient {
     return (await response.json()) as DeltaObject;
   }
 
-  /**
-   * Push a delta (execute a proposal).
-   * The delta_payload must be in execution format: { data: "<base64>" }
-   * (not proposal format: { tx_summary: { data }, signatures }).
-   */
   async pushDelta(delta: ExecutionDelta): Promise<DeltaObject> {
     const response = await this.fetchAuthenticated('/delta', {
       method: 'POST',
@@ -123,9 +96,6 @@ export class PsmHttpClient {
     return (await response.json()) as DeltaObject;
   }
 
-  /**
-   * Get a specific delta by nonce.
-   */
   async getDelta(accountId: string, nonce: number): Promise<DeltaObject> {
     const params = new URLSearchParams({
       account_id: accountId,
@@ -137,9 +107,6 @@ export class PsmHttpClient {
     return (await response.json()) as DeltaObject;
   }
 
-  /**
-   * Get merged delta since a nonce.
-   */
   async getDeltaSince(accountId: string, fromNonce: number): Promise<DeltaObject> {
     const params = new URLSearchParams({
       account_id: accountId,
@@ -150,10 +117,6 @@ export class PsmHttpClient {
     }, accountId);
     return (await response.json()) as DeltaObject;
   }
-
-  // ==========================================================================
-  // Private helpers
-  // ==========================================================================
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
