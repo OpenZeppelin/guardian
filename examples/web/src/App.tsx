@@ -267,8 +267,15 @@ export default function App() {
     setSyncingState(true);
     setError(null);
     try {
-      // Sync miden client state first
-      await webClient.syncState();
+      // Sync miden client state first (with retry for IndexedDB race conditions)
+      try {
+        await webClient.syncState();
+      } catch (syncErr) {
+        // IndexedDB can have PrematureCommitError - retry once after a short delay
+        console.warn('First syncState attempt failed, retrying...', syncErr);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await webClient.syncState();
+      }
 
       // Sync PSM state
       const state = await multisig.fetchState();
@@ -448,7 +455,7 @@ export default function App() {
       console.log('[Execute] Starting execution for proposal:', proposalId);
       const proposal = multisig.listProposals().find(p => p.id === proposalId);
       console.log('[Execute] Proposal metadata:', proposal?.metadata);
-      console.log('[Execute] Proposal type:', proposal?.metadata?.proposalType);
+      console.log('[Execute] Proposal type:', proposal?.metadata?.kind);
 
       await multisig.executeProposal(proposalId, webClient);
       console.log('[Execute] Execution completed successfully');

@@ -5,7 +5,7 @@
  * to create new multisig accounts and load existing ones.
  */
 
-import { type WebClient } from '@demox-labs/miden-sdk';
+import { type WebClient, Account } from '@demox-labs/miden-sdk';
 import { PsmHttpClient } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
@@ -90,27 +90,24 @@ export class MultisigClient {
     // Set the signer on PSM client for authentication
     this._psmClient.setSigner(signer);
 
-    // Always pull from PSM (source of truth) and add to Miden SDK's local store
+    // Always pull from PSM (source of truth)
     const stateResponse = await this._psmClient.getState(accountId);
 
-    // The state_json.data contains base64-encoded serialized account bytes
+    // Validate PSM returned account data
     const accountBase64 = stateResponse.state_json.data;
     if (!accountBase64) {
       throw new Error('No account data found in PSM state');
     }
 
-    // Decode base64 to bytes
+    // Decode base64 to bytes and deserialize the account
     const binaryString = atob(accountBase64);
     const accountBytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
       accountBytes[i] = binaryString.charCodeAt(i);
     }
-
-    // Deserialize the account using the SDK
-    const { Account } = await import('@demox-labs/miden-sdk');
     const account = Account.deserialize(accountBytes);
 
-    // Add to Miden SDK's local store (overwrite=true to handle reloads)
+    // Add to Miden SDK's local store (required for transaction execution)
     await this.webClient.newAccount(account, true);
 
     // Return wrapped Multisig instance

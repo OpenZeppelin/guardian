@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Proposal, ProposalType } from '@openzeppelin/miden-multisig-client';
+import type { Proposal, ProposalKind } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface ProposalCardProps {
@@ -19,7 +19,7 @@ interface ProposalCardProps {
   onSignOffline: (proposalId: string) => void;
 }
 
-function getProposalTypeLabel(type?: ProposalType): string {
+function getProposalTypeLabel(type?: ProposalKind): string {
   switch (type) {
     case 'add_signer':
       return 'Add Signer';
@@ -33,14 +33,12 @@ function getProposalTypeLabel(type?: ProposalType): string {
       return 'Consume Notes';
     case 'p2id':
       return 'Send Payment';
-    case 'custom':
-      return 'Custom';
     default:
       return 'Unknown';
   }
 }
 
-function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 'destructive' | 'outline' {
+function getProposalTypeVariant(type?: ProposalKind): 'default' | 'secondary' | 'destructive' | 'outline' {
   switch (type) {
     case 'add_signer':
       return 'default';
@@ -90,7 +88,7 @@ export function ProposalCard({
         ? 'secondary'
         : 'outline';
 
-  const proposalType = proposal.metadata?.proposalType;
+  const proposalType = proposal.metadata?.kind;
   const description = proposal.metadata?.description;
 
   return (

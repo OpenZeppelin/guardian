@@ -45,10 +45,6 @@
  * ```
  */
 
-// =============================================================================
-// Client Classes
-// =============================================================================
-
 export { MultisigClient, type MultisigClientConfig } from './client.js';
 export { Multisig, type AccountState } from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
@@ -60,27 +56,16 @@ export {
   buildP2idTransactionRequest,
 } from './transaction.js';
 
-// =============================================================================
-// PSM Client (re-exported from @openzeppelin/psm-client)
-// =============================================================================
-
 export { PsmHttpClient, PsmHttpError } from '@openzeppelin/psm-client';
 
-// =============================================================================
-// Signer
-// =============================================================================
-
 export { FalconSigner } from './signer.js';
-
-// =============================================================================
-// Account Creation
-// =============================================================================
 
 export {
   createMultisigAccount,
   validateMultisigConfig,
   buildMultisigStorageSlots,
   buildPsmStorageSlots,
+  storageLayoutBuilder,
   loadMasmFile,
   loadMultisigMasm,
   loadPsmMasm,
@@ -90,16 +75,14 @@ export {
   getMasmBaseUrl,
   setEmbeddedMultisigMasm,
   setEmbeddedPsmMasm,
+  masmLoader,
+  MasmLoader,
+  StorageLayoutBuilder,
 } from './account/index.js';
-
-// =============================================================================
-// Types
-// =============================================================================
 
 export type {
   // Account types
   MultisigAccountState,
-  MultisigAccount as MultisigAccountType, // Deprecated alias
   MultisigConfig,
   CreateAccountResult,
 
@@ -107,6 +90,7 @@ export type {
   Proposal,
   ProposalStatus,
   ProposalSignatureEntry,
+  ProposalKind,
   ProposalMetadata,
   ProposalType,
   ExportedProposal,

@@ -16,10 +16,6 @@ import type { MultisigConfig, CreateAccountResult } from '../types.js';
 import { buildMultisigStorageSlots, buildPsmStorageSlots } from './storage.js';
 import { getMultisigMasm, getPsmMasm } from './masm.js';
 
-// =============================================================================
-// Account Creation
-// =============================================================================
-
 /**
  * Creates a multisig account with PSM authentication.
  *
