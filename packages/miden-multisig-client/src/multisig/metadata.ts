@@ -35,10 +35,7 @@ const inferKind = (raw: RawPsmMetadata): ProposalKind | undefined => {
 
 export function fromPsmMetadata(raw: RawPsmMetadata): ProposalMetadata | undefined {
   if (!raw) return undefined;
-  console.log('[fromPsmMetadata] raw input:', JSON.stringify(raw, null, 2));
   const kind = inferKind(raw);
-  const explicitType = raw.proposalType ?? raw.proposal_type;
-  console.log('[fromPsmMetadata] inferred kind:', kind, 'explicitType:', explicitType, 'raw.proposalType:', raw.proposalType, 'raw.proposal_type:', raw.proposal_type);
   if (!kind) return undefined;
 
   if (kind === 'p2id') {
@@ -87,7 +84,6 @@ export function toPsmMetadata(metadata?: ProposalMetadata): Record<string, unkno
     description: metadata.description,
     saltHex: metadata.saltHex,
   };
-  console.log('[toPsmMetadata] input kind:', metadata.kind, 'output proposalType:', base.proposalType);
 
   switch (metadata.kind) {
     case 'p2id':

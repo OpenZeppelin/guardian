@@ -83,43 +83,21 @@ export async function buildUpdateSignersTransactionRequest(
   // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  console.log('[buildUpdateSignersTransactionRequest] Building transaction...');
-  console.log('[buildUpdateSignersTransactionRequest] script:', !!script);
-  console.log('[buildUpdateSignersTransactionRequest] configHashForScript:', !!configHashForScript);
-  console.log('[buildUpdateSignersTransactionRequest] advice:', !!advice);
-  console.log('[buildUpdateSignersTransactionRequest] authSaltForBuilder:', !!authSaltForBuilder);
-  console.log('[buildUpdateSignersTransactionRequest] options.signatureAdviceMap:', !!options.signatureAdviceMap);
-
   let txBuilder = new TransactionRequestBuilder();
-  console.log('[buildUpdateSignersTransactionRequest] Created builder');
-
   txBuilder = txBuilder.withCustomScript(script);
-  console.log('[buildUpdateSignersTransactionRequest] Added script');
-
   txBuilder = txBuilder.withScriptArg(configHashForScript);
-  console.log('[buildUpdateSignersTransactionRequest] Added script arg');
-
   txBuilder = txBuilder.extendAdviceMap(advice);
-  console.log('[buildUpdateSignersTransactionRequest] Extended advice map (internal)');
-
   txBuilder = txBuilder.withAuthArg(authSaltForBuilder);
-  console.log('[buildUpdateSignersTransactionRequest] Added auth arg');
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
-    console.log('[buildUpdateSignersTransactionRequest] Extended advice map (signatures)');
   }
-
-  console.log('[buildUpdateSignersTransactionRequest] About to build...');
 
   // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  const request = txBuilder.build();
-  console.log('[buildUpdateSignersTransactionRequest] Build successful');
-
   return {
-    request,
+    request: txBuilder.build(),
     salt: authSaltForReturn,
     configHash: configHashForReturn,
   };

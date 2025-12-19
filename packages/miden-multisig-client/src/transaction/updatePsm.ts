@@ -53,40 +53,21 @@ export async function buildUpdatePsmTransactionRequest(
   // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  console.log('[buildUpdatePsmTransactionRequest] Building transaction...');
-  console.log('[buildUpdatePsmTransactionRequest] newPsmPubkey:', newPsmPubkey);
-  console.log('[buildUpdatePsmTransactionRequest] options.signatureAdviceMap:', !!options.signatureAdviceMap);
-
   let txBuilder = new TransactionRequestBuilder();
-  console.log('[buildUpdatePsmTransactionRequest] Created builder');
-
   txBuilder = txBuilder.withCustomScript(script);
-  console.log('[buildUpdatePsmTransactionRequest] Added script');
-
   txBuilder = txBuilder.withScriptArg(pubkeyWordForScript);
-  console.log('[buildUpdatePsmTransactionRequest] Added script arg');
-
   txBuilder = txBuilder.extendAdviceMap(advice);
-  console.log('[buildUpdatePsmTransactionRequest] Extended advice map (internal)');
-
   txBuilder = txBuilder.withAuthArg(authSaltForBuilder);
-  console.log('[buildUpdatePsmTransactionRequest] Added auth arg');
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
-    console.log('[buildUpdatePsmTransactionRequest] Extended advice map (signatures)');
   }
-
-  console.log('[buildUpdatePsmTransactionRequest] About to build...');
 
   // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  const request = txBuilder.build();
-  console.log('[buildUpdatePsmTransactionRequest] Build successful');
-
   return {
-    request,
+    request: txBuilder.build(),
     salt: authSaltForReturn,
   };
 }

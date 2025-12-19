@@ -185,10 +185,8 @@ export class Multisig {
    */
   async syncProposals(): Promise<Proposal[]> {
     const deltas = await this.psm.getDeltaProposals(this._accountId);
-    console.log('[syncProposals] Got', deltas.length, 'deltas from PSM');
 
     for (const delta of deltas) {
-      console.log('[syncProposals] delta.delta_payload.metadata:', JSON.stringify(delta.delta_payload.metadata, null, 2));
       // Compute proposal ID (commitment) client-side from tx_summary
       // This matches the Rust client behavior - we don't rely on server returning new_commitment
       const proposalId = computeCommitmentFromTxSummary(delta.delta_payload.tx_summary.data);
@@ -223,9 +221,7 @@ export class Multisig {
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
   async createProposal(nonce: number, txSummaryBase64: string, metadata?: ProposalMetadata): Promise<Proposal> {
-    // Include metadata in the PSM request so other signers can retrieve it
     const psmMetadata = metadata ? toPsmMetadata(metadata) : undefined;
-    console.log('[createProposal] Sending metadata to PSM:', JSON.stringify(psmMetadata, null, 2));
     const response = await this.psm.pushDeltaProposal({
       account_id: this._accountId,
       nonce,
@@ -235,10 +231,8 @@ export class Multisig {
         metadata: psmMetadata as any,
       },
     });
-    console.log('[createProposal] Response from PSM, metadata:', JSON.stringify(response.delta.delta_payload.metadata, null, 2));
 
     const proposal = this.deltaToProposal(response.delta, response.commitment);
-    // Attach metadata if provided
     if (metadata) {
       proposal.metadata = metadata;
     }
@@ -674,22 +668,15 @@ export class Multisig {
       throw new Error('Proposal missing metadata kind');
     }
 
-    console.log('[executeProposal] metadata.kind:', metadata.kind);
-    console.log('[executeProposal] adviceMap created:', !!adviceMap);
-    console.log('[executeProposal] saltHex:', saltHex);
-
     let finalRequest: TransactionRequest;
     switch (metadata.kind) {
       case 'consume_notes': {
         if (!metadata.noteIds || metadata.noteIds.length === 0) {
           throw new Error('Proposal missing noteIds. Was it created with createConsumeNotesProposal?');
         }
-        console.log('[executeProposal] Building consume_notes request with noteIds:', metadata.noteIds);
-        const saltForConsumeNotes = Word.fromHex(normalizeHexWord(saltHex));
-        console.log('[executeProposal] Created salt Word for consume_notes:', !!saltForConsumeNotes);
         const { request } = buildConsumeNotesTransactionRequest(
           metadata.noteIds,
-          { salt: saltForConsumeNotes, signatureAdviceMap: adviceMap },
+          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
         );
         finalRequest = request;
         break;

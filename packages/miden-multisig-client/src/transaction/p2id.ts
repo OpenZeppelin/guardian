@@ -91,35 +91,19 @@ export function buildP2idTransactionRequest(
   // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  console.log('[buildP2idTransactionRequest] Building transaction...');
-  console.log('[buildP2idTransactionRequest] senderId:', senderId);
-  console.log('[buildP2idTransactionRequest] recipientId:', recipientId);
-  console.log('[buildP2idTransactionRequest] options.signatureAdviceMap:', !!options.signatureAdviceMap);
-
   let txBuilder = new TransactionRequestBuilder();
-  console.log('[buildP2idTransactionRequest] Created builder');
-
   txBuilder = txBuilder.withOwnOutputNotes(outputNotes);
-  console.log('[buildP2idTransactionRequest] Added output notes');
-
   txBuilder = txBuilder.withAuthArg(authSaltForBuilder);
-  console.log('[buildP2idTransactionRequest] Added auth arg');
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
-    console.log('[buildP2idTransactionRequest] Extended advice map (signatures)');
   }
-
-  console.log('[buildP2idTransactionRequest] About to build...');
 
   // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  const request = txBuilder.build();
-  console.log('[buildP2idTransactionRequest] Build successful');
-
   return {
-    request,
+    request: txBuilder.build(),
     salt: authSaltForReturn,
   };
 }
