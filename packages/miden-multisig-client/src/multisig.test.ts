@@ -628,4 +628,361 @@ describe('Multisig', () => {
       ).rejects.toThrow('not ready for execution');
     });
   });
+
+  describe('proposal metadata preservation', () => {
+    it('should preserve local metadata when syncing proposals', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      // Create a proposal with metadata
+      const mockDelta: DeltaObject = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: { proposalType: 'add_signer' },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        kind: 'add_signer',
+        targetThreshold: 2,
+        targetSignerCommitments: ['0x1', '0x2'],
+      });
+
+      expect(proposal.metadata?.kind).toBe('add_signer');
+
+      // Now sync - should preserve local metadata
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [mockDelta],
+        }),
+      });
+
+      const syncedProposals = await multisig.syncProposals();
+      const syncedProposal = syncedProposals.find(p => p.nonce === 1);
+
+      expect(syncedProposal?.metadata?.kind).toBe('add_signer');
+    });
+
+    it('should use PSM metadata for new proposals from other signers', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      // Sync proposals - no local proposals exist
+      const mockProposals: DeltaObject[] = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposalType: 'p2id',
+              recipientId: '0xrecipient',
+              faucetId: '0xfaucet',
+              amount: '100',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'other'.repeat(12),
+            cosigner_sigs: [],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: mockProposals }),
+      });
+
+      const proposals = await multisig.syncProposals();
+
+      expect(proposals.length).toBe(1);
+      expect(proposals[0].metadata?.kind).toBe('p2id');
+    });
+  });
+
+  describe('createProposal with different metadata types', () => {
+    it('should create consume_notes proposal', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      const mockDelta: DeltaObject = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        kind: 'consume_notes',
+        noteIds: ['0xnote1', '0xnote2'],
+      });
+
+      expect(proposal.metadata?.kind).toBe('consume_notes');
+    });
+
+    it('should create p2id proposal', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      const mockDelta: DeltaObject = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        kind: 'p2id',
+        recipientId: '0xrecipient',
+        faucetId: '0xfaucet',
+        amount: '100',
+      });
+
+      expect(proposal.metadata?.kind).toBe('p2id');
+    });
+
+    it('should create switch_psm proposal', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      const mockDelta: DeltaObject = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        kind: 'switch_psm',
+        newPsmPubkey: '0xnewpubkey',
+        newPsmEndpoint: 'http://new-psm.com',
+      });
+
+      expect(proposal.metadata?.kind).toBe('switch_psm');
+    });
+  });
+
+  describe('proposal status transitions', () => {
+    it('should transition from pending to ready when threshold met', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      // First sync with 1 signature (pending)
+      const mockProposalsPending: DeltaObject[] = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'sig'.repeat(40) },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+            ],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: mockProposalsPending }),
+      });
+
+      let proposals = await multisig.syncProposals();
+      expect(proposals[0].status.type).toBe('pending');
+
+      // Second sync with 2 signatures (ready)
+      const mockProposalsReady: DeltaObject[] = [
+        {
+          ...mockProposalsPending[0],
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'sig'.repeat(40) },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+              {
+                signer_id: '0x' + 'b'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'sig2'.repeat(40) },
+                timestamp: '2024-01-01T01:00:00Z',
+              },
+            ],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: mockProposalsReady }),
+      });
+
+      proposals = await multisig.syncProposals();
+      expect(proposals[0].status.type).toBe('ready');
+    });
+  });
+
+  describe('getters', () => {
+    it('should expose threshold', () => {
+      const config = {
+        threshold: 3,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'c'.repeat(64)],
+        psmCommitment: '0x' + 'd'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      expect(multisig.threshold).toBe(3);
+    });
+
+    it('should expose signerCommitments', () => {
+      const signerCommitments = ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)];
+      const config = {
+        threshold: 2,
+        signerCommitments,
+        psmCommitment: '0x' + 'd'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      expect(multisig.signerCommitments).toEqual(signerCommitments);
+    });
+
+    it('should expose psmCommitment', () => {
+      const psmCommitment = '0x' + 'psm'.repeat(20);
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment,
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      expect(multisig.psmCommitment).toBe(psmCommitment);
+    });
+
+    it('should expose account when provided', () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'd'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      expect(multisig.account).toBe(mockAccount);
+    });
+  });
 });
