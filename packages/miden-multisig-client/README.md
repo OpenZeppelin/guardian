@@ -1,6 +1,18 @@
 # @openzeppelin/miden-multisig-client
 
-TypeScript SDK for Miden multisig accounts with Private State Manager (PSM) integration.
+TypeScript SDK for private multisignature workflows on Miden. This package wraps the on-chain multisig contracts plus Private State Manager (PSM) coordination so you can:
+
+- Create multisig accounts, register them with a PSM, and keep state off-chain
+- Propose, sign, and execute transactions with threshold enforcement
+- Export/import proposals as files for sharing using side channels
+
+## How Private Multisigs & PSM Work
+
+Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. PSM acts as a coordination server:
+
+1. A proposer pushes a delta (transaction plan) to Private State Manager (PSM). PSM tracks who signed and emits an ack signature once the threshold is met.
+2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to PSM.
+3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the PSM ack, executes it on-chain.
 
 ## Installation
 
