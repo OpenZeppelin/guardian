@@ -36,9 +36,9 @@ export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' |
 
 export interface ProposalMetadata {
   proposalType?: ProposalType;
-  targetThreshold: number;
-  targetSignerCommitments: string[];
-  saltHex: string;
+  targetThreshold?: number;
+  targetSignerCommitments?: string[];
+  saltHex?: string;
   description?: string;
   newPsmPubkey?: string;
   newPsmEndpoint?: string;
