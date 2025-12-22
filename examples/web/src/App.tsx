@@ -12,7 +12,7 @@ import {
   type Proposal,
 } from '@openzeppelin/miden-multisig-client';
 
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { WebClient } from '@demox-labs/miden-sdk';
 
 import {
   Header,
@@ -24,28 +24,11 @@ import {
 } from '@/components';
 
 import { normalizeCommitment } from '@/lib/helpers';
+import { formatError } from '@/lib/errors';
+import { clearMidenDatabase, createWebClient, initializeSigner as initSigner } from '@/lib/initClient';
+import { syncAll } from '@/lib/multisigApi';
+import { PSM_ENDPOINT } from '@/config';
 import type { SignerInfo } from '@/types';
-
-const DEFAULT_PSM_URL = 'http://localhost:3000';
-const MIDEN_DB_NAME = 'MidenClientDB';
-
-async function clearMidenDatabase(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.deleteDatabase(MIDEN_DB_NAME);
-    request.onsuccess = () => {
-      console.log('[IndexedDB] Cleared MidenClientDB');
-      resolve();
-    };
-    request.onerror = () => {
-      console.error('[IndexedDB] Failed to clear MidenClientDB:', request.error);
-      reject(request.error);
-    };
-    request.onblocked = () => {
-      console.warn('[IndexedDB] Database deletion blocked - other connections open');
-      resolve(); // Continue anyway
-    };
-  });
-}
 
 export default function App() {
   // Core state
@@ -57,7 +40,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // PSM state
-  const [psmUrl, setPsmUrl] = useState(DEFAULT_PSM_URL);
+  const [psmUrl, setPsmUrl] = useState(PSM_ENDPOINT);
   const [psmStatus, setPsmStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
   const [psmPubkey, setPsmPubkey] = useState('');
   const [psmState, setPsmState] = useState<AccountState | null>(null);
@@ -108,8 +91,8 @@ export default function App() {
         setPsmStatus('connected');
         return { pubkey, msClient };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Unknown error';
-        console.error('Failed to connect to PSM:', err);
+        const msg = formatError(err);
+        console.error('Failed to connect to PSM:', msg);
         setPsmStatus('error');
         setPsmPubkey('');
         setError(`Failed to connect to PSM: ${msg}`);
@@ -119,35 +102,6 @@ export default function App() {
     [webClient]
   );
 
-  // Generate a fresh signer
-  const initializeSigner = useCallback(async (client: WebClient): Promise<SignerInfo | null> => {
-    setGeneratingSigner(true);
-    try {
-      // Always generate a fresh key (no localStorage persistence)
-      console.log('[Signer] Generating new key...');
-      const secretKey = SecretKey.rpoFalconWithRNG(undefined);
-
-      // Add to WebClient's keystore (ignore "already exists" errors on reload)
-      try {
-        await client.addAccountSecretKeyToWebStore(secretKey);
-      } catch (storeErr) {
-        // Key already exists in IndexedDB - this is expected on page reload
-        console.log('[Signer] Key already in web store (expected on reload)');
-      }
-      const publicKey = secretKey.publicKey();
-      const commitment = publicKey.toCommitment().toHex();
-      console.log('[Signer] Initialized with commitment:', commitment);
-      const signerInfo = { commitment, secretKey };
-      setSigner(signerInfo);
-      return signerInfo;
-    } catch (err) {
-      setError(`Failed to initialize signer: ${err instanceof Error ? err.message : 'Unknown'}`);
-      return null;
-    } finally {
-      setGeneratingSigner(false);
-    }
-  }, []);
-
   // Initialize on mount
   useEffect(() => {
     const init = async () => {
@@ -155,17 +109,18 @@ export default function App() {
         // Clear IndexedDB to start fresh on each page load
         await clearMidenDatabase();
 
-        const client = await WebClient.createClient('https://rpc.testnet.miden.io:443');
-        await client.syncState();
+        const client = await createWebClient();
         setWebClient(client);
 
-        // Connect to PSM and get pubkey + msClient
         await connectToPsm(psmUrl, client);
 
-        // Initialize signer (load from localStorage or generate new)
-        await initializeSigner(client);
+        setGeneratingSigner(true);
+        const signerInfo = await initSigner(client);
+        setSigner(signerInfo);
       } catch (err) {
-        setError(`Initialization failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+        setError(formatError(err, 'Initialization failed'));
+      } finally {
+        setGeneratingSigner(false);
       }
     };
     init();
@@ -202,7 +157,7 @@ export default function App() {
 
       setCreateDialogOpen(false);
     } catch (err) {
-      setError(`Failed to create: ${err instanceof Error ? err.message : 'Unknown'}`);
+      setError(formatError(err, 'Failed to create'));
     } finally {
       setCreating(false);
     }
@@ -277,7 +232,6 @@ export default function App() {
         await webClient.syncState();
       }
 
-      // Sync PSM state
       const state = await multisig.fetchState();
       setPsmState(state);
 
@@ -295,20 +249,12 @@ export default function App() {
       const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
       setMultisig(reloadedMs);
 
-      // Sync proposals
-      const synced = await reloadedMs.syncProposals();
+      const { proposals: synced, state: refreshedState, notes } = await syncAll(reloadedMs, webClient);
+      setPsmState(refreshedState ?? state);
       setProposals(synced);
-
-      // Fetch consumable notes
-      try {
-        const notes = await reloadedMs.getConsumableNotes(webClient);
-        setConsumableNotes(notes);
-      } catch (noteErr) {
-        console.warn('Failed to fetch consumable notes:', noteErr);
-        // Don't fail the whole sync if notes fetch fails
-      }
+      setConsumableNotes(notes);
     } catch (err) {
-      setError(`Sync failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+      setError(formatError(err, 'Sync failed'));
     } finally {
       setSyncingState(false);
     }
