@@ -9,6 +9,7 @@ import { type WebClient, Account } from '@demox-labs/miden-sdk';
 import { PsmHttpClient } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
+import { AccountInspector } from './inspector.js';
 import type { MultisigConfig, Signer } from './types.js';
 
 /**
@@ -81,12 +82,14 @@ export class MultisigClient {
   /**
    * Load an existing multisig account from PSM.
    *
+   * The account configuration (threshold, signers, PSM commitment) is automatically
+   * detected from the account's on-chain storage.
+   *
    * @param accountId - The account ID to load
-   * @param config - Multisig configuration (must match the account)
    * @param signer - The signer for this client
    * @returns A Multisig instance for the loaded account
    */
-  async load(accountId: string, config: MultisigConfig, signer: Signer): Promise<Multisig> {
+  async load(accountId: string, signer: Signer): Promise<Multisig> {
     // Set the signer on PSM client for authentication
     this._psmClient.setSigner(signer);
 
@@ -106,6 +109,15 @@ export class MultisigClient {
       accountBytes[i] = binaryString.charCodeAt(i);
     }
     const account = Account.deserialize(accountBytes);
+
+    // Detect config from account storage
+    const detected = AccountInspector.fromAccount(account);
+    const config: MultisigConfig = {
+      threshold: detected.threshold,
+      signerCommitments: detected.signerCommitments,
+      psmCommitment: detected.psmCommitment ?? '',
+      psmEnabled: detected.psmEnabled,
+    };
 
     // Add to Miden SDK's local store (required for transaction execution)
     await this.webClient.newAccount(account, true);

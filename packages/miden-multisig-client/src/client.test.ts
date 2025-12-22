@@ -20,6 +20,20 @@ vi.mock('@demox-labs/miden-sdk', () => ({
   },
 }));
 
+// Mock the AccountInspector
+vi.mock('./inspector.js', () => ({
+  AccountInspector: {
+    fromAccount: vi.fn(() => ({
+      threshold: 2,
+      numSigners: 2,
+      signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+      psmEnabled: true,
+      psmCommitment: '0x' + 'c'.repeat(64),
+      vaultBalances: [],
+    })),
+  },
+}));
+
 // Mock the account creation module
 vi.mock('./account/index.js', () => ({
   createMultisigAccount: vi.fn().mockResolvedValue({
@@ -116,7 +130,7 @@ describe('MultisigClient', () => {
   });
 
   describe('load', () => {
-    it('should load existing multisig account', async () => {
+    it('should load existing multisig account and detect config', async () => {
       const client = new MultisigClient(webClient);
 
       // Mock getState response
@@ -131,18 +145,15 @@ describe('MultisigClient', () => {
         }),
       });
 
-      const config = {
-        threshold: 2,
-        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
-      };
-
       const accountId = '0x' + 'd'.repeat(30);
-      const multisig = await client.load(accountId, config, mockSigner);
+      const multisig = await client.load(accountId, mockSigner);
 
       expect(multisig).toBeDefined();
       expect(multisig.accountId).toBe(accountId);
+      // Config is detected from account storage via AccountInspector
       expect(multisig.threshold).toBe(2);
+      expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)]);
+      expect(multisig.psmCommitment).toBe('0x' + 'c'.repeat(64));
       expect(multisig.account).toBeNull(); // Loaded accounts don't have the SDK Account
     });
 
@@ -156,14 +167,8 @@ describe('MultisigClient', () => {
         text: async () => 'Account not found',
       });
 
-      const config = {
-        threshold: 1,
-        signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
-      };
-
       await expect(
-        client.load('0xnonexistent', config, mockSigner)
+        client.load('0xnonexistent', mockSigner)
       ).rejects.toThrow();
     });
   });
