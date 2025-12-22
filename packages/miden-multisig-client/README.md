@@ -63,8 +63,10 @@ await multisig.registerOnPsm();
 
 ### Load an Existing Multisig
 
+The configuration is automatically detected from the account's on-chain storage:
+
 ```typescript
-const multisig = await client.load(accountId, config, signer);
+const multisig = await client.load(accountId, signer);
 ```
 
 ### Fetch Account State
@@ -79,10 +81,11 @@ console.log('Created:', state.createdAt);
 
 ```typescript
 // Create a proposal to add a new signer
+const nonce = Math.floor(Math.random() * 1_000_000_000);
 const proposal = await multisig.createAddSignerProposal(
   webClient,
   newSignerCommitment, // Commitment of signer to add
-  Date.now(),          // Optional nonce
+  nonce,               // Optional nonce (random value)
   3,                   // Optional new threshold
 );
 console.log('Proposal ID:', proposal.id);
@@ -97,6 +100,8 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
+Fetches proposals from the PSM server and updates local state:
+
 ```typescript
 const proposals = await multisig.syncProposals();
 for (const p of proposals) {
@@ -105,6 +110,8 @@ for (const p of proposals) {
 ```
 
 ### Check Proposal Status
+
+Returns cached proposals without making a network request:
 
 ```typescript
 const proposals = multisig.listProposals();
@@ -168,58 +175,3 @@ const sigBytes = signatureHexToBytes(signatureHex);
 npm test           # Run tests once
 npm run test:watch # Run tests in watch mode
 ```
-
-## API Reference
-
-### MultisigClient
-
-| Method | Description |
-|--------|-------------|
-| `psmClient` | Access the underlying PSM HTTP client |
-| `create(config, signer)` | Create a new multisig account |
-| `load(accountId, config, signer)` | Load an existing multisig |
-
-### Multisig
-
-| Property | Description |
-|----------|-------------|
-| `accountId` | The account ID (hex string) |
-| `threshold` | Number of signatures required |
-| `signerCommitments` | All signer public key commitments |
-| `psmCommitment` | PSM server's public key commitment |
-| `signerCommitment` | Current signer's commitment |
-
-| Method | Description |
-|--------|-------------|
-| `fetchState()` | Get account state from PSM |
-| `registerOnPsm(initialState?)` | Register account on PSM |
-| `syncProposals()` | Sync proposals from PSM |
-| `listProposals()` | List cached proposals |
-| `createProposal(nonce, txSummary, metadata?)` | Create a proposal |
-| `createAddSignerProposal(webClient, commitment, nonce?, threshold?)` | Create add-signer proposal |
-| `signProposal(proposalId)` | Sign a proposal |
-| `executeProposal(proposalId, webClient)` | Execute a ready proposal |
-| `exportProposal(proposalId)` | Export for offline signing |
-
-### FalconSigner
-
-```typescript
-const signer = new FalconSigner(secretKey);
-console.log(signer.commitment); // Public key commitment
-console.log(signer.publicKey);  // Full public key hex
-```
-
-## Types
-
-Key types exported:
-
-- `MultisigConfig` - Configuration for creating multisig
-- `Proposal` - Proposal data with status and signatures
-- `ProposalStatus` - Status union (pending/ready/finalized)
-- `ProposalMetadata` - Metadata for execution (target config, salt)
-- `ExportedProposal` - Proposal data for offline signing
-- `Signer` - Re-exported from psm-client
-
-## License
-
-MIT
