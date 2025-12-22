@@ -76,35 +76,95 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_threshold_zero() {
+    fn psm_config_new_creates_with_endpoint() {
+        let config = PsmConfig::new("http://localhost:50051");
+        assert_eq!(config.endpoint, "http://localhost:50051");
+    }
+
+    #[test]
+    fn psm_config_new_accepts_string() {
+        let endpoint = String::from("http://localhost:50051");
+        let config = PsmConfig::new(endpoint);
+        assert_eq!(config.endpoint, "http://localhost:50051");
+    }
+
+    #[test]
+    fn multisig_config_new_sets_all_fields() {
+        let signers = vec![dummy_word(), dummy_word()];
+        let psm = PsmConfig::new("http://psm:50051");
+        let config = MultisigConfig::new(2, signers.clone(), psm);
+
+        assert_eq!(config.threshold, 2);
+        assert_eq!(config.signer_commitments.len(), 2);
+        assert_eq!(config.psm_config.endpoint, "http://psm:50051");
+    }
+
+    #[test]
+    fn validate_threshold_zero_returns_error() {
         let config = MultisigConfig::new(0, vec![dummy_word()], PsmConfig::new("http://psm:50051"));
-        assert!(config.validate().is_err());
-        assert!(config.validate().unwrap_err().contains("threshold"));
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("threshold"));
+        assert!(err.contains("greater than 0"));
     }
 
     #[test]
-    fn test_validate_empty_commitments() {
+    fn validate_empty_commitments_returns_error() {
         let config = MultisigConfig::new(1, vec![], PsmConfig::new("http://psm:50051"));
-        assert!(config.validate().is_err());
-        assert!(config.validate().unwrap_err().contains("signer"));
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("signer"));
     }
 
     #[test]
-    fn test_validate_threshold_exceeds_signers() {
+    fn validate_threshold_exceeds_signers_returns_error() {
         let config = MultisigConfig::new(
             3,
             vec![dummy_word(), dummy_word()],
             PsmConfig::new("http://psm:50051"),
         );
-        assert!(config.validate().is_err());
-        assert!(config.validate().unwrap_err().contains("exceed"));
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("exceed"));
+        assert!(err.contains("3"));
+        assert!(err.contains("2"));
     }
 
     #[test]
-    fn test_validate_valid_config() {
+    fn validate_empty_psm_endpoint_returns_error() {
+        let config = MultisigConfig::new(1, vec![dummy_word()], PsmConfig::new(""));
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("PSM endpoint"));
+    }
+
+    #[test]
+    fn validate_valid_1_of_1_config() {
+        let config = MultisigConfig::new(1, vec![dummy_word()], PsmConfig::new("http://psm:50051"));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_valid_2_of_3_config() {
         let config = MultisigConfig::new(
             2,
             vec![dummy_word(), dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_valid_3_of_3_config() {
+        let config = MultisigConfig::new(
+            3,
+            vec![dummy_word(), dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_threshold_equals_signers_is_valid() {
+        let config = MultisigConfig::new(
+            2,
+            vec![dummy_word(), dummy_word()],
             PsmConfig::new("http://psm:50051"),
         );
         assert!(config.validate().is_ok());

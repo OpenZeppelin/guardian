@@ -167,7 +167,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_proposal_payload_serialization() {
+    fn proposal_payload_serialization_includes_all_fields() {
         let payload = ProposalPayload {
             tx_summary: serde_json::json!({"data": "test"}),
             signatures: vec![DeltaSignature {
@@ -192,5 +192,131 @@ mod tests {
 
         let metadata = json.get("metadata").unwrap();
         assert_eq!(metadata.get("new_threshold").unwrap().as_u64(), Some(2));
+    }
+
+    #[test]
+    fn with_signer_metadata_sets_fields() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_signer_metadata(
+            3,
+            vec!["0xabc".to_string(), "0xdef".to_string()],
+            "0xsalt".to_string(),
+        );
+
+        let meta = payload.metadata.unwrap();
+        assert_eq!(meta.new_threshold, Some(3));
+        assert_eq!(meta.signer_commitments_hex.len(), 2);
+        assert_eq!(meta.salt_hex, Some("0xsalt".to_string()));
+    }
+
+    #[test]
+    fn with_payment_metadata_sets_fields() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+        );
+
+        let meta = payload.metadata.unwrap();
+        assert_eq!(meta.recipient_hex, Some("0xrecipient".to_string()));
+        assert_eq!(meta.faucet_id_hex, Some("0xfaucet".to_string()));
+        assert_eq!(meta.amount, Some(1000));
+        assert_eq!(meta.salt_hex, Some("0xsalt".to_string()));
+    }
+
+    #[test]
+    fn with_note_consumption_metadata_sets_fields() {
+        let note_ids = vec!["0xnote1".to_string(), "0xnote2".to_string()];
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_note_consumption_metadata(&note_ids, "0xsalt".to_string());
+
+        let meta = payload.metadata.unwrap();
+        assert_eq!(meta.note_ids_hex.len(), 2);
+        assert_eq!(meta.note_ids_hex[0], "0xnote1");
+        assert_eq!(meta.salt_hex, Some("0xsalt".to_string()));
+    }
+
+    #[test]
+    fn with_psm_update_metadata_sets_fields() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_psm_update_metadata(
+            "0xpubkey".to_string(),
+            "http://new-psm:50051".to_string(),
+            "0xsalt".to_string(),
+        );
+
+        let meta = payload.metadata.unwrap();
+        assert_eq!(meta.new_psm_pubkey_hex, Some("0xpubkey".to_string()));
+        assert_eq!(
+            meta.new_psm_endpoint,
+            Some("http://new-psm:50051".to_string())
+        );
+        assert_eq!(meta.salt_hex, Some("0xsalt".to_string()));
+    }
+
+    #[test]
+    fn to_json_omits_empty_signatures() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        };
+
+        let json = payload.to_json();
+        assert!(json.get("signatures").is_none());
+    }
+
+    #[test]
+    fn to_json_omits_none_metadata() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        };
+
+        let json = payload.to_json();
+        assert!(json.get("metadata").is_none());
+    }
+
+    #[test]
+    fn metadata_serialization_omits_empty_fields() {
+        let meta = ProposalMetadataPayload {
+            new_threshold: Some(2),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(json.get("new_threshold").is_some());
+        assert!(json.get("salt_hex").is_none());
+        assert!(json.get("recipient_hex").is_none());
+        assert!(json.get("signer_commitments_hex").is_none());
+    }
+
+    #[test]
+    fn metadata_deserialization_handles_missing_fields() {
+        let json = r#"{"new_threshold": 2}"#;
+        let meta: ProposalMetadataPayload = serde_json::from_str(json).unwrap();
+
+        assert_eq!(meta.new_threshold, Some(2));
+        assert!(meta.signer_commitments_hex.is_empty());
+        assert!(meta.salt_hex.is_none());
     }
 }

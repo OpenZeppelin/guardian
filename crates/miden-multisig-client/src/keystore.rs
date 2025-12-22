@@ -172,14 +172,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_keystore() {
+    fn generate_creates_valid_keystore() {
         let keystore = PsmKeyStore::generate();
         assert!(keystore.commitment_hex().starts_with("0x"));
-        assert_eq!(keystore.commitment_hex().len(), 66); // 0x + 64 hex chars
+        assert_eq!(keystore.commitment_hex().len(), 66);
     }
 
     #[test]
-    fn test_commitment_roundtrip() {
+    fn new_from_secret_key_derives_correct_commitment() {
+        let secret_key = SecretKey::new();
+        let expected_commitment = secret_key.public_key().to_commitment();
+        let keystore = PsmKeyStore::new(secret_key);
+        assert_eq!(keystore.commitment(), expected_commitment);
+    }
+
+    #[test]
+    fn commitment_hex_is_consistent() {
+        let keystore = PsmKeyStore::generate();
+        let hex1 = keystore.commitment_hex();
+        let hex2 = keystore.commitment_hex();
+        assert_eq!(hex1, hex2);
+    }
+
+    #[test]
+    fn commitment_roundtrip_via_hex() {
         let keystore = PsmKeyStore::generate();
         let hex = keystore.commitment_hex();
         let parsed = commitment_from_hex(&hex).unwrap();
@@ -187,50 +203,152 @@ mod tests {
     }
 
     #[test]
-    fn test_sign_and_verify() {
+    fn sign_produces_verifiable_signature() {
         let keystore = PsmKeyStore::generate();
         let message = Word::default();
         let signature = keystore.sign(message);
-
-        // Verify signature is valid
         let result = keystore.public_key().verify(message, &signature);
         assert!(result);
     }
 
     #[test]
-    fn test_strip_hex_prefix() {
+    fn sign_hex_returns_hex_encoded_signature() {
+        let keystore = PsmKeyStore::generate();
+        let message = Word::default();
+        let sig_hex = keystore.sign_hex(message);
+        assert!(sig_hex.starts_with("0x"));
+        assert!(hex::decode(sig_hex.strip_prefix("0x").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn clone_secret_key_produces_equivalent_key() {
+        let keystore = PsmKeyStore::generate();
+        let cloned = keystore.clone_secret_key();
+        let message = Word::default();
+        let sig1 = keystore.sign(message);
+        let sig2 = cloned.sign(message);
+        assert!(keystore.public_key().verify(message, &sig1));
+        assert!(keystore.public_key().verify(message, &sig2));
+    }
+
+    #[test]
+    fn secret_key_accessor_returns_key() {
+        let keystore = PsmKeyStore::generate();
+        let key = keystore.secret_key();
+        assert!(key.public_key().to_commitment() == keystore.commitment());
+    }
+
+    #[test]
+    fn public_key_accessor_returns_key() {
+        let keystore = PsmKeyStore::generate();
+        let pubkey = keystore.public_key();
+        assert_eq!(pubkey.to_commitment(), keystore.commitment());
+    }
+
+    #[test]
+    fn strip_hex_prefix_with_prefix() {
         assert_eq!(strip_hex_prefix("0xabcd"), "abcd");
+    }
+
+    #[test]
+    fn strip_hex_prefix_without_prefix() {
         assert_eq!(strip_hex_prefix("abcd"), "abcd");
+    }
+
+    #[test]
+    fn strip_hex_prefix_empty_after_prefix() {
         assert_eq!(strip_hex_prefix("0x"), "");
+    }
+
+    #[test]
+    fn strip_hex_prefix_empty_string() {
         assert_eq!(strip_hex_prefix(""), "");
     }
 
     #[test]
-    fn test_ensure_hex_prefix() {
+    fn ensure_hex_prefix_adds_prefix() {
         assert_eq!(ensure_hex_prefix("abcd"), "0xabcd");
+    }
+
+    #[test]
+    fn ensure_hex_prefix_preserves_existing() {
         assert_eq!(ensure_hex_prefix("0xabcd"), "0xabcd");
+    }
+
+    #[test]
+    fn ensure_hex_prefix_empty_string() {
         assert_eq!(ensure_hex_prefix(""), "0x");
     }
 
     #[test]
-    fn test_validate_commitment_hex() {
-        // Valid: 64 hex chars without prefix
-        let valid_no_prefix = "a".repeat(64);
-        assert!(validate_commitment_hex(&valid_no_prefix).is_ok());
+    fn validate_commitment_hex_valid_without_prefix() {
+        let valid = "a".repeat(64);
+        assert!(validate_commitment_hex(&valid).is_ok());
+    }
 
-        // Valid: 64 hex chars with prefix
-        let valid_with_prefix = format!("0x{}", "b".repeat(64));
-        assert!(validate_commitment_hex(&valid_with_prefix).is_ok());
+    #[test]
+    fn validate_commitment_hex_valid_with_prefix() {
+        let valid = format!("0x{}", "b".repeat(64));
+        assert!(validate_commitment_hex(&valid).is_ok());
+    }
 
-        // Invalid: too short
-        assert!(validate_commitment_hex("abcd").is_err());
+    #[test]
+    fn validate_commitment_hex_too_short() {
+        let err = validate_commitment_hex("abcd").unwrap_err();
+        assert!(err.contains("expected 64"));
+    }
 
-        // Invalid: too long
+    #[test]
+    fn validate_commitment_hex_too_long() {
         let too_long = "c".repeat(65);
-        assert!(validate_commitment_hex(&too_long).is_err());
+        let err = validate_commitment_hex(&too_long).unwrap_err();
+        assert!(err.contains("expected 64"));
+    }
 
-        // Invalid: not hex
+    #[test]
+    fn validate_commitment_hex_invalid_chars() {
         let not_hex = "g".repeat(64);
-        assert!(validate_commitment_hex(&not_hex).is_err());
+        let err = validate_commitment_hex(&not_hex).unwrap_err();
+        assert!(err.contains("invalid hex"));
+    }
+
+    #[test]
+    fn commitment_from_hex_valid_with_prefix() {
+        let hex = format!("0x{}", "a".repeat(64));
+        let result = commitment_from_hex(&hex);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn commitment_from_hex_valid_without_prefix() {
+        let hex = "b".repeat(64);
+        let result = commitment_from_hex(&hex);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn commitment_from_hex_invalid_length() {
+        let hex = "abcd";
+        let err = commitment_from_hex(hex).unwrap_err();
+        assert!(err.contains("expected 32 bytes"));
+    }
+
+    #[test]
+    fn commitment_from_hex_invalid_chars() {
+        let hex = "g".repeat(64);
+        let err = commitment_from_hex(&hex).unwrap_err();
+        assert!(err.contains("invalid hex"));
+    }
+
+    #[test]
+    fn commitment_from_hex_roundtrip() {
+        let original = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+        let word = commitment_from_hex(original).unwrap();
+        let bytes: Vec<u8> = word
+            .iter()
+            .flat_map(|f| f.as_int().to_le_bytes())
+            .collect();
+        let result = hex::encode(bytes);
+        assert_eq!(original, result);
     }
 }
