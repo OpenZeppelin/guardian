@@ -421,7 +421,12 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createProposal(1, 'AQID');
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
 
       expect(proposal.nonce).toBe(1);
       expect(proposal.id).toBe('0x' + 'd'.repeat(64));
@@ -463,7 +468,12 @@ describe('Multisig', () => {
         }),
       });
 
-      await multisig.createProposal(1, 'AQID');
+      await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
 
       // Now sign it
       const signedDelta: DeltaObject = {
@@ -669,6 +679,7 @@ describe('Multisig', () => {
         proposalType: 'add_signer',
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
+        description: '',
       });
 
       expect(proposal.metadata?.proposalType).toBe('add_signer');
@@ -770,6 +781,7 @@ describe('Multisig', () => {
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'consume_notes',
         noteIds: ['0xnote1', '0xnote2'],
+        description: '',
       });
 
       expect(proposal.metadata?.proposalType).toBe('consume_notes');
@@ -813,6 +825,7 @@ describe('Multisig', () => {
         recipientId: '0xrecipient',
         faucetId: '0xfaucet',
         amount: '100',
+        description: '',
       });
 
       expect(proposal.metadata?.proposalType).toBe('p2id');
@@ -855,6 +868,7 @@ describe('Multisig', () => {
         proposalType: 'switch_psm',
         newPsmPubkey: '0xnewpubkey',
         newPsmEndpoint: 'http://new-psm.com',
+        description: '',
       });
 
       expect(proposal.metadata?.proposalType).toBe('switch_psm');

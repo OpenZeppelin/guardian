@@ -68,6 +68,11 @@ export function ProposalCard({
   onExport,
   onSignOffline,
 }: ProposalCardProps) {
+  // metadata is required by type, but guard in case of malformed data
+  if (!proposal.metadata) {
+    return null;
+  }
+
   const userSigned = signer
     ? proposal.signatures.some(
         (sig) => sig.signerId.toLowerCase() === signer.commitment.toLowerCase()
@@ -88,8 +93,9 @@ export function ProposalCard({
         ? 'secondary'
         : 'outline';
 
-  const proposalType = proposal.metadata?.proposalType;
-  const description = proposal.metadata?.description;
+  const meta = proposal.metadata as any;
+  const proposalType = meta.proposalType as ProposalType;
+  const description = meta.description as string;
 
   return (
     <Card>

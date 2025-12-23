@@ -9,7 +9,7 @@ export interface ProposalView {
 }
 
 export function toProposalView(proposal: Proposal): ProposalView {
-  const meta = proposal.metadata as { proposalType?: string; description?: string } | undefined;
+  const meta = proposal.metadata as { proposalType: string; description?: string } | undefined;
   return {
     id: proposal.id,
     proposalType: meta?.proposalType,

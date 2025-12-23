@@ -17,14 +17,7 @@ type RawPsmMetadata =
     }
   | undefined;
 
-const VALID_TYPES: ProposalType[] = [
-  'add_signer',
-  'remove_signer',
-  'change_threshold',
-  'switch_psm',
-  'consume_notes',
-  'p2id',
-];
+const VALID_TYPES: ProposalType[] = ['add_signer', 'remove_signer', 'change_threshold', 'switch_psm', 'consume_notes', 'p2id'];
 
 const inferProposalType = (raw: RawPsmMetadata): ProposalType | undefined => {
   if (!raw) return undefined;
@@ -47,7 +40,7 @@ export function fromPsmMetadata(raw: RawPsmMetadata): ProposalMetadata | undefin
   if (proposalType === 'p2id') {
     return {
       proposalType,
-      description: raw.description,
+      description: raw.description ?? '',
       saltHex: raw.saltHex,
       recipientId: raw.recipientId ?? '',
       faucetId: raw.faucetId ?? '',
@@ -58,7 +51,7 @@ export function fromPsmMetadata(raw: RawPsmMetadata): ProposalMetadata | undefin
   if (proposalType === 'consume_notes') {
     return {
       proposalType,
-      description: raw.description,
+      description: raw.description ?? '',
       saltHex: raw.saltHex,
       noteIds: raw.noteIds ?? [],
     };
@@ -66,28 +59,32 @@ export function fromPsmMetadata(raw: RawPsmMetadata): ProposalMetadata | undefin
 
   if (proposalType === 'switch_psm') {
     return {
-      proposalType,
-      description: raw.description,
+      proposalType: proposalType as 'switch_psm',
+      description: raw.description ?? '',
       saltHex: raw.saltHex,
       newPsmPubkey: raw.newPsmPubkey ?? '',
       newPsmEndpoint: raw.newPsmEndpoint,
     };
   }
 
-  return {
-    proposalType,
-    description: raw.description,
-    saltHex: raw.saltHex,
-    targetThreshold: raw.targetThreshold ?? 0,
-    targetSignerCommitments: raw.targetSignerCommitments ?? [],
-  };
+  if (proposalType === 'add_signer' || proposalType === 'remove_signer' || proposalType === 'change_threshold') {
+    return {
+      proposalType,
+      description: raw.description ?? '',
+      saltHex: raw.saltHex,
+      targetThreshold: raw.targetThreshold ?? 0,
+      targetSignerCommitments: raw.targetSignerCommitments ?? [],
+    };
+  }
+
+  return undefined;
 }
 
 export function toPsmMetadata(metadata?: ProposalMetadata): Record<string, unknown> | undefined {
   if (!metadata) return undefined;
   const base = {
     proposalType: metadata.proposalType,
-    description: metadata.description,
+    description: metadata.description ?? '',
     saltHex: metadata.saltHex,
   };
 

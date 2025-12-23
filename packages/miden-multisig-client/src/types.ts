@@ -16,7 +16,6 @@ export type {
   DeltaStatus,
   DeltaObject,
   StateObject,
-  ProposalType,
   ConfigureRequest,
   ConfigureResponse,
   PubkeyResponse,
@@ -32,6 +31,7 @@ export type {
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalStatus,
+  ProposalType,
 } from './types/proposal.js';
 
 export interface MultisigAccountState {
