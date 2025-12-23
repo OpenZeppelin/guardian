@@ -7,4 +7,3 @@ export function formatError(err: unknown, prefix?: string): string {
         : 'Unknown error';
   return prefix ? `${prefix}: ${message}` : message;
 }
-

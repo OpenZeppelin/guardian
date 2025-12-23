@@ -21,7 +21,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'p2id',
+        proposalType: 'p2id',
         recipientId: '0xabc',
         faucetId: '0xf00',
         amount: '42',
@@ -41,7 +41,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'consume_notes',
+        proposalType: 'consume_notes',
         noteIds: ['0xnote1', '0xnote2'],
         description: 'consume notes',
         saltHex: '0xsalt',
@@ -60,7 +60,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'switch_psm',
+        proposalType: 'switch_psm',
         newPsmPubkey: '0xpubkey',
         newPsmEndpoint: 'http://new-psm.com',
         description: 'switch PSM',
@@ -80,7 +80,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'add_signer',
+        proposalType: 'add_signer',
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
         description: 'add signer',
@@ -99,7 +99,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'remove_signer',
+        proposalType: 'remove_signer',
         targetThreshold: 1,
         targetSignerCommitments: ['0x1'],
         description: 'remove signer',
@@ -117,7 +117,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'change_threshold',
+        proposalType: 'change_threshold',
         targetThreshold: 3,
         targetSignerCommitments: ['0x1', '0x2', '0x3'],
         description: undefined,
@@ -134,7 +134,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('add_signer');
+      expect(meta?.proposalType).toBe('add_signer');
     });
 
     it('prefers proposalType over proposal_type', () => {
@@ -147,7 +147,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('add_signer');
+      expect(meta?.proposalType).toBe('add_signer');
     });
 
     it('infers p2id from recipientId field', () => {
@@ -159,7 +159,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('p2id');
+      expect(meta?.proposalType).toBe('p2id');
     });
 
     it('infers p2id from faucetId field', () => {
@@ -170,7 +170,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('p2id');
+      expect(meta?.proposalType).toBe('p2id');
     });
 
     it('infers p2id from amount field', () => {
@@ -180,7 +180,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('p2id');
+      expect(meta?.proposalType).toBe('p2id');
     });
 
     it('infers consume_notes from noteIds field', () => {
@@ -190,7 +190,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('consume_notes');
+      expect(meta?.proposalType).toBe('consume_notes');
     });
 
     it('infers switch_psm from newPsmPubkey field', () => {
@@ -200,7 +200,7 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('switch_psm');
+      expect(meta?.proposalType).toBe('switch_psm');
     });
 
     it('infers change_threshold from targetSignerCommitments field', () => {
@@ -211,10 +211,10 @@ describe('metadata conversion', () => {
 
       const meta = fromPsmMetadata(raw);
 
-      expect(meta?.kind).toBe('change_threshold');
+      expect(meta?.proposalType).toBe('change_threshold');
     });
 
-    it('returns undefined when kind cannot be inferred', () => {
+    it('returns undefined when proposalType cannot be inferred', () => {
       const raw = {
         unknownField: 'value',
       };
@@ -242,7 +242,7 @@ describe('metadata conversion', () => {
       const meta = fromPsmMetadata(raw);
 
       expect(meta).toEqual({
-        kind: 'p2id',
+        proposalType: 'p2id',
         recipientId: '',
         faucetId: '',
         amount: '0',
@@ -259,7 +259,7 @@ describe('metadata conversion', () => {
 
     it('maps add_signer to PSM metadata', () => {
       const meta = toPsmMetadata({
-        kind: 'add_signer',
+        proposalType: 'add_signer',
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
         saltHex: '0xsalt',
@@ -277,7 +277,7 @@ describe('metadata conversion', () => {
 
     it('maps remove_signer to PSM metadata', () => {
       const meta = toPsmMetadata({
-        kind: 'remove_signer',
+        proposalType: 'remove_signer',
         targetThreshold: 1,
         targetSignerCommitments: ['0x1'],
       });
@@ -293,7 +293,7 @@ describe('metadata conversion', () => {
 
     it('maps change_threshold to PSM metadata', () => {
       const meta = toPsmMetadata({
-        kind: 'change_threshold',
+        proposalType: 'change_threshold',
         targetThreshold: 3,
         targetSignerCommitments: ['0x1', '0x2', '0x3'],
       });
@@ -309,7 +309,7 @@ describe('metadata conversion', () => {
 
     it('maps p2id to PSM metadata', () => {
       const meta = toPsmMetadata({
-        kind: 'p2id',
+        proposalType: 'p2id',
         recipientId: '0xabc',
         faucetId: '0xf00',
         amount: '42',
@@ -329,7 +329,7 @@ describe('metadata conversion', () => {
 
     it('maps consume_notes to PSM metadata', () => {
       const meta = toPsmMetadata({
-        kind: 'consume_notes',
+        proposalType: 'consume_notes',
         noteIds: ['0xnote1', '0xnote2'],
         description: 'consume',
       });
@@ -344,7 +344,7 @@ describe('metadata conversion', () => {
 
     it('maps switch_psm to PSM metadata', () => {
       const meta = toPsmMetadata({
-        kind: 'switch_psm',
+        proposalType: 'switch_psm',
         newPsmPubkey: '0xpubkey',
         newPsmEndpoint: 'http://new.com',
         targetThreshold: 2,
@@ -366,7 +366,7 @@ describe('metadata conversion', () => {
   describe('roundtrip', () => {
     it('p2id metadata survives roundtrip', () => {
       const original = {
-        kind: 'p2id' as const,
+        proposalType: 'p2id' as const,
         recipientId: '0xabc',
         faucetId: '0xf00',
         amount: '42',
@@ -382,7 +382,7 @@ describe('metadata conversion', () => {
 
     it('consume_notes metadata survives roundtrip', () => {
       const original = {
-        kind: 'consume_notes' as const,
+        proposalType: 'consume_notes' as const,
         noteIds: ['0xnote1', '0xnote2'],
         description: 'test',
         saltHex: '0xsalt',
@@ -396,7 +396,7 @@ describe('metadata conversion', () => {
 
     it('add_signer metadata survives roundtrip', () => {
       const original = {
-        kind: 'add_signer' as const,
+        proposalType: 'add_signer' as const,
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
         description: 'test',

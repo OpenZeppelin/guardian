@@ -12,7 +12,6 @@ import type {
   MultisigConfig,
   NoteAsset,
   Proposal,
-  ProposalKind,
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalStatus,
@@ -269,7 +268,7 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      kind: 'add_signer',
+      proposalType: 'add_signer',
       targetThreshold,
       targetSignerCommitments,
       saltHex: salt.toHex(),
@@ -332,7 +331,7 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      kind: 'remove_signer',
+      proposalType: 'remove_signer',
       targetThreshold,
       targetSignerCommitments,
       saltHex: salt.toHex(),
@@ -376,7 +375,7 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      kind: 'change_threshold',
+      proposalType: 'change_threshold',
       targetThreshold: newThreshold,
       targetSignerCommitments: this.signerCommitments,
       saltHex: salt.toHex(),
@@ -410,7 +409,7 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      kind: 'switch_psm',
+      proposalType: 'switch_psm',
       saltHex: salt.toHex(),
       newPsmPubkey,
       newPsmEndpoint,
@@ -443,7 +442,7 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      kind: 'consume_notes',
+      proposalType: 'consume_notes',
       noteIds,
       saltHex: salt.toHex(),
       description: `Consume ${noteIds.length} note(s)`,
@@ -484,7 +483,7 @@ export class Multisig {
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      kind: 'p2id',
+      proposalType: 'p2id',
       saltHex: salt.toHex(),
       recipientId,
       faucetId,
@@ -669,7 +668,7 @@ export class Multisig {
     }
 
     let finalRequest: TransactionRequest;
-    switch (metadata.kind) {
+    switch (metadata.proposalType) {
       case 'consume_notes': {
         if (!metadata.noteIds || metadata.noteIds.length === 0) {
           throw new Error('Proposal missing noteIds. Was it created with createConsumeNotesProposal?');

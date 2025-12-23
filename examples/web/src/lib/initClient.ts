@@ -46,4 +46,3 @@ export async function initClients(psmEndpoint = PSM_ENDPOINT) {
 
   return { webClient, multisigClient, signerInfo, falconSigner, psmPubkey };
 }
-

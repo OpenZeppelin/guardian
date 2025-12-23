@@ -2,19 +2,20 @@ import type { Proposal, ConsumableNote } from '@openzeppelin/miden-multisig-clie
 
 export interface ProposalView {
   id: string;
-  kind?: string;
+  proposalType?: string;
   description?: string;
   status: Proposal['status'];
   createdAt?: string;
 }
 
 export function toProposalView(proposal: Proposal): ProposalView {
+  const meta = proposal.metadata as { proposalType?: string; description?: string } | undefined;
   return {
     id: proposal.id,
-    kind: proposal.metadata?.kind ?? proposal.metadata?.proposalType,
-    description: proposal.metadata?.description,
+    proposalType: meta?.proposalType,
+    description: meta?.description,
     status: proposal.status,
-    createdAt: proposal.metadata?.saltHex ? undefined : undefined,
+    createdAt: undefined,
   };
 }
 
@@ -29,4 +30,3 @@ export function toConsumableNoteView(note: ConsumableNote): ConsumableNoteView {
     assets: note.assets,
   };
 }
-

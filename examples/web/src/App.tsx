@@ -401,7 +401,7 @@ export default function App() {
       console.log('[Execute] Starting execution for proposal:', proposalId);
       const proposal = multisig.listProposals().find(p => p.id === proposalId);
       console.log('[Execute] Proposal metadata:', proposal?.metadata);
-      console.log('[Execute] Proposal type:', proposal?.metadata?.kind);
+      console.log('[Execute] Proposal type:', proposal?.metadata?.proposalType);
 
       await multisig.executeProposal(proposalId, webClient);
       console.log('[Execute] Execution completed successfully');

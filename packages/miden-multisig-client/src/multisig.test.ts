@@ -666,12 +666,12 @@ describe('Multisig', () => {
       });
 
       const proposal = await multisig.createProposal(1, 'AQID', {
-        kind: 'add_signer',
+        proposalType: 'add_signer',
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
       });
 
-      expect(proposal.metadata?.kind).toBe('add_signer');
+      expect(proposal.metadata?.proposalType).toBe('add_signer');
 
       // Now sync - should preserve local metadata
       mockFetch.mockResolvedValueOnce({
@@ -684,7 +684,7 @@ describe('Multisig', () => {
       const syncedProposals = await multisig.syncProposals();
       const syncedProposal = syncedProposals.find(p => p.nonce === 1);
 
-      expect(syncedProposal?.metadata?.kind).toBe('add_signer');
+      expect(syncedProposal?.metadata?.proposalType).toBe('add_signer');
     });
 
     it('should use PSM metadata for new proposals from other signers', async () => {
@@ -729,7 +729,7 @@ describe('Multisig', () => {
       const proposals = await multisig.syncProposals();
 
       expect(proposals.length).toBe(1);
-      expect(proposals[0].metadata?.kind).toBe('p2id');
+      expect(proposals[0].metadata?.proposalType).toBe('p2id');
     });
   });
 
@@ -768,11 +768,11 @@ describe('Multisig', () => {
       });
 
       const proposal = await multisig.createProposal(1, 'AQID', {
-        kind: 'consume_notes',
+        proposalType: 'consume_notes',
         noteIds: ['0xnote1', '0xnote2'],
       });
 
-      expect(proposal.metadata?.kind).toBe('consume_notes');
+      expect(proposal.metadata?.proposalType).toBe('consume_notes');
     });
 
     it('should create p2id proposal', async () => {
@@ -809,13 +809,13 @@ describe('Multisig', () => {
       });
 
       const proposal = await multisig.createProposal(1, 'AQID', {
-        kind: 'p2id',
+        proposalType: 'p2id',
         recipientId: '0xrecipient',
         faucetId: '0xfaucet',
         amount: '100',
       });
 
-      expect(proposal.metadata?.kind).toBe('p2id');
+      expect(proposal.metadata?.proposalType).toBe('p2id');
     });
 
     it('should create switch_psm proposal', async () => {
@@ -852,12 +852,12 @@ describe('Multisig', () => {
       });
 
       const proposal = await multisig.createProposal(1, 'AQID', {
-        kind: 'switch_psm',
+        proposalType: 'switch_psm',
         newPsmPubkey: '0xnewpubkey',
         newPsmEndpoint: 'http://new-psm.com',
       });
 
-      expect(proposal.metadata?.kind).toBe('switch_psm');
+      expect(proposal.metadata?.proposalType).toBe('switch_psm');
     });
   });
 

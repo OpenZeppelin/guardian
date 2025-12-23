@@ -90,7 +90,6 @@ export type {
   Proposal,
   ProposalStatus,
   ProposalSignatureEntry,
-  ProposalKind,
   ProposalMetadata,
   ProposalType,
   ExportedProposal,
