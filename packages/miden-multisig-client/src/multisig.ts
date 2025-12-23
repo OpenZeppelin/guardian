@@ -190,17 +190,20 @@ export class Multisig {
       // This matches the Rust client behavior - we don't rely on server returning new_commitment
       const proposalId = computeCommitmentFromTxSummary(delta.delta_payload.tx_summary.data);
       const existingProposal = this.proposals.get(proposalId);
-      const proposal = this.deltaToProposal(delta, proposalId);
 
       // Prefer existing local metadata if available (we trust our own create calls)
       // Fall back to PSM metadata for proposals created by other signers
-      const resolved =
+      const resolvedMetadata =
         existingProposal?.metadata ??
-        (delta.delta_payload.metadata ? (fromPsmMetadata(delta.delta_payload.metadata) as ProposalMetadata) : undefined);
-      if (!resolved) {
+        (delta.delta_payload.metadata
+          ? (fromPsmMetadata(delta.delta_payload.metadata) as ProposalMetadata) ?? (delta.delta_payload.metadata as ProposalMetadata)
+          : undefined);
+      if (!resolvedMetadata) {
         throw new Error('Missing proposal metadata from PSM');
       }
-      proposal.metadata = resolved;
+
+      const proposal = this.deltaToProposal(delta, proposalId, resolvedMetadata);
+
       this.proposals.set(proposal.id, proposal);
     }
 

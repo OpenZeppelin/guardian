@@ -120,34 +120,9 @@ describe('metadata conversion', () => {
         proposalType: 'change_threshold',
         targetThreshold: 3,
         targetSignerCommitments: ['0x1', '0x2', '0x3'],
-        description: undefined,
+        description: '',
         saltHex: undefined,
       });
-    });
-
-    it('supports snake_case proposal_type', () => {
-      const raw = {
-        proposal_type: 'add_signer',
-        targetThreshold: 2,
-        targetSignerCommitments: ['0x1', '0x2'],
-      };
-
-      const meta = fromPsmMetadata(raw);
-
-      expect(meta?.proposalType).toBe('add_signer');
-    });
-
-    it('prefers proposalType over proposal_type', () => {
-      const raw = {
-        proposalType: 'add_signer',
-        proposal_type: 'remove_signer',
-        targetThreshold: 2,
-        targetSignerCommitments: ['0x1', '0x2'],
-      };
-
-      const meta = fromPsmMetadata(raw);
-
-      expect(meta?.proposalType).toBe('add_signer');
     });
 
     it('infers p2id from recipientId field', () => {
@@ -246,7 +221,7 @@ describe('metadata conversion', () => {
         recipientId: '',
         faucetId: '',
         amount: '0',
-        description: undefined,
+        description: '',
         saltHex: undefined,
       });
     });
@@ -280,6 +255,7 @@ describe('metadata conversion', () => {
         proposalType: 'remove_signer',
         targetThreshold: 1,
         targetSignerCommitments: ['0x1'],
+        description: '',
       });
 
       expect(meta).toEqual({
@@ -287,7 +263,7 @@ describe('metadata conversion', () => {
         targetThreshold: 1,
         targetSignerCommitments: ['0x1'],
         saltHex: undefined,
-        description: undefined,
+        description: '',
       });
     });
 
@@ -296,6 +272,7 @@ describe('metadata conversion', () => {
         proposalType: 'change_threshold',
         targetThreshold: 3,
         targetSignerCommitments: ['0x1', '0x2', '0x3'],
+        description: '',
       });
 
       expect(meta).toEqual({
@@ -303,7 +280,7 @@ describe('metadata conversion', () => {
         targetThreshold: 3,
         targetSignerCommitments: ['0x1', '0x2', '0x3'],
         saltHex: undefined,
-        description: undefined,
+        description: '',
       });
     });
 
@@ -349,6 +326,7 @@ describe('metadata conversion', () => {
         newPsmEndpoint: 'http://new.com',
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
+        description: '',
       });
 
       expect(meta).toEqual({
@@ -357,7 +335,7 @@ describe('metadata conversion', () => {
         newPsmEndpoint: 'http://new.com',
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
-        description: undefined,
+        description: '',
         saltHex: undefined,
       });
     });

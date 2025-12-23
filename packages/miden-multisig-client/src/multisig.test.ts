@@ -302,6 +302,12 @@ describe('Multisig', () => {
           delta_payload: {
             tx_summary: { data: 'AQID' },
             signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
           },
           status: {
             status: 'pending',
@@ -347,6 +353,12 @@ describe('Multisig', () => {
           delta_payload: {
             tx_summary: { data: 'AQID' },
             signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
           },
           status: {
             status: 'pending',
@@ -490,6 +502,15 @@ describe('Multisig', () => {
             },
           ],
         },
+        delta_payload: {
+          ...mockDelta.delta_payload,
+          metadata: {
+            proposalType: 'add_signer',
+            description: '',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          },
+        },
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -523,6 +544,12 @@ describe('Multisig', () => {
           delta_payload: {
             tx_summary: { data: 'AQID' },
             signatures: [],
+            metadata: {
+              proposalType: 'add_signer',
+              description: '',
+              targetThreshold: 1,
+              targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            },
           },
           status: {
             status: 'pending',
@@ -607,6 +634,12 @@ describe('Multisig', () => {
           delta_payload: {
             tx_summary: { data: 'AQID' },
             signatures: [],
+            metadata: {
+              proposalType: 'add_signer',
+              description: '',
+              targetThreshold: 2,
+              targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+            },
           },
           status: {
             status: 'pending',
@@ -761,6 +794,12 @@ describe('Multisig', () => {
         delta_payload: {
           tx_summary: { data: 'AQID' },
           signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            targetThreshold: 2,
+            targetSignerCommitments: ['0x1', '0x2'],
+            description: '',
+          },
         },
         status: {
           status: 'pending',
@@ -803,6 +842,12 @@ describe('Multisig', () => {
         delta_payload: {
           tx_summary: { data: 'AQID' },
           signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
         },
         status: {
           status: 'pending',
@@ -847,6 +892,12 @@ describe('Multisig', () => {
         delta_payload: {
           tx_summary: { data: 'AQID' },
           signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            targetThreshold: 2,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+            description: '',
+          },
         },
         status: {
           status: 'pending',
@@ -894,6 +945,12 @@ describe('Multisig', () => {
           delta_payload: {
             tx_summary: { data: 'AQID' },
             signatures: [],
+            metadata: {
+              proposalType: 'add_signer',
+              targetThreshold: 2,
+              targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+              description: '',
+            },
           },
           status: {
             status: 'pending',
@@ -922,6 +979,15 @@ describe('Multisig', () => {
       const mockProposalsReady: DeltaObject[] = [
         {
           ...mockProposalsPending[0],
+          delta_payload: {
+            ...mockProposalsPending[0].delta_payload,
+            metadata: {
+              proposalType: 'add_signer',
+              targetThreshold: 2,
+              targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+              description: '',
+            },
+          },
           status: {
             status: 'pending',
             timestamp: '2024-01-01T00:00:00Z',

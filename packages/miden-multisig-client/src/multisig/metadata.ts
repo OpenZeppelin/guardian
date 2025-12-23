@@ -3,7 +3,6 @@ import type { ProposalMetadata, ProposalType } from '../types.js';
 type RawPsmMetadata =
   | {
       proposalType?: string;
-      proposal_type?: string;
       targetThreshold?: number;
       targetSignerCommitments?: string[];
       saltHex?: string;
@@ -21,7 +20,7 @@ const VALID_TYPES: ProposalType[] = ['add_signer', 'remove_signer', 'change_thre
 
 const inferProposalType = (raw: RawPsmMetadata): ProposalType | undefined => {
   if (!raw) return undefined;
-  const explicitType = raw.proposalType ?? raw.proposal_type;
+  const explicitType = raw.proposalType;
   if (explicitType && VALID_TYPES.includes(explicitType as ProposalType)) {
     return explicitType as ProposalType;
   }
