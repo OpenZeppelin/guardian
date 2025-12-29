@@ -18,6 +18,7 @@ interface LoadMultisigDialogProps {
   onOpenChange: (open: boolean) => void;
   loading: boolean;
   detectedConfig: DetectedMultisigConfig | null;
+  error: string | null;
   onLoad: (accountId: string) => void;
 }
 
@@ -26,6 +27,7 @@ export function LoadMultisigDialog({
   onOpenChange,
   loading,
   detectedConfig,
+  error,
   onLoad,
 }: LoadMultisigDialogProps) {
   const [accountIdInput, setAccountIdInput] = useState('');
@@ -64,6 +66,12 @@ export function LoadMultisigDialog({
               onKeyDown={(e) => e.key === 'Enter' && handleLoad()}
             />
           </div>
+
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
 
           {detectedConfig && (
             <Alert>

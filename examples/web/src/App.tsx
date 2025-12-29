@@ -165,7 +165,15 @@ export default function App() {
 
   // Load multisig from PSM
   const handleLoad = async (accountId: string) => {
-    if (!multisigClient || !signer || !psmPubkey) return;
+    if (!multisigClient || !signer) {
+      setError('Client not initialized. Try reconnecting to PSM.');
+      return;
+    }
+    if (!psmPubkey) {
+      setPsmStatus('error');
+      setError('Not connected to PSM. Check the endpoint and try again.');
+      return;
+    }
 
     let normalizedId = accountId;
     if (!normalizedId.startsWith('0x')) {
@@ -178,28 +186,14 @@ export default function App() {
     try {
       const falconSigner = new FalconSigner(signer.secretKey);
 
-      // Temporary config to fetch state
-      const tempConfig: MultisigConfig = {
-        threshold: 1,
-        signerCommitments: [signer.commitment],
-        psmCommitment: psmPubkey,
-        psmEnabled: true,
-      };
+      // Load multisig - config is auto-detected from PSM state
+      const ms = await multisigClient.load(normalizedId, falconSigner);
+      setMultisig(ms);
 
-      const tempMs = await multisigClient.load(normalizedId, tempConfig, falconSigner);
-      const state = await tempMs.fetchState();
+      // Fetch state for display
+      const state = await ms.fetchState();
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
       setDetectedConfig(detected);
-
-      const config: MultisigConfig = {
-        threshold: detected.threshold,
-        signerCommitments: detected.signerCommitments,
-        psmCommitment: detected.psmCommitment || psmPubkey,
-        psmEnabled: detected.psmEnabled,
-      };
-
-      const ms = await multisigClient.load(normalizedId, config, falconSigner);
-      setMultisig(ms);
       setPsmState(state);
 
       setLoadDialogOpen(false);
@@ -232,22 +226,16 @@ export default function App() {
         await webClient.syncState();
       }
 
-      const state = await multisig.fetchState();
+      // Reload multisig with fresh state from PSM
+      const falconSigner = new FalconSigner(signer.secretKey);
+      const reloadedMs = await multisigClient.load(multisig.accountId, falconSigner);
+      setMultisig(reloadedMs);
+
+      const state = await reloadedMs.fetchState();
       setPsmState(state);
 
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
       setDetectedConfig(detected);
-
-      const newConfig: MultisigConfig = {
-        threshold: detected.threshold,
-        signerCommitments: detected.signerCommitments,
-        psmCommitment: detected.psmCommitment || psmPubkey,
-        psmEnabled: detected.psmEnabled,
-      };
-
-      const falconSigner = new FalconSigner(signer.secretKey);
-      const reloadedMs = await multisigClient.load(multisig.accountId, newConfig, falconSigner);
-      setMultisig(reloadedMs);
 
       const { proposals: synced, state: refreshedState, notes } = await syncAll(reloadedMs, webClient);
       setPsmState(refreshedState ?? state);
@@ -498,7 +486,7 @@ export default function App() {
           <WelcomeView
             ready={ready}
             onCreateClick={() => setCreateDialogOpen(true)}
-            onLoadClick={() => setLoadDialogOpen(true)}
+            onLoadClick={() => { setError(null); setLoadDialogOpen(true); }}
             onResetData={handleResetData}
           />
         ) : signer ? (
@@ -546,6 +534,7 @@ export default function App() {
             onOpenChange={setLoadDialogOpen}
             loading={loadingAccount}
             detectedConfig={detectedConfig}
+            error={error}
             onLoad={handleLoad}
           />
           <ImportProposalDialog

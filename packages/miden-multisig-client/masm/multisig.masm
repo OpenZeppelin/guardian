@@ -421,5 +421,3 @@ pub proc auth_tx_rpo_falcon512_multisig.1(salt: BeWord)
     # => [TX_SUMMARY_COMMITMENT]
     exec.assert_new_tx
 end
-
-
