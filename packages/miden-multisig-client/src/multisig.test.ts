@@ -670,6 +670,68 @@ describe('Multisig', () => {
         multisig.executeProposal('0x' + 'c'.repeat(64), webClient)
       ).rejects.toThrow('not ready for execution');
     });
+
+    it('should fail when PSM ack signature is missing (selector ON)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      const readyDelta: DeltaObject = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            description: '',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'd'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      // Prime local cache via syncProposals
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [readyDelta] }),
+      });
+      await multisig.syncProposals();
+
+      // executeProposal: getDeltaProposals
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [readyDelta] }),
+      });
+      // executeProposal: pushDelta without ack_sig
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ...readyDelta, ack_sig: null }),
+      });
+
+      await expect(multisig.executeProposal(proposalId, {} as any)).rejects.toThrow(
+        'PSM did not return acknowledgment signature'
+      );
+    });
   });
 
   describe('proposal metadata preservation', () => {

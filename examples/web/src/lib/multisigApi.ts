@@ -31,11 +31,10 @@ export async function createMultisigAccount(
 export async function loadMultisigAccount(
   multisigClient: MultisigClient,
   accountId: string,
-  config: MultisigConfig,
   signer: SignerInfo,
 ): Promise<Multisig> {
   const falconSigner = new FalconSigner(signer.secretKey);
-  return multisigClient.load(accountId, config, falconSigner);
+  return multisigClient.load(accountId, falconSigner);
 }
 
 export async function syncAll(
