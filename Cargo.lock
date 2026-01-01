@@ -2015,9 +2015,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client-sqlite-store"
-version = "0.12.3"
+version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57f806b34687798a0545177619196017362cb3b67bd0c7003081d1fd5d179c70"
+checksum = "594b08393cd63ff092acabae229ae8cc92953471831efdf63650496f4c22dbd6"
 dependencies = [
  "anyhow",
  "async-trait",
