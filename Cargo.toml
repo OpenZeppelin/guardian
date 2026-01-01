@@ -51,7 +51,7 @@ thiserror = "2.0.9"
 hex = "0.4.3"
 base64 = "0.22"
 rand_chacha = "0.9.0"
-tempfile = "3.15.0"
+tempfile = "3.24.0"
 rand = "0.9"
 anyhow = { version = "1.0", features = ["backtrace", "std"] }
 assert_matches = "1.5"
