@@ -44,7 +44,7 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tower = "0.5"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.19", features = ["v4"] }
 miden-lib = { workspace = true }
 
 [features]
