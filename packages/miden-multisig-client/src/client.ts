@@ -97,7 +97,7 @@ export class MultisigClient {
     const stateResponse = await this._psmClient.getState(accountId);
 
     // Validate PSM returned account data
-    const accountBase64 = stateResponse.state_json.data;
+    const accountBase64 = stateResponse.stateJson.data;
     if (!accountBase64) {
       throw new Error('No account data found in PSM state');
     }

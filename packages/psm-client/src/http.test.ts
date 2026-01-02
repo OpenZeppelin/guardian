@@ -74,7 +74,8 @@ describe('PsmHttpClient', () => {
     it('should configure account with authentication', async () => {
       client.setSigner(mockSigner);
 
-      const configureResponse: ConfigureResponse = {
+      // Server returns snake_case
+      const serverResponse = {
         success: true,
         message: 'Account configured',
         ack_pubkey: '0x' + 'c'.repeat(64),
@@ -82,28 +83,42 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => configureResponse,
+        json: async () => serverResponse,
       });
 
+      // Client API uses camelCase
       const request = {
-        account_id: '0x' + 'd'.repeat(30),
+        accountId: '0x' + 'd'.repeat(30),
         auth: {
           MidenFalconRpo: {
             cosigner_commitments: ['0x' + 'e'.repeat(64)],
           },
         },
-        initial_state: { data: 'base64data', account_id: '0x' + 'd'.repeat(30) },
-        storage_type: 'Filesystem' as const,
+        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+        storageType: 'Filesystem' as const,
       };
 
       const response = await client.configure(request);
 
-      expect(response).toEqual(configureResponse);
+      // Client returns camelCase
+      const expectedResponse: ConfigureResponse = {
+        success: true,
+        message: 'Account configured',
+        ackPubkey: '0x' + 'c'.repeat(64),
+      };
+      expect(response).toEqual(expectedResponse);
+
+      // Wire format is snake_case
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/configure',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify(request),
+          body: JSON.stringify({
+            account_id: '0x' + 'd'.repeat(30),
+            auth: { MidenFalconRpo: { cosigner_commitments: ['0x' + 'e'.repeat(64)] } },
+            initial_state: { data: 'base64data', account_id: '0x' + 'd'.repeat(30) },
+            storage_type: 'Filesystem',
+          }),
           headers: expect.objectContaining({
             'x-pubkey': mockSigner.publicKey,
             'x-signature': expect.any(String),
@@ -114,10 +129,10 @@ describe('PsmHttpClient', () => {
 
     it('should throw error when no signer configured', async () => {
       const request = {
-        account_id: '0x' + 'd'.repeat(30),
+        accountId: '0x' + 'd'.repeat(30),
         auth: { MidenFalconRpo: { cosigner_commitments: [] } },
-        initial_state: { data: 'base64data', account_id: '0x' + 'd'.repeat(30) },
-        storage_type: 'Filesystem' as const,
+        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+        storageType: 'Filesystem' as const,
       };
 
       await expect(client.configure(request)).rejects.toThrow('No signer configured');
@@ -128,7 +143,8 @@ describe('PsmHttpClient', () => {
     it('should get account state with authentication', async () => {
       client.setSigner(mockSigner);
 
-      const stateObject: StateObject = {
+      // Server returns snake_case
+      const serverState = {
         account_id: '0x' + 'a'.repeat(30),
         commitment: '0x' + 'b'.repeat(64),
         state_json: { data: 'base64state' },
@@ -138,13 +154,22 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => stateObject,
+        json: async () => serverState,
       });
 
       const accountId = '0x' + 'a'.repeat(30);
       const state = await client.getState(accountId);
 
-      expect(state).toEqual(stateObject);
+      // Client returns camelCase
+      const expectedState: StateObject = {
+        accountId: '0x' + 'a'.repeat(30),
+        commitment: '0x' + 'b'.repeat(64),
+        stateJson: { data: 'base64state' },
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-02T00:00:00Z',
+      };
+
+      expect(state).toEqual(expectedState);
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/state?'),
         expect.objectContaining({
@@ -161,7 +186,8 @@ describe('PsmHttpClient', () => {
     it('should get delta proposals for account', async () => {
       client.setSigner(mockSigner);
 
-      const proposals: DeltaObject[] = [
+      // Server returns snake_case
+      const serverProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -181,13 +207,35 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ proposals }),
+        json: async () => ({ proposals: serverProposals }),
       });
 
       const accountId = '0x' + 'a'.repeat(30);
       const result = await client.getDeltaProposals(accountId);
 
-      expect(result).toEqual(proposals);
+      // Client returns camelCase
+      const expectedProposals: DeltaObject[] = [
+        {
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prevCommitment: '0x' + 'b'.repeat(64),
+          newCommitment: undefined,
+          deltaPayload: {
+            txSummary: { data: 'base64summary' },
+            signatures: [],
+            metadata: undefined,
+          },
+          ackSig: undefined,
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposerId: '0x' + 'c'.repeat(64),
+            cosignerSigs: [],
+          },
+        },
+      ];
+
+      expect(result).toEqual(expectedProposals);
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/delta/proposal?'),
         expect.objectContaining({ method: 'GET' })
@@ -199,7 +247,8 @@ describe('PsmHttpClient', () => {
     it('should push a new delta proposal', async () => {
       client.setSigner(mockSigner);
 
-      const proposalResponse: DeltaProposalResponse = {
+      // Server returns snake_case
+      const serverResponse = {
         delta: {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -220,26 +269,59 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => proposalResponse,
+        json: async () => serverResponse,
       });
 
+      // Client API uses camelCase
       const request = {
-        account_id: '0x' + 'a'.repeat(30),
+        accountId: '0x' + 'a'.repeat(30),
         nonce: 1,
-        delta_payload: {
-          tx_summary: { data: 'base64summary' },
+        deltaPayload: {
+          txSummary: { data: 'base64summary' },
           signatures: [],
         },
       };
 
       const result = await client.pushDeltaProposal(request);
 
-      expect(result).toEqual(proposalResponse);
+      // Client returns camelCase
+      const expectedResponse: DeltaProposalResponse = {
+        delta: {
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prevCommitment: '0x' + 'b'.repeat(64),
+          newCommitment: undefined,
+          deltaPayload: {
+            txSummary: { data: 'base64summary' },
+            signatures: [],
+            metadata: undefined,
+          },
+          ackSig: undefined,
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposerId: '0x' + 'c'.repeat(64),
+            cosignerSigs: [],
+          },
+        },
+        commitment: '0x' + 'd'.repeat(64),
+      };
+
+      expect(result).toEqual(expectedResponse);
+
+      // Wire format is snake_case
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/delta/proposal',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify(request),
+          body: JSON.stringify({
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            delta_payload: {
+              tx_summary: { data: 'base64summary' },
+              signatures: [],
+            },
+          }),
         })
       );
     });
@@ -249,7 +331,8 @@ describe('PsmHttpClient', () => {
     it('should sign a delta proposal', async () => {
       client.setSigner(mockSigner);
 
-      const delta: DeltaObject = {
+      // Server returns snake_case
+      const serverDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -273,40 +356,72 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => delta,
+        json: async () => serverDelta,
       });
 
+      // Client API uses camelCase
       const request = {
-        account_id: '0x' + 'a'.repeat(30),
+        accountId: '0x' + 'a'.repeat(30),
         commitment: '0x' + 'e'.repeat(64),
         signature: { scheme: 'falcon' as const, signature: '0x' + 'd'.repeat(128) },
       };
 
       const result = await client.signDeltaProposal(request);
 
-      expect(result).toEqual(delta);
+      // Client returns camelCase
+      const expectedDelta: DeltaObject = {
+        accountId: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prevCommitment: '0x' + 'b'.repeat(64),
+        newCommitment: undefined,
+        deltaPayload: {
+          txSummary: { data: 'base64summary' },
+          signatures: [{ signerId: '0x' + 'c'.repeat(64), signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) } }],
+          metadata: undefined,
+        },
+        ackSig: undefined,
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposerId: '0x' + 'c'.repeat(64),
+          cosignerSigs: [
+            {
+              signerId: '0x' + 'c'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      expect(result).toEqual(expectedDelta);
+
+      // Wire format is snake_case
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/delta/proposal',
         expect.objectContaining({
           method: 'PUT',
-          body: JSON.stringify(request),
+          body: JSON.stringify({
+            account_id: '0x' + 'a'.repeat(30),
+            commitment: '0x' + 'e'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) },
+          }),
         })
       );
     });
   });
 
   describe('pushDelta', () => {
-    it('should push a delta for execution', async () => {
+    it('should push a delta for execution and return ack signature', async () => {
       client.setSigner(mockSigner);
 
-      const resultDelta: DeltaObject = {
+      // Server returns snake_case - execution delta response has raw delta_payload
+      const serverResponse = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
-        delta_payload: {
-          tx_summary: { data: 'base64summary' },
-          signatures: [],
-        },
+        new_commitment: '0x' + 'd'.repeat(64),
+        delta_payload: { data: 'base64summary' },
         ack_sig: '0x' + 'f'.repeat(128),
         status: {
           status: 'candidate',
@@ -316,26 +431,31 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => resultDelta,
+        json: async () => serverResponse,
       });
 
+      // Client API uses camelCase
       const executionDelta = {
-        account_id: '0x' + 'a'.repeat(30),
+        accountId: '0x' + 'a'.repeat(30),
         nonce: 1,
-        prev_commitment: '0x' + 'b'.repeat(64),
-        delta_payload: { data: 'base64summary' },
+        prevCommitment: '0x' + 'b'.repeat(64),
+        deltaPayload: { data: 'base64summary' },
         status: {
           status: 'pending' as const,
           timestamp: '2024-01-01T00:00:00Z',
-          proposer_id: '0x' + 'c'.repeat(64),
-          cosigner_sigs: [],
+          proposerId: '0x' + 'c'.repeat(64),
+          cosignerSigs: [],
         },
       };
 
       const result = await client.pushDelta(executionDelta);
 
-      expect(result).toEqual(resultDelta);
-      expect(result.ack_sig).toBe('0x' + 'f'.repeat(128));
+      // PushDeltaResponse only includes essential fields for execution
+      expect(result.accountId).toBe('0x' + 'a'.repeat(30));
+      expect(result.nonce).toBe(1);
+      expect(result.newCommitment).toBe('0x' + 'd'.repeat(64));
+      expect(result.ackSig).toBe('0x' + 'f'.repeat(128));
+
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/delta',
         expect.objectContaining({
@@ -349,7 +469,8 @@ describe('PsmHttpClient', () => {
     it('should get a specific delta by nonce', async () => {
       client.setSigner(mockSigner);
 
-      const delta: DeltaObject = {
+      // Server returns snake_case
+      const serverDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 5,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -365,12 +486,17 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => delta,
+        json: async () => serverDelta,
       });
 
       const result = await client.getDelta('0x' + 'a'.repeat(30), 5);
 
-      expect(result).toEqual(delta);
+      // Client returns camelCase
+      expect(result.accountId).toBe('0x' + 'a'.repeat(30));
+      expect(result.nonce).toBe(5);
+      expect(result.prevCommitment).toBe('0x' + 'b'.repeat(64));
+      expect(result.status.status).toBe('canonical');
+
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/delta?'),
         expect.objectContaining({ method: 'GET' })
@@ -382,7 +508,8 @@ describe('PsmHttpClient', () => {
     it('should get merged delta since a nonce', async () => {
       client.setSigner(mockSigner);
 
-      const delta: DeltaObject = {
+      // Server returns snake_case
+      const serverDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 10,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -398,12 +525,16 @@ describe('PsmHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => delta,
+        json: async () => serverDelta,
       });
 
       const result = await client.getDeltaSince('0x' + 'a'.repeat(30), 5);
 
-      expect(result).toEqual(delta);
+      // Client returns camelCase
+      expect(result.accountId).toBe('0x' + 'a'.repeat(30));
+      expect(result.nonce).toBe(10);
+      expect(result.deltaPayload.txSummary.data).toBe('base64mergeddata');
+
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/delta/since?'),
         expect.objectContaining({ method: 'GET' })

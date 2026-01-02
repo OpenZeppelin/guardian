@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
-import { PsmHttpClient, type Signer, type DeltaObject } from '@openzeppelin/psm-client';
+import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
 
 // Mock the Miden SDK
 vi.mock('@demox-labs/miden-sdk', () => ({
@@ -294,7 +294,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockProposals: DeltaObject[] = [
+      const mockProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -303,9 +303,9 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
           metadata: {
-            proposalType: 'add_signer',
-            targetThreshold: 1,
-            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
             description: '',
           },
           },
@@ -345,7 +345,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockProposals: DeltaObject[] = [
+      const mockProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -354,9 +354,9 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
           metadata: {
-            proposalType: 'add_signer',
-            targetThreshold: 1,
-            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
             description: '',
           },
           },
@@ -409,7 +409,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockDelta: DeltaObject = {
+      const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -456,7 +456,7 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
       // First create a proposal
-      const mockDelta: DeltaObject = {
+      const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -488,7 +488,7 @@ describe('Multisig', () => {
       });
 
       // Now sign it
-      const signedDelta: DeltaObject = {
+      const signedDelta = {
         ...mockDelta,
         status: {
           status: 'pending',
@@ -505,10 +505,10 @@ describe('Multisig', () => {
         delta_payload: {
           ...mockDelta.delta_payload,
           metadata: {
-            proposalType: 'add_signer',
+            proposal_type: 'add_signer',
             description: '',
-            targetThreshold: 1,
-            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
           },
         },
       };
@@ -536,7 +536,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockProposals: DeltaObject[] = [
+      const mockProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -545,10 +545,10 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
             metadata: {
-              proposalType: 'add_signer',
+              proposal_type: 'add_signer',
               description: '',
-              targetThreshold: 1,
-              targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
             },
           },
           status: {
@@ -626,7 +626,7 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
       // Sync with pending proposal (only 1 signature)
-      const mockProposals: DeltaObject[] = [
+      const mockProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -635,10 +635,10 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
             metadata: {
-              proposalType: 'add_signer',
+              proposal_type: 'add_signer',
               description: '',
-              targetThreshold: 2,
-              targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+              target_threshold: 2,
+              signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
             },
           },
           status: {
@@ -680,7 +680,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const readyDelta: DeltaObject = {
+      const readyDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -688,10 +688,10 @@ describe('Multisig', () => {
           tx_summary: { data: 'AQID' },
           signatures: [],
           metadata: {
-            proposalType: 'add_signer',
+            proposal_type: 'add_signer',
             description: '',
-            targetThreshold: 1,
-            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
           },
         },
         status: {
@@ -745,14 +745,14 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
       // Create a proposal with metadata
-      const mockDelta: DeltaObject = {
+      const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
         delta_payload: {
           tx_summary: { data: 'AQID' },
           signatures: [],
-          metadata: { proposalType: 'add_signer' },
+          metadata: { proposal_type: 'add_signer' },
         },
         status: {
           status: 'pending',
@@ -803,7 +803,7 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
       // Sync proposals - no local proposals exist
-      const mockProposals: DeltaObject[] = [
+      const mockProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -812,9 +812,9 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
             metadata: {
-              proposalType: 'p2id',
-              recipientId: '0xrecipient',
-              faucetId: '0xfaucet',
+              proposal_type: 'p2id',
+              recipient_id: '0xrecipient',
+              faucet_id: '0xfaucet',
               amount: '100',
             },
           },
@@ -849,7 +849,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockDelta: DeltaObject = {
+      const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -857,9 +857,9 @@ describe('Multisig', () => {
           tx_summary: { data: 'AQID' },
           signatures: [],
           metadata: {
-            proposalType: 'add_signer',
-            targetThreshold: 2,
-            targetSignerCommitments: ['0x1', '0x2'],
+            proposal_type: 'add_signer',
+            target_threshold: 2,
+            signer_commitments: ['0x1', '0x2'],
             description: '',
           },
         },
@@ -897,7 +897,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockDelta: DeltaObject = {
+      const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -905,9 +905,9 @@ describe('Multisig', () => {
           tx_summary: { data: 'AQID' },
           signatures: [],
           metadata: {
-            proposalType: 'add_signer',
-            targetThreshold: 1,
-            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
             description: '',
           },
         },
@@ -947,7 +947,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
-      const mockDelta: DeltaObject = {
+      const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
@@ -999,7 +999,7 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
 
       // First sync with 1 signature (pending)
-      const mockProposalsPending: DeltaObject[] = [
+      const mockProposalsPending = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -1008,9 +1008,9 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
             metadata: {
-              proposalType: 'add_signer',
-              targetThreshold: 2,
-              targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+              proposal_type: 'add_signer',
+              target_threshold: 2,
+              signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
               description: '',
             },
           },
@@ -1038,15 +1038,15 @@ describe('Multisig', () => {
       expect(proposals[0].status.type).toBe('pending');
 
       // Second sync with 2 signatures (ready)
-      const mockProposalsReady: DeltaObject[] = [
+      const mockProposalsReady = [
         {
           ...mockProposalsPending[0],
           delta_payload: {
             ...mockProposalsPending[0].delta_payload,
             metadata: {
-              proposalType: 'add_signer',
-              targetThreshold: 2,
-              targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+              proposal_type: 'add_signer',
+              target_threshold: 2,
+              signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
               description: '',
             },
           },
@@ -1125,6 +1125,163 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner);
       expect(multisig.account).toBe(mockAccount);
+    });
+  });
+
+  describe('cross-client compatibility: sync with snake_case metadata', () => {
+    it('should parse Rust client proposals with snake_case metadata', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      // Simulates a PSM response with canonical snake_case metadata
+      const rustProposals = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              target_threshold: 3,
+              signer_commitments: ['0xa', '0xb', '0xc'],
+              salt: '0xlegacysalt',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'rust_client'.repeat(5),
+            cosigner_sigs: [],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: rustProposals }),
+      });
+
+      const proposals = await multisig.syncProposals();
+
+      expect(proposals.length).toBe(1);
+      // The TS client should normalize snake_case to camelCase
+      expect(proposals[0].metadata?.proposalType).toBe('change_threshold');
+      if (proposals[0].metadata?.proposalType === 'change_threshold') {
+        expect(proposals[0].metadata.targetThreshold).toBe(3);
+        expect(proposals[0].metadata.targetSignerCommitments).toEqual(['0xa', '0xb', '0xc']);
+      }
+    });
+
+    it('should parse Rust client P2ID proposal with snake_case fields', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      // P2ID proposal with canonical snake_case fields
+      const p2idProposals = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'p2id',
+              recipient_id: '0xrecipient',
+              faucet_id: '0xfaucet',
+              amount: '12345',
+              salt: '0xsalt',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'sig'.repeat(40) },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+            ],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: p2idProposals }),
+      });
+
+      const proposals = await multisig.syncProposals();
+
+      expect(proposals.length).toBe(1);
+      expect(proposals[0].metadata?.proposalType).toBe('p2id');
+      if (proposals[0].metadata?.proposalType === 'p2id') {
+        expect(proposals[0].metadata.recipientId).toBe('0xrecipient');
+        expect(proposals[0].metadata.faucetId).toBe('0xfaucet');
+        expect(proposals[0].metadata.amount).toBe('12345');
+      }
+    });
+
+    it('should parse switch_psm proposal with snake_case fields', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+
+      const switchPsmProposals = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'switch_psm',
+              new_psm_pubkey: '0xnewpubkey',
+              new_psm_endpoint: 'http://new-psm.com',
+              salt: '0xsalt',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: switchPsmProposals }),
+      });
+
+      const proposals = await multisig.syncProposals();
+
+      expect(proposals.length).toBe(1);
+      expect(proposals[0].metadata?.proposalType).toBe('switch_psm');
+      if (proposals[0].metadata?.proposalType === 'switch_psm') {
+        expect(proposals[0].metadata.newPsmPubkey).toBe('0xnewpubkey');
+        expect(proposals[0].metadata.newPsmEndpoint).toBe('http://new-psm.com');
+      }
     });
   });
 });

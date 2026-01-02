@@ -5,12 +5,29 @@ import type {
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
-  ProposalsResponse,
-  PubkeyResponse,
+  PushDeltaResponse,
   SignProposalRequest,
   Signer,
   StateObject,
 } from './types.js';
+import type {
+  ServerDeltaObject,
+  ServerDeltaProposalResponse,
+  ServerProposalsResponse,
+  ServerPubkeyResponse,
+  ServerStateObject,
+  ServerConfigureResponse,
+  ServerPushDeltaResponse,
+} from './server-types.js';
+import {
+  fromServerConfigureResponse,
+  fromServerDeltaObject,
+  fromServerStateObject,
+  toServerConfigureRequest,
+  toServerDeltaProposalRequest,
+  toServerExecutionDelta,
+  toServerSignProposalRequest,
+} from './conversion.js';
 
 /**
  * Error thrown by the PSM HTTP client.
@@ -43,16 +60,18 @@ export class PsmHttpClient {
 
   async getPubkey(): Promise<string> {
     const response = await this.fetch('/pubkey', { method: 'GET' });
-    const data = (await response.json()) as PubkeyResponse;
+    const data = (await response.json()) as ServerPubkeyResponse;
     return data.pubkey;
   }
 
   async configure(request: ConfigureRequest): Promise<ConfigureResponse> {
+    const serverRequest = toServerConfigureRequest(request);
     const response = await this.fetchAuthenticated('/configure', {
       method: 'POST',
-      body: JSON.stringify(request),
-    }, request.account_id);
-    return (await response.json()) as ConfigureResponse;
+      body: JSON.stringify(serverRequest),
+    }, request.accountId);
+    const server = (await response.json()) as ServerConfigureResponse;
+    return fromServerConfigureResponse(server);
   }
 
   async getState(accountId: string): Promise<StateObject> {
@@ -60,7 +79,8 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated(`/state?${params}`, {
       method: 'GET',
     }, accountId);
-    return (await response.json()) as StateObject;
+    const server = (await response.json()) as ServerStateObject;
+    return fromServerStateObject(server);
   }
 
   async getDeltaProposals(accountId: string): Promise<DeltaObject[]> {
@@ -68,32 +88,46 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated(`/delta/proposal?${params}`, {
       method: 'GET',
     }, accountId);
-    const data = (await response.json()) as ProposalsResponse;
-    return data.proposals;
+    const data = (await response.json()) as ServerProposalsResponse;
+    return data.proposals.map(fromServerDeltaObject);
   }
 
   async pushDeltaProposal(request: DeltaProposalRequest): Promise<DeltaProposalResponse> {
+    const serverRequest = toServerDeltaProposalRequest(request);
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'POST',
-      body: JSON.stringify(request),
-    }, request.account_id);
-    return (await response.json()) as DeltaProposalResponse;
+      body: JSON.stringify(serverRequest),
+    }, request.accountId);
+    const server = (await response.json()) as ServerDeltaProposalResponse;
+    return {
+      delta: fromServerDeltaObject(server.delta),
+      commitment: server.commitment,
+    };
   }
 
   async signDeltaProposal(request: SignProposalRequest): Promise<DeltaObject> {
+    const serverRequest = toServerSignProposalRequest(request);
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'PUT',
-      body: JSON.stringify(request),
-    }, request.account_id);
-    return (await response.json()) as DeltaObject;
+      body: JSON.stringify(serverRequest),
+    }, request.accountId);
+    const server = (await response.json()) as ServerDeltaObject;
+    return fromServerDeltaObject(server);
   }
 
-  async pushDelta(delta: ExecutionDelta): Promise<DeltaObject> {
+  async pushDelta(delta: ExecutionDelta): Promise<PushDeltaResponse> {
+    const serverDelta = toServerExecutionDelta(delta);
     const response = await this.fetchAuthenticated('/delta', {
       method: 'POST',
-      body: JSON.stringify(delta),
-    }, delta.account_id);
-    return (await response.json()) as DeltaObject;
+      body: JSON.stringify(serverDelta),
+    }, delta.accountId);
+    const server = (await response.json()) as ServerPushDeltaResponse;
+    return {
+      accountId: server.account_id,
+      nonce: server.nonce,
+      newCommitment: server.new_commitment,
+      ackSig: server.ack_sig,
+    };
   }
 
   async getDelta(accountId: string, nonce: number): Promise<DeltaObject> {
@@ -104,7 +138,8 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated(`/delta?${params}`, {
       method: 'GET',
     }, accountId);
-    return (await response.json()) as DeltaObject;
+    const server = (await response.json()) as ServerDeltaObject;
+    return fromServerDeltaObject(server);
   }
 
   async getDeltaSince(accountId: string, fromNonce: number): Promise<DeltaObject> {
@@ -115,7 +150,8 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated(`/delta/since?${params}`, {
       method: 'GET',
     }, accountId);
-    return (await response.json()) as DeltaObject;
+    const server = (await response.json()) as ServerDeltaObject;
+    return fromServerDeltaObject(server);
   }
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {

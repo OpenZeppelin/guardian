@@ -1,4 +1,3 @@
-// Types for the PSM (Private State Manager) client.
 
 export interface Signer {
   readonly commitment: string;
@@ -21,24 +20,31 @@ export interface AuthConfig {
 export type StorageType = 'Filesystem';
 
 export interface CosignerSignature {
-  signer_id: string;
+  signerId: string;
   signature: FalconSignature;
   timestamp: string;
 }
 
 export type DeltaStatus =
-  | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: CosignerSignature[] }
+  | { status: 'pending'; timestamp: string; proposerId: string; cosignerSigs: CosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
   | { status: 'discarded'; timestamp: string };
 
-export type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'switch_psm' | 'consume_notes' | 'p2id' | 'custom';
+export type ProposalType =
+  | 'add_signer'
+  | 'remove_signer'
+  | 'change_threshold'
+  | 'switch_psm'
+  | 'consume_notes'
+  | 'p2id'
+  | 'custom';
 
 export interface ProposalMetadata {
   proposalType?: ProposalType;
   targetThreshold?: number;
-  targetSignerCommitments?: string[];
-  saltHex?: string;
+  signerCommitments?: string[];
+  salt?: string;
   description?: string;
   newPsmPubkey?: string;
   newPsmEndpoint?: string;
@@ -49,48 +55,48 @@ export interface ProposalMetadata {
 }
 
 export interface DeltaObject {
-  account_id: string;
+  accountId: string;
   nonce: number;
-  prev_commitment: string;
-  new_commitment?: string;
-  delta_payload: {
-    tx_summary: { data: string };
-    signatures: Array<{ signer_id: string; signature: FalconSignature }>;
+  prevCommitment: string;
+  newCommitment?: string;
+  deltaPayload: {
+    txSummary: { data: string };
+    signatures: Array<{ signerId: string; signature: FalconSignature }>;
     metadata?: ProposalMetadata;
   };
-  ack_sig?: string;
+  ackSig?: string;
   status: DeltaStatus;
 }
 
 export interface ExecutionDelta {
-  account_id: string;
+  accountId: string;
   nonce: number;
-  prev_commitment: string;
-  new_commitment?: string;
-  delta_payload: { data: string };
-  ack_sig?: string;
+  prevCommitment: string;
+  newCommitment?: string;
+  deltaPayload: { data: string };
+  ackSig?: string;
   status: DeltaStatus;
 }
 
 export interface StateObject {
-  account_id: string;
+  accountId: string;
   commitment: string;
-  state_json: { data: string };
-  created_at: string;
-  updated_at: string;
+  stateJson: { data: string };
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ConfigureRequest {
-  account_id: string;
+  accountId: string;
   auth: AuthConfig;
-  initial_state: { data: string; account_id: string };
-  storage_type: StorageType;
+  initialState: { data: string; accountId: string };
+  storageType: StorageType;
 }
 
 export interface ConfigureResponse {
   success: boolean;
   message: string;
-  ack_pubkey?: string;
+  ackPubkey?: string;
 }
 
 export interface PubkeyResponse {
@@ -98,11 +104,11 @@ export interface PubkeyResponse {
 }
 
 export interface DeltaProposalRequest {
-  account_id: string;
+  accountId: string;
   nonce: number;
-  delta_payload: {
-    tx_summary: { data: string };
-    signatures: Array<{ signer_id: string; signature: FalconSignature }>;
+  deltaPayload: {
+    txSummary: { data: string };
+    signatures: Array<{ signerId: string; signature: FalconSignature }>;
     metadata?: ProposalMetadata;
   };
 }
@@ -117,7 +123,14 @@ export interface ProposalsResponse {
 }
 
 export interface SignProposalRequest {
-  account_id: string;
+  accountId: string;
   commitment: string;
   signature: FalconSignature;
+}
+
+export interface PushDeltaResponse {
+  accountId: string;
+  nonce: number;
+  newCommitment?: string;
+  ackSig?: string;
 }
