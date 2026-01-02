@@ -47,9 +47,10 @@ fn validate_tx_summary(tx_summary: &Value) -> Result<()> {
 }
 
 fn normalize_metadata(metadata: Value) -> Result<Value> {
-    let mut obj = metadata.as_object().cloned().ok_or_else(|| {
-        PsmError::InvalidDelta("metadata must be a JSON object".to_string())
-    })?;
+    let mut obj = metadata
+        .as_object()
+        .cloned()
+        .ok_or_else(|| PsmError::InvalidDelta("metadata must be a JSON object".to_string()))?;
 
     let proposal_type = match obj.get("proposal_type").and_then(Value::as_str) {
         Some(p) if VALID_PROPOSAL_TYPES.contains(&p) => p.to_string(),
@@ -58,7 +59,7 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
                 "Unknown proposal_type '{}'. Must be one of: {}",
                 p,
                 VALID_PROPOSAL_TYPES.join(", ")
-            )))
+            )));
         }
         None => infer_proposal_type(&obj)?,
     };
@@ -79,7 +80,10 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
 }
 
 fn infer_proposal_type(obj: &Map<String, Value>) -> Result<String> {
-    if obj.contains_key("recipient_id") || obj.contains_key("faucet_id") || obj.contains_key("amount") {
+    if obj.contains_key("recipient_id")
+        || obj.contains_key("faucet_id")
+        || obj.contains_key("amount")
+    {
         return Ok("p2id".to_string());
     }
     if obj
@@ -101,4 +105,3 @@ fn infer_proposal_type(obj: &Map<String, Value>) -> Result<String> {
         "Cannot determine proposal_type from metadata fields. Please provide an explicit proposal_type.".to_string(),
     ))
 }
-

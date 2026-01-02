@@ -26,8 +26,8 @@ pub use get_delta_proposals::{
 };
 pub use get_delta_since::{GetDeltaSinceParams, GetDeltaSinceResult, get_delta_since};
 pub use get_state::{GetStateParams, GetStateResult, get_state};
-pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use payload_normalize::normalize_payload;
+pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use push_delta_proposal::{
     PushDeltaProposalParams, PushDeltaProposalResult, push_delta_proposal,
 };

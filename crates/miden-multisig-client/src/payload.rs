@@ -275,11 +275,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
         }
-        .with_remove_signer_metadata(
-            2,
-            vec!["0xabc".to_string()],
-            "0xsalt".to_string(),
-        );
+        .with_remove_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string());
 
         let meta = payload.metadata.unwrap();
         assert_eq!(meta.proposal_type, "remove_signer");

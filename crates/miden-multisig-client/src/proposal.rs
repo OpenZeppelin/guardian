@@ -238,9 +238,10 @@ impl Proposal {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let amount = metadata_obj
-            .and_then(|m| m.get("amount"))
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+        let amount = metadata_obj.and_then(|m| m.get("amount")).and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        });
 
         // Extract note consumption fields
         let note_ids_hex: Vec<String> = metadata_obj
