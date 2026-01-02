@@ -161,8 +161,9 @@ impl MultisigClient {
 
     /// Resets the miden-client by clearing the SQLite database and recreating the client.
     ///
-    /// WORKAROUND: This is a recovery mechanism for miden-client v0.12.x issues where
-    /// the local partial MMR state can become corrupted, causing sync to panic.
+    /// This is useful when:
+    /// - The local partial MMR state becomes corrupted (causing sync to panic)
+    /// - Too many notes have accumulated in local state (exceeding RPC limits)
     ///
     /// This preserves:
     /// - The in-memory account state (re-added to the new client)
@@ -170,7 +171,7 @@ impl MultisigClient {
     /// - All key material
     ///
     /// After reset, sync will fetch notes from the network again.
-    pub(crate) async fn reset_miden_client(&mut self) -> Result<()> {
+    pub async fn reset_miden_client(&mut self) -> Result<()> {
         let store_path = self.account_dir.join("miden-client.sqlite");
         let backup_path = self.account_dir.join("miden-client.sqlite.corrupt");
 

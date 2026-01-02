@@ -32,7 +32,7 @@ impl SessionState {
     ) -> Result<(), String> {
         let account_dir = self.account_directory.path().to_path_buf();
 
-        let client = MultisigClient::builder()
+        let mut client = MultisigClient::builder()
             .miden_endpoint(miden_endpoint)
             .psm_endpoint(psm_endpoint)
             .account_dir(account_dir)
@@ -40,6 +40,12 @@ impl SessionState {
             .build()
             .await
             .map_err(|e| format!("Failed to create multisig client: {}", e))?;
+
+        // Reset miden-client state to avoid issues with accumulated notes
+        client
+            .reset_miden_client()
+            .await
+            .map_err(|e| format!("Failed to reset miden client: {}", e))?;
 
         self.client = Some(client);
         Ok(())

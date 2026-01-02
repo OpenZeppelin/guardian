@@ -172,7 +172,7 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
-            .with_signer_metadata(
+            .with_add_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
@@ -274,7 +274,7 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
-            .with_signer_metadata(
+            .with_remove_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),

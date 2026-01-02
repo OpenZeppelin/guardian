@@ -97,12 +97,16 @@ impl MultisigClient {
     /// Executes a proposal when it has enough signatures.
     ///
     /// This will:
-    /// 1. Get the proposal and verify it has enough signatures
-    /// 2. Push delta to PSM to get acknowledgment signature
-    /// 3. Build the transaction with all cosigner signatures + PSM ack
-    /// 4. Execute the transaction on-chain
-    /// 5. Sync and update local account state
+    /// 1. Sync with the Miden network to get latest chain state
+    /// 2. Get the proposal and verify it has enough signatures
+    /// 3. Push delta to PSM to get acknowledgment signature
+    /// 4. Build the transaction with all cosigner signatures + PSM ack
+    /// 5. Execute the transaction on-chain
+    /// 6. Sync and update local account state
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
+        // Sync with the network before executing to ensure we have latest state
+        self.sync().await?;
+
         let account = self.require_account()?.clone();
         let account_id = account.id();
 

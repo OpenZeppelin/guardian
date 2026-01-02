@@ -24,7 +24,7 @@ pub async fn sync_miden_state(client: &mut Client<()>) -> Result<()> {
     match result {
         Ok(Ok(_sync_summary)) => Ok(()),
         Ok(Err(e)) => Err(MultisigError::MidenClient(format!(
-            "failed to sync state: {}",
+            "failed to sync state: {:#?}",
             e
         ))),
         Err(panic_info) => {

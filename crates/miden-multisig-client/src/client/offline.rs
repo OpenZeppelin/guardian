@@ -320,6 +320,9 @@ impl MultisigClient {
     /// client.execute_imported_proposal(&proposal).await?;
     /// ```
     pub async fn execute_imported_proposal(&mut self, exported: &ExportedProposal) -> Result<()> {
+        // Sync with the network before executing to ensure we have latest state
+        self.sync().await?;
+
         let account = self.require_account()?.clone();
         let account_id = account.id();
 

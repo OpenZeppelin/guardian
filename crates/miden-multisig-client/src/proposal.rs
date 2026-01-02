@@ -205,15 +205,15 @@ impl Proposal {
             MultisigError::MidenClient(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        // Extract metadata
+        // Extract metadata using canonical field names
         let metadata_obj = payload_json.get("metadata");
 
         let new_threshold = metadata_obj
-            .and_then(|m| m.get("new_threshold"))
+            .and_then(|m| m.get("target_threshold"))
             .and_then(|v| v.as_u64());
 
         let signer_commitments_hex: Vec<String> = metadata_obj
-            .and_then(|m| m.get("signer_commitments_hex"))
+            .and_then(|m| m.get("signer_commitments"))
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -223,28 +223,28 @@ impl Proposal {
             .unwrap_or_default();
 
         let salt_hex = metadata_obj
-            .and_then(|m| m.get("salt_hex"))
+            .and_then(|m| m.get("salt"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         // Extract P2ID fields
         let recipient_hex = metadata_obj
-            .and_then(|m| m.get("recipient_hex"))
+            .and_then(|m| m.get("recipient_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let faucet_id_hex = metadata_obj
-            .and_then(|m| m.get("faucet_id_hex"))
+            .and_then(|m| m.get("faucet_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let amount = metadata_obj
             .and_then(|m| m.get("amount"))
-            .and_then(|v| v.as_u64());
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
 
         // Extract note consumption fields
         let note_ids_hex: Vec<String> = metadata_obj
-            .and_then(|m| m.get("note_ids_hex"))
+            .and_then(|m| m.get("note_ids"))
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -260,7 +260,7 @@ impl Proposal {
 
         // Extract PSM update fields
         let new_psm_pubkey_hex = metadata_obj
-            .and_then(|m| m.get("new_psm_pubkey_hex"))
+            .and_then(|m| m.get("new_psm_pubkey"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 

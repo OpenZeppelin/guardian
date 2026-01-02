@@ -135,6 +135,7 @@ let filter = NoteFilter::by_faucet_min_amount(faucet, 5_000);
 let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
+
 ## Demo CLI
 
  Run the Terminal UI demo in [`examples/demo`](../../examples/demo/), which exercises the same APIs for account management, note listing, proposal signing, and offline export/import.
