@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 async-trait = "0.1"
 axum = "0.8.6"
+base64 = { workspace = true }
 chrono = "0.4"
 hex = { workspace = true }
 rand = "0.9"

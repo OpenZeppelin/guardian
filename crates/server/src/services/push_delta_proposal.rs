@@ -2,7 +2,7 @@ use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::resolve_account;
+use crate::services::{normalize_payload, resolve_account};
 use private_state_manager_shared::DeltaSignature;
 use tracing::info;
 
@@ -31,7 +31,8 @@ pub async fn push_delta_proposal(
         credentials,
     } = params;
 
-    // Resolve account and verify authentication
+    let delta_payload = normalize_payload(delta_payload)?;
+
     let resolved = resolve_account(state, &account_id, &credentials).await?;
 
     // Fetch current state to validate delta
