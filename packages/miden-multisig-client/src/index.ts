@@ -2,8 +2,6 @@
  * @openzeppelin/miden-multisig-client
  *
  * TypeScript SDK for Miden multisig accounts with PSM (Private State Manager) integration.
- * This provides the same functionality as the Rust `miden-multisig-client` crate
- * but for browser and Node.js environments.
  *
  * @example
  * ```typescript
