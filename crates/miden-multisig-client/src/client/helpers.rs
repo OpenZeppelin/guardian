@@ -171,9 +171,6 @@ impl MultisigClient {
     }
 
     /// Adds an account to miden-client if it doesn't exist, or updates it if it does.
-    ///
-    /// This is a defensive helper that prevents duplicate account entries by checking
-    /// if the account is already tracked before calling add_account.
     pub(crate) async fn add_or_update_account(
         &mut self,
         account: &Account,
@@ -181,7 +178,6 @@ impl MultisigClient {
     ) -> Result<()> {
         let account_id = account.id();
 
-        // Check if account already exists in miden-client
         let existing = self
             .miden_client
             .get_account(account_id)
@@ -189,7 +185,6 @@ impl MultisigClient {
             .map_err(|e| MultisigError::MidenClient(format!("failed to check account: {}", e)))?;
 
         if existing.is_some() {
-            // Account exists - use overwrite=true to update
             self.miden_client
                 .add_account(account, true)
                 .await
@@ -197,7 +192,6 @@ impl MultisigClient {
                     MultisigError::MidenClient(format!("failed to update account: {}", e))
                 })?;
         } else {
-            // Account doesn't exist - add as new
             self.miden_client
                 .add_account(account, imported)
                 .await

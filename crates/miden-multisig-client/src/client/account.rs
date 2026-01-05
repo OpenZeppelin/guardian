@@ -203,22 +203,17 @@ impl MultisigClient {
             }
         };
 
-        // Extract the merged delta from the response
         let merged_delta = response.merged_delta.ok_or_else(|| {
             MultisigError::PsmServer("no merged_delta in response".to_string())
         })?;
 
-        // Parse the delta payload to get the TransactionSummary
         let tx_summary = merged_delta.try_into_tx_summary().map_err(|e| {
             MultisigError::MidenClient(format!("failed to parse delta payload: {}", e))
         })?;
 
-        // Get the AccountDelta from the TransactionSummary
         let account_delta = tx_summary.account_delta();
 
-        // Handle both full state deltas (new account) and partial deltas (updates)
         let updated_account: Account = if account_delta.is_full_state() {
-            // Full state delta - convert directly to Account (used for account deployment)
             Account::try_from(account_delta).map_err(|e| {
                 MultisigError::MidenClient(format!(
                     "failed to convert full state delta to account: {}",
@@ -226,7 +221,6 @@ impl MultisigClient {
                 ))
             })?
         } else {
-            // Partial delta - apply to existing account
             let mut acc: Account = account.into_inner();
             acc.apply_delta(account_delta).map_err(|e| {
                 MultisigError::MidenClient(format!("failed to apply delta to account: {}", e))
@@ -234,10 +228,8 @@ impl MultisigClient {
             acc
         };
 
-        // Update the miden-client with the new account state
         self.add_or_update_account(&updated_account, true).await?;
 
-        // Update our local cache
         let multisig_account = MultisigAccount::new(updated_account, &self.psm_endpoint);
         self.account = Some(multisig_account);
 
