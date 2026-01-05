@@ -10,10 +10,7 @@ use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsm
 use miden_objects::Word;
 use miden_objects::account::AccountId;
 use private_state_manager_client::{
-    AuthConfig,
-    ClientError as PsmClientError,
-    MidenFalconRpoAuth,
-    TryIntoTxSummary,
+    AuthConfig, ClientError as PsmClientError, MidenFalconRpoAuth, TryIntoTxSummary,
     auth_config::AuthType,
 };
 
@@ -155,9 +152,10 @@ impl MultisigClient {
     pub async fn sync(&mut self) -> Result<()> {
         self.get_deltas().await?;
 
-        self.miden_client.sync_state().await.map_err(|e| {
-            MultisigError::MidenClient(format!("failed to sync state: {:#?}", e))
-        })?;
+        self.miden_client
+            .sync_state()
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to sync state: {:#?}", e)))?;
 
         // Refresh cached account (commitment/nonce/etc.) from the miden-client store
         if let Some(current) = self.account.take() {
@@ -186,10 +184,7 @@ impl MultisigClient {
         let current_nonce = account.nonce();
 
         let mut psm_client = self.create_authenticated_psm_client().await?;
-        let response = match psm_client
-            .get_delta_since(&account_id, current_nonce)
-            .await
-        {
+        let response = match psm_client.get_delta_since(&account_id, current_nonce).await {
             Ok(resp) => resp,
             Err(PsmClientError::ServerError(msg)) if msg.contains("not found") => {
                 // No new deltas since current nonce - this is not an error
@@ -203,9 +198,9 @@ impl MultisigClient {
             }
         };
 
-        let merged_delta = response.merged_delta.ok_or_else(|| {
-            MultisigError::PsmServer("no merged_delta in response".to_string())
-        })?;
+        let merged_delta = response
+            .merged_delta
+            .ok_or_else(|| MultisigError::PsmServer("no merged_delta in response".to_string()))?;
 
         let tx_summary = merged_delta.try_into_tx_summary().map_err(|e| {
             MultisigError::MidenClient(format!("failed to parse delta payload: {}", e))

@@ -5,8 +5,8 @@ use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
 use miden_objects::utils::Serializable;
-use private_state_manager_shared::hex::FromHex;
 use private_state_manager_shared::DeltaSignature;
+use private_state_manager_shared::hex::FromHex;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -107,9 +107,11 @@ pub async fn sign_delta_proposal(
         .get_mut("signatures")
         .and_then(|v| v.as_array_mut())
     {
-        signatures.push(serde_json::to_value(new_sig).map_err(|e| {
-            PsmError::InvalidDelta(format!("Failed to serialize signature: {e}"))
-        })?);
+        signatures.push(
+            serde_json::to_value(new_sig).map_err(|e| {
+                PsmError::InvalidDelta(format!("Failed to serialize signature: {e}"))
+            })?,
+        );
     } else {
         delta_proposal
             .delta_payload

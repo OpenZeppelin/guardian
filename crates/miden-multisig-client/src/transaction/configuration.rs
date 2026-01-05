@@ -110,7 +110,8 @@ mod tests {
 
     #[test]
     fn signature_advice_key_matches_hash_elements_concat() {
-        let pubkey_commitment = Word::from([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
+        let pubkey_commitment =
+            Word::from([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
         let message = Word::from([Felt::new(5), Felt::new(6), Felt::new(7), Felt::new(8)]);
 
         let secret_key = SecretKey::new();

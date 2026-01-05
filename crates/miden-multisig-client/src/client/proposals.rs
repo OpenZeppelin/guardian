@@ -145,8 +145,8 @@ impl MultisigClient {
 
         // Collect signatures from the delta payload (available even after READY)
         let mut signature_inputs: Vec<SignatureInput> = {
-            let payload_json: serde_json::Value =
-                serde_json::from_str(&raw_proposal.delta_payload).map_err(|e| {
+            let payload_json: serde_json::Value = serde_json::from_str(&raw_proposal.delta_payload)
+                .map_err(|e| {
                     MultisigError::MidenClient(format!(
                         "failed to parse delta payload signatures: {}",
                         e
@@ -159,10 +159,7 @@ impl MultisigClient {
                     arr.iter()
                         .filter_map(|sig| {
                             let signer = sig.get("signer_id")?.as_str()?;
-                            let sig_hex = sig
-                                .get("signature")?
-                                .get("signature")?
-                                .as_str()?;
+                            let sig_hex = sig.get("signature")?.get("signature")?.as_str()?;
                             Some(SignatureInput {
                                 signer_commitment: signer.to_string(),
                                 signature_hex: sig_hex.to_string(),

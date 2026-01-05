@@ -138,7 +138,10 @@ pub(crate) async fn create_miden_client(
         .unwrap_or_default()
         .as_millis();
     let random_suffix: u32 = rand::random();
-    let store_path = account_dir.join(format!("miden-client-{}-{}.sqlite", timestamp, random_suffix));
+    let store_path = account_dir.join(format!(
+        "miden-client-{}-{}.sqlite",
+        timestamp, random_suffix
+    ));
     let store = SqliteStore::new(store_path)
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to open SQLite store: {}", e)))?;
