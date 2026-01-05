@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use miden_client::crypto::RpoRandomCoin;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
-use miden_client::{Client, ExecutionOptions, Word};
+use miden_client::{Client, ExecutionOptions};
 use miden_client_sqlite_store::SqliteStore;
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 use miden_objects::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
@@ -126,17 +126,26 @@ impl MultisigClientBuilder {
 }
 
 /// Creates a miden-client instance with SQLite storage.
+///
+/// Each call creates a fresh database with a unique filename to ensure
+/// no accumulated state from previous sessions.
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
 ) -> Result<Client<()>> {
-    let store_path = account_dir.join("miden-client.sqlite");
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let random_suffix: u32 = rand::random();
+    let store_path = account_dir.join(format!("miden-client-{}-{}.sqlite", timestamp, random_suffix));
     let store = SqliteStore::new(store_path)
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to open SQLite store: {}", e)))?;
     let store = Arc::new(store);
 
-    let rng = Box::new(RpoRandomCoin::new(Word::default()));
+    let rng_seed: [u32; 4] = rand::random();
+    let rng = Box::new(RpoRandomCoin::new(rng_seed.into()));
     let exec_options = ExecutionOptions::new(
         Some(MAX_TX_EXECUTION_CYCLES),
         MIN_TX_EXECUTION_CYCLES,
@@ -145,7 +154,7 @@ pub(crate) async fn create_miden_client(
     )
     .map_err(|e| MultisigError::MidenClient(format!("failed to build execution options: {}", e)))?;
 
-    let grpc_client = GrpcClient::new(endpoint, 10_000);
+    let grpc_client = GrpcClient::new(endpoint, 20_000);
     let rpc_client: Arc<dyn NodeRpcClient> = Arc::new(grpc_client);
 
     Client::new(

@@ -65,7 +65,6 @@ mod export;
 mod keystore;
 mod payload;
 mod proposal;
-mod sync;
 mod transaction;
 
 // Main client

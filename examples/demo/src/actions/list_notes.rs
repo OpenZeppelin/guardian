@@ -16,7 +16,7 @@ pub async fn action_list_notes(state: &mut SessionState) -> Result<(), String> {
 
     if notes.is_empty() {
         print_info("No consumable notes found");
-        print_info("(Notes must be committed on-chain to be consumable)");
+        print_info("Tip: run 'Sync account' to refresh local state from the network.");
         return Ok(());
     }
 

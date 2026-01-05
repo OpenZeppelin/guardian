@@ -47,7 +47,7 @@ impl PsmKeyStore {
         let public_key = secret_key.public_key();
         // Use the same commitment computation as miden-objects (SequentialCommit trait)
         let commitment = public_key.to_commitment();
-        let commitment_hex = format!("0x{}", hex::encode(commitment.as_bytes()));
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
 
         Self {
             secret_key,

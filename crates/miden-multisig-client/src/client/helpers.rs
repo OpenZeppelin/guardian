@@ -53,7 +53,12 @@ impl MultisigClient {
         use private_state_manager_shared::ToJson;
 
         let account_id = account.id();
-        let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+        let prev_commitment = format!(
+            "0x{}",
+            hex::encode(miden_objects::utils::serde::Serializable::to_bytes(
+                &account.commitment(),
+            ))
+        );
 
         // Push delta to PSM to get acknowledgment signature
         let mut psm_client = self.create_authenticated_psm_client().await?;
@@ -159,51 +164,46 @@ impl MultisigClient {
         Ok(())
     }
 
-    /// Resets the miden-client by clearing the SQLite database and recreating the client.
-    ///
-    /// This is useful when:
-    /// - The local partial MMR state becomes corrupted (causing sync to panic)
-    /// - Too many notes have accumulated in local state (exceeding RPC limits)
-    ///
-    /// This preserves:
-    /// - The in-memory account state (re-added to the new client)
-    /// - PSM connection and credentials
-    /// - All key material
-    ///
-    /// After reset, sync will fetch notes from the network again.
+    /// Resets the miden-client by creating a new instance with a fresh database.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        let store_path = self.account_dir.join("miden-client.sqlite");
-        let backup_path = self.account_dir.join("miden-client.sqlite.corrupt");
-
-        // Rename the corrupt DB file to free up the original path.
-        // This works even with open file handles on Unix (the old client still
-        // holds the renamed file). On Windows rename may fail, but we try anyway.
-        if store_path.exists() {
-            let _ = std::fs::rename(&store_path, &backup_path);
-        }
-
-        // Create new client with fresh DB at original path
         self.miden_client = create_miden_client(&self.account_dir, &self.miden_endpoint).await?;
+        Ok(())
+    }
 
-        // Clean up old files (best effort - may fail on Windows with open handles)
-        let _ = std::fs::remove_file(&backup_path);
-        let _ = std::fs::remove_file(self.account_dir.join("miden-client.sqlite-wal"));
-        let _ = std::fs::remove_file(self.account_dir.join("miden-client.sqlite-shm"));
+    /// Adds an account to miden-client if it doesn't exist, or updates it if it does.
+    ///
+    /// This is a defensive helper that prevents duplicate account entries by checking
+    /// if the account is already tracked before calling add_account.
+    pub(crate) async fn add_or_update_account(
+        &mut self,
+        account: &Account,
+        imported: bool,
+    ) -> Result<()> {
+        let account_id = account.id();
 
-        // Re-add the account to the new miden-client so sync can discover notes for it
-        if let Some(account) = &self.account {
+        // Check if account already exists in miden-client
+        let existing = self
+            .miden_client
+            .get_account(account_id)
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to check account: {}", e)))?;
+
+        if existing.is_some() {
+            // Account exists - use overwrite=true to update
             self.miden_client
-                .add_account(account.inner(), true) // true = imported
+                .add_account(account, true)
                 .await
                 .map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to re-add account after reset: {}",
-                        e
-                    ))
+                    MultisigError::MidenClient(format!("failed to update account: {}", e))
                 })?;
+        } else {
+            // Account doesn't exist - add as new
+            self.miden_client
+                .add_account(account, imported)
+                .await
+                .map_err(|e| MultisigError::MidenClient(format!("failed to add account: {}", e)))?;
         }
 
-        eprintln!("Local state reset successfully. Re-syncing...");
         Ok(())
     }
 }

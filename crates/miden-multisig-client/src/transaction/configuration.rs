@@ -45,9 +45,37 @@ pub fn build_signature_advice_entry(
     message: Word,
     signature: &Signature,
 ) -> (Word, Vec<Felt>) {
-    let key = Hasher::merge(&[pubkey_commitment, message]);
+    let mut elements = Vec::with_capacity(8);
+    elements.extend_from_slice(pubkey_commitment.as_elements());
+    elements.extend_from_slice(message.as_elements());
+    let key: Word = Hasher::hash_elements(&elements);
     let values = signature.to_prepared_signature(message);
     (key, values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miden_objects::account::auth::Signature as AccountSignature;
+    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+
+    #[test]
+    fn signature_advice_key_matches_hash_elements_concat() {
+        let pubkey_commitment = Word::from([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
+        let message = Word::from([Felt::new(5), Felt::new(6), Felt::new(7), Felt::new(8)]);
+
+        let secret_key = SecretKey::new();
+        let rpo_sig = secret_key.sign(message);
+        let signature = AccountSignature::from(rpo_sig);
+        let (key, _) = build_signature_advice_entry(pubkey_commitment, message, &signature);
+
+        let mut elements = Vec::with_capacity(8);
+        elements.extend_from_slice(pubkey_commitment.as_elements());
+        elements.extend_from_slice(message.as_elements());
+        let expected: Word = Hasher::hash_elements(&elements);
+
+        assert_eq!(key, expected);
+    }
 }
 
 /// Builds the update_signers transaction script.

@@ -725,14 +725,34 @@ async fn prompt_consume_notes(
 ) -> Result<TransactionType, String> {
     let client = state.get_client_mut()?;
 
-    print_waiting("Fetching consumable notes...");
-    let notes = client
+    print_waiting("Fetching consumable notes (local cache)...");
+    let mut notes = client
         .list_consumable_notes()
         .await
         .map_err(|e| format!("Failed to list notes: {}", e))?;
 
     if notes.is_empty() {
-        return Err("No consumable notes available".to_string());
+        print_info("No consumable notes in local cache.");
+        let confirm = prompt_input(editor, "Sync account now and retry? [y/N]: ")?;
+        if confirm.to_lowercase() != "y" {
+            return Err("No consumable notes available".to_string());
+        }
+
+        print_waiting("Syncing account state from network...");
+        client
+            .sync()
+            .await
+            .map_err(|e| format!("Failed to sync: {}", e))?;
+
+        print_waiting("Fetching consumable notes (local cache)...");
+        notes = client
+            .list_consumable_notes()
+            .await
+            .map_err(|e| format!("Failed to list notes: {}", e))?;
+
+        if notes.is_empty() {
+            return Err("No consumable notes available".to_string());
+        }
     }
 
     println!("\nConsumable notes:");

@@ -6,6 +6,7 @@ use crate::services::resolve_account;
 use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
 use miden_objects::utils::Serializable;
 use private_state_manager_shared::hex::FromHex;
+use private_state_manager_shared::DeltaSignature;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -96,6 +97,31 @@ pub async fn sign_delta_proposal(
         signer_id: signer_commitment_hex.clone(),
     };
     cosigner_sigs.push(new_signature);
+
+    let new_sig = DeltaSignature {
+        signer_id: signer_commitment_hex.clone(),
+        signature: cosigner_sigs.last().expect("just pushed").signature.clone(),
+    };
+    if let Some(signatures) = delta_proposal
+        .delta_payload
+        .get_mut("signatures")
+        .and_then(|v| v.as_array_mut())
+    {
+        signatures.push(serde_json::to_value(new_sig).map_err(|e| {
+            PsmError::InvalidDelta(format!("Failed to serialize signature: {e}"))
+        })?);
+    } else {
+        delta_proposal
+            .delta_payload
+            .as_object_mut()
+            .ok_or_else(|| PsmError::InvalidDelta("delta_payload must be an object".to_string()))?
+            .insert(
+                "signatures".to_string(),
+                serde_json::to_value(vec![new_sig]).map_err(|e| {
+                    PsmError::InvalidDelta(format!("Failed to serialize signature: {e}"))
+                })?,
+            );
+    }
 
     info!(
         account_id = %account_id,
@@ -248,6 +274,14 @@ mod tests {
             }
             _ => panic!("Expected Pending status"),
         }
+
+        let payload_sigs = result
+            .delta
+            .delta_payload
+            .get("signatures")
+            .and_then(|v| v.as_array())
+            .expect("signatures must exist in delta_payload");
+        assert_eq!(payload_sigs.len(), 1);
 
         let update_calls = storage.get_update_delta_proposal_calls();
         assert_eq!(update_calls.len(), 1);

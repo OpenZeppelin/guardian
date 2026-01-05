@@ -41,7 +41,6 @@ impl SessionState {
             .await
             .map_err(|e| format!("Failed to create multisig client: {}", e))?;
 
-        // Reset miden-client state to avoid issues with accumulated notes
         client
             .reset_miden_client()
             .await

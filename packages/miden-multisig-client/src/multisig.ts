@@ -201,7 +201,7 @@ export class Multisig {
         throw new Error('Missing proposal metadata from PSM');
       }
 
-      const proposal = this.deltaToProposal(delta, proposalId, resolvedMetadata);
+      const proposal = this.deltaToProposal(delta, proposalId, resolvedMetadata, existingProposal?.signatures);
 
       this.proposals.set(proposal.id, proposal);
     }
@@ -571,7 +571,7 @@ export class Multisig {
       signature,
     });
 
-    const proposal = this.deltaToProposal(delta, proposalId);
+    const proposal = this.deltaToProposal(delta, proposalId, undefined, existingProposal?.signatures);
 
     // Preserve metadata from existing proposal (e.g., target config for signer updates)
     if (existingProposal?.metadata) {
@@ -626,19 +626,17 @@ export class Multisig {
     // Build advice map with all signatures
     const adviceMap = new AdviceMap();
 
-    if (delta.status.status === 'pending') {
-      for (const cosignerSig of delta.status.cosignerSigs) {
-        const signerCommitment = Word.fromHex(normalizeHexWord(cosignerSig.signerId));
-        const sigBytes = signatureHexToBytes(cosignerSig.signature.signature);
-        const signature = Signature.deserialize(sigBytes);
-        const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
-        const { key, values } = buildSignatureAdviceEntry(
-          signerCommitment,
-          txCommitment,
-          signature
-        );
-        adviceMap.insert(key, new FeltArray(values));
-      }
+    for (const cosignerSig of proposal.signatures) {
+      const signerCommitment = Word.fromHex(normalizeHexWord(cosignerSig.signerId));
+      const sigBytes = signatureHexToBytes(cosignerSig.signature.signature);
+      const signature = Signature.deserialize(sigBytes);
+      const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
+      const { key, values } = buildSignatureAdviceEntry(
+        signerCommitment,
+        txCommitment,
+        signature
+      );
+      adviceMap.insert(key, new FeltArray(values));
     }
 
     const isSwitchPsm = proposal.metadata?.proposalType === 'switch_psm';
@@ -910,10 +908,15 @@ export class Multisig {
     return this.exportProposalToJson(proposalId);
   }
 
-  private deltaToProposal(delta: DeltaObject, proposalId: string, metadata?: ProposalMetadata): Proposal {
+  private deltaToProposal(
+    delta: DeltaObject,
+    proposalId: string,
+    metadata?: ProposalMetadata,
+    existingSignatures?: ProposalSignatureEntry[],
+  ): Proposal {
     const status = this.deltaStatusToProposalStatus(delta.status);
 
-    const signatures: ProposalSignatureEntry[] =
+    const signaturesFromStatus =
       delta.status.status === 'pending'
         ? delta.status.cosignerSigs.map((s) => ({
             signerId: s.signerId,
@@ -921,6 +924,15 @@ export class Multisig {
             timestamp: s.timestamp,
           }))
         : [];
+
+    const signaturesMap = new Map<string, ProposalSignatureEntry>();
+    for (const sig of existingSignatures ?? []) {
+      signaturesMap.set(sig.signerId, sig);
+    }
+    for (const sig of signaturesFromStatus) {
+      signaturesMap.set(sig.signerId, sig);
+    }
+    const signatures = Array.from(signaturesMap.values());
 
     const resolvedMetadata: ProposalMetadata | undefined =
       metadata ??

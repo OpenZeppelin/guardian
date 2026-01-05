@@ -143,37 +143,63 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        // Extract signatures from PSM delta status into SignatureInput format
-        // We fail explicitly if any cosigner entry is missing its signature data,
-        // rather than silently skipping corrupt entries.
-        let signature_inputs: Vec<SignatureInput> = if let Some(ref status) = raw_proposal.status
+        // Collect signatures from the delta payload (available even after READY)
+        let mut signature_inputs: Vec<SignatureInput> = {
+            let payload_json: serde_json::Value =
+                serde_json::from_str(&raw_proposal.delta_payload).map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to parse delta payload signatures: {}",
+                        e
+                    ))
+                })?;
+            payload_json
+                .get("signatures")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|sig| {
+                            let signer = sig.get("signer_id")?.as_str()?;
+                            let sig_hex = sig
+                                .get("signature")?
+                                .get("signature")?
+                                .as_str()?;
+                            Some(SignatureInput {
+                                signer_commitment: signer.to_string(),
+                                signature_hex: sig_hex.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // Also collect any signatures present in pending status from PSM (if still pending)
+        if let Some(ref status) = raw_proposal.status
             && let Some(ref status_oneof) = status.status
             && let Status::Pending(pending) = status_oneof
         {
-            pending
-                .cosigner_sigs
-                .iter()
-                .map(|cosigner_sig| {
-                    let sig_hex = cosigner_sig
-                        .signature
-                        .as_ref()
-                        .ok_or_else(|| {
-                            MultisigError::Signature(format!(
-                                "missing signature for cosigner {}",
-                                cosigner_sig.signer_id
-                            ))
-                        })?
-                        .signature
-                        .clone();
-                    Ok(SignatureInput {
-                        signer_commitment: cosigner_sig.signer_id.clone(),
-                        signature_hex: sig_hex,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            Vec::new()
-        };
+            for cosigner_sig in &pending.cosigner_sigs {
+                let sig_hex = cosigner_sig
+                    .signature
+                    .as_ref()
+                    .ok_or_else(|| {
+                        MultisigError::Signature(format!(
+                            "missing signature for cosigner {}",
+                            cosigner_sig.signer_id
+                        ))
+                    })?
+                    .signature
+                    .clone();
+                signature_inputs.push(SignatureInput {
+                    signer_commitment: cosigner_sig.signer_id.clone(),
+                    signature_hex: sig_hex,
+                });
+            }
+        }
+
+        // Deduplicate by signer commitment
+        signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
+        signature_inputs.dedup_by(|a, b| a.signer_commitment == b.signer_commitment);
 
         // Build signature advice from cosigner signatures
         // Important: Use CURRENT account signers for validation, not proposal's new signers.

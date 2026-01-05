@@ -97,9 +97,6 @@ impl MultisigClient {
     pub async fn list_consumable_notes(&mut self) -> Result<Vec<ConsumableNote>> {
         let account_id = self.require_account()?.id();
 
-        // Sync first to get latest notes
-        self.sync().await?;
-
         let consumable = self
             .miden_client
             .get_consumable_notes(Some(account_id))
@@ -133,9 +130,6 @@ impl MultisigClient {
     /// Returns a list of all committed notes (not just consumable).
     pub async fn list_committed_notes(&mut self) -> Result<Vec<ConsumableNote>> {
         let account_id = self.require_account()?.id();
-
-        // Sync first to get latest notes
-        self.sync().await?;
 
         let notes = self
             .miden_client
