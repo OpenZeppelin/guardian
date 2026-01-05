@@ -1,10 +1,5 @@
-import {
-  MultisigClient,
-  FalconSigner,
-  setMasmBaseUrl,
-} from '@openzeppelin/miden-multisig-client';
 import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
-import { MASM_BASE_URL, MIDEN_DB_NAME, MIDEN_RPC_URL, PSM_ENDPOINT } from '@/config';
+import { MIDEN_DB_NAME, MIDEN_RPC_URL } from '@/config';
 import type { SignerInfo } from '@/types';
 
 export async function clearMidenDatabase(dbName = MIDEN_DB_NAME): Promise<void> {
@@ -32,17 +27,4 @@ export async function initializeSigner(webClient: WebClient): Promise<SignerInfo
   const publicKey = secretKey.publicKey();
   const commitment = publicKey.toCommitment().toHex();
   return { commitment, secretKey };
-}
-
-export async function initClients(psmEndpoint = PSM_ENDPOINT) {
-  setMasmBaseUrl(MASM_BASE_URL);
-  const webClient = await createWebClient();
-  const signerInfo = await initializeSigner(webClient);
-
-  const multisigClient = new MultisigClient(webClient, { psmEndpoint });
-  const psmPubkey = await multisigClient.psmClient.getPubkey();
-
-  const falconSigner = new FalconSigner(signerInfo.secretKey);
-
-  return { webClient, multisigClient, signerInfo, falconSigner, psmPubkey };
 }
