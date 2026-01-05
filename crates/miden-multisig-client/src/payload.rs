@@ -7,82 +7,51 @@ use serde::{Deserialize, Serialize};
 use crate::keystore::KeyManager;
 
 /// Metadata for multisig transaction proposals.
-///
-/// This contains information needed to reconstruct and execute the transaction
-/// after all signatures have been collected.
-///
-/// Field names use the canonical format expected by the PSM server.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct ProposalMetadataPayload {
-    /// Explicit proposal type (required by PSM server).
-    /// Valid values: add_signer, remove_signer, change_threshold, switch_psm, consume_notes, p2id
     pub proposal_type: String,
-
-    /// Description of the proposal.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 
-    /// Target threshold after the transaction (for signer updates).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_threshold: Option<u64>,
 
-    /// Signer commitments as hex strings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signer_commitments: Vec<String>,
 
-    /// Salt used for transaction authentication.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub salt: Option<String>,
 
-    // Payment (P2ID) fields
-    /// Recipient account ID as hex string (for P2ID transfers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient_id: Option<String>,
 
-    /// Faucet ID as hex string (for P2ID transfers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faucet_id: Option<String>,
 
-    /// Amount to transfer (for P2ID transfers) - serialized as string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<String>,
 
-    // Note consumption fields
-    /// Note IDs to consume as hex strings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
 
-    // PSM update fields
-    /// New PSM public key commitment as hex string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_pubkey: Option<String>,
 
-    /// New PSM endpoint URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_endpoint: Option<String>,
 }
 
 /// Complete payload for a multisig transaction proposal.
-///
-/// This is the structured format sent to PSM when creating a proposal.
-/// It contains:
-/// - The transaction summary (serialized)
-/// - Initial signatures from the proposer
-/// - Metadata needed for execution
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProposalPayload {
-    /// The transaction summary.
     pub tx_summary: serde_json::Value,
-    /// Signatures collected so far.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signatures: Vec<DeltaSignature>,
-    /// Metadata for the proposal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ProposalMetadataPayload>,
 }
 
 impl ProposalPayload {
-    /// Creates a new proposal payload from a transaction summary.
     pub fn new(tx_summary: &TransactionSummary) -> Self {
         Self {
             tx_summary: tx_summary.to_json(),

@@ -20,15 +20,6 @@ use crate::error::{MultisigError, Result};
 
 impl MultisigClient {
     /// Creates a new multisig account.
-    ///
-    /// This will:
-    /// 1. Fetch the PSM server's public key commitment
-    /// 2. Create the multisig account using miden-confidential-contracts
-    /// 3. Add the account to the local miden-client
-    /// 4. Store the account in the client
-    ///
-    /// Note: After creation, you should call `push_account` to register
-    /// the account with the PSM server.
     pub async fn create_account(
         &mut self,
         threshold: u32,
@@ -77,12 +68,10 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get state: {}", e)))?;
 
-        // Extract state JSON from response
         let state_obj = state_response
             .state
             .ok_or_else(|| MultisigError::PsmServer("no state returned from PSM".to_string()))?;
 
-        // Parse the state JSON to get the base64-encoded account
         let state_value: serde_json::Value = serde_json::from_str(&state_obj.state_json)?;
 
         let account_base64 = state_value["data"]
@@ -97,10 +86,8 @@ impl MultisigClient {
             MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
         })?;
 
-        // Add to miden-client
         self.add_or_update_account(&account, true).await?;
 
-        // Wrap and store
         let multisig_account = MultisigAccount::new(account, &self.psm_endpoint);
         self.account = Some(multisig_account);
 
@@ -108,19 +95,14 @@ impl MultisigClient {
     }
 
     /// Pushes the current account to PSM for initial registration.
-    ///
-    /// This should be called after `create_account` to register the account
-    /// with the PSM server so other cosigners can pull it.
     pub async fn push_account(&mut self) -> Result<()> {
         let account = self
             .account
             .as_ref()
             .ok_or_else(|| MultisigError::MissingConfig("no account loaded".to_string()))?;
 
-        // Use authenticated client for PSM configuration
         let mut psm_client = self.create_authenticated_psm_client().await?;
 
-        // Serialize account to base64 (matching the demo pattern)
         let account_bytes = account.inner().to_bytes();
         let account_base64 = base64::engine::general_purpose::STANDARD.encode(&account_bytes);
 
@@ -129,7 +111,6 @@ impl MultisigClient {
             "account_id": account.id().to_string(),
         });
 
-        // Build auth config with cosigner commitments
         let cosigner_commitments = account.cosigner_commitments_hex();
         let auth_config = AuthConfig {
             auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
@@ -234,10 +215,8 @@ impl MultisigClient {
     /// Syncs account state from PSM and updates the local cache.
     pub async fn sync_account(&mut self) -> Result<()> {
         if self.account().is_some() {
-            // Account already loaded locally; just sync state with the network.
             self.sync().await
         } else {
-            // No local account; pull from PSM to hydrate.
             let account_id = self.require_account()?.id();
             self.pull_account(account_id).await?;
             Ok(())
@@ -245,13 +224,6 @@ impl MultisigClient {
     }
 
     /// Registers the current account on the PSM server.
-    ///
-    /// This is useful after:
-    /// - Switching to a new PSM endpoint
-    /// - Re-registering an account that was removed from PSM
-    /// - Initial account setup (alternative to the automatic registration in `create_account`)
-    ///
-    /// The account must already be loaded locally via `create_account` or `pull_account`.
     ///
     /// # Example
     ///
@@ -265,16 +237,6 @@ impl MultisigClient {
     }
 
     /// Changes the PSM endpoint and optionally registers the account on the new server.
-    ///
-    /// Use this when:
-    /// - The PSM server has moved to a new address (same server, new URL)
-    /// - You want to switch to a different PSM provider without on-chain changes
-    ///
-    /// **Note:** This does NOT update the on-chain PSM public key. For that, use
-    /// `propose_transaction(TransactionType::SwitchPsm { ... })` which will:
-    /// 1. Update the PSM public key on-chain
-    /// 2. Execute the transaction
-    /// 3. Automatically register on the new PSM
     ///
     /// # Arguments
     ///

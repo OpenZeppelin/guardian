@@ -4,30 +4,6 @@
 //! and importing them back. This enables offline sharing of proposals via
 //! side channels (email, USB, etc.) when the PSM server is unavailable.
 //!
-//! # Export File Format
-//!
-//! Proposals are exported as JSON files with all the information needed to:
-//! - Display proposal details to cosigners
-//! - Add signatures offline
-//! - Execute the transaction when ready
-//!
-//! # Workflow
-//!
-//! **Exporting (Proposer):**
-//! 1. Create proposal via `propose_transaction()`
-//! 2. Export via `export_proposal()` or `export_proposal_to_string()`
-//! 3. Share file via side channel
-//!
-//! **Importing & Signing (Cosigner):**
-//! 1. Receive file via side channel
-//! 2. Import via `import_proposal()`
-//! 3. Sign via `sign_imported_proposal()`
-//! 4. Export updated proposal with new signature
-//! 5. Share back to proposer or next cosigner
-//!
-//! **Executing (Any cosigner with enough signatures):**
-//! 1. Import final proposal with all signatures
-//! 2. Execute via `execute_imported_proposal()`
 
 use miden_objects::account::AccountId;
 use miden_objects::transaction::TransactionSummary;
@@ -41,85 +17,58 @@ use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionTyp
 pub const EXPORT_VERSION: u32 = 1;
 
 /// Exported proposal for offline sharing.
-///
-/// Contains all the information needed to reconstruct, sign, and execute
-/// a proposal without access to the PSM server.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExportedProposal {
-    /// Format version for future compatibility.
     pub version: u32,
-
-    /// Account ID this proposal belongs to.
     pub account_id: String,
 
-    /// Proposal ID (commitment hex).
     pub id: String,
-
-    /// Account nonce at proposal creation.
     pub nonce: u64,
 
-    /// Transaction type identifier.
     pub transaction_type: String,
-
-    /// Full transaction summary as JSON.
     pub tx_summary: serde_json::Value,
 
-    /// Signatures collected (accumulates as proposal is passed between cosigners).
     #[serde(default)]
     pub signatures: Vec<ExportedSignature>,
 
-    /// Threshold required for execution.
     pub signatures_required: usize,
-
-    /// All metadata needed for reconstruction.
     pub metadata: ExportedMetadata,
 }
 
 /// A signature collected for an exported proposal.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExportedSignature {
-    /// Signer's public key commitment (hex).
     pub signer_commitment: String,
-    /// Falcon signature (hex).
     pub signature: String,
 }
 
 /// Metadata needed for proposal reconstruction.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ExportedMetadata {
-    /// Salt used for transaction authentication (hex).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub salt_hex: Option<String>,
 
-    /// New threshold (for signer updates).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_threshold: Option<u64>,
 
-    /// Signer commitments as hex strings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signer_commitments_hex: Vec<String>,
 
-    /// Recipient account ID as hex string (for P2ID transfers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient_hex: Option<String>,
 
-    /// Faucet ID as hex string (for P2ID transfers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faucet_id_hex: Option<String>,
 
-    /// Amount to transfer (for P2ID transfers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<u64>,
 
-    /// Note IDs to consume as hex strings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,
 
-    /// New PSM public key commitment as hex string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_pubkey_hex: Option<String>,
 
-    /// New PSM endpoint URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_endpoint: Option<String>,
 }
@@ -138,8 +87,6 @@ impl ExportedProposal {
 
         let signatures_required = proposal.signatures_required();
 
-        // We only have signer IDs from status, not full signatures
-        // The signatures will need to be provided separately when exporting from PSM
         let signatures = Vec::new();
 
         let metadata = ExportedMetadata {
@@ -179,16 +126,13 @@ impl ExportedProposal {
 
     /// Converts the ExportedProposal back to a Proposal.
     pub fn to_proposal(&self) -> Result<Proposal> {
-        // Parse transaction summary
         let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        // Parse account ID
         let _account_id = AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
 
-        // Build ProposalMetadata
         let metadata = ProposalMetadata {
             tx_summary_json: Some(self.tx_summary.clone()),
             new_threshold: self.metadata.new_threshold,
@@ -204,10 +148,8 @@ impl ExportedProposal {
             collected_signatures: Some(self.signatures.len()),
         };
 
-        // Determine transaction type from the string
         let transaction_type = self.parse_transaction_type(&metadata)?;
 
-        // Build status
         let signers: Vec<String> = self
             .signatures
             .iter()
@@ -268,7 +210,6 @@ impl ExportedProposal {
                 Ok(TransactionType::ConsumeNotes { note_ids })
             }
             "AddCosigner" => {
-                // Find the new commitment (last one in the list that's being added)
                 let commitments = metadata.signer_commitments()?;
                 let new_commitment = commitments.last().cloned().ok_or_else(|| {
                     MultisigError::MissingConfig("new cosigner commitment".to_string())
@@ -276,8 +217,6 @@ impl ExportedProposal {
                 Ok(TransactionType::AddCosigner { new_commitment })
             }
             "RemoveCosigner" => {
-                // For remove, we'd need to track which was removed
-                // For now, return UpdateSigners as a fallback
                 let signer_commitments = metadata.signer_commitments()?;
                 let new_threshold = metadata
                     .new_threshold
@@ -386,7 +325,6 @@ impl ExportedProposal {
     pub fn from_json(json: &str) -> Result<Self> {
         let exported: Self = serde_json::from_str(json)?;
 
-        // Validate version
         if exported.version > EXPORT_VERSION {
             return Err(MultisigError::InvalidConfig(format!(
                 "unsupported export version {}, maximum supported is {}",

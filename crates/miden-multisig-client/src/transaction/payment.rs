@@ -17,15 +17,6 @@ use crate::error::{MultisigError, Result};
 ///
 /// Creates a pay-to-id note and builds a transaction request to send it.
 /// This uses the low-level `create_p2id_note` and `build_send_notes_script`
-/// approach for compatibility with multisig authentication.
-///
-/// # Arguments
-///
-/// * `sender_account` - The multisig account sending assets
-/// * `recipient` - The recipient account ID
-/// * `assets` - Assets to transfer
-/// * `salt` - Salt for replay protection
-/// * `signature_advice` - Iterator of (key, values) pairs for signature advice map
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
@@ -36,10 +27,8 @@ pub fn build_p2id_transaction_request<I>(
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    // Create random coin for note generation
     let mut rng = RpoRandomCoin::new(salt);
 
-    // Create the P2ID note
     let note = create_p2id_note(
         sender_account.id(),
         recipient,
@@ -61,9 +50,6 @@ where
         })?;
 
     // Build the transaction request with signature advice
-    // Note: When using custom_script (build_send_notes_script), we should NOT also set
-    // own_output_notes as that causes a conflict. The script handles note output internally.
-    // We use expected_output_recipients to track the expected notes using the note's recipient.
     let request = TransactionRequestBuilder::new()
         .custom_script(send_script)
         .expected_output_recipients(vec![note.recipient().clone()])

@@ -1,6 +1,4 @@
 //! Note consumption transaction utilities.
-//!
-//! Functions for building transactions that consume notes sent to a multisig account.
 
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_objects::note::NoteId;
@@ -32,7 +30,6 @@ where
         ));
     }
 
-    // Build transaction request with authenticated input notes
     let request = TransactionRequestBuilder::new()
         .authenticated_input_notes(note_ids.iter().map(|id| (*id, None)).collect::<Vec<_>>())
         .extend_advice_map(signature_advice)

@@ -725,7 +725,7 @@ async fn prompt_consume_notes(
 ) -> Result<TransactionType, String> {
     let client = state.get_client_mut()?;
 
-    print_waiting("Fetching consumable notes (local cache)...");
+    print_waiting("Fetching consumable notes...");
     let mut notes = client
         .list_consumable_notes()
         .await

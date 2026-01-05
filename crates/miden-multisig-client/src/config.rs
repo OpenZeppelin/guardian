@@ -2,15 +2,13 @@
 
 use miden_objects::Word;
 
-/// Configuration for connecting to a PSM server.
 #[derive(Debug, Clone)]
 pub struct PsmConfig {
-    /// The gRPC endpoint URL (e.g., "http://localhost:50051").
+    /// The gRPC endpoint URL
     pub endpoint: String,
 }
 
 impl PsmConfig {
-    /// Creates a new PSM configuration with the given endpoint.
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -21,11 +19,8 @@ impl PsmConfig {
 /// Configuration for creating a new multisig account.
 #[derive(Debug, Clone)]
 pub struct MultisigConfig {
-    /// Minimum number of signatures required to authorize a transaction.
     pub threshold: u32,
-    /// Public key commitments of all signers.
     pub signer_commitments: Vec<Word>,
-    /// PSM server configuration.
     pub psm_config: PsmConfig,
 }
 

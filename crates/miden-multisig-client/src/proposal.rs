@@ -13,28 +13,20 @@ use crate::error::{MultisigError, Result};
 /// Status of a proposal in the signing workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposalStatus {
-    /// Proposal created, awaiting signatures.
     Pending {
-        /// Number of signatures collected so far.
         signatures_collected: usize,
-        /// Number of signatures required (threshold).
         signatures_required: usize,
-        /// Commitment hex strings of signers who have signed.
         signers: Vec<String>,
     },
-    /// All signatures collected, ready for finalization.
     Ready,
-    /// Proposal has been finalized and submitted.
     Finalized,
 }
 
 impl ProposalStatus {
-    /// Returns true if the proposal is ready for finalization.
     pub fn is_ready(&self) -> bool {
         matches!(self, ProposalStatus::Ready)
     }
 
-    /// Returns true if the proposal is still pending signatures.
     pub fn is_pending(&self) -> bool {
         matches!(self, ProposalStatus::Pending { .. })
     }
@@ -43,24 +35,18 @@ impl ProposalStatus {
 /// Types of transactions supported by the multisig SDK.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionType {
-    /// Transfer assets to another account via P2ID.
     P2ID {
         recipient: AccountId,
         faucet_id: AccountId,
         amount: u64,
     },
-    /// Consume notes sent to this account.
     ConsumeNotes { note_ids: Vec<NoteId> },
-    /// Add a new cosigner to the multisig.
     AddCosigner { new_commitment: Word },
-    /// Remove an existing cosigner from the multisig.
     RemoveCosigner { commitment: Word },
-    /// Switch to a different PSM server.
     SwitchPsm {
         new_endpoint: String,
         new_commitment: Word,
     },
-    /// Update signers configuration (generic).
     UpdateSigners {
         new_threshold: u32,
         signer_commitments: Vec<Word>,
@@ -112,36 +98,21 @@ impl TransactionType {
 /// Metadata needed to reconstruct and finalize a proposal.
 #[derive(Debug, Clone, Default)]
 pub struct ProposalMetadata {
-    /// The raw transaction summary JSON.
     pub tx_summary_json: Option<Value>,
-    /// New threshold (for signer updates).
     pub new_threshold: Option<u64>,
-    /// Signer commitments as hex strings.
     pub signer_commitments_hex: Vec<String>,
-    /// Salt used for transaction authentication.
     pub salt_hex: Option<String>,
 
-    // Payment (P2ID) fields
-    /// Recipient account ID as hex string.
     pub recipient_hex: Option<String>,
-    /// Faucet ID as hex string.
     pub faucet_id_hex: Option<String>,
-    /// Amount to transfer.
     pub amount: Option<u64>,
 
-    // Note consumption fields
-    /// Note IDs to consume as hex strings.
     pub note_ids_hex: Vec<String>,
 
-    // PSM update fields
-    /// New PSM public key commitment as hex string.
     pub new_psm_pubkey_hex: Option<String>,
-    /// New PSM endpoint URL.
     pub new_psm_endpoint: Option<String>,
 
-    /// Cached signature threshold for this proposal.
     pub required_signatures: Option<usize>,
-    /// Cached signatures collected count (e.g., initial proposer signature).
     pub collected_signatures: Option<usize>,
 }
 
@@ -174,22 +145,15 @@ impl ProposalMetadata {
 /// A proposal for a multisig transaction.
 #[derive(Debug, Clone)]
 pub struct Proposal {
-    /// Unique identifier (tx_summary commitment hex).
     pub id: String,
-    /// Account nonce at proposal creation.
     pub nonce: u64,
-    /// Type of transaction.
     pub transaction_type: TransactionType,
-    /// Current status.
     pub status: ProposalStatus,
-    /// The transaction summary.
     pub tx_summary: TransactionSummary,
-    /// Metadata for reconstruction.
     pub metadata: ProposalMetadata,
 }
 
 impl Proposal {
-    /// Creates a Proposal from a PSM DeltaObject.
     pub fn from(
         delta: &DeltaObject,
         current_threshold: u32,
@@ -205,7 +169,6 @@ impl Proposal {
             MultisigError::MidenClient(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        // Extract metadata using canonical field names
         let metadata_obj = payload_json.get("metadata");
 
         let new_threshold = metadata_obj
@@ -243,7 +206,6 @@ impl Proposal {
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         });
 
-        // Extract note consumption fields
         let note_ids_hex: Vec<String> = metadata_obj
             .and_then(|m| m.get("note_ids"))
             .and_then(|v| v.as_array())
@@ -259,7 +221,6 @@ impl Proposal {
             .map(|hex| Ok(NoteId::from(hex_to_word(hex)?)))
             .collect::<Result<_>>()?;
 
-        // Extract PSM update fields
         let new_psm_pubkey_hex = metadata_obj
             .and_then(|m| m.get("new_psm_pubkey"))
             .and_then(|v| v.as_str())
@@ -285,7 +246,6 @@ impl Proposal {
             collected_signatures: None,
         };
 
-        // Determine transaction type
         let transaction_type = if !parsed_note_ids.is_empty() {
             TransactionType::ConsumeNotes {
                 note_ids: parsed_note_ids,
@@ -293,7 +253,6 @@ impl Proposal {
         } else if let (Some(recipient_str), Some(faucet_str), Some(amt)) =
             (&recipient_hex, &faucet_id_hex, amount)
         {
-            // This is a P2ID transfer
             let recipient = AccountId::from_hex(recipient_str)
                 .map_err(|e| MultisigError::InvalidConfig(format!("invalid recipient: {}", e)))?;
             let faucet_id = AccountId::from_hex(faucet_str)
@@ -305,14 +264,12 @@ impl Proposal {
             }
         } else if let (Some(pubkey_hex), Some(endpoint)) = (&new_psm_pubkey_hex, &new_psm_endpoint)
         {
-            // PSM switch transaction
             let new_commitment = hex_to_word(pubkey_hex)?;
             TransactionType::SwitchPsm {
                 new_endpoint: endpoint.clone(),
                 new_commitment,
             }
         } else if let Some(threshold) = new_threshold {
-            // Signer update transaction
             let proposed_signers = metadata.signer_commitments()?;
             determine_transaction_type(
                 threshold as u32,
@@ -326,9 +283,6 @@ impl Proposal {
             ));
         };
 
-        // Count signatures from delta status
-        // For signer updates, we need the CURRENT threshold to determine required signatures,
-        // since the on-chain code verifies against the currently stored config.
         let (signatures_collected, signers) = count_signatures_from_delta(delta);
         let signatures_required = current_threshold as usize;
         metadata.collected_signatures = Some(signatures_collected);
@@ -343,7 +297,6 @@ impl Proposal {
             }
         };
 
-        // Compute proposal ID from tx_summary commitment
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));
 
@@ -357,7 +310,7 @@ impl Proposal {
         })
     }
 
-    /// Creates a new Proposal (used when creating proposals locally).
+    /// Creates a new Proposal
     pub fn new(
         tx_summary: TransactionSummary,
         nonce: u64,
@@ -387,7 +340,6 @@ impl Proposal {
         }
     }
 
-    /// Checks if a signer has already signed this proposal.
     pub fn has_signed(&self, signer_commitment_hex: &str) -> bool {
         match &self.status {
             ProposalStatus::Pending { signers, .. } => signers
@@ -397,7 +349,6 @@ impl Proposal {
         }
     }
 
-    /// Returns the number of signatures collected.
     pub fn signatures_collected(&self) -> usize {
         match &self.status {
             ProposalStatus::Pending {
@@ -412,7 +363,6 @@ impl Proposal {
         }
     }
 
-    /// Returns the number of signatures required.
     pub fn signatures_required(&self) -> usize {
         match &self.status {
             ProposalStatus::Pending {
@@ -426,21 +376,16 @@ impl Proposal {
         }
     }
 
-    /// Returns (collected, required) signature counts.
     pub fn signature_counts(&self) -> (usize, usize) {
         (self.signatures_collected(), self.signatures_required())
     }
 
-    /// Returns the number of additional signatures needed for finalization.
-    /// Returns 0 if the proposal is ready.
     pub fn signatures_needed(&self) -> usize {
         self.signatures_required()
             .saturating_sub(self.signatures_collected())
     }
 
     /// Returns the commitment hex strings of signers who haven't signed yet.
-    ///
-    /// Returns an empty list if the proposal is Ready or Finalized (no missing signers).
     pub fn missing_signers(&self) -> Vec<String> {
         match &self.status {
             ProposalStatus::Pending { signers, .. } => {

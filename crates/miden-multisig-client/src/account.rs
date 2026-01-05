@@ -142,9 +142,3 @@ impl MultisigAccount {
             .map_err(|e| MultisigError::AccountStorage(e.to_string()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // Note: Full tests require creating actual multisig accounts which needs
-    // the miden-confidential-contracts crate. Integration tests will cover this.
-}

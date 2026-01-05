@@ -20,8 +20,6 @@ use miden_objects::{Felt, FieldElement, Word};
 use crate::error::{MultisigError, Result};
 
 /// Executes a transaction to get its summary (expects Unauthorized error).
-///
-/// This is used to get the TransactionSummary for signing before creating a proposal.
 pub async fn execute_for_summary(
     client: &mut Client<()>,
     account_id: AccountId,

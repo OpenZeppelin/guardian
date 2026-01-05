@@ -11,13 +11,6 @@ use miden_objects::{Felt, Word};
 use crate::error::{MultisigError, Result};
 
 /// Builds the update_psm_public_key transaction script.
-///
-/// This script:
-/// 1. Loads the new PSM public key from the advice map using the script_arg as key
-/// 2. Calls `update_psm_public_key` which disables PSM, updates the key, and re-enables PSM
-///
-/// Note: The `update_psm_public_key` MASM procedure uses `adv_loadw` to read from the advice stack.
-/// We use `adv.push_mapval` to push the value from the advice map to the advice stack first.
 pub fn build_update_psm_script() -> Result<TransactionScript> {
     let psm_library = get_psm_library().map_err(|e| {
         MultisigError::TransactionExecution(format!("failed to get PSM library: {}", e))
@@ -60,9 +53,6 @@ pub fn build_update_psm_script() -> Result<TransactionScript> {
 /// * `new_psm_pubkey` - The new PSM public key commitment
 /// * `salt` - Salt for replay protection
 /// * `signature_advice` - Iterator of (key, values) pairs for cosigner signature advice
-///
-/// Note: This transaction does NOT require PSM signature because `update_psm_public_key`
-/// disables PSM before updating, and `verify_psm_signature` reads the current (not initial) state.
 pub fn build_update_psm_transaction_request<I>(
     new_psm_pubkey: Word,
     salt: Word,
@@ -73,8 +63,6 @@ where
 {
     let script = build_update_psm_script()?;
 
-    // The new PSM pubkey is stored in the advice map with itself as the key
-    // (this is a simple approach - the script_arg is used to look it up)
     let psm_key = new_psm_pubkey;
     let psm_values: Vec<Felt> = new_psm_pubkey.iter().copied().collect();
 

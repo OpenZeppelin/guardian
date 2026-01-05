@@ -1,7 +1,4 @@
 //! Key management for PSM authentication.
-//!
-//! This module provides key management functionality separate from miden-client's keystore
-//! because miden-client's keystore doesn't expose direct signing methods.
 
 use miden_client::Serializable;
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
@@ -26,7 +23,7 @@ pub trait KeyManager: Send + Sync {
 
     /// Returns a clone of the secret key for PSM authentication.
     ///
-    /// This is needed to create `Auth` for PSM client requests.
+    /// This is needed to authenticate PSM client requests.
     fn clone_secret_key(&self) -> SecretKey;
 }
 
@@ -45,7 +42,7 @@ impl PsmKeyStore {
     /// Creates a new key store with the given secret key.
     pub fn new(secret_key: SecretKey) -> Self {
         let public_key = secret_key.public_key();
-        // Use the same commitment computation as miden-objects (SequentialCommit trait)
+        // Use the same commitment computation as miden-objects (SequentialCommit trait
         let commitment = public_key.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
 
@@ -91,10 +88,6 @@ impl KeyManager for PsmKeyStore {
         self.secret_key.clone()
     }
 }
-
-// ============================================================================
-// Hex Utilities
-// ============================================================================
 
 /// Strips the "0x" prefix from a hex string if present.
 ///
@@ -142,9 +135,6 @@ pub fn validate_commitment_hex(input: &str) -> Result<(), String> {
 }
 
 /// Parses a hex-encoded commitment string to a Word.
-///
-/// Accepts hex strings with or without the "0x" prefix.
-/// This is the primary function for converting user input to a commitment Word.
 pub fn commitment_from_hex(hex_str: &str) -> Result<Word, String> {
     let trimmed = strip_hex_prefix(hex_str);
     let bytes = hex::decode(trimmed).map_err(|e| format!("invalid hex: {}", e))?;

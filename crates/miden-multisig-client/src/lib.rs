@@ -3,13 +3,6 @@
 //! A high-level SDK for interacting with multisig accounts on Miden,
 //! coordinated through Private State Manager (PSM) servers.
 //!
-//! # Overview
-//!
-//! This crate provides a simple, ergonomic API for:
-//! - Creating and managing multisig accounts
-//! - Coordinating multi-party transaction signing via PSM
-//! - Executing common multisig operations (transfers, signer management)
-//!
 //! # Quick Start
 //!
 //! ```ignore
@@ -43,17 +36,7 @@
 //!     Ok(())
 //! }
 //! ```
-//!
-//! # Architecture
-//!
-//! The SDK follows a proposal-based workflow for multisig operations:
-//!
-//! 1. **Create Proposal**: Any cosigner initiates a transaction
-//! 2. **Sign Proposal**: Other cosigners review and add signatures
-//! 3. **Finalize Proposal**: Once threshold is met, submit to network
-//!
-//! All coordination happens through PSM, which stores proposals and
-//! collects signatures from multiple parties.
+//! 
 
 mod account;
 mod builder;
