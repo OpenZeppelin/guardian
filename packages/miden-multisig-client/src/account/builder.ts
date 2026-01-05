@@ -1,8 +1,7 @@
 /**
  * Account builder for creating multisig accounts with PSM authentication.
  *
- * This module provides functionality to create multisig accounts,
- * mirroring the Rust MultisigPsmBuilder pattern.
+ * This module provides functionality to create multisig accounts.
  */
 
 import {
@@ -19,11 +18,6 @@ import { getMultisigMasm, getPsmMasm } from './masm.js';
 /**
  * Creates a multisig account with PSM authentication.
  *
- * This mirrors the Rust MultisigPsmBuilder pattern:
- * - Multisig component as auth component
- * - PSM component as regular component
- * - BasicWallet as regular component
- *
  * @param webClient - Initialized Miden WebClient
  * @param config - Multisig configuration
  * @returns The created account and seed
@@ -32,26 +26,21 @@ export async function createMultisigAccount(
   webClient: WebClient,
   config: MultisigConfig
 ): Promise<CreateAccountResult> {
-  // Validate configuration
   validateMultisigConfig(config);
 
-  // Load MASM files
   const [multisigMasm, psmMasm] = await Promise.all([
     getMultisigMasm(),
     getPsmMasm(),
   ]);
 
-  // Build storage slots
   const multisigSlots = buildMultisigStorageSlots(config);
   const psmSlots = buildPsmStorageSlots(config);
 
-  // Compile PSM component with its own builder (no extra links)
   const psmBuilder = webClient.createScriptBuilder();
   const psmComponent = AccountComponent
     .compile(psmMasm, psmBuilder, psmSlots)
     .withSupportsAllTypes();
 
-  // Compile multisig auth component; link psm as openzeppelin::psm dependency
   const multisigBuilder = webClient.createScriptBuilder();
   const psmLib = multisigBuilder.buildLibrary('openzeppelin::psm', psmMasm);
   multisigBuilder.linkStaticLibrary(psmLib);
@@ -63,10 +52,6 @@ export async function createMultisigAccount(
   const seed = new Uint8Array(32);
   crypto.getRandomValues(seed);
 
-  // Build the account:
-  // - Multisig as auth component
-  // - PSM as regular component
-  // - BasicWallet as regular component
   const accountBuilder = new AccountBuilder(seed)
     .accountType(AccountType.RegularAccountUpdatableCode)
     .storageMode(AccountStorageMode.public())
@@ -76,8 +61,6 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.build();
 
-  // Insert the account into the WebClient's local store
-  // This is required for later executeTransaction calls to find the account
   await webClient.newAccount(result.account, false);
 
   return {

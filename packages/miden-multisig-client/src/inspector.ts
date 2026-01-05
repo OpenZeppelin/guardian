@@ -1,8 +1,5 @@
 /**
  * Account Inspector - Inspects account storage to detect multisig configuration.
- *
- * This utility parses serialized account data to extract the multisig
- * configuration (threshold, signers, PSM settings) from storage slots.
  */
 
 import { Account, Word } from '@demox-labs/miden-sdk';
@@ -61,33 +58,23 @@ export class AccountInspector {
   static fromAccount(account: Account): DetectedMultisigConfig {
     const storage = account.storage();
 
-    // Get storage slots
-    // Multisig component: slots 0-3
-    // PSM component: slots 4-5 (if present)
-
-    // Slot 0: Threshold config [threshold, num_signers, 0, 0]
     const slot0 = storage.getItem(0) as Word;
     const threshold = Number(wordElementToBigInt(slot0, 0));
     const numSigners = Number(wordElementToBigInt(slot0, 1));
 
-    // Slot 1: Signer commitments map
-    // Read signers by iterating through indices 0..numSigners
     const signerCommitments: string[] = [];
     for (let i = 0; i < numSigners; i++) {
       try {
-        // Create key [index, 0, 0, 0]
         const key = new Word(new BigUint64Array([BigInt(i), 0n, 0n, 0n]));
         const commitment = storage.getMapItem(1, key) as Word;
         if (commitment) {
           signerCommitments.push(wordToHex(commitment));
         }
-      } catch {
-        // Map entry might not exist
+      } catch (error) {
+        console.warn(error);
       }
     }
 
-    // PSM slots (offset by 4 from multisig slots)
-    // Slot 4: PSM selector [1, 0, 0, 0] for ON, [0, 0, 0, 0] for OFF
     let psmEnabled = false;
     let psmCommitment: string | null = null;
 
@@ -97,18 +84,16 @@ export class AccountInspector {
       psmEnabled = selector === 1;
 
       if (psmEnabled) {
-        // Slot 5: PSM public key map
         const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
         const psmKey = storage.getMapItem(5, zeroKey) as Word;
         if (psmKey) {
           psmCommitment = wordToHex(psmKey);
         }
       }
-    } catch {
-      // PSM component might not be present
+    } catch (error) {
+      console.warn(error);
     }
 
-    // Read vault balances
     const vaultBalances: VaultBalance[] = [];
     try {
       const vault = account.vault();
@@ -119,8 +104,8 @@ export class AccountInspector {
           amount: BigInt(asset.amount()),
         });
       }
-    } catch {
-      // Vault might be empty or not accessible
+    } catch (error) {
+      console.warn(error);
     }
 
     return {

@@ -63,13 +63,10 @@ export async function buildUpdateSignersTransactionRequest(
   signerCommitments: string[],
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
-  // Build config advice - this generates the hash and payload
   const { configHash: configHashForAdvice, payload } = buildMultisigConfigAdvice(threshold, signerCommitments);
 
-  // Create a second config hash for use as script arg (WASM objects get consumed)
   const { configHash: configHashForScript } = buildMultisigConfigAdvice(threshold, signerCommitments);
 
-  // Create a third one to return (will be consumed when caller uses it)
   const { configHash: configHashForReturn } = buildMultisigConfigAdvice(threshold, signerCommitments);
 
   const advice = new AdviceMap();
@@ -77,10 +74,8 @@ export async function buildUpdateSignersTransactionRequest(
 
   const script = await buildUpdateSignersScript(webClient);
 
-  // Store salt as hex so we can create fresh Word instances (WASM objects get consumed)
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   let txBuilder = new TransactionRequestBuilder();
@@ -93,7 +88,6 @@ export async function buildUpdateSignersTransactionRequest(
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   return {

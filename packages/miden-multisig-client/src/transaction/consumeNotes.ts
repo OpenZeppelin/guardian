@@ -19,10 +19,8 @@ export function buildConsumeNotesTransactionRequest(
     noteIdAndArgsArray.push(noteIdAndArgs);
   }
 
-  // Store salt as hex so we can create fresh Word instances (WASM objects get consumed)
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   let txBuilder = new TransactionRequestBuilder();
@@ -33,7 +31,6 @@ export function buildConsumeNotesTransactionRequest(
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   return {

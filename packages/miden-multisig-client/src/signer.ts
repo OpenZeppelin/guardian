@@ -36,12 +36,6 @@ export class FalconSigner implements Signer {
   /**
    * Signs an account ID for request authentication.
    * The server verifies this signature to authorize the request.
-   *
-   * This mirrors the Rust server's account_id_to_digest function:
-   * 1. Parse the account ID from hex
-   * 2. Convert to field elements [prefix, suffix]
-   * 3. Pad with zeros to 4 elements
-   * 4. Hash using RPO256 to produce the message digest
    */
   signAccountId(accountId: string): string {
     // Parse the account ID from hex
@@ -56,7 +50,6 @@ export class FalconSigner implements Signer {
       new Felt(BigInt(0)),
     ]);
 
-    // Hash using RPO256 and sign the digest
     const digest = Rpo256.hashElements(feltArray);
     const signature = this.secretKey.sign(digest);
     const signatureBytes = signature.serialize();
@@ -66,7 +59,6 @@ export class FalconSigner implements Signer {
 
   /**
    * Signs a commitment/word for proposal signing.
-   * Used when signing delta proposals.
    */
   signCommitment(commitmentHex: string): string {
     const paddedHex = commitmentHex.startsWith('0x') ? commitmentHex : `0x${commitmentHex}`;

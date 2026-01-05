@@ -1,4 +1,4 @@
-import type { TransactionRequest, Word, AdviceMap } from '@demox-labs/miden-sdk';
+import type { TransactionRequest, Word } from '@demox-labs/miden-sdk';
 import {
   AccountId,
   Felt,
@@ -31,7 +31,6 @@ function buildP2idNote(
   aux: Felt,
   saltHex: string,
 ): Note {
-  // Create salt from hex (WASM objects get consumed when used)
   const salt = WordType.fromHex(normalizeHexWord(saltHex));
   const serialNum = Rpo256.hashElements(new FeltArray([
     ...salt.toFelts(),
@@ -69,13 +68,11 @@ export function buildP2idTransactionRequest(
   const recipient = AccountId.fromHex(recipientId);
   const faucet = AccountId.fromHex(faucetId);
 
-  // Store salt as hex so we can create fresh Word instances (WASM objects get consumed)
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
   const asset = new FungibleAsset(faucet, amount);
   const noteAssets = new NoteAssets([asset]);
 
-  // buildP2idNote will create its own Word from the hex
   const note = buildP2idNote(
     sender,
     recipient,
@@ -88,7 +85,6 @@ export function buildP2idTransactionRequest(
   const outputNote = OutputNote.full(note);
   const outputNotes = new MidenArrays.OutputNoteArray([outputNote]);
 
-  // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   let txBuilder = new TransactionRequestBuilder();
@@ -99,7 +95,6 @@ export function buildP2idTransactionRequest(
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   return {

@@ -39,10 +39,8 @@ export async function buildUpdatePsmTransactionRequest(
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   const script = await buildUpdatePsmScript(webClient);
 
-  // Store salt as hex so we can create fresh Word instances (WASM objects get consumed)
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  // Create separate Word instances for each use (WASM objects get consumed)
   const pubkeyWordForAdvice = WordType.fromHex(normalizeHexWord(newPsmPubkey));
   const pubkeyWordForFelts = WordType.fromHex(normalizeHexWord(newPsmPubkey));
   const pubkeyWordForScript = WordType.fromHex(normalizeHexWord(newPsmPubkey));
@@ -50,7 +48,6 @@ export async function buildUpdatePsmTransactionRequest(
   const advice = new AdviceMap();
   advice.insert(pubkeyWordForAdvice, new FeltArray(pubkeyWordForFelts.toFelts()));
 
-  // Create fresh Word for withAuthArg
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   let txBuilder = new TransactionRequestBuilder();
@@ -63,7 +60,6 @@ export async function buildUpdatePsmTransactionRequest(
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  // Create fresh Word for return value
   const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   return {

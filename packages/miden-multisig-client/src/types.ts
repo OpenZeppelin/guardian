@@ -1,11 +1,4 @@
 import type { Account } from '@demox-labs/miden-sdk';
-import type {
-  ExportedProposal,
-  Proposal,
-  ProposalMetadata,
-  ProposalSignatureEntry,
-  ProposalStatus,
-} from './types/proposal.js';
 
 export type {
   Signer,

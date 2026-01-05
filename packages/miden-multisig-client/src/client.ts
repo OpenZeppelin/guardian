@@ -16,12 +16,12 @@ import type { MultisigConfig, Signer } from './types.js';
  * Configuration for MultisigClient.
  */
 export interface MultisigClientConfig {
-  /** PSM server endpoint (default: 'http://localhost:3000') */
+  /** PSM server endpoint */
   psmEndpoint?: string;
 }
 
 /**
- * Factory client for creating and loading multisig accounts.
+ * Client for creating and loading multisig accounts.
  *
  * @example
  * ```typescript
@@ -55,7 +55,6 @@ export class MultisigClient {
 
   /**
    * Access the internal PSM client.
-   * Useful for getting the PSM pubkey before creating a multisig.
    */
   get psmClient(): PsmHttpClient {
     return this._psmClient;
@@ -69,40 +68,30 @@ export class MultisigClient {
    * @returns A Multisig instance wrapping the created account
    */
   async create(config: MultisigConfig, signer: Signer): Promise<Multisig> {
-    // Set the signer on PSM client for authentication
     this._psmClient.setSigner(signer);
 
-    // Create the multisig account using the Miden SDK
     const { account } = await createMultisigAccount(this.webClient, config);
 
-    // Return wrapped Multisig instance
     return new Multisig(account, config, this._psmClient, signer);
   }
 
   /**
    * Load an existing multisig account from PSM.
    *
-   * The account configuration (threshold, signers, PSM commitment) is automatically
-   * detected from the account's on-chain storage.
-   *
    * @param accountId - The account ID to load
    * @param signer - The signer for this client
    * @returns A Multisig instance for the loaded account
    */
   async load(accountId: string, signer: Signer): Promise<Multisig> {
-    // Set the signer on PSM client for authentication
     this._psmClient.setSigner(signer);
 
-    // Always pull from PSM (source of truth)
     const stateResponse = await this._psmClient.getState(accountId);
 
-    // Validate PSM returned account data
     const accountBase64 = stateResponse.stateJson.data;
     if (!accountBase64) {
       throw new Error('No account data found in PSM state');
     }
 
-    // Decode base64 to bytes and deserialize the account
     const binaryString = atob(accountBase64);
     const accountBytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
@@ -110,7 +99,6 @@ export class MultisigClient {
     }
     const account = Account.deserialize(accountBytes);
 
-    // Detect config from account storage
     const detected = AccountInspector.fromAccount(account);
     const config: MultisigConfig = {
       threshold: detected.threshold,
@@ -119,10 +107,8 @@ export class MultisigClient {
       psmEnabled: detected.psmEnabled,
     };
 
-    // Add to Miden SDK's local store (required for transaction execution)
     await this.webClient.newAccount(account, true);
 
-    // Return wrapped Multisig instance
     return new Multisig(null, config, this._psmClient, signer, accountId);
   }
 }
