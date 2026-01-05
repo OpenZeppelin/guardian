@@ -72,7 +72,7 @@ export class MultisigClient {
 
     const { account } = await createMultisigAccount(this.webClient, config);
 
-    return new Multisig(account, config, this._psmClient, signer);
+    return new Multisig(account, config, this._psmClient, signer, this.webClient);
   }
 
   /**
@@ -109,6 +109,6 @@ export class MultisigClient {
 
     await this.webClient.newAccount(account, true);
 
-    return new Multisig(null, config, this._psmClient, signer, accountId);
+    return new Multisig(null, config, this._psmClient, signer, this.webClient, accountId);
   }
 }

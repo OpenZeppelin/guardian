@@ -237,7 +237,7 @@ export default function App() {
       const detected = AccountInspector.fromBase64(state.stateDataBase64);
       setDetectedConfig(detected);
 
-      const { proposals: synced, state: refreshedState, notes } = await syncAll(reloadedMs, webClient);
+      const { proposals: synced, state: refreshedState, notes } = await syncAll(reloadedMs);
       setPsmState(refreshedState ?? state);
       setProposals(synced);
       setConsumableNotes(notes);
@@ -250,7 +250,7 @@ export default function App() {
 
   // Create add signer proposal
   const handleCreateAddSignerProposal = async (commitment: string, increaseThreshold: boolean) => {
-    if (!multisig || !webClient) return;
+    if (!multisig) return;
 
     let normalizedCommitment: string;
     try {
@@ -264,7 +264,7 @@ export default function App() {
     setError(null);
     try {
       const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-      const proposal = await multisig.createAddSignerProposal(webClient, normalizedCommitment, undefined, newThreshold);
+      const proposal = await multisig.createAddSignerProposal(normalizedCommitment, undefined, newThreshold);
       const synced = await multisig.syncProposals();
       setProposals(synced);
       if (!synced.find((p) => p.id === proposal.id)) {
@@ -280,12 +280,12 @@ export default function App() {
 
   // Create remove signer proposal
   const handleCreateRemoveSignerProposal = async (signerToRemove: string, newThreshold?: number) => {
-    if (!multisig || !webClient) return;
+    if (!multisig) return;
 
     setCreatingProposal(true);
     setError(null);
     try {
-      const proposal = await multisig.createRemoveSignerProposal(webClient, signerToRemove, undefined, newThreshold);
+      const proposal = await multisig.createRemoveSignerProposal(signerToRemove, undefined, newThreshold);
       const synced = await multisig.syncProposals();
       setProposals(synced);
       if (!synced.find((p) => p.id === proposal.id)) {
@@ -301,12 +301,12 @@ export default function App() {
 
   // Create change threshold proposal
   const handleCreateChangeThresholdProposal = async (newThreshold: number) => {
-    if (!multisig || !webClient) return;
+    if (!multisig) return;
 
     setCreatingProposal(true);
     setError(null);
     try {
-      const proposal = await multisig.createChangeThresholdProposal(webClient, newThreshold);
+      const proposal = await multisig.createChangeThresholdProposal(newThreshold);
       const synced = await multisig.syncProposals();
       setProposals(synced);
       if (!synced.find((p) => p.id === proposal.id)) {
@@ -322,12 +322,12 @@ export default function App() {
 
   // Create consume notes proposal
   const handleCreateConsumeNotesProposal = async (noteIds: string[]) => {
-    if (!multisig || !webClient) return;
+    if (!multisig) return;
 
     setCreatingProposal(true);
     setError(null);
     try {
-      const proposal = await multisig.createConsumeNotesProposal(webClient, noteIds);
+      const proposal = await multisig.createConsumeNotesProposal(noteIds);
       const synced = await multisig.syncProposals();
       setProposals(synced);
       if (!synced.find((p) => p.id === proposal.id)) {
@@ -343,12 +343,12 @@ export default function App() {
 
   // Create P2ID (send payment) proposal
   const handleCreateP2idProposal = async (recipientId: string, faucetId: string, amount: bigint) => {
-    if (!multisig || !webClient) return;
+    if (!multisig) return;
 
     setCreatingProposal(true);
     setError(null);
     try {
-      const proposal = await multisig.createP2idProposal(webClient, recipientId, faucetId, amount);
+      const proposal = await multisig.createP2idProposal(recipientId, faucetId, amount);
       const synced = await multisig.syncProposals();
       setProposals(synced);
       if (!synced.find((p) => p.id === proposal.id)) {
@@ -381,7 +381,7 @@ export default function App() {
 
   // Execute proposal
   const handleExecuteProposal = async (proposalId: string) => {
-    if (!multisig || !webClient) return;
+    if (!multisig) return;
 
     setExecutingProposal(proposalId);
     setError(null);
@@ -391,7 +391,7 @@ export default function App() {
       console.log('[Execute] Proposal metadata:', proposal?.metadata);
       console.log('[Execute] Proposal type:', (proposal?.metadata as any)?.proposalType);
 
-      await multisig.executeProposal(proposalId, webClient);
+      await multisig.executeProposal(proposalId);
       console.log('[Execute] Execution completed successfully');
       toast.success('Proposal executed successfully');
 

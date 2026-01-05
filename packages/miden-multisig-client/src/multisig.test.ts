@@ -86,6 +86,7 @@ describe('Multisig', () => {
   let psm: PsmHttpClient;
   let mockSigner: Signer;
   let mockAccount: any;
+  let mockWebClient: any;
 
   beforeEach(() => {
     mockFetch.mockReset();
@@ -109,6 +110,15 @@ describe('Multisig', () => {
       }),
       serialize: () => new Uint8Array([1, 2, 3]),
     };
+
+    mockWebClient = {
+      executeTransaction: vi.fn(),
+      proveTransaction: vi.fn(),
+      submitProvenTransaction: vi.fn(),
+      applyTransaction: vi.fn(),
+      getConsumableNotes: vi.fn().mockResolvedValue([]),
+      syncState: vi.fn(),
+    };
   });
 
   describe('constructor', () => {
@@ -119,7 +129,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(config.signerCommitments);
@@ -135,7 +145,7 @@ describe('Multisig', () => {
       };
 
       const accountId = '0x' + 'd'.repeat(30);
-      const multisig = new Multisig(null, config, psm, mockSigner, accountId);
+      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, accountId);
 
       expect(multisig.account).toBeNull();
       expect(multisig.accountId).toBe(accountId);
@@ -150,7 +160,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.accountId).toBe('0x' + 'a'.repeat(30));
     });
 
@@ -162,7 +172,7 @@ describe('Multisig', () => {
       };
 
       const accountId = '0x' + 'e'.repeat(30);
-      const multisig = new Multisig(null, config, psm, mockSigner, accountId);
+      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, accountId);
       expect(multisig.accountId).toBe(accountId);
     });
   });
@@ -175,7 +185,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
     });
   });
@@ -188,7 +198,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -217,7 +227,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -238,7 +248,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(null, config, psm, mockSigner, '0x' + 'e'.repeat(30));
+      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, '0x' + 'e'.repeat(30));
 
       await expect(multisig.registerOnPsm()).rejects.toThrow('Cannot register on PSM');
     });
@@ -250,7 +260,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(null, config, psm, mockSigner, '0x' + 'e'.repeat(30));
+      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, '0x' + 'e'.repeat(30));
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -270,7 +280,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -292,7 +302,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -343,7 +353,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -394,7 +404,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.listProposals()).toEqual([]);
     });
   });
@@ -407,7 +417,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -453,7 +463,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // First create a proposal
       const mockDelta = {
@@ -534,7 +544,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -587,7 +597,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -608,11 +618,10 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
-      const webClient = {} as any;
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       await expect(
-        multisig.executeProposal('0x' + 'nonexistent'.repeat(5), webClient)
+        multisig.executeProposal('0x' + 'nonexistent'.repeat(5))
       ).rejects.toThrow('Proposal not found');
     });
 
@@ -623,7 +632,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // Sync with pending proposal (only 1 signature)
       const mockProposals = [
@@ -663,11 +672,9 @@ describe('Multisig', () => {
 
       await multisig.syncProposals();
 
-      const webClient = {} as any;
-
       // Proposal ID is mocked to return 'c'.repeat(64)
       await expect(
-        multisig.executeProposal('0x' + 'c'.repeat(64), webClient)
+        multisig.executeProposal('0x' + 'c'.repeat(64))
       ).rejects.toThrow('not ready for execution');
     });
 
@@ -678,7 +685,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const readyDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -728,7 +735,7 @@ describe('Multisig', () => {
         json: async () => ({ ...readyDelta, ack_sig: null }),
       });
 
-      await expect(multisig.executeProposal(proposalId, {} as any)).rejects.toThrow(
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
         'PSM did not return acknowledgment signature'
       );
     });
@@ -742,7 +749,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // Create a proposal with metadata
       const mockDelta = {
@@ -800,7 +807,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // Sync proposals - no local proposals exist
       const mockProposals = [
@@ -847,7 +854,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -895,7 +902,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -945,7 +952,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -996,7 +1003,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // First sync with 1 signature (pending)
       const mockProposalsPending = [
@@ -1088,7 +1095,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.threshold).toBe(3);
     });
 
@@ -1100,7 +1107,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.signerCommitments).toEqual(signerCommitments);
     });
 
@@ -1112,7 +1119,7 @@ describe('Multisig', () => {
         psmCommitment,
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.psmCommitment).toBe(psmCommitment);
     });
 
@@ -1123,7 +1130,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
       expect(multisig.account).toBe(mockAccount);
     });
   });
@@ -1136,7 +1143,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // Simulates a PSM response with canonical snake_case metadata
       const rustProposals = [
@@ -1186,7 +1193,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       // P2ID proposal with canonical snake_case fields
       const p2idProposals = [
@@ -1243,7 +1250,7 @@ describe('Multisig', () => {
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       const switchPsmProposals = [
         {

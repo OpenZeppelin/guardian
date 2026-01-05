@@ -66,6 +66,7 @@ export class Multisig {
 
   private readonly psm: PsmHttpClient;
   private readonly signer: Signer;
+  private readonly webClient: WebClient;
   private readonly _accountId: string;
   private proposals: Map<string, Proposal> = new Map();
 
@@ -74,6 +75,7 @@ export class Multisig {
     config: MultisigConfig,
     psm: PsmHttpClient,
     signer: Signer,
+    webClient: WebClient,
     accountId?: string
   ) {
     this.account = account;
@@ -82,6 +84,7 @@ export class Multisig {
     this.psmCommitment = config.psmCommitment;
     this.psm = psm;
     this.signer = signer;
+    this.webClient = webClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
   }
 
@@ -215,13 +218,11 @@ export class Multisig {
   /**
    * Create an "add signer" proposal.
    *
-   * @param webClient - Initialized Miden WebClient
    * @param newCommitment - Commitment of the new signer (hex)
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    * @param newThreshold - Optional new threshold (defaults to current threshold)
    */
   async createAddSignerProposal(
-    webClient: WebClient,
     newCommitment: string,
     nonce?: number,
     newThreshold?: number,
@@ -230,12 +231,12 @@ export class Multisig {
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      webClient,
+      this.webClient,
       targetThreshold,
       targetSignerCommitments,
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -253,13 +254,11 @@ export class Multisig {
   /**
    * Create a "remove signer" proposal by executing the update_signers script to summary.
    *
-   * @param webClient - Initialized Miden WebClient
    * @param signerToRemove - Commitment of the signer to remove (hex)
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    * @param newThreshold - Optional new threshold (defaults to min of current threshold and new signer count)
    */
   async createRemoveSignerProposal(
-    webClient: WebClient,
     signerToRemove: string,
     nonce?: number,
     newThreshold?: number,
@@ -289,12 +288,12 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      webClient,
+      this.webClient,
       targetThreshold,
       targetSignerCommitments,
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -312,12 +311,10 @@ export class Multisig {
   /**
    * Create a "change threshold" proposal.
    *
-   * @param webClient - Initialized Miden WebClient
    * @param newThreshold - The new threshold value
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
   async createChangeThresholdProposal(
-    webClient: WebClient,
     newThreshold: number,
     nonce?: number,
   ): Promise<Proposal> {
@@ -332,12 +329,12 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      webClient,
+      this.webClient,
       newThreshold,
       this.signerCommitments,
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -355,23 +352,21 @@ export class Multisig {
   /**
    * Create a "switch PSM" proposal to change the PSM provider.
    *
-   * @param webClient - Initialized Miden WebClient
    * @param newPsmEndpoint - The new PSM server endpoint URL
    * @param newPsmPubkey - The new PSM server's public key commitment (hex)
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
   async createSwitchPsmProposal(
-    webClient: WebClient,
     newPsmEndpoint: string,
     newPsmPubkey: string,
     nonce?: number,
   ): Promise<Proposal> {
     const { request, salt } = await buildUpdatePsmTransactionRequest(
-      webClient,
+      this.webClient,
       newPsmPubkey,
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -389,12 +384,10 @@ export class Multisig {
   /**
    * Create a "consume notes" proposal to consume notes sent to the multisig account.
    *
-   * @param webClient - Initialized Miden WebClient
    * @param noteIds - IDs of the notes to consume (hex strings)
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
   async createConsumeNotesProposal(
-    webClient: WebClient,
     noteIds: string[],
     nonce?: number,
   ): Promise<Proposal> {
@@ -404,7 +397,7 @@ export class Multisig {
 
     const { request, salt } = buildConsumeNotesTransactionRequest(noteIds);
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -421,14 +414,12 @@ export class Multisig {
   /**
    * Create a P2ID proposal to send funds to another account.
    *
-   * @param webClient - Initialized Miden WebClient
    * @param recipientId - Account ID of the recipient (hex string)
    * @param faucetId - Faucet/token account ID (hex string)
    * @param amount - Amount to send
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
   async createP2idProposal(
-    webClient: WebClient,
     recipientId: string,
     faucetId: string,
     amount: bigint,
@@ -445,7 +436,7 @@ export class Multisig {
       amount,
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -466,16 +457,12 @@ export class Multisig {
    *
    * Returns a list of notes that are committed on-chain and can be consumed
    * immediately by the multisig account.
-   *
-   * @param webClient - Initialized Miden WebClient
    */
-  async getConsumableNotes(
-    webClient: WebClient,
-  ): Promise<ConsumableNote[]> {
+  async getConsumableNotes(): Promise<ConsumableNote[]> {
     const accountId = AccountId.fromHex(this._accountId);
 
     // Get consumable notes for this account
-    const consumableRecords = await webClient.getConsumableNotes(accountId);
+    const consumableRecords = await this.webClient.getConsumableNotes(accountId);
 
     // Convert to our simplified ConsumableNote type
     const notes: ConsumableNote[] = [];
@@ -549,12 +536,8 @@ export class Multisig {
    * Execute a proposal that has enough signatures.
    *
    * @param proposalId - The proposal commitment/ID
-   * @param webClient - Initialized Miden WebClient for transaction execution
    */
-  async executeProposal(
-    proposalId: string,
-    webClient: WebClient,
-  ): Promise<void> {
+  async executeProposal(proposalId: string): Promise<void> {
     const proposal = this.proposals.get(proposalId);
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
@@ -641,7 +624,7 @@ export class Multisig {
           throw new Error('Proposal missing newPsmPubkey. Was it created with createSwitchPsmProposal?');
         }
         const { request } = await buildUpdatePsmTransactionRequest(
-          webClient,
+          this.webClient,
           metadata.newPsmPubkey,
           { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
         );
@@ -667,7 +650,7 @@ export class Multisig {
           throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
         }
         const { request } = await buildUpdateSignersTransactionRequest(
-          webClient,
+          this.webClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
           { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
@@ -678,10 +661,10 @@ export class Multisig {
     }
 
     const accountId = AccountId.fromHex(this._accountId);
-    const result = await webClient.executeTransaction(accountId, finalRequest);
-    const proven = await webClient.proveTransaction(result, null);
-    const submissionHeight = await webClient.submitProvenTransaction(proven, result);
-    await webClient.applyTransaction(result, submissionHeight);
+    const result = await this.webClient.executeTransaction(accountId, finalRequest);
+    const proven = await this.webClient.proveTransaction(result, null);
+    const submissionHeight = await this.webClient.submitProvenTransaction(proven, result);
+    await this.webClient.applyTransaction(result, submissionHeight);
 
     proposal.status = { type: 'finalized' };
   }

@@ -6,7 +6,6 @@ import {
   type MultisigConfig,
   type ConsumableNote,
 } from '@openzeppelin/miden-multisig-client';
-import type { WebClient } from '@demox-labs/miden-sdk';
 import { FalconSigner } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
@@ -39,11 +38,10 @@ export async function loadMultisigAccount(
 
 export async function syncAll(
   multisig: Multisig,
-  webClient: WebClient | null,
 ): Promise<{ proposals: Proposal[]; state: AccountState | null; notes: ConsumableNote[] }> {
   const proposals = await multisig.syncProposals();
-  const state = webClient ? await multisig.fetchState() : null;
-  const notes = webClient ? await multisig.getConsumableNotes(webClient) : [];
+  const state = await multisig.fetchState();
+  const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
 }
 
