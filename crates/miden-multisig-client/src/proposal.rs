@@ -40,9 +40,15 @@ pub enum TransactionType {
         faucet_id: AccountId,
         amount: u64,
     },
-    ConsumeNotes { note_ids: Vec<NoteId> },
-    AddCosigner { new_commitment: Word },
-    RemoveCosigner { commitment: Word },
+    ConsumeNotes {
+        note_ids: Vec<NoteId>,
+    },
+    AddCosigner {
+        new_commitment: Word,
+    },
+    RemoveCosigner {
+        commitment: Word,
+    },
     SwitchPsm {
         new_endpoint: String,
         new_commitment: Word,

@@ -36,7 +36,7 @@
 //!     Ok(())
 //! }
 //! ```
-//! 
+//!
 
 mod account;
 mod builder;
