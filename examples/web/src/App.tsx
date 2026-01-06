@@ -7,7 +7,6 @@ import {
   type AccountState,
   type DetectedMultisigConfig,
   type Proposal,
-  setMasmBaseUrl,
 } from '@openzeppelin/miden-multisig-client';
 
 import { WebClient } from '@demox-labs/miden-sdk';
@@ -42,7 +41,7 @@ import {
   signProposalOffline,
   importProposal,
 } from '@/lib/multisigApi';
-import { PSM_ENDPOINT, MASM_BASE_URL } from '@/config';
+import { PSM_ENDPOINT } from '@/config';
 import type { SignerInfo } from '@/types';
 
 export default function App() {
@@ -117,9 +116,6 @@ export default function App() {
   useEffect(() => {
     const init = async () => {
       try {
-        // Set MASM base URL
-        setMasmBaseUrl(MASM_BASE_URL);
-
         // Clear IndexedDB to start fresh on each page load
         await clearMidenDatabase();
 

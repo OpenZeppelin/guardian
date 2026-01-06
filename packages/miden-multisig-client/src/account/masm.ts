@@ -1,96 +1,606 @@
-export class MasmLoader {
-  private baseUrl: string;
-  private embeddedMultisigMasm: string | null = null;
-  private embeddedPsmMasm: string | null = null;
+// Embedded MASM constants - content from masm/*.masm files
 
-  constructor(baseUrl = '/masm') {
-    this.baseUrl = baseUrl;
-  }
+export const MULTISIG_MASM = `# Multi-Signature RPO Falcon 512 Authentication Component
+#
+# This component provides multi-signature authentication for accounts.
+# It integrates with the PSM component for optional PSM signature verification.
 
-  setBaseUrl(baseUrl: string): void {
-    this.baseUrl = baseUrl;
-  }
+use miden::active_account
+use miden::native_account
+use miden::auth
+use openzeppelin::psm
 
-  getBaseUrl(): string {
-    return this.baseUrl;
-  }
+# Type definitions for v0.12 syntax
+type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
-  setEmbeddedMultisig(masm: string): void {
-    this.embeddedMultisigMasm = masm;
-  }
+# CONSTANTS
+# =================================================================================================
 
-  setEmbeddedPsm(masm: string): void {
-    this.embeddedPsmMasm = masm;
-  }
+# Auth Request Constants
 
-  async load(filename: string): Promise<string> {
-    const url = `${this.baseUrl}/${filename}`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to load MASM file ${filename}: ${response.statusText}`);
-    }
-    return response.text();
-  }
+# The event emitted when a signature is not found for a required signer.
+const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 
-  async loadMultisig(): Promise<string> {
-    return this.load('multisig.masm');
-  }
+# Storage Layout Constants
+#
+# +-------------------------------+----------+--------------+-------------------+
+# | THRESHOLD & APPROVERS CONFIG  | PUB KEYS | EXECUTED TXS |  PROC THRESHOLDS  |
+# |           (slot)              |   (map)  |    (map)     |       (map)       |
+# +-------------------------------+----------+--------------+-------------------+
+# |              0                |    1     |      2       |         3         |
+# +-------------------------------+----------+--------------+-------------------+
 
-  async loadPsm(): Promise<string> {
-    return this.load('psm.masm');
-  }
+# The slot in this component's storage layout where the default signature threshold and
+# number of approvers are stored as:
+# [default_threshold, num_approvers, 0, 0].
+# The threshold is guaranteed to be less than or equal to num_approvers.
+const THRESHOLD_CONFIG_SLOT = 0
 
-  async getMultisigMasm(): Promise<string> {
-    if (this.embeddedMultisigMasm) {
-      return this.embeddedMultisigMasm;
-    }
-    return this.loadMultisig();
-  }
+# The slot in this component's storage layout where the public keys map is stored.
+# Map entries: [key_index, 0, 0, 0] => APPROVER_PUBLIC_KEY
+const PUBLIC_KEYS_MAP_SLOT = 1
 
-  async getPsmMasm(): Promise<string> {
-    if (this.embeddedPsmMasm) {
-      return this.embeddedPsmMasm;
-    }
-    return this.loadPsm();
-  }
-}
+# The slot in this component's storage layout where executed transactions are stored.
+# Map entries: transaction_message => [is_executed, 0, 0, 0]
+const EXECUTED_TXS_SLOT = 2
 
-const defaultMasmLoader = new MasmLoader();
+# The slot in this component's storage layout where procedure thresholds are stored.
+# Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
+const PROC_THRESHOLD_ROOTS_SLOT = 3
 
-export function setMasmBaseUrl(baseUrl: string): void {
-  defaultMasmLoader.setBaseUrl(baseUrl);
-}
+# Executed Transaction Flag Constant
+const IS_EXECUTED_FLAG = [1, 0, 0, 0]
 
-export function getMasmBaseUrl(): string {
-  return defaultMasmLoader.getBaseUrl();
-}
+# ERRORS
+const ERR_TX_ALREADY_EXECUTED = "failed to approve multisig transaction as it was already executed"
 
-export async function loadMasmFile(filename: string): Promise<string> {
-  return defaultMasmLoader.load(filename);
-}
+const ERR_MALFORMED_MULTISIG_CONFIG = "number of approvers must be equal to or greater than threshold"
 
-export async function loadMultisigMasm(): Promise<string> {
-  return defaultMasmLoader.loadMultisig();
-}
+const ERR_ZERO_IN_MULTISIG_CONFIG = "number of approvers or threshold must not be zero"
 
-export async function loadPsmMasm(): Promise<string> {
-  return defaultMasmLoader.loadPsm();
-}
+# MULTISIG PROCEDURES
+# =================================================================================================
 
-export function setEmbeddedMultisigMasm(masm: string): void {
-  defaultMasmLoader.setEmbeddedMultisig(masm);
-}
+#! Check if transaction has already been executed and add it to executed transactions for replay protection.
+#!
+#! Inputs:  [MSG]
+#! Outputs: []
+#!
+#! Panics if:
+#! - the same transaction has already been executed
+proc assert_new_tx(msg: BeWord)
+    push.IS_EXECUTED_FLAG
+    # => [[0, 0, 0, is_executed], MSG]
 
-export function setEmbeddedPsmMasm(masm: string): void {
-  defaultMasmLoader.setEmbeddedPsm(masm);
-}
+    swapw
+    # => [MSG, IS_EXECUTED_FLAG]
 
-export async function getMultisigMasm(): Promise<string> {
-  return defaultMasmLoader.getMultisigMasm();
-}
+    push.EXECUTED_TXS_SLOT
+    # => [index, MSG, IS_EXECUTED_FLAG]
 
-export async function getPsmMasm(): Promise<string> {
-  return defaultMasmLoader.getPsmMasm();
-}
+    # Set the key value pair in the map to mark transaction as executed
+    exec.native_account::set_map_item
+    # => [OLD_MAP_ROOT, [0, 0, 0, is_executed]]
 
-export const masmLoader = defaultMasmLoader;
+    dropw drop drop drop
+    # => [is_executed]
+
+    assertz.err=ERR_TX_ALREADY_EXECUTED
+    # => []
+end
+
+#! Remove old approver public keys from the approver public key mapping.
+#!
+#! This procedure cleans up the storage by removing public keys of approvers that are no longer
+#! part of the multisig configuration. This procedure assumes that init_num_of_approvers and
+#! new_num_of_approvers are u32 values.
+#!
+#! Inputs: [init_num_of_approvers, new_num_of_approvers]
+#! Outputs: []
+#!
+#! Where:
+#! - init_num_of_approvers is the original number of approvers before the update
+#! - new_num_of_approvers is the new number of approvers after the update
+proc cleanup_pubkey_mapping(init_num_of_approvers: u32, new_num_of_approvers: u32)
+    dup.1 dup.1
+    u32assert2 u32lt
+    # => [should_loop, i = init_num_of_approvers, new_num_of_approvers]
+
+    while.true
+        # => [i, new_num_of_approvers]
+
+        sub.1
+        # => [i-1, new_num_of_approvers]
+
+        dup
+        # => [i-1, i-1, new_num_of_approvers]
+
+        push.0.0.0
+        # => [[0, 0, 0, i-1], i-1, new_num_of_approvers]
+
+        padw swapw
+        # => [[0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
+
+        push.PUBLIC_KEYS_MAP_SLOT
+        # => [pub_key_slot_idx, [0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
+
+        exec.native_account::set_map_item
+        # => [OLD_MAP_ROOT, OLD_MAP_VALUE, i-1, new_num_of_approvers]
+
+        dropw dropw
+        # => [i-1, new_num_of_approvers]
+
+        dup.1 dup.1
+        u32lt
+        # => [should_loop, i-1, new_num_of_approvers]
+    end
+
+    drop drop
+    # => []
+end
+
+#! Update threshold config and add / remove approvers
+#!
+#! Inputs:
+#!   Operand stack: [MULTISIG_CONFIG_HASH, pad(12)]
+#!   Advice map: {
+#!     MULTISIG_CONFIG_HASH => [CONFIG, PUB_KEY_N, PUB_KEY_N-1, ..., PUB_KEY_0]
+#!   }
+#! Outputs:
+#!   Operand stack: []
+#!
+#! Where:
+#! - MULTISIG_CONFIG_HASH is the hash of the threshold and new public key vector
+#! - MULTISIG_CONFIG is [threshold, num_approvers, 0, 0]
+#! - PUB_KEY_i is the public key of the i-th signer
+#!
+#! Locals:
+#! 0: new_num_of_approvers
+#! 1: init_num_of_approvers
+pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
+    adv.push_mapval
+    # => [MULTISIG_CONFIG_HASH, pad(12)]
+
+    adv_loadw
+    # => [MULTISIG_CONFIG, pad(12)]
+
+    # store new_num_of_approvers for later
+    dup.2 loc_store.0
+    # => [MULTISIG_CONFIG, pad(12)]
+
+    dup.3 dup.3
+    # => [num_approvers, threshold, MULTISIG_CONFIG, pad(12)]
+
+    # make sure that the threshold is smaller than the number of approvers
+    u32assert2.err=ERR_MALFORMED_MULTISIG_CONFIG
+    u32gt assertz.err=ERR_MALFORMED_MULTISIG_CONFIG
+    # => [MULTISIG_CONFIG, pad(12)]
+
+    dup.3 dup.3
+    # => [num_approvers, threshold, MULTISIG_CONFIG, pad(12)]
+
+    # make sure that threshold or num_approvers are not zero
+    eq.0 assertz.err=ERR_ZERO_IN_MULTISIG_CONFIG
+    eq.0 assertz.err=ERR_ZERO_IN_MULTISIG_CONFIG
+    # => [MULTISIG_CONFIG, pad(12)]
+
+    push.THRESHOLD_CONFIG_SLOT
+    # => [slot, MULTISIG_CONFIG, pad(12)]
+
+    exec.native_account::set_item
+    # => [OLD_THRESHOLD_CONFIG, pad(12)]
+
+    # store init_num_of_approvers for later
+    drop drop loc_store.1 drop
+    # => [pad(12)]
+
+    loc_load.0
+    # => [num_approvers]
+
+    dup neq.0
+    while.true
+        sub.1
+        # => [i-1, pad(12)]
+
+        dup push.0.0.0
+        # => [[0, 0, 0, i-1], i-1, pad(12)]
+
+        padw adv_loadw
+        # => [PUB_KEY, [0, 0, 0, i-1], i-1, pad(12)]
+
+        swapw
+        # => [[0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
+
+        push.PUBLIC_KEYS_MAP_SLOT
+        # => [pub_key_slot_idx, [0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
+
+        exec.native_account::set_map_item
+        # => [OLD_MAP_ROOT, OLD_MAP_VALUE, i-1, pad(12)]
+
+        dropw dropw
+        # => [i-1, pad(12)]
+
+        dup neq.0
+        # => [is_non_zero, i-1, pad(12)]
+    end
+    # => [pad(13)]
+
+    drop
+    # => [pad(12)]
+
+    # compare initial vs current multisig config
+
+    # load init_num_of_approvers & new_num_of_approvers
+    loc_load.0 loc_load.1
+    # => [init_num_of_approvers, new_num_of_approvers, pad(12)]
+
+    exec.cleanup_pubkey_mapping
+    # => [pad(12)]
+end
+
+# Computes the effective transaction threshold based on called procedures and per-procedure
+# overrides stored in PROC_THRESHOLD_ROOTS_SLOT. Falls back to default_threshold if no
+# overrides apply.
+#
+#! Inputs:  [default_threshold]
+#! Outputs: [transaction_threshold]
+proc compute_transaction_threshold.1(default_threshold: u32) -> u32
+    # 1. initialize transaction_threshold = 0
+    # 2. iterate through all account procedures
+    #   a. check if the procedure was called during the transaction
+    #   b. if called, get the override threshold of that procedure from the config map
+    #   c. if proc_threshold > transaction_threshold, set transaction_threshold = proc_threshold
+    # 3. if transaction_threshold == 0 at the end, revert to using default_threshold
+
+    # store default_threshold for later
+    loc_store.0
+    # => []
+
+    # 1. initialize transaction_threshold = 0
+    push.0
+    # => [transaction_threshold]
+
+    # get the number of account procedures
+    exec.active_account::get_num_procedures
+    # => [num_procedures, transaction_threshold]
+
+    # 2. iterate through all account procedures
+    dup neq.0
+    # => [should_continue, num_procedures, transaction_threshold]
+    while.true
+        sub.1 dup
+        # => [num_procedures-1, num_procedures-1, transaction_threshold]
+
+        # get procedure root of the procedure with index i
+        exec.active_account::get_procedure_root dupw
+        # => [PROC_ROOT, PROC_ROOT, num_procedures-1, transaction_threshold]
+
+        # 2a. check if this procedure has been called in the transaction
+        exec.native_account::was_procedure_called
+        # => [was_called, PROC_ROOT, num_procedures-1, transaction_threshold]
+
+        # if it has been called, get the override threshold of that procedure
+        if.true
+            # => [PROC_ROOT, num_procedures-1, transaction_threshold]
+
+            push.PROC_THRESHOLD_ROOTS_SLOT
+            # => [PROC_THRESHOLD_ROOTS_SLOT, PROC_ROOT, num_procedures-1, transaction_threshold]
+
+            # 2b. get the override proc_threshold of that procedure
+            # if the procedure has no override threshold, the returned map item will be [0, 0, 0, 0]
+            exec.active_account::get_initial_map_item
+            # => [[0, 0, 0, proc_threshold], num_procedures-1, transaction_threshold]
+
+            drop drop drop dup dup.3
+            # => [transaction_threshold, proc_threshold, proc_threshold, num_procedures-1, transaction_threshold]
+
+            u32assert2.err="transaction threshold or procedure threshold are not u32"
+            u32gt
+            # => [is_gt, proc_threshold, num_procedures-1, transaction_threshold]
+            # 2c. if proc_threshold > transaction_threshold, update transaction_threshold
+            movup.2 movdn.3
+            # => [is_gt, proc_threshold, transaction_threshold, num_procedures-1]
+            cdrop
+            # => [updated_transaction_threshold, num_procedures-1]
+            swap
+            # => [num_procedures-1, updated_transaction_threshold]
+        # if it has not been called during this transaction, nothing to do, move to the next procedure
+        else
+            dropw
+            # => [num_procedures-1, transaction_threshold]
+        end
+
+        dup neq.0
+        # => [should_continue, num_procedures-1, transaction_threshold]
+    end
+
+    drop
+    # => [transaction_threshold]
+
+    loc_load.0
+    # => [default_threshold, transaction_threshold]
+
+    # 3. if transaction_threshold == 0 at the end, revert to using default_threshold
+    dup.1 eq.0
+    # => [is_zero, default_threshold, transaction_threshold]
+
+    cdrop
+    # => [effective_transaction_threshold]
+end
+
+#! Authenticate a transaction using the Falcon signature scheme with multi-signature support.
+#!
+#! This procedure implements multi-signature authentication by:
+#! 1. Computing the transaction summary message that needs to be signed
+#! 2. Verifying signatures from multiple required signers against their public keys
+#! 3. Ensuring the minimum threshold of valid signatures is met
+#! 4. Implementing replay protection by tracking executed transactions
+#! 5. Verifying PSM signature if PSM selector is enabled (via PSM component)
+#!
+#! Inputs:
+#!   Operand stack: [SALT]
+#!   Advice map: {
+#!     h(SIG_0, MSG): SIG_0,
+#!     h(SIG_1, MSG): SIG_1,
+#!     h(SIG_n, MSG): SIG_n
+#!   }
+#! Outputs:
+#!   Operand stack: []
+#!
+#! Where:
+#! - SALT is a cryptographically random nonce that enables multiple concurrent
+#!   multisig transactions while maintaining replay protection. Each transaction
+#!   must use a unique SALT value to ensure transaction uniqueness.
+#! - SIG_i is the signature from the i-th signer.
+#! - MSG is the transaction message being signed.
+#! - h(SIG_i, MSG) is the hash of the signature and message used as the advice map key.
+#!
+#! Panics if:
+#! - insufficient number of valid signatures (below threshold).
+#! - the same transaction has already been executed (replay protection).
+#! - PSM signature verification fails (if PSM is enabled).
+#!
+#! Invocation: call
+pub proc auth_tx_rpo_falcon512_multisig.1(salt: BeWord)
+    exec.native_account::incr_nonce drop
+    # => [SALT]
+
+    # ------ Computing transaction summary ------
+
+    exec.auth::create_tx_summary
+    # => [SALT, OUTPUT_NOTES_COMMITMENT, INPUT_NOTES_COMMITMENT, ACCOUNT_DELTA_COMMITMENT]
+
+    # to build a tx_summary in the host, we need these four words in the advice provider
+    exec.auth::adv_insert_hqword
+    # => [SALT, OUTPUT_NOTES_COMMITMENT, INPUT_NOTES_COMMITMENT, ACCOUNT_DELTA_COMMITMENT]
+
+    # the commitment to the tx summary is the message that is signed
+    exec.auth::hash_tx_summary
+    # => [TX_SUMMARY_COMMITMENT]
+
+    # ------ Verifying approver signatures ------
+
+    push.THRESHOLD_CONFIG_SLOT
+    # => [index, TX_SUMMARY_COMMITMENT]
+
+    exec.active_account::get_initial_item
+    # => [0, 0, num_of_approvers, default_threshold, TX_SUMMARY_COMMITMENT]
+
+    drop drop
+    # => [num_of_approvers, default_threshold, TX_SUMMARY_COMMITMENT]
+
+    swap movdn.5
+    # => [num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
+
+    push.PUBLIC_KEYS_MAP_SLOT
+    # => [pub_key_slot_idx, num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
+
+    exec.::miden::auth::rpo_falcon512::verify_signatures
+    # => [num_verified_signatures, TX_SUMMARY_COMMITMENT, default_threshold]
+
+    # ------ Checking threshold is >= num_verified_signatures ------
+
+    movup.5
+    # => [default_threshold, num_verified_signatures, TX_SUMMARY_COMMITMENT]
+
+    exec.compute_transaction_threshold
+    # => [transaction_threshold, num_verified_signatures, TX_SUMMARY_COMMITMENT]
+
+    u32assert2 u32lt
+    # => [is_unauthorized, TX_SUMMARY_COMMITMENT]
+
+    # If signatures are non-existent the tx will fail here.
+    if.true
+        emit.AUTH_UNAUTHORIZED_EVENT
+        push.0 assert.err="insufficient number of signatures"
+    end
+
+    # ------ Verifying PSM Signature ------
+    # => [TX_SUMMARY_COMMITMENT]
+    call.psm::verify_psm_signature
+
+    # ------ Writing executed transaction MSG to map ------
+    # => [TX_SUMMARY_COMMITMENT]
+    exec.assert_new_tx
+end
+`;
+
+export const PSM_MASM = `# Private State Manager (PSM) Authentication Component
+#
+# This component provides PSM signature verification for accounts.
+# It can be used standalone or in conjunction with other auth components like multisig.
+
+use miden::active_account
+use miden::native_account
+
+# Type definitions for v0.12 syntax
+type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
+
+# IMPORTANT SECURITY NOTES
+# --------------------------------------------------------------------------------
+# - The selector in \`PSM_SELECTOR_SLOT\` controls whether the extra PSM signature
+#   is enforced:
+#     * PSM_ON  => exactly one valid PSM signature is required.
+#     * PSM_OFF => PSM signature is skipped for that call.
+#
+# - \`verify_psm_signature\` reads the selector from initial storage state.
+#   This means changes made during the same transaction won't affect the check.
+#
+# - \`enable_psm\` / \`disable_psm\` procedures allow explicit control over PSM state.
+#
+# - \`update_psm_public_key\`:
+#     * Installs a new PSM public key in the map at \`PSM_PUBLIC_KEY_MAP_SLOT\`.
+#     * Does not itself perform any signature checks.
+#     * To update the key without requiring PSM signature, ensure selector is OFF.
+#
+# Storage Layout
+# --------------------------------------------------------------------------------
+#
+# +---------------------+---------------+
+# |     DESCRIPTION     |     SLOT      |
+# +---------------------+---------------+
+# | PSM SELECTOR (word) |       0       |
+# | PSM PUBLIC KEY MAP  |       1       |
+# +---------------------+---------------+
+#
+# - PSM_SELECTOR_SLOT (0):
+#     * Stores a word that is compared against [1, 0, 0, 0] (PSM_ON).
+#     * Any value != PSM_ON is treated as PSM_OFF.
+#
+# - PSM_PUBLIC_KEY_MAP_SLOT (1):
+#     * A map from a fixed key [0, 0, 0, 0] to the single PSM public key:
+#         [0, 0, 0, 0] => PSM_PUBLIC_KEY
+#     * PSM_PUBLIC_KEY is a RPO Falcon 512 public key represented as a word.
+
+# CONSTANTS
+# =================================================================================================
+
+# Slot where the PSM selector flag is stored:
+# - PSM_ON  => PSM signature required
+# - PSM_OFF => PSM signature skipped
+const PSM_SELECTOR_SLOT = 0
+
+# Map slot for PSM public key
+# Uses exactly one PSM public key at index [0, 0, 0, 0]
+# [0, 0, 0, 0] => PSM_PUBLIC_KEY
+const PSM_PUBLIC_KEY_MAP_SLOT = 1
+
+# Selector flag values
+const PSM_ON = [1, 0, 0, 0]
+const PSM_OFF = [0, 0, 0, 0]
+
+# The event emitted when a signature is not found for a required signer.
+const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
+
+# PSM PROCEDURES
+# =================================================================================================
+
+#! Enable PSM verification by setting the selector to ON.
+#!
+#! Operand stack inputs: []
+#! Outputs: []
+#!
+#! Notes:
+#! - Sets PSM_SELECTOR_SLOT to PSM_ON (1)
+#! - After this, transactions will require PSM signature verification
+proc.enable_psm
+    push.PSM_ON
+    # => [PSM_ON]
+
+    push.PSM_SELECTOR_SLOT
+    # => [PSM_SELECTOR_SLOT, PSM_ON]
+
+    exec.native_account::set_item
+    # => [OLD_ROOT]
+
+    dropw
+    # => []
+end
+
+#! Disable PSM verification by setting the selector to OFF.
+#!
+#! Operand stack inputs: []
+#! Outputs: []
+#!
+#! Notes:
+#! - Sets PSM_SELECTOR_SLOT to PSM_OFF (0)
+#! - After this, transactions will NOT require PSM signature verification
+proc.disable_psm
+    push.PSM_OFF
+    # => [PSM_OFF]
+
+    push.PSM_SELECTOR_SLOT
+    # => [PSM_SELECTOR_SLOT, PSM_OFF]
+
+    exec.native_account::set_item
+    # => [OLD_ROOT]
+
+    dropw
+    # => []
+end
+
+#! Update the PSM public key.
+#!
+#! Operand stack inputs: []
+#! Advice stack inputs:  [PUB_KEY]
+#!   - PUB_KEY is the new PSM RPO Falcon 512 public key
+#!
+#! Notes:
+#! - Stores PUB_KEY into PSM_PUBLIC_KEY_MAP_SLOT:
+#!      [0, 0, 0, 0] => PSM_PUBLIC_KEY
+#! - To update the key without requiring PSM signature, ensure
+#!   PSM_SELECTOR_SLOT = 0 (OFF) before calling this.
+pub proc update_psm_public_key
+    exec.disable_psm
+    # ------ Update the PSM public key ------
+    adv_loadw
+    # => [PUB_KEY]
+
+    push.0.0.0.0
+    # => [MAP_KEY, PUB_KEY]
+    # Note that MAP_KEY is [0, 0, 0, 0] for a single PSM_KEY
+
+    push.PSM_PUBLIC_KEY_MAP_SLOT
+    # => [index, MAP_KEY, PUB_KEY]
+
+    exec.native_account::set_map_item
+    # => [OLD_MAP_ROOT, OLD_MAP_VALUE]
+
+    dropw dropw
+    # => []
+end
+
+#! Conditionally verify a "PSM" signature against a stored public key hash.
+#! The condition is controlled by the selector at PSM_SELECTOR_SLOT.
+#!
+#! Inputs:  [MSG]
+#! Outputs: [MSG]
+#!
+#! Panics if:
+#! - Selector is ON but the provided PSM signature is invalid or missing.
+#!
+#! Notes:
+#! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
+#! - If selector is OFF (0), PSM verification is skipped
+#! - Selector value is read from initial storage state
+pub proc verify_psm_signature(msg: BeWord)
+    push.PSM_SELECTOR_SLOT
+    exec.active_account::get_item
+    drop drop drop
+    # => [selector, MSG]
+
+    push.1 eq
+    if.true
+        push.1
+        push.PSM_PUBLIC_KEY_MAP_SLOT
+        exec.::miden::auth::rpo_falcon512::verify_signatures
+        push.1 neq
+        if.true
+            emit.AUTH_UNAUTHORIZED_EVENT
+            push.0 assert.err="invalid PSM signature"
+        end
+    end
+    # => [MSG]
+    exec.enable_psm
+end
+`;

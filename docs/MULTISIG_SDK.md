@@ -41,10 +41,7 @@ Create a 1-of-3 multisig account, propose a transfer, collect signatures, and ex
 
 ```typescript
 import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
-import { MultisigClient, FalconSigner, setMasmBaseUrl } from '@openzeppelin/miden-multisig-client';
-
-// Configure MASM files location (required for account creation)
-setMasmBaseUrl('/masm');
+import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 
 // 1. Setup clients
 const midenClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
@@ -205,13 +202,8 @@ import {
   Multisig,
   FalconSigner,
   AccountInspector,
-  setMasmBaseUrl,
   type MultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
-
-// Configure MASM files location (required for account creation)
-// Point to where multisig.masm and psm.masm are served
-setMasmBaseUrl('/masm');  // Or absolute URL like 'https://example.com/masm'
 
 // Initialize web client (connects to Miden node)
 const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
@@ -224,25 +216,6 @@ const signer = new FalconSigner(secretKey);
 const client = new MultisigClient(webClient, {
   psmEndpoint: 'http://localhost:3000'
 });
-```
-
-### MASM Configuration
-
-The TypeScript SDK needs access to MASM files for account creation. Configure the base URL:
-
-```typescript
-import { setMasmBaseUrl, getMasmBaseUrl } from '@openzeppelin/miden-multisig-client';
-
-// Set base URL for MASM files
-setMasmBaseUrl('/public/masm');
-
-// Or use embedded MASM (for bundlers that support raw imports)
-import { setEmbeddedMultisigMasm, setEmbeddedPsmMasm } from '@openzeppelin/miden-multisig-client';
-import multisigMasm from './masm/multisig.masm?raw';
-import psmMasm from './masm/psm.masm?raw';
-
-setEmbeddedMultisigMasm(multisigMasm);
-setEmbeddedPsmMasm(psmMasm);
 ```
 
 ### Creating Accounts

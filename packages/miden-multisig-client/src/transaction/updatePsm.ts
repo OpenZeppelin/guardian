@@ -8,15 +8,14 @@ import {
   Word,
   Word as WordType,
 } from '@demox-labs/miden-sdk';
-import { getPsmMasm } from '../account/masm.js';
+import { PSM_MASM } from '../account/masm.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
 
-async function buildUpdatePsmScript(webClient: WebClient): Promise<TransactionScript> {
-  const psmMasm = await getPsmMasm();
+function buildUpdatePsmScript(webClient: WebClient): TransactionScript {
   const libBuilder = webClient.createScriptBuilder();
-  const psmLib = libBuilder.buildLibrary('openzeppelin::psm', psmMasm);
+  const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
   libBuilder.linkDynamicLibrary(psmLib);
 
   const scriptSource = `
@@ -37,7 +36,7 @@ export async function buildUpdatePsmTransactionRequest(
   newPsmPubkey: string,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word }> {
-  const script = await buildUpdatePsmScript(webClient);
+  const script = buildUpdatePsmScript(webClient);
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 

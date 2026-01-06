@@ -8,7 +8,6 @@
  * import {
  *   MultisigClient,
  *   FalconSigner,
- *   setMasmBaseUrl,
  * } from '@openzeppelin/miden-multisig-client';
  * import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
  *
@@ -64,17 +63,6 @@ export {
   buildMultisigStorageSlots,
   buildPsmStorageSlots,
   storageLayoutBuilder,
-  loadMasmFile,
-  loadMultisigMasm,
-  loadPsmMasm,
-  getMultisigMasm,
-  getPsmMasm,
-  setMasmBaseUrl,
-  getMasmBaseUrl,
-  setEmbeddedMultisigMasm,
-  setEmbeddedPsmMasm,
-  masmLoader,
-  MasmLoader,
   StorageLayoutBuilder,
 } from './account/index.js';
 
