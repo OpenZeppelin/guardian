@@ -514,8 +514,7 @@ mod tests {
     async fn test_process_all_accounts_empty_list() {
         let mock_storage = MockStorageBackend::new();
         let mock_network = MockNetworkClient::new();
-        let mock_metadata =
-            MockMetadataStore::new().with_list_with_pending_candidates(Ok(vec![]));
+        let mock_metadata = MockMetadataStore::new().with_list_with_pending_candidates(Ok(vec![]));
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
@@ -579,8 +578,7 @@ mod tests {
     async fn test_process_account_no_candidates() {
         let account_id = "0xtest_account";
 
-        let mock_storage = MockStorageBackend::new()
-            .with_pull_deltas_after(Ok(vec![])); // No deltas
+        let mock_storage = MockStorageBackend::new().with_pull_deltas_after(Ok(vec![])); // No deltas
         let mock_network = MockNetworkClient::new();
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -679,8 +677,7 @@ mod tests {
         let account_id = "0xtest_account";
         // Create a candidate that has already been retried max_retries times
         let mut candidate = create_candidate_delta(account_id, 1);
-        candidate.status =
-            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 9);
+        candidate.status = DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 9);
 
         let mock_storage = MockStorageBackend::new()
             .with_pull_deltas_after(Ok(vec![candidate.clone()]))
@@ -1021,8 +1018,7 @@ mod tests {
     async fn test_test_processor_process_all_accounts() {
         let mock_storage = MockStorageBackend::new();
         let mock_network = MockNetworkClient::new();
-        let mock_metadata =
-            MockMetadataStore::new().with_list_with_pending_candidates(Ok(vec![]));
+        let mock_metadata = MockMetadataStore::new().with_list_with_pending_candidates(Ok(vec![]));
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
