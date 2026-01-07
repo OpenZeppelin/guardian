@@ -397,3 +397,642 @@ impl Processor for TestDeltasProcessor {
         self.base.process_account(account_id).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::delta_object::DeltaStatus;
+    use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
+    use crate::state_object::StateObject;
+    use crate::storage::StorageType;
+    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use std::sync::Arc;
+
+    fn create_test_metadata(account_id: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![],
+            },
+            storage_type: StorageType::Filesystem,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: true,
+        }
+    }
+
+    fn create_test_state(account_id: &str) -> StateObject {
+        StateObject {
+            account_id: account_id.to_string(),
+            commitment: "old_commitment".to_string(),
+            state_json: serde_json::json!({"balance": 100}),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn create_candidate_delta(account_id: &str, nonce: u64) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: "prev_commitment".to_string(),
+            new_commitment: Some("new_commitment".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: None,
+            status: DeltaStatus::candidate("2024-01-01T00:00:00Z".to_string()),
+        }
+    }
+
+    fn create_canonical_delta(account_id: &str, nonce: u64) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: "prev_commitment".to_string(),
+            new_commitment: Some("new_commitment".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: None,
+            status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_get_candidates_filters_only_candidates() {
+        let account_id = "0xtest_account";
+        let deltas = vec![
+            create_candidate_delta(account_id, 1),
+            create_canonical_delta(account_id, 2),
+            create_candidate_delta(account_id, 3),
+        ];
+
+        let candidates = get_candidates(&deltas);
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|d| d.status.is_candidate()));
+    }
+
+    #[test]
+    fn test_get_candidates_sorts_by_nonce() {
+        let account_id = "0xtest_account";
+        let deltas = vec![
+            create_candidate_delta(account_id, 5),
+            create_candidate_delta(account_id, 2),
+            create_candidate_delta(account_id, 8),
+            create_candidate_delta(account_id, 1),
+        ];
+
+        let candidates = get_candidates(&deltas);
+
+        assert_eq!(candidates.len(), 4);
+        assert_eq!(candidates[0].nonce, 1);
+        assert_eq!(candidates[1].nonce, 2);
+        assert_eq!(candidates[2].nonce, 5);
+        assert_eq!(candidates[3].nonce, 8);
+    }
+
+    #[test]
+    fn test_get_candidates_empty_input() {
+        let deltas: Vec<DeltaObject> = vec![];
+        let candidates = get_candidates(&deltas);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_get_candidates_no_candidates() {
+        let account_id = "0xtest_account";
+        let deltas = vec![
+            create_canonical_delta(account_id, 1),
+            create_canonical_delta(account_id, 2),
+        ];
+
+        let candidates = get_candidates(&deltas);
+        assert!(candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_process_all_accounts_empty_list() {
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata =
+            MockMetadataStore::new().with_list_with_pending_candidates(Ok(vec![]));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_all_accounts_list_error() {
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Err("Database error".to_string()));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PsmError::StorageError(_)));
+    }
+
+    #[tokio::test]
+    async fn test_process_account_metadata_not_found() {
+        let account_id = "0xtest_account";
+
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(None)); // Metadata not found
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        // process_all_accounts should continue even if one account fails
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_account_no_candidates() {
+        let account_id = "0xtest_account";
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![])); // No deltas
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_candidate_verification_succeeds() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id))) // Called twice
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(()))
+            .with_should_update_auth(Ok(None));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(())); // For clearing has_pending_candidate
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_candidate_verification_fails_increments_retry() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Err("Verification failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        // Use max_retries > 1 so it increments instead of discarding
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_candidate_max_retries_discards() {
+        let account_id = "0xtest_account";
+        // Create a candidate that has already been retried max_retries times
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status =
+            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 9);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Err("Verification failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(())); // For clearing has_pending_candidate
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        // max_retries = 10, so retry_count 9 + 1 = 10 >= 10, will discard
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_candidate_no_new_commitment() {
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.new_commitment = None; // No commitment
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        // Should succeed but log error about missing commitment
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_candidate_apply_delta_fails() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)));
+
+        let mock_network =
+            MockNetworkClient::new().with_apply_delta(Err("Apply delta failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        // Should continue processing even on error
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_canonicalize_with_auth_update() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let new_auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xnew_commitment".to_string()],
+        };
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(()))
+            .with_should_update_auth(Ok(Some(new_auth)));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(())) // For update_auth
+            .with_set(Ok(())); // For clearing has_pending_candidate
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_deltas_processor_new() {
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new();
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::new(5, 30);
+        let _processor = DeltasProcessor::new(state, config);
+        // Just verify it constructs without panic
+    }
+
+    #[tokio::test]
+    async fn test_test_deltas_processor_new() {
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new();
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let _processor = TestDeltasProcessor::new(state);
+        // Just verify it constructs without panic
+    }
+
+    #[tokio::test]
+    async fn test_process_multiple_accounts() {
+        let account_id_1 = "0xtest_account_1";
+        let account_id_2 = "0xtest_account_2";
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![])) // First account has no deltas
+            .with_pull_deltas_after(Ok(vec![])); // Second account has no deltas
+
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![
+                account_id_1.to_string(),
+                account_id_2.to_string(),
+            ]))
+            .with_get(Ok(Some(create_test_metadata(account_id_1))))
+            .with_get(Ok(Some(create_test_metadata(account_id_2))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_account_directly() {
+        let account_id = "0xtest_account";
+
+        let mock_storage = MockStorageBackend::new().with_pull_deltas_after(Ok(vec![]));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata =
+            MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_account(account_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_test_processor_process_account() {
+        let account_id = "0xtest_account";
+
+        let mock_storage = MockStorageBackend::new().with_pull_deltas_after(Ok(vec![]));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata =
+            MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let processor = TestDeltasProcessor::new(state);
+
+        let result = processor.process_account(account_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_canonicalize_with_existing_proposal() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()))
+            .with_pull_delta_proposal(Ok(candidate.clone())) // Proposal exists
+            .with_delete_delta_proposal(Ok(()));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(()))
+            .with_should_update_auth(Ok(None));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(())); // For clearing has_pending_candidate
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_canonicalize_delete_proposal_fails() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()))
+            .with_pull_delta_proposal(Ok(candidate.clone()))
+            .with_delete_delta_proposal(Err("Delete failed".to_string())); // Delete fails
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(()))
+            .with_should_update_auth(Ok(None));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(())); // For clearing has_pending_candidate
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        // Should succeed even if proposal delete fails (just logs warning)
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_test_processor_process_all_accounts() {
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata =
+            MockMetadataStore::new().with_list_with_pending_candidates(Ok(vec![]));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+
+        let processor = TestDeltasProcessor::new(state);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+    }
+}
