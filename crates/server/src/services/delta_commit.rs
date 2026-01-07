@@ -45,7 +45,21 @@ impl DeltaCommitStrategy {
                         "Failed to submit candidate delta"
                     );
                     PsmError::StorageError(format!("Failed to submit delta: {e}"))
-                })
+                })?;
+
+                // Set flag indicating account has a pending candidate
+                ctx.state
+                    .metadata
+                    .set_has_pending_candidate(&delta.account_id, true, &ctx.now)
+                    .await
+                    .map_err(|e| {
+                        warn!(
+                            account_id = %delta.account_id,
+                            error = %e,
+                            "Failed to set has_pending_candidate flag"
+                        );
+                        PsmError::StorageError(format!("Failed to update metadata: {e}"))
+                    })
             }
             DeltaCommitStrategy::Optimistic => {
                 delta.status = DeltaStatus::canonical(ctx.now.clone());
@@ -167,6 +181,7 @@ mod tests {
             storage_type: StorageType::Filesystem,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
         }
     }
 

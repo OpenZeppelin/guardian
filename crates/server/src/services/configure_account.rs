@@ -111,6 +111,7 @@ pub async fn configure_account(
         storage_type: params.storage_type,
         created_at: account_state.created_at.clone(),
         updated_at: account_state.updated_at.clone(),
+        has_pending_candidate: false,
     };
 
     state.metadata.set(metadata_entry).await.map_err(|e| {
@@ -228,6 +229,7 @@ mod tests {
             storage_type: StorageType::Filesystem,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
         };
 
         let network_client = MockNetworkClient::new();

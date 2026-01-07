@@ -188,6 +188,7 @@ mod tests {
             storage_type: StorageType::Filesystem,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            has_pending_candidate: false,
         }
     }
 

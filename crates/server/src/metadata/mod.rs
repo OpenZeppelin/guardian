@@ -16,6 +16,7 @@ pub struct AccountMetadata {
     pub storage_type: StorageType,
     pub created_at: String,
     pub updated_at: String,
+    pub has_pending_candidate: bool,
 }
 
 /// Metadata store trait for managing account metadata
@@ -46,4 +47,29 @@ pub trait MetadataStore: Send + Sync {
 
         self.set(metadata).await
     }
+
+    /// Set the has_pending_candidate flag for an account
+    async fn set_has_pending_candidate(
+        &self,
+        account_id: &str,
+        has_candidate: bool,
+        now: &str,
+    ) -> Result<(), String> {
+        let mut metadata = self
+            .get(account_id)
+            .await?
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+        if metadata.has_pending_candidate == has_candidate {
+            return Ok(());
+        }
+
+        metadata.has_pending_candidate = has_candidate;
+        metadata.updated_at = now.to_string();
+
+        self.set(metadata).await
+    }
+
+    /// List all account IDs that have pending candidates
+    async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
 }

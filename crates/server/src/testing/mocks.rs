@@ -459,6 +459,7 @@ pub struct MockMetadataStore {
     pub set_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
     pub list_responses: Arc<StdMutex<Vec<ListResult>>>,
+    pub list_with_pending_candidates_responses: Arc<StdMutex<Vec<ListResult>>>,
 }
 
 impl MockMetadataStore {
@@ -481,6 +482,17 @@ impl MockMetadataStore {
 
     pub fn with_list(self, response: StdResult<Vec<String>, String>) -> Self {
         self.list_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_list_with_pending_candidates(
+        self,
+        response: StdResult<Vec<String>, String>,
+    ) -> Self {
+        self.list_with_pending_candidates_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
@@ -510,6 +522,14 @@ impl MetadataStore for MockMetadataStore {
 
     async fn list(&self) -> StdResult<Vec<String>, String> {
         self.list_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn list_with_pending_candidates(&self) -> StdResult<Vec<String>, String> {
+        self.list_with_pending_candidates_responses
             .lock()
             .unwrap()
             .pop()

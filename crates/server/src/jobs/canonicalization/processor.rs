@@ -34,9 +34,14 @@ impl DeltasProcessorBase {
         let account_ids = self
             .state
             .metadata
-            .list()
+            .list_with_pending_candidates()
             .await
             .map_err(|e| PsmError::StorageError(format!("Failed to list accounts: {e}")))?;
+
+        tracing::info!(
+            accounts_with_candidates = account_ids.len(),
+            "Running canonicalization process"
+        );
 
         for account_id in account_ids {
             if let Err(e) = self.process_account(&account_id).await {
@@ -169,6 +174,21 @@ impl DeltasProcessorBase {
                         .map_err(|e| {
                             PsmError::StorageError(format!("Failed to delete delta: {e}"))
                         })?;
+
+                    // Clear the pending candidate flag after discard
+                    let now = self.state.clock.now_rfc3339();
+                    if let Err(e) = self
+                        .state
+                        .metadata
+                        .set_has_pending_candidate(&delta.account_id, false, &now)
+                        .await
+                    {
+                        tracing::warn!(
+                            account_id = %delta.account_id,
+                            error = %e,
+                            "Failed to clear has_pending_candidate flag after discard"
+                        );
+                    }
                 } else {
                     tracing::info!(
                         account_id = %delta.account_id,
@@ -268,13 +288,27 @@ impl DeltasProcessorBase {
         }
 
         let mut canonical_delta = delta.clone();
-        canonical_delta.status = DeltaStatus::canonical(now);
+        canonical_delta.status = DeltaStatus::canonical(now.clone());
 
         storage_backend
             .submit_delta(&canonical_delta)
             .await
             .map_err(|e| {
                 PsmError::StorageError(format!("Failed to update delta as canonical: {e}"))
+            })?;
+
+        // Clear the pending candidate flag
+        self.state
+            .metadata
+            .set_has_pending_candidate(&delta.account_id, false, &now)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    error = %e,
+                    "Failed to clear has_pending_candidate flag"
+                );
+                PsmError::StorageError(format!("Failed to update metadata: {e}"))
             })?;
 
         // Delete matching proposal now that delta is canonical

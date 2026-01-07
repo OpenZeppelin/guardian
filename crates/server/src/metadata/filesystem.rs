@@ -102,4 +102,13 @@ impl MetadataStore for FilesystemMetadataStore {
         let cache = self.cache.read().await;
         Ok(cache.keys().cloned().collect())
     }
+
+    async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String> {
+        let cache = self.cache.read().await;
+        Ok(cache
+            .iter()
+            .filter(|(_, m)| m.has_pending_candidate)
+            .map(|(k, _)| k.clone())
+            .collect())
+    }
 }
