@@ -37,15 +37,19 @@ impl DeltaCommitStrategy {
         match self {
             DeltaCommitStrategy::Candidate => {
                 delta.status = DeltaStatus::candidate(ctx.now.clone());
-                ctx.resolved.backend.submit_delta(delta).await.map_err(|e| {
-                    error!(
-                        account_id = %delta.account_id,
-                        nonce = delta.nonce,
-                        error = %e,
-                        "Failed to submit candidate delta"
-                    );
-                    PsmError::StorageError(format!("Failed to submit delta: {e}"))
-                })?;
+                ctx.resolved
+                    .backend
+                    .submit_delta(delta)
+                    .await
+                    .map_err(|e| {
+                        error!(
+                            account_id = %delta.account_id,
+                            nonce = delta.nonce,
+                            error = %e,
+                            "Failed to submit candidate delta"
+                        );
+                        PsmError::StorageError(format!("Failed to submit delta: {e}"))
+                    })?;
 
                 // Set flag indicating account has a pending candidate
                 ctx.state
