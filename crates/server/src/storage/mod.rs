@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::delta_object::DeltaObject;
+use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::filesystem::FilesystemService;
 
@@ -80,6 +80,13 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<(), String>;
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
+    async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;
+    async fn update_delta_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+    ) -> Result<(), String>;
 }
 
 /// Storage registry that maps storage types to their backend implementations

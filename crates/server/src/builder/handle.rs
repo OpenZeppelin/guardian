@@ -34,8 +34,8 @@ impl ServerHandle {
         // Start background jobs based on canonicalization config
         if let Some(config) = &self.app_state.canonicalization {
             tracing::info!(
-                delay_seconds = config.delay_seconds,
                 check_interval_seconds = config.check_interval_seconds,
+                max_retries = config.max_retries,
                 "Starting canonicalization worker"
             );
             crate::services::start_canonicalization_worker(self.app_state.clone());

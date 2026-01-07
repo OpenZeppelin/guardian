@@ -313,7 +313,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         crate::delta_object::DeltaStatus::Pending { timestamp, .. } => {
             (Some(timestamp.clone()), None, None)
         }
-        crate::delta_object::DeltaStatus::Candidate { timestamp } => {
+        crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => {
             (Some(timestamp.clone()), None, None)
         }
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
@@ -350,7 +350,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
                 )),
             })
         }
-        crate::delta_object::DeltaStatus::Candidate { timestamp } => Some(DeltaStatusGrpc {
+        crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
             status: Some(state_manager::delta_status::Status::CandidateAt(
                 timestamp.clone(),
             )),

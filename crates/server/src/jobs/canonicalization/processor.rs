@@ -4,7 +4,6 @@ use crate::error::{PsmError, Result};
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 
 #[async_trait]
 pub trait Processor: Send + Sync {
@@ -14,89 +13,24 @@ pub trait Processor: Send + Sync {
     async fn process_account(&self, account_id: &str) -> Result<()>;
 }
 
-trait CandidateFilter: Send + Sync {
-    fn filter(&self, deltas: &[DeltaObject]) -> Vec<DeltaObject>;
-}
+fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
+    let mut candidates: Vec<DeltaObject> = deltas
+        .iter()
+        .filter(|delta| delta.status.is_candidate())
+        .cloned()
+        .collect();
 
-struct TimeBasedFilter {
-    config: CanonicalizationConfig,
-    now: DateTime<Utc>,
-}
-
-impl CandidateFilter for TimeBasedFilter {
-    fn filter(&self, deltas: &[DeltaObject]) -> Vec<DeltaObject> {
-        let mut candidates: Vec<DeltaObject> = deltas
-            .iter()
-            .filter(|delta| self.is_ready_candidate(delta))
-            .cloned()
-            .collect();
-
-        candidates.sort_by_key(|d| d.nonce);
-        candidates
-    }
-}
-
-impl TimeBasedFilter {
-    fn is_ready_candidate(&self, delta: &DeltaObject) -> bool {
-        if !delta.status.is_candidate() {
-            tracing::debug!(
-                account_id = %delta.account_id,
-                nonce = delta.nonce,
-                status = ?delta.status,
-                "Delta not in candidate status"
-            );
-            return false;
-        }
-
-        let candidate_at_str = delta.status.timestamp();
-        if let Ok(candidate_at) = DateTime::parse_from_rfc3339(candidate_at_str) {
-            let elapsed = self.now.signed_duration_since(candidate_at);
-            let is_ready = elapsed.num_seconds() >= self.config.delay_seconds as i64;
-
-            tracing::debug!(
-                account_id = %delta.account_id,
-                nonce = delta.nonce,
-                candidate_at = %candidate_at_str,
-                elapsed_seconds = elapsed.num_seconds(),
-                delay_seconds = self.config.delay_seconds,
-                is_ready = is_ready,
-                "Candidate eligibility check"
-            );
-
-            return is_ready;
-        }
-
-        tracing::warn!(
-            account_id = %delta.account_id,
-            nonce = delta.nonce,
-            timestamp = %candidate_at_str,
-            "Failed to parse candidate timestamp"
-        );
-        false
-    }
-}
-
-struct AllCandidatesFilter;
-
-impl CandidateFilter for AllCandidatesFilter {
-    fn filter(&self, deltas: &[DeltaObject]) -> Vec<DeltaObject> {
-        let mut candidates: Vec<DeltaObject> = deltas
-            .iter()
-            .filter(|delta| delta.status.is_candidate())
-            .cloned()
-            .collect();
-
-        candidates.sort_by_key(|d| d.nonce);
-        candidates
-    }
+    candidates.sort_by_key(|d| d.nonce);
+    candidates
 }
 
 struct DeltasProcessorBase {
     state: AppState,
+    max_retries: u32,
 }
 
 impl DeltasProcessorBase {
-    async fn process_all_with_filter(&self, filter: &dyn CandidateFilter) -> Result<()> {
+    async fn process_all_accounts(&self) -> Result<()> {
         let account_ids = self
             .state
             .metadata
@@ -105,7 +39,7 @@ impl DeltasProcessorBase {
             .map_err(|e| PsmError::StorageError(format!("Failed to list accounts: {e}")))?;
 
         for account_id in account_ids {
-            if let Err(e) = self.process_account_with_filter(&account_id, filter).await {
+            if let Err(e) = self.process_account(&account_id).await {
                 tracing::error!(
                     account_id = %account_id,
                     error = %e,
@@ -117,11 +51,7 @@ impl DeltasProcessorBase {
         Ok(())
     }
 
-    async fn process_account_with_filter(
-        &self,
-        account_id: &str,
-        filter: &dyn CandidateFilter,
-    ) -> Result<()> {
+    async fn process_account(&self, account_id: &str) -> Result<()> {
         let account_metadata = self
             .state
             .metadata
@@ -147,7 +77,7 @@ impl DeltasProcessorBase {
             "Pulled deltas from storage"
         );
 
-        let candidates = filter.filter(&all_deltas);
+        let candidates = get_candidates(&all_deltas);
 
         tracing::info!(
             account_id = %account_id,
@@ -220,12 +150,45 @@ impl DeltasProcessorBase {
                 }
             }
             Err(e) => {
-                tracing::error!(
-                    account_id = %delta.account_id,
-                    nonce = delta.nonce,
-                    error = %e,
-                    "Failed to verify delta"
-                );
+                let current_retry = delta.status.retry_count();
+                let new_retry = current_retry + 1;
+
+                if new_retry >= self.max_retries {
+                    tracing::warn!(
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        retries = new_retry,
+                        max_retries = self.max_retries,
+                        error = %e,
+                        "Delta verification failed after max retries, discarding"
+                    );
+
+                    storage_backend
+                        .delete_delta(&delta.account_id, delta.nonce)
+                        .await
+                        .map_err(|e| {
+                            PsmError::StorageError(format!("Failed to delete delta: {e}"))
+                        })?;
+                } else {
+                    tracing::info!(
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        retry = new_retry,
+                        max_retries = self.max_retries,
+                        error = %e,
+                        "Delta verification failed, will retry"
+                    );
+
+                    let now = self.state.clock.now_rfc3339();
+                    let new_status = delta.status.with_incremented_retry(now);
+
+                    storage_backend
+                        .update_delta_status(&delta.account_id, delta.nonce, new_status)
+                        .await
+                        .map_err(|e| {
+                            PsmError::StorageError(format!("Failed to update delta status: {e}"))
+                        })?;
+                }
 
                 Ok(())
             }
@@ -347,55 +310,19 @@ impl DeltasProcessorBase {
 
         Ok(())
     }
-
-    #[allow(dead_code)]
-    async fn discard_mismatched_delta(&self, delta: DeltaObject) -> Result<()> {
-        tracing::warn!(
-            account_id = %delta.account_id,
-            nonce = delta.nonce,
-            "Discarding delta (commitment mismatch with on-chain state)"
-        );
-
-        let account_metadata = self
-            .state
-            .metadata
-            .get(&delta.account_id)
-            .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
-            .ok_or_else(|| PsmError::AccountNotFound(delta.account_id.clone()))?;
-
-        let storage_backend = self
-            .state
-            .storage
-            .get(&account_metadata.storage_type)
-            .map_err(PsmError::ConfigurationError)?;
-
-        let now = self.state.clock.now_rfc3339();
-
-        let mut discarded_delta = delta.clone();
-        discarded_delta.status = DeltaStatus::discarded(now);
-
-        storage_backend
-            .submit_delta(&discarded_delta)
-            .await
-            .map_err(|e| {
-                PsmError::StorageError(format!("Failed to update delta as discarded: {e}"))
-            })?;
-
-        Ok(())
-    }
 }
 
 pub struct DeltasProcessor {
     base: DeltasProcessorBase,
-    config: CanonicalizationConfig,
 }
 
 impl DeltasProcessor {
     pub fn new(state: AppState, config: CanonicalizationConfig) -> Self {
         Self {
-            base: DeltasProcessorBase { state },
-            config,
+            base: DeltasProcessorBase {
+                state,
+                max_retries: config.max_retries,
+            },
         }
     }
 }
@@ -403,21 +330,11 @@ impl DeltasProcessor {
 #[async_trait]
 impl Processor for DeltasProcessor {
     async fn process_all_accounts(&self) -> Result<()> {
-        let filter = TimeBasedFilter {
-            config: self.config.clone(),
-            now: self.base.state.clock.now(),
-        };
-        self.base.process_all_with_filter(&filter).await
+        self.base.process_all_accounts().await
     }
 
     async fn process_account(&self, account_id: &str) -> Result<()> {
-        let filter = TimeBasedFilter {
-            config: self.config.clone(),
-            now: self.base.state.clock.now(),
-        };
-        self.base
-            .process_account_with_filter(account_id, &filter)
-            .await
+        self.base.process_account(account_id).await
     }
 }
 
@@ -428,7 +345,10 @@ pub struct TestDeltasProcessor {
 impl TestDeltasProcessor {
     pub fn new(state: AppState) -> Self {
         Self {
-            base: DeltasProcessorBase { state },
+            base: DeltasProcessorBase {
+                state,
+                max_retries: u32::MAX, // Test processor doesn't discard on retries
+            },
         }
     }
 }
@@ -436,14 +356,10 @@ impl TestDeltasProcessor {
 #[async_trait]
 impl Processor for TestDeltasProcessor {
     async fn process_all_accounts(&self) -> Result<()> {
-        let filter = AllCandidatesFilter;
-        self.base.process_all_with_filter(&filter).await
+        self.base.process_all_accounts().await
     }
 
     async fn process_account(&self, account_id: &str) -> Result<()> {
-        let filter = AllCandidatesFilter;
-        self.base
-            .process_account_with_filter(account_id, &filter)
-            .await
+        self.base.process_account(account_id).await
     }
 }

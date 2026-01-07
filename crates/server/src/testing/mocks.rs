@@ -437,6 +437,19 @@ impl StorageBackend for MockStorageBackend {
             .pop()
             .unwrap_or(Ok(()))
     }
+
+    async fn delete_delta(&self, _account_id: &str, _nonce: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn update_delta_status(
+        &self,
+        _account_id: &str,
+        _nonce: u64,
+        _status: crate::delta_object::DeltaStatus,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]

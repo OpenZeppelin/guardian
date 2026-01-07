@@ -1,4 +1,4 @@
-use crate::delta_object::DeltaObject;
+use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
@@ -367,6 +367,43 @@ impl StorageBackend for FilesystemService {
 
         Ok(())
     }
+
+    async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String> {
+        let path = self.get_delta_path(account_id, nonce);
+
+        if !path.exists() {
+            return Ok(()); // Already deleted or doesn't exist
+        }
+
+        fs::remove_file(&path)
+            .await
+            .map_err(|e| format!("Failed to delete delta file: {e}"))?;
+
+        Ok(())
+    }
+
+    async fn update_delta_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+    ) -> Result<(), String> {
+        let path = self.get_delta_path(account_id, nonce);
+
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Failed to read delta file: {e}"))?;
+
+        let mut delta: DeltaObject = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
+
+        delta.status = status;
+
+        let updated_content = serde_json::to_string_pretty(&delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+
+        self.write(&path, &updated_content).await
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +732,98 @@ mod tests {
 
         assert!(result1.is_ok(), "Pull with prefix should work");
         assert!(result2.is_ok(), "Pull without prefix should work");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_delete_delta() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let delta = create_test_delta(account_id, 1);
+
+        // Submit delta
+        storage
+            .submit_delta(&delta)
+            .await
+            .expect("Submit delta failed");
+
+        // Verify it exists
+        storage
+            .pull_delta(account_id, 1)
+            .await
+            .expect("Pull delta should succeed");
+
+        // Delete delta
+        storage
+            .delete_delta(account_id, 1)
+            .await
+            .expect("Delete delta failed");
+
+        // Verify it's gone
+        let result = storage.pull_delta(account_id, 1).await;
+        assert!(result.is_err(), "Pull should fail after delete");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_delta() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+
+        // Delete nonexistent delta should succeed (no-op)
+        let result = storage.delete_delta(account_id, 999).await;
+        assert!(result.is_ok(), "Delete of nonexistent should succeed");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_update_delta_status() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-01-01T00:00:00Z".to_string());
+
+        // Submit delta as candidate
+        storage
+            .submit_delta(&delta)
+            .await
+            .expect("Submit delta failed");
+
+        // Verify initial status
+        let pulled = storage.pull_delta(account_id, 1).await.unwrap();
+        assert!(pulled.status.is_candidate());
+        assert_eq!(pulled.status.retry_count(), 0);
+
+        // Update status with incremented retry
+        let new_status = DeltaStatus::candidate_with_retry("2024-01-01T00:01:00Z".to_string(), 1);
+        storage
+            .update_delta_status(account_id, 1, new_status)
+            .await
+            .expect("Update status failed");
+
+        // Verify updated status
+        let pulled = storage.pull_delta(account_id, 1).await.unwrap();
+        assert!(pulled.status.is_candidate());
+        assert_eq!(pulled.status.retry_count(), 1);
+        assert_eq!(pulled.status.timestamp(), "2024-01-01T00:01:00Z");
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();

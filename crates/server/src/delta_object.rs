@@ -20,6 +20,8 @@ pub enum DeltaStatus {
     },
     Candidate {
         timestamp: String,
+        #[serde(default)]
+        retry_count: u32,
     },
     Canonical {
         timestamp: String,
@@ -39,7 +41,17 @@ impl DeltaStatus {
     }
 
     pub fn candidate(timestamp: String) -> Self {
-        Self::Candidate { timestamp }
+        Self::Candidate {
+            timestamp,
+            retry_count: 0,
+        }
+    }
+
+    pub fn candidate_with_retry(timestamp: String, retry_count: u32) -> Self {
+        Self::Candidate {
+            timestamp,
+            retry_count,
+        }
     }
 
     pub fn canonical(timestamp: String) -> Self {
@@ -69,9 +81,26 @@ impl DeltaStatus {
     pub fn timestamp(&self) -> &str {
         match self {
             Self::Pending { timestamp, .. } => timestamp,
-            Self::Candidate { timestamp } => timestamp,
+            Self::Candidate { timestamp, .. } => timestamp,
             Self::Canonical { timestamp } => timestamp,
             Self::Discarded { timestamp } => timestamp,
+        }
+    }
+
+    pub fn retry_count(&self) -> u32 {
+        match self {
+            Self::Candidate { retry_count, .. } => *retry_count,
+            _ => 0,
+        }
+    }
+
+    pub fn with_incremented_retry(&self, new_timestamp: String) -> Self {
+        match self {
+            Self::Candidate { retry_count, .. } => Self::Candidate {
+                timestamp: new_timestamp,
+                retry_count: retry_count + 1,
+            },
+            _ => self.clone(),
         }
     }
 }
@@ -80,6 +109,7 @@ impl Default for DeltaStatus {
     fn default() -> Self {
         Self::Candidate {
             timestamp: String::new(),
+            retry_count: 0,
         }
     }
 }
@@ -211,6 +241,7 @@ mod tests {
 
         let candidate = DeltaStatus::Candidate {
             timestamp: "2024-01-02".to_string(),
+            retry_count: 0,
         };
         assert!(!candidate.is_pending());
         assert!(candidate.is_candidate());
@@ -321,5 +352,46 @@ mod tests {
         let json = serde_json::to_string(&sig).unwrap();
         let deserialized: CosignerSignature = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, sig);
+    }
+
+    #[test]
+    fn test_candidate_retry_count() {
+        let candidate = DeltaStatus::candidate("2024-01-01".to_string());
+        assert_eq!(candidate.retry_count(), 0);
+
+        let candidate_with_retry = DeltaStatus::candidate_with_retry("2024-01-01".to_string(), 5);
+        assert_eq!(candidate_with_retry.retry_count(), 5);
+
+        let incremented = candidate.with_incremented_retry("2024-01-02".to_string());
+        assert_eq!(incremented.retry_count(), 1);
+        assert_eq!(incremented.timestamp(), "2024-01-02");
+
+        let incremented_again = incremented.with_incremented_retry("2024-01-03".to_string());
+        assert_eq!(incremented_again.retry_count(), 2);
+    }
+
+    #[test]
+    fn test_retry_count_for_non_candidate() {
+        let canonical = DeltaStatus::canonical("2024-01-01".to_string());
+        assert_eq!(canonical.retry_count(), 0);
+
+        let pending = DeltaStatus::pending("2024-01-01".to_string(), "proposer".to_string());
+        assert_eq!(pending.retry_count(), 0);
+    }
+
+    #[test]
+    fn test_candidate_deserialization_without_retry_count() {
+        let json = r#"{"status":"candidate","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let status: DeltaStatus = serde_json::from_str(json).unwrap();
+        assert!(status.is_candidate());
+        assert_eq!(status.retry_count(), 0);
+    }
+
+    #[test]
+    fn test_candidate_deserialization_with_retry_count() {
+        let json = r#"{"status":"candidate","timestamp":"2024-01-01T00:00:00Z","retry_count":3}"#;
+        let status: DeltaStatus = serde_json::from_str(json).unwrap();
+        assert!(status.is_candidate());
+        assert_eq!(status.retry_count(), 3);
     }
 }
