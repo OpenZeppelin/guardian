@@ -66,6 +66,29 @@ export async function registerOnPsm(multisig: Multisig): Promise<void> {
 }
 
 /**
+ * Register an account on PSM server using existing state data.
+ * Used when switching PSM endpoints with an active multisig.
+ */
+export async function registerOnPsmWithState(
+  multisig: Multisig,
+  stateDataBase64: string,
+): Promise<void> {
+  await multisig.registerOnPsm(stateDataBase64);
+}
+
+/**
+ * Switch an existing multisig to a new PSM endpoint.
+ */
+export async function switchMultisigPsm(
+  multisigClient: MultisigClient,
+  multisig: Multisig,
+  stateDataBase64: string,
+): Promise<void> {
+  multisig.setPsmClient(multisigClient.psmClient);
+  await multisig.registerOnPsm(stateDataBase64);
+}
+
+/**
  * Fetch account state from PSM and detect config.
  */
 export async function fetchAccountState(
@@ -166,6 +189,20 @@ export async function createP2idProposal(
   if (!proposals.find((p) => p.id === proposal.id)) {
     return { proposal, proposals: [...proposals, proposal] };
   }
+  return { proposal, proposals };
+}
+
+/**
+ * Create a "switch PSM" proposal.
+ * This is stored locally only (no PSM sync) since the current PSM may be unavailable.
+ */
+export async function createSwitchPsmProposal(
+  multisig: Multisig,
+  newPsmEndpoint: string,
+  newPsmPubkey: string,
+): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
+  const proposal = await multisig.createSwitchPsmProposal(newPsmEndpoint, newPsmPubkey);
+  const proposals = multisig.listProposals();
   return { proposal, proposals };
 }
 

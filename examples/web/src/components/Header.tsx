@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ interface HeaderProps {
   psmStatus: 'connected' | 'connecting' | 'error';
   psmUrl: string;
   onPsmUrlChange: (url: string) => void;
-  onReconnect: () => void;
+  onReconnect: (url: string) => void;
 }
 
 export function Header({
@@ -31,9 +31,14 @@ export function Header({
   const [urlInput, setUrlInput] = useState(psmUrl);
   const [popoverOpen, setPopoverOpen] = useState(false);
 
+  // Sync urlInput when psmUrl changes externally
+  useEffect(() => {
+    setUrlInput(psmUrl);
+  }, [psmUrl]);
+
   const handleSave = () => {
     onPsmUrlChange(urlInput);
-    onReconnect();
+    onReconnect(urlInput);
     setPopoverOpen(false);
   };
 

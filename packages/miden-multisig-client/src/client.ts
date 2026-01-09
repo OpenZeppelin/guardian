@@ -5,7 +5,7 @@
  * to create new multisig accounts and load existing ones.
  */
 
-import { type WebClient, Account } from '@demox-labs/miden-sdk';
+import { type WebClient, Account, AccountId } from '@demox-labs/miden-sdk';
 import { PsmHttpClient } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
@@ -46,11 +46,20 @@ export interface MultisigClientConfig {
  */
 export class MultisigClient {
   private readonly webClient: WebClient;
-  private readonly _psmClient: PsmHttpClient;
+  private _psmClient: PsmHttpClient;
 
   constructor(webClient: WebClient, config: MultisigClientConfig = {}) {
     this.webClient = webClient;
     this._psmClient = new PsmHttpClient(config.psmEndpoint ?? 'http://localhost:3000');
+  }
+
+  /**
+   * Change the PSM endpoint.
+   * 
+   * @param endpoint - The new PSM server endpoint URL
+   */
+  setPsmEndpoint(endpoint: string): void {
+    this._psmClient = new PsmHttpClient(endpoint);
   }
 
   /**
@@ -107,7 +116,10 @@ export class MultisigClient {
       psmEnabled: detected.psmEnabled,
     };
 
-    await this.webClient.newAccount(account, true);
+    const existingAccount = await this.webClient.getAccount(AccountId.fromHex(accountId));
+    if (!existingAccount) {
+      await this.webClient.newAccount(account, true);
+    }
 
     return new Multisig(null, config, this._psmClient, signer, this.webClient, accountId);
   }

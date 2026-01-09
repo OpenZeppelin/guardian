@@ -8,8 +8,9 @@ import {
   type DetectedMultisigConfig,
   type Proposal,
 } from '@openzeppelin/miden-multisig-client';
+import { PsmHttpError } from '@openzeppelin/psm-client';
 
-import { WebClient } from '@demox-labs/miden-sdk';
+import { WebClient, AccountId } from '@demox-labs/miden-sdk';
 
 import {
   Header,
@@ -28,6 +29,7 @@ import {
   createMultisigAccount,
   loadMultisigAccount,
   registerOnPsm,
+  switchMultisigPsm,
   fetchAccountState,
   syncAll,
   createAddSignerProposal,
@@ -35,6 +37,7 @@ import {
   createChangeThresholdProposal,
   createConsumeNotesProposal,
   createP2idProposal,
+  createSwitchPsmProposal,
   signProposal,
   executeProposal,
   exportProposalToJson,
@@ -101,6 +104,51 @@ export default function App() {
         setPsmPubkey(pubkey);
         setMultisigClient(msClient);
         setPsmStatus('connected');
+
+        // If there's an active multisig, try to load or register on the new PSM
+        if (multisig && signer && psmState?.stateDataBase64) {
+          setRegisteringOnPsm(true);
+          try {
+            // First, try to load from the new PSM
+            const reloadedMs = await loadMultisigAccount(msClient, multisig.accountId, signer);
+            setMultisig(reloadedMs);
+
+            const { state, config } = await fetchAccountState(reloadedMs);
+            setPsmState(state);
+            setDetectedConfig(config);
+
+            toast.success('Account loaded from PSM');
+          } catch (loadErr) {
+            // Check if it's a 404 (account not found on this PSM)
+            const isNotFound = loadErr instanceof PsmHttpError && loadErr.status === 404;
+
+            if (isNotFound) {
+              try {
+                const accountId = AccountId.fromHex(multisig.accountId);
+                const currentAccount = await wc.getAccount(accountId);
+                if (!currentAccount) {
+                  throw new Error('Account not found in local client');
+                }
+                const freshStateBytes = currentAccount.serialize();
+                const freshStateBase64 = btoa(String.fromCharCode(...freshStateBytes));
+
+                await switchMultisigPsm(msClient, multisig, freshStateBase64);
+
+                const { state, config } = await fetchAccountState(multisig);
+                setPsmState(state);
+                setDetectedConfig(config);
+
+                toast.success('Account registered on new PSM');
+              } catch (registerErr) {
+                setError(`Failed to register account on new PSM: ${formatError(registerErr)}`);
+              }
+            } else {
+              setError(`Failed to load account from PSM: ${formatError(loadErr)}`);
+            }
+          } finally {
+            setRegisteringOnPsm(false);
+          }
+        }
       } catch (err) {
         const msg = formatError(err);
         console.error('Failed to connect to PSM:', msg);
@@ -109,7 +157,7 @@ export default function App() {
         setError(`Failed to connect to PSM: ${msg}`);
       }
     },
-    [webClient]
+    [webClient, multisig, signer, psmState]
   );
 
   // Initialize on mount
@@ -334,6 +382,23 @@ export default function App() {
     }
   };
 
+  // Create switch PSM proposal
+  const handleCreateSwitchPsmProposal = async (newEndpoint: string, newPubkey: string) => {
+    if (!multisig) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    try {
+      const { proposals } = await createSwitchPsmProposal(multisig, newEndpoint, newPubkey);
+      setProposals(proposals);
+      toast.success('Switch PSM proposal created');
+    } catch (err) {
+      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
   // Sign proposal
   const handleSignProposal = async (proposalId: string) => {
     if (!multisig) return;
@@ -442,7 +507,7 @@ export default function App() {
         psmStatus={psmStatus}
         psmUrl={psmUrl}
         onPsmUrlChange={setPsmUrl}
-        onReconnect={() => connectToPsm(psmUrl)}
+        onReconnect={(url) => connectToPsm(url)}
       />
 
       <main className="flex-1">
@@ -471,6 +536,7 @@ export default function App() {
             onCreateChangeThreshold={handleCreateChangeThresholdProposal}
             onCreateConsumeNotes={handleCreateConsumeNotesProposal}
             onCreateP2id={handleCreateP2idProposal}
+            onCreateSwitchPsm={handleCreateSwitchPsmProposal}
             onSync={handleSync}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}

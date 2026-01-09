@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/select';
 import type { ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
 
-type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes' | 'p2id';
+type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes' | 'p2id' | 'switch_psm';
 
 interface CreateProposalFormProps {
   currentThreshold: number;
@@ -26,6 +26,7 @@ interface CreateProposalFormProps {
   onCreateChangeThreshold: (newThreshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
+  onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
 }
 
 export function CreateProposalForm({
@@ -39,6 +40,7 @@ export function CreateProposalForm({
   onCreateChangeThreshold,
   onCreateConsumeNotes,
   onCreateP2id,
+  onCreateSwitchPsm,
 }: CreateProposalFormProps) {
   const [proposalType, setProposalType] = useState<ProposalType>('add_signer');
 
@@ -60,6 +62,57 @@ export function CreateProposalForm({
   const [recipientId, setRecipientId] = useState('');
   const [selectedFaucetId, setSelectedFaucetId] = useState('');
   const [sendAmount, setSendAmount] = useState('');
+
+  // Switch PSM state
+  const [newPsmEndpoint, setNewPsmEndpoint] = useState('');
+  const [newPsmPubkey, setNewPsmPubkey] = useState('');
+  const [fetchingPubkey, setFetchingPubkey] = useState(false);
+  const [pubkeyError, setPubkeyError] = useState<string | null>(null);
+  const debounceRef = useRef<number | null>(null);
+
+  // Auto-fetch pubkey when endpoint changes
+  useEffect(() => {
+    if (!newPsmEndpoint.trim()) {
+      setNewPsmPubkey('');
+      setPubkeyError(null);
+      return;
+    }
+
+    // Clear previous timeout
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    // Debounce the fetch
+    debounceRef.current = window.setTimeout(async () => {
+      setFetchingPubkey(true);
+      setPubkeyError(null);
+      setNewPsmPubkey('');
+
+      try {
+        const response = await fetch(`${newPsmEndpoint.trim()}/pubkey`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (data.pubkey) {
+          setNewPsmPubkey(data.pubkey);
+        } else {
+          throw new Error('No pubkey in response');
+        }
+      } catch (err) {
+        setPubkeyError(err instanceof Error ? err.message : 'Failed to fetch');
+      } finally {
+        setFetchingPubkey(false);
+      }
+    }, 500);
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, [newPsmEndpoint]);
 
   const handleCreate = () => {
     switch (proposalType) {
@@ -101,6 +154,14 @@ export function CreateProposalForm({
           }
         }
         break;
+      case 'switch_psm':
+        if (newPsmEndpoint.trim() && newPsmPubkey) {
+          onCreateSwitchPsm(newPsmEndpoint.trim(), newPsmPubkey);
+          setNewPsmEndpoint('');
+          setNewPsmPubkey('');
+          setPubkeyError(null);
+        }
+        break;
     }
   };
 
@@ -124,6 +185,8 @@ export function CreateProposalForm({
           return false;
         }
       }
+      case 'switch_psm':
+        return newPsmEndpoint.trim().length > 0 && newPsmPubkey.length > 0 && !fetchingPubkey && !pubkeyError;
     }
   };
 
@@ -139,6 +202,8 @@ export function CreateProposalForm({
         return 'Create a proposal to consume notes sent to the multisig account.';
       case 'p2id':
         return 'Create a proposal to send funds to another account.';
+      case 'switch_psm':
+        return 'Create a proposal to switch the PSM provider for this multisig.';
     }
   };
 
@@ -178,6 +243,7 @@ export function CreateProposalForm({
               <SelectItem value="change_threshold">Change Threshold</SelectItem>
               <SelectItem value="consume_notes">Consume Notes</SelectItem>
               <SelectItem value="p2id">Send Payment</SelectItem>
+              <SelectItem value="switch_psm">Switch PSM</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -396,6 +462,37 @@ export function CreateProposalForm({
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {/* Switch PSM Form */}
+        {proposalType === 'switch_psm' && (
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label>New PSM Endpoint</Label>
+              <Input
+                placeholder="http://localhost:3000"
+                value={newPsmEndpoint}
+                onChange={(e) => setNewPsmEndpoint(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>PSM Public Key</Label>
+              {fetchingPubkey ? (
+                <p className="text-sm text-muted-foreground">Fetching pubkey...</p>
+              ) : pubkeyError ? (
+                <p className="text-sm text-destructive">Failed to fetch: {pubkeyError}</p>
+              ) : newPsmPubkey ? (
+                <code className="block text-xs bg-muted px-2 py-1 rounded font-mono break-all">
+                  {newPsmPubkey}
+                </code>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Enter an endpoint URL to auto-fetch the pubkey
+                </p>
+              )}
+            </div>
           </div>
         )}
 
