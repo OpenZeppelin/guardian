@@ -171,7 +171,7 @@ export function ProposalCard({
                 onClick={() => onSignOffline(proposal.id)}
                 title="Sign offline and copy to clipboard"
               >
-                Sign & Copy
+                Sign Offline
               </Button>
             </>
           )}

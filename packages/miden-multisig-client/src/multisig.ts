@@ -64,7 +64,7 @@ export class Multisig {
   readonly signerCommitments: string[];
   readonly psmCommitment: string;
 
-  private readonly psm: PsmHttpClient;
+  private psm: PsmHttpClient;
   private readonly signer: Signer;
   private readonly webClient: WebClient;
   private readonly _accountId: string;
@@ -96,6 +96,16 @@ export class Multisig {
   /** The signer's commitment */
   get signerCommitment(): string {
     return this.signer.commitment;
+  }
+
+  /**
+   * Update the PSM client used by this Multisig instance.
+   *
+   * @param psmClient - The new PSM HTTP client
+   */
+  setPsmClient(psmClient: PsmHttpClient): void {
+    this.psm = psmClient;
+    this.psm.setSigner(this.signer);
   }
 
   /**
@@ -351,7 +361,7 @@ export class Multisig {
 
   /**
    * Create a "switch PSM" proposal to change the PSM provider.
-   *
+   * 
    * @param newPsmEndpoint - The new PSM server endpoint URL
    * @param newPsmPubkey - The new PSM server's public key commitment (hex)
    * @param nonce - Optional proposal nonce (defaults to Date.now())
@@ -378,7 +388,19 @@ export class Multisig {
       description: `Switch PSM to ${newPsmEndpoint}`,
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    const proposalId = computeCommitmentFromTxSummary(summaryBase64);
+    const proposal: Proposal = {
+      id: proposalId,
+      accountId: this._accountId,
+      nonce: proposalNonce,
+      status: { type: 'pending', signaturesCollected: 0, signaturesRequired: this.threshold, signers: [] },
+      txSummary: summaryBase64,
+      signatures: [],
+      metadata,
+    };
+
+    this.proposals.set(proposal.id, proposal);
+    return proposal;
   }
 
   /**
@@ -547,16 +569,26 @@ export class Multisig {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
-    const deltas = await this.psm.getDeltaProposals(this._accountId);
-    const delta = deltas.find(
-      (d) => computeCommitmentFromTxSummary(d.deltaPayload.txSummary.data) === proposalId
-    );
+    const isSwitchPsm = proposal.metadata?.proposalType === 'switch_psm';
 
-    if (!delta) {
-      throw new Error(`Proposal not found on server: ${proposalId}`);
+    let txSummaryBase64: string;
+    let delta: DeltaObject | undefined;
+
+    if (isSwitchPsm) {
+      txSummaryBase64 = proposal.txSummary;
+    } else {
+      const deltas = await this.psm.getDeltaProposals(this._accountId);
+      delta = deltas.find(
+        (d) => computeCommitmentFromTxSummary(d.deltaPayload.txSummary.data) === proposalId
+      );
+
+      if (!delta) {
+        throw new Error(`Proposal not found on server: ${proposalId}`);
+      }
+      txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
 
-    const txSummaryBytes = base64ToUint8Array(delta.deltaPayload.txSummary.data);
+    const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
     const saltHex = txSummary.salt().toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
@@ -576,8 +608,7 @@ export class Multisig {
       adviceMap.insert(key, new FeltArray(values));
     }
 
-    const isSwitchPsm = proposal.metadata?.proposalType === 'switch_psm';
-    if (!isSwitchPsm) {
+    if (!isSwitchPsm && delta) {
       const executionDelta = {
         ...delta,
         deltaPayload: delta.deltaPayload.txSummary,

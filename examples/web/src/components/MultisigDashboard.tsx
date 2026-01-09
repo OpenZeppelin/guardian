@@ -26,6 +26,7 @@ interface MultisigDashboardProps {
   onCreateChangeThreshold: (newThreshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
+  onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
   onSync: () => void;
   onSignProposal: (proposalId: string) => void;
   onExecuteProposal: (proposalId: string) => void;
@@ -52,6 +53,7 @@ export function MultisigDashboard({
   onCreateChangeThreshold,
   onCreateConsumeNotes,
   onCreateP2id,
+  onCreateSwitchPsm,
   onSync,
   onSignProposal,
   onExecuteProposal,
@@ -159,6 +161,7 @@ export function MultisigDashboard({
         onCreateChangeThreshold={onCreateChangeThreshold}
         onCreateConsumeNotes={onCreateConsumeNotes}
         onCreateP2id={onCreateP2id}
+        onCreateSwitchPsm={onCreateSwitchPsm}
       />
 
       {/* Proposals List */}
