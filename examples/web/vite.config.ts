@@ -28,20 +28,14 @@ export default defineConfig({
     rollupOptions: {
       output: {
         inlineDynamicImports: true,
+        assetFileNames: '[name][extname]',
       },
-      // Place assets at root so wasm fetch is simple
-      assetFileNames: '[name][extname]',
     },
   },
   worker: {
-    target: 'esnext',
     format: 'es',
-    rollupOptions: {
-      output: {
-        inlineDynamicImports: true,
-      },
-    },
   },
+  assetsInclude: ['**/*.wasm'],
   optimizeDeps: {
     exclude: ['@demox-labs/miden-sdk'],
   },
