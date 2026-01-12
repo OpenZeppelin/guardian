@@ -15,7 +15,6 @@ export interface ProcedureInfo {
 
 /**
  * User-facing procedures that can have threshold overrides.
- * Note: auth_tx and verify_psm are internal and not exposed in UI.
  */
 export const USER_PROCEDURES: ProcedureInfo[] = [
   { name: 'receive_asset', label: 'Receive Assets', description: 'Accept incoming assets' },

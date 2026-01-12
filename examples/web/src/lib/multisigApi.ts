@@ -44,6 +44,7 @@ export async function createMultisigAccount(
     psmCommitment,
     psmEnabled: true,
     procedureThresholds,
+    storageMode: 'public',
   };
   const falconSigner = new FalconSigner(signer.secretKey);
   return multisigClient.create(config, falconSigner);
