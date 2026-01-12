@@ -3,6 +3,8 @@
 use miden_objects::Word;
 use miden_objects::account::AccountStorageMode;
 
+use crate::procedures::ProcedureName;
+
 #[derive(Debug, Clone)]
 pub struct PsmConfig {
     /// The gRPC endpoint URL
@@ -17,6 +19,44 @@ impl PsmConfig {
     }
 }
 
+/// Per-procedure threshold override.
+///
+/// Allows specifying different signature thresholds for specific procedures.
+///
+/// # Example
+///
+/// ```
+/// use miden_multisig_client::{ProcedureThreshold, ProcedureName};
+///
+/// // Require only 1 signature for receiving assets
+/// let receive_threshold = ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1);
+///
+/// // Require all signers for configuration changes
+/// let config_threshold = ProcedureThreshold::new(ProcedureName::UpdateSigners, 3);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct ProcedureThreshold {
+    /// The procedure name
+    pub procedure: ProcedureName,
+    /// Required signatures for this procedure
+    pub threshold: u32,
+}
+
+impl ProcedureThreshold {
+    /// Creates a new procedure threshold override.
+    pub fn new(procedure: ProcedureName, threshold: u32) -> Self {
+        Self {
+            procedure,
+            threshold,
+        }
+    }
+
+    /// Returns the procedure root (MAST root hash) for this threshold.
+    pub fn procedure_root(&self) -> Word {
+        self.procedure.root()
+    }
+}
+
 /// Configuration for creating a new multisig account.
 #[derive(Debug, Clone)]
 pub struct MultisigConfig {
@@ -24,6 +64,7 @@ pub struct MultisigConfig {
     pub signer_commitments: Vec<Word>,
     pub psm_config: PsmConfig,
     pub storage_mode: AccountStorageMode,
+    pub procedure_thresholds: Vec<ProcedureThreshold>,
 }
 
 impl MultisigConfig {
@@ -39,12 +80,19 @@ impl MultisigConfig {
             signer_commitments,
             psm_config,
             storage_mode: AccountStorageMode::Private,
+            procedure_thresholds: Vec::new(),
         }
     }
 
     /// Sets the account storage mode.
     pub fn with_storage_mode(mut self, storage_mode: AccountStorageMode) -> Self {
         self.storage_mode = storage_mode;
+        self
+    }
+
+    /// Sets per-procedure threshold overrides.
+    pub fn with_procedure_thresholds(mut self, thresholds: Vec<ProcedureThreshold>) -> Self {
+        self.procedure_thresholds = thresholds;
         self
     }
 
@@ -66,6 +114,20 @@ impl MultisigConfig {
         if self.psm_config.endpoint.is_empty() {
             return Err("PSM endpoint is required".to_string());
         }
+
+        for pt in &self.procedure_thresholds {
+            if pt.threshold == 0 {
+                return Err("procedure threshold must be at least 1".to_string());
+            }
+            if pt.threshold > self.signer_commitments.len() as u32 {
+                return Err(format!(
+                    "procedure threshold ({}) cannot exceed number of signers ({})",
+                    pt.threshold,
+                    self.signer_commitments.len()
+                ));
+            }
+        }
+
         Ok(())
     }
 }

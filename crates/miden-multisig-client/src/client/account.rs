@@ -16,14 +16,54 @@ use private_state_manager_client::{
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
+use crate::config::ProcedureThreshold;
 use crate::error::{MultisigError, Result};
 
 impl MultisigClient {
     /// Creates a new multisig account.
+    ///
+    /// # Arguments
+    /// * `threshold` - Minimum number of signatures required (default threshold)
+    /// * `signer_commitments` - Public key commitments of all signers
+    ///
+    /// For per-procedure thresholds, use `create_account_with_config` instead.
     pub async fn create_account(
         &mut self,
         threshold: u32,
         signer_commitments: Vec<Word>,
+    ) -> Result<&MultisigAccount> {
+        self.create_account_with_proc_thresholds(threshold, signer_commitments, Vec::new())
+            .await
+    }
+
+    /// Creates a new multisig account with per-procedure threshold overrides.
+    ///
+    /// # Arguments
+    /// * `threshold` - Minimum number of signatures required (default threshold)
+    /// * `signer_commitments` - Public key commitments of all signers
+    /// * `proc_threshold_overrides` - Per-procedure threshold overrides using named procedures.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use miden_multisig_client::{ProcedureThreshold, ProcedureName};
+    ///
+    /// let thresholds = vec![
+    ///     ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1),
+    ///     ProcedureThreshold::new(ProcedureName::UpdateSigners, 3),
+    /// ];
+    ///
+    /// let account = client.create_account_with_proc_thresholds(
+    ///     2,  // default 2-of-3
+    ///     signer_commitments,
+    ///     thresholds,
+    /// ).await?;
+    /// ```
+    pub async fn create_account_with_proc_thresholds(
+        &mut self,
+        threshold: u32,
+        signer_commitments: Vec<Word>,
+        proc_threshold_overrides: Vec<ProcedureThreshold>,
     ) -> Result<&MultisigAccount> {
         // Get PSM server's public key commitment
         let mut psm_client = self.create_psm_client().await?;
@@ -35,8 +75,15 @@ impl MultisigClient {
         let psm_commitment = crate::keystore::commitment_from_hex(&psm_pubkey_hex)
             .map_err(MultisigError::HexDecode)?;
 
-        // Create the multisig account
-        let psm_config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment);
+        // Convert procedure thresholds to (Word, u32) pairs
+        let overrides: Vec<(Word, u32)> = proc_threshold_overrides
+            .iter()
+            .map(|pt| (pt.procedure_root(), pt.threshold))
+            .collect();
+
+        // Create the multisig account config
+        let psm_config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment)
+            .with_proc_threshold_overrides(overrides);
 
         // Generate a random seed for account ID
         let mut seed = [0u8; 32];

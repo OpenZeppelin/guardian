@@ -89,4 +89,24 @@ export function validateMultisigConfig(config: MultisigConfig): void {
   if (!config.psmCommitment) {
     throw new Error('PSM commitment is required');
   }
+
+  // Validate procedure thresholds if provided
+  if (config.procedureThresholds) {
+    const seen = new Set<string>();
+    for (const pt of config.procedureThresholds) {
+      if (pt.threshold < 1) {
+        throw new Error('procedure threshold must be at least 1');
+      }
+      if (pt.threshold > config.signerCommitments.length) {
+        throw new Error(
+          `procedure threshold (${pt.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`
+        );
+      }
+
+      if (seen.has(pt.procedure)) {
+        throw new Error(`duplicate procedure threshold for: ${pt.procedure}`);
+      }
+      seen.add(pt.procedure);
+    }
+  }
 }

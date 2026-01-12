@@ -1,4 +1,5 @@
 import type { Account } from '@demox-labs/miden-sdk';
+import type { ProcedureName } from './procedures.js';
 
 export type {
   Signer,
@@ -34,12 +35,30 @@ export interface MultisigAccountState {
   cosignerCommitments: string[];
 }
 
+/**
+ * Per-procedure threshold override.
+ *
+ * @example
+ * ```typescript
+ * const thresholds: ProcedureThreshold[] = [
+ *   { procedure: 'receive_asset', threshold: 1 },
+ *   { procedure: 'update_signers', threshold: 3 },
+ * ];
+ * ```
+ */
+export interface ProcedureThreshold {
+  procedure: ProcedureName;
+  /** Threshold for this procedure (1 to numSigners) */
+  threshold: number;
+}
+
 export interface MultisigConfig {
   threshold: number;
   signerCommitments: string[];
   psmCommitment: string;
   psmEnabled?: boolean;
   storageMode?: 'private' | 'public';
+  procedureThresholds?: ProcedureThreshold[];
 }
 
 export interface CreateAccountResult {

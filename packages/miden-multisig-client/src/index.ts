@@ -66,11 +66,20 @@ export {
   StorageLayoutBuilder,
 } from './account/index.js';
 
+export {
+  PROCEDURE_ROOTS,
+  getProcedureRoot,
+  isProcedureName,
+  getProcedureNames,
+  type ProcedureName,
+} from './procedures.js';
+
 export type {
   // Account types
   MultisigAccountState,
   MultisigConfig,
   CreateAccountResult,
+  ProcedureThreshold,
 
   // Proposal types
   Proposal,

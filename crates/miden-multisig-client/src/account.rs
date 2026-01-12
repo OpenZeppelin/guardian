@@ -11,6 +11,8 @@ use crate::error::{MultisigError, Result};
 /// This provides convenient access to multisig configuration stored in account storage:
 /// - Slot 0: Threshold config `[threshold, num_signers, 0, 0]`
 /// - Slot 1: Cosigner commitments map `[index, 0, 0, 0] => COMMITMENT`
+/// - Slot 2: Executed transactions map (replay protection)
+/// - Slot 3: Procedure threshold overrides map `PROC_ROOT => [threshold, 0, 0, 0]`
 /// - Slot 4: PSM selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
 /// - Slot 5: PSM public key map
 #[derive(Debug, Clone)]

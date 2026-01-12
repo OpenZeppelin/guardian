@@ -47,6 +47,7 @@ mod execution;
 mod export;
 mod keystore;
 mod payload;
+mod procedures;
 mod proposal;
 mod transaction;
 
@@ -55,7 +56,10 @@ pub use builder::MultisigClientBuilder;
 pub use client::{ConsumableNote, MultisigClient, NoteFilter, ProposalResult};
 
 // Configuration
-pub use config::{MultisigConfig, PsmConfig};
+pub use config::{MultisigConfig, ProcedureThreshold, PsmConfig};
+
+// Procedures
+pub use procedures::ProcedureName;
 
 // Account types
 pub use account::MultisigAccount;

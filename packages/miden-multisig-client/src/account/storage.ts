@@ -1,6 +1,7 @@
 import type { MultisigConfig } from '../types.js';
 import { StorageSlot, StorageMap, Word } from '@demox-labs/miden-sdk';
 import { ensureHexPrefix } from '../utils/encoding.js';
+import { getProcedureRoot } from '../procedures.js';
 
 export class StorageLayoutBuilder {
   buildMultisigSlots(config: MultisigConfig): StorageSlot[] {
@@ -24,7 +25,18 @@ export class StorageLayoutBuilder {
     const slot1 = StorageSlot.map(signersMap);
 
     const slot2 = StorageSlot.map(new StorageMap());
-    const slot3 = StorageSlot.map(new StorageMap());
+
+    // Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
+    const procThresholdMap = new StorageMap();
+    if (config.procedureThresholds) {
+      for (const pt of config.procedureThresholds) {
+        const rootHex = getProcedureRoot(pt.procedure);
+        const key = Word.fromHex(ensureHexPrefix(rootHex));
+        const value = new Word(new BigUint64Array([BigInt(pt.threshold), 0n, 0n, 0n]));
+        procThresholdMap.insert(key, value);
+      }
+    }
+    const slot3 = StorageSlot.map(procThresholdMap);
 
     return [slot0, slot1, slot2, slot3];
   }
