@@ -57,7 +57,7 @@ fn main() {
     let code = account.code();
     for (idx, procedure) in code.procedures().iter().enumerate() {
         let root = procedure.mast_root();
-        let root_word: Word = (*root).into();
+        let root_word: Word = *root;
 
         // Match against known BasicWallet roots to identify them
         let name = if root_word == receive_asset {
@@ -84,7 +84,7 @@ fn main() {
 
     for (idx, procedure) in code.procedures().iter().enumerate() {
         let root = procedure.mast_root();
-        let root_word: Word = (*root).into();
+        let root_word: Word = *root;
         let hex = word_to_hex(&root_word);
 
         let name = if root_word == receive_asset {

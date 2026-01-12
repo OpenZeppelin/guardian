@@ -136,6 +136,7 @@ impl MultisigConfig {
 mod tests {
     use super::*;
     use miden_objects::Word;
+    use miden_objects::account::AccountStorageMode;
 
     fn dummy_word() -> Word {
         Word::default()
@@ -155,6 +156,21 @@ mod tests {
     }
 
     #[test]
+    fn procedure_threshold_new_creates_correctly() {
+        let threshold = ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1);
+        assert_eq!(threshold.procedure, ProcedureName::ReceiveAsset);
+        assert_eq!(threshold.threshold, 1);
+    }
+
+    #[test]
+    fn procedure_threshold_procedure_root_returns_correct_root() {
+        let threshold = ProcedureThreshold::new(ProcedureName::SendAsset, 2);
+        let root = threshold.procedure_root();
+        // The root should match the procedure's root
+        assert_eq!(root, ProcedureName::SendAsset.root());
+    }
+
+    #[test]
     fn multisig_config_new_sets_all_fields() {
         let signers = vec![dummy_word(), dummy_word()];
         let psm = PsmConfig::new("http://psm:50051");
@@ -163,6 +179,36 @@ mod tests {
         assert_eq!(config.threshold, 2);
         assert_eq!(config.signer_commitments.len(), 2);
         assert_eq!(config.psm_config.endpoint, "http://psm:50051");
+        // Verify defaults
+        assert!(matches!(config.storage_mode, AccountStorageMode::Private));
+        assert!(config.procedure_thresholds.is_empty());
+    }
+
+    #[test]
+    fn multisig_config_with_storage_mode_sets_mode() {
+        let config = MultisigConfig::new(1, vec![dummy_word()], PsmConfig::new("http://psm:50051"))
+            .with_storage_mode(AccountStorageMode::Public);
+        assert!(matches!(config.storage_mode, AccountStorageMode::Public));
+    }
+
+    #[test]
+    fn multisig_config_with_procedure_thresholds_sets_thresholds() {
+        let thresholds = vec![
+            ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1),
+            ProcedureThreshold::new(ProcedureName::SendAsset, 2),
+        ];
+        let config = MultisigConfig::new(
+            2,
+            vec![dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        )
+        .with_procedure_thresholds(thresholds);
+
+        assert_eq!(config.procedure_thresholds.len(), 2);
+        assert_eq!(config.procedure_thresholds[0].procedure, ProcedureName::ReceiveAsset);
+        assert_eq!(config.procedure_thresholds[0].threshold, 1);
+        assert_eq!(config.procedure_thresholds[1].procedure, ProcedureName::SendAsset);
+        assert_eq!(config.procedure_thresholds[1].threshold, 2);
     }
 
     #[test]
@@ -234,5 +280,68 @@ mod tests {
             PsmConfig::new("http://psm:50051"),
         );
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_procedure_threshold_zero_returns_error() {
+        let thresholds = vec![ProcedureThreshold::new(ProcedureName::ReceiveAsset, 0)];
+        let config = MultisigConfig::new(
+            1,
+            vec![dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        )
+        .with_procedure_thresholds(thresholds);
+
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("procedure threshold"));
+        assert!(err.contains("at least 1"));
+    }
+
+    #[test]
+    fn validate_procedure_threshold_exceeds_signers_returns_error() {
+        let thresholds = vec![ProcedureThreshold::new(ProcedureName::SendAsset, 5)];
+        let config = MultisigConfig::new(
+            2,
+            vec![dummy_word(), dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        )
+        .with_procedure_thresholds(thresholds);
+
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("procedure threshold"));
+        assert!(err.contains("5"));
+        assert!(err.contains("3"));
+    }
+
+    #[test]
+    fn validate_valid_config_with_procedure_thresholds() {
+        let thresholds = vec![
+            ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1),
+            ProcedureThreshold::new(ProcedureName::UpdateSigners, 3),
+        ];
+        let config = MultisigConfig::new(
+            2,
+            vec![dummy_word(), dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        )
+        .with_procedure_thresholds(thresholds);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_with_storage_mode_and_thresholds() {
+        let thresholds = vec![ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1)];
+        let config = MultisigConfig::new(
+            2,
+            vec![dummy_word(), dummy_word()],
+            PsmConfig::new("http://psm:50051"),
+        )
+        .with_storage_mode(AccountStorageMode::Public)
+        .with_procedure_thresholds(thresholds);
+
+        assert!(config.validate().is_ok());
+        assert!(matches!(config.storage_mode, AccountStorageMode::Public));
+        assert_eq!(config.procedure_thresholds.len(), 1);
     }
 }
