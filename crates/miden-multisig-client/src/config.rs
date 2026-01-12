@@ -1,6 +1,7 @@
 //! Configuration types for the multisig client.
 
 use miden_objects::Word;
+use miden_objects::account::AccountStorageMode;
 
 #[derive(Debug, Clone)]
 pub struct PsmConfig {
@@ -22,6 +23,7 @@ pub struct MultisigConfig {
     pub threshold: u32,
     pub signer_commitments: Vec<Word>,
     pub psm_config: PsmConfig,
+    pub storage_mode: AccountStorageMode,
 }
 
 impl MultisigConfig {
@@ -36,7 +38,14 @@ impl MultisigConfig {
             threshold,
             signer_commitments,
             psm_config,
+            storage_mode: AccountStorageMode::Private,
         }
+    }
+
+    /// Sets the account storage mode.
+    pub fn with_storage_mode(mut self, storage_mode: AccountStorageMode) -> Self {
+        self.storage_mode = storage_mode;
+        self
     }
 
     /// Validates the configuration.

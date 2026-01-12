@@ -39,6 +39,7 @@ export interface MultisigConfig {
   signerCommitments: string[];
   psmCommitment: string;
   psmEnabled?: boolean;
+  storageMode?: 'private' | 'public';
 }
 
 export interface CreateAccountResult {

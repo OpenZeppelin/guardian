@@ -47,9 +47,13 @@ export async function createMultisigAccount(
   const seed = new Uint8Array(32);
   crypto.getRandomValues(seed);
 
+  const storageMode = config.storageMode === 'public'
+    ? AccountStorageMode.public()
+    : AccountStorageMode.private();
+
   const accountBuilder = new AccountBuilder(seed)
     .accountType(AccountType.RegularAccountUpdatableCode)
-    .storageMode(AccountStorageMode.public())
+    .storageMode(storageMode)
     .withAuthComponent(multisigComponent)
     .withComponent(psmComponent)
     .withBasicWalletComponent();

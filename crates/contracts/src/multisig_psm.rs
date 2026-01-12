@@ -23,6 +23,8 @@ pub struct MultisigPsmConfig {
     pub psm_commitment: Word,
     /// Whether PSM verification is enabled (true = ON, false = OFF).
     pub psm_enabled: bool,
+    /// Account storage mode (defaults to Private).
+    pub storage_mode: AccountStorageMode,
     /// Optional procedure-specific threshold overrides.
     /// Map from procedure root to threshold.
     pub proc_threshold_overrides: Vec<(Word, u32)>,
@@ -46,6 +48,7 @@ impl MultisigPsmConfig {
             signer_commitments,
             psm_commitment,
             psm_enabled: true,
+            storage_mode: AccountStorageMode::Private,
             proc_threshold_overrides: Vec::new(),
         }
     }
@@ -53,6 +56,12 @@ impl MultisigPsmConfig {
     /// Sets whether PSM verification is enabled.
     pub fn with_psm_enabled(mut self, enabled: bool) -> Self {
         self.psm_enabled = enabled;
+        self
+    }
+
+    /// Sets the account storage mode.
+    pub fn with_storage_mode(mut self, storage_mode: AccountStorageMode) -> Self {
+        self.storage_mode = storage_mode;
         self
     }
 
@@ -100,11 +109,12 @@ pub struct MultisigPsmBuilder {
 impl MultisigPsmBuilder {
     /// Creates a new MultisigPsm builder with the given configuration.
     pub fn new(config: MultisigPsmConfig) -> Self {
+        let storage_mode = config.storage_mode;
         Self {
             config,
             seed: [0u8; 32],
             account_type: AccountType::RegularAccountUpdatableCode,
-            storage_mode: AccountStorageMode::Public,
+            storage_mode,
         }
     }
 
