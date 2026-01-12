@@ -186,19 +186,28 @@ export default function App() {
   }, []);
 
   // Create multisig
-  const handleCreate = async (otherSignerCommitments: string[], threshold: number) => {
+  const handleCreate = async (
+    otherSignerCommitments: string[],
+    threshold: number,
+    procedureThresholds?: import('@openzeppelin/miden-multisig-client').ProcedureThreshold[],
+  ) => {
     if (!multisigClient || !signer || !psmPubkey) return;
 
     setCreating(true);
     setError(null);
     try {
-      const ms = await createMultisigAccount(multisigClient, signer, otherSignerCommitments, threshold, psmPubkey);
+      const ms = await createMultisigAccount(multisigClient, signer, otherSignerCommitments, threshold, psmPubkey, procedureThresholds);
       setMultisig(ms);
 
       // Auto-register on PSM
       setRegisteringOnPsm(true);
       try {
         await registerOnPsm(ms);
+
+        // Fetch account state to populate detectedConfig with procedure thresholds
+        const { state, config } = await fetchAccountState(ms);
+        setPsmState(state);
+        setDetectedConfig(config);
       } catch (psmErr) {
         setError(`Created but failed to register on PSM: ${psmErr instanceof Error ? psmErr.message : 'Unknown'}`);
       } finally {
@@ -526,6 +535,7 @@ export default function App() {
             proposals={proposals}
             consumableNotes={consumableNotes}
             vaultBalances={detectedConfig?.vaultBalances ?? []}
+            procedureThresholds={detectedConfig?.procedureThresholds}
             creatingProposal={creatingProposal}
             syncing={syncingState}
             signingProposal={signingProposal}

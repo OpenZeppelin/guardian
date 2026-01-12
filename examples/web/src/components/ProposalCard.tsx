@@ -4,13 +4,15 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Proposal, ProposalType } from '@openzeppelin/miden-multisig-client';
+import { getEffectiveThreshold } from '@/lib/procedures';
+import type { Proposal, ProposalType, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface ProposalCardProps {
   proposal: Proposal;
   signer: SignerInfo | null;
-  threshold: number;
+  defaultThreshold: number;
+  procedureThresholds?: Map<ProcedureName, number>;
   signingProposal: string | null;
   executingProposal: string | null;
   onSign: (proposalId: string) => void;
@@ -60,7 +62,8 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
 export function ProposalCard({
   proposal,
   signer,
-  threshold,
+  defaultThreshold,
+  procedureThresholds,
   signingProposal,
   executingProposal,
   onSign,
@@ -73,6 +76,14 @@ export function ProposalCard({
     return null;
   }
 
+  const meta = proposal.metadata as { proposalType?: ProposalType; description?: string };
+  const proposalType = meta.proposalType;
+
+  // Calculate effective threshold for this proposal type
+  const effectiveThreshold = proposalType
+    ? getEffectiveThreshold(proposalType, defaultThreshold, procedureThresholds)
+    : defaultThreshold;
+
   const userSigned = signer
     ? proposal.signatures.some(
         (sig) => sig.signerId.toLowerCase() === signer.commitment.toLowerCase()
@@ -82,7 +93,7 @@ export function ProposalCard({
   const canSign = proposal.status.type === 'pending' && !userSigned;
   const canExecute =
     proposal.status.type === 'ready' ||
-    (proposal.status.type === 'pending' && proposal.signatures.length >= threshold);
+    (proposal.status.type === 'pending' && proposal.signatures.length >= effectiveThreshold);
   const isSigningThis = signingProposal === proposal.id;
   const isExecutingThis = executingProposal === proposal.id;
 
@@ -93,8 +104,6 @@ export function ProposalCard({
         ? 'secondary'
         : 'outline';
 
-  const meta = proposal.metadata as any;
-  const proposalType = meta.proposalType as ProposalType;
   const description = meta.description as string;
 
   return (
@@ -128,7 +137,7 @@ export function ProposalCard({
           </div>
           <div>
             <span className="text-muted-foreground">Signatures:</span>{' '}
-            {proposal.signatures.length} / {threshold}
+            {proposal.signatures.length} / {effectiveThreshold}
             {userSigned && <span className="text-green-600 ml-1 font-medium">You signed</span>}
           </div>
         </div>

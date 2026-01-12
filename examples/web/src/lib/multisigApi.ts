@@ -5,6 +5,7 @@ import {
   type AccountState,
   type MultisigConfig,
   type ConsumableNote,
+  type ProcedureThreshold,
   MultisigClient as MultisigClientClass,
   FalconSigner,
   AccountInspector,
@@ -34,6 +35,7 @@ export async function createMultisigAccount(
   otherCommitments: string[],
   threshold: number,
   psmCommitment: string,
+  procedureThresholds?: ProcedureThreshold[],
 ): Promise<Multisig> {
   const signerCommitments = [signer.commitment, ...otherCommitments];
   const config: MultisigConfig = {
@@ -41,6 +43,7 @@ export async function createMultisigAccount(
     signerCommitments,
     psmCommitment,
     psmEnabled: true,
+    procedureThresholds,
   };
   const falconSigner = new FalconSigner(signer.secretKey);
   return multisigClient.create(config, falconSigner);

@@ -11,8 +11,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { normalizeCommitment, truncateHex } from '@/lib/helpers';
+import { USER_PROCEDURES } from '@/lib/procedures';
 import type { OtherSigner } from '@/types';
+import type { ProcedureThreshold, ProcedureName } from '@openzeppelin/miden-multisig-client';
 
 interface CreateMultisigDialogProps {
   open: boolean;
@@ -20,7 +29,7 @@ interface CreateMultisigDialogProps {
   signerCommitment: string;
   creating: boolean;
   registeringOnPsm: boolean;
-  onCreate: (otherSigners: string[], threshold: number) => void;
+  onCreate: (otherSigners: string[], threshold: number, procedureThresholds?: ProcedureThreshold[]) => void;
 }
 
 export function CreateMultisigDialog({
@@ -36,14 +45,20 @@ export function CreateMultisigDialog({
   const [threshold, setThreshold] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
+  // Advanced settings state
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [procedureOverrides, setProcedureOverrides] = useState<Map<ProcedureName, number | null>>(
+    new Map()
+  );
+
   const totalSigners = 1 + otherSigners.length;
 
   const handleAddOtherSigner = () => {
     let normalizedCommitment: string;
     try {
       normalizedCommitment = normalizeCommitment(otherCommitmentInput);
-    } catch (e: any) {
-      setError(e?.message ?? 'Invalid commitment');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Invalid commitment');
       return;
     }
 
@@ -69,13 +84,39 @@ export function CreateMultisigDialog({
     setOtherSigners((prev) => prev.filter((s) => s.id !== id));
   };
 
+  const setOverride = (proc: ProcedureName, value: number | null) => {
+    setProcedureOverrides((prev) => {
+      const next = new Map(prev);
+      if (value === null) {
+        next.delete(proc);
+      } else {
+        next.set(proc, value);
+      }
+      return next;
+    });
+  };
+
+  const buildProcedureThresholds = (): ProcedureThreshold[] | undefined => {
+    const result: ProcedureThreshold[] = [];
+    for (const [procedure, thresholdValue] of procedureOverrides) {
+      if (thresholdValue !== null) {
+        result.push({ procedure, threshold: thresholdValue });
+      }
+    }
+    return result.length > 0 ? result : undefined;
+  };
+
   const handleCreate = () => {
     if (threshold < 1 || threshold > totalSigners) {
       setError(`Threshold must be between 1 and ${totalSigners}`);
       return;
     }
     setError(null);
-    onCreate(otherSigners.map((s) => s.commitment), threshold);
+    onCreate(
+      otherSigners.map((s) => s.commitment),
+      threshold,
+      buildProcedureThresholds()
+    );
   };
 
   const handleClose = () => {
@@ -84,6 +125,8 @@ export function CreateMultisigDialog({
       setOtherCommitmentInput('');
       setThreshold(1);
       setError(null);
+      setShowAdvanced(false);
+      setProcedureOverrides(new Map());
       onOpenChange(false);
     }
   };
@@ -163,6 +206,61 @@ export function CreateMultisigDialog({
             />
             <span className="text-sm text-muted-foreground">of {totalSigners} required</span>
           </div>
+
+          {/* Advanced Settings Toggle */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start text-muted-foreground"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+          >
+            {showAdvanced ? '▼' : '▶'} Advanced: Threshold Overrides
+          </Button>
+
+          {/* Advanced Settings Content */}
+          {showAdvanced && (
+            <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Override thresholds for specific actions (leave as "Default" to use {threshold}).
+              </p>
+              {USER_PROCEDURES.map((proc) => {
+                const currentOverride = procedureOverrides.get(proc.name);
+                return (
+                  <div key={proc.name} className="flex items-center justify-between gap-2">
+                    <div className="flex-1">
+                      <Label className="text-sm">{proc.label}</Label>
+                      <p className="text-xs text-muted-foreground">{proc.description}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={currentOverride?.toString() ?? 'default'}
+                        onValueChange={(val) => {
+                          if (val === 'default') {
+                            setOverride(proc.name, null);
+                          } else {
+                            setOverride(proc.name, parseInt(val, 10));
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-20" size="sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default</SelectItem>
+                          {Array.from({ length: totalSigners }, (_, i) => i + 1).map((n) => (
+                            <SelectItem key={n} value={n.toString()}>
+                              {n}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <span className="text-xs text-muted-foreground">of {totalSigners}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {error && (
             <Alert variant="destructive">

@@ -6,7 +6,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalForm } from './CreateProposalForm';
 import { copyToClipboard } from '@/lib/helpers';
-import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
+import { USER_PROCEDURES } from '@/lib/procedures';
+import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface MultisigDashboardProps {
@@ -16,6 +17,7 @@ interface MultisigDashboardProps {
   proposals: Proposal[];
   consumableNotes: ConsumableNote[];
   vaultBalances: VaultBalance[];
+  procedureThresholds?: Map<ProcedureName, number>;
   creatingProposal: boolean;
   syncing: boolean;
   signingProposal: string | null;
@@ -43,6 +45,7 @@ export function MultisigDashboard({
   proposals,
   consumableNotes,
   vaultBalances,
+  procedureThresholds,
   creatingProposal,
   syncing,
   signingProposal,
@@ -95,6 +98,20 @@ export function MultisigDashboard({
               </div>
             </div>
           </div>
+
+          {/* Procedure Threshold Overrides */}
+          {procedureThresholds && procedureThresholds.size > 0 && (
+            <div className="pt-2 border-t">
+              <span className="text-sm text-muted-foreground">Threshold Overrides</span>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {USER_PROCEDURES.filter((proc) => procedureThresholds.has(proc.name)).map((proc) => (
+                  <Badge key={proc.name} variant="secondary" className="text-xs">
+                    {proc.label}: {procedureThresholds.get(proc.name)}-of-{multisig.signerCommitments.length}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
 
           {psmState && (
             <div className="pt-2 border-t text-xs text-muted-foreground">
@@ -176,7 +193,8 @@ export function MultisigDashboard({
                 key={proposal.id}
                 proposal={proposal}
                 signer={signer}
-                threshold={multisig.threshold}
+                defaultThreshold={multisig.threshold}
+                procedureThresholds={procedureThresholds}
                 signingProposal={signingProposal}
                 executingProposal={executingProposal}
                 onSign={onSignProposal}

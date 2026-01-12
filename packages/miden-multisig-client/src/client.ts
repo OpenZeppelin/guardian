@@ -118,7 +118,7 @@ export class MultisigClient {
 
     const existingAccount = await this.webClient.getAccount(AccountId.fromHex(accountId));
     if (!existingAccount) {
-      await this.webClient.newAccount(account, true);
+        await this.webClient.newAccount(account, true);
     }
 
     return new Multisig(null, config, this._psmClient, signer, this.webClient, accountId);

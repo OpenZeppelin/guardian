@@ -5,6 +5,7 @@
 import { Account, Word } from '@demox-labs/miden-sdk';
 import { base64ToUint8Array } from './utils/encoding.js';
 import { wordElementToBigInt, wordToHex } from './utils/word.js';
+import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
 
 export interface VaultBalance {
   faucetId: string;
@@ -18,6 +19,7 @@ export interface DetectedMultisigConfig {
   psmEnabled: boolean;
   psmCommitment: string | null;
   vaultBalances: VaultBalance[];
+  procedureThresholds: Map<ProcedureName, number>;
 }
 
 /**
@@ -108,6 +110,25 @@ export class AccountInspector {
       console.warn(error);
     }
 
+    // Read procedure threshold overrides from storage slot 3
+    // Storage layout: slot 3 is a map of PROC_ROOT => [threshold, 0, 0, 0]
+    const procedureThresholds = new Map<ProcedureName, number>();
+    for (const procName of getProcedureNames()) {
+      try {
+        const rootHex = getProcedureRoot(procName);
+        const rootWord = Word.fromHex(rootHex);
+        const value = storage.getMapItem(3, rootWord) as Word;
+        if (value) {
+          const procThreshold = Number(wordElementToBigInt(value, 0));
+          if (procThreshold > 0) {
+            procedureThresholds.set(procName, procThreshold);
+          }
+        }
+      } catch {
+        // Procedure threshold not set - use default
+      }
+    }
+
     return {
       threshold,
       numSigners,
@@ -115,6 +136,7 @@ export class AccountInspector {
       psmEnabled,
       psmCommitment,
       vaultBalances,
+      procedureThresholds,
     };
   }
 }
