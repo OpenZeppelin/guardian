@@ -205,9 +205,15 @@ mod tests {
         .with_procedure_thresholds(thresholds);
 
         assert_eq!(config.procedure_thresholds.len(), 2);
-        assert_eq!(config.procedure_thresholds[0].procedure, ProcedureName::ReceiveAsset);
+        assert_eq!(
+            config.procedure_thresholds[0].procedure,
+            ProcedureName::ReceiveAsset
+        );
         assert_eq!(config.procedure_thresholds[0].threshold, 1);
-        assert_eq!(config.procedure_thresholds[1].procedure, ProcedureName::SendAsset);
+        assert_eq!(
+            config.procedure_thresholds[1].procedure,
+            ProcedureName::SendAsset
+        );
         assert_eq!(config.procedure_thresholds[1].threshold, 2);
     }
 
@@ -285,12 +291,8 @@ mod tests {
     #[test]
     fn validate_procedure_threshold_zero_returns_error() {
         let thresholds = vec![ProcedureThreshold::new(ProcedureName::ReceiveAsset, 0)];
-        let config = MultisigConfig::new(
-            1,
-            vec![dummy_word()],
-            PsmConfig::new("http://psm:50051"),
-        )
-        .with_procedure_thresholds(thresholds);
+        let config = MultisigConfig::new(1, vec![dummy_word()], PsmConfig::new("http://psm:50051"))
+            .with_procedure_thresholds(thresholds);
 
         let err = config.validate().unwrap_err();
         assert!(err.contains("procedure threshold"));
