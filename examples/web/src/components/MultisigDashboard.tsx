@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalForm } from './CreateProposalForm';
+import { CandidateWarningBanner } from './CandidateWarningBanner';
 import { copyToClipboard } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
 import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
@@ -23,6 +24,8 @@ interface MultisigDashboardProps {
   signingProposal: string | null;
   executingProposal: string | null;
   error: string | null;
+  pendingCandidateWarning: string | null;
+  onDismissWarning: () => void;
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
@@ -51,6 +54,8 @@ export function MultisigDashboard({
   signingProposal,
   executingProposal,
   error,
+  pendingCandidateWarning,
+  onDismissWarning,
   onCreateAddSigner,
   onCreateRemoveSigner,
   onCreateChangeThreshold,
@@ -158,6 +163,13 @@ export function MultisigDashboard({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {pendingCandidateWarning && (
+        <CandidateWarningBanner
+          message={pendingCandidateWarning}
+          onDismiss={onDismissWarning}
+        />
       )}
 
       {error && (
