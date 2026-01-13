@@ -114,6 +114,9 @@ export class MultisigClient {
       signerCommitments: detected.signerCommitments,
       psmCommitment: detected.psmCommitment ?? '',
       psmEnabled: detected.psmEnabled,
+      procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
+        ([procedure, threshold]) => ({ procedure, threshold })
+      ),
     };
 
     const existingAccount = await this.webClient.getAccount(AccountId.fromHex(accountId));

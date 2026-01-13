@@ -27,11 +27,12 @@ export class StorageLayoutBuilder {
     const slot2 = StorageSlot.map(new StorageMap());
 
     // Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
+    // Use SDK's Word.fromHex to match how account code procedure roots are represented
     const procThresholdMap = new StorageMap();
     if (config.procedureThresholds) {
       for (const pt of config.procedureThresholds) {
         const rootHex = getProcedureRoot(pt.procedure);
-        const key = Word.fromHex(ensureHexPrefix(rootHex));
+        const key = Word.fromHex(rootHex);
         const value = new Word(new BigUint64Array([BigInt(pt.threshold), 0n, 0n, 0n]));
         procThresholdMap.insert(key, value);
       }

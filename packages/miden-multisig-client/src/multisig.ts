@@ -15,7 +15,9 @@ import type {
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalStatus,
+  ProposalType,
 } from './types.js';
+import type { ProcedureName } from './procedures.js';
 import type { WebClient, TransactionRequest } from '@demox-labs/miden-sdk';
 import {
   Account,
@@ -63,6 +65,7 @@ export class Multisig {
   readonly threshold: number;
   readonly signerCommitments: string[];
   readonly psmCommitment: string;
+  readonly procedureThresholds: Map<ProcedureName, number>;
 
   private psm: PsmHttpClient;
   private readonly signer: Signer;
@@ -82,6 +85,9 @@ export class Multisig {
     this.threshold = config.threshold;
     this.signerCommitments = config.signerCommitments;
     this.psmCommitment = config.psmCommitment;
+    this.procedureThresholds = new Map(
+      (config.procedureThresholds ?? []).map((pt) => [pt.procedure, pt.threshold])
+    );
     this.psm = psm;
     this.signer = signer;
     this.webClient = webClient;
@@ -96,6 +102,46 @@ export class Multisig {
   /** The signer's commitment */
   get signerCommitment(): string {
     return this.signer.commitment;
+  }
+
+  /**
+   * Maps a proposal type to the procedure that determines its threshold.
+   */
+  private getProposalProcedure(proposalType: ProposalType): ProcedureName | null {
+    switch (proposalType) {
+      case 'p2id':
+        return 'send_asset';
+      case 'consume_notes':
+        return 'receive_asset';
+      case 'add_signer':
+      case 'remove_signer':
+      case 'change_threshold':
+        return 'update_signers';
+      case 'switch_psm':
+        return 'update_psm';
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Get the effective threshold for a given proposal type.
+   * Returns the procedure-specific threshold if configured, otherwise the default threshold.
+   *
+   * @param proposalType - The type of proposal
+   * @returns The threshold that applies to this proposal type
+   */
+  getEffectiveThreshold(proposalType: ProposalType): number {
+    if (this.procedureThresholds.size === 0) {
+      return this.threshold;
+    }
+
+    const procedure = this.getProposalProcedure(proposalType);
+    if (!procedure) {
+      return this.threshold;
+    }
+
+    return this.procedureThresholds.get(procedure) ?? this.threshold;
   }
 
   /**
@@ -565,11 +611,16 @@ export class Multisig {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
 
-    if (proposal.status.type === 'pending') {
+    const proposalType = proposal.metadata?.proposalType;
+    const effectiveThreshold = proposalType
+      ? this.getEffectiveThreshold(proposalType)
+      : this.threshold;
+
+    if (proposal.signatures.length < effectiveThreshold) {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
-    const isSwitchPsm = proposal.metadata?.proposalType === 'switch_psm';
+    const isSwitchPsm = proposalType === 'switch_psm';
 
     let txSummaryBase64: string;
     let delta: DeltaObject | undefined;
@@ -676,10 +727,10 @@ export class Multisig {
         finalRequest = request;
         break;
       }
+      case 'unknown': {
+        throw new Error('Cannot execute proposal with unknown type. The proposal must have been imported without proper metadata.');
+      }
       default: {
-        if (metadata.targetThreshold === undefined || !metadata.targetSignerCommitments) {
-          throw new Error('Proposal missing metadata (targetThreshold/targetSignerCommitments). Was it created with createAddSignerProposal?');
-        }
         const { request } = await buildUpdateSignersTransactionRequest(
           this.webClient,
           metadata.targetThreshold,
@@ -778,8 +829,13 @@ export class Multisig {
       throw new Error('Invalid proposal: commitment does not match tx_summary');
     }
 
+    const metadata: ProposalMetadata = (exported.metadata as ProposalMetadata) ?? {
+      proposalType: 'unknown',
+      description: '',
+    };
+
     const signaturesCollected = exported.signatures.length;
-    const signaturesRequired = this.threshold;
+    const signaturesRequired = this.getEffectiveThreshold(metadata.proposalType);
     const status: ProposalStatus = signaturesCollected >= signaturesRequired
       ? { type: 'ready' }
       : {
@@ -800,13 +856,7 @@ export class Multisig {
         signature: { scheme: 'falcon' as const, signature: s.signatureHex },
         timestamp: s.timestamp || new Date().toISOString(),
       })),
-      metadata: (exported.metadata as ProposalMetadata) ?? {
-        proposalType: 'add_signer',
-        description: '',
-        targetThreshold: this.threshold,
-        targetSignerCommitments: this.signerCommitments,
-        saltHex: '',
-      },
+      metadata,
     };
 
     this.proposals.set(proposal.id, proposal);
@@ -846,13 +896,18 @@ export class Multisig {
 
     // Update status
     const signaturesCollected = proposal.signatures.length;
-    if (signaturesCollected >= this.threshold) {
+    const proposalType = proposal.metadata?.proposalType;
+    const effectiveThreshold = proposalType
+      ? this.getEffectiveThreshold(proposalType)
+      : this.threshold;
+
+    if (signaturesCollected >= effectiveThreshold) {
       proposal.status = { type: 'ready' };
     } else if (proposal.status.type === 'pending') {
       proposal.status = {
         type: 'pending',
         signaturesCollected,
-        signaturesRequired: this.threshold,
+        signaturesRequired: effectiveThreshold,
         signers: proposal.signatures.map((s) => s.signerId),
       };
     }
@@ -867,7 +922,14 @@ export class Multisig {
     metadata?: ProposalMetadata,
     existingSignatures?: ProposalSignatureEntry[],
   ): Proposal {
-    const status = this.deltaStatusToProposalStatus(delta.status);
+    const resolvedMetadata: ProposalMetadata | undefined =
+      metadata ??
+      (delta.deltaPayload.metadata ? this.fromPsmMetadata(delta.deltaPayload.metadata) : undefined);
+    if (!resolvedMetadata) {
+      throw new Error('Missing proposal metadata');
+    }
+
+    const status = this.deltaStatusToProposalStatus(delta.status, resolvedMetadata.proposalType);
 
     const signaturesFromStatus =
       delta.status.status === 'pending'
@@ -887,12 +949,6 @@ export class Multisig {
     }
     const signatures = Array.from(signaturesMap.values());
 
-    const resolvedMetadata: ProposalMetadata | undefined =
-      metadata ??
-      (delta.deltaPayload.metadata ? this.fromPsmMetadata(delta.deltaPayload.metadata) : undefined);
-    if (!resolvedMetadata) {
-      throw new Error('Missing proposal metadata');
-    }
     return {
       id: proposalId,
       accountId: delta.accountId,
@@ -940,6 +996,8 @@ export class Multisig {
           targetThreshold: metadata.targetThreshold,
           signerCommitments: metadata.targetSignerCommitments,
         };
+      case 'unknown':
+        return base;
     }
   }
 
@@ -988,11 +1046,13 @@ export class Multisig {
     }
   }
 
-  private deltaStatusToProposalStatus(status: DeltaStatus): ProposalStatus {
+  private deltaStatusToProposalStatus(status: DeltaStatus, proposalType?: ProposalType): ProposalStatus {
     switch (status.status) {
       case 'pending': {
         const signaturesCollected = status.cosignerSigs.length;
-        const signaturesRequired = this.threshold;
+        const signaturesRequired = proposalType
+          ? this.getEffectiveThreshold(proposalType)
+          : this.threshold;
         if (signaturesCollected >= signaturesRequired) {
           return { type: 'ready' };
         }

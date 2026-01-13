@@ -30,6 +30,7 @@ vi.mock('./inspector.js', () => ({
       psmEnabled: true,
       psmCommitment: '0x' + 'c'.repeat(64),
       vaultBalances: [],
+      procedureThresholds: new Map(),
     })),
   },
 }));
@@ -68,6 +69,7 @@ describe('MultisigClient', () => {
       applyTransaction: vi.fn(),
       syncState: vi.fn(),
       newAccount: vi.fn(),
+      getAccount: vi.fn().mockResolvedValue(null),
     };
 
     mockSigner = {

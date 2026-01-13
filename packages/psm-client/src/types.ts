@@ -38,7 +38,8 @@ export type ProposalType =
   | 'switch_psm'
   | 'consume_notes'
   | 'p2id'
-  | 'custom';
+  | 'custom'
+  | 'unknown';
 
 export interface ProposalMetadata {
   proposalType?: ProposalType;

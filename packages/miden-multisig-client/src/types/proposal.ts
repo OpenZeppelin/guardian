@@ -44,11 +44,16 @@ export interface P2IdProposalMetadata extends BaseProposalMetadata {
   amount: string;
 }
 
+export interface UnknownProposalMetadata extends BaseProposalMetadata {
+  proposalType: 'unknown';
+}
+
 export type ProposalMetadata =
   | UpdateSignersProposalMetadata
   | SwitchPsmProposalMetadata
   | ConsumeNotesProposalMetadata
-  | P2IdProposalMetadata;
+  | P2IdProposalMetadata
+  | UnknownProposalMetadata;
 
 export interface Proposal {
   id: string;

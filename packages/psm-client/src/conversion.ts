@@ -171,7 +171,7 @@ export function toServerDeltaStatus(status: DeltaStatus): ServerDeltaStatus {
 
 export function toServerProposalMetadata(meta: ProposalMetadata): ServerProposalMetadata {
   return {
-    proposal_type: meta.proposalType,
+    proposal_type: meta.proposalType === 'unknown' ? undefined : meta.proposalType,
     target_threshold: meta.targetThreshold,
     signer_commitments: meta.signerCommitments,
     salt: meta.salt,
