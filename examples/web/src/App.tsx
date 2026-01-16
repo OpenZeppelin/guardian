@@ -47,6 +47,15 @@ import {
 import { PSM_ENDPOINT } from '@/config';
 import type { SignerInfo } from '@/types';
 
+// Helper to check if an error is related to pending candidate delta
+function isPendingCandidateError(error: unknown): boolean {
+  const errorStr = error instanceof Error ? error.message : String(error);
+  return (
+    errorStr.includes('non-canonical delta pending') ||
+    errorStr.includes('ConflictPendingDelta')
+  );
+}
+
 export default function App() {
   // Core state
   const [webClient, setWebClient] = useState<WebClient | null>(null);
@@ -55,6 +64,7 @@ export default function App() {
   const [generatingSigner, setGeneratingSigner] = useState(false);
   const [multisig, setMultisig] = useState<Multisig | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingCandidateWarning, setPendingCandidateWarning] = useState<string | null>(null);
 
   // PSM state
   const [psmUrl, setPsmUrl] = useState(PSM_ENDPOINT);
@@ -269,6 +279,7 @@ export default function App() {
 
     setSyncingState(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       // Sync miden client state first (with retry for IndexedDB race conditions)
       try {
@@ -292,7 +303,16 @@ export default function App() {
       setProposals(synced);
       setConsumableNotes(notes);
     } catch (err) {
-      setError(formatError(err, 'Sync failed'));
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('account nonce is too low to import')) {
+        setPendingCandidateWarning(
+          'Sync warning: local state is ahead of the on-chain state. ' +
+          'This can happen right after executing a transaction. Please wait a moment and sync again.'
+        );
+        setError(null);
+      } else {
+        setError(formatError(err, 'Sync failed'));
+      }
     } finally {
       setSyncingState(false);
     }
@@ -312,12 +332,20 @@ export default function App() {
 
     setCreatingProposal(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       const { proposals } = await createAddSignerProposal(multisig, normalizedCommitment, increaseThreshold);
       setProposals(proposals);
       toast.success('Add signer proposal created');
     } catch (err) {
-      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setCreatingProposal(false);
     }
@@ -329,12 +357,20 @@ export default function App() {
 
     setCreatingProposal(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       const { proposals } = await createRemoveSignerProposal(multisig, signerToRemove, newThreshold);
       setProposals(proposals);
       toast.success('Remove signer proposal created');
     } catch (err) {
-      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setCreatingProposal(false);
     }
@@ -346,12 +382,20 @@ export default function App() {
 
     setCreatingProposal(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       const { proposals } = await createChangeThresholdProposal(multisig, newThreshold);
       setProposals(proposals);
       toast.success('Change threshold proposal created');
     } catch (err) {
-      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setCreatingProposal(false);
     }
@@ -363,12 +407,20 @@ export default function App() {
 
     setCreatingProposal(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       const { proposals } = await createConsumeNotesProposal(multisig, noteIds);
       setProposals(proposals);
       toast.success('Consume notes proposal created');
     } catch (err) {
-      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setCreatingProposal(false);
     }
@@ -380,12 +432,20 @@ export default function App() {
 
     setCreatingProposal(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       const { proposals } = await createP2idProposal(multisig, recipientId, faucetId, amount);
       setProposals(proposals);
       toast.success('Send payment proposal created');
     } catch (err) {
-      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setCreatingProposal(false);
     }
@@ -397,12 +457,20 @@ export default function App() {
 
     setCreatingProposal(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       const { proposals } = await createSwitchPsmProposal(multisig, newEndpoint, newPubkey);
       setProposals(proposals);
       toast.success('Switch PSM proposal created');
     } catch (err) {
-      setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setCreatingProposal(false);
     }
@@ -430,6 +498,7 @@ export default function App() {
 
     setExecutingProposal(proposalId);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       await executeProposal(multisig, proposalId);
       toast.success('Proposal executed successfully');
@@ -438,7 +507,14 @@ export default function App() {
       await handleSync();
     } catch (err) {
       console.error('[Execute] Execution failed:', err);
-      setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before executing proposals.'
+        );
+      } else {
+        setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setExecutingProposal(null);
     }
@@ -541,6 +617,8 @@ export default function App() {
             signingProposal={signingProposal}
             executingProposal={executingProposal}
             error={error}
+            pendingCandidateWarning={pendingCandidateWarning}
+            onDismissWarning={() => setPendingCandidateWarning(null)}
             onCreateAddSigner={handleCreateAddSignerProposal}
             onCreateRemoveSigner={handleCreateRemoveSignerProposal}
             onCreateChangeThreshold={handleCreateChangeThresholdProposal}

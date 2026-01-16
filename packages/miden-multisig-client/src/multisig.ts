@@ -172,6 +172,31 @@ export class Multisig {
   }
 
   /**
+   * Sync account state from PSM into the local WebClient store.
+   *
+   * If the PSM commitment differs from the local commitment (or the account
+   * is missing locally), the local store is overwritten with the PSM state.
+   */
+  async syncState(): Promise<AccountState> {
+    const state = await this.fetchState();
+    const accountId = AccountId.fromHex(this._accountId);
+    const localAccount = await this.webClient.getAccount(accountId);
+
+    const psmCommitment = normalizeHexWord(state.commitment);
+    const localCommitment = localAccount
+      ? normalizeHexWord(localAccount.commitment().toHex())
+      : null;
+
+    if (!localAccount || localCommitment !== psmCommitment) {
+      const accountBytes = base64ToUint8Array(state.stateDataBase64);
+      const account = Account.deserialize(accountBytes);
+      await this.webClient.newAccount(account, true);
+    }
+
+    return state;
+  }
+
+  /**
    * Register this multisig account on the PSM server.
    *
    * The initial state must be the serialized Account bytes (base64-encoded).

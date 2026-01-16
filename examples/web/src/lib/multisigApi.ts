@@ -44,7 +44,7 @@ export async function createMultisigAccount(
     psmCommitment,
     psmEnabled: true,
     procedureThresholds,
-    storageMode: 'public',
+    storageMode: 'private',
   };
   const falconSigner = new FalconSigner(signer.secretKey);
   return multisigClient.create(config, falconSigner);
@@ -98,7 +98,7 @@ export async function switchMultisigPsm(
 export async function fetchAccountState(
   multisig: Multisig,
 ): Promise<{ state: AccountState; config: DetectedMultisigConfig }> {
-  const state = await multisig.fetchState();
+  const state = await multisig.syncState();
   const config = AccountInspector.fromBase64(state.stateDataBase64);
   return { state, config };
 }
@@ -110,7 +110,7 @@ export async function syncAll(
   multisig: Multisig,
 ): Promise<{ proposals: Proposal[]; state: AccountState; notes: ConsumableNote[] }> {
   const proposals = await multisig.syncProposals();
-  const state = await multisig.fetchState();
+  const state = await multisig.syncState();
   const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
 }

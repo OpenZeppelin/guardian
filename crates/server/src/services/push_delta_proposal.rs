@@ -42,6 +42,24 @@ pub async fn push_delta_proposal(
         .await
         .map_err(|_| PsmError::StateNotFound(account_id.clone()))?;
 
+    // Check for pending candidates before accepting new proposal
+    let has_pending = resolved
+        .backend
+        .has_pending_candidate(&account_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to check pending candidate in push_delta_proposal"
+            );
+            PsmError::StorageError(format!("Failed to check pending candidate: {e}"))
+        })?;
+
+    if has_pending {
+        return Err(PsmError::ConflictPendingDelta);
+    }
+
     // Extract tx_summary and signatures from delta_payload
     let tx_summary = delta_payload
         .get("tx_summary")
@@ -469,6 +487,71 @@ mod tests {
                 assert_eq!(id, account_id);
             }
             e => panic!("Expected StateNotFound error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_delta_proposal_blocked_by_pending_candidate() {
+        let (state, storage, network, metadata) = create_test_state();
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+
+        let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+
+        let (test_pubkey, test_commitment_hex, test_signature) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![test_commitment_hex.clone()],
+        ))));
+
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            test_commitment.to_string(),
+            account_json.clone(),
+        )));
+
+        // Mock pull_deltas_after to return a candidate delta (this triggers has_pending_candidate)
+        let candidate_delta = DeltaObject {
+            account_id: account_id.clone(),
+            nonce: 1,
+            prev_commitment: test_commitment.to_string(),
+            new_commitment: Some("0xnewcommitment".to_string()),
+            delta_payload: serde_json::json!({}),
+            ack_sig: None,
+            status: DeltaStatus::Candidate {
+                timestamp: "2024-11-14T12:00:00Z".to_string(),
+                retry_count: 0,
+            },
+        };
+        let _storage = storage.with_pull_deltas_after(Ok(vec![candidate_delta]));
+
+        let _network = network.with_validate_credential(Ok(()));
+
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"].clone(),
+            "signatures": []
+        });
+
+        let params = PushDeltaProposalParams {
+            account_id: account_id.clone(),
+            nonce: 2,
+            delta_payload,
+            credentials: Credentials::signature(test_pubkey, test_signature),
+        };
+
+        let result = push_delta_proposal(&state, params).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PsmError::ConflictPendingDelta => {
+                // Expected - proposal creation blocked because there's a pending candidate
+            }
+            e => panic!("Expected ConflictPendingDelta error, got: {:?}", e),
         }
     }
 }
