@@ -279,6 +279,7 @@ export default function App() {
 
     setSyncingState(true);
     setError(null);
+    setPendingCandidateWarning(null);
     try {
       // Sync miden client state first (with retry for IndexedDB race conditions)
       try {
@@ -302,7 +303,16 @@ export default function App() {
       setProposals(synced);
       setConsumableNotes(notes);
     } catch (err) {
-      setError(formatError(err, 'Sync failed'));
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('account nonce is too low to import')) {
+        setPendingCandidateWarning(
+          'Sync warning: local state is ahead of the on-chain state. ' +
+          'This can happen right after executing a transaction. Please wait a moment and sync again.'
+        );
+        setError(null);
+      } else {
+        setError(formatError(err, 'Sync failed'));
+      }
     } finally {
       setSyncingState(false);
     }
