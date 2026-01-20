@@ -169,7 +169,7 @@ impl MultisigClient {
 
         // Configure account on PSM
         psm_client
-            .configure(&account_id, auth_config, initial_state, "Filesystem")
+            .configure(&account_id, auth_config, initial_state)
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to configure account: {}", e)))?;
 

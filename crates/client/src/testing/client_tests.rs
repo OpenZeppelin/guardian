@@ -74,7 +74,7 @@ async fn test_configure_success() {
     };
 
     let result = client
-        .configure(&account_id, auth_config, initial_state, "Filesystem")
+        .configure(&account_id, auth_config, initial_state)
         .await;
 
     assert!(result.is_ok());
@@ -105,7 +105,7 @@ async fn test_configure_server_error() {
     };
 
     let result = client
-        .configure(&account_id, auth_config, initial_state, "Filesystem")
+        .configure(&account_id, auth_config, initial_state)
         .await;
 
     assert!(result.is_err());

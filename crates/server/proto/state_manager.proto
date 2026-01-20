@@ -49,7 +49,6 @@ message ConfigureRequest {
   string account_id = 1;
   AuthConfig auth = 2;
   string initial_state = 3; // JSON string
-  string storage_type = 4;
 }
 
 message ConfigureResponse {

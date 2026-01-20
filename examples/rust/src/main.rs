@@ -245,7 +245,7 @@ async fn main() -> ClientResult<()> {
     });
 
     match psm_client1
-        .configure(&account_id, auth_config, initial_state, "Filesystem")
+        .configure(&account_id, auth_config, initial_state)
         .await
     {
         Ok(response) => {

@@ -81,13 +81,11 @@ impl PsmClient {
     /// Configure a new account
     ///
     /// # Arguments
-    /// * `storage_type` - Storage backend type (e.g., "Filesystem")
     pub async fn configure(
         &mut self,
         account_id: &AccountId,
         auth: AuthConfig,
         initial_state: impl serde::Serialize,
-        storage_type: impl Into<String>,
     ) -> ClientResult<ConfigureResponse> {
         let initial_state_json = serde_json::to_string(&initial_state)?;
 
@@ -95,7 +93,6 @@ impl PsmClient {
             account_id: account_id.to_string(),
             auth: Some(auth),
             initial_state: initial_state_json,
-            storage_type: storage_type.into(),
         });
 
         self.add_auth_metadata(&mut request, account_id)?;
