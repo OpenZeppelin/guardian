@@ -25,7 +25,7 @@ pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetSt
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
 
     let account_state = resolved
-        .backend
+        .storage
         .pull_state(&params.account_id)
         .await
         .map_err(|_e| PsmError::StateNotFound(params.account_id.clone()))?;

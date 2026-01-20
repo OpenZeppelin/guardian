@@ -63,8 +63,6 @@ diesel::table! {
         #[max_length = 64]
         account_id -> Varchar,
         auth -> Jsonb,
-        #[max_length = 32]
-        storage_type -> Varchar,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         has_pending_candidate -> Bool,

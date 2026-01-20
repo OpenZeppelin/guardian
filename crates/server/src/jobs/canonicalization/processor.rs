@@ -57,7 +57,7 @@ impl DeltasProcessorBase {
     }
 
     async fn process_account(&self, account_id: &str) -> Result<()> {
-        let account_metadata = self
+        let _account_metadata = self
             .state
             .metadata
             .get(account_id)
@@ -65,11 +65,7 @@ impl DeltasProcessorBase {
             .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
             .ok_or_else(|| PsmError::InvalidInput("Account metadata not found".to_string()))?;
 
-        let storage_backend = self
-            .state
-            .storage
-            .get(&account_metadata.storage_type)
-            .map_err(PsmError::ConfigurationError)?;
+        let storage_backend = self.state.storage.clone();
 
         let all_deltas = storage_backend
             .pull_deltas_after(account_id, 0)
@@ -107,7 +103,7 @@ impl DeltasProcessorBase {
     }
 
     async fn process_candidate(&self, delta: DeltaObject) -> Result<()> {
-        let account_metadata = self
+        let _account_metadata = self
             .state
             .metadata
             .get(&delta.account_id)
@@ -115,11 +111,7 @@ impl DeltasProcessorBase {
             .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
             .ok_or_else(|| PsmError::AccountNotFound(delta.account_id.clone()))?;
 
-        let storage_backend = self
-            .state
-            .storage
-            .get(&account_metadata.storage_type)
-            .map_err(PsmError::ConfigurationError)?;
+        let storage_backend = self.state.storage.clone();
 
         let current_state = storage_backend
             .pull_state(&delta.account_id)
@@ -227,7 +219,7 @@ impl DeltasProcessorBase {
             "Canonicalizing delta (commitment matches on-chain)"
         );
 
-        let account_metadata = self
+        let _account_metadata = self
             .state
             .metadata
             .get(&delta.account_id)
@@ -235,11 +227,7 @@ impl DeltasProcessorBase {
             .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
             .ok_or_else(|| PsmError::AccountNotFound(delta.account_id.clone()))?;
 
-        let storage_backend = self
-            .state
-            .storage
-            .get(&account_metadata.storage_type)
-            .map_err(PsmError::ConfigurationError)?;
+        let storage_backend = self.state.storage.clone();
 
         let current_state = storage_backend
             .pull_state(&delta.account_id)
@@ -405,7 +393,6 @@ mod tests {
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
     use crate::state_object::StateObject;
-    use crate::storage::StorageType;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
@@ -416,7 +403,6 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![],
             },
-            storage_type: StorageType::Filesystem,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: true,

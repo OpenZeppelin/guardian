@@ -29,7 +29,7 @@ pub async fn get_delta_proposals(
 
     // Get all proposals from the proposals directory
     let mut proposals = resolved
-        .backend
+        .storage
         .pull_all_delta_proposals(&account_id)
         .await
         .unwrap_or_default();
@@ -47,7 +47,6 @@ mod tests {
     use crate::delta_object::{DeltaObject, DeltaStatus};
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
-    use crate::storage::StorageType;
     use crate::testing::fixtures;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
@@ -82,7 +81,6 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments,
             },
-            storage_type: StorageType::Filesystem,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,

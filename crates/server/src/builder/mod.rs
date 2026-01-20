@@ -11,6 +11,7 @@ pub mod clock;
 pub mod handle;
 pub mod logging;
 pub mod state;
+pub mod storage;
 
 use crate::ack::Acknowledger;
 use crate::builder::handle::ServerHandle;
@@ -20,14 +21,14 @@ use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
-use crate::storage::StorageRegistry;
+use crate::storage::StorageBackend;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
     network_type: Option<NetworkType>,
-    storage: Option<StorageRegistry>,
+    storage: Option<Arc<dyn StorageBackend>>,
     metadata: Option<Arc<dyn MetadataStore>>,
     ack: Option<Acknowledger>,
     canonicalization: Option<CanonicalizationConfig>,
@@ -74,34 +75,30 @@ impl ServerBuilder {
         self
     }
 
-    /// Set the storage registry
+    /// Set the storage backend
     ///
-    /// The storage registry maps storage types to their backend implementations.
-    /// Accounts can use different storage backends based on their configuration.
+    /// The server uses a single storage backend for all accounts.
     ///
     /// # Example
     /// ```no_run
     /// use server::builder::ServerBuilder;
-    /// use server::storage::StorageRegistry;
+    /// use server::storage::filesystem::FilesystemService;
     /// use std::path::PathBuf;
+    /// use std::sync::Arc;
     ///
     /// # async fn example() -> Result<(), String> {
-    /// // Simple case: use filesystem only
-    /// let storage_registry = StorageRegistry::with_filesystem(
-    ///     PathBuf::from("/var/psm/storage")
-    /// ).await?;
+    /// let storage = FilesystemService::new(PathBuf::from("/var/psm/storage")).await?;
     ///
     /// let builder = ServerBuilder::new()
-    ///     .storage(storage_registry);
+    ///     .storage(Arc::new(storage));
     /// # Ok(())
     /// # }
     /// ```
-    ///
-    /// For multiple storage backends, use `StorageRegistry::new()` with a HashMap.
-    pub fn storage(mut self, storage: StorageRegistry) -> Self {
+    pub fn storage(mut self, storage: Arc<dyn StorageBackend>) -> Self {
         self.storage = Some(storage);
         self
     }
+
 
     /// Set the metadata store
     ///
@@ -287,8 +284,7 @@ impl ServerBuilder {
     /// use server::network::NetworkType;
     /// use server::storage::filesystem::FilesystemService;
     /// use server::metadata::filesystem::FilesystemMetadataStore;
-    /// use server::storage::{StorageBackend, StorageRegistry, StorageType};
-    /// use std::collections::HashMap;
+    /// use server::storage::StorageBackend;
     /// use std::sync::Arc;
     /// use std::path::PathBuf;
     ///
@@ -296,13 +292,9 @@ impl ServerBuilder {
     /// let storage = FilesystemService::new(PathBuf::from("/var/psm/storage")).await?;
     /// let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/psm/metadata")).await?;
     ///
-    /// let mut backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
-    /// backends.insert(StorageType::Filesystem, Arc::new(storage));
-    /// let storage_registry = StorageRegistry::new(backends);
-    ///
     /// let handle = ServerBuilder::new()
     ///     .network(NetworkType::MidenTestnet)
-    ///     .storage(storage_registry)
+    ///     .storage(Arc::new(storage))
     ///     .metadata(Arc::new(metadata))
     ///     .build()
     ///     .await?;
@@ -321,7 +313,7 @@ impl ServerBuilder {
 
         let storage = self
             .storage
-            .ok_or("Storage registry not set. Use .storage(StorageRegistry::new(...))")?;
+            .ok_or("Storage backend not set. Use .storage(Arc::new(...))")?;
 
         let metadata = self
             .metadata

@@ -38,7 +38,7 @@ impl DeltaCommitStrategy {
             DeltaCommitStrategy::Candidate => {
                 delta.status = DeltaStatus::candidate(ctx.now.clone());
                 ctx.resolved
-                    .backend
+                    .storage
                     .submit_delta(delta)
                     .await
                     .map_err(|e| {
@@ -77,7 +77,7 @@ impl DeltaCommitStrategy {
                 };
 
                 ctx.resolved
-                    .backend
+                    .storage
                     .submit_state(&new_state)
                     .await
                     .map_err(|e| {
@@ -90,7 +90,7 @@ impl DeltaCommitStrategy {
                     })?;
 
                 ctx.resolved
-                    .backend
+                    .storage
                     .submit_delta(delta)
                     .await
                     .map_err(|e| {
@@ -114,7 +114,7 @@ impl DeltaCommitStrategy {
                 if let Some(ref id) = proposal_id
                     && let Ok(_existing_proposal) = ctx
                         .resolved
-                        .backend
+                        .storage
                         .pull_delta_proposal(&delta.account_id, id)
                         .await
                 {
@@ -125,7 +125,7 @@ impl DeltaCommitStrategy {
                     );
                     if let Err(e) = ctx
                         .resolved
-                        .backend
+                        .storage
                         .delete_delta_proposal(&delta.account_id, id)
                         .await
                     {
@@ -149,7 +149,6 @@ mod tests {
     use super::*;
     use crate::delta_object::DeltaStatus;
     use crate::metadata::AccountMetadata;
-    use crate::storage::StorageType;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
@@ -182,7 +181,6 @@ mod tests {
             auth: crate::metadata::auth::Auth::MidenFalconRpo {
                 cosigner_commitments: vec![],
             },
-            storage_type: StorageType::Filesystem,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
@@ -202,14 +200,11 @@ mod tests {
             Arc::new(mock_metadata),
         );
 
-        let storage_backend = state
-            .storage
-            .get(&StorageType::Filesystem)
-            .expect("Should have filesystem backend");
+        let storage_backend = state.storage.clone();
 
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
-            backend: storage_backend,
+            storage: storage_backend,
         };
 
         let current_state = create_test_state_object();
@@ -249,14 +244,11 @@ mod tests {
             Arc::new(mock_metadata),
         );
 
-        let storage_backend = state
-            .storage
-            .get(&StorageType::Filesystem)
-            .expect("Should have filesystem backend");
+        let storage_backend = state.storage.clone();
 
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
-            backend: storage_backend,
+            storage: storage_backend,
         };
 
         let current_state = create_test_state_object();
@@ -297,14 +289,11 @@ mod tests {
             Arc::new(mock_metadata),
         );
 
-        let storage_backend = state
-            .storage
-            .get(&StorageType::Filesystem)
-            .expect("Should have filesystem backend");
+        let storage_backend = state.storage.clone();
 
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
-            backend: storage_backend,
+            storage: storage_backend,
         };
 
         let current_state = create_test_state_object();
@@ -348,14 +337,11 @@ mod tests {
             Arc::new(mock_metadata),
         );
 
-        let storage_backend = state
-            .storage
-            .get(&StorageType::Filesystem)
-            .expect("Should have filesystem backend");
+        let storage_backend = state.storage.clone();
 
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
-            backend: storage_backend,
+            storage: storage_backend,
         };
 
         let current_state = create_test_state_object();
@@ -392,14 +378,11 @@ mod tests {
             Arc::new(mock_metadata),
         );
 
-        let storage_backend = state
-            .storage
-            .get(&StorageType::Filesystem)
-            .expect("Should have filesystem backend");
+        let storage_backend = state.storage.clone();
 
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
-            backend: storage_backend,
+            storage: storage_backend,
         };
 
         let current_state = create_test_state_object();
@@ -440,14 +423,11 @@ mod tests {
             Arc::new(mock_metadata),
         );
 
-        let storage_backend = state
-            .storage
-            .get(&StorageType::Filesystem)
-            .expect("Should have filesystem backend");
+        let storage_backend = state.storage.clone();
 
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
-            backend: storage_backend,
+            storage: storage_backend,
         };
 
         let current_state = create_test_state_object();

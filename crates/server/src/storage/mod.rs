@@ -1,12 +1,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
-use crate::storage::filesystem::FilesystemService;
-
 pub mod filesystem;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -95,52 +91,3 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<(), String>;
 }
 
-/// Storage registry that maps storage types to their backend implementations
-#[derive(Clone)]
-pub struct StorageRegistry {
-    backends: Arc<HashMap<StorageType, Arc<dyn StorageBackend>>>,
-}
-
-impl StorageRegistry {
-    pub fn new(backends: HashMap<StorageType, Arc<dyn StorageBackend>>) -> Self {
-        Self {
-            backends: Arc::new(backends),
-        }
-    }
-
-    pub async fn with_filesystem(storage_path: std::path::PathBuf) -> Result<Self, String> {
-        let fs_storage = FilesystemService::new(storage_path).await?;
-
-        let mut backends = HashMap::new();
-        backends.insert(
-            StorageType::Filesystem,
-            Arc::new(fs_storage) as Arc<dyn StorageBackend>,
-        );
-
-        Ok(Self::new(backends))
-    }
-
-    /// Creates a storage registry with only Postgres backend.
-    /// Automatically runs database migrations on startup.
-    #[cfg(feature = "postgres")]
-    pub async fn with_postgres(database_url: &str) -> Result<Self, String> {
-        postgres::run_migrations(database_url).await?;
-
-        let pg_storage = postgres::PostgresService::new(database_url).await?;
-
-        let mut backends = HashMap::new();
-        backends.insert(
-            StorageType::Postgres,
-            Arc::new(pg_storage) as Arc<dyn StorageBackend>,
-        );
-
-        Ok(Self::new(backends))
-    }
-
-    pub fn get(&self, storage_type: &StorageType) -> Result<Arc<dyn StorageBackend>, String> {
-        self.backends
-            .get(storage_type)
-            .cloned()
-            .ok_or_else(|| format!("No storage backend registered for type: {storage_type}"))
-    }
-}

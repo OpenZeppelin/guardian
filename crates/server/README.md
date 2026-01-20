@@ -31,17 +31,15 @@ Each account has:
 
 ### Storage Backends
 
-The server supports multiple storage backends `Filesystem` and `Postgres`. Uses `Postgres` if the `postgres` feature is enabled and defaults to `Filesystem`.
+The server uses a single storage backend per instance: `Filesystem` by default, or `Postgres` when built with the `postgres` feature.
 
 #### Filesystem Storage
 
 ```rust
-use server::storage::StorageRegistry;
+use server::storage::filesystem::FilesystemService;
 use std::path::PathBuf;
 
-let storage_registry = StorageRegistry::with_filesystem(
-    PathBuf::from("/var/psm/storage")
-).await?;
+let storage = FilesystemService::new(PathBuf::from("/var/psm/storage")).await?;
 ```
 
 Filesystem is the default when the binary is built without the `postgres` feature.
@@ -50,15 +48,14 @@ Filesystem is the default when the binary is built without the `postgres` featur
 
 Postgres support is optional and must be enabled at build time with the `postgres` feature.
 When enabled, provide `DATABASE_URL` and the server will use Postgres by default.
-Migrations run automatically when creating the storage registry.
+Migrations run automatically at startup (the server runs migrations on boot).
 
 ```rust
-use server::storage::StorageRegistry;
+use server::storage::postgres::PostgresService;
 
 let database_url = "postgres://psm:psm_dev_password@localhost:5432/psm";
 
-// Migrations run automatically
-let storage_registry = StorageRegistry::with_postgres(&database_url).await?;
+let storage = PostgresService::new(&database_url).await?;
 ```
 
 ```bash

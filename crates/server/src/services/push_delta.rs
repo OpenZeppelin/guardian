@@ -26,7 +26,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
 
     let current_state = resolved
-        .backend
+        .storage
         .pull_state(&params.delta.account_id)
         .await
         .map_err(|e| {
@@ -40,7 +40,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
 
     // Check for pending candidates before accepting new delta
     let has_pending = resolved
-        .backend
+        .storage
         .has_pending_candidate(&params.delta.account_id)
         .await
         .map_err(|e| {

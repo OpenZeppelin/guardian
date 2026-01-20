@@ -46,7 +46,6 @@ CREATE INDEX idx_proposals_account_commitment ON delta_proposals(account_id, com
 CREATE TABLE account_metadata (
     account_id VARCHAR(64) PRIMARY KEY,
     auth JSONB NOT NULL,
-    storage_type VARCHAR(32) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     has_pending_candidate BOOLEAN NOT NULL DEFAULT FALSE

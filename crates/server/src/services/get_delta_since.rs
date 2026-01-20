@@ -33,7 +33,7 @@ pub async fn get_delta_since(
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
 
     let all_deltas = resolved
-        .backend
+        .storage
         .pull_deltas_after(&params.account_id, params.from_nonce)
         .await
         .map_err(|e| PsmError::StorageError(format!("Failed to fetch deltas: {e}")))?;

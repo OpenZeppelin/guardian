@@ -8,7 +8,7 @@ use crate::metadata::filesystem::FilesystemMetadataStore;
 use crate::network::{NetworkClient, NetworkType};
 use crate::state::AppState;
 use crate::storage::filesystem::FilesystemService;
-use crate::storage::{StorageBackend, StorageRegistry, StorageType};
+use crate::storage::StorageBackend;
 use async_trait::async_trait;
 use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
@@ -161,9 +161,7 @@ pub async fn create_test_app_state() -> AppState {
         .await
         .expect("Failed to create metadata");
 
-    let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
-    storage_backends.insert(StorageType::Filesystem, Arc::new(storage));
-    let storage_registry = StorageRegistry::new(storage_backends);
+    let storage_backend: Arc<dyn StorageBackend> = Arc::new(storage);
 
     let miden_client =
         crate::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
@@ -175,7 +173,7 @@ pub async fn create_test_app_state() -> AppState {
     let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
 
     AppState {
-        storage: storage_registry,
+        storage: storage_backend,
         metadata: Arc::new(metadata),
         network_client: Arc::new(tokio::sync::Mutex::new(mock_client)),
         ack,
@@ -359,15 +357,13 @@ pub fn create_test_app_state_with_mocks(
         std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
 
-    let mut storage_backends: HashMap<StorageType, Arc<dyn StorageBackend>> = HashMap::new();
-    storage_backends.insert(StorageType::Filesystem, storage);
-    let storage_registry = StorageRegistry::new(storage_backends);
+    let storage_backend: Arc<dyn StorageBackend> = storage;
 
     let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
     let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
 
     AppState {
-        storage: storage_registry,
+        storage: storage_backend,
         metadata,
         network_client,
         ack,

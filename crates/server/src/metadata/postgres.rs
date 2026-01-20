@@ -1,6 +1,5 @@
 use crate::metadata::{AccountMetadata, Auth, MetadataStore};
 use crate::schema::account_metadata;
-use crate::storage::StorageType;
 use async_trait::async_trait;
 use diesel::prelude::*;
 use diesel_async::pooled_connection::deadpool::Pool;
@@ -40,7 +39,6 @@ impl PostgresMetadataStore {
 struct MetadataRow {
     account_id: String,
     auth: serde_json::Value,
-    storage_type: String,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
@@ -52,7 +50,6 @@ struct MetadataRow {
 struct NewMetadata<'a> {
     account_id: &'a str,
     auth: serde_json::Value,
-    storage_type: &'a str,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
@@ -65,16 +62,9 @@ impl TryFrom<MetadataRow> for AccountMetadata {
         let auth: Auth =
             serde_json::from_value(row.auth).map_err(|e| format!("Failed to parse auth: {e}"))?;
 
-        let storage_type = match row.storage_type.as_str() {
-            "Filesystem" => StorageType::Filesystem,
-            "Postgres" => StorageType::Postgres,
-            _ => return Err(format!("Unknown storage type: {}", row.storage_type)),
-        };
-
         Ok(AccountMetadata {
             account_id: row.account_id,
             auth,
-            storage_type,
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
             has_pending_candidate: row.has_pending_candidate,
@@ -112,7 +102,6 @@ impl MetadataStore for PostgresMetadataStore {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let storage_type_str = metadata.storage_type.to_string();
         let created_at: chrono::DateTime<chrono::Utc> = metadata
             .created_at
             .parse()
@@ -128,7 +117,6 @@ impl MetadataStore for PostgresMetadataStore {
         let new_metadata = NewMetadata {
             account_id: &metadata.account_id,
             auth: auth_json.clone(),
-            storage_type: &storage_type_str,
             created_at,
             updated_at,
             has_pending_candidate: metadata.has_pending_candidate,
@@ -140,7 +128,6 @@ impl MetadataStore for PostgresMetadataStore {
             .do_update()
             .set((
                 account_metadata::auth.eq(&auth_json),
-                account_metadata::storage_type.eq(&storage_type_str),
                 account_metadata::updated_at.eq(updated_at),
                 account_metadata::has_pending_candidate.eq(metadata.has_pending_candidate),
             ))
@@ -188,10 +175,4 @@ impl MetadataStore for PostgresMetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_storage_type_to_string() {
-        assert_eq!(StorageType::Filesystem.to_string(), "Filesystem");
-        assert_eq!(StorageType::Postgres.to_string(), "Postgres");
-    }
 }

@@ -415,7 +415,6 @@ mod tests {
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
     use crate::state_object::StateObject;
-    use crate::storage::StorageType;
     use crate::testing::fixtures;
     use crate::testing::helpers::{create_test_app_state_with_mocks, generate_falcon_signature};
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
@@ -451,7 +450,6 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments,
             },
-            storage_type: StorageType::Filesystem,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,

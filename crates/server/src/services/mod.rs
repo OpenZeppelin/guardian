@@ -38,7 +38,7 @@ pub use sign_delta_proposal::{
 #[derive(Clone)]
 pub struct ResolvedAccount {
     pub metadata: AccountMetadata,
-    pub backend: Arc<dyn StorageBackend>,
+    pub storage: Arc<dyn StorageBackend>,
 }
 
 #[tracing::instrument(skip(state, creds), fields(account_id = %account_id))]
@@ -70,10 +70,7 @@ pub async fn resolve_account(
         PsmError::AuthenticationFailed(e)
     })?;
 
-    let backend = state
-        .storage
-        .get(&metadata.storage_type)
-        .map_err(PsmError::ConfigurationError)?;
+    let storage = state.storage.clone();
 
-    Ok(ResolvedAccount { metadata, backend })
+    Ok(ResolvedAccount { metadata, storage })
 }

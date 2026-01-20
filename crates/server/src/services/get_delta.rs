@@ -27,7 +27,7 @@ pub async fn get_delta(state: &AppState, params: GetDeltaParams) -> Result<GetDe
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
 
     let delta = resolved
-        .backend
+        .storage
         .pull_delta(&params.account_id, params.nonce)
         .await
         .map_err(|_e| PsmError::DeltaNotFound {

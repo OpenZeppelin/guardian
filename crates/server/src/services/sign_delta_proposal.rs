@@ -38,7 +38,7 @@ pub async fn sign_delta_proposal(
 
     // Fetch the proposal by commitment
     let mut delta_proposal = resolved
-        .backend
+        .storage
         .pull_delta_proposal(&account_id, &commitment)
         .await
         .map_err(|_| PsmError::ProposalNotFound {
@@ -141,7 +141,7 @@ pub async fn sign_delta_proposal(
 
     // Store the updated proposal
     resolved
-        .backend
+        .storage
         .update_delta_proposal(&commitment, &delta_proposal)
         .await
         .map_err(PsmError::StorageError)?;
@@ -157,7 +157,6 @@ mod tests {
     use crate::delta_object::DeltaStatus;
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
-    use crate::storage::StorageType;
     use crate::testing::fixtures;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
@@ -192,7 +191,6 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments,
             },
-            storage_type: StorageType::Filesystem,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
