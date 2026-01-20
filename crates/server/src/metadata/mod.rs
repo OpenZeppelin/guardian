@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod auth;
 pub mod filesystem;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 
 pub use auth::{Auth, AuthHeader, Credentials, ExtractCredentials};
 

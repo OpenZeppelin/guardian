@@ -27,6 +27,7 @@ tonic-prost = { workspace = true }
 tonic-reflection = "0.14"
 prost = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
+dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 miden-objects = { workspace = true, features = ["testing"] }
@@ -35,6 +36,11 @@ miden-objects = { workspace = true, features = ["testing"] }
 private-state-manager-shared = { path = "../shared" }
 miden-keystore = { path = "../miden-keystore" }
 miden-rpc-client = { path = "../miden-rpc-client" }
+
+# Postgres storage
+diesel = { version = "2.2", features = ["postgres", "chrono", "serde_json"], optional = true }
+diesel-async = { version = "0.5", features = ["postgres", "deadpool"], optional = true }
+diesel_migrations = { version = "2.2", optional = true }
 
 # Optional dependencies for e2e tests
 miden-client = { workspace = true, features = ["testing"], optional = true }
@@ -50,5 +56,6 @@ miden-lib = { workspace = true }
 
 [features]
 default = []
+postgres = ["diesel", "diesel-async", "diesel_migrations"]
 integration = []
 e2e = ["miden-client", "miden-confidential-contracts"]

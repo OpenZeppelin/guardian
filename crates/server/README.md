@@ -18,9 +18,8 @@ let builder = ServerBuilder::new()
 
 ### Environment Variables
 
-- `PSM_ENV` - Environment (default: `dev`)
-- `PSM_STORAGE_PATH` - Storage backend path (default: `/var/psm/storage`)
-- `PSM_METADATA_PATH` - Metadata store path (default: `/var/psm/metadata`)
+- `POSTGRES_PASSWORD` - PostgreSQL password (required for Postgres storage/metadata)
+- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata, e.g., `postgres://psm:${POSTGRES_PASSWORD}@localhost:5432/psm`)
 - `PSM_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/psm/keystore`)
 - `RUST_LOG` - Logging level (default: `info`)
 
@@ -29,35 +28,74 @@ let builder = ServerBuilder::new()
 Each account has:
 - `account_id` - Network-specific identifier
 - `auth` - Auth type with authorization data (e.g., cosigner public keys)
-- `storage_type` - Which backend stores this account's data
+- `storage_type` - Storage backend for this account's data
+
+### Storage Backends
+
+The server supports multiple storage backends `Filesystem` and `Postgres`. Uses `Postgres` if the `postgres` feature is enabled and defaults to `Filesystem`.
+
+#### Filesystem Storage
 
 ```rust
-use server::builder::ServerBuilder;
-
-// Create storage registry with filesystem backend
-// NOTE: Other storage types will be supported in the future.
-let storage_registry = StorageRegistry::with_filesystem(PathBuf::from("/var/psm/storage")).await?;
-
-let builder = ServerBuilder::new()
-    .network(NetworkType::MidenTestnet)
-    .storage(storage_registry).await?);
-```
-
-Also the server supports configuring the networks, storage types, metadata store, and keystore.
-
-```rust
-use server::builder::ServerBuilder;
-use server::network::NetworkType;
 use server::storage::StorageRegistry;
-use server::storage::filesystem::FilesystemMetadataStore;
 use std::path::PathBuf;
 
-// Store accounts metadata using filesystem backend.
+let storage_registry = StorageRegistry::with_filesystem(
+    PathBuf::from("/var/psm/storage")
+).await?;
+```
+
+Filesystem is the default when the binary is built without the `postgres` feature.
+
+#### Postgres Storage
+
+Postgres support is optional and must be enabled at build time with the `postgres` feature.
+When enabled, provide `DATABASE_URL` and the server will use Postgres by default.
+Migrations run automatically when creating the storage registry.
+
+```rust
+use server::storage::StorageRegistry;
+
+let database_url = "postgres://psm:psm_dev_password@localhost:5432/psm";
+
+// Migrations run automatically
+let storage_registry = StorageRegistry::with_postgres(&database_url).await?;
+```
+
+```bash
+DATABASE_URL=postgres://psm:psm_dev_password@localhost:5432/psm \
+cargo run --features postgres --package private-state-manager-server
+```
+
+### Metadata Store
+
+The server supports configuring the metadata store separately from the storage backends.
+
+#### Filesystem Metadata Store
+
+```rust
+use server::metadata::filesystem::FilesystemMetadataStore;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/psm/metadata")).await?;
 
 let builder = ServerBuilder::new()
-    .metadata(Arc::new(metadata))
-    .keystore(PathBuf::from("/var/psm/keystore"));
+    .metadata(Arc::new(metadata));
+```
+
+#### Postgres Metadata Store
+
+```rust
+use server::metadata::postgres::PostgresMetadataStore;
+use std::sync::Arc;
+
+let database_url = "postgres://psm:psm_dev_password@localhost:5432/psm";
+
+let metadata = PostgresMetadataStore::new(&database_url).await?;
+
+let builder = ServerBuilder::new()
+    .metadata(Arc::new(metadata));
 ```
 
 ### Logging
@@ -116,6 +154,22 @@ All methods are available through the `state_manager.StateManager` service:
 
 See `proto/state_manager.proto` for the complete protocol buffer definitions.
 
+
+## Running with Docker Compose
+
+The project includes a `docker-compose.yml` with a Postgres service for local development:
+
+```bash
+# Start the server with Postgres
+docker-compose up -d
+
+# The services expose:
+# - Server HTTP: localhost:3000
+# - Server gRPC: localhost:50051
+# - Postgres: localhost:5432 (user: psm, password: psm_dev_password, db: psm)
+```
+
+The Postgres service uses a health check and the server waits for it to be ready before starting.
 
 ## Testing
 

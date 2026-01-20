@@ -8,11 +8,16 @@ use crate::state_object::StateObject;
 use crate::storage::filesystem::FilesystemService;
 
 pub mod filesystem;
+#[cfg(feature = "postgres")]
+pub mod postgres;
+#[cfg(feature = "postgres")]
+pub use postgres::run_migrations;
 
 /// Storage backend type with configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum StorageType {
     Filesystem,
+    Postgres,
 }
 
 impl Default for StorageType {
@@ -25,6 +30,7 @@ impl std::fmt::Display for StorageType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StorageType::Filesystem => write!(f, "Filesystem"),
+            StorageType::Postgres => write!(f, "Postgres"),
         }
     }
 }
@@ -109,6 +115,23 @@ impl StorageRegistry {
         backends.insert(
             StorageType::Filesystem,
             Arc::new(fs_storage) as Arc<dyn StorageBackend>,
+        );
+
+        Ok(Self::new(backends))
+    }
+
+    /// Creates a storage registry with only Postgres backend.
+    /// Automatically runs database migrations on startup.
+    #[cfg(feature = "postgres")]
+    pub async fn with_postgres(database_url: &str) -> Result<Self, String> {
+        postgres::run_migrations(database_url).await?;
+
+        let pg_storage = postgres::PostgresService::new(database_url).await?;
+
+        let mut backends = HashMap::new();
+        backends.insert(
+            StorageType::Postgres,
+            Arc::new(pg_storage) as Arc<dyn StorageBackend>,
         );
 
         Ok(Self::new(backends))

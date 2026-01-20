@@ -1,0 +1,8 @@
+# Diesel configuration for Private State Manager Server
+
+[print_schema]
+file = "src/schema.rs"
+with_docs = true
+
+[migrations_directory]
+dir = "migrations"
