@@ -190,7 +190,6 @@ export function toServerConfigureRequest(req: ConfigureRequest): ServerConfigure
     account_id: req.accountId,
     auth: req.auth,
     initial_state: { data: req.initialState.data, account_id: req.initialState.accountId },
-    storage_type: req.storageType,
   };
 }
 

@@ -6,7 +6,6 @@ export type {
   FalconSignature,
   CosignerSignature,
   AuthConfig,
-  StorageType,
   DeltaStatus,
   DeltaObject,
   StateObject,

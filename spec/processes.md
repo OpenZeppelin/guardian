@@ -2,7 +2,7 @@
 
 ## Services overview
 
-- **configure_account**: creates a new account by validating the provided initial state against the network, persisting it, and storing account metadata (auth, storage type, timestamps).
+- **configure_account**: creates a new account by validating the provided initial state against the network, persisting it, and storing account metadata (auth, timestamps).
 - **push_delta**: verifies the delta against the current state, computes the new commitment, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode).
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
@@ -19,12 +19,12 @@ sequenceDiagram
   participant N as Network
   participant ST as Storage
   participant M as Metadata
-  C->>S: POST /configure {account_id, auth, initial_state, storage_type}
+  C->>S: POST /configure {account_id, auth, initial_state}
   S->>N: validate_credential(initial_state, credential)
   S->>A: auth.verify(account_id, credential)
   S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
-  S->>M: set(account_id, auth, storage_type, timestamps)
+  S->>M: set(account_id, auth, timestamps)
   S-->>C: 200 {account_id, ack_pubkey}
 ```
 

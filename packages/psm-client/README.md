@@ -53,7 +53,6 @@ await client.configure({
     },
   },
   initial_state: { data: '<base64-encoded-account>', account_id: '0x...' },
-  storage_type: 'Filesystem',
 });
 ```
 

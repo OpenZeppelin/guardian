@@ -102,7 +102,6 @@ export type {
 
   // PSM API types
   AuthConfig,
-  StorageType,
   DeltaObject,
   DeltaStatus,
   StateObject,

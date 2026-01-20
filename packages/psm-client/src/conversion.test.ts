@@ -285,7 +285,6 @@ describe('conversion', () => {
         accountId: '0xaccount',
         auth: { MidenFalconRpo: { cosigner_commitments: ['0x1', '0x2'] } },
         initialState: { data: 'statedata', accountId: '0xaccount' },
-        storageType: 'Filesystem',
       };
 
       const result = toServerConfigureRequest(req);
@@ -294,7 +293,6 @@ describe('conversion', () => {
         account_id: '0xaccount',
         auth: { MidenFalconRpo: { cosigner_commitments: ['0x1', '0x2'] } },
         initial_state: { data: 'statedata', account_id: '0xaccount' },
-        storage_type: 'Filesystem',
       });
     });
 

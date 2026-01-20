@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { PsmHttpClient, type DeltaObject, type DeltaStatus, type FalconSignature, type Signer, type StorageType, type AuthConfig, type StateObject, type ProposalMetadata as PsmProposalMetadata } from '@openzeppelin/psm-client';
+import { PsmHttpClient, type DeltaObject, type DeltaStatus, type FalconSignature, type Signer, type AuthConfig, type StateObject, type ProposalMetadata as PsmProposalMetadata } from '@openzeppelin/psm-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -228,7 +228,6 @@ export class Multisig {
       accountId: this._accountId,
       auth,
       initialState: { data: stateData, accountId: this._accountId },
-      storageType: 'Filesystem' as StorageType,
     });
 
     if (!response.success) {

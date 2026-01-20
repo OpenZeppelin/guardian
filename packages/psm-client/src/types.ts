@@ -17,7 +17,6 @@ export interface AuthConfig {
   };
 }
 
-export type StorageType = 'Filesystem';
 
 export interface CosignerSignature {
   signerId: string;
@@ -91,7 +90,6 @@ export interface ConfigureRequest {
   accountId: string;
   auth: AuthConfig;
   initialState: { data: string; accountId: string };
-  storageType: StorageType;
 }
 
 export interface ConfigureResponse {

@@ -29,7 +29,7 @@
 
 - POST /configure
   - Headers: `x-pubkey`, `x-signature`
-  - Body: `{ account_id: string, auth: Auth, initial_state: object, storage_type: "Filesystem" }`
+  - Body: `{ account_id: string, auth: Auth, initial_state: object }`
   - 200: `{ success: true, message: string, ack_pubkey: string }` (represents the server acknowledgement key; clients may treat this as the signer commitment)
   - 400: `{ success: false, message: string, ack_pubkey: null }`
 - POST /delta
@@ -98,8 +98,7 @@ curl -X POST http://localhost:3000/configure \
   -d '{
     "account_id": "0x...",
     "auth": { "MidenFalconRpo": { "cosigner_commitments": ["0x..."] } },
-    "initial_state": { "...": "..." },
-    "storage_type": "Filesystem"
+    "initial_state": { "...": "..." }
   }'
   
 curl -X POST http://localhost:3000/delta/proposal \

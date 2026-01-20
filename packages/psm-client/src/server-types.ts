@@ -88,13 +88,10 @@ export interface ServerAuthConfig {
   };
 }
 
-export type ServerStorageType = 'Filesystem';
-
 export interface ServerConfigureRequest {
   account_id: string;
   auth: ServerAuthConfig;
   initial_state: { data: string; account_id: string };
-  storage_type: ServerStorageType;
 }
 
 export interface ServerConfigureResponse {

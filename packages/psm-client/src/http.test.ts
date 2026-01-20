@@ -95,7 +95,6 @@ describe('PsmHttpClient', () => {
           },
         },
         initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
-        storageType: 'Filesystem' as const,
       };
 
       const response = await client.configure(request);
@@ -117,7 +116,6 @@ describe('PsmHttpClient', () => {
             account_id: '0x' + 'd'.repeat(30),
             auth: { MidenFalconRpo: { cosigner_commitments: ['0x' + 'e'.repeat(64)] } },
             initial_state: { data: 'base64data', account_id: '0x' + 'd'.repeat(30) },
-            storage_type: 'Filesystem',
           }),
           headers: expect.objectContaining({
             'x-pubkey': mockSigner.publicKey,
@@ -132,7 +130,6 @@ describe('PsmHttpClient', () => {
         accountId: '0x' + 'd'.repeat(30),
         auth: { MidenFalconRpo: { cosigner_commitments: [] } },
         initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
-        storageType: 'Filesystem' as const,
       };
 
       await expect(client.configure(request)).rejects.toThrow('No signer configured');
