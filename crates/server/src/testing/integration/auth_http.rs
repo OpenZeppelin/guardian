@@ -26,8 +26,7 @@ async fn test_configure_and_push_delta_with_auth() {
                 "cosigner_commitments": [commitment_hex]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
@@ -95,8 +94,7 @@ async fn test_push_delta_unauthorized_cosigner() {
                 "cosigner_commitments": [authorized_commitment] // Only this commitment is authorized
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
@@ -158,8 +156,8 @@ async fn test_push_delta_missing_auth_headers() {
                 "cosigner_commitments": [commitment_hex]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()

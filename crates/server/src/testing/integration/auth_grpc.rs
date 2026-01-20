@@ -19,7 +19,6 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex.clone()])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     let configure_response = service
@@ -73,7 +72,6 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![authorized_commitment])), // Only this key is authorized
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     let configure_response = service
@@ -124,7 +122,6 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     let configure_response = service
@@ -177,7 +174,6 @@ async fn test_grpc_get_delta_with_auth() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex.clone()])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     service

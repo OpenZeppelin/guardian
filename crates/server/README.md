@@ -28,7 +28,6 @@ let builder = ServerBuilder::new()
 Each account has:
 - `account_id` - Network-specific identifier
 - `auth` - Auth type with authorization data (e.g., cosigner public keys)
-- `storage_type` - Storage backend for this account's data
 
 ### Storage Backends
 

@@ -22,7 +22,6 @@ async fn test_grpc_push_delta_proposal_success() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex.clone()])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     let configure_response = service
@@ -81,7 +80,6 @@ async fn test_grpc_get_delta_proposals_empty() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     service
@@ -120,7 +118,6 @@ async fn test_grpc_get_delta_proposals_with_proposals() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     service
@@ -186,7 +183,6 @@ async fn test_grpc_sign_delta_proposal_not_found() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     service
@@ -241,7 +237,6 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
         account_id: account_id_hex.clone(),
         auth: Some(create_miden_falcon_rpo_auth(vec![authorized_commitment])),
         initial_state,
-        storage_type: "Filesystem".to_string(),
     };
 
     service

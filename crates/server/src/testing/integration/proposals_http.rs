@@ -26,8 +26,7 @@ async fn test_push_delta_proposal_success() {
                 "cosigner_commitments": [commitment_hex]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
@@ -89,8 +88,7 @@ async fn test_get_delta_proposals_empty() {
                 "cosigner_commitments": [commitment_hex]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
@@ -140,8 +138,7 @@ async fn test_get_delta_proposals_with_proposals() {
                 "cosigner_commitments": [commitment_hex]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
@@ -214,8 +211,7 @@ async fn test_sign_delta_proposal_not_found() {
                 "cosigner_commitments": [signer_commitment]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
@@ -278,8 +274,7 @@ async fn test_push_delta_proposal_unauthorized() {
                 "cosigner_commitments": [authorized_commitment]
             }
         },
-        "initial_state": initial_state,
-        "storage_type": "Filesystem"
+        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()

@@ -6,7 +6,6 @@ use crate::services::{
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
-use crate::storage::StorageType;
 use axum::{Json, extract::Query, extract::State, http::StatusCode};
 use private_state_manager_shared::ProposalSignature;
 use serde::{Deserialize, Serialize};
@@ -16,7 +15,6 @@ pub struct ConfigureRequest {
     pub account_id: String,
     pub auth: Auth,
     pub initial_state: serde_json::Value,
-    pub storage_type: StorageType,
 }
 
 impl From<ConfigureRequest> for ConfigureAccountParams {
@@ -25,7 +23,6 @@ impl From<ConfigureRequest> for ConfigureAccountParams {
             account_id: req.account_id,
             auth: req.auth,
             initial_state: req.initial_state,
-            storage_type: req.storage_type,
             // Credential will be set from AuthHeader
             credential: Credentials::signature(String::new(), String::new()),
         }
@@ -401,7 +398,6 @@ mod tests {
                 cosigner_commitments: vec![commitment],
             },
             initial_state: account_json,
-            storage_type: StorageType::Filesystem,
         };
 
         let credentials = Credentials::signature(pubkey, signature);

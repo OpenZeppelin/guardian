@@ -5,7 +5,6 @@ use crate::services::{
     SignDeltaProposalParams, configure_account, get_delta_proposals, push_delta,
     push_delta_proposal, sign_delta_proposal,
 };
-use crate::storage::StorageType;
 use crate::testing::fixtures;
 use crate::testing::helpers::{create_test_app_state, generate_falcon_signature};
 
@@ -34,7 +33,6 @@ async fn test_sign_delta_proposal() {
             cosigner_commitments: vec![commitment1_hex.clone(), commitment2_hex.clone()],
         },
         initial_state: account_json.clone(),
-        storage_type: StorageType::Filesystem,
         credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
     };
 
@@ -133,7 +131,6 @@ async fn test_multi_cosigner_signing_workflow() {
             ],
         },
         initial_state: account_json.clone(),
-        storage_type: StorageType::Filesystem,
         credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
     };
 
@@ -268,7 +265,6 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
             cosigner_commitments: vec![commitment1_hex.clone()],
         },
         initial_state: account_json.clone(),
-        storage_type: StorageType::Filesystem,
         credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
     };
 

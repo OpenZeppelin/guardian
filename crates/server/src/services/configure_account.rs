@@ -10,7 +10,6 @@ pub struct ConfigureAccountParams {
     pub account_id: String,
     pub auth: Auth,
     pub initial_state: serde_json::Value,
-    pub storage_type: StorageType,
     pub credential: Credentials,
 }
 
@@ -87,9 +86,15 @@ pub async fn configure_account(
         updated_at: now,
     };
 
+    let storage_type = if cfg!(feature = "postgres") {
+        StorageType::Postgres
+    } else {
+        StorageType::Filesystem
+    };
+
     let storage_backend = state
         .storage
-        .get(&params.storage_type)
+        .get(&storage_type)
         .map_err(PsmError::ConfigurationError)?;
 
     storage_backend
@@ -108,7 +113,7 @@ pub async fn configure_account(
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
-        storage_type: params.storage_type,
+        storage_type,
         created_at: account_state.created_at.clone(),
         updated_at: account_state.updated_at.clone(),
         has_pending_candidate: false,
@@ -195,7 +200,6 @@ mod tests {
                 cosigner_commitments: vec![commitment_hex],
             },
             initial_state,
-            storage_type: StorageType::Filesystem,
             credential,
         };
 
@@ -246,7 +250,6 @@ mod tests {
                 cosigner_commitments: vec![commitment_hex],
             },
             initial_state: serde_json::json!({"balance": 100}),
-            storage_type: StorageType::Filesystem,
             credential,
         };
 
@@ -283,7 +286,6 @@ mod tests {
                 cosigner_commitments: vec![commitment_hex],
             },
             initial_state: serde_json::json!({"balance": 100}),
-            storage_type: StorageType::Filesystem,
             credential,
         };
 

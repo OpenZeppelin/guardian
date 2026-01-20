@@ -1,6 +1,5 @@
 use crate::metadata::auth::{Auth, Credentials};
 use crate::services::{ConfigureAccountParams, configure_account};
-use crate::storage::StorageType;
 use crate::testing::fixtures;
 use crate::testing::helpers::{create_test_app_state, generate_falcon_signature};
 
@@ -26,7 +25,6 @@ async fn test_configure_account_with_real_miden_account() {
             cosigner_commitments: vec![commitment_hex.clone()],
         },
         initial_state: account_json.clone(),
-        storage_type: StorageType::Filesystem,
         credential: Credentials::signature(pubkey_hex, signature_hex),
     };
 

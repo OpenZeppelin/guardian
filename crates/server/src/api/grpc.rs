@@ -4,7 +4,6 @@ use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetStateParams, PushDeltaParams,
 };
 use crate::state::AppState;
-use crate::storage::StorageType;
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code
@@ -44,10 +43,6 @@ impl StateManager for StateManagerService {
         let auth = Auth::try_from(auth_config)
             .map_err(|e| Status::invalid_argument(format!("Invalid auth config: {e}")))?;
 
-        // Parse storage_type
-        let storage_type: StorageType = serde_json::from_str(&format!("\"{}\"", req.storage_type))
-            .map_err(|e| Status::invalid_argument(format!("Invalid storage type: {e}")))?;
-
         // Parse initial_state JSON
         let initial_state: serde_json::Value = serde_json::from_str(&req.initial_state)
             .map_err(|e| Status::invalid_argument(format!("Invalid initial_state JSON: {e}")))?;
@@ -56,7 +51,6 @@ impl StateManager for StateManagerService {
             account_id: req.account_id.clone(),
             auth,
             initial_state,
-            storage_type,
             credential,
         };
 
@@ -526,7 +520,6 @@ mod tests {
                 )),
             }),
             initial_state: serde_json::to_string(&account_json).unwrap(),
-            storage_type: "Filesystem".to_string(),
         };
 
         let request = create_request_with_auth(request, &pubkey, &signature);

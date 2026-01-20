@@ -16,7 +16,6 @@ use server::metadata::postgres::PostgresMetadataStore;
 
 #[tokio::main]
 async fn main() {
-    // Load .env file from current directory or parent directories
     dotenvy::dotenv().ok();
 
     let keystore_path: PathBuf = env::var("PSM_KEYSTORE_PATH")
