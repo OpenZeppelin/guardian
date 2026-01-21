@@ -99,7 +99,6 @@ impl ServerBuilder {
         self
     }
 
-
     /// Set the metadata store
     ///
     /// Metadata stores handle account configuration and authorization info.

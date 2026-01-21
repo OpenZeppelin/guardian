@@ -8,7 +8,6 @@ pub mod postgres;
 
 pub use auth::{Auth, AuthHeader, Credentials, ExtractCredentials};
 
-
 /// Metadata for a single account
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountMetadata {

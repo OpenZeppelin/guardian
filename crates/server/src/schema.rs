@@ -69,9 +69,4 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(
-    states,
-    deltas,
-    delta_proposals,
-    account_metadata,
-);
+diesel::allow_tables_to_appear_in_same_query!(states, deltas, delta_proposals, account_metadata,);

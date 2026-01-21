@@ -2,8 +2,8 @@ use crate::metadata::{AccountMetadata, Auth, MetadataStore};
 use crate::schema::account_metadata;
 use async_trait::async_trait;
 use diesel::prelude::*;
-use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
 pub struct PostgresMetadataStore {
@@ -170,9 +170,4 @@ impl MetadataStore for PostgresMetadataStore {
 
         Ok(rows)
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 }

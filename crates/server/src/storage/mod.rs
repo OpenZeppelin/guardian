@@ -90,4 +90,3 @@ pub trait StorageBackend: Send + Sync {
         status: DeltaStatus,
     ) -> Result<(), String>;
 }
-

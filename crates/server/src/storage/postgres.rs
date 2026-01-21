@@ -5,10 +5,10 @@ use crate::storage::StorageBackend;
 use async_trait::async_trait;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
-use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -229,8 +229,8 @@ impl StorageBackend for PostgresService {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let status_json =
-            serde_json::to_value(&delta.status).map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let status_json = serde_json::to_value(&delta.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
 
         let new_delta = NewDelta {
             account_id: &delta.account_id,
@@ -544,8 +544,8 @@ impl StorageBackend for PostgresService {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let status_json =
-            serde_json::to_value(&status).map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let status_json = serde_json::to_value(&status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
 
         diesel::update(deltas::table)
             .filter(deltas::account_id.eq(account_id))

@@ -157,7 +157,6 @@ async fn test_push_delta_missing_auth_headers() {
             }
         },
         "initial_state": initial_state
-        "initial_state": initial_state
     });
 
     let configure_request = Request::builder()
