@@ -21,6 +21,15 @@ SKIP_BUILD=false
 CLUSTER_NAME="psm-cluster"
 ECR_REPO_NAME="psm-server"
 SERVICE_NAME="psm-server"
+POSTGRES_SERVICE_NAME="psm-postgres"
+POSTGRES_TASK_FAMILY="psm-postgres"
+POSTGRES_DB="${POSTGRES_DB:-psm}"
+POSTGRES_USER="${POSTGRES_USER:-psm}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-psm_dev_password}"
+SD_NAMESPACE_NAME="psm.local"
+SD_SERVICE_NAME="psm-postgres"
+LOG_GROUP_SERVER="/ecs/psm-server"
+LOG_GROUP_POSTGRES="/ecs/psm-postgres"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,25 +45,51 @@ get_aws_account_id() {
 }
 
 wait_for_service() {
-  log_info "Waiting for service to stabilize..."
-  local max_attempts=30
-  local attempt=0
-  while [ $attempt -lt $max_attempts ]; do
-    local running=$(aws ecs describe-services \
-      --cluster $CLUSTER_NAME \
-      --services $SERVICE_NAME \
-      --region $AWS_REGION \
-      --query 'services[0].runningCount' --output text 2>/dev/null)
-    if [ "$running" == "1" ]; then
-      log_info "Service is running"
-      return 0
-    fi
-    attempt=$((attempt + 1))
-    echo -n "."
-    sleep 10
-  done
+  local service_name="${1:-$SERVICE_NAME}"
+  log_info "Waiting for service to stabilize ($service_name)..."
+
+  if aws ecs wait services-stable \
+    --cluster $CLUSTER_NAME \
+    --services $service_name \
+    --region $AWS_REGION >/dev/null 2>&1; then
+    log_info "Service is stable"
+    return 0
+  fi
+
   log_error "Service failed to stabilize"
+  aws ecs describe-services \
+    --cluster $CLUSTER_NAME \
+    --services $service_name \
+    --region $AWS_REGION \
+    --query 'services[0].{status:status,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,deployments:deployments}' \
+    --output json 2>/dev/null || true
   return 1
+}
+
+cleanup_old_task_definitions() {
+  local family="$1"
+  local keep_count="${2:-3}"
+
+  log_info "Cleaning up old task definitions for $family (keeping last $keep_count)..."
+
+  local revisions=$(aws ecs list-task-definitions \
+    --family-prefix $family \
+    --sort DESC \
+    --region $AWS_REGION \
+    --query 'taskDefinitionArns' --output json 2>/dev/null)
+
+  local count=$(echo "$revisions" | jq length)
+  if [ "$count" -le "$keep_count" ]; then
+    log_info "No old task definitions to clean up"
+    return 0
+  fi
+
+  echo "$revisions" | jq -r ".[$keep_count:][]" | while read -r arn; do
+    local revision=$(echo "$arn" | grep -oE ':[0-9]+$' | tr -d ':')
+    log_info "Deregistering $family:$revision..."
+    aws ecs deregister-task-definition --task-definition "$arn" --region $AWS_REGION >/dev/null 2>&1 || true
+    aws ecs delete-task-definitions --task-definitions "$arn" --region $AWS_REGION >/dev/null 2>&1 || true
+  done
 }
 
 cmd_build_and_push() {
@@ -70,7 +105,7 @@ cmd_build_and_push() {
     docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
   log_info "Building Docker image..."
-  docker build --platform linux/amd64 -t psm-server .
+  docker build --platform linux/amd64 --no-cache -t psm-server .
 
   log_info "Tagging and pushing to ECR..."
   docker tag psm-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/psm-server:latest
@@ -109,7 +144,7 @@ cmd_create_task_definition() {
     --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy 2>/dev/null || true
 
   log_info "Creating CloudWatch log group..."
-  aws logs create-log-group --log-group-name /ecs/psm-server --region $AWS_REGION 2>/dev/null || \
+  aws logs create-log-group --log-group-name $LOG_GROUP_SERVER --region $AWS_REGION 2>/dev/null || \
     log_warn "Log group already exists"
 
   log_info "Registering task definition..."
@@ -131,12 +166,13 @@ cmd_create_task_definition() {
         {"containerPort": 50051, "protocol": "tcp"}
       ],
       "environment": [
-        {"name": "RUST_LOG", "value": "info"}
+        {"name": "RUST_LOG", "value": "info"},
+        {"name": "DATABASE_URL", "value": "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${SD_SERVICE_NAME}.${SD_NAMESPACE_NAME}:5432/${POSTGRES_DB}"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/psm-server",
+          "awslogs-group": "${LOG_GROUP_SERVER}",
           "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs"
         }
@@ -148,6 +184,150 @@ EOF
 
   aws ecs register-task-definition --cli-input-json file:///tmp/task-definition.json --region $AWS_REGION
   rm /tmp/task-definition.json
+}
+
+cmd_create_postgres_task_definition() {
+  local AWS_ACCOUNT_ID=$(get_aws_account_id)
+
+  log_info "Creating CloudWatch log group for Postgres..."
+  aws logs create-log-group --log-group-name $LOG_GROUP_POSTGRES --region $AWS_REGION 2>/dev/null || \
+    log_warn "Log group already exists"
+
+  log_info "Registering Postgres task definition..."
+  cat > /tmp/postgres-task-definition.json << EOF
+{
+  "family": "${POSTGRES_TASK_FAMILY}",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "${POSTGRES_SERVICE_NAME}",
+      "image": "postgres:16-alpine",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 5432, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "POSTGRES_USER", "value": "${POSTGRES_USER}"},
+        {"name": "POSTGRES_PASSWORD", "value": "${POSTGRES_PASSWORD}"},
+        {"name": "POSTGRES_DB", "value": "${POSTGRES_DB}"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "${LOG_GROUP_POSTGRES}",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+  aws ecs register-task-definition --cli-input-json file:///tmp/postgres-task-definition.json --region $AWS_REGION
+  rm /tmp/postgres-task-definition.json
+}
+
+cmd_create_service_discovery() {
+  local vpc_id="$1"
+
+  local namespace_id=$(aws servicediscovery list-namespaces \
+    --region $AWS_REGION \
+    --query "Namespaces[?Name=='${SD_NAMESPACE_NAME}'].Id" --output text 2>/dev/null)
+
+  if [ -z "$namespace_id" ] || [ "$namespace_id" == "None" ]; then
+    log_info "Creating Cloud Map namespace (${SD_NAMESPACE_NAME})..." >&2
+    local operation_id=$(aws servicediscovery create-private-dns-namespace \
+      --name $SD_NAMESPACE_NAME \
+      --vpc $vpc_id \
+      --region $AWS_REGION \
+      --query 'OperationId' --output text)
+
+    local status="PENDING"
+    local attempt=0
+    while [ "$status" != "SUCCESS" ] && [ $attempt -lt 30 ]; do
+      status=$(aws servicediscovery get-operation \
+        --operation-id $operation_id \
+        --region $AWS_REGION \
+        --query 'Operation.Status' --output text 2>/dev/null)
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+
+    namespace_id=$(aws servicediscovery list-namespaces \
+      --region $AWS_REGION \
+      --query "Namespaces[?Name=='${SD_NAMESPACE_NAME}'].Id" --output text 2>/dev/null)
+  fi
+
+  local service_arn=$(aws servicediscovery list-services \
+    --region $AWS_REGION \
+    --query "Services[?Name=='${SD_SERVICE_NAME}'].Arn" --output text 2>/dev/null)
+
+  if [ -z "$service_arn" ] || [ "$service_arn" == "None" ]; then
+    log_info "Creating Cloud Map service (${SD_SERVICE_NAME})..." >&2
+    service_arn=$(aws servicediscovery create-service \
+      --name $SD_SERVICE_NAME \
+      --dns-config "NamespaceId=${namespace_id},DnsRecords=[{Type=A,TTL=10}]" \
+      --health-check-custom-config FailureThreshold=1 \
+      --region $AWS_REGION \
+      --query 'Service.Arn' --output text)
+  fi
+
+  printf '%s' "$service_arn"
+}
+
+cmd_create_postgres_service() {
+  local subnet_id="$1"
+  local postgres_sg_id="$2"
+  local sd_service_arn="$3"
+
+  if [ -z "$subnet_id" ] || [ -z "$postgres_sg_id" ]; then
+    log_error "Missing subnet or security group id for Postgres service"
+    return 1
+  fi
+  if [[ "$postgres_sg_id" != sg-* ]]; then
+    log_error "Invalid Postgres security group id: $postgres_sg_id"
+    return 1
+  fi
+
+  local service_registries=""
+  if [ -n "$sd_service_arn" ] && [ "$sd_service_arn" != "None" ]; then
+    service_registries="--service-registries registryArn=$sd_service_arn"
+  else
+    log_warn "Cloud Map service not available; creating Postgres service without service discovery"
+  fi
+
+  local existing=$(aws ecs describe-services \
+    --cluster $CLUSTER_NAME \
+    --services $POSTGRES_SERVICE_NAME \
+    --region $AWS_REGION \
+    --query 'services[0].serviceName' --output text 2>/dev/null)
+
+  if [ "$existing" != "$POSTGRES_SERVICE_NAME" ]; then
+    log_info "Creating Postgres ECS service..."
+    aws ecs create-service \
+      --cluster $CLUSTER_NAME \
+      --service-name $POSTGRES_SERVICE_NAME \
+      --task-definition $POSTGRES_TASK_FAMILY \
+      --desired-count 1 \
+      --launch-type FARGATE \
+      --platform-version LATEST \
+      --region $AWS_REGION \
+      $service_registries \
+      --network-configuration "awsvpcConfiguration={subnets=[$subnet_id],securityGroups=[$postgres_sg_id],assignPublicIp=ENABLED}"
+  else
+    log_info "Postgres service already exists, updating..."
+    aws ecs update-service \
+      --cluster $CLUSTER_NAME \
+      --service $POSTGRES_SERVICE_NAME \
+      --task-definition $POSTGRES_TASK_FAMILY \
+      --force-new-deployment \
+      --region $AWS_REGION >/dev/null
+  fi
 }
 
 cmd_deploy() {
@@ -166,8 +346,9 @@ cmd_deploy() {
   local SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
     --query 'Subnets[0].SubnetId' --output text --region $AWS_REGION)
 
-  log_info "Creating security group..."
-  local SG_ID=$(aws ec2 create-security-group \
+  log_info "Creating security group for server..."
+  local SG_ID
+  SG_ID=$(aws ec2 create-security-group \
     --group-name psm-server-sg \
     --description "PSM server" \
     --vpc-id $VPC_ID \
@@ -177,12 +358,32 @@ cmd_deploy() {
       --filters "Name=group-name,Values=psm-server-sg" \
       --query 'SecurityGroups[0].GroupId' --output text)
 
+  log_info "Creating security group for Postgres..."
+  local PG_SG_ID
+  PG_SG_ID=$(aws ec2 create-security-group \
+    --group-name psm-postgres-sg \
+    --description "PSM postgres" \
+    --vpc-id $VPC_ID \
+    --region $AWS_REGION \
+    --query 'GroupId' --output text 2>/dev/null) || \
+    PG_SG_ID=$(aws ec2 describe-security-groups --region $AWS_REGION \
+      --filters "Name=group-name,Values=psm-postgres-sg" \
+      --query 'SecurityGroups[0].GroupId' --output text)
+
   # Allow traffic from anywhere (API Gateway uses public IPs)
   aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 3000 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
   aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 50051 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
 
+  # Allow server to access Postgres
+  aws ec2 authorize-security-group-ingress --group-id $PG_SG_ID --protocol tcp --port 5432 --source-group $SG_ID --region $AWS_REGION 2>/dev/null || true
+
+  cmd_create_postgres_task_definition
+  local SD_SERVICE_ARN=$(cmd_create_service_discovery $VPC_ID)
+  cmd_create_postgres_service $SUBNET_ID $PG_SG_ID $SD_SERVICE_ARN
+  wait_for_service $POSTGRES_SERVICE_NAME
+
   log_info "Creating ECS service..."
-  aws ecs create-service \
+  if aws ecs create-service \
     --cluster $CLUSTER_NAME \
     --service-name $SERVICE_NAME \
     --task-definition psm-server \
@@ -190,10 +391,19 @@ cmd_deploy() {
     --launch-type FARGATE \
     --platform-version LATEST \
     --region $AWS_REGION \
-    --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" 2>/dev/null || \
-    log_warn "Service already exists, updating..."
+    --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" 2>/dev/null; then
+    log_info "Service created"
+  else
+    log_info "Service already exists, updating to latest task definition..."
+    aws ecs update-service \
+      --cluster $CLUSTER_NAME \
+      --service $SERVICE_NAME \
+      --task-definition psm-server \
+      --force-new-deployment \
+      --region $AWS_REGION >/dev/null
+  fi
 
-  wait_for_service
+  wait_for_service $SERVICE_NAME
 
   # Get the task's public IP
   local TASK_ARN=$(aws ecs list-tasks \
@@ -287,6 +497,10 @@ cmd_deploy() {
     --region $AWS_REGION \
     --query 'ApiEndpoint' --output text)
 
+  # Clean up old task definitions
+  cleanup_old_task_definitions "psm-server"
+  cleanup_old_task_definitions "psm-postgres"
+
   echo ""
   log_info "Deployment complete!"
   echo ""
@@ -367,10 +581,12 @@ cmd_cleanup() {
     exit 0
   fi
 
-  log_info "Scaling down ECS service..."
+  log_info "Scaling down ECS services..."
+  aws ecs update-service --cluster $CLUSTER_NAME --service $POSTGRES_SERVICE_NAME --desired-count 0 --region $AWS_REGION 2>/dev/null || true
   aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --desired-count 0 --region $AWS_REGION 2>/dev/null || true
 
-  log_info "Deleting ECS service..."
+  log_info "Deleting ECS services..."
+  aws ecs delete-service --cluster $CLUSTER_NAME --service $POSTGRES_SERVICE_NAME --region $AWS_REGION 2>/dev/null || true
   aws ecs delete-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --region $AWS_REGION 2>/dev/null || true
 
   log_info "Waiting for service to stop..."
@@ -385,12 +601,18 @@ cmd_cleanup() {
     aws apigatewayv2 delete-api --api-id $API_ID --region $AWS_REGION 2>/dev/null || true
   fi
 
-  # Delete security group
+  # Delete security groups
+  local pg_sg_id=$(aws ec2 describe-security-groups --region $AWS_REGION \
+    --filters "Name=group-name,Values=psm-postgres-sg" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+  if [ -n "$pg_sg_id" ] && [ "$pg_sg_id" != "None" ]; then
+    aws ec2 delete-security-group --group-id $pg_sg_id --region $AWS_REGION 2>/dev/null || true
+  fi
+
   local sg_id=$(aws ec2 describe-security-groups --region $AWS_REGION \
     --filters "Name=group-name,Values=psm-server-sg" \
     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
   if [ -n "$sg_id" ] && [ "$sg_id" != "None" ]; then
-    log_info "Deleting security group..."
     aws ec2 delete-security-group --group-id $sg_id --region $AWS_REGION 2>/dev/null || true
   fi
 
@@ -400,8 +622,23 @@ cmd_cleanup() {
   log_info "Deleting ECR repository..."
   aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS_REGION 2>/dev/null || true
 
-  log_info "Deleting CloudWatch log group..."
-  aws logs delete-log-group --log-group-name /ecs/psm-server --region $AWS_REGION 2>/dev/null || true
+  log_info "Deleting CloudWatch log groups..."
+  aws logs delete-log-group --log-group-name $LOG_GROUP_SERVER --region $AWS_REGION 2>/dev/null || true
+  aws logs delete-log-group --log-group-name $LOG_GROUP_POSTGRES --region $AWS_REGION 2>/dev/null || true
+
+  log_info "Deleting Cloud Map service and namespace..."
+  local sd_service_id=$(aws servicediscovery list-services \
+    --region $AWS_REGION \
+    --query "Services[?Name=='${SD_SERVICE_NAME}'].Id" --output text 2>/dev/null)
+  if [ -n "$sd_service_id" ] && [ "$sd_service_id" != "None" ]; then
+    aws servicediscovery delete-service --id $sd_service_id --region $AWS_REGION 2>/dev/null || true
+  fi
+  local namespace_id=$(aws servicediscovery list-namespaces \
+    --region $AWS_REGION \
+    --query "Namespaces[?Name=='${SD_NAMESPACE_NAME}'].Id" --output text 2>/dev/null)
+  if [ -n "$namespace_id" ] && [ "$namespace_id" != "None" ]; then
+    aws servicediscovery delete-namespace --id $namespace_id --region $AWS_REGION 2>/dev/null || true
+  fi
 
   log_info "Cleanup complete!"
 }

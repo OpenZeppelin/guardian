@@ -78,8 +78,3 @@ curl https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/health
 curl https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/pubkey
 ```
 
-## Notes
-
-- **IP Changes**: If the ECS task restarts and gets a new IP, run `deploy --skip-build` to update the API Gateway
-- **Ephemeral Storage**: Data is lost when containers restart. For production, add EFS volumes
-- **Costs**: API Gateway, ECS Fargate, ECR, and CloudWatch all incur AWS charges

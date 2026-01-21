@@ -77,7 +77,7 @@ impl ServerBuilder {
 
     /// Set the storage backend
     ///
-    /// The server uses a single storage backend for all accounts.
+    /// The server uses a storage backend for accounts.
     ///
     /// # Example
     /// ```no_run
