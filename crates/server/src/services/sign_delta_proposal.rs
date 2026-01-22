@@ -256,7 +256,11 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig.clone(),
             },
-            credentials: Credentials::signature(signer_pubkey.clone(), signer_signature.clone(), signer_timestamp),
+            credentials: Credentials::signature(
+                signer_pubkey.clone(),
+                signer_signature.clone(),
+                signer_timestamp,
+            ),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -301,8 +305,12 @@ mod tests {
             crate::testing::helpers::generate_falcon_signature(&account_id);
         let (_first_signer_pubkey, first_signer_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (second_signer_pubkey, second_signer_commitment, second_signer_signature, second_signer_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let (
+            second_signer_pubkey,
+            second_signer_commitment,
+            second_signer_signature,
+            second_signer_timestamp,
+        ) = crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -460,8 +468,12 @@ mod tests {
 
         let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (unauthorized_pubkey, _unauthorized_commitment, unauthorized_signature, unauthorized_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let (
+            unauthorized_pubkey,
+            _unauthorized_commitment,
+            unauthorized_signature,
+            unauthorized_timestamp,
+        ) = crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -475,7 +487,11 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig,
             },
-            credentials: Credentials::signature(unauthorized_pubkey, unauthorized_signature, unauthorized_timestamp),
+            credentials: Credentials::signature(
+                unauthorized_pubkey,
+                unauthorized_signature,
+                unauthorized_timestamp,
+            ),
         };
 
         let result = sign_delta_proposal(&state, params).await;

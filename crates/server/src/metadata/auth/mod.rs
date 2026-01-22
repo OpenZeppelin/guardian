@@ -31,13 +31,14 @@ impl Auth {
             Auth::MidenFalconRpo {
                 cosigner_commitments,
             } => {
-                let (_pubkey, signature, timestamp) = credentials.as_signature().ok_or_else(|| {
-                    tracing::error!(
-                        account_id = %account_id,
-                        "MidenFalconRpo requires signature credentials but got different type"
-                    );
-                    "MidenFalconRpo requires signature credentials".to_string()
-                })?;
+                let (_pubkey, signature, timestamp) =
+                    credentials.as_signature().ok_or_else(|| {
+                        tracing::error!(
+                            account_id = %account_id,
+                            "MidenFalconRpo requires signature credentials but got different type"
+                        );
+                        "MidenFalconRpo requires signature credentials".to_string()
+                    })?;
 
                 miden_falcon_rpo::verify_request_signature(
                     account_id,

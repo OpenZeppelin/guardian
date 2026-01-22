@@ -471,7 +471,12 @@ mod tests {
         }
     }
 
-    fn create_request_with_auth<T>(req: T, pubkey: &str, signature: &str, timestamp: i64) -> Request<T> {
+    fn create_request_with_auth<T>(
+        req: T,
+        pubkey: &str,
+        signature: &str,
+        timestamp: i64,
+    ) -> Request<T> {
         let mut request = Request::new(req);
         request
             .metadata_mut()

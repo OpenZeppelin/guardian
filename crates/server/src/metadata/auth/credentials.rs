@@ -125,9 +125,7 @@ impl ExtractCredentials for tonic::metadata::MetadataMap {
             })?
             .parse::<i64>()
             .map_err(|_| {
-                tonic::Status::invalid_argument(
-                    "Invalid x-timestamp value: must be Unix timestamp",
-                )
+                tonic::Status::invalid_argument("Invalid x-timestamp value: must be Unix timestamp")
             })?;
 
         Ok(Credentials::signature(pubkey, signature, timestamp))

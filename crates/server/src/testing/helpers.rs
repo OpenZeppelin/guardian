@@ -380,7 +380,12 @@ pub fn generate_falcon_signature_with_timestamp(
 ) -> (String, String, String, i64) {
     let signer = TestSigner::new();
     let (signature_hex, timestamp) = signer.sign_with_timestamp(account_id_hex, timestamp);
-    (signer.pubkey_hex, signer.commitment_hex, signature_hex, timestamp)
+    (
+        signer.pubkey_hex,
+        signer.commitment_hex,
+        signature_hex,
+        timestamp,
+    )
 }
 
 /// Convenience function that generates a signature with current timestamp (milliseconds)

@@ -63,7 +63,10 @@ pub fn verify_request_signature(
 /// # Arguments
 /// * `account_id_hex` - The account ID in hex format (e.g., "0x1234...")
 /// * `timestamp` - Unix timestamp in milliseconds
-pub fn account_id_timestamp_to_digest(account_id_hex: &str, timestamp: i64) -> Result<Word, String> {
+pub fn account_id_timestamp_to_digest(
+    account_id_hex: &str,
+    timestamp: i64,
+) -> Result<Word, String> {
     let account_id = AccountId::from_hex(account_id_hex).map_err(|e| {
         tracing::error!(
             account_id = %account_id_hex,

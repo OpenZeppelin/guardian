@@ -84,7 +84,11 @@ async fn test_sign_delta_proposal() {
         signature: ProposalSignature::Falcon {
             signature: dummy_sig,
         },
-        credentials: Credentials::signature(pubkey2_hex.clone(), signature2_hex.clone(), timestamp2),
+        credentials: Credentials::signature(
+            pubkey2_hex.clone(),
+            signature2_hex.clone(),
+            timestamp2,
+        ),
     };
 
     let sign_result = sign_delta_proposal(&state, sign_params)
@@ -184,7 +188,11 @@ async fn test_multi_cosigner_signing_workflow() {
         signature: ProposalSignature::Falcon {
             signature: dummy_sig.clone(),
         },
-        credentials: Credentials::signature(pubkey2_hex.clone(), signature2_hex.clone(), timestamp2),
+        credentials: Credentials::signature(
+            pubkey2_hex.clone(),
+            signature2_hex.clone(),
+            timestamp2,
+        ),
     };
 
     let sign_result2 = sign_delta_proposal(&state, sign_params2)
@@ -206,7 +214,11 @@ async fn test_multi_cosigner_signing_workflow() {
         signature: ProposalSignature::Falcon {
             signature: dummy_sig,
         },
-        credentials: Credentials::signature(pubkey3_hex.clone(), signature3_hex.clone(), timestamp3),
+        credentials: Credentials::signature(
+            pubkey3_hex.clone(),
+            signature3_hex.clone(),
+            timestamp3,
+        ),
     };
 
     let sign_result3 = sign_delta_proposal(&state, sign_params3)

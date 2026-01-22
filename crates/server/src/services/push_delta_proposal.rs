@@ -261,7 +261,11 @@ mod tests {
             account_id: account_id.clone(),
             nonce: 1,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey.clone(), test_signature.clone(), test_timestamp),
+            credentials: Credentials::signature(
+                test_pubkey.clone(),
+                test_signature.clone(),
+                test_timestamp,
+            ),
         };
 
         let result = push_delta_proposal(&state, params).await;

@@ -285,8 +285,12 @@ mod tests {
 
         let (_authorized_pubkey, authorized_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (unauthorized_pubkey, _unauthorized_commitment, unauthorized_signature, unauthorized_ts) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let (
+            unauthorized_pubkey,
+            _unauthorized_commitment,
+            unauthorized_signature,
+            unauthorized_ts,
+        ) = crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -295,7 +299,11 @@ mod tests {
 
         let params = GetDeltaProposalsParams {
             account_id: account_id.clone(),
-            credentials: Credentials::signature(unauthorized_pubkey, unauthorized_signature, unauthorized_ts),
+            credentials: Credentials::signature(
+                unauthorized_pubkey,
+                unauthorized_signature,
+                unauthorized_ts,
+            ),
         };
 
         let result = get_delta_proposals(&state, params).await;

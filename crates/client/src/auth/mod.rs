@@ -2,7 +2,9 @@
 
 pub mod miden_falcon_rpo;
 
-pub use miden_falcon_rpo::{FalconRpoSigner, account_id_timestamp_to_word, verify_commitment_signature};
+pub use miden_falcon_rpo::{
+    FalconRpoSigner, account_id_timestamp_to_word, verify_commitment_signature,
+};
 use miden_objects::account::AccountId;
 
 /// Authentication provider for PSM requests.
@@ -25,7 +27,9 @@ impl Auth {
     /// Signs an account ID with a timestamp and returns the hex-encoded signature.
     pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
         match self {
-            Auth::FalconRpoSigner(signer) => signer.sign_account_id_with_timestamp(account_id, timestamp),
+            Auth::FalconRpoSigner(signer) => {
+                signer.sign_account_id_with_timestamp(account_id, timestamp)
+            }
         }
     }
 }

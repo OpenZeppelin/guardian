@@ -1,7 +1,6 @@
 use crate::testing::helpers::{
-    create_grpc_service, create_miden_falcon_rpo_auth, create_request_with_auth,
+    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_request_with_auth,
     create_test_app_state, load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
-    TestSigner,
 };
 use tonic::Request;
 
@@ -23,7 +22,9 @@ async fn test_grpc_push_delta_proposal_success() {
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -52,7 +53,12 @@ async fn test_grpc_push_delta_proposal_success() {
         delta_payload: serde_json::to_string(&delta_payload).unwrap(),
     };
 
-    let request = create_request_with_auth(push_proposal_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
+    let request = create_request_with_auth(
+        push_proposal_req,
+        &signer.pubkey_hex,
+        &signature_hex_2,
+        timestamp_2,
+    );
     let push_response = service.push_delta_proposal(request).await;
 
     assert!(
@@ -84,7 +90,9 @@ async fn test_grpc_get_delta_proposals_empty() {
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -104,7 +112,12 @@ async fn test_grpc_get_delta_proposals_empty() {
         account_id: account_id_hex,
     };
 
-    let request = create_request_with_auth(get_proposals_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
+    let request = create_request_with_auth(
+        get_proposals_req,
+        &signer.pubkey_hex,
+        &signature_hex_2,
+        timestamp_2,
+    );
     let get_response = service.get_delta_proposals(request).await;
 
     assert!(get_response.is_ok(), "Get delta proposals should succeed");
@@ -125,7 +138,9 @@ async fn test_grpc_get_delta_proposals_with_proposals() {
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -169,7 +184,12 @@ async fn test_grpc_get_delta_proposals_with_proposals() {
         account_id: account_id_hex,
     };
 
-    let request = create_request_with_auth(get_proposals_req, &signer.pubkey_hex, &signature_hex_3, timestamp_3);
+    let request = create_request_with_auth(
+        get_proposals_req,
+        &signer.pubkey_hex,
+        &signature_hex_3,
+        timestamp_3,
+    );
     let get_response = service.get_delta_proposals(request).await;
 
     assert!(get_response.is_ok());
@@ -195,7 +215,9 @@ async fn test_grpc_sign_delta_proposal_not_found() {
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -221,7 +243,12 @@ async fn test_grpc_sign_delta_proposal_not_found() {
         }),
     };
 
-    let request = create_request_with_auth(sign_proposal_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
+    let request = create_request_with_auth(
+        sign_proposal_req,
+        &signer.pubkey_hex,
+        &signature_hex_2,
+        timestamp_2,
+    );
     let sign_response = service.sign_delta_proposal(request).await;
 
     assert!(sign_response.is_ok(), "gRPC call should succeed");
@@ -252,7 +279,9 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
     // Configure account with ONLY the authorized commitment
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![authorized_signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            authorized_signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -279,8 +308,12 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
         delta_payload: serde_json::to_string(&delta_payload).unwrap(),
     };
 
-    let request =
-        create_request_with_auth(push_proposal_req, &unauthorized_signer.pubkey_hex, &unauthorized_sig, unauthorized_ts);
+    let request = create_request_with_auth(
+        push_proposal_req,
+        &unauthorized_signer.pubkey_hex,
+        &unauthorized_sig,
+        unauthorized_ts,
+    );
     let push_response = service.push_delta_proposal(request).await;
 
     assert!(push_response.is_ok(), "gRPC call should succeed");

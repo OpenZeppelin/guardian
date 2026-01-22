@@ -327,10 +327,11 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let (credential_pubkey_hex, _signature, _timestamp) = credential.as_signature().ok_or_else(|| {
-            tracing::error!("Invalid credential type - expected signature");
-            "Invalid credential type".to_string()
-        })?;
+        let (credential_pubkey_hex, _signature, _timestamp) =
+            credential.as_signature().ok_or_else(|| {
+                tracing::error!("Invalid credential type - expected signature");
+                "Invalid credential type".to_string()
+            })?;
 
         let pubkey_bytes = hex::decode(&credential_pubkey_hex[2..]).map_err(|e| {
             tracing::error!(

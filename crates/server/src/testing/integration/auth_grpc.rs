@@ -1,7 +1,6 @@
 use crate::testing::helpers::{
-    create_grpc_service, create_miden_falcon_rpo_auth, create_request_with_auth,
+    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_request_with_auth,
     create_test_app_state, load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
-    TestSigner,
 };
 use tonic::Request;
 
@@ -20,7 +19,9 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     // Step 1: Configure account with the cosigner commitment
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -45,7 +46,8 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
         delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
-    let request = create_request_with_auth(push_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
+    let request =
+        create_request_with_auth(push_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
     let push_response = service.push_delta(request).await;
 
     assert!(
@@ -76,7 +78,9 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     // Configure account with ONLY the authorized commitment
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![authorized_signer.commitment_hex.clone()])), // Only this key is authorized
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            authorized_signer.commitment_hex.clone(),
+        ])), // Only this key is authorized
         initial_state,
     };
 
@@ -133,7 +137,9 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -189,7 +195,9 @@ async fn test_grpc_get_delta_with_auth() {
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
         initial_state,
     };
 
@@ -230,7 +238,8 @@ async fn test_grpc_get_delta_with_auth() {
         nonce: 1,
     };
 
-    let request = create_request_with_auth(get_req, &signer.pubkey_hex, &signature_hex_3, timestamp_3);
+    let request =
+        create_request_with_auth(get_req, &signer.pubkey_hex, &signature_hex_3, timestamp_3);
     let get_response = service.get_delta(request).await;
 
     assert!(
@@ -238,7 +247,11 @@ async fn test_grpc_get_delta_with_auth() {
         "Get delta should succeed with valid auth"
     );
     let get_response = get_response.unwrap().into_inner();
-    assert!(get_response.success, "Get response should be successful: {}", get_response.message);
+    assert!(
+        get_response.success,
+        "Get response should be successful: {}",
+        get_response.message
+    );
     assert!(get_response.delta.is_some(), "Should return delta");
 
     let delta = get_response.delta.unwrap();
