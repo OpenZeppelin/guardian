@@ -131,3 +131,138 @@ impl ExtractCredentials for tonic::metadata::MetadataMap {
         Ok(Credentials::signature(pubkey, signature, timestamp))
     }
 }
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_credentials_signature_constructor() {
+        let creds =
+            Credentials::signature("pubkey123".to_string(), "sig456".to_string(), 1700000000000);
+
+        match creds {
+            Credentials::Signature {
+                pubkey,
+                signature,
+                timestamp,
+            } => {
+                assert_eq!(pubkey, "pubkey123");
+                assert_eq!(signature, "sig456");
+                assert_eq!(timestamp, 1700000000000);
+            }
+        }
+    }
+
+    #[test]
+    fn test_credentials_as_signature() {
+        let creds =
+            Credentials::signature("pubkey123".to_string(), "sig456".to_string(), 1700000000000);
+
+        let (pubkey, sig, ts) = creds.as_signature().expect("Should return Some");
+        assert_eq!(pubkey, "pubkey123");
+        assert_eq!(sig, "sig456");
+        assert_eq!(ts, 1700000000000);
+    }
+
+    #[test]
+    fn test_credentials_timestamp() {
+        let creds = Credentials::signature("pubkey".to_string(), "sig".to_string(), 1700000000000);
+
+        assert_eq!(creds.timestamp(), 1700000000000);
+    }
+
+    #[test]
+    fn test_extract_credentials_from_headers_success() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-pubkey", "0xpubkey".parse().unwrap());
+        headers.insert("x-signature", "0xsignature".parse().unwrap());
+        headers.insert("x-timestamp", "1700000000000".parse().unwrap());
+
+        let creds = headers.extract_credentials().expect("Should succeed");
+        let (pubkey, sig, ts) = creds.as_signature().unwrap();
+        assert_eq!(pubkey, "0xpubkey");
+        assert_eq!(sig, "0xsignature");
+        assert_eq!(ts, 1700000000000);
+    }
+
+    #[test]
+    fn test_extract_credentials_missing_pubkey() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-signature", "0xsignature".parse().unwrap());
+        headers.insert("x-timestamp", "1700000000000".parse().unwrap());
+
+        let result = headers.extract_credentials();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing x-pubkey"));
+    }
+
+    #[test]
+    fn test_extract_credentials_missing_signature() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-pubkey", "0xpubkey".parse().unwrap());
+        headers.insert("x-timestamp", "1700000000000".parse().unwrap());
+
+        let result = headers.extract_credentials();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing x-signature"));
+    }
+
+    #[test]
+    fn test_extract_credentials_missing_timestamp() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-pubkey", "0xpubkey".parse().unwrap());
+        headers.insert("x-signature", "0xsignature".parse().unwrap());
+
+        let result = headers.extract_credentials();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing x-timestamp"));
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_timestamp() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-pubkey", "0xpubkey".parse().unwrap());
+        headers.insert("x-signature", "0xsignature".parse().unwrap());
+        headers.insert("x-timestamp", "not-a-number".parse().unwrap());
+
+        let result = headers.extract_credentials();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid x-timestamp value"));
+    }
+
+    #[test]
+    fn test_extract_credentials_from_grpc_metadata_success() {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert("x-pubkey", "0xpubkey".parse().unwrap());
+        metadata.insert("x-signature", "0xsignature".parse().unwrap());
+        metadata.insert("x-timestamp", "1700000000000".parse().unwrap());
+
+        let creds = metadata.extract_credentials().expect("Should succeed");
+        let (pubkey, sig, ts) = creds.as_signature().unwrap();
+        assert_eq!(pubkey, "0xpubkey");
+        assert_eq!(sig, "0xsignature");
+        assert_eq!(ts, 1700000000000);
+    }
+
+    #[test]
+    fn test_extract_credentials_from_grpc_missing_pubkey() {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert("x-signature", "0xsignature".parse().unwrap());
+        metadata.insert("x-timestamp", "1700000000000".parse().unwrap());
+
+        let result = metadata.extract_credentials();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_credentials_from_grpc_invalid_timestamp() {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert("x-pubkey", "0xpubkey".parse().unwrap());
+        metadata.insert("x-signature", "0xsignature".parse().unwrap());
+        metadata.insert("x-timestamp", "not-a-number".parse().unwrap());
+
+        let result = metadata.extract_credentials();
+        assert!(result.is_err());
+    }
+}
