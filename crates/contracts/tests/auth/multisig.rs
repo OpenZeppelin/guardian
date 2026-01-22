@@ -11,8 +11,8 @@ use miden_objects::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATA
 use miden_objects::transaction::OutputNote;
 use miden_objects::vm::{AdviceInputs, AdviceMap};
 use miden_objects::{Felt, Hasher, Word};
-use miden_testing::MockChainBuilder;
 use miden_testing::utils::create_spawn_note;
+use miden_testing::{MockChainBuilder, TxContextInput};
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use rand::SeedableRng;
@@ -188,7 +188,11 @@ async fn test_multisig_2_of_2_with_note_creation_with_psm() -> anyhow::Result<()
 
     // Execute transaction without signatures - should fail
     let tx_context_init = mock_chain
-        .build_tx_context(multisig_account.id(), &[input_note.id()], &[])?
+        .build_tx_context(
+            TxContextInput::Account(multisig_account.clone()),
+            &[input_note.id()],
+            &[],
+        )?
         .extend_expected_output_notes(vec![OutputNote::Full(output_note.clone())])
         .auth_args(salt)
         .build()?;
@@ -216,7 +220,11 @@ async fn test_multisig_2_of_2_with_note_creation_with_psm() -> anyhow::Result<()
 
     // Execute transaction with signatures - should succeed
     let tx_context_execute = mock_chain
-        .build_tx_context(multisig_account.id(), &[input_note.id()], &[])?
+        .build_tx_context(
+            TxContextInput::Account(multisig_account.clone()),
+            &[input_note.id()],
+            &[],
+        )?
         .extend_expected_output_notes(vec![OutputNote::Full(output_note)])
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
@@ -326,7 +334,7 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init = mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])?
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script.clone())
         .tx_script_args(tx_script_args)
         .extend_advice_inputs(advice_inputs.clone())
@@ -355,7 +363,7 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
 
     // Execute transaction with signatures - should succeed
     let update_approvers_tx = mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])?
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script)
         .tx_script_args(multisig_config_hash)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
@@ -455,7 +463,11 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init_new = new_mock_chain
-        .build_tx_context(updated_multisig_account.id(), &[input_note_new.id()], &[])?
+        .build_tx_context(
+            TxContextInput::Account(updated_multisig_account.clone()),
+            &[input_note_new.id()],
+            &[],
+        )?
         .extend_expected_output_notes(vec![OutputNote::Full(output_note.clone())])
         .auth_args(salt_new)
         .build()?;
@@ -487,7 +499,11 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
 
     // Execute transaction with new signatures - should succeed
     let tx_context_execute_new = new_mock_chain
-        .build_tx_context(updated_multisig_account.id(), &[input_note_new.id()], &[])?
+        .build_tx_context(
+            TxContextInput::Account(updated_multisig_account.clone()),
+            &[input_note_new.id()],
+            &[],
+        )?
         .extend_expected_output_notes(vec![OutputNote::Full(output_note_new)])
         .add_signature(new_public_keys[0].clone().into(), msg_new, sig_1_new)
         .add_signature(new_public_keys[1].clone().into(), msg_new, sig_2_new)
@@ -589,7 +605,7 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init = mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])?
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script.clone())
         .extend_advice_inputs(advice_inputs.clone())
         .auth_args(salt)
@@ -613,7 +629,7 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 
     // Execute transaction with signatures without a need of the PSM signature! - should succeed
     let update_psm_public_key_tx = mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])?
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
@@ -681,7 +697,11 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init_new = new_mock_chain
-        .build_tx_context(updated_multisig_account.id(), &[input_note_new.id()], &[])?
+        .build_tx_context(
+            TxContextInput::Account(updated_multisig_account.clone()),
+            &[input_note_new.id()],
+            &[],
+        )?
         .extend_expected_output_notes(vec![OutputNote::Full(output_note.clone())])
         .auth_args(salt_new)
         .build()?;
@@ -716,7 +736,11 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
     // Execute transaction with new psm public key - should succeed
     // ================================================================================
     let tx_context_execute_new = new_mock_chain
-        .build_tx_context(updated_multisig_account.id(), &[input_note_new.id()], &[])?
+        .build_tx_context(
+            TxContextInput::Account(updated_multisig_account.clone()),
+            &[input_note_new.id()],
+            &[],
+        )?
         .extend_expected_output_notes(vec![OutputNote::Full(output_note_new)])
         .add_signature(public_keys[0].clone().into(), msg_new, sig_1_new)
         .add_signature(public_keys[1].clone().into(), msg_new, sig_2_new)
