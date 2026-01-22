@@ -105,6 +105,7 @@ pub async fn configure_account(
         created_at: account_state.created_at.clone(),
         updated_at: account_state.updated_at.clone(),
         has_pending_candidate: false,
+        last_auth_timestamp: None,
     };
 
     state.metadata.set(metadata_entry).await.map_err(|e| {
@@ -159,7 +160,8 @@ mod tests {
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(account_id_hex);
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
@@ -175,7 +177,7 @@ mod tests {
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
 
-        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex);
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
         let params = ConfigureAccountParams {
             account_id: account_id_hex.to_string(),
@@ -206,7 +208,8 @@ mod tests {
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(account_id_hex);
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
 
         let existing_metadata = AccountMetadata {
             account_id: account_id_hex.to_string(),
@@ -216,6 +219,7 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
+            last_auth_timestamp: None,
         };
 
         let network_client = MockNetworkClient::new();
@@ -224,7 +228,7 @@ mod tests {
 
         let state = create_test_app_state(network_client, storage_backend, metadata_store);
 
-        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex);
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
         let params = ConfigureAccountParams {
             account_id: account_id_hex.to_string(),
@@ -249,7 +253,8 @@ mod tests {
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(account_id_hex);
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
@@ -260,7 +265,7 @@ mod tests {
 
         let state = create_test_app_state(network_client, storage_backend, metadata_store);
 
-        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex);
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
         let params = ConfigureAccountParams {
             account_id: account_id_hex.to_string(),

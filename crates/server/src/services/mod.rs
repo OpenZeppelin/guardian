@@ -1,6 +1,6 @@
 use crate::error::{PsmError, Result};
 use crate::metadata::AccountMetadata;
-use crate::metadata::auth::Credentials;
+use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use std::sync::Arc;
@@ -61,6 +61,24 @@ pub async fn resolve_account(
         })?
         .ok_or_else(|| PsmError::AccountNotFound(account_id.to_string()))?;
 
+    let request_timestamp = creds.timestamp();
+    let server_now_ms = state.clock.now().timestamp_millis();
+    let time_diff_ms = (server_now_ms - request_timestamp).abs();
+    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS {
+        tracing::warn!(
+            account_id = %account_id,
+            request_timestamp = %request_timestamp,
+            server_now_ms = %server_now_ms,
+            time_diff_ms = %time_diff_ms,
+            max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
+            "Request timestamp outside allowed skew window"
+        );
+        return Err(PsmError::AuthenticationFailed(format!(
+            "Request timestamp outside allowed window: {}ms drift (max {}ms)",
+            time_diff_ms, MAX_TIMESTAMP_SKEW_MS
+        )));
+    }
+
     metadata.auth.verify(account_id, creds).map_err(|e| {
         tracing::warn!(
             account_id = %account_id,
@@ -69,6 +87,32 @@ pub async fn resolve_account(
         );
         PsmError::AuthenticationFailed(e)
     })?;
+
+    // Atomically check and update the last auth timestamp for replay protection
+    let now_str = state.clock.now_rfc3339();
+    let updated = state
+        .metadata
+        .update_last_auth_timestamp_cas(account_id, request_timestamp, &now_str)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to update last auth timestamp"
+            );
+            PsmError::StorageError(format!("Failed to update last auth timestamp: {e}"))
+        })?;
+
+    if !updated {
+        tracing::warn!(
+            account_id = %account_id,
+            request_timestamp = %request_timestamp,
+            "Replay attack detected: timestamp not greater than last seen (CAS failed)"
+        );
+        return Err(PsmError::AuthenticationFailed(
+            "Replay attack detected: timestamp must be greater than previous request".to_string(),
+        ));
+    }
 
     let storage = state.storage.clone();
 

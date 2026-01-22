@@ -1,7 +1,9 @@
-use crate::testing::helpers::*;
 use crate::testing::helpers::{
-    load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
+    create_grpc_service, create_miden_falcon_rpo_auth, create_request_with_auth,
+    create_test_app_state, load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
+    TestSigner,
 };
+use tonic::Request;
 
 use crate::api::grpc::state_manager::state_manager_server::StateManager;
 use crate::api::grpc::state_manager::{ConfigureRequest, GetDeltaRequest, PushDeltaRequest};
@@ -12,26 +14,29 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     let service = create_grpc_service(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
+    let signer = TestSigner::new();
+    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Step 1: Configure account with the cosigner commitment
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
         initial_state,
     };
 
     let configure_response = service
         .configure(create_request_with_auth(
             configure_req,
-            &pubkey_hex,
+            &signer.pubkey_hex,
             &signature_hex,
+            timestamp,
         ))
         .await;
     assert!(configure_response.is_ok(), "Configure should succeed");
     assert!(configure_response.unwrap().into_inner().success);
 
     // Step 2: Push a delta with authentication metadata
+    let (signature_hex_2, timestamp_2) = signer.sign(&account_id_hex);
     let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
         account_id: delta_1["account_id"].as_str().unwrap().to_string(),
@@ -40,7 +45,7 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
         delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
-    let request = create_request_with_auth(push_req, &pubkey_hex, &signature_hex);
+    let request = create_request_with_auth(push_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
     let push_response = service.push_delta(request).await;
 
     assert!(
@@ -63,22 +68,24 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
 
     // Generate two different key pairs
-    let (authorized_pubkey, authorized_commitment, authorized_sig) =
-        generate_falcon_signature(&account_id_hex);
-    let (unauthorized_pubkey, _, unauthorized_sig) = generate_falcon_signature(&account_id_hex);
+    let authorized_signer = TestSigner::new();
+    let (authorized_sig, authorized_ts) = authorized_signer.sign(&account_id_hex);
+    let unauthorized_signer = TestSigner::new();
+    let (unauthorized_sig, unauthorized_ts) = unauthorized_signer.sign(&account_id_hex);
 
     // Configure account with ONLY the authorized commitment
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![authorized_commitment])), // Only this key is authorized
+        auth: Some(create_miden_falcon_rpo_auth(vec![authorized_signer.commitment_hex.clone()])), // Only this key is authorized
         initial_state,
     };
 
     let configure_response = service
         .configure(create_request_with_auth(
             configure_req,
-            &authorized_pubkey,
+            &authorized_signer.pubkey_hex,
             &authorized_sig,
+            authorized_ts,
         ))
         .await;
     assert!(configure_response.is_ok());
@@ -93,7 +100,12 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
         delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
-    let request = create_request_with_auth(push_req, &unauthorized_pubkey, &unauthorized_sig);
+    let request = create_request_with_auth(
+        push_req,
+        &unauthorized_signer.pubkey_hex,
+        &unauthorized_sig,
+        unauthorized_ts,
+    );
     let push_response = service.push_delta(request).await;
 
     // Should succeed as a gRPC call but return failure in response
@@ -115,20 +127,22 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
     let service = create_grpc_service(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
+    let signer = TestSigner::new();
+    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
         initial_state,
     };
 
     let configure_response = service
         .configure(create_request_with_auth(
             configure_req,
-            &pubkey_hex,
+            &signer.pubkey_hex,
             &signature_hex,
+            timestamp,
         ))
         .await;
     assert!(configure_response.is_ok());
@@ -156,7 +170,9 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
         "Should be InvalidArgument error"
     );
     assert!(
-        error.message().contains("x-pubkey") || error.message().contains("x-signature"),
+        error.message().contains("x-pubkey")
+            || error.message().contains("x-signature")
+            || error.message().contains("x-timestamp"),
         "Error should mention missing metadata"
     );
 }
@@ -167,25 +183,28 @@ async fn test_grpc_get_delta_with_auth() {
     let service = create_grpc_service(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
+    let signer = TestSigner::new();
+    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Configure account
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![commitment_hex.clone()])),
+        auth: Some(create_miden_falcon_rpo_auth(vec![signer.commitment_hex.clone()])),
         initial_state,
     };
 
     service
         .configure(create_request_with_auth(
             configure_req,
-            &pubkey_hex,
+            &signer.pubkey_hex,
             &signature_hex,
+            timestamp,
         ))
         .await
         .unwrap();
 
-    // Push a delta (nonce 1)
+    // Push a delta (nonce 1) - need fresh signature with new timestamp
+    let (signature_hex_2, timestamp_2) = signer.sign(&account_id_hex);
     let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
         account_id: delta_1["account_id"].as_str().unwrap().to_string(),
@@ -197,19 +216,21 @@ async fn test_grpc_get_delta_with_auth() {
     service
         .push_delta(create_request_with_auth(
             push_req,
-            &pubkey_hex,
-            &signature_hex,
+            &signer.pubkey_hex,
+            &signature_hex_2,
+            timestamp_2,
         ))
         .await
         .unwrap();
 
-    // Get specific delta by nonce
+    // Get specific delta by nonce - need fresh signature with new timestamp
+    let (signature_hex_3, timestamp_3) = signer.sign(&account_id_hex);
     let get_req = GetDeltaRequest {
         account_id: account_id_hex,
         nonce: 1,
     };
 
-    let request = create_request_with_auth(get_req, &pubkey_hex, &signature_hex);
+    let request = create_request_with_auth(get_req, &signer.pubkey_hex, &signature_hex_3, timestamp_3);
     let get_response = service.get_delta(request).await;
 
     assert!(
@@ -217,7 +238,7 @@ async fn test_grpc_get_delta_with_auth() {
         "Get delta should succeed with valid auth"
     );
     let get_response = get_response.unwrap().into_inner();
-    assert!(get_response.success, "Get response should be successful");
+    assert!(get_response.success, "Get response should be successful: {}", get_response.message);
     assert!(get_response.delta.is_some(), "Should return delta");
 
     let delta = get_response.delta.unwrap();

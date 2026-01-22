@@ -10,6 +10,7 @@ use crate::state::AppState;
 use crate::storage::StorageBackend;
 use crate::storage::filesystem::FilesystemService;
 use async_trait::async_trait;
+use chrono::Utc;
 use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
 use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 use miden_objects::crypto::hash::rpo::Rpo256;
@@ -186,7 +187,12 @@ pub fn create_grpc_service(state: AppState) -> StateManagerService {
     StateManagerService { app_state: state }
 }
 
-pub fn create_request_with_auth<T>(payload: T, pubkey: &str, sig: &str) -> Request<T> {
+pub fn create_request_with_auth<T>(
+    payload: T,
+    pubkey: &str,
+    sig: &str,
+    timestamp: i64,
+) -> Request<T> {
     let mut request = Request::new(payload);
     let metadata = request.metadata_mut();
 
@@ -197,6 +203,10 @@ pub fn create_request_with_auth<T>(payload: T, pubkey: &str, sig: &str) -> Reque
     metadata.insert(
         "x-signature",
         MetadataValue::try_from(sig).expect("Valid sig metadata"),
+    );
+    metadata.insert(
+        "x-timestamp",
+        MetadataValue::try_from(timestamp.to_string()).expect("Valid timestamp metadata"),
     );
 
     request
@@ -297,31 +307,86 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
     tx_summary.to_json()
 }
 
-pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String) {
-    let secret_key = SecretKey::new();
-    let public_key = secret_key.public_key();
+/// A test signer that can be reused to sign multiple messages with the same keypair
+/// Tracks the last used timestamp to prevent replay attack detection in tests
+pub struct TestSigner {
+    secret_key: SecretKey,
+    pub pubkey_hex: String,
+    pub commitment_hex: String,
+    last_timestamp: std::cell::Cell<i64>,
+}
 
-    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
-    let account_id_felts: [Felt; 2] = account_id.into();
+impl Default for TestSigner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    let message_elements = vec![
-        account_id_felts[0],
-        account_id_felts[1],
-        Felt::ZERO,
-        Felt::ZERO,
-    ];
+impl TestSigner {
+    pub fn new() -> Self {
+        let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
+        let commitment = public_key.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let pubkey_hex = public_key.into_hex();
+        Self {
+            secret_key,
+            pubkey_hex,
+            commitment_hex,
+            last_timestamp: std::cell::Cell::new(0),
+        }
+    }
 
-    let digest = Rpo256::hash_elements(&message_elements);
-    let message: Word = digest;
+    /// Sign an account ID with an auto-incrementing timestamp
+    /// Ensures each call returns a timestamp greater than the previous one
+    /// Returns (signature_hex, timestamp_ms)
+    pub fn sign(&self, account_id_hex: &str) -> (String, i64) {
+        let current = Utc::now().timestamp_millis();
+        let last = self.last_timestamp.get();
+        let timestamp = if current <= last { last + 1 } else { current };
+        self.last_timestamp.set(timestamp);
+        self.sign_with_timestamp(account_id_hex, timestamp)
+    }
 
-    let signature = secret_key.sign(message);
+    /// Sign an account ID with a specific timestamp
+    /// Returns (signature_hex, timestamp)
+    pub fn sign_with_timestamp(&self, account_id_hex: &str, timestamp: i64) -> (String, i64) {
+        let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+        let account_id_felts: [Felt; 2] = account_id.into();
 
-    let commitment = public_key.to_commitment();
-    let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
-    let pubkey_hex = public_key.into_hex();
-    let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+        let timestamp_felt = Felt::new(timestamp as u64);
+        let message_elements = vec![
+            account_id_felts[0],
+            account_id_felts[1],
+            timestamp_felt,
+            Felt::ZERO,
+        ];
 
-    (pubkey_hex, commitment_hex, signature_hex)
+        let digest = Rpo256::hash_elements(&message_elements);
+        let message: Word = digest;
+
+        let signature = self.secret_key.sign(message);
+        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+
+        (signature_hex, timestamp)
+    }
+}
+
+/// Generates a Falcon signature for replay-resistant authentication.
+/// Returns (pubkey_hex, commitment_hex, signature_hex, timestamp)
+pub fn generate_falcon_signature_with_timestamp(
+    account_id_hex: &str,
+    timestamp: i64,
+) -> (String, String, String, i64) {
+    let signer = TestSigner::new();
+    let (signature_hex, timestamp) = signer.sign_with_timestamp(account_id_hex, timestamp);
+    (signer.pubkey_hex, signer.commitment_hex, signature_hex, timestamp)
+}
+
+/// Convenience function that generates a signature with current timestamp (milliseconds)
+pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String, i64) {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    generate_falcon_signature_with_timestamp(account_id_hex, timestamp)
 }
 
 pub fn pubkey_hex_to_commitment_hex(pubkey_hex: &str) -> String {

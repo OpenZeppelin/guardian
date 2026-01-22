@@ -42,6 +42,7 @@ struct MetadataRow {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
+    last_auth_timestamp: Option<i64>,
 }
 
 // Insertable struct for writing to database
@@ -53,6 +54,7 @@ struct NewMetadata<'a> {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
+    last_auth_timestamp: Option<i64>,
 }
 
 impl TryFrom<MetadataRow> for AccountMetadata {
@@ -68,6 +70,7 @@ impl TryFrom<MetadataRow> for AccountMetadata {
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
             has_pending_candidate: row.has_pending_candidate,
+            last_auth_timestamp: row.last_auth_timestamp,
         })
     }
 }
@@ -120,6 +123,7 @@ impl MetadataStore for PostgresMetadataStore {
             created_at,
             updated_at,
             has_pending_candidate: metadata.has_pending_candidate,
+            last_auth_timestamp: metadata.last_auth_timestamp,
         };
 
         diesel::insert_into(account_metadata::table)
@@ -130,6 +134,7 @@ impl MetadataStore for PostgresMetadataStore {
                 account_metadata::auth.eq(&auth_json),
                 account_metadata::updated_at.eq(updated_at),
                 account_metadata::has_pending_candidate.eq(metadata.has_pending_candidate),
+                account_metadata::last_auth_timestamp.eq(metadata.last_auth_timestamp),
             ))
             .execute(&mut conn)
             .await
@@ -169,5 +174,41 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to list accounts with pending candidates: {e}"))?;
 
         Ok(rows)
+    }
+
+    /// Atomically update last_auth_timestamp using compare-and-swap.
+    async fn update_last_auth_timestamp_cas(
+        &self,
+        account_id: &str,
+        new_timestamp: i64,
+        now: &str,
+    ) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let updated_at: chrono::DateTime<chrono::Utc> = now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+
+        // Atomic CAS: only update if new_timestamp > current (or current is NULL)
+        let rows_updated = diesel::update(account_metadata::table)
+            .filter(account_metadata::account_id.eq(account_id))
+            .filter(
+                account_metadata::last_auth_timestamp
+                    .is_null()
+                    .or(account_metadata::last_auth_timestamp.lt(new_timestamp)),
+            )
+            .set((
+                account_metadata::last_auth_timestamp.eq(Some(new_timestamp)),
+                account_metadata::updated_at.eq(updated_at),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
+
+        Ok(rows_updated > 0)
     }
 }

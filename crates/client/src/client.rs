@@ -9,6 +9,7 @@ use crate::proto::{
     PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
     SignDeltaProposalResponse,
 };
+use chrono::Utc;
 use miden_objects::account::AccountId;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::metadata::MetadataValue;
@@ -63,17 +64,23 @@ impl PsmClient {
     ) -> ClientResult<()> {
         if let Some(auth) = &self.auth {
             let pubkey_hex = auth.public_key_hex();
-            let signature_hex = auth.sign_account_id(account_id);
+            let timestamp = Utc::now().timestamp_millis();
+            let signature_hex = auth.sign_account_id_with_timestamp(account_id, timestamp);
 
             let pubkey_metadata = MetadataValue::try_from(&pubkey_hex)
                 .map_err(|e| ClientError::InvalidResponse(format!("Invalid pubkey: {e}")))?;
             let signature_metadata = MetadataValue::try_from(&signature_hex)
                 .map_err(|e| ClientError::InvalidResponse(format!("Invalid signature: {e}")))?;
+            let timestamp_metadata = MetadataValue::try_from(timestamp.to_string())
+                .map_err(|e| ClientError::InvalidResponse(format!("Invalid timestamp: {e}")))?;
 
             request.metadata_mut().insert("x-pubkey", pubkey_metadata);
             request
                 .metadata_mut()
                 .insert("x-signature", signature_metadata);
+            request
+                .metadata_mut()
+                .insert("x-timestamp", timestamp_metadata);
         }
         Ok(())
     }

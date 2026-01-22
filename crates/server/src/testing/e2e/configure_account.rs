@@ -17,7 +17,8 @@ async fn test_configure_account_with_real_miden_account() {
         .expect("Missing account_id")
         .to_string();
 
-    let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(&account_id);
+    let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+        generate_falcon_signature(&account_id);
 
     let params = ConfigureAccountParams {
         account_id: account_id.clone(),
@@ -25,7 +26,7 @@ async fn test_configure_account_with_real_miden_account() {
             cosigner_commitments: vec![commitment_hex.clone()],
         },
         initial_state: account_json.clone(),
-        credential: Credentials::signature(pubkey_hex, signature_hex),
+        credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
     };
 
     let result = configure_account(&state, params).await;

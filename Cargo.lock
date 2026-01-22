@@ -3535,6 +3535,7 @@ dependencies = [
 name = "private-state-manager-client"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "hex",
  "miden-keystore",
  "miden-lib 0.12.4",

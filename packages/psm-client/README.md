@@ -35,7 +35,8 @@ import type { Signer } from '@openzeppelin/psm-client';
 const signer: Signer = {
   commitment: '0x...', // 64 hex chars
   publicKey: '0x...',  // Full public key hex
-  signAccountId: (accountId: string) => '0x...', // Returns signature hex
+  // Sign account ID with timestamp (milliseconds) for replay-resistant auth
+  signAccountIdWithTimestamp: (accountId: string, timestamp: number) => '0x...', // Returns signature hex
   signCommitment: (commitmentHex: string) => '0x...', // Returns signature hex
 };
 

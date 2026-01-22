@@ -1,6 +1,9 @@
 use crate::error::PsmError;
 use axum::{extract::FromRequestParts, http::request::Parts};
 
+/// Maximum allowed clock skew in milliseconds between client and server timestamps
+pub const MAX_TIMESTAMP_SKEW_MS: i64 = 300_000; // 5 minutes in milliseconds
+
 /// Trait for extracting authentication credentials from request metadata
 /// Implemented by HTTP headers and gRPC metadata
 pub trait ExtractCredentials {
@@ -13,19 +16,37 @@ pub trait ExtractCredentials {
 /// Authentication credentials enum - extensible for different auth methods
 #[derive(Debug, Clone)]
 pub enum Credentials {
-    /// Public key signature-based authentication
+    /// Public key signature-based authentication with timestamp
     /// Used for cryptographic signature verification (e.g., Falcon, ECDSA, etc.)
-    Signature { pubkey: String, signature: String },
+    Signature {
+        pubkey: String,
+        signature: String,
+        timestamp: i64,
+    },
 }
 
 impl Credentials {
-    pub fn signature(pubkey: String, signature: String) -> Self {
-        Self::Signature { pubkey, signature }
+    pub fn signature(pubkey: String, signature: String, timestamp: i64) -> Self {
+        Self::Signature {
+            pubkey,
+            signature,
+            timestamp,
+        }
     }
 
-    pub fn as_signature(&self) -> Option<(&str, &str)> {
+    pub fn as_signature(&self) -> Option<(&str, &str, i64)> {
         match self {
-            Self::Signature { pubkey, signature } => Some((pubkey, signature)),
+            Self::Signature {
+                pubkey,
+                signature,
+                timestamp,
+            } => Some((pubkey, signature, *timestamp)),
+        }
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Signature { timestamp, .. } => *timestamp,
         }
     }
 }
@@ -66,7 +87,15 @@ impl ExtractCredentials for axum::http::HeaderMap {
             .map_err(|_| "Invalid x-signature header".to_string())?
             .to_string();
 
-        Ok(Credentials::signature(pubkey, signature))
+        let timestamp = self
+            .get("x-timestamp")
+            .ok_or_else(|| "Missing x-timestamp header".to_string())?
+            .to_str()
+            .map_err(|_| "Invalid x-timestamp header".to_string())?
+            .parse::<i64>()
+            .map_err(|_| "Invalid x-timestamp value: must be Unix timestamp".to_string())?;
+
+        Ok(Credentials::signature(pubkey, signature, timestamp))
     }
 }
 
@@ -88,6 +117,19 @@ impl ExtractCredentials for tonic::metadata::MetadataMap {
             })?
             .to_string();
 
-        Ok(Credentials::signature(pubkey, signature))
+        let timestamp = self
+            .get("x-timestamp")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                tonic::Status::invalid_argument("Missing or invalid x-timestamp metadata")
+            })?
+            .parse::<i64>()
+            .map_err(|_| {
+                tonic::Status::invalid_argument(
+                    "Invalid x-timestamp value: must be Unix timestamp",
+                )
+            })?;
+
+        Ok(Credentials::signature(pubkey, signature, timestamp))
     }
 }

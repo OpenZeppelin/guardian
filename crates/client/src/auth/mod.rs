@@ -2,7 +2,7 @@
 
 pub mod miden_falcon_rpo;
 
-pub use miden_falcon_rpo::{FalconRpoSigner, verify_commitment_signature};
+pub use miden_falcon_rpo::{FalconRpoSigner, account_id_timestamp_to_word, verify_commitment_signature};
 use miden_objects::account::AccountId;
 
 /// Authentication provider for PSM requests.
@@ -22,10 +22,10 @@ impl Auth {
         }
     }
 
-    /// Signs an account ID and returns the hex-encoded signature.
-    pub fn sign_account_id(&self, account_id: &AccountId) -> String {
+    /// Signs an account ID with a timestamp and returns the hex-encoded signature.
+    pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
         match self {
-            Auth::FalconRpoSigner(signer) => signer.sign_account_id(account_id),
+            Auth::FalconRpoSigner(signer) => signer.sign_account_id_with_timestamp(account_id, timestamp),
         }
     }
 }
@@ -33,19 +33,20 @@ impl Auth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::miden_falcon_rpo::IntoWord;
+    use crate::auth::miden_falcon_rpo::account_id_timestamp_to_word;
     use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
     use miden_objects::crypto::dsa::rpo_falcon512::Signature;
     use miden_objects::utils::Deserializable;
 
     #[test]
-    fn test_auth_enum_falcon_signer() {
+    fn test_auth_enum_falcon_signer_with_timestamp() {
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
         let auth = Auth::FalconRpoSigner(FalconRpoSigner::new(secret_key));
 
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
-        let signature_hex = auth.sign_account_id(&account_id);
+        let timestamp: i64 = 1700000000;
+        let signature_hex = auth.sign_account_id_with_timestamp(&account_id, timestamp);
 
         assert!(signature_hex.starts_with("0x"));
 
@@ -53,7 +54,7 @@ mod tests {
         let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
 
-        let message = account_id.into_word();
+        let message = account_id_timestamp_to_word(account_id, timestamp);
 
         // Verify signature with public key
         assert!(

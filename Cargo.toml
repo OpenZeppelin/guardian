@@ -57,6 +57,7 @@ anyhow = { version = "1.0", features = ["backtrace", "std"] }
 assert_matches = "1.5"
 rstest = "0.26"
 futures = "0.3"
+chrono = "0.4"
 
 # Miden
 miden-objects = "0.12.4"

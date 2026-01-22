@@ -16,6 +16,8 @@ pub struct AccountMetadata {
     pub created_at: String,
     pub updated_at: String,
     pub has_pending_candidate: bool,
+    #[serde(default)]
+    pub last_auth_timestamp: Option<i64>,
 }
 
 /// Metadata store trait for managing account metadata
@@ -71,4 +73,16 @@ pub trait MetadataStore: Send + Sync {
 
     /// List all account IDs that have pending candidates
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
+
+    /// Atomically update the last authentication timestamp for replay protection.
+    ///
+    /// Uses compare-and-swap semantics: only updates if the new timestamp is strictly
+    /// greater than the current stored timestamp. Returns Ok(true) if updated,
+    /// Ok(false) if the timestamp was not greater (potential replay), or Err on failure.
+    async fn update_last_auth_timestamp_cas(
+        &self,
+        account_id: &str,
+        new_timestamp: i64,
+        now: &str,
+    ) -> Result<bool, String>;
 }
