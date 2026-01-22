@@ -2,7 +2,13 @@
 export interface Signer {
   readonly commitment: string;
   readonly publicKey: string;
-  signAccountId(accountId: string): string;
+  /**
+   * Signs an account ID with a timestamp.
+   * @param accountId - The account ID to sign
+   * @param timestamp - Unix timestamp in milliseconds (use Date.now())
+   * @returns Hex-encoded signature
+   */
+  signAccountIdWithTimestamp(accountId: string, timestamp: number): string;
   signCommitment(commitmentHex: string): string;
 }
 

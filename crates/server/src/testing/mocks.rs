@@ -460,6 +460,7 @@ pub struct MockMetadataStore {
     pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
     pub list_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub list_with_pending_candidates_responses: Arc<StdMutex<Vec<ListResult>>>,
+    pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
 }
 
 impl MockMetadataStore {
@@ -496,6 +497,14 @@ impl MockMetadataStore {
         self
     }
 
+    pub fn with_update_timestamp_cas(self, response: StdResult<bool, String>) -> Self {
+        self.update_timestamp_cas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn get_get_calls(&self) -> Vec<String> {
         self.get_calls.lock().unwrap().clone()
     }
@@ -512,11 +521,19 @@ impl MetadataStore for MockMetadataStore {
         account_id: &str,
     ) -> StdResult<Option<crate::metadata::AccountMetadata>, String> {
         self.get_calls.lock().unwrap().push(account_id.to_string());
-        self.get_responses.lock().unwrap().pop().unwrap_or(Ok(None))
+        let mut responses = self.get_responses.lock().unwrap();
+        // Return cloned last response if multiple calls expected, otherwise pop
+        if responses.len() > 1 {
+            responses.pop().unwrap_or(Ok(None))
+        } else {
+            // Clone the last response to allow multiple gets without consuming
+            responses.last().cloned().unwrap_or(Ok(None))
+        }
     }
 
     async fn set(&self, metadata: crate::metadata::AccountMetadata) -> StdResult<(), String> {
         self.set_calls.lock().unwrap().push(metadata);
+        // Always allow set operations by default
         self.set_responses.lock().unwrap().pop().unwrap_or(Ok(()))
     }
 
@@ -534,5 +551,18 @@ impl MetadataStore for MockMetadataStore {
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn update_last_auth_timestamp_cas(
+        &self,
+        _account_id: &str,
+        _new_timestamp: i64,
+        _now: &str,
+    ) -> StdResult<bool, String> {
+        self.update_timestamp_cas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true)) // Default to success
     }
 }

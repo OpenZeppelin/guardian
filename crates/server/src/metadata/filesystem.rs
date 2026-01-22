@@ -111,4 +111,29 @@ impl MetadataStore for FilesystemMetadataStore {
             .map(|(k, _)| k.clone())
             .collect())
     }
+
+    async fn update_last_auth_timestamp_cas(
+        &self,
+        account_id: &str,
+        new_timestamp: i64,
+        now: &str,
+    ) -> Result<bool, String> {
+        let mut cache = self.cache.write().await;
+
+        let metadata = cache
+            .get_mut(account_id)
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+        if let Some(current) = metadata.last_auth_timestamp
+            && new_timestamp <= current
+        {
+            return Ok(false); // Potential replay, don't update
+        }
+
+        metadata.last_auth_timestamp = Some(new_timestamp);
+        metadata.updated_at = now.to_string();
+
+        self.persist(&cache).await?;
+        Ok(true)
+    }
 }

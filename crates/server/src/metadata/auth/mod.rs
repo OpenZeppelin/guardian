@@ -5,7 +5,7 @@ use crate::metadata::MetadataStore;
 mod credentials;
 mod miden_falcon_rpo;
 
-pub use credentials::{AuthHeader, Credentials, ExtractCredentials};
+pub use credentials::{AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP_SKEW_MS};
 
 /// Authentication and authorization handler
 /// Defines which signature scheme to use and handles verification
@@ -19,24 +19,30 @@ pub enum Auth {
 impl Auth {
     /// Verify credentials are authorized for account
     ///
+    /// This verifies:
+    /// 1. The signature is valid for the account_id + timestamp payload
+    /// 2. The signer's commitment is in the authorized list
+    ///
     /// # Arguments
     /// * `account_id` - The account ID
-    /// * `credentials` - The credentials to verify
+    /// * `credentials` - The credentials to verify (includes timestamp)
     pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<(), String> {
         match self {
             Auth::MidenFalconRpo {
                 cosigner_commitments,
             } => {
-                let (_pubkey, signature) = credentials.as_signature().ok_or_else(|| {
-                    tracing::error!(
-                        account_id = %account_id,
-                        "MidenFalconRpo requires signature credentials but got different type"
-                    );
-                    "MidenFalconRpo requires signature credentials".to_string()
-                })?;
+                let (_pubkey, signature, timestamp) =
+                    credentials.as_signature().ok_or_else(|| {
+                        tracing::error!(
+                            account_id = %account_id,
+                            "MidenFalconRpo requires signature credentials but got different type"
+                        );
+                        "MidenFalconRpo requires signature credentials".to_string()
+                    })?;
 
                 miden_falcon_rpo::verify_request_signature(
                     account_id,
+                    timestamp,
                     cosigner_commitments,
                     signature,
                 )

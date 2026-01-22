@@ -21,6 +21,7 @@ prost = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 miden-rpc-client = { path = "../miden-rpc-client" }

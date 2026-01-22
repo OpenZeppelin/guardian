@@ -205,6 +205,7 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
+            last_auth_timestamp: None,
         }
     }
 
@@ -234,7 +235,7 @@ mod tests {
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
         // Generate valid Falcon signature
-        let (test_pubkey, test_commitment_hex, test_signature) =
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -260,7 +261,11 @@ mod tests {
             account_id: account_id.clone(),
             nonce: 1,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey.clone(), test_signature.clone()),
+            credentials: Credentials::signature(
+                test_pubkey.clone(),
+                test_signature.clone(),
+                test_timestamp,
+            ),
         };
 
         let result = push_delta_proposal(&state, params).await;
@@ -300,9 +305,9 @@ mod tests {
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
         // Generate valid Falcon signatures for two cosigners
-        let (test_pubkey, test_commitment_hex, test_signature) =
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (_, cosigner_commitment, _) =
+        let (_, cosigner_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -337,7 +342,7 @@ mod tests {
             account_id,
             nonce: 1,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey, test_signature),
+            credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
         };
 
         let result = push_delta_proposal(&state, params).await.unwrap();
@@ -363,7 +368,7 @@ mod tests {
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
 
-        let (test_pubkey, test_commitment_hex, test_signature) =
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -385,7 +390,7 @@ mod tests {
             account_id,
             nonce: 1,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey, test_signature),
+            credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
         };
 
         let result = push_delta_proposal(&state, params).await;
@@ -408,7 +413,7 @@ mod tests {
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
 
-        let (test_pubkey, test_commitment_hex, test_signature) =
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -433,7 +438,7 @@ mod tests {
             account_id,
             nonce: 1,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey, test_signature),
+            credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
         };
 
         let result = push_delta_proposal(&state, params).await;
@@ -455,7 +460,7 @@ mod tests {
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
 
-        let (test_pubkey, test_commitment_hex, test_signature) =
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -474,7 +479,7 @@ mod tests {
             account_id: account_id.clone(),
             nonce: 1,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey, test_signature),
+            credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
         };
 
         let result = push_delta_proposal(&state, params).await;
@@ -499,7 +504,7 @@ mod tests {
 
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
-        let (test_pubkey, test_commitment_hex, test_signature) =
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -539,7 +544,7 @@ mod tests {
             account_id: account_id.clone(),
             nonce: 2,
             delta_payload,
-            credentials: Credentials::signature(test_pubkey, test_signature),
+            credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
         };
 
         let result = push_delta_proposal(&state, params).await;

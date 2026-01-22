@@ -31,12 +31,28 @@ impl FalconRpoSigner {
         (&self.public_key).into_hex()
     }
 
-    /// Signs an account ID and returns the hex-encoded signature.
-    pub fn sign_account_id(&self, account_id: &AccountId) -> String {
-        let message = account_id.into_word();
+    /// Signs an account ID with a timestamp and returns the hex-encoded signature.
+    pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
+        let message = account_id_timestamp_to_word(*account_id, timestamp);
         let signature = self.secret_key.sign(message);
         signature.into_hex()
     }
+}
+
+/// Converts an account ID and timestamp to a Word for signing.
+pub fn account_id_timestamp_to_word(account_id: AccountId, timestamp: i64) -> Word {
+    let account_id_felts: [Felt; 2] = account_id.into();
+
+    let timestamp_felt = Felt::new(timestamp as u64);
+
+    let message_elements = vec![
+        account_id_felts[0],
+        account_id_felts[1],
+        timestamp_felt,
+        Felt::ZERO,
+    ];
+
+    Rpo256::hash_elements(&message_elements)
 }
 
 /// Trait for converting types to a [`Word`] for signing.
@@ -47,7 +63,7 @@ pub trait IntoWord {
 
 impl IntoWord for AccountId {
     fn into_word(self) -> Word {
-        let account_id_felts: [Felt; 2] = (self).into();
+        let account_id_felts: [Felt; 2] = self.into();
 
         let message_elements = vec![
             account_id_felts[0],
@@ -116,7 +132,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_falcon_signer_creates_valid_signature() {
+    fn test_falcon_signer_creates_valid_signature_with_timestamp() {
         use miden_objects::utils::Deserializable;
 
         let secret_key = SecretKey::new();
@@ -124,7 +140,8 @@ mod tests {
         let signer = FalconRpoSigner::new(secret_key);
 
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
-        let signature_hex = signer.sign_account_id(&account_id);
+        let timestamp: i64 = 1700000000;
+        let signature_hex = signer.sign_account_id_with_timestamp(&account_id, timestamp);
 
         // Verify signature format
         assert!(signature_hex.starts_with("0x"));
@@ -133,13 +150,38 @@ mod tests {
         let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
 
-        // Create the message digest that was signed (using the same method as sign_account_id)
-        let message = account_id.into_word();
+        // Create the message digest that was signed
+        let message = account_id_timestamp_to_word(account_id, timestamp);
 
         // Verify signature with public key
         assert!(
             public_key.verify(message, &signature),
             "Signature verification failed"
+        );
+    }
+
+    #[test]
+    fn test_signature_fails_with_wrong_timestamp() {
+        use miden_objects::utils::Deserializable;
+
+        let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
+        let signer = FalconRpoSigner::new(secret_key);
+
+        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let timestamp1: i64 = 1700000000;
+        let timestamp2: i64 = 1700000001;
+        let signature_hex = signer.sign_account_id_with_timestamp(&account_id, timestamp1);
+
+        let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
+        let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
+
+        // Try to verify with wrong timestamp - should fail
+        let wrong_message = account_id_timestamp_to_word(account_id, timestamp2);
+
+        assert!(
+            !public_key.verify(wrong_message, &signature),
+            "Signature verification should fail with wrong timestamp"
         );
     }
 
@@ -166,7 +208,8 @@ mod tests {
     fn test_signature_from_hex_roundtrip() {
         let secret_key = SecretKey::new();
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
-        let message = account_id.into_word();
+        let timestamp: i64 = 1700000000;
+        let message = account_id_timestamp_to_word(account_id, timestamp);
         let original_sig = secret_key.sign(message);
 
         // Convert to hex

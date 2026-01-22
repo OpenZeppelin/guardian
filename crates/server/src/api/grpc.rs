@@ -453,6 +453,7 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
+            last_auth_timestamp: None,
         }
     }
 
@@ -470,7 +471,12 @@ mod tests {
         }
     }
 
-    fn create_request_with_auth<T>(req: T, pubkey: &str, signature: &str) -> Request<T> {
+    fn create_request_with_auth<T>(
+        req: T,
+        pubkey: &str,
+        signature: &str,
+        timestamp: i64,
+    ) -> Request<T> {
         let mut request = Request::new(req);
         request
             .metadata_mut()
@@ -478,6 +484,9 @@ mod tests {
         request
             .metadata_mut()
             .insert("x-signature", signature.parse().unwrap());
+        request
+            .metadata_mut()
+            .insert("x-timestamp", timestamp.to_string().parse().unwrap());
         request
     }
 
@@ -504,7 +513,7 @@ mod tests {
         let service = create_service(state);
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
@@ -520,7 +529,7 @@ mod tests {
             initial_state: serde_json::to_string(&account_json).unwrap(),
         };
 
-        let request = create_request_with_auth(request, &pubkey, &signature);
+        let request = create_request_with_auth(request, &pubkey, &signature, timestamp);
         let response = service.configure(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -535,16 +544,22 @@ mod tests {
         let service = create_service(state);
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
 
-        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
-            account_id.clone(),
-            vec![commitment],
-        ))));
+        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        let _metadata = metadata
+            .with_get(Ok(Some(create_account_metadata(
+                account_id.clone(),
+                vec![commitment.clone()],
+            ))))
+            .with_get(Ok(Some(create_account_metadata(
+                account_id.clone(),
+                vec![commitment],
+            ))));
 
         let _storage = storage.with_pull_state(Ok(create_state_object(
             account_id.clone(),
@@ -562,7 +577,7 @@ mod tests {
             .unwrap(),
         };
 
-        let request = create_request_with_auth(request, &pubkey, &signature);
+        let request = create_request_with_auth(request, &pubkey, &signature, timestamp);
         let response = service.push_delta_proposal(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -578,7 +593,7 @@ mod tests {
         let service = create_service(state);
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
@@ -599,7 +614,7 @@ mod tests {
             delta_payload: serde_json::to_string(&serde_json::json!({"signatures": []})).unwrap(),
         };
 
-        let request = create_request_with_auth(request, &pubkey, &signature);
+        let request = create_request_with_auth(request, &pubkey, &signature, timestamp);
         let response = service.push_delta_proposal(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -612,12 +627,18 @@ mod tests {
         let service = create_service(state);
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
 
-        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
-            account_id.clone(),
-            vec![commitment.clone()],
-        ))));
+        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        let _metadata = metadata
+            .with_get(Ok(Some(create_account_metadata(
+                account_id.clone(),
+                vec![commitment.clone()],
+            ))))
+            .with_get(Ok(Some(create_account_metadata(
+                account_id.clone(),
+                vec![commitment.clone()],
+            ))));
 
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
@@ -636,7 +657,7 @@ mod tests {
 
         let request = state_manager::GetDeltaProposalsRequest { account_id };
 
-        let request = create_request_with_auth(request, &pubkey, &signature);
+        let request = create_request_with_auth(request, &pubkey, &signature, timestamp);
         let response = service.get_delta_proposals(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -650,18 +671,24 @@ mod tests {
         let service = create_service(state);
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
 
-        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
-            account_id.clone(),
-            vec![commitment],
-        ))));
+        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        let _metadata = metadata
+            .with_get(Ok(Some(create_account_metadata(
+                account_id.clone(),
+                vec![commitment.clone()],
+            ))))
+            .with_get(Ok(Some(create_account_metadata(
+                account_id.clone(),
+                vec![commitment],
+            ))));
 
         let _storage = storage.with_pull_all_delta_proposals(Ok(vec![]));
 
         let request = state_manager::GetDeltaProposalsRequest { account_id };
 
-        let request = create_request_with_auth(request, &pubkey, &signature);
+        let request = create_request_with_auth(request, &pubkey, &signature, timestamp);
         let response = service.get_delta_proposals(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -675,7 +702,7 @@ mod tests {
         let service = create_service(state);
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature) = generate_falcon_signature(&account_id);
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -694,7 +721,7 @@ mod tests {
             }),
         };
 
-        let request = create_request_with_auth(request, &pubkey, &signature);
+        let request = create_request_with_auth(request, &pubkey, &signature, timestamp);
         let response = service.sign_delta_proposal(request).await.unwrap();
         let inner = response.into_inner();
 

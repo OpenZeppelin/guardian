@@ -181,7 +181,8 @@ export class PsmHttpClient {
       throw new Error('No signer configured. Call setSigner() first.');
     }
 
-    const signature = this.signer.signAccountId(accountId);
+    const timestamp = Date.now();
+    const signature = this.signer.signAccountIdWithTimestamp(accountId, timestamp);
 
     return this.fetch(path, {
       ...init,
@@ -189,6 +190,7 @@ export class PsmHttpClient {
         ...init.headers,
         'x-pubkey': this.signer.publicKey,
         'x-signature': signature,
+        'x-timestamp': timestamp.toString(),
       },
     });
   }

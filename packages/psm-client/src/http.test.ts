@@ -10,7 +10,7 @@ vi.stubGlobal('fetch', mockFetch);
 const mockSigner: Signer = {
   commitment: '0x' + '1'.repeat(64),
   publicKey: '0x' + '2'.repeat(64),
-  signAccountId: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
+  signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
   signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
 };
 

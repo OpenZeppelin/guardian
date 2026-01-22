@@ -402,7 +402,7 @@ await multisig.executeProposal(signedProposal.id);
 |-----------------|-------------|
 | `commitment` | Public key commitment (hex) |
 | `publicKey` | Serialized public key (hex) |
-| `signAccountId(id)` | Sign account ID for auth |
+| `signAccountIdWithTimestamp(id, timestamp)` | Sign account ID with timestamp (ms) for auth |
 | `signCommitment(hex)` | Sign commitment/word |
 
 #### AccountInspector

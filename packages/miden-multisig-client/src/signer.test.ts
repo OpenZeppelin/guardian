@@ -71,26 +71,38 @@ describe('FalconSigner', () => {
     });
   });
 
-  describe('signAccountId', () => {
+  describe('signAccountIdWithTimestamp', () => {
     it('handles account ID with 0x prefix', () => {
-      const signature = signer.signAccountId('0x' + 'a'.repeat(30));
+      const signature = signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
     it('handles account ID without 0x prefix', () => {
-      const signature = signer.signAccountId('a'.repeat(30));
+      const signature = signer.signAccountIdWithTimestamp('a'.repeat(30), 1700000000);
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
     it('calls sign method with hashed digest', () => {
-      signer.signAccountId('0x' + 'a'.repeat(30));
+      signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(mockSecretKey.sign).toHaveBeenCalled();
     });
 
     it('returns signature without first byte', () => {
       // Signature serialized is [0, 1, 2, ...9], slice(1) returns [1, 2, ...9]
-      const signature = signer.signAccountId('0x' + 'a'.repeat(30));
+      const signature = signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(signature).toBe('0x010203040506070809');
+    });
+
+    it('includes timestamp in signed payload', async () => {
+      const { Felt, FeltArray } = await import('@demox-labs/miden-sdk');
+      signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+      // Verify FeltArray was called with timestamp in the third position
+      expect(FeltArray).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.anything(), // prefix
+        expect.anything(), // suffix
+        expect.anything(), // timestamp
+        expect.anything(), // zero padding
+      ]));
     });
   });
 

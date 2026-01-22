@@ -34,19 +34,22 @@ export class FalconSigner implements Signer {
   }
 
   /**
-   * Signs an account ID for request authentication.
-   * The server verifies this signature to authorize the request.
+   * Signs an account ID with a timestamp.
+   * @param accountId - The account ID to sign
+   * @param timestamp - Unix timestamp in milliseconds (use Date.now())
+   * @returns Hex-encoded Falcon signature
    */
-  signAccountId(accountId: string): string {
+  signAccountIdWithTimestamp(accountId: string, timestamp: number): string {
     // Parse the account ID from hex
     const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
     const parsedAccountId = AccountId.fromHex(paddedHex);
     const prefix = parsedAccountId.prefix();
     const suffix = parsedAccountId.suffix();
+
     const feltArray = new FeltArray([
       prefix,
       suffix,
-      new Felt(BigInt(0)),
+      new Felt(BigInt(timestamp)),
       new Felt(BigInt(0)),
     ]);
 

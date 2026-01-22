@@ -1,6 +1,5 @@
 use crate::testing::helpers::{
-    create_router, create_test_app_state, generate_falcon_signature, load_fixture_account,
-    load_fixture_delta,
+    TestSigner, create_router, create_test_app_state, load_fixture_account, load_fixture_delta,
 };
 
 use axum::{
@@ -16,14 +15,15 @@ async fn test_configure_and_push_delta_with_auth() {
     let app = create_router(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
+    let signer = TestSigner::new();
+    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Step 1: Configure account with the cosigner commitment
     let configure_body = json!({
         "account_id": account_id_hex,
         "auth": {
             "MidenFalconRpo": {
-                "cosigner_commitments": [commitment_hex]
+                "cosigner_commitments": [signer.commitment_hex]
             }
         },
         "initial_state": initial_state
@@ -33,8 +33,9 @@ async fn test_configure_and_push_delta_with_auth() {
         .uri("/configure")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-pubkey", &pubkey_hex)
+        .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", &signature_hex)
+        .header("x-timestamp", timestamp.to_string())
         .body(Body::from(serde_json::to_string(&configure_body).unwrap()))
         .unwrap();
 
@@ -46,6 +47,8 @@ async fn test_configure_and_push_delta_with_auth() {
         StatusCode::OK,
         "Configure should succeed"
     );
+
+    let (signature_hex_2, timestamp_2) = signer.sign(&account_id_hex);
 
     let delta_1 = load_fixture_delta(1);
     let delta_body = json!({
@@ -59,8 +62,9 @@ async fn test_configure_and_push_delta_with_auth() {
         .uri("/push_delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-pubkey", pubkey_hex)
-        .header("x-signature", signature_hex)
+        .header("x-pubkey", &signer.pubkey_hex)
+        .header("x-signature", signature_hex_2)
+        .header("x-timestamp", timestamp_2.to_string())
         .body(Body::from(serde_json::to_string(&delta_body).unwrap()))
         .unwrap();
 
@@ -82,16 +86,17 @@ async fn test_push_delta_unauthorized_cosigner() {
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
 
     // Generate two different key pairs
-    let (authorized_pubkey, authorized_commitment, authorized_sig) =
-        generate_falcon_signature(&account_id_hex);
-    let (unauthorized_pubkey, _, unauthorized_sig) = generate_falcon_signature(&account_id_hex);
+    let authorized_signer = TestSigner::new();
+    let (authorized_sig, authorized_ts) = authorized_signer.sign(&account_id_hex);
+    let unauthorized_signer = TestSigner::new();
+    let (unauthorized_sig, unauthorized_ts) = unauthorized_signer.sign(&account_id_hex);
 
     // Configure account with ONLY the authorized commitment
     let configure_body = json!({
         "account_id": account_id_hex,
         "auth": {
             "MidenFalconRpo": {
-                "cosigner_commitments": [authorized_commitment] // Only this commitment is authorized
+                "cosigner_commitments": [authorized_signer.commitment_hex] // Only this commitment is authorized
             }
         },
         "initial_state": initial_state
@@ -101,8 +106,9 @@ async fn test_push_delta_unauthorized_cosigner() {
         .uri("/configure")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-pubkey", &authorized_pubkey)
+        .header("x-pubkey", &authorized_signer.pubkey_hex)
         .header("x-signature", &authorized_sig)
+        .header("x-timestamp", authorized_ts.to_string())
         .body(Body::from(serde_json::to_string(&configure_body).unwrap()))
         .unwrap();
 
@@ -124,8 +130,9 @@ async fn test_push_delta_unauthorized_cosigner() {
         .uri("/push_delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-pubkey", unauthorized_pubkey)
+        .header("x-pubkey", &unauthorized_signer.pubkey_hex)
         .header("x-signature", unauthorized_sig)
+        .header("x-timestamp", unauthorized_ts.to_string())
         .body(Body::from(serde_json::to_string(&delta_body).unwrap()))
         .unwrap();
 
@@ -146,14 +153,15 @@ async fn test_push_delta_missing_auth_headers() {
     let app = create_router(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let (pubkey_hex, commitment_hex, signature_hex) = generate_falcon_signature(&account_id_hex);
+    let signer = TestSigner::new();
+    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Configure account
     let configure_body = json!({
         "account_id": account_id_hex,
         "auth": {
             "MidenFalconRpo": {
-                "cosigner_commitments": [commitment_hex]
+                "cosigner_commitments": [signer.commitment_hex]
             }
         },
         "initial_state": initial_state
@@ -163,8 +171,9 @@ async fn test_push_delta_missing_auth_headers() {
         .uri("/configure")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-pubkey", &pubkey_hex)
+        .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", &signature_hex)
+        .header("x-timestamp", timestamp.to_string())
         .body(Body::from(serde_json::to_string(&configure_body).unwrap()))
         .unwrap();
 

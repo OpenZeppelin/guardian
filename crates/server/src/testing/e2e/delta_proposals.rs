@@ -23,8 +23,10 @@ async fn test_sign_delta_proposal() {
         .to_string();
 
     // Generate two different cosigner keys
-    let (pubkey1_hex, commitment1_hex, signature1_hex) = generate_falcon_signature(&account_id);
-    let (pubkey2_hex, commitment2_hex, signature2_hex) = generate_falcon_signature(&account_id);
+    let (pubkey1_hex, commitment1_hex, signature1_hex, timestamp1) =
+        generate_falcon_signature(&account_id);
+    let (pubkey2_hex, commitment2_hex, signature2_hex, timestamp2) =
+        generate_falcon_signature(&account_id);
 
     // Configure account with two cosigners
     let configure_params = ConfigureAccountParams {
@@ -33,7 +35,7 @@ async fn test_sign_delta_proposal() {
             cosigner_commitments: vec![commitment1_hex.clone(), commitment2_hex.clone()],
         },
         initial_state: account_json.clone(),
-        credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone(), timestamp1),
     };
 
     configure_account(&state, configure_params)
@@ -50,11 +52,12 @@ async fn test_sign_delta_proposal() {
     });
 
     // Create delta proposal with first cosigner
+    let (_, _, signature1_hex_2, timestamp1_2) = generate_falcon_signature(&account_id);
     let proposal_params = PushDeltaProposalParams {
         account_id: account_id.clone(),
         nonce: 1,
         delta_payload,
-        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex_2, timestamp1_2),
     };
 
     let proposal_result = push_delta_proposal(&state, proposal_params)
@@ -81,7 +84,11 @@ async fn test_sign_delta_proposal() {
         signature: ProposalSignature::Falcon {
             signature: dummy_sig,
         },
-        credentials: Credentials::signature(pubkey2_hex.clone(), signature2_hex.clone()),
+        credentials: Credentials::signature(
+            pubkey2_hex.clone(),
+            signature2_hex.clone(),
+            timestamp2,
+        ),
     };
 
     let sign_result = sign_delta_proposal(&state, sign_params)
@@ -116,9 +123,12 @@ async fn test_multi_cosigner_signing_workflow() {
         .to_string();
 
     // Generate three different cosigner keys
-    let (pubkey1_hex, commitment1_hex, signature1_hex) = generate_falcon_signature(&account_id);
-    let (pubkey2_hex, commitment2_hex, signature2_hex) = generate_falcon_signature(&account_id);
-    let (pubkey3_hex, commitment3_hex, signature3_hex) = generate_falcon_signature(&account_id);
+    let (pubkey1_hex, commitment1_hex, signature1_hex, timestamp1) =
+        generate_falcon_signature(&account_id);
+    let (pubkey2_hex, commitment2_hex, signature2_hex, timestamp2) =
+        generate_falcon_signature(&account_id);
+    let (pubkey3_hex, commitment3_hex, signature3_hex, timestamp3) =
+        generate_falcon_signature(&account_id);
 
     // Configure account with three cosigners
     let configure_params = ConfigureAccountParams {
@@ -131,7 +141,7 @@ async fn test_multi_cosigner_signing_workflow() {
             ],
         },
         initial_state: account_json.clone(),
-        credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone(), timestamp1),
     };
 
     configure_account(&state, configure_params)
@@ -148,11 +158,12 @@ async fn test_multi_cosigner_signing_workflow() {
     });
 
     // Cosigner 1 creates proposal
+    let (_, _, signature1_hex_2, timestamp1_2) = generate_falcon_signature(&account_id);
     let proposal_params = PushDeltaProposalParams {
         account_id: account_id.clone(),
         nonce: 1,
         delta_payload,
-        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex_2, timestamp1_2),
     };
 
     let proposal_result = push_delta_proposal(&state, proposal_params)
@@ -177,7 +188,11 @@ async fn test_multi_cosigner_signing_workflow() {
         signature: ProposalSignature::Falcon {
             signature: dummy_sig.clone(),
         },
-        credentials: Credentials::signature(pubkey2_hex.clone(), signature2_hex.clone()),
+        credentials: Credentials::signature(
+            pubkey2_hex.clone(),
+            signature2_hex.clone(),
+            timestamp2,
+        ),
     };
 
     let sign_result2 = sign_delta_proposal(&state, sign_params2)
@@ -199,7 +214,11 @@ async fn test_multi_cosigner_signing_workflow() {
         signature: ProposalSignature::Falcon {
             signature: dummy_sig,
         },
-        credentials: Credentials::signature(pubkey3_hex.clone(), signature3_hex.clone()),
+        credentials: Credentials::signature(
+            pubkey3_hex.clone(),
+            signature3_hex.clone(),
+            timestamp3,
+        ),
     };
 
     let sign_result3 = sign_delta_proposal(&state, sign_params3)
@@ -218,9 +237,10 @@ async fn test_multi_cosigner_signing_workflow() {
     }
 
     // Verify all proposals are returned
+    let (_, _, signature1_hex_3, timestamp1_3) = generate_falcon_signature(&account_id);
     let get_proposals_params = GetDeltaProposalsParams {
         account_id: account_id.clone(),
-        credentials: Credentials::signature(pubkey1_hex, signature1_hex),
+        credentials: Credentials::signature(pubkey1_hex, signature1_hex_3, timestamp1_3),
     };
 
     let proposals_result = get_delta_proposals(&state, get_proposals_params)
@@ -256,7 +276,8 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
         .expect("Missing account_id")
         .to_string();
 
-    let (pubkey1_hex, commitment1_hex, signature1_hex) = generate_falcon_signature(&account_id);
+    let (pubkey1_hex, commitment1_hex, signature1_hex, timestamp1) =
+        generate_falcon_signature(&account_id);
 
     // Configure account
     let configure_params = ConfigureAccountParams {
@@ -265,7 +286,7 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
             cosigner_commitments: vec![commitment1_hex.clone()],
         },
         initial_state: account_json.clone(),
-        credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credential: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone(), timestamp1),
     };
 
     configure_account(&state, configure_params)
@@ -282,11 +303,12 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
     });
 
     // Create delta proposal
+    let (_, _, signature1_hex_2, timestamp1_2) = generate_falcon_signature(&account_id);
     let proposal_params = PushDeltaProposalParams {
         account_id: account_id.clone(),
         nonce: 1,
         delta_payload,
-        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex_2, timestamp1_2),
     };
 
     let proposal_result = push_delta_proposal(&state, proposal_params)
@@ -294,12 +316,13 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
         .expect("Failed to push delta proposal");
 
     // Verify proposal exists
+    let (_, _, signature1_hex_3, timestamp1_3) = generate_falcon_signature(&account_id);
     let get_proposals_params = GetDeltaProposalsParams {
         account_id: account_id.clone(),
-        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex_3, timestamp1_3),
     };
 
-    let proposals_before = get_delta_proposals(&state, get_proposals_params.clone())
+    let proposals_before = get_delta_proposals(&state, get_proposals_params)
         .await
         .expect("Failed to get proposals");
     assert_eq!(proposals_before.proposals.len(), 1);
@@ -323,9 +346,11 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
         },
     };
 
+    // Need fresh signature for push_delta
+    let (_, _, signature1_hex_4, timestamp1_4) = generate_falcon_signature(&account_id);
     let push_params = PushDeltaParams {
         delta,
-        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex.clone()),
+        credentials: Credentials::signature(pubkey1_hex.clone(), signature1_hex_4, timestamp1_4),
     };
 
     let push_result = push_delta(&state, push_params)
@@ -335,8 +360,13 @@ async fn test_proposal_cleanup_after_canonicalization_optimistic() {
     // Verify delta is canonical
     assert!(push_result.delta.status.is_canonical());
 
-    // Verify proposal was cleaned up
-    let proposals_after = get_delta_proposals(&state, get_proposals_params)
+    // Verify proposal was cleaned up - need fresh signature
+    let (_, _, signature1_hex_5, timestamp1_5) = generate_falcon_signature(&account_id);
+    let get_proposals_params_after = GetDeltaProposalsParams {
+        account_id: account_id.clone(),
+        credentials: Credentials::signature(pubkey1_hex, signature1_hex_5, timestamp1_5),
+    };
+    let proposals_after = get_delta_proposals(&state, get_proposals_params_after)
         .await
         .expect("Failed to get proposals");
 

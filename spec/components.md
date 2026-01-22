@@ -7,14 +7,15 @@ The API exposes a simple interface for operating states and deltas over HTTP and
 ## Metadata
 
 - Stores per-account configuration required to authorise requests and route to storage.
-- Records: `account_id`, authentication policy, storage backend type, and timestamps.
+- Records: `account_id`, authentication policy, storage backend type, timestamps, and `last_auth_timestamp` for replay protection.
 - Offers CRUD operations for metadata and a simple list operation to iterate accounts.
 
 ## Auth
 
 - Request authentication is configured per account.
 - Current policy: Miden Falcon RPO with an allowlist of `cosigner_commitments` (commitments of authorised public keys).
-- Requests carry `x-pubkey` and `x-signature`; verification derives the commitment from the supplied public key, checks it is authorised, and verifies the signature over an account-bound digest.
+- Requests carry `x-pubkey`, `x-signature`, and `x-timestamp`; verification derives the commitment from the supplied public key, checks it is authorised, and verifies the signature over a digest of `(account_id, timestamp)`.
+- Replay protection: the signed timestamp is validated against a 300-second skew window and must be strictly greater than the account's `last_auth_timestamp`.
 
 ## Acknowledger
 

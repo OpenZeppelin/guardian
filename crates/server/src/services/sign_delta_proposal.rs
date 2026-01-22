@@ -194,6 +194,7 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
+            last_auth_timestamp: None,
         }
     }
 
@@ -231,9 +232,9 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment = "mock_proposal_id".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature) =
+        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature) =
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -255,7 +256,11 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig.clone(),
             },
-            credentials: Credentials::signature(signer_pubkey.clone(), signer_signature.clone()),
+            credentials: Credentials::signature(
+                signer_pubkey.clone(),
+                signer_signature.clone(),
+                signer_timestamp,
+            ),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -296,12 +301,16 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment = "mock_proposal_id".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature) =
+        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (_first_signer_pubkey, first_signer_commitment, _) =
+        let (_first_signer_pubkey, first_signer_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (second_signer_pubkey, second_signer_commitment, second_signer_signature) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let (
+            second_signer_pubkey,
+            second_signer_commitment,
+            second_signer_signature,
+            second_signer_timestamp,
+        ) = crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -340,6 +349,7 @@ mod tests {
             credentials: Credentials::signature(
                 second_signer_pubkey.clone(),
                 second_signer_signature.clone(),
+                second_signer_timestamp,
             ),
         };
 
@@ -362,7 +372,7 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment = "nonexistent_proposal".to_string();
 
-        let (signer_pubkey, signer_commitment, signer_signature) =
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -379,7 +389,7 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig,
             },
-            credentials: Credentials::signature(signer_pubkey, signer_signature),
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -404,9 +414,9 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment = "mock_proposal_id".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature) =
+        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature) =
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -435,7 +445,7 @@ mod tests {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
             signature: ProposalSignature::Falcon { signature: new_sig },
-            credentials: Credentials::signature(signer_pubkey, signer_signature),
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -456,10 +466,14 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment = "mock_proposal_id".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature) =
+        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (unauthorized_pubkey, _unauthorized_commitment, unauthorized_signature) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let (
+            unauthorized_pubkey,
+            _unauthorized_commitment,
+            unauthorized_signature,
+            unauthorized_timestamp,
+        ) = crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -473,7 +487,11 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig,
             },
-            credentials: Credentials::signature(unauthorized_pubkey, unauthorized_signature),
+            credentials: Credentials::signature(
+                unauthorized_pubkey,
+                unauthorized_signature,
+                unauthorized_timestamp,
+            ),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -492,9 +510,9 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment = "mock_proposal_id".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature) =
+        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature) =
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -516,7 +534,7 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig,
             },
-            credentials: Credentials::signature(signer_pubkey, signer_signature),
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
         };
 
         let result = sign_delta_proposal(&state, params).await;

@@ -19,12 +19,13 @@ sequenceDiagram
   participant N as Network
   participant ST as Storage
   participant M as Metadata
-  C->>S: POST /configure {account_id, auth, initial_state}
+  C->>S: POST /configure {account_id, auth, initial_state} + credentials
+  S->>S: verify timestamp (within 300s skew window)
   S->>N: validate_credential(initial_state, credential)
-  S->>A: auth.verify(account_id, credential)
+  S->>S: auth.verify(account_id, timestamp, credential)
   S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
-  S->>M: set(account_id, auth, timestamps)
+  S->>M: set(account_id, auth, timestamps, last_auth_timestamp)
   S-->>C: 200 {account_id, ack_pubkey}
 ```
 
@@ -38,7 +39,9 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   C->>S: POST /delta {delta, credentials}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_state(account_id)
   S->>ST: pull_deltas_after(account_id, 0)
   alt pending candidate exists
@@ -66,7 +69,9 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: GET /state?account_id=... {credentials}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_state(account_id)
   S-->>C: 200 {state}
 ```
@@ -80,7 +85,9 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: GET /delta?account_id=...&nonce=... {credentials}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_delta(account_id, nonce)
   S-->>C: 200 {delta}
 ```
@@ -95,7 +102,9 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   C->>S: GET /delta/since?account_id=...&from_nonce=... {credentials}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_deltas_after(account_id, from_nonce)
   S->>S: filter -> only canonical
   S->>N: merge_deltas(delta_payloads) -> merged_payload
@@ -113,7 +122,9 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   C->>S: POST /delta/proposal {account_id, nonce, delta_payload(tx_summary,...)}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_state(account_id)
   S->>N: verify_delta(prev_commitment, state_json, tx_summary)
   S->>N: delta_proposal_id(account_id, nonce, tx_summary)
@@ -130,7 +141,9 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: PUT /delta/proposal {account_id, commitment, signature,...}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_delta_proposal(account_id, commitment)
   S->>S: ensure status.pending & signer not recorded
   S->>ST: update_delta_proposal(commitment, append_signature)
@@ -146,7 +159,9 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: GET /delta/proposal?account_id=... {credentials}
-  S->>M: get(account_id) & verify(credentials)
+  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>S: check timestamp > last_auth_timestamp
+  S->>M: update last_auth_timestamp
   S->>ST: pull_all_delta_proposals(account_id)
   S->>S: filter(status.pending) & sort_by_nonce
   S-->>C: 200 {proposals}

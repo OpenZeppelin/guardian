@@ -66,6 +66,7 @@ diesel::table! {
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         has_pending_candidate -> Bool,
+        last_auth_timestamp -> Nullable<Int8>,
     }
 }
 
