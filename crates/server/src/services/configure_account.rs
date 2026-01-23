@@ -28,7 +28,6 @@ pub async fn configure_account(
     params: ConfigureAccountParams,
 ) -> Result<ConfigureAccountResult> {
     tracing::info!(account_id = %params.account_id, "Configuring account");
-
     let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
         tracing::error!(
             account_id = %params.account_id,
@@ -37,13 +36,13 @@ pub async fn configure_account(
         );
         PsmError::StorageError(format!("Failed to check existing account: {e}"))
     })?;
-
+   
     if existing.is_some() {
         return Err(PsmError::AccountAlreadyExists(params.account_id.clone()));
     }
 
     let commitment = {
-        let client = state.network_client.lock().await;
+        let mut client = state.network_client.lock().await;
 
         // Validates that the credential is valid for the account state.
         client
@@ -56,7 +55,7 @@ pub async fn configure_account(
                 );
                 PsmError::NetworkError(format!("Failed to validate credential: {e}"))
             })?;
-
+    
         // Verifies the credential authorization.
         params
             .auth
@@ -70,10 +69,35 @@ pub async fn configure_account(
                 PsmError::AuthenticationFailed(format!("Signature verification failed: {e}"))
             })?;
 
-        // calculates the commitment of the account state.
-        client
-            .get_state_commitment(&params.account_id, &params.initial_state)
-            .map_err(PsmError::NetworkError)?
+    // Extract expected auth from initial_state to validate against provided params
+    let expected_auth = client
+    .should_update_auth(&params.initial_state)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            account_id = %params.account_id,
+            error = %e,
+            "Failed to extract auth from initial_state"
+        );
+        PsmError::AuthenticationFailed(e)
+    })?;
+
+
+    // Compare with client-provided auth
+    if let Some(expected_auth) = expected_auth {
+        if expected_auth != params.auth {
+
+            return Err(PsmError::AuthenticationFailed(
+                "auth.cosigner_commitments do not match account initial state".to_string(),
+            ));
+        }
+    }
+
+
+    // calculates the commitment of the account state.
+    client
+        .get_state_commitment(&params.account_id, &params.initial_state)
+        .map_err(PsmError::NetworkError)?
     };
 
     let now = state.clock.now_rfc3339();
@@ -200,6 +224,60 @@ mod tests {
         assert!(
             result.ack_pubkey.starts_with("0x"),
             "ack_pubkey should be hex format"
+        );
+    }
+
+
+   #[tokio::test]
+    async fn test_configure_rejects_auth_mismatch() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x2133663d171cfa1023a7ad0ea95163";
+
+        let fixture_commitment = "0x4801592850367928503679285036792850367928503679285036792850367928"; 
+
+     
+        let network_client = MockNetworkClient::new()
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![fixture_commitment.to_string()],
+            })))
+            // Bypass the network credential check so we can test the auth mismatch logic
+            .with_validate_credential(Ok(())) 
+            .with_get_state_commitment(Ok("0x1234".to_string()));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+
+      
+        let (malicious_pubkey, malicious_commitment, malicious_sig, timestamp) = 
+            generate_falcon_signature(account_id_hex);
+
+        let credential = Credentials::signature(malicious_pubkey, malicious_sig, timestamp);
+
+       
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![malicious_commitment], // Valid crypto, but wrong for this account
+            },
+            initial_state,
+            credential,
+        };
+
+        // 5. Run Service
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_err(), "Service should reject mismatched auth commitment");
+        
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("match") || err_msg.contains("cosigner"),
+            "Expected mismatch error, but got: {}",
+            err_msg
         );
     }
 
