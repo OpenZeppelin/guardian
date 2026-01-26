@@ -410,6 +410,7 @@ fn extract_enhanced_key<B>(req: &Request<B>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::HeaderValue;
 
     #[test]
     fn test_rate_limit_config_default() {
@@ -424,6 +425,21 @@ mod tests {
         assert_eq!(config.burst_per_sec, 5);
         assert_eq!(config.per_min, 30);
     }
+
+    #[test]
+    fn test_rate_limit_config_from_env_defaults() {
+        // Clear any existing env vars
+        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        unsafe {
+            env::remove_var("PSM_RATE_BURST_PER_SEC");
+            env::remove_var("PSM_RATE_PER_MIN");
+        }
+
+        let config = RateLimitConfig::from_env();
+        assert_eq!(config.burst_per_sec, DEFAULT_BURST_PER_SEC);
+        assert_eq!(config.per_min, DEFAULT_PER_MIN);
+    }
+
 
     #[test]
     fn test_rate_limit_store_allows_under_limit() {
@@ -489,8 +505,355 @@ mod tests {
     }
 
     #[test]
+    fn test_rate_limit_store_burst_and_sustained_independent() {
+        let config = RateLimitConfig::new(3, 5);
+        let store = RateLimitStore::new(config);
+
+        // Use up burst limit
+        for _ in 0..3 {
+            assert!(store.check_burst("independent_test").is_ok());
+        }
+        assert!(store.check_burst("independent_test").is_err());
+
+        // Sustained should still work (different method, but same key creates new entry)
+        // Note: Using different key to test sustained independently
+        for _ in 0..5 {
+            assert!(store.check_sustained("independent_test_sustained").is_ok());
+        }
+        assert!(store.check_sustained("independent_test_sustained").is_err());
+    }
+
+    #[test]
+    fn test_rate_limit_store_zero_limits() {
+        let config = RateLimitConfig::new(0, 0);
+        let store = RateLimitStore::new(config);
+
+        // With 0 limits, first request should fail
+        assert!(store.check_burst("zero_test").is_err());
+        assert!(store.check_sustained("zero_test").is_err());
+    }
+
+    // ================================================================================================
+    // RateLimitType tests
+    // ================================================================================================
+
+    #[test]
     fn test_rate_limit_type_as_str() {
         assert_eq!(RateLimitType::Burst.as_str(), "burst");
         assert_eq!(RateLimitType::Sustained.as_str(), "sustained");
+    }
+
+    #[test]
+    fn test_rate_limit_type_debug() {
+        // Ensure Debug trait is implemented
+        let burst = RateLimitType::Burst;
+        let sustained = RateLimitType::Sustained;
+        assert!(format!("{:?}", burst).contains("Burst"));
+        assert!(format!("{:?}", sustained).contains("Sustained"));
+    }
+
+    #[test]
+    fn test_rate_limit_type_clone() {
+        let original = RateLimitType::Burst;
+        let cloned = original;
+        assert_eq!(original.as_str(), cloned.as_str());
+    }
+
+    #[test]
+    fn test_rate_limit_response_serialization() {
+        let response = RateLimitResponse {
+            success: false,
+            error: "Rate limit exceeded".to_string(),
+            retry_after_secs: 60,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"retry_after_secs\":60"));
+        assert!(json.contains("Rate limit exceeded"));
+    }
+
+    #[test]
+    fn test_rate_limit_layer_new() {
+        let config = RateLimitConfig::new(10, 60);
+        let layer = RateLimitLayer::new(config);
+        // Verify layer is created (store is private, but we can check it works)
+        assert!(format!("{:?}", layer).contains("RateLimitLayer"));
+    }
+
+    #[test]
+    fn test_rate_limit_layer_from_env() {
+        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        unsafe {
+            env::remove_var("PSM_RATE_BURST_PER_SEC");
+            env::remove_var("PSM_RATE_PER_MIN");
+        }
+
+        let layer = RateLimitLayer::from_env();
+        assert!(format!("{:?}", layer).contains("RateLimitLayer"));
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_forwarded_for() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.100"),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_forwarded_for_multiple() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        // Multiple IPs - should take the first (original client)
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("10.0.0.1, 192.168.1.1, 172.16.0.1"),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_forwarded_for_with_spaces() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("  203.0.113.50  , 70.41.3.18"),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_real_ip() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut()
+            .insert("x-real-ip", HeaderValue::from_static("10.20.30.40"));
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "10.20.30.40");
+    }
+
+    #[test]
+    fn test_extract_client_ip_x_forwarded_for_takes_precedence() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        // Both headers present - X-Forwarded-For should take precedence
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("1.1.1.1"),
+        );
+        req.headers_mut()
+            .insert("x-real-ip", HeaderValue::from_static("2.2.2.2"));
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "1.1.1.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_fallback_to_unknown() {
+        let req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        // No headers, no connection info
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "unknown");
+    }
+
+    #[test]
+    fn test_extract_client_ip_ipv6() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("2001:db8::1"),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "2001:db8::1");
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_account_id_from_query() {
+        let req = Request::builder()
+            .uri("/delta?account_id=0x1234567890abcdef")
+            .body(Body::empty())
+            .unwrap();
+
+        let key = extract_enhanced_key(&req);
+        assert_eq!(key, Some("account:0x1234567890abcdef".to_string()));
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_account_id_with_other_params() {
+        let req = Request::builder()
+            .uri("/delta?nonce=5&account_id=0xabc123&other=value")
+            .body(Body::empty())
+            .unwrap();
+
+        let key = extract_enhanced_key(&req);
+        assert_eq!(key, Some("account:0xabc123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_pubkey_from_header() {
+        let mut req = Request::builder()
+            .uri("/delta")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut().insert(
+            "x-pubkey",
+            HeaderValue::from_static("0x1234567890abcdef1234567890abcdef"),
+        );
+
+        let key = extract_enhanced_key(&req);
+        // Should truncate to first 16 chars: "0x1234567890abcd"
+        assert_eq!(key, Some("signer:0x1234567890abcd".to_string()));
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_short_pubkey() {
+        let mut req = Request::builder()
+            .uri("/delta")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut()
+            .insert("x-pubkey", HeaderValue::from_static("short"));
+
+        let key = extract_enhanced_key(&req);
+        assert_eq!(key, Some("signer:short".to_string()));
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_account_id_takes_precedence() {
+        let mut req = Request::builder()
+            .uri("/delta?account_id=0xaccount123")
+            .body(Body::empty())
+            .unwrap();
+
+        req.headers_mut()
+            .insert("x-pubkey", HeaderValue::from_static("0xpubkey456"));
+
+        let key = extract_enhanced_key(&req);
+        // account_id should take precedence
+        assert_eq!(key, Some("account:0xaccount123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_none_when_no_identifiers() {
+        let req = Request::builder()
+            .uri("/pubkey")
+            .body(Body::empty())
+            .unwrap();
+
+        let key = extract_enhanced_key(&req);
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_empty_query_string() {
+        let req = Request::builder()
+            .uri("/delta?")
+            .body(Body::empty())
+            .unwrap();
+
+        let key = extract_enhanced_key(&req);
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_extract_enhanced_key_similar_param_name() {
+        let req = Request::builder()
+            .uri("/delta?account_id_backup=0x123&my_account_id=0x456")
+            .body(Body::empty())
+            .unwrap();
+
+        // Should not match partial names
+        let key = extract_enhanced_key(&req);
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_rate_limit_key_generation() {
+        // Test that different requests generate appropriate keys
+        let config = RateLimitConfig::new(5, 30);
+        let store = RateLimitStore::new(config);
+
+        // Simulate key patterns that would be generated by the middleware
+        let ip_key = "ip:192.168.1.1";
+        let ip_endpoint_key = "ip:192.168.1.1|endpoint:/delta";
+        let ip_account_key = "ip:192.168.1.1|account:0x123";
+
+        // All should be independent
+        for _ in 0..5 {
+            assert!(store.check_burst(ip_key).is_ok());
+            assert!(store.check_burst(ip_endpoint_key).is_ok());
+            assert!(store.check_burst(ip_account_key).is_ok());
+        }
+
+        // Each should hit its own limit
+        assert!(store.check_burst(ip_key).is_err());
+        assert!(store.check_burst(ip_endpoint_key).is_err());
+        assert!(store.check_burst(ip_account_key).is_err());
+    }
+
+    #[test]
+    fn test_concurrent_store_access() {
+        use std::thread;
+
+        let config = RateLimitConfig::new(100, 1000);
+        let store = RateLimitStore::new(config);
+
+        let mut handles = vec![];
+
+        // Spawn multiple threads accessing the store
+        for i in 0..10 {
+            let store_clone = store.clone();
+            let handle = thread::spawn(move || {
+                let key = format!("thread_{}", i);
+                for _ in 0..10 {
+                    let _ = store_clone.check_burst(&key);
+                    let _ = store_clone.check_sustained(&key);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // All threads should complete without panic
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
     }
 }
