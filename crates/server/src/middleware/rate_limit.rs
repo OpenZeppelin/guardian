@@ -440,7 +440,6 @@ mod tests {
         assert_eq!(config.per_min, DEFAULT_PER_MIN);
     }
 
-
     #[test]
     fn test_rate_limit_store_allows_under_limit() {
         let config = RateLimitConfig::new(5, 10);
@@ -595,15 +594,10 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_from_x_forwarded_for() {
-        let mut req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        req.headers_mut().insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("192.168.1.100"),
-        );
+        req.headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("192.168.1.100"));
 
         let ip = extract_client_ip(&req);
         assert_eq!(ip, "192.168.1.100");
@@ -611,10 +605,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_from_x_forwarded_for_multiple() {
-        let mut req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         // Multiple IPs - should take the first (original client)
         req.headers_mut().insert(
@@ -628,10 +619,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_from_x_forwarded_for_with_spaces() {
-        let mut req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         req.headers_mut().insert(
             "x-forwarded-for",
@@ -644,10 +632,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_from_x_real_ip() {
-        let mut req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         req.headers_mut()
             .insert("x-real-ip", HeaderValue::from_static("10.20.30.40"));
@@ -658,16 +643,11 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_x_forwarded_for_takes_precedence() {
-        let mut req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         // Both headers present - X-Forwarded-For should take precedence
-        req.headers_mut().insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("1.1.1.1"),
-        );
+        req.headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("1.1.1.1"));
         req.headers_mut()
             .insert("x-real-ip", HeaderValue::from_static("2.2.2.2"));
 
@@ -677,10 +657,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_fallback_to_unknown() {
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         // No headers, no connection info
         let ip = extract_client_ip(&req);
@@ -689,15 +666,10 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_ipv6() {
-        let mut req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        req.headers_mut().insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("2001:db8::1"),
-        );
+        req.headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("2001:db8::1"));
 
         let ip = extract_client_ip(&req);
         assert_eq!(ip, "2001:db8::1");
