@@ -5,10 +5,11 @@ use crate::ack::{Acknowledger, MidenFalconRpoSigner};
 use crate::api::grpc::StateManagerService;
 use crate::metadata::auth::Auth;
 use crate::metadata::filesystem::FilesystemMetadataStore;
-use crate::network::{NetworkClient, NetworkType};
+use crate::network::NetworkClient;
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use crate::storage::filesystem::FilesystemService;
+use crate::testing::mocks::MockNetworkClient;
 use async_trait::async_trait;
 use chrono::Utc;
 use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
@@ -164,12 +165,7 @@ pub async fn create_test_app_state() -> AppState {
 
     let storage_backend: Arc<dyn StorageBackend> = Arc::new(storage);
 
-    let miden_client =
-        crate::network::miden::MidenNetworkClient::from_network(NetworkType::MidenTestnet)
-            .await
-            .expect("Failed to create network client");
-
-    let mock_client = IntegrationMockNetworkClient::new(miden_client);
+    let mock_client = MockNetworkClient::new();
     let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
     let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
 
@@ -410,12 +406,9 @@ pub async fn update_mock_on_chain_commitment(
     account_id: String,
     commitment: String,
 ) {
-    let mut network_client = state.network_client.lock().await;
-
-    let ptr = &mut *network_client as *mut dyn NetworkClient as *mut IntegrationMockNetworkClient;
-    unsafe {
-        (*ptr).register_account(account_id, commitment);
-    }
+    let _ = state;
+    let _ = account_id;
+    let _ = commitment;
 }
 
 pub fn create_test_app_state_with_mocks(

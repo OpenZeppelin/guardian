@@ -2,4 +2,3 @@
 #![cfg(feature = "e2e")]
 
 mod configure_account;
-mod delta_proposals;

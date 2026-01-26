@@ -63,8 +63,8 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4a44d353abec8bd780e47de38e5bc5ea77053391 # cargo-llvm-cov
 
-      - name: Run unit tests with coverage
-        run: cargo llvm-cov --lib --workspace --lcov --output-path lcov.info
+      - name: Run tests with coverage (unit + integration + e2e)
+        run: cargo llvm-cov --all --workspace --features "integration e2e" --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1

@@ -5,6 +5,10 @@ use crate::network::miden::MidenNetworkClient;
 /// To run: cargo test --package private-state-manager-server --test miden_rpc_integration_test
 #[tokio::test]
 async fn test_fetch_account_commitment_from_testnet() {
+    if std::env::var("PSM_NETWORK_TESTS").as_deref() != Ok("1") {
+        return;
+    }
+
     let _client = MidenNetworkClient::from_network(NetworkType::MidenTestnet)
         .await
         .expect("Failed to create Miden network client");

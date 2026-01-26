@@ -5,6 +5,8 @@ use crate::network::NetworkClient;
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
+use miden_objects::account::Account;
+use private_state_manager_shared::FromJson;
 use std::sync::{Arc, Mutex as StdMutex};
 
 type StdResult<T, E> = std::result::Result<T, E>;
@@ -94,11 +96,14 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .push((account_id.to_string(), state_json.clone()));
 
-        self.get_state_commitment_responses
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap_or_else(|| Ok("mock_commitment".to_string()))
+        if let Some(response) = self.get_state_commitment_responses.lock().unwrap().pop() {
+            return response;
+        }
+
+        let account = Account::from_json(state_json)
+            .map_err(|e| format!("Failed to deserialize account: {e}"))?;
+        let commitment_hex = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+        Ok(commitment_hex)
     }
 
     async fn verify_state(
