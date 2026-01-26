@@ -4,11 +4,11 @@
 //! Uses two windows: burst (per second) and sustained (per minute).
 
 use axum::{
+    Json,
     body::Body,
     extract::ConnectInfo,
     http::{Request, Response, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use serde::Serialize;
 use std::{
@@ -125,7 +125,9 @@ impl RateLimitStore {
 
         let now = Instant::now();
         let mut entries = self.entries.write().unwrap();
-        let entry = entries.entry(key.to_string()).or_insert_with(RateLimitEntry::new);
+        let entry = entries
+            .entry(key.to_string())
+            .or_insert_with(RateLimitEntry::new);
 
         // Check and reset burst window (1 second)
         if now.duration_since(entry.burst_window_start) >= Duration::from_secs(1) {
@@ -151,7 +153,9 @@ impl RateLimitStore {
 
         let now = Instant::now();
         let mut entries = self.entries.write().unwrap();
-        let entry = entries.entry(key.to_string()).or_insert_with(RateLimitEntry::new);
+        let entry = entries
+            .entry(key.to_string())
+            .or_insert_with(RateLimitEntry::new);
 
         // Check and reset sustained window (1 minute)
         if now.duration_since(entry.sustained_window_start) >= Duration::from_secs(60) {
@@ -392,7 +396,11 @@ fn extract_enhanced_key<B>(req: &Request<B>) -> Option<String> {
         && let Ok(value) = pubkey.to_str()
     {
         // Use first 16 chars of pubkey to keep key short
-        let short_key = if value.len() > 16 { &value[..16] } else { value };
+        let short_key = if value.len() > 16 {
+            &value[..16]
+        } else {
+            value
+        };
         return Some(format!("signer:{}", short_key));
     }
 
@@ -416,7 +424,6 @@ mod tests {
         assert_eq!(config.burst_per_sec, 5);
         assert_eq!(config.per_min, 30);
     }
-
 
     #[test]
     fn test_rate_limit_store_allows_under_limit() {
@@ -480,7 +487,6 @@ mod tests {
         assert!(store.check_burst("key2").is_ok());
         assert!(store.check_burst("key2").is_ok());
     }
-
 
     #[test]
     fn test_rate_limit_type_as_str() {
