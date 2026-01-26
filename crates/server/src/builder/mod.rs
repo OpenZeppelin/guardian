@@ -19,7 +19,7 @@ use crate::canonicalization::CanonicalizationConfig;
 use crate::clock::SystemClock;
 use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
-use crate::middleware::RateLimitConfig;
+use crate::middleware::{BodyLimitConfig, RateLimitConfig};
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
@@ -36,6 +36,7 @@ pub struct ServerBuilder {
     logging_config: Option<LoggingConfig>,
     cors_layer: Option<tower_http::cors::CorsLayer>,
     rate_limit_config: Option<RateLimitConfig>,
+    body_limit_config: Option<BodyLimitConfig>,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -54,6 +55,7 @@ impl ServerBuilder {
             logging_config: None,
             cors_layer: None,
             rate_limit_config: None,
+            body_limit_config: None,
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -299,6 +301,32 @@ impl ServerBuilder {
         self
     }
 
+    /// Configure maximum request body size for HTTP server
+    ///
+    /// Limits the size of incoming request bodies to prevent memory exhaustion.
+    /// Requests exceeding the limit receive a 413 Payload Too Large response.
+    ///
+    /// # Arguments
+    /// * `config` - The body limit configuration to use
+    ///
+    /// # Example
+    /// ```no_run
+    /// use server::builder::ServerBuilder;
+    /// use server::middleware::BodyLimitConfig;
+    ///
+    /// // Custom limit (5 MB)
+    /// let builder = ServerBuilder::new()
+    ///     .with_body_limit(BodyLimitConfig::new(5 * 1024 * 1024));
+    ///
+    /// // Load from environment (PSM_MAX_REQUEST_BYTES)
+    /// let builder = ServerBuilder::new()
+    ///     .with_body_limit(BodyLimitConfig::from_env());
+    /// ```
+    pub fn with_body_limit(mut self, config: BodyLimitConfig) -> Self {
+        self.body_limit_config = Some(config);
+        self
+    }
+
     /// Build the server handle
     ///
     /// Validates that all required components are configured and returns
@@ -372,6 +400,7 @@ impl ServerBuilder {
             app_state,
             cors_layer: self.cors_layer,
             rate_limit_config: self.rate_limit_config,
+            body_limit_config: self.body_limit_config,
             http_enabled: self.http_enabled,
             http_port: self.http_port,
             grpc_enabled: self.grpc_enabled,

@@ -28,6 +28,12 @@ let builder = ServerBuilder::new()
 - `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
 - `PSM_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
 
+#### Request Size Limits
+
+- `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
+
+Requests exceeding this limit receive a 413 Payload Too Large response.
+
 ### Account Configuration
 
 Each account has:
@@ -155,16 +161,18 @@ The `Retry-After` header is also set with the recommended wait time.
 
 ```rust
 use server::builder::ServerBuilder;
-use server::middleware::RateLimitConfig;
+use server::middleware::{RateLimitConfig, BodyLimitConfig};
 
 // Custom limits
 ServerBuilder::new()
     .with_rate_limit(RateLimitConfig::new(20, 120))  // 20/sec, 120/min
+    .with_body_limit(BodyLimitConfig::new(5 * 1024 * 1024))  // 5 MB
     // ...
 
-// Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN)
+// Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN, PSM_MAX_REQUEST_BYTES)
 ServerBuilder::new()
     .with_rate_limit(RateLimitConfig::from_env())
+    .with_body_limit(BodyLimitConfig::from_env())
     // ...
 ```
 

@@ -1,4 +1,4 @@
-use axum::{Router, routing::get, routing::post, routing::put};
+use axum::{Router, extract::DefaultBodyLimit, routing::get, routing::post, routing::put};
 use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
@@ -8,7 +8,7 @@ use crate::api::http::{
     configure, get_delta, get_delta_proposals, get_delta_since, get_pubkey, get_state, push_delta,
     push_delta_proposal, sign_delta_proposal,
 };
-use crate::middleware::{RateLimitConfig, RateLimitLayer};
+use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
 use crate::state::AppState;
 
 /// Handle for a configured server instance
@@ -18,6 +18,7 @@ pub struct ServerHandle {
     pub(crate) app_state: AppState,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
+    pub(crate) body_limit_config: Option<BodyLimitConfig>,
     pub(crate) http_enabled: bool,
     pub(crate) http_port: u16,
     pub(crate) grpc_enabled: bool,
@@ -53,6 +54,7 @@ impl ServerHandle {
             let port = self.http_port;
             let cors_layer = self.cors_layer.clone();
             let rate_limit_config = self.rate_limit_config.clone();
+            let body_limit_config = self.body_limit_config;
 
             let task = tokio::spawn(async move {
                 let mut app = Router::new()
@@ -67,6 +69,10 @@ impl ServerHandle {
                     .route("/state", get(get_state))
                     .route("/pubkey", get(get_pubkey))
                     .with_state(state);
+
+                // Apply body size limit
+                let body_limit = body_limit_config.unwrap_or_else(BodyLimitConfig::from_env);
+                app = app.layer(DefaultBodyLimit::max(body_limit.max_bytes));
 
                 // Apply rate limiting
                 let rate_limit = rate_limit_config.unwrap_or_else(RateLimitConfig::from_env);

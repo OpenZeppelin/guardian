@@ -41,6 +41,9 @@ See the [Server README](crates/server/README.md) for detailed API documentation 
 - `RUST_LOG` - Logging level (default: `info`)
   - Supports: `trace`, `debug`, `info`, `warn`, `error`
   - Module-specific: `RUST_LOG=server::jobs::canonicalization=debug`
+- `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
+- `PSM_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
+- `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
 
 ### Running
 
