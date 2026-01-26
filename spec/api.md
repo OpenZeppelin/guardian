@@ -36,6 +36,12 @@
 
 ## HTTP Endpoints
 
+- Rate limiting:
+  - HTTP endpoints are rate limited by client IP.
+  - Burst limits are applied per IP and per endpoint path.
+  - Sustained limits are applied per IP and per IP+account/signer when available.
+  - Exceeded limits return `429 Too Many Requests` and include a `Retry-After` header.
+
 - POST /configure
   - Headers: `x-pubkey`, `x-signature`, `x-timestamp`
   - Body: `{ account_id: string, auth: Auth, initial_state: object }`

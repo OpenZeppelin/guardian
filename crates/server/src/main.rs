@@ -4,6 +4,7 @@ use server::ack::{Acknowledger, MidenFalconRpoSigner};
 use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
 use server::canonicalization::CanonicalizationConfig;
 use server::logging::LoggingConfig;
+use server::middleware::RateLimitConfig;
 use server::network::NetworkType;
 use std::env;
 use std::path::PathBuf;
@@ -35,6 +36,7 @@ async fn main() {
         .with_logging(LoggingConfig::default())
         .network(NetworkType::MidenTestnet)
         .with_canonicalization(Some(CanonicalizationConfig::new(10, 18)))
+        .with_rate_limit(RateLimitConfig::from_env())
         .storage(storage_backend)
         .metadata(metadata)
         .ack(ack)

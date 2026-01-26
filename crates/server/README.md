@@ -23,6 +23,11 @@ let builder = ServerBuilder::new()
 - `PSM_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/psm/keystore`)
 - `RUST_LOG` - Logging level (default: `info`)
 
+#### Rate Limiting
+
+- `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
+- `PSM_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
+
 ### Account Configuration
 
 Each account has:
@@ -119,6 +124,48 @@ RUST_LOG=server::jobs::canonicalization=trace cargo run
 
 # Multiple modules
 RUST_LOG=server::jobs=debug,server::services=info cargo run
+```
+
+### Rate Limiting
+
+The HTTP API includes built-in rate limiting to protect against abuse. Rate limits are applied per client IP, with enhanced keying when authentication headers or account IDs are present.
+
+#### How It Works
+
+- **IP-based limits**: All requests are tracked by client IP address
+- **Enhanced keying**: When `x-pubkey` header or `account_id` query parameter is present, limits are applied per IP+account/signer combination
+- **Two windows**: Burst (per second) and sustained (per minute) limits are enforced independently
+- **Proxy support**: Respects `X-Forwarded-For` and `X-Real-IP` headers for proxied requests
+
+#### Response When Limited
+
+When rate limited, the server returns HTTP 429 with a JSON body:
+
+```json
+{
+  "success": false,
+  "error": "Rate limit exceeded (burst limit). Retry after 1 seconds.",
+  "retry_after_secs": 1
+}
+```
+
+The `Retry-After` header is also set with the recommended wait time.
+
+#### Programmatic Configuration
+
+```rust
+use server::builder::ServerBuilder;
+use server::middleware::RateLimitConfig;
+
+// Custom limits
+ServerBuilder::new()
+    .with_rate_limit(RateLimitConfig::new(20, 120))  // 20/sec, 120/min
+    // ...
+
+// Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN)
+ServerBuilder::new()
+    .with_rate_limit(RateLimitConfig::from_env())
+    // ...
 ```
 
 ### API Endpoints

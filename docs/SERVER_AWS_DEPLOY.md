@@ -4,7 +4,7 @@ This guide walks through deploying the Private State Manager (PSM) server to AWS
 
 ## Prerequisites
 
-- AWS CLI configured with enough permissions to create ECS, ECR, API Gateway, and EC2 resources
+- AWS CLI configured with enough permissions to create ECS, ECR, ELB (ALB), and EC2 resources
 - Docker installed locally
 - Run from root of the repository
 
@@ -36,8 +36,8 @@ docker info
 
 | Command | Description |
 |---------|-------------|
-| `deploy` | Build Docker image, push to ECR, create ECS cluster/service, and set up API Gateway with HTTPS |
-| `deploy --skip-build` | Skip Docker build and only update API Gateway with new ECS task IP |
+| `deploy` | Build Docker image, push to ECR, create ECS cluster/service, and set up an ALB |
+| `deploy --skip-build` | Skip Docker build and reuse existing image |
 | `status` | Show deployment status, running tasks, and HTTPS URL |
 | `logs` | Tail CloudWatch logs (Ctrl+C to exit) |
 | `cleanup` | Remove all AWS resources (ECR, ECS, API Gateway, security groups, logs) |
@@ -47,6 +47,8 @@ docker info
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AWS_REGION` | `us-east-1` | AWS region for deployment |
+| `ALB_LISTENER_PORT` | `80` | ALB listener port for HTTP traffic |
+| `ACM_CERT_ARN` | empty | Optional ACM certificate ARN to enable HTTPS |
 
 ## What Gets Created
 
@@ -55,26 +57,26 @@ The deployment script creates:
 - **ECR Repository** - Stores the Docker image
 - **ECS Cluster** - Fargate cluster to run the container
 - **ECS Service** - Manages the running task with public IP
-- **API Gateway HTTP API** - Provides HTTPS endpoint proxying to ECS
-- **Security Group** - Allows traffic on ports 3000 and 50051
+- **ALB + Target Group** - Provides public endpoint for the HTTP API
+- **Security Groups** - ALB ingress and server ingress rules
 - **CloudWatch Log Group** - Stores container logs
 - **IAM Role** - Task execution role for ECS
 
 ## Output
 
-After deployment, you'll receive an auto-generated HTTPS URL:
+After deployment, you'll receive the ALB DNS name:
 
 ```
-https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
+http://psm-alb-xxxxxxxx.us-east-1.elb.amazonaws.com
 ```
 
 Test the deployment:
 
 ```bash
 # Health check
-curl https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/health
+curl http://psm-alb-xxxxxxxx.us-east-1.elb.amazonaws.com/health
 
 # Get server public key
-curl https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/pubkey
+curl http://psm-alb-xxxxxxxx.us-east-1.elb.amazonaws.com/pubkey
 ```
 

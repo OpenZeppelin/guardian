@@ -8,6 +8,7 @@ use crate::api::http::{
     configure, get_delta, get_delta_proposals, get_delta_since, get_pubkey, get_state, push_delta,
     push_delta_proposal, sign_delta_proposal,
 };
+use crate::middleware::{RateLimitConfig, RateLimitLayer};
 use crate::state::AppState;
 
 /// Handle for a configured server instance
@@ -16,6 +17,7 @@ use crate::state::AppState;
 pub struct ServerHandle {
     pub(crate) app_state: AppState,
     pub(crate) cors_layer: Option<CorsLayer>,
+    pub(crate) rate_limit_config: Option<RateLimitConfig>,
     pub(crate) http_enabled: bool,
     pub(crate) http_port: u16,
     pub(crate) grpc_enabled: bool,
@@ -50,6 +52,7 @@ impl ServerHandle {
             let state = self.app_state.clone();
             let port = self.http_port;
             let cors_layer = self.cors_layer.clone();
+            let rate_limit_config = self.rate_limit_config.clone();
 
             let task = tokio::spawn(async move {
                 let mut app = Router::new()
@@ -65,6 +68,10 @@ impl ServerHandle {
                     .route("/pubkey", get(get_pubkey))
                     .with_state(state);
 
+                // Apply rate limiting
+                let rate_limit = rate_limit_config.unwrap_or_else(RateLimitConfig::from_env);
+                app = app.layer(RateLimitLayer::new(rate_limit));
+
                 if let Some(cors) = cors_layer {
                     app = app.layer(cors);
                 }
@@ -79,9 +86,13 @@ impl ServerHandle {
                     "HTTP server listening"
                 );
 
-                axum::serve(listener, app)
-                    .await
-                    .expect("HTTP server failed");
+                // Use into_make_service_with_connect_info to capture client socket address
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                .expect("HTTP server failed");
             });
 
             tasks.push(task);

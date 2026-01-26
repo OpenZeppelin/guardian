@@ -3,6 +3,7 @@ pub use private_state_manager_shared::{FromJson, ToJson};
 pub mod ack;
 pub mod api;
 pub mod builder;
+pub mod middleware;
 
 #[cfg(feature = "postgres")]
 mod schema;

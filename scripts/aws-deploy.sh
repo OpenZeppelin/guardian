@@ -5,7 +5,7 @@ set -e
 # Usage: ./scripts/aws-deploy.sh [command] [options]
 #
 # Commands:
-#   deploy   - Deploy PSM server with HTTPS via API Gateway
+#   deploy   - Deploy PSM server behind an ALB
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
@@ -28,6 +28,11 @@ POSTGRES_USER="${POSTGRES_USER:-psm}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-psm_dev_password}"
 SD_NAMESPACE_NAME="psm.local"
 SD_SERVICE_NAME="psm-postgres"
+ALB_NAME="psm-alb"
+ALB_SG_NAME="psm-alb-sg"
+ALB_TG_NAME="psm-server-tg"
+ALB_LISTENER_PORT="${ALB_LISTENER_PORT:-80}"
+ACM_CERT_ARN="${ACM_CERT_ARN:-}"
 LOG_GROUP_SERVER="/ecs/psm-server"
 LOG_GROUP_POSTGRES="/ecs/psm-postgres"
 
@@ -330,8 +335,138 @@ cmd_create_postgres_service() {
   fi
 }
 
+cmd_create_alb() {
+  local subnet_ids="$1"
+  local alb_sg_id="$2"
+
+  local alb_arn=$(aws elbv2 describe-load-balancers \
+    --names $ALB_NAME \
+    --region $AWS_REGION \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
+
+  if [ -z "$alb_arn" ] || [ "$alb_arn" == "None" ]; then
+    log_info "Creating ALB..." >&2
+    alb_arn=$(aws elbv2 create-load-balancer \
+      --name $ALB_NAME \
+      --subnets $subnet_ids \
+      --security-groups $alb_sg_id \
+      --scheme internet-facing \
+      --type application \
+      --ip-address-type ipv4 \
+      --region $AWS_REGION \
+      --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+  else
+    log_info "ALB already exists" >&2
+  fi
+
+  printf '%s' "$alb_arn"
+}
+
+cmd_create_alb_target_group() {
+  local vpc_id="$1"
+
+  local tg_arn=$(aws elbv2 describe-target-groups \
+    --names $ALB_TG_NAME \
+    --region $AWS_REGION \
+    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)
+
+  if [ -z "$tg_arn" ] || [ "$tg_arn" == "None" ]; then
+    log_info "Creating ALB target group..." >&2
+    tg_arn=$(aws elbv2 create-target-group \
+      --name $ALB_TG_NAME \
+      --protocol HTTP \
+      --port 3000 \
+      --vpc-id $vpc_id \
+      --target-type ip \
+      --health-check-path / \
+      --region $AWS_REGION \
+      --query 'TargetGroups[0].TargetGroupArn' --output text)
+  else
+    log_info "ALB target group already exists" >&2
+  fi
+
+  printf '%s' "$tg_arn"
+}
+
+cmd_create_alb_listener() {
+  local alb_arn="$1"
+  local tg_arn="$2"
+
+  if [ -n "$ACM_CERT_ARN" ]; then
+    # HTTPS listener on 443
+    local https_listener_arn=$(aws elbv2 describe-listeners \
+      --load-balancer-arn $alb_arn \
+      --region $AWS_REGION \
+      --query "Listeners[?Port==\`443\`].ListenerArn" --output text 2>/dev/null)
+
+    if [ -z "$https_listener_arn" ] || [ "$https_listener_arn" == "None" ]; then
+      log_info "Creating ALB HTTPS listener on port 443..." >&2
+      aws elbv2 create-listener \
+        --load-balancer-arn $alb_arn \
+        --protocol HTTPS \
+        --port 443 \
+        --certificates CertificateArn=$ACM_CERT_ARN \
+        --ssl-policy ELBSecurityPolicy-2016-08 \
+        --default-actions Type=forward,TargetGroupArn=$tg_arn \
+        --region $AWS_REGION >/dev/null
+    else
+      log_info "Updating ALB HTTPS listener on port 443..." >&2
+      aws elbv2 modify-listener \
+        --listener-arn $https_listener_arn \
+        --certificates CertificateArn=$ACM_CERT_ARN \
+        --ssl-policy ELBSecurityPolicy-2016-08 \
+        --default-actions Type=forward,TargetGroupArn=$tg_arn \
+        --region $AWS_REGION >/dev/null
+    fi
+
+    # HTTP listener on 80 redirects to HTTPS
+    local http_listener_arn=$(aws elbv2 describe-listeners \
+      --load-balancer-arn $alb_arn \
+      --region $AWS_REGION \
+      --query "Listeners[?Port==\`80\`].ListenerArn" --output text 2>/dev/null)
+
+    if [ -z "$http_listener_arn" ] || [ "$http_listener_arn" == "None" ]; then
+      log_info "Creating ALB HTTP listener on port 80 (redirect to HTTPS)..." >&2
+      aws elbv2 create-listener \
+        --load-balancer-arn $alb_arn \
+        --protocol HTTP \
+        --port 80 \
+        --default-actions Type=redirect,RedirectConfig='{Protocol=HTTPS,Port=443,StatusCode=HTTP_301}' \
+        --region $AWS_REGION >/dev/null
+    else
+      log_info "Updating ALB HTTP listener on port 80 (redirect to HTTPS)..." >&2
+      aws elbv2 modify-listener \
+        --listener-arn $http_listener_arn \
+        --default-actions Type=redirect,RedirectConfig='{Protocol=HTTPS,Port=443,StatusCode=HTTP_301}' \
+        --region $AWS_REGION >/dev/null
+    fi
+  else
+    local listener_port="$ALB_LISTENER_PORT"
+    local listener_arn=$(aws elbv2 describe-listeners \
+      --load-balancer-arn $alb_arn \
+      --region $AWS_REGION \
+      --query "Listeners[?Port==\`$listener_port\`].ListenerArn" --output text 2>/dev/null)
+
+    if [ -z "$listener_arn" ] || [ "$listener_arn" == "None" ]; then
+      log_info "Creating ALB listener on port $listener_port..." >&2
+      aws elbv2 create-listener \
+        --load-balancer-arn $alb_arn \
+        --protocol HTTP \
+        --port $listener_port \
+        --default-actions Type=forward,TargetGroupArn=$tg_arn \
+        --region $AWS_REGION >/dev/null
+    else
+      log_info "Updating ALB listener on port $listener_port..." >&2
+      aws elbv2 modify-listener \
+        --listener-arn $listener_arn \
+        --default-actions Type=forward,TargetGroupArn=$tg_arn \
+        --region $AWS_REGION >/dev/null
+    fi
+  fi
+}
+
 cmd_deploy() {
-  log_info "Deploying PSM server with HTTPS via API Gateway..."
+  log_info "Deploying PSM server behind an ALB..."
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -343,8 +478,9 @@ cmd_deploy() {
 
   local VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" \
     --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION)
-  local SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query 'Subnets[0].SubnetId' --output text --region $AWS_REGION)
+  local SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'Subnets[].SubnetId' --output text --region $AWS_REGION)
+  local SUBNET_ID=$(echo "$SUBNET_IDS" | awk '{print $1}')
 
   log_info "Creating security group for server..."
   local SG_ID
@@ -356,6 +492,18 @@ cmd_deploy() {
     --query 'GroupId' --output text 2>/dev/null) || \
     SG_ID=$(aws ec2 describe-security-groups --region $AWS_REGION \
       --filters "Name=group-name,Values=psm-server-sg" \
+      --query 'SecurityGroups[0].GroupId' --output text)
+
+  log_info "Creating security group for ALB..."
+  local ALB_SG_ID
+  ALB_SG_ID=$(aws ec2 create-security-group \
+    --group-name $ALB_SG_NAME \
+    --description "PSM ALB" \
+    --vpc-id $VPC_ID \
+    --region $AWS_REGION \
+    --query 'GroupId' --output text 2>/dev/null) || \
+    ALB_SG_ID=$(aws ec2 describe-security-groups --region $AWS_REGION \
+      --filters "Name=group-name,Values=$ALB_SG_NAME" \
       --query 'SecurityGroups[0].GroupId' --output text)
 
   log_info "Creating security group for Postgres..."
@@ -370,12 +518,20 @@ cmd_deploy() {
       --filters "Name=group-name,Values=psm-postgres-sg" \
       --query 'SecurityGroups[0].GroupId' --output text)
 
-  # Allow traffic from anywhere (API Gateway uses public IPs)
-  aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 3000 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
+  # Allow ALB ingress
+  aws ec2 authorize-security-group-ingress --group-id $ALB_SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
+  aws ec2 authorize-security-group-ingress --group-id $ALB_SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
+
+  # Allow ALB to reach the server HTTP port
+  aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 3000 --source-group $ALB_SG_ID --region $AWS_REGION 2>/dev/null || true
   aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 50051 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
 
   # Allow server to access Postgres
   aws ec2 authorize-security-group-ingress --group-id $PG_SG_ID --protocol tcp --port 5432 --source-group $SG_ID --region $AWS_REGION 2>/dev/null || true
+
+  local ALB_ARN=$(cmd_create_alb "$SUBNET_IDS" "$ALB_SG_ID")
+  local TG_ARN=$(cmd_create_alb_target_group "$VPC_ID")
+  cmd_create_alb_listener "$ALB_ARN" "$TG_ARN"
 
   cmd_create_postgres_task_definition
   local SD_SERVICE_ARN=$(cmd_create_service_discovery $VPC_ID)
@@ -391,6 +547,8 @@ cmd_deploy() {
     --launch-type FARGATE \
     --platform-version LATEST \
     --region $AWS_REGION \
+    --health-check-grace-period-seconds 30 \
+    --load-balancers "targetGroupArn=$TG_ARN,containerName=psm-server,containerPort=3000" \
     --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" 2>/dev/null; then
     log_info "Service created"
   else
@@ -399,103 +557,17 @@ cmd_deploy() {
       --cluster $CLUSTER_NAME \
       --service $SERVICE_NAME \
       --task-definition psm-server \
+      --load-balancers "targetGroupArn=$TG_ARN,containerName=psm-server,containerPort=3000" \
       --force-new-deployment \
       --region $AWS_REGION >/dev/null
   fi
 
   wait_for_service $SERVICE_NAME
 
-  # Get the task's public IP
-  local TASK_ARN=$(aws ecs list-tasks \
-    --cluster $CLUSTER_NAME \
-    --service-name $SERVICE_NAME \
+  local ALB_DNS=$(aws elbv2 describe-load-balancers \
+    --load-balancer-arns $ALB_ARN \
     --region $AWS_REGION \
-    --query 'taskArns[0]' --output text)
-
-  local ENI_ID=$(aws ecs describe-tasks \
-    --cluster $CLUSTER_NAME \
-    --tasks $TASK_ARN \
-    --region $AWS_REGION \
-    --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
-
-  local PSM_IP=$(aws ec2 describe-network-interfaces \
-    --network-interface-ids $ENI_ID \
-    --region $AWS_REGION \
-    --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
-
-  log_info "ECS task IP: $PSM_IP"
-
-  # Create API Gateway HTTP API
-  log_info "Creating API Gateway HTTP API..."
-
-  # Check for existing API
-  local API_ID=$(aws apigatewayv2 get-apis \
-    --region $AWS_REGION \
-    --query "Items[?Name=='psm-server-api'].ApiId" --output text 2>/dev/null)
-
-  if [ -n "$API_ID" ] && [ "$API_ID" != "None" ]; then
-    log_info "Found existing API Gateway: $API_ID"
-    # Update the integration with new IP
-    local INTEGRATION_ID=$(aws apigatewayv2 get-integrations \
-      --api-id $API_ID \
-      --region $AWS_REGION \
-      --query "Items[0].IntegrationId" --output text 2>/dev/null)
-
-    if [ -n "$INTEGRATION_ID" ] && [ "$INTEGRATION_ID" != "None" ]; then
-      log_info "Updating integration with new IP..."
-      aws apigatewayv2 update-integration \
-        --api-id $API_ID \
-        --integration-id $INTEGRATION_ID \
-        --integration-uri "http://$PSM_IP:3000/{proxy}" \
-        --region $AWS_REGION >/dev/null
-    fi
-  else
-    # Create new API
-    API_ID=$(aws apigatewayv2 create-api \
-      --name psm-server-api \
-      --protocol-type HTTP \
-      --region $AWS_REGION \
-      --query 'ApiId' --output text)
-
-    log_info "Created API Gateway: $API_ID"
-
-    # Create HTTP proxy integration
-    local INTEGRATION_ID=$(aws apigatewayv2 create-integration \
-      --api-id $API_ID \
-      --integration-type HTTP_PROXY \
-      --integration-method ANY \
-      --integration-uri "http://$PSM_IP:3000/{proxy}" \
-      --payload-format-version "1.0" \
-      --region $AWS_REGION \
-      --query 'IntegrationId' --output text)
-
-    # Create catch-all route
-    aws apigatewayv2 create-route \
-      --api-id $API_ID \
-      --route-key 'ANY /{proxy+}' \
-      --target "integrations/$INTEGRATION_ID" \
-      --region $AWS_REGION >/dev/null
-
-    # Create root route for /health etc
-    aws apigatewayv2 create-route \
-      --api-id $API_ID \
-      --route-key 'ANY /' \
-      --target "integrations/$INTEGRATION_ID" \
-      --region $AWS_REGION >/dev/null 2>/dev/null || true
-
-    # Create default stage with auto-deploy
-    aws apigatewayv2 create-stage \
-      --api-id $API_ID \
-      --stage-name '$default' \
-      --auto-deploy \
-      --region $AWS_REGION >/dev/null
-  fi
-
-  # Get the API endpoint
-  local API_ENDPOINT=$(aws apigatewayv2 get-api \
-    --api-id $API_ID \
-    --region $AWS_REGION \
-    --query 'ApiEndpoint' --output text)
+    --query 'LoadBalancers[0].DNSName' --output text)
 
   # Clean up old task definitions
   cleanup_old_task_definitions "psm-server"
@@ -504,12 +576,15 @@ cmd_deploy() {
   echo ""
   log_info "Deployment complete!"
   echo ""
-  echo "  HTTPS URL: $API_ENDPOINT"
+  local scheme="http"
+  if [ -n "$ACM_CERT_ARN" ]; then
+    scheme="https"
+  fi
+  echo "  URL: ${scheme}://$ALB_DNS"
   echo ""
-  echo "  Health check: curl $API_ENDPOINT/health"
-  echo "  Public key:   curl $API_ENDPOINT/pubkey"
+  echo "  Health check: curl ${scheme}://$ALB_DNS/health"
+  echo "  Public key:   curl ${scheme}://$ALB_DNS/pubkey"
   echo ""
-  log_warn "Note: If you redeploy and the ECS task gets a new IP, run 'deploy --skip-build' to update the API Gateway"
 }
 
 cmd_status() {
@@ -551,20 +626,20 @@ cmd_status() {
   fi
 
   echo ""
-  echo "=== API Gateway ==="
-  local API_ID=$(aws apigatewayv2 get-apis \
+  echo "=== ALB ==="
+  local ALB_ARN=$(aws elbv2 describe-load-balancers \
+    --names $ALB_NAME \
     --region $AWS_REGION \
-    --query "Items[?Name=='psm-server-api'].ApiId" --output text 2>/dev/null)
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
 
-  if [ -n "$API_ID" ] && [ "$API_ID" != "None" ]; then
-    local API_ENDPOINT=$(aws apigatewayv2 get-api \
-      --api-id $API_ID \
+  if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+    local ALB_DNS=$(aws elbv2 describe-load-balancers \
+      --load-balancer-arns $ALB_ARN \
       --region $AWS_REGION \
-      --query 'ApiEndpoint' --output text)
-    echo "API Gateway ID: $API_ID"
-    echo "HTTPS URL: $API_ENDPOINT"
+      --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null)
+    echo "ALB DNS: $ALB_DNS"
   else
-    echo "No API Gateway configured"
+    echo "No ALB configured"
   fi
 }
 
@@ -592,13 +667,33 @@ cmd_cleanup() {
   log_info "Waiting for service to stop..."
   sleep 30
 
-  # Delete API Gateway
-  local API_ID=$(aws apigatewayv2 get-apis \
+  # Delete ALB resources
+  local ALB_ARN=$(aws elbv2 describe-load-balancers \
+    --names $ALB_NAME \
     --region $AWS_REGION \
-    --query "Items[?Name=='psm-server-api'].ApiId" --output text 2>/dev/null)
-  if [ -n "$API_ID" ] && [ "$API_ID" != "None" ]; then
-    log_info "Deleting API Gateway..."
-    aws apigatewayv2 delete-api --api-id $API_ID --region $AWS_REGION 2>/dev/null || true
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
+  if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+    log_info "Deleting ALB listeners..."
+    local LISTENER_ARNS=$(aws elbv2 describe-listeners \
+      --load-balancer-arn $ALB_ARN \
+      --region $AWS_REGION \
+      --query 'Listeners[].ListenerArn' --output text 2>/dev/null)
+    for listener_arn in $LISTENER_ARNS; do
+      aws elbv2 delete-listener --listener-arn $listener_arn --region $AWS_REGION 2>/dev/null || true
+    done
+
+    log_info "Deleting ALB..."
+    aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN --region $AWS_REGION 2>/dev/null || true
+    aws elbv2 wait load-balancers-deleted --load-balancer-arns $ALB_ARN --region $AWS_REGION 2>/dev/null || true
+  fi
+
+  local TG_ARN=$(aws elbv2 describe-target-groups \
+    --names $ALB_TG_NAME \
+    --region $AWS_REGION \
+    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)
+  if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+    log_info "Deleting ALB target group..."
+    aws elbv2 delete-target-group --target-group-arn $TG_ARN --region $AWS_REGION 2>/dev/null || true
   fi
 
   # Delete security groups
@@ -614,6 +709,13 @@ cmd_cleanup() {
     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
   if [ -n "$sg_id" ] && [ "$sg_id" != "None" ]; then
     aws ec2 delete-security-group --group-id $sg_id --region $AWS_REGION 2>/dev/null || true
+  fi
+
+  local alb_sg_id=$(aws ec2 describe-security-groups --region $AWS_REGION \
+    --filters "Name=group-name,Values=$ALB_SG_NAME" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+  if [ -n "$alb_sg_id" ] && [ "$alb_sg_id" != "None" ]; then
+    aws ec2 delete-security-group --group-id $alb_sg_id --region $AWS_REGION 2>/dev/null || true
   fi
 
   log_info "Deleting ECS cluster..."
@@ -678,7 +780,7 @@ case "${COMMAND:-}" in
     echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  deploy   Deploy PSM server with HTTPS (auto-generated URL via API Gateway)"
+    echo "  deploy   Deploy PSM server behind an ALB"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"
     echo "  cleanup  Remove all AWS resources"
@@ -688,7 +790,7 @@ case "${COMMAND:-}" in
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
-    echo "  ./scripts/aws-deploy.sh deploy --skip-build  # Update API Gateway with new IP"
+    echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"
     ;;

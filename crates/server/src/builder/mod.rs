@@ -19,6 +19,7 @@ use crate::canonicalization::CanonicalizationConfig;
 use crate::clock::SystemClock;
 use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
+use crate::middleware::RateLimitConfig;
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
@@ -34,6 +35,7 @@ pub struct ServerBuilder {
     canonicalization: Option<CanonicalizationConfig>,
     logging_config: Option<LoggingConfig>,
     cors_layer: Option<tower_http::cors::CorsLayer>,
+    rate_limit_config: Option<RateLimitConfig>,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -51,6 +53,7 @@ impl ServerBuilder {
             canonicalization: Some(CanonicalizationConfig::default()),
             logging_config: None,
             cors_layer: None,
+            rate_limit_config: None,
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -269,6 +272,33 @@ impl ServerBuilder {
         self
     }
 
+    /// Configure rate limiting for HTTP server
+    ///
+    /// Rate limiting uses two windows: burst (per second) and sustained (per minute).
+    /// Limits are applied per IP, with optional enhancement based on account/signer.
+    ///
+    /// # Arguments
+    /// * `config` - The rate limit configuration to use
+    ///
+    /// # Example
+    /// ```no_run
+    /// use server::builder::ServerBuilder;
+    /// use server::middleware::RateLimitConfig;
+    ///
+    /// // Custom limits
+    /// let builder = ServerBuilder::new()
+    ///     .with_rate_limit(RateLimitConfig::new(10, 60));
+    ///
+    /// // Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN)
+    /// let builder = ServerBuilder::new()
+    ///     .with_rate_limit(RateLimitConfig::from_env());
+    ///
+    /// ```
+    pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
+        self.rate_limit_config = Some(config);
+        self
+    }
+
     /// Build the server handle
     ///
     /// Validates that all required components are configured and returns
@@ -341,6 +371,7 @@ impl ServerBuilder {
         Ok(ServerHandle {
             app_state,
             cors_layer: self.cors_layer,
+            rate_limit_config: self.rate_limit_config,
             http_enabled: self.http_enabled,
             http_port: self.http_port,
             grpc_enabled: self.grpc_enabled,
