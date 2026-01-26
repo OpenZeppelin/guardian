@@ -1,0 +1,38 @@
+# Required: AWS region
+aws_region = "us-east-1"
+
+# Required: ECR image URI for psm-server
+# After pushing to ECR, set this to the full image URI
+server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest"
+
+# Optional: VPC and subnet configuration
+# If not specified, uses the default VPC and all its subnets
+# vpc_id     = "vpc-xxxxxxxx"
+# subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+
+# Optional: Postgres credentials
+# postgres_db       = "psm"
+# postgres_user     = "psm"
+# postgres_password = "psm_dev_password"
+
+# Optional: Route 53 hosted zone ID (auto-lookup by domain name)
+# route53_zone_id = "Z1234567890ABC"
+
+# Optional: Restrict ALB ingress (defaults to 0.0.0.0/0)
+# alb_ingress_cidrs = ["203.0.113.0/24"]
+
+# Optional: CloudWatch log retention
+# log_retention_days = 7
+
+# Optional: Task resource configuration
+# server_cpu    = 512
+# server_memory = 1024
+# postgres_cpu    = 512
+# postgres_memory = 1024
+
+# Optional: Resource naming (defaults match the original bash script)
+# cluster_name          = "psm-cluster"
+# server_service_name   = "psm-server"
+# postgres_service_name = "psm-postgres"
+# alb_name              = "psm-alb"
+# sd_namespace_name     = "psm.local"
