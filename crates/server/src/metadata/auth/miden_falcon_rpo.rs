@@ -1,8 +1,8 @@
-use miden_objects::account::AccountId;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature;
-use miden_objects::crypto::hash::rpo::Rpo256;
-use miden_objects::utils::{Deserializable, Serializable};
-use miden_objects::{Felt, FieldElement, Word};
+use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
+use miden_protocol::crypto::hash::rpo::Rpo256;
+use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::{Felt, FieldElement, Word};
 
 /// Verify a Falcon RPO signature for a request with timestamp
 ///
@@ -118,12 +118,12 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-    use miden_objects::utils::Serializable;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+    use miden_protocol::utils::Serializable;
 
     #[test]
     fn test_falcon_sign_and_verify_account_id_with_timestamp() {
-        use miden_objects::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_falcon_verify_with_wrong_pubkey() {
-        use miden_objects::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
 
         let secret_key1 = SecretKey::new();
         let secret_key2 = SecretKey::new();
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_falcon_verify_with_wrong_message() {
-        use miden_objects::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_falcon_verify_with_wrong_timestamp() {
-        use miden_objects::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();

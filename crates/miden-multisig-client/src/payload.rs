@@ -1,6 +1,6 @@
 //! Payload types for multisig transaction proposals.
 
-use miden_objects::transaction::TransactionSummary;
+use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::{DeltaSignature, ProposalSignature, ToJson};
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +64,7 @@ impl ProposalPayload {
     pub fn with_signature(
         mut self,
         key_manager: &dyn KeyManager,
-        message: miden_objects::Word,
+        message: miden_protocol::Word,
     ) -> Self {
         let signature_hex = key_manager.sign_hex(message);
         self.signatures.push(DeltaSignature {

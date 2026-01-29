@@ -3,8 +3,8 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalS
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
-use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
-use miden_objects::utils::Serializable;
+use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+use miden_protocol::utils::Serializable;
 use private_state_manager_shared::DeltaSignature;
 use private_state_manager_shared::hex::FromHex;
 use tracing::info;

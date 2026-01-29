@@ -1,4 +1,4 @@
-import type { Account } from '@demox-labs/miden-sdk';
+import type { Account } from '@miden-sdk/miden-sdk';
 import type { ProcedureName } from './procedures.js';
 
 export type {

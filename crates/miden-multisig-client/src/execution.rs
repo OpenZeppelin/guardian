@@ -4,10 +4,10 @@ use std::collections::HashSet;
 
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
-use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::asset::FungibleAsset;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
-use miden_objects::{Felt, Word};
+use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::{Felt, Word};
 use private_state_manager_shared::hex::FromHex;
 
 use crate::error::{MultisigError, Result};
@@ -143,7 +143,7 @@ pub fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 
     #[test]
     fn test_collect_signature_advice_filters_by_required() {

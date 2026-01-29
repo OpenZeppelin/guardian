@@ -1,11 +1,11 @@
 /**
  * Falcon Signer implementation for PSM client authentication.
  *
- * This implements the Signer interface using the Miden SDK's SecretKey
+ * This implements the Signer interface using the Miden SDK's AuthSecretKey
  * for Falcon signatures.
  */
 
-import { SecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@demox-labs/miden-sdk';
+import { AuthSecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@miden-sdk/miden-sdk';
 import type { Signer } from './types.js';
 import { bytesToHex } from './utils/encoding.js';
 
@@ -14,7 +14,7 @@ import { bytesToHex } from './utils/encoding.js';
  *
  * @example
  * ```typescript
- * const secretKey = SecretKey.rpoFalconWithRNG(seed);
+ * const secretKey = AuthSecretKey.rpoFalconWithRNG(seed);
  * const signer = new FalconSigner(secretKey);
  * console.log(signer.commitment);
  * ```
@@ -22,9 +22,9 @@ import { bytesToHex } from './utils/encoding.js';
 export class FalconSigner implements Signer {
   readonly commitment: string;
   readonly publicKey: string;
-  private readonly secretKey: SecretKey;
+  private readonly secretKey: AuthSecretKey;
 
-  constructor(secretKey: SecretKey) {
+  constructor(secretKey: AuthSecretKey) {
     this.secretKey = secretKey;
     const pubKey = secretKey.publicKey();
     this.commitment = pubKey.toCommitment().toHex();

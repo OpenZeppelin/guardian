@@ -1,4 +1,4 @@
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import { MIDEN_DB_NAME, MIDEN_RPC_URL } from '@/config';
 import type { SignerInfo } from '@/types';
 
@@ -17,13 +17,10 @@ export async function createWebClient(rpcUrl = MIDEN_RPC_URL): Promise<WebClient
   return client;
 }
 
-export async function initializeSigner(webClient: WebClient): Promise<SignerInfo> {
-  const secretKey = SecretKey.rpoFalconWithRNG(undefined);
-  try {
-    await webClient.addAccountSecretKeyToWebStore(secretKey);
-  } catch {
-    // Key may already exist on reload; ignore
-  }
+export async function initializeSigner(_webClient: WebClient): Promise<SignerInfo> {
+  const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
+  // Note: In v0.13, addAccountSecretKeyToWebStore requires an account_id.
+  // The key is stored in memory and will be associated with accounts when they're created.
   const publicKey = secretKey.publicKey();
   const commitment = publicKey.toCommitment().toHex();
   return { commitment, secretKey };

@@ -1,5 +1,5 @@
-import type { TransactionRequest, TransactionSummary, WebClient } from '@demox-labs/miden-sdk';
-import { AccountId } from '@demox-labs/miden-sdk';
+import type { TransactionRequest, TransactionSummary, WebClient } from '@miden-sdk/miden-sdk';
+import { AccountId } from '@miden-sdk/miden-sdk';
 
 export async function executeForSummary(
   client: WebClient,

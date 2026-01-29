@@ -1,4 +1,4 @@
-import { AdviceMap, Felt, FeltArray, Rpo256, Signature, Word } from '@demox-labs/miden-sdk';
+import { AdviceMap, Felt, FeltArray, Rpo256, Signature, Word } from '@miden-sdk/miden-sdk';
 import { hexToBytes, normalizeHexWord } from './encoding.js';
 
 export function signatureHexToBytes(hex: string): Uint8Array {

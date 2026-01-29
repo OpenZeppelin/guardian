@@ -4,10 +4,10 @@
 //! It serves as the single source of truth for MultisigPsm account creation across the codebase.
 
 use anyhow::{Result, anyhow};
-use miden_lib::account::wallets::BasicWallet;
-use miden_objects::{
+use miden_standards::account::wallets::BasicWallet;
+use miden_protocol::{
     Word,
-    account::{Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot},
+    account::{Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot, StorageSlotName},
 };
 
 use crate::masm_builder::{build_multisig_component, build_psm_component};
@@ -206,30 +206,43 @@ impl MultisigPsmBuilder {
         let num_signers = self.config.signer_commitments.len() as u32;
 
         // Slot 0: Threshold config
-        let slot_0 = StorageSlot::Value(Word::from([self.config.threshold, num_signers, 0, 0]));
+        let threshold_config_name = StorageSlotName::new("openzeppelin::multisig::threshold_config")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let slot_0 = StorageSlot::with_value(
+            threshold_config_name,
+            Word::from([self.config.threshold, num_signers, 0, 0]),
+        );
 
         // Slot 1: Signer public keys map
+        let signer_keys_name = StorageSlotName::new("openzeppelin::multisig::signer_public_keys")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let map_entries = self
             .config
             .signer_commitments
             .iter()
             .enumerate()
             .map(|(i, commitment)| (Word::from([i as u32, 0, 0, 0]), *commitment));
-        let slot_1 = StorageSlot::Map(
+        let slot_1 = StorageSlot::with_map(
+            signer_keys_name,
             StorageMap::with_entries(map_entries)
                 .map_err(|e| anyhow!("failed to create signer keys map: {e}"))?,
         );
 
         // Slot 2: Executed transactions map (empty)
-        let slot_2 = StorageSlot::Map(StorageMap::default());
+        let executed_txs_name = StorageSlotName::new("openzeppelin::multisig::executed_transactions")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let slot_2 = StorageSlot::with_map(executed_txs_name, StorageMap::default());
 
         // Slot 3: Procedure threshold overrides
+        let proc_thresholds_name = StorageSlotName::new("openzeppelin::multisig::procedure_thresholds")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let proc_overrides = self
             .config
             .proc_threshold_overrides
             .iter()
             .map(|(proc_root, threshold)| (*proc_root, Word::from([*threshold, 0, 0, 0])));
-        let slot_3 = StorageSlot::Map(
+        let slot_3 = StorageSlot::with_map(
+            proc_thresholds_name,
             StorageMap::with_entries(proc_overrides)
                 .map_err(|e| anyhow!("failed to create proc threshold map: {e}"))?,
         );
@@ -239,12 +252,17 @@ impl MultisigPsmBuilder {
 
     fn build_psm_slots(&self) -> Result<Vec<StorageSlot>> {
         // Slot 0: PSM selector
+        let psm_selector_name = StorageSlotName::new("openzeppelin::psm::selector")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let selector = if self.config.psm_enabled { 1u32 } else { 0u32 };
-        let slot_0 = StorageSlot::Value(Word::from([selector, 0, 0, 0]));
+        let slot_0 = StorageSlot::with_value(psm_selector_name, Word::from([selector, 0, 0, 0]));
 
         // Slot 1: PSM public key map
+        let psm_public_key_name = StorageSlotName::new("openzeppelin::psm::public_key")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let psm_key_entries = vec![(Word::from([0u32, 0, 0, 0]), self.config.psm_commitment)];
-        let slot_1 = StorageSlot::Map(
+        let slot_1 = StorageSlot::with_map(
+            psm_public_key_name,
             StorageMap::with_entries(psm_key_entries)
                 .map_err(|e| anyhow!("failed to create PSM key map: {e}"))?,
         );

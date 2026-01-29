@@ -1,9 +1,9 @@
 use crate::delta_object::DeltaObject;
 use crate::error::{MidenFalconRpoResult as Result, PsmError};
 use miden_keystore::{FilesystemKeyStore, KeyStore};
-use miden_objects::{
+use miden_protocol::{
     Word,
-    crypto::dsa::rpo_falcon512::{PublicKey, Signature},
+    crypto::dsa::falcon512_rpo::{PublicKey, Signature},
     transaction::TransactionSummary,
     utils::Serializable,
 };

@@ -1,7 +1,7 @@
 //! Configuration types for the multisig client.
 
-use miden_objects::Word;
-use miden_objects::account::AccountStorageMode;
+use miden_protocol::Word;
+use miden_protocol::account::AccountStorageMode;
 
 use crate::procedures::ProcedureName;
 
@@ -135,8 +135,8 @@ impl MultisigConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::Word;
-    use miden_objects::account::AccountStorageMode;
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountStorageMode;
 
     fn dummy_word() -> Word {
         Word::default()

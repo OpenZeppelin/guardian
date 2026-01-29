@@ -3,7 +3,7 @@ import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
 
 // Mock the Miden SDK
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },

@@ -1,10 +1,10 @@
 //! Proposal builder for multisig transactions.
 
 use miden_client::Client;
-use miden_objects::Word;
-use miden_objects::account::AccountId;
-use miden_objects::asset::FungibleAsset;
-use miden_objects::note::NoteId;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::note::NoteId;
 use private_state_manager_client::PsmClient;
 use private_state_manager_shared::ToJson;
 

@@ -1,4 +1,4 @@
-import { Word } from '@demox-labs/miden-sdk';
+import { Word } from '@miden-sdk/miden-sdk';
 
 export function randomWord(): Word {
   const bytes = new Uint8Array(32);

@@ -18,9 +18,9 @@ miden-confidential-contracts = { path = "../contracts" }
 # Miden
 miden-client = { workspace = true, features = ["tonic", "testing"] }
 miden-client-sqlite-store = { workspace = true }
-miden-objects = { workspace = true }
+miden-protocol = { workspace = true }
 miden-tx = { workspace = true }
-miden-lib = { workspace = true }
+miden-standards = { workspace = true }
 
 # Async
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

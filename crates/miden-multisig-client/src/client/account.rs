@@ -7,8 +7,8 @@ use base64::Engine;
 use miden_client::account::Account;
 use miden_client::{Deserializable, Serializable};
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_objects::Word;
-use miden_objects::account::AccountId;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 use private_state_manager_client::{
     AuthConfig, ClientError as PsmClientError, MidenFalconRpoAuth, TryIntoTxSummary,
     auth_config::AuthType,
@@ -198,7 +198,10 @@ impl MultisigClient {
                 .ok_or_else(|| {
                     MultisigError::MissingConfig("account not found after sync".to_string())
                 })?;
-            let refreshed = MultisigAccount::new(account_record.into(), &self.psm_endpoint);
+            let account: Account = account_record.try_into().map_err(|e| {
+                MultisigError::MidenClient(format!("account record is not full: {}", e))
+            })?;
+            let refreshed = MultisigAccount::new(account, &self.psm_endpoint);
             self.account = Some(refreshed);
         }
 

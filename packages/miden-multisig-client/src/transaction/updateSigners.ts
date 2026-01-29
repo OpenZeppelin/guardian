@@ -9,7 +9,7 @@ import {
   WebClient,
   Word,
   Word as WordType,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import { MULTISIG_MASM, PSM_MASM } from '../account/masm.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
@@ -36,7 +36,7 @@ function buildMultisigConfigAdvice(
 }
 
 function buildUpdateSignersScript(webClient: WebClient): TransactionScript {
-  const libBuilder = webClient.createScriptBuilder();
+  const libBuilder = webClient.createCodeBuilder();
   const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
   libBuilder.linkStaticLibrary(psmLib);
 
@@ -44,7 +44,7 @@ function buildUpdateSignersScript(webClient: WebClient): TransactionScript {
   libBuilder.linkDynamicLibrary(multisigLib);
 
   const scriptSource = `
-use.auth::multisig
+use auth::multisig
 
 begin
     call.multisig::update_signers_and_threshold

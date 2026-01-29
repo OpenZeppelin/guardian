@@ -14,8 +14,8 @@ pub use psm::build_update_psm_transaction_request;
 
 use miden_client::transaction::{TransactionExecutorError, TransactionRequest, TransactionSummary};
 use miden_client::{Client, ClientError};
-use miden_objects::account::AccountId;
-use miden_objects::{Felt, FieldElement, Word};
+use miden_protocol::account::AccountId;
+use miden_protocol::{Felt, FieldElement, Word};
 
 use crate::error::{MultisigError, Result};
 

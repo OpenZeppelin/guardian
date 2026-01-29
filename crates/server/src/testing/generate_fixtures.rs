@@ -3,13 +3,19 @@ mod fixtures {
     use miden_client::account::Account;
     use miden_client::{Deserializable, Serializable, Word};
     use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-    use miden_objects::account::AccountDelta;
-    use miden_objects::account::delta::{AccountStorageDelta, AccountVaultDelta};
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-    use miden_objects::transaction::{InputNotes, OutputNotes, TransactionSummary};
-    use miden_objects::{Felt, Word as MidenWord, ZERO};
+    use miden_protocol::account::AccountDelta;
+    use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::StorageSlotName;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, Word as MidenWord, ZERO};
     use private_state_manager_shared::{FromJson, ToJson};
     use std::fs;
+
+    // Storage slot names (matching multisig_psm.rs)
+    const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
+    const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
+    const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
 
     fn create_multisig_psm_account(
         threshold: u64,
@@ -127,14 +133,21 @@ mod fixtures {
         println!("\n🔄 Delta 1: Add 4th signer");
         println!("  New signer: {}", commitment_4_hex);
 
+        let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT)
+            .expect("invalid slot name");
+        let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT)
+            .expect("invalid slot name");
+        let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT)
+            .expect("invalid slot name");
+
         let mut storage_delta_1 = AccountStorageDelta::default();
         storage_delta_1.set_map_item(
-            1,
+            signer_pubkeys_name.clone(),
             MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO]),
             commitment_4,
         );
         storage_delta_1.set_item(
-            0,
+            threshold_config_name.clone(),
             MidenWord::from([Felt::new(threshold), Felt::new(4), ZERO, ZERO]),
         );
 
@@ -161,12 +174,11 @@ mod fixtures {
             .expect("Failed to apply delta 1");
 
         // Apply replay protection (matches what apply_delta does for PSM accounts)
-        const EXECUTED_TXS_SLOT: u8 = 2;
         let tx_commitment_1 = tx_summary_1.to_commitment();
         account_state
             .storage_mut()
             .set_map_item(
-                EXECUTED_TXS_SLOT,
+                &executed_txs_name,
                 tx_commitment_1,
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
@@ -214,12 +226,12 @@ mod fixtures {
 
         let mut storage_delta_2 = AccountStorageDelta::default();
         storage_delta_2.set_map_item(
-            1,
+            signer_pubkeys_name.clone(),
             MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO]),
             commitment_5,
         );
         storage_delta_2.set_item(
-            0,
+            threshold_config_name.clone(),
             MidenWord::from([Felt::new(threshold), Felt::new(5), ZERO, ZERO]),
         );
 
@@ -248,7 +260,7 @@ mod fixtures {
         account_state
             .storage_mut()
             .set_map_item(
-                EXECUTED_TXS_SLOT,
+                &executed_txs_name,
                 tx_commitment_2,
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
@@ -289,7 +301,7 @@ mod fixtures {
         println!("\n🔄 Delta 3: Increase threshold to 3");
 
         let mut storage_delta_3 = AccountStorageDelta::default();
-        storage_delta_3.set_item(0, MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]));
+        storage_delta_3.set_item(threshold_config_name.clone(), MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]));
 
         let delta_3 = AccountDelta::new(
             account_id,
@@ -316,7 +328,7 @@ mod fixtures {
         account_state
             .storage_mut()
             .set_map_item(
-                EXECUTED_TXS_SLOT,
+                &executed_txs_name,
                 tx_commitment_3,
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )

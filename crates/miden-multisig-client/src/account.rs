@@ -1,20 +1,30 @@
 //! Multisig account wrapper with storage inspection helpers.
 
 use miden_client::Serializable;
-use miden_objects::Word;
-use miden_objects::account::{Account, AccountId};
+use miden_protocol::Word;
+use miden_protocol::account::{Account, AccountId, StorageSlotContent, StorageSlotName};
 
 use crate::error::{MultisigError, Result};
+
+// Storage slot names for OpenZeppelin multisig/psm components
+const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
+const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
+const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
+const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
+
+// Alternative slot names for miden-standards auth components
+const STD_THRESHOLD_CONFIG: &str = "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
+const STD_APPROVER_PUBKEYS: &str = "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
 
 /// Wrapper around a Miden Account with multisig-specific helpers.
 ///
 /// This provides convenient access to multisig configuration stored in account storage:
-/// - Slot 0: Threshold config `[threshold, num_signers, 0, 0]`
-/// - Slot 1: Cosigner commitments map `[index, 0, 0, 0] => COMMITMENT`
-/// - Slot 2: Executed transactions map (replay protection)
-/// - Slot 3: Procedure threshold overrides map `PROC_ROOT => [threshold, 0, 0, 0]`
-/// - Slot 4: PSM selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
-/// - Slot 5: PSM public key map
+/// - Threshold config slot: `[threshold, num_signers, 0, 0]`
+/// - Signer commitments map slot: `[index, 0, 0, 0] => COMMITMENT`
+/// - Executed transactions map slot (replay protection)
+/// - Procedure threshold overrides map slot: `PROC_ROOT => [threshold, 0, 0, 0]`
+/// - PSM selector slot: `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
+/// - PSM public key map slot
 #[derive(Debug, Clone)]
 pub struct MultisigAccount {
     account: Account,
@@ -60,37 +70,80 @@ impl MultisigAccount {
         self.account
     }
 
-    /// Returns the multisig threshold from storage slot 0.
+    /// Helper to get a storage item by trying multiple slot names
+    fn get_item_by_names(&self, names: &[&str]) -> Option<Word> {
+        for name in names {
+            if let Ok(slot_name) = StorageSlotName::new(*name) {
+                if let Ok(value) = self.account.storage().get_item(&slot_name) {
+                    return Some(value);
+                }
+            }
+        }
+        None
+    }
+
+    /// Helper to get a map item by trying multiple slot names
+    fn get_map_item_by_names(&self, names: &[&str], key: Word) -> Option<Word> {
+        for name in names {
+            if let Ok(slot_name) = StorageSlotName::new(*name)
+                && let Ok(value) = self.account.storage().get_map_item(&slot_name, key)
+            {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Find a map slot by checking multiple possible names
+    fn find_map_slot_name(&self, candidates: &[&str]) -> Option<String> {
+        for slot in self.account.storage().slots() {
+            let name_str = slot.name().as_str();
+            if candidates.contains(&name_str)
+                && matches!(slot.content(), StorageSlotContent::Map(_))
+            {
+                return Some(name_str.to_string());
+            }
+        }
+        None
+    }
+
+    /// Returns the multisig threshold from storage.
     pub fn threshold(&self) -> Result<u32> {
         let slot_value = self
-            .account
-            .storage()
-            .get_item(0)
-            .map_err(|e| MultisigError::AccountStorage(e.to_string()))?;
+            .get_item_by_names(&[OZ_MULTISIG_THRESHOLD_CONFIG, STD_THRESHOLD_CONFIG])
+            .ok_or_else(|| MultisigError::AccountStorage("threshold config slot not found".to_string()))?;
 
         Ok(slot_value[0].as_int() as u32)
     }
 
-    /// Returns the number of signers from storage slot 0.
+    /// Returns the number of signers from storage.
     pub fn num_signers(&self) -> Result<u32> {
         let slot_value = self
-            .account
-            .storage()
-            .get_item(0)
-            .map_err(|e| MultisigError::AccountStorage(e.to_string()))?;
+            .get_item_by_names(&[OZ_MULTISIG_THRESHOLD_CONFIG, STD_THRESHOLD_CONFIG])
+            .ok_or_else(|| MultisigError::AccountStorage("threshold config slot not found".to_string()))?;
 
         Ok(slot_value[1].as_int() as u32)
     }
 
-    /// Extracts cosigner commitments from storage slot 1.
+    /// Extracts cosigner commitments from signer public keys map slot.
     ///
     /// Returns a vector of commitment Words. Returns empty vector if
-    /// slot 1 is empty or has no entries.
+    /// the slot is empty or has no entries.
     pub fn cosigner_commitments(&self) -> Vec<Word> {
         let mut commitments = Vec::new();
 
+        // Find the map slot name
+        let Some(slot_name) = self.find_map_slot_name(&[OZ_MULTISIG_SIGNER_PUBKEYS, STD_APPROVER_PUBKEYS]) else {
+            return commitments;
+        };
+
         let key_zero = Word::from([0u32, 0, 0, 0]);
-        let first_entry = self.account.storage().get_map_item(1, key_zero);
+        let slot_name_ref = StorageSlotName::new(slot_name.clone()).ok();
+        let Some(slot_name_ref) = slot_name_ref else {
+            return commitments;
+        };
+
+        let first_entry = self.account.storage().get_map_item(&slot_name_ref, key_zero);
 
         if first_entry.is_err() || first_entry.as_ref().unwrap() == &Word::default() {
             return commitments;
@@ -99,7 +152,7 @@ impl MultisigAccount {
         let mut index = 0u32;
         loop {
             let key = Word::from([index, 0, 0, 0]);
-            match self.account.storage().get_map_item(1, key) {
+            match self.account.storage().get_map_item(&slot_name_ref, key) {
                 Ok(value) if value != Word::default() => {
                     commitments.push(value);
                     index += 1;
@@ -124,23 +177,19 @@ impl MultisigAccount {
         self.cosigner_commitments().contains(commitment)
     }
 
-    /// Returns whether PSM verification is enabled (storage slot 4).
+    /// Returns whether PSM verification is enabled.
     pub fn psm_enabled(&self) -> Result<bool> {
         let slot_value = self
-            .account
-            .storage()
-            .get_item(4)
-            .map_err(|e| MultisigError::AccountStorage(e.to_string()))?;
+            .get_item_by_names(&[OZ_PSM_SELECTOR])
+            .ok_or_else(|| MultisigError::AccountStorage("PSM selector slot not found".to_string()))?;
 
         Ok(slot_value[0].as_int() == 1)
     }
 
-    /// Returns the PSM server commitment from storage slot 5.
+    /// Returns the PSM server commitment from PSM public key map slot.
     pub fn psm_commitment(&self) -> Result<Word> {
         let key = Word::from([0u32, 0, 0, 0]);
-        self.account
-            .storage()
-            .get_map_item(5, key)
-            .map_err(|e| MultisigError::AccountStorage(e.to_string()))
+        self.get_map_item_by_names(&[OZ_PSM_PUBLIC_KEY], key)
+            .ok_or_else(|| MultisigError::AccountStorage("PSM public key slot not found".to_string()))
     }
 }

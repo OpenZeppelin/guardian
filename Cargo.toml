@@ -60,12 +60,10 @@ futures = "0.3"
 chrono = "0.4"
 
 # Miden
-miden-objects = "0.12.4"
-miden-lib = "0.12.4"
-miden-tx = "0.12.4"
-miden-node-proto = "0.12.3"
-miden-client = "0.12.5"
-miden-client-sqlite-store = "0.12.5"
-miden-crypto = "0.17.1"
-miden-testing = "0.12.4"
-miden-client-tools = "0.2.4"
+miden-protocol = "0.13"
+miden-standards = "0.13"
+miden-tx = "0.13"
+miden-node-proto = "0.13"
+miden-testing = "0.13"
+miden-client = { git = "https://github.com/0xMiden/miden-client", branch = "next" }
+miden-client-sqlite-store = { git = "https://github.com/0xMiden/miden-client", branch = "next" }

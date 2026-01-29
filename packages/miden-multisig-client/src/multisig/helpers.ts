@@ -1,4 +1,4 @@
-import { Account, TransactionSummary, Word } from '@demox-labs/miden-sdk';
+import { Account, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
 import { base64ToUint8Array } from '../utils/encoding.js';
 
 export function computeCommitmentFromTxSummary(txSummaryBase64: string): string {

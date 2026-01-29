@@ -1,4 +1,4 @@
-import { Word } from '@demox-labs/miden-sdk';
+import { Word } from '@miden-sdk/miden-sdk';
 
 export function wordToHex(word: Word): string {
   return word.toHex();

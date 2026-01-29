@@ -1,8 +1,8 @@
 //! Key management for PSM authentication.
 
 use miden_client::Serializable;
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
-use miden_objects::{FieldElement, Word};
+use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature};
+use miden_protocol::{FieldElement, Word};
 
 /// Trait for managing keys used in PSM authentication and transaction signing.
 pub trait KeyManager: Send + Sync {
@@ -146,12 +146,12 @@ pub fn commitment_from_hex(hex_str: &str) -> Result<Word, String> {
         ));
     }
 
-    let mut felts = [miden_objects::Felt::ZERO; 4];
+    let mut felts = [miden_protocol::Felt::ZERO; 4];
     #[allow(clippy::needless_range_loop)]
     for (i, chunk) in bytes.chunks(8).enumerate() {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(chunk);
-        felts[i] = miden_objects::Felt::new(u64::from_le_bytes(arr));
+        felts[i] = miden_protocol::Felt::new(u64::from_le_bytes(arr));
     }
 
     Ok(felts.into())

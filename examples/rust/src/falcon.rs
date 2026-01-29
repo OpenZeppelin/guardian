@@ -2,15 +2,14 @@ use miden_client::auth::AuthSecretKey;
 use miden_client::crypto::rpo_falcon512::SecretKey;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::Serializable;
-use rand_chacha::ChaCha20Rng;
 
 /// Generate a Falcon keypair and return (full_pubkey_hex, commitment_hex, secret_key)
 pub fn generate_falcon_keypair(
-    keystore: &FilesystemKeyStore<ChaCha20Rng>,
+    keystore: &FilesystemKeyStore,
 ) -> (String, String, SecretKey) {
     // Generate a new secret key
     let secret_key = SecretKey::new();
-    let auth_secret_key = AuthSecretKey::RpoFalcon512(secret_key.clone());
+    let auth_secret_key = AuthSecretKey::Falcon512Rpo(secret_key.clone());
 
     // Add it to the keystore
     keystore
@@ -23,13 +22,13 @@ pub fn generate_falcon_keypair(
 
     // Verify we can retrieve it
     let retrieved_key = keystore
-        .get_key(actual_commitment)
+        .get_key(actual_commitment.into())
         .expect("Failed to get key")
         .expect("Key not found in keystore");
 
     // Verify the retrieved key matches
-    let AuthSecretKey::RpoFalcon512(retrieved_secret) = retrieved_key else {
-        panic!("Expected RpoFalcon512 key but got different variant");
+    let AuthSecretKey::Falcon512Rpo(retrieved_secret) = retrieved_key else {
+        panic!("Expected Falcon512Rpo key but got different variant");
     };
     assert_eq!(
         retrieved_secret.public_key().to_commitment(),

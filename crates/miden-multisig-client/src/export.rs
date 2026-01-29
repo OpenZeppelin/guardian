@@ -5,8 +5,8 @@
 //! side channels (email, USB, etc.) when the PSM server is unavailable.
 //!
 
-use miden_objects::account::AccountId;
-use miden_objects::transaction::TransactionSummary;
+use miden_protocol::account::AccountId;
+use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::FromJson;
 use serde::{Deserialize, Serialize};
 
@@ -337,8 +337,8 @@ impl ExportedProposal {
 }
 
 /// Converts a hex string to Word.
-fn hex_to_word(hex: &str) -> Result<miden_objects::Word> {
-    use miden_objects::Felt;
+fn hex_to_word(hex: &str) -> Result<miden_protocol::Word> {
+    use miden_protocol::Felt;
 
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
     let bytes = hex::decode(hex).map_err(|e| {
@@ -359,7 +359,7 @@ fn hex_to_word(hex: &str) -> Result<miden_objects::Word> {
         arr.copy_from_slice(chunk);
         word[i] = u64::from_le_bytes(arr);
     }
-    Ok(miden_objects::Word::from(word.map(Felt::new)))
+    Ok(miden_protocol::Word::from(word.map(Felt::new)))
 }
 
 #[cfg(test)]

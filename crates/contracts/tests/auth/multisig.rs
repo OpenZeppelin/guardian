@@ -1,22 +1,27 @@
 use miden_confidential_contracts::masm_builder::{get_multisig_library, get_psm_library};
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_lib::note::create_p2id_note;
-use miden_lib::utils::ScriptBuilder;
-use miden_objects::account::{Account, auth::AuthSecretKey};
-use miden_objects::asset::FungibleAsset;
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey};
-use miden_objects::crypto::rand::RpoRandomCoin;
-use miden_objects::note::NoteType;
-use miden_objects::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
-use miden_objects::transaction::OutputNote;
-use miden_objects::vm::{AdviceInputs, AdviceMap};
-use miden_objects::{Felt, Hasher, Word};
+use miden_standards::code_builder::CodeBuilder;
+use miden_standards::note::create_p2id_note;
+use miden_protocol::account::{Account, StorageSlotName, auth::AuthSecretKey};
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey};
+use miden_protocol::crypto::rand::RpoRandomCoin;
+use miden_protocol::note::NoteType;
+use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
+use miden_protocol::transaction::OutputNote;
+use miden_protocol::vm::{AdviceInputs, AdviceMap};
+use miden_protocol::{Felt, Hasher, Word};
 use miden_testing::utils::create_spawn_note;
 use miden_testing::{MockChainBuilder, TxContextInput};
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+
+// Storage slot names for multisig account storage
+const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
+const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
+const PSM_PUBLIC_KEY_SLOT: &str = "openzeppelin::psm::public_key";
 
 // ================================================================================================
 // HELPER FUNCTIONS
@@ -58,7 +63,7 @@ fn setup_keys_and_authenticators(
     // Create authenticators for required signers
     for secret_key in secret_keys.iter().take(threshold) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(secret_key.clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(secret_key.clone())]);
         authenticators.push(authenticator);
     }
 
@@ -86,7 +91,7 @@ fn setup_keys_and_authenticators_with_psm(
     // Create authenticators only for the signers we'll actually use
     for secret_key in secret_keys.iter().take(threshold) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(secret_key.clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(secret_key.clone())]);
         authenticators.push(authenticator);
     }
 
@@ -94,7 +99,7 @@ fn setup_keys_and_authenticators_with_psm(
     let psm_sec_key = SecretKey::with_rng(&mut rng);
     let psm_pub_key = psm_sec_key.public_key();
     let psm_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(psm_sec_key.clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(psm_sec_key.clone())]);
 
     Ok((
         secret_keys,
@@ -114,7 +119,7 @@ fn setup_keys_and_authenticator_for_psm() -> anyhow::Result<PsmTestSetup> {
     let psm_sec_key = SecretKey::with_rng(&mut rng);
     let psm_pub_key = psm_sec_key.public_key();
     let psm_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(psm_sec_key.clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(psm_sec_key.clone())]);
 
     Ok((psm_sec_key, psm_pub_key, psm_authenticator))
 }
@@ -315,14 +320,15 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
     // Build the multisig library for transaction script
     let multisig_library = get_multisig_library()?;
 
-    // Use call.:: syntax for dynamically linked library procedure calls (v0.12+)
+    // Use namespaced call syntax for dynamically linked library procedures
     let tx_script_code = r#"
+    use oz_multisig::multisig
     begin
-        call.::update_signers_and_threshold
+        call.multisig::update_signers_and_threshold
     end
     "#;
 
-    let tx_script = ScriptBuilder::new(true)
+    let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&multisig_library)?
         .compile_tx_script(tx_script_code)?;
 
@@ -390,6 +396,7 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
     updated_multisig_account.apply_delta(update_approvers_tx.account_delta())?;
 
     // Verify that the public keys were actually updated in storage
+    let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
     for (i, expected_key) in new_public_keys.iter().enumerate() {
         let storage_key = [
             Felt::new(i as u64),
@@ -400,7 +407,7 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
         .into();
         let storage_item = updated_multisig_account
             .storage()
-            .get_map_item(1, storage_key)
+            .get_map_item(&signer_pubkeys_name, storage_key)
             .unwrap();
 
         let expected_word: Word = expected_key.to_commitment();
@@ -413,7 +420,8 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
     }
 
     // Verify the threshold was updated by checking storage slot 0
-    let threshold_config_storage = updated_multisig_account.storage().get_item(0).unwrap();
+    let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT).unwrap();
+    let threshold_config_storage = updated_multisig_account.storage().get_item(&threshold_config_name).unwrap();
 
     assert_eq!(
         threshold_config_storage[0],
@@ -434,7 +442,7 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
     let mut new_authenticators = Vec::new();
     for secret_key in _new_secret_keys.iter().take(3) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::RpoFalcon512(secret_key.clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(secret_key.clone())]);
         new_authenticators.push(authenticator);
     }
 
@@ -589,17 +597,18 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
     // Build the PSM library for transaction script
     let psm_library = get_psm_library()?;
 
-    // Use call.:: syntax for dynamically linked library procedure calls (v0.12+)
+    // Use namespaced call syntax for dynamically linked library procedures
     // This script only calls update_psm_public_key.
     // Note: enable_psm is now a private procedure and is automatically called
     // by verify_psm_signature at the end of transaction authentication.
     let tx_script_code = r#"
+    use oz_psm::psm
     begin
-        call.::update_psm_public_key
+        call.psm::update_psm_public_key
     end
     "#;
 
-    let tx_script = ScriptBuilder::new(true)
+    let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&psm_library)?
         .compile_tx_script(tx_script_code)?;
 
@@ -656,9 +665,10 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
     let storage_key = [Felt::new(0), Felt::new(0), Felt::new(0), Felt::new(0)].into();
 
     // Verify the psm public key was actually updated in storage
+    let psm_public_key_name = StorageSlotName::new(PSM_PUBLIC_KEY_SLOT).unwrap();
     let storage_item = updated_multisig_account
         .storage()
-        .get_map_item(5, storage_key)
+        .get_map_item(&psm_public_key_name, storage_key)
         .unwrap();
 
     let expected_word: Word = _new_psm_public_key.to_commitment();

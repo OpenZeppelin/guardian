@@ -5,8 +5,8 @@
 
 use std::collections::HashSet;
 
-use miden_objects::asset::FungibleAsset;
-use miden_objects::transaction::TransactionSummary;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::{FromJson, ToJson};
 
 use super::MultisigClient;

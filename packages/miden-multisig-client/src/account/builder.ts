@@ -10,7 +10,7 @@ import {
   AccountType,
   AccountStorageMode,
   type WebClient,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
 import { buildMultisigStorageSlots, buildPsmStorageSlots } from './storage.js';
 import { MULTISIG_MASM, PSM_MASM } from './masm.js';
@@ -27,20 +27,19 @@ export async function createMultisigAccount(
   config: MultisigConfig
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
-
   const multisigSlots = buildMultisigStorageSlots(config);
   const psmSlots = buildPsmStorageSlots(config);
-
-  const psmBuilder = webClient.createScriptBuilder();
+  const psmBuilder = webClient.createCodeBuilder();
+  const psmCode = psmBuilder.compileAccountComponentCode(PSM_MASM);
   const psmComponent = AccountComponent
-    .compile(PSM_MASM, psmBuilder, psmSlots)
+    .compile(psmCode, psmSlots)
     .withSupportsAllTypes();
-
-  const multisigBuilder = webClient.createScriptBuilder();
+  const multisigBuilder = webClient.createCodeBuilder();
   const psmLib = multisigBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
   multisigBuilder.linkStaticLibrary(psmLib);
+  const multisigCode = multisigBuilder.compileAccountComponentCode(MULTISIG_MASM);
   const multisigComponent = AccountComponent
-    .compile(MULTISIG_MASM, multisigBuilder, multisigSlots)
+    .compile(multisigCode, multisigSlots)
     .withSupportsAllTypes();
 
   // Generate random seed

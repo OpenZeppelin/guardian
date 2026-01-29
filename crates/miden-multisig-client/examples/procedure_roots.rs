@@ -9,8 +9,8 @@
 //! ```
 
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_lib::account::wallets::BasicWallet;
-use miden_objects::{Felt, Word};
+use miden_standards::account::wallets::BasicWallet;
+use miden_protocol::{Felt, Word};
 
 fn main() {
     // Helper to format Word as hex (big-endian)
@@ -34,11 +34,11 @@ fn main() {
 
     println!("\n=== PROCEDURE ROOTS ===\n");
 
-    // BasicWallet procedure roots (compile-time constants from miden_lib)
+    // BasicWallet procedure roots (compile-time constants from miden_standards)
     let receive_asset = BasicWallet::receive_asset_digest();
     let send_asset = BasicWallet::move_asset_to_note_digest();
 
-    println!("BasicWallet procedures (from miden_lib):");
+    println!("BasicWallet procedures (from miden_standards):");
     println!("  receive_asset: 0x{}", word_to_hex(&receive_asset));
     println!("  send_asset:    0x{}", word_to_hex(&send_asset));
 

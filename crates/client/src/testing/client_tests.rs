@@ -8,8 +8,8 @@ use crate::{
     GetDeltaSinceResponse, GetStateResponse, PsmClient, PushDeltaProposalResponse,
     PushDeltaResponse, SignDeltaProposalResponse,
 };
-use miden_objects::account::AccountId;
-use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::Status;
 

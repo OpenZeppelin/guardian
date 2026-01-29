@@ -2,14 +2,15 @@
 //!
 //! Functions for building P2ID (pay-to-id) and other payment transactions.
 
+use miden_client::account::AccountInterfaceExt;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
-use miden_lib::account::interface::AccountInterface;
-use miden_lib::note::create_p2id_note;
-use miden_objects::account::{Account, AccountId};
-use miden_objects::asset::Asset;
-use miden_objects::crypto::rand::RpoRandomCoin;
-use miden_objects::note::NoteType;
-use miden_objects::{Felt, Word};
+use miden_standards::account::interface::AccountInterface;
+use miden_standards::note::create_p2id_note;
+use miden_protocol::account::{Account, AccountId};
+use miden_protocol::asset::Asset;
+use miden_protocol::crypto::rand::RpoRandomCoin;
+use miden_protocol::note::NoteType;
+use miden_protocol::{Felt, Word};
 
 use crate::error::{MultisigError, Result};
 
@@ -42,9 +43,9 @@ where
     })?;
 
     // Build the send notes script using AccountInterface
-    let account_interface = AccountInterface::from(sender_account);
+    let account_interface = AccountInterface::from_account(sender_account);
     let send_script = account_interface
-        .build_send_notes_script(&[note.clone().into()], None, false)
+        .build_send_notes_script(&[note.clone().into()], None)
         .map_err(|e| {
             MultisigError::TransactionExecution(format!("failed to build send script: {}", e))
         })?;

@@ -18,7 +18,7 @@ import type {
   ProposalType,
 } from './types.js';
 import type { ProcedureName } from './procedures.js';
-import type { WebClient, TransactionRequest } from '@demox-labs/miden-sdk';
+import type { WebClient, TransactionRequest } from '@miden-sdk/miden-sdk';
 import {
   Account,
   AccountId,
@@ -27,7 +27,7 @@ import {
   Signature,
   TransactionSummary,
   Word,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
@@ -565,7 +565,7 @@ export class Multisig {
       // Only include notes that can be consumed now (consumableAfterBlock is undefined/null)
       const canConsumeNow = consumability.some(
         (c) => c.accountId().toString().toLowerCase() === this._accountId.toLowerCase() &&
-               c.consumableAfterBlock() === undefined
+               c.consumptionStatus().consumableAfterBlock() === undefined
       );
 
       if (canConsumeNow) {

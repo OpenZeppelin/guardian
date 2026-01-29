@@ -2,7 +2,7 @@
 //!
 //! Extracted from: `cargo test --package miden-confidential-contracts log_procedure_roots -- --nocapture`
 
-use miden_objects::{Felt, Word};
+use miden_protocol::{Felt, Word};
 
 /// Procedure names that can be used for threshold overrides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

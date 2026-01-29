@@ -1,7 +1,20 @@
 import type { MultisigConfig } from '../types.js';
-import { StorageSlot, StorageMap, Word } from '@demox-labs/miden-sdk';
+import { StorageSlot, StorageMap, Word } from '@miden-sdk/miden-sdk';
 import { ensureHexPrefix } from '../utils/encoding.js';
 import { getProcedureRoot } from '../procedures.js';
+
+// Storage slot names matching the MASM definitions
+const MULTISIG_SLOT_NAMES = {
+  THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
+  SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
+  EXECUTED_TRANSACTIONS: 'openzeppelin::multisig::executed_transactions',
+  PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
+} as const;
+
+const PSM_SLOT_NAMES = {
+  SELECTOR: 'openzeppelin::psm::selector',
+  PUBLIC_KEY: 'openzeppelin::psm::public_key',
+} as const;
 
 export class StorageLayoutBuilder {
   buildMultisigSlots(config: MultisigConfig): StorageSlot[] {
@@ -14,7 +27,7 @@ export class StorageLayoutBuilder {
         0n,
       ])
     );
-    const slot0 = StorageSlot.fromValue(slot0Word);
+    const slot0 = StorageSlot.fromValue(MULTISIG_SLOT_NAMES.THRESHOLD_CONFIG, slot0Word);
 
     const signersMap = new StorageMap();
     config.signerCommitments.forEach((commitment, index) => {
@@ -22,9 +35,9 @@ export class StorageLayoutBuilder {
       const value = Word.fromHex(ensureHexPrefix(commitment));
       signersMap.insert(key, value);
     });
-    const slot1 = StorageSlot.map(signersMap);
+    const slot1 = StorageSlot.map(MULTISIG_SLOT_NAMES.SIGNER_PUBLIC_KEYS, signersMap);
 
-    const slot2 = StorageSlot.map(new StorageMap());
+    const slot2 = StorageSlot.map(MULTISIG_SLOT_NAMES.EXECUTED_TRANSACTIONS, new StorageMap());
 
     // Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
     // Use SDK's Word.fromHex to match how account code procedure roots are represented
@@ -37,7 +50,7 @@ export class StorageLayoutBuilder {
         procThresholdMap.insert(key, value);
       }
     }
-    const slot3 = StorageSlot.map(procThresholdMap);
+    const slot3 = StorageSlot.map(MULTISIG_SLOT_NAMES.PROCEDURE_THRESHOLDS, procThresholdMap);
 
     return [slot0, slot1, slot2, slot3];
   }
@@ -45,13 +58,13 @@ export class StorageLayoutBuilder {
   buildPsmSlots(config: MultisigConfig): StorageSlot[] {
     const selector = config.psmEnabled !== false ? 1n : 0n;
     const selectorWord = new Word(new BigUint64Array([selector, 0n, 0n, 0n]));
-    const slot0 = StorageSlot.fromValue(selectorWord);
+    const slot0 = StorageSlot.fromValue(PSM_SLOT_NAMES.SELECTOR, selectorWord);
 
     const psmKeyMap = new StorageMap();
     const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
     const psmKey = Word.fromHex(ensureHexPrefix(config.psmCommitment));
     psmKeyMap.insert(zeroKey, psmKey);
-    const slot1 = StorageSlot.map(psmKeyMap);
+    const slot1 = StorageSlot.map(PSM_SLOT_NAMES.PUBLIC_KEY, psmKeyMap);
 
     return [slot0, slot1];
   }

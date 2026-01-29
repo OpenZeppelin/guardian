@@ -10,8 +10,8 @@ homepage.workspace = true
 default-run = "miden-confidential-contracts"
 
 [dependencies]
-miden-lib = { workspace = true }
-miden-objects = { workspace = true }
+miden-standards = { workspace = true }
+miden-protocol = { workspace = true }
 miden-tx = { workspace = true }
 miden-testing = { workspace = true }
 
@@ -20,8 +20,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"
 
 [dev-dependencies]
 miden-client = { workspace = true, features = ["testing", "tonic"] }
-miden-client-tools = { workspace = true }
-miden-crypto = { workspace = true, features = ["executable"] }
 
 rand = { workspace = true }
 rand_chacha = { workspace = true }

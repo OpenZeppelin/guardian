@@ -5,7 +5,7 @@ use crate::network::NetworkClient;
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
-use miden_objects::account::Account;
+use miden_protocol::account::Account;
 use private_state_manager_shared::FromJson;
 use std::sync::{Arc, Mutex as StdMutex};
 

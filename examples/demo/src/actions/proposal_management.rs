@@ -6,7 +6,7 @@ use miden_multisig_client::{
     commitment_from_hex, ensure_hex_prefix, Asset, ExportedProposal, NoteId, ProposalStatus,
     TransactionType,
 };
-use miden_objects::account::AccountId;
+use miden_protocol::account::AccountId;
 use rustyline::DefaultEditor;
 
 use crate::display::{

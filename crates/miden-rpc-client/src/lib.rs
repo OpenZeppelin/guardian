@@ -1,12 +1,12 @@
 //! Minimal Miden RPC client using miden-node-proto crate
-use miden_objects::{account::AccountId, utils::Serializable};
+use miden_protocol::{account::AccountId, utils::Serializable};
 use tonic::{
     transport::{Channel, ClientTlsConfig},
     Request,
 };
 
 pub use miden_node_proto::generated::{
-    account, block_producer, blockchain, note, primitives, rpc, rpc_store, shared, transaction,
+    account, block_producer, blockchain, note, primitives, rpc, store, transaction,
 };
 pub use rpc::api_client::ApiClient;
 
@@ -53,8 +53,8 @@ impl MidenRpcClient {
         &mut self,
         block_num: Option<u32>,
         include_mmr_proof: bool,
-    ) -> Result<shared::BlockHeaderByNumberResponse, String> {
-        let request = shared::BlockHeaderByNumberRequest {
+    ) -> Result<rpc::BlockHeaderByNumberResponse, String> {
+        let request = rpc::BlockHeaderByNumberRequest {
             block_num,
             include_mmr_proof: Some(include_mmr_proof),
         };
@@ -72,19 +72,18 @@ impl MidenRpcClient {
     pub async fn submit_transaction(
         &mut self,
         proven_tx_bytes: Vec<u8>,
-    ) -> Result<block_producer::SubmitProvenTransactionResponse, String> {
+    ) -> Result<(), String> {
         let request = transaction::ProvenTransaction {
             transaction: proven_tx_bytes,
             transaction_inputs: None,
         };
 
-        let response = self
-            .client
+        self.client
             .submit_proven_transaction(Request::new(request))
             .await
             .map_err(|e| format!("SubmitProvenTransaction RPC failed: {e}"))?;
 
-        Ok(response.into_inner())
+        Ok(())
     }
 
     /// Sync state for specified accounts and note tags
@@ -93,13 +92,13 @@ impl MidenRpcClient {
         block_num: u32,
         account_ids: Vec<Vec<u8>>,
         note_tags: Vec<u32>,
-    ) -> Result<rpc_store::SyncStateResponse, String> {
+    ) -> Result<rpc::SyncStateResponse, String> {
         let account_ids = account_ids
             .into_iter()
             .map(|id| account::AccountId { id })
             .collect();
 
-        let request = rpc_store::SyncStateRequest {
+        let request = rpc::SyncStateRequest {
             block_num,
             account_ids,
             note_tags,
@@ -118,8 +117,8 @@ impl MidenRpcClient {
     pub async fn check_nullifiers(
         &mut self,
         nullifiers: Vec<primitives::Digest>,
-    ) -> Result<rpc_store::CheckNullifiersResponse, String> {
-        let request = rpc_store::NullifierList { nullifiers };
+    ) -> Result<rpc::CheckNullifiersResponse, String> {
+        let request = rpc::NullifierList { nullifiers };
 
         let response = self
             .client
@@ -157,25 +156,30 @@ impl MidenRpcClient {
     ) -> Result<String, String> {
         let account_id_bytes = account_id.to_bytes();
 
-        let request = Request::new(account::AccountId {
-            id: account_id_bytes.to_vec(),
+        let request = Request::new(rpc::AccountRequest {
+            account_id: Some(account::AccountId {
+                id: account_id_bytes.to_vec(),
+            }),
+            block_num: None,
+            details: None,
         });
 
         let response = self
             .client
-            .get_account_details(request)
+            .get_account(request)
             .await
             .map_err(|e| format!("RPC call failed: {e}"))?;
 
-        let account_details = response.into_inner();
+        let account_response = response.into_inner();
 
-        let summary = account_details
-            .summary
-            .ok_or_else(|| "No account summary in response".to_string())?;
+        // Get commitment from witness (which contains the state commitment)
+        let witness = account_response
+            .witness
+            .ok_or_else(|| "No witness in account response".to_string())?;
 
-        let commitment = summary
-            .account_commitment
-            .ok_or_else(|| "No commitment in account summary".to_string())?;
+        let commitment = witness
+            .commitment
+            .ok_or_else(|| "No commitment in witness".to_string())?;
 
         // Convert Digest to hex string
         let bytes = [
@@ -193,16 +197,20 @@ impl MidenRpcClient {
     pub async fn get_account_details(
         &mut self,
         account_id: &AccountId,
-    ) -> Result<account::AccountDetails, String> {
+    ) -> Result<rpc::AccountResponse, String> {
         let account_id_bytes = account_id.to_bytes();
 
-        let request = Request::new(account::AccountId {
-            id: account_id_bytes.to_vec(),
+        let request = Request::new(rpc::AccountRequest {
+            account_id: Some(account::AccountId {
+                id: account_id_bytes.to_vec(),
+            }),
+            block_num: None,
+            details: None,
         });
 
         let response = self
             .client
-            .get_account_details(request)
+            .get_account(request)
             .await
             .map_err(|e| format!("RPC call failed: {e}"))?;
 

@@ -1,9 +1,9 @@
 //! Internal helper functions for PSM client interactions.
 
 use miden_client::account::Account;
-use miden_objects::account::AccountId;
-use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
+use miden_protocol::account::AccountId;
+use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use private_state_manager_client::{Auth, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::hex::FromHex;
 
@@ -48,14 +48,14 @@ impl MultisigClient {
         account: &MultisigAccount,
         nonce: u64,
         tx_summary: &miden_client::transaction::TransactionSummary,
-        tx_summary_commitment: miden_objects::Word,
+        tx_summary_commitment: miden_protocol::Word,
     ) -> Result<crate::execution::SignatureAdvice> {
         use private_state_manager_shared::ToJson;
 
         let account_id = account.id();
         let prev_commitment = format!(
             "0x{}",
-            hex::encode(miden_objects::utils::serde::Serializable::to_bytes(
+            hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
                 &account.commitment(),
             ))
         );
@@ -138,7 +138,9 @@ impl MultisigClient {
                 MultisigError::MissingConfig("account not found after sync".to_string())
             })?;
 
-        let updated_account: Account = account_record.into();
+        let updated_account: Account = account_record.try_into().map_err(|e| {
+            MultisigError::MidenClient(format!("account record is not full: {}", e))
+        })?;
 
         // Update PSM endpoint if this was a SwitchPsm transaction, then register on new PSM
         if let Some(endpoint) = new_psm_endpoint {

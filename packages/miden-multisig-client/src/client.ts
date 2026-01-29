@@ -5,7 +5,7 @@
  * to create new multisig accounts and load existing ones.
  */
 
-import { type WebClient, Account, AccountId } from '@demox-labs/miden-sdk';
+import { type WebClient, Account, AccountId } from '@miden-sdk/miden-sdk';
 import { PsmHttpClient } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
@@ -26,7 +26,7 @@ export interface MultisigClientConfig {
  * @example
  * ```typescript
  * import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
- * import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+ * import { WebClient, SecretKey } from '@miden-sdk/miden-sdk';
  *
  * // Initialize
  * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');

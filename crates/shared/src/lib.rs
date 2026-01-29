@@ -1,7 +1,7 @@
 use base64::Engine;
-use miden_objects::account::Account;
-use miden_objects::transaction::TransactionSummary;
-use miden_objects::utils::serde::{Deserializable, Serializable};
+use miden_protocol::account::Account;
+use miden_protocol::transaction::TransactionSummary;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde::{Deserialize, Serialize};
 
 pub mod auth;
@@ -115,11 +115,11 @@ impl FromJson for TransactionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_lib::account::{auth::AuthRpoFalcon512, wallets::BasicWallet};
-    use miden_objects::{
+    use miden_protocol::{
         account::{AccountBuilder, auth::PublicKeyCommitment},
-        crypto::dsa::rpo_falcon512::SecretKey,
+        crypto::dsa::falcon512_rpo::SecretKey,
     };
+    use miden_standards::account::{auth::AuthFalcon512Rpo, wallets::BasicWallet};
 
     #[test]
     fn test_account_json_round_trip() {
@@ -128,7 +128,7 @@ mod tests {
         let public_key_commitment =
             PublicKeyCommitment::from(secret_key.public_key().to_commitment());
         let account = AccountBuilder::new([0xff; 32])
-            .with_auth_component(AuthRpoFalcon512::new(public_key_commitment))
+            .with_auth_component(AuthFalcon512Rpo::new(public_key_commitment))
             .with_component(BasicWallet)
             .build()
             .unwrap();
@@ -145,8 +145,8 @@ mod tests {
         assert_eq!(account.nonce(), deserialized_account.nonce());
         assert_eq!(account.commitment(), deserialized_account.commitment());
         assert_eq!(
-            account.storage().commitment(),
-            deserialized_account.storage().commitment()
+            account.storage().to_commitment(),
+            deserialized_account.storage().to_commitment()
         );
         assert_eq!(
             account.code().commitment(),

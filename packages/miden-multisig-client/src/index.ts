@@ -9,7 +9,7 @@
  *   MultisigClient,
  *   FalconSigner,
  * } from '@openzeppelin/miden-multisig-client';
- * import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+ * import { WebClient, SecretKey } from '@miden-sdk/miden-sdk';
  *
  * // Initialize WebClient
  * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
