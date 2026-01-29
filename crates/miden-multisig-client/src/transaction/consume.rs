@@ -1,7 +1,7 @@
 //! Note consumption transaction utilities.
 
-use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequestBuilder};
 use miden_client::Client;
+use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::note::{Note, NoteId};
 use miden_protocol::{Felt, Word};
 
@@ -56,10 +56,7 @@ where
 
         // Convert InputNoteRecord to Note using TryInto
         let note: Note = input_note_record.try_into().map_err(|e| {
-            MultisigError::InvalidConfig(format!(
-                "failed to convert note record to note: {:?}",
-                e
-            ))
+            MultisigError::InvalidConfig(format!("failed to convert note record to note: {:?}", e))
         })?;
 
         notes.push((note, None));

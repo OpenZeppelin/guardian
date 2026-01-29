@@ -4,9 +4,7 @@ use miden_client::keystore::FilesystemKeyStore;
 use miden_client::Serializable;
 
 /// Generate a Falcon keypair and return (full_pubkey_hex, commitment_hex, secret_key)
-pub fn generate_falcon_keypair(
-    keystore: &FilesystemKeyStore,
-) -> (String, String, SecretKey) {
+pub fn generate_falcon_keypair(keystore: &FilesystemKeyStore) -> (String, String, SecretKey) {
     // Generate a new secret key
     let secret_key = SecretKey::new();
     let auth_secret_key = AuthSecretKey::Falcon512Rpo(secret_key.clone());

@@ -8,8 +8,10 @@ const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_
 const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
 
 // Alternative slot names for miden-standards auth components
-const STD_THRESHOLD_CONFIG: &str = "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
-const STD_APPROVER_PUBKEYS: &str = "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
+const STD_THRESHOLD_CONFIG: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
+const STD_APPROVER_PUBKEYS: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,

@@ -9,8 +9,8 @@
 //! ```
 
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_standards::account::wallets::BasicWallet;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::wallets::BasicWallet;
 
 fn main() {
     // Helper to format Word as hex (big-endian)

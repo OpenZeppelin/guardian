@@ -1,15 +1,7 @@
 use assert_matches::assert_matches;
-use miden_standards::account::components::falcon_512_rpo_multisig_library;
-use miden_standards::account::interface::AccountInterface;
-use miden_standards::account::interface::AccountInterfaceExt;
-use miden_standards::account::wallets::BasicWallet;
-use miden_standards::code_builder::CodeBuilder;
-use miden_standards::errors::standards::ERR_TX_ALREADY_EXECUTED;
-use miden_standards::note::NoteConsumptionStatus;
-use miden_standards::note::create_p2id_note;
-use miden_standards::testing::account_interface::get_public_keys_from_account;
 use miden_protocol::account::{
-    Account, AccountBuilder, AccountId, AccountStorageMode, AccountType, StorageSlotName, auth::AuthSecretKey,
+    Account, AccountBuilder, AccountId, AccountStorageMode, AccountType, StorageSlotName,
+    auth::AuthSecretKey,
 };
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey};
@@ -21,6 +13,15 @@ use miden_protocol::testing::account_id::{
 use miden_protocol::transaction::OutputNote;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::account::components::falcon_512_rpo_multisig_library;
+use miden_standards::account::interface::AccountInterface;
+use miden_standards::account::interface::AccountInterfaceExt;
+use miden_standards::account::wallets::BasicWallet;
+use miden_standards::code_builder::CodeBuilder;
+use miden_standards::errors::standards::ERR_TX_ALREADY_EXECUTED;
+use miden_standards::note::NoteConsumptionStatus;
+use miden_standards::note::create_p2id_note;
+use miden_standards::testing::account_interface::get_public_keys_from_account;
 use miden_testing::utils::create_spawn_note;
 use miden_testing::{Auth, MockChainBuilder};
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
@@ -29,10 +30,13 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 // Storage slot names for multisig account storage (matching miden-standards)
-const THRESHOLD_CONFIG_SLOT: &str = "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
-const APPROVER_PUBKEYS_SLOT: &str = "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
+const THRESHOLD_CONFIG_SLOT: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
+const APPROVER_PUBKEYS_SLOT: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
 #[allow(dead_code)]
-const EXECUTED_TXS_SLOT: &str = "miden::standards::auth::falcon512_rpo_multisig::executed_transactions";
+const EXECUTED_TXS_SLOT: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::executed_transactions";
 
 // ================================================================================================
 // HELPER FUNCTIONS
@@ -442,7 +446,10 @@ async fn test_multisig_update_signers() -> anyhow::Result<()> {
     }
 
     // Verify the threshold was updated by checking storage slot 0
-    let threshold_config_storage = updated_multisig_account.storage().get_item(&threshold_config_name).unwrap();
+    let threshold_config_storage = updated_multisig_account
+        .storage()
+        .get_item(&threshold_config_name)
+        .unwrap();
 
     assert_eq!(
         threshold_config_storage[0],
@@ -615,7 +622,9 @@ async fn test_multisig_update_signers_remove_owner() -> anyhow::Result<()> {
     // Create transaction script
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(falcon_512_rpo_multisig_library())?
-        .compile_tx_script("begin\n    call.::falcon_512_rpo_multisig::update_signers_and_threshold\nend")?;
+        .compile_tx_script(
+            "begin\n    call.::falcon_512_rpo_multisig::update_signers_and_threshold\nend",
+        )?;
 
     let advice_inputs =
         AdviceInputs::default().with_map(advice_map.into_iter().map(|(k, v)| (k, v.to_vec())));
@@ -706,7 +715,10 @@ async fn test_multisig_update_signers_remove_owner() -> anyhow::Result<()> {
     }
 
     // Verify threshold and num_approvers
-    let threshold_config = updated_multisig_account.storage().get_item(&threshold_config_name2).unwrap();
+    let threshold_config = updated_multisig_account
+        .storage()
+        .get_item(&threshold_config_name2)
+        .unwrap();
     assert_eq!(
         threshold_config[0],
         Felt::new(threshold),
@@ -1126,10 +1138,8 @@ async fn test_multisig_proc_threshold_overrides() -> anyhow::Result<()> {
         &mut RpoRandomCoin::new(Word::from([Felt::new(42); 4])),
     )?;
     let multisig_account_interface = AccountInterface::from_account(&multisig_account);
-    let send_note_transaction_script = multisig_account_interface.build_send_notes_script(
-        &[output_note.clone().into()],
-        None,
-    )?;
+    let send_note_transaction_script =
+        multisig_account_interface.build_send_notes_script(&[output_note.clone().into()], None)?;
 
     // Execute transaction without signatures to get tx summary
     let tx_context_init = mock_chain

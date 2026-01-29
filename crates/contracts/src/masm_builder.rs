@@ -9,8 +9,8 @@ use anyhow::{Result, anyhow};
 use miden_protocol::{
     account::{AccountComponent, StorageSlot},
     assembly::{
-        Assembler, DefaultSourceManager, Library, Module, ModuleKind,
-        Path as LibraryPath, SourceManager,
+        Assembler, DefaultSourceManager, Library, Module, ModuleKind, Path as LibraryPath,
+        SourceManager,
     },
     transaction::TransactionKernel,
 };

@@ -4,8 +4,8 @@ mod fixtures {
     use miden_client::{Deserializable, Serializable, Word};
     use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
     use miden_protocol::account::AccountDelta;
-    use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
     use miden_protocol::account::StorageSlotName;
+    use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
     use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
     use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word as MidenWord, ZERO};
@@ -133,12 +133,11 @@ mod fixtures {
         println!("\n🔄 Delta 1: Add 4th signer");
         println!("  New signer: {}", commitment_4_hex);
 
-        let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT)
-            .expect("invalid slot name");
-        let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT)
-            .expect("invalid slot name");
-        let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT)
-            .expect("invalid slot name");
+        let threshold_config_name =
+            StorageSlotName::new(THRESHOLD_CONFIG_SLOT).expect("invalid slot name");
+        let signer_pubkeys_name =
+            StorageSlotName::new(SIGNER_PUBKEYS_SLOT).expect("invalid slot name");
+        let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT).expect("invalid slot name");
 
         let mut storage_delta_1 = AccountStorageDelta::default();
         storage_delta_1.set_map_item(
@@ -301,7 +300,10 @@ mod fixtures {
         println!("\n🔄 Delta 3: Increase threshold to 3");
 
         let mut storage_delta_3 = AccountStorageDelta::default();
-        storage_delta_3.set_item(threshold_config_name.clone(), MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]));
+        storage_delta_3.set_item(
+            threshold_config_name.clone(),
+            MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]),
+        );
 
         let delta_3 = AccountDelta::new(
             account_id,

@@ -2,9 +2,9 @@
 
 use std::collections::HashSet;
 
+use miden_client::Client;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
-use miden_client::Client;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;

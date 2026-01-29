@@ -199,9 +199,8 @@ impl NetworkClient for MidenNetworkClient {
             let tx_commitment = tx_summary.to_commitment();
             let flag_word = Word::from(IS_EXECUTED_FLAG);
 
-            let slot_name = StorageSlotName::new(EXECUTED_TXS_SLOT_NAME).map_err(|e| {
-                format!("Failed to create storage slot name: {e}")
-            })?;
+            let slot_name = StorageSlotName::new(EXECUTED_TXS_SLOT_NAME)
+                .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
 
             account
                 .storage_mut()
@@ -488,12 +487,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_delta_full_state() {
-        use miden_standards::account::auth::NoAuth;
-        use miden_standards::account::wallets::BasicWallet;
         use miden_protocol::Felt;
         use miden_protocol::account::AccountDelta;
         use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
         use miden_protocol::account::{AccountBuilder, AccountStorageMode, AccountType};
+        use miden_standards::account::auth::NoAuth;
+        use miden_standards::account::wallets::BasicWallet;
 
         let network = NetworkType::MidenTestnet;
         let client = MidenNetworkClient::from_network(network)

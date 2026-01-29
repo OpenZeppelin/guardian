@@ -1,7 +1,5 @@
 use miden_confidential_contracts::masm_builder::{get_multisig_library, get_psm_library};
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::create_p2id_note;
 use miden_protocol::account::{Account, StorageSlotName, auth::AuthSecretKey};
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey};
@@ -11,6 +9,8 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDAT
 use miden_protocol::transaction::OutputNote;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::code_builder::CodeBuilder;
+use miden_standards::note::create_p2id_note;
 use miden_testing::utils::create_spawn_note;
 use miden_testing::{MockChainBuilder, TxContextInput};
 use miden_tx::TransactionExecutorError;
@@ -421,7 +421,10 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
 
     // Verify the threshold was updated by checking storage slot 0
     let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT).unwrap();
-    let threshold_config_storage = updated_multisig_account.storage().get_item(&threshold_config_name).unwrap();
+    let threshold_config_storage = updated_multisig_account
+        .storage()
+        .get_item(&threshold_config_name)
+        .unwrap();
 
     assert_eq!(
         threshold_config_storage[0],

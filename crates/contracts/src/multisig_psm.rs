@@ -4,11 +4,14 @@
 //! It serves as the single source of truth for MultisigPsm account creation across the codebase.
 
 use anyhow::{Result, anyhow};
-use miden_standards::account::wallets::BasicWallet;
 use miden_protocol::{
     Word,
-    account::{Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot, StorageSlotName},
+    account::{
+        Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot,
+        StorageSlotName,
+    },
 };
+use miden_standards::account::wallets::BasicWallet;
 
 use crate::masm_builder::{build_multisig_component, build_psm_component};
 
@@ -206,8 +209,9 @@ impl MultisigPsmBuilder {
         let num_signers = self.config.signer_commitments.len() as u32;
 
         // Slot 0: Threshold config
-        let threshold_config_name = StorageSlotName::new("openzeppelin::multisig::threshold_config")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let threshold_config_name =
+            StorageSlotName::new("openzeppelin::multisig::threshold_config")
+                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let slot_0 = StorageSlot::with_value(
             threshold_config_name,
             Word::from([self.config.threshold, num_signers, 0, 0]),
@@ -229,13 +233,15 @@ impl MultisigPsmBuilder {
         );
 
         // Slot 2: Executed transactions map (empty)
-        let executed_txs_name = StorageSlotName::new("openzeppelin::multisig::executed_transactions")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let executed_txs_name =
+            StorageSlotName::new("openzeppelin::multisig::executed_transactions")
+                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let slot_2 = StorageSlot::with_map(executed_txs_name, StorageMap::default());
 
         // Slot 3: Procedure threshold overrides
-        let proc_thresholds_name = StorageSlotName::new("openzeppelin::multisig::procedure_thresholds")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let proc_thresholds_name =
+            StorageSlotName::new("openzeppelin::multisig::procedure_thresholds")
+                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
         let proc_overrides = self
             .config
             .proc_threshold_overrides

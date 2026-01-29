@@ -239,7 +239,10 @@ async fn create_proposal_with_retry(
                             "  Previous transaction still pending. Waiting {} seconds before retry ({}/{})...",
                             PROPOSAL_RETRY_DELAY_SECS, attempt, MAX_PROPOSAL_RETRIES
                         ));
-                        tokio::time::sleep(tokio::time::Duration::from_secs(PROPOSAL_RETRY_DELAY_SECS)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            PROPOSAL_RETRY_DELAY_SECS,
+                        ))
+                        .await;
                     } else {
                         print_error("Previous transaction is still pending on-chain.");
                         print_info("Please wait for it to be confirmed and try again.");
@@ -872,7 +875,11 @@ fn prompt_p2id(
     let faucet_id = selected_asset.faucet_id();
     let max_amount = selected_asset.amount();
 
-    println!("\nSelected: {} tokens from faucet {}", max_amount, shorten_hex(&faucet_id.to_hex()));
+    println!(
+        "\nSelected: {} tokens from faucet {}",
+        max_amount,
+        shorten_hex(&faucet_id.to_hex())
+    );
 
     // Get recipient
     print_info("Enter the recipient account ID:");
@@ -889,7 +896,10 @@ fn prompt_p2id(
         .map_err(|e| format!("Invalid amount: {}", e))?;
 
     if amount > max_amount {
-        return Err(format!("Amount {} exceeds available balance {}", amount, max_amount));
+        return Err(format!(
+            "Amount {} exceeds available balance {}",
+            amount, max_amount
+        ));
     }
 
     if amount == 0 {

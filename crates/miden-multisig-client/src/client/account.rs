@@ -198,10 +198,9 @@ impl MultisigClient {
         // If PSM updated our account, sync with network again to ensure
         // block headers are consistent with the new account state.
         if account_updated {
-            self.miden_client
-                .sync_state()
-                .await
-                .map_err(|e| MultisigError::MidenClient(format!("failed to sync after PSM update: {:#?}", e)))?;
+            self.miden_client.sync_state().await.map_err(|e| {
+                MultisigError::MidenClient(format!("failed to sync after PSM update: {:#?}", e))
+            })?;
         }
 
         // Refresh cached account (commitment/nonce/etc.) from the miden-client store
@@ -250,10 +249,9 @@ impl MultisigClient {
 
         // Fetch state from PSM
         let mut psm_client = self.create_authenticated_psm_client().await?;
-        let state_response = psm_client
-            .get_state(&account_id)
-            .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to get state from PSM: {}", e)))?;
+        let state_response = psm_client.get_state(&account_id).await.map_err(|e| {
+            MultisigError::PsmServer(format!("failed to get state from PSM: {}", e))
+        })?;
 
         let state_obj = state_response
             .state
@@ -261,8 +259,8 @@ impl MultisigClient {
 
         // Parse PSM commitment
         let psm_commitment_hex = &state_obj.commitment;
-        let psm_commitment = crate::commitment_from_hex(psm_commitment_hex)
-            .map_err(MultisigError::HexDecode)?;
+        let psm_commitment =
+            crate::commitment_from_hex(psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         // Compare commitments - if they match, no update needed
         if local_commitment == psm_commitment {
@@ -296,7 +294,10 @@ impl MultisigClient {
         // If we get a commitment mismatch (locked state), reset and retry.
         match self.add_or_update_account(&fresh_account, true).await {
             Ok(()) => {}
-            Err(e) if e.to_string().contains("doesn't match the imported account commitment") => {
+            Err(e)
+                if e.to_string()
+                    .contains("doesn't match the imported account commitment") =>
+            {
                 // Reset miden-client and try again with fresh state
                 self.reset_miden_client().await?;
                 self.add_or_update_account(&fresh_account, true).await?;
@@ -364,7 +365,10 @@ impl MultisigClient {
                 self.account = Some(multisig_account);
                 Ok(())
             }
-            Err(e) if e.to_string().contains("doesn't match the imported account commitment") => {
+            Err(e)
+                if e.to_string()
+                    .contains("doesn't match the imported account commitment") =>
+            {
                 // The miden-client store has the account in a stale/locked state.
                 // Reset the client and re-pull fresh state from PSM.
                 self.reset_miden_client().await?;
@@ -376,19 +380,21 @@ impl MultisigClient {
                     .await
                     .map_err(|e| MultisigError::PsmServer(format!("failed to get state: {}", e)))?;
 
-                let state_obj = state_response
-                    .state
-                    .ok_or_else(|| MultisigError::PsmServer("no state returned from PSM".to_string()))?;
+                let state_obj = state_response.state.ok_or_else(|| {
+                    MultisigError::PsmServer("no state returned from PSM".to_string())
+                })?;
 
                 let state_value: serde_json::Value = serde_json::from_str(&state_obj.state_json)?;
 
-                let account_base64 = state_value["data"]
-                    .as_str()
-                    .ok_or_else(|| MultisigError::PsmServer("missing 'data' field in state".to_string()))?;
+                let account_base64 = state_value["data"].as_str().ok_or_else(|| {
+                    MultisigError::PsmServer("missing 'data' field in state".to_string())
+                })?;
 
                 let account_bytes = base64::engine::general_purpose::STANDARD
                     .decode(account_base64)
-                    .map_err(|e| MultisigError::MidenClient(format!("failed to decode account: {}", e)))?;
+                    .map_err(|e| {
+                        MultisigError::MidenClient(format!("failed to decode account: {}", e))
+                    })?;
 
                 let fresh_account = Account::read_from_bytes(&account_bytes).map_err(|e| {
                     MultisigError::MidenClient(format!("failed to deserialize account: {}", e))

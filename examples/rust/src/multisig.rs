@@ -1,12 +1,12 @@
 use std::fmt;
 
 use miden_client::account::Account;
+use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{
     TransactionAuthenticator, TransactionExecutorError, TransactionRequest,
     TransactionRequestBuilder, TransactionRequestError, TransactionScript, TransactionSummary,
 };
 use miden_client::{Client, ClientError, Deserializable, Word};
-use miden_client::assembly::CodeBuilder;
 use miden_confidential_contracts::masm_builder::get_multisig_library;
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_protocol::account::auth::Signature;

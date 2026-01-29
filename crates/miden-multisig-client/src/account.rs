@@ -13,8 +13,10 @@ const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
 const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
 
 // Alternative slot names for miden-standards auth components
-const STD_THRESHOLD_CONFIG: &str = "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
-const STD_APPROVER_PUBKEYS: &str = "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
+const STD_THRESHOLD_CONFIG: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
+const STD_APPROVER_PUBKEYS: &str =
+    "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
 
 /// Wrapper around a Miden Account with multisig-specific helpers.
 ///
@@ -111,7 +113,9 @@ impl MultisigAccount {
     pub fn threshold(&self) -> Result<u32> {
         let slot_value = self
             .get_item_by_names(&[OZ_MULTISIG_THRESHOLD_CONFIG, STD_THRESHOLD_CONFIG])
-            .ok_or_else(|| MultisigError::AccountStorage("threshold config slot not found".to_string()))?;
+            .ok_or_else(|| {
+                MultisigError::AccountStorage("threshold config slot not found".to_string())
+            })?;
 
         Ok(slot_value[0].as_int() as u32)
     }
@@ -120,7 +124,9 @@ impl MultisigAccount {
     pub fn num_signers(&self) -> Result<u32> {
         let slot_value = self
             .get_item_by_names(&[OZ_MULTISIG_THRESHOLD_CONFIG, STD_THRESHOLD_CONFIG])
-            .ok_or_else(|| MultisigError::AccountStorage("threshold config slot not found".to_string()))?;
+            .ok_or_else(|| {
+                MultisigError::AccountStorage("threshold config slot not found".to_string())
+            })?;
 
         Ok(slot_value[1].as_int() as u32)
     }
@@ -133,7 +139,9 @@ impl MultisigAccount {
         let mut commitments = Vec::new();
 
         // Find the map slot name
-        let Some(slot_name) = self.find_map_slot_name(&[OZ_MULTISIG_SIGNER_PUBKEYS, STD_APPROVER_PUBKEYS]) else {
+        let Some(slot_name) =
+            self.find_map_slot_name(&[OZ_MULTISIG_SIGNER_PUBKEYS, STD_APPROVER_PUBKEYS])
+        else {
             return commitments;
         };
 
@@ -143,7 +151,10 @@ impl MultisigAccount {
             return commitments;
         };
 
-        let first_entry = self.account.storage().get_map_item(&slot_name_ref, key_zero);
+        let first_entry = self
+            .account
+            .storage()
+            .get_map_item(&slot_name_ref, key_zero);
 
         if first_entry.is_err() || first_entry.as_ref().unwrap() == &Word::default() {
             return commitments;
@@ -179,9 +190,9 @@ impl MultisigAccount {
 
     /// Returns whether PSM verification is enabled.
     pub fn psm_enabled(&self) -> Result<bool> {
-        let slot_value = self
-            .get_item_by_names(&[OZ_PSM_SELECTOR])
-            .ok_or_else(|| MultisigError::AccountStorage("PSM selector slot not found".to_string()))?;
+        let slot_value = self.get_item_by_names(&[OZ_PSM_SELECTOR]).ok_or_else(|| {
+            MultisigError::AccountStorage("PSM selector slot not found".to_string())
+        })?;
 
         Ok(slot_value[0].as_int() == 1)
     }
@@ -190,6 +201,8 @@ impl MultisigAccount {
     pub fn psm_commitment(&self) -> Result<Word> {
         let key = Word::from([0u32, 0, 0, 0]);
         self.get_map_item_by_names(&[OZ_PSM_PUBLIC_KEY], key)
-            .ok_or_else(|| MultisigError::AccountStorage("PSM public key slot not found".to_string()))
+            .ok_or_else(|| {
+                MultisigError::AccountStorage("PSM public key slot not found".to_string())
+            })
     }
 }

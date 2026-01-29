@@ -102,8 +102,8 @@ async fn main() -> ClientResult<()> {
     println!("=== PSM Multi-Client E2E Flow ===\n");
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let keystore = FilesystemKeyStore::new(temp_dir.path().to_path_buf())
-        .expect("Failed to create keystore");
+    let keystore =
+        FilesystemKeyStore::new(temp_dir.path().to_path_buf()).expect("Failed to create keystore");
 
     println!("Setup: Generating keys...");
 

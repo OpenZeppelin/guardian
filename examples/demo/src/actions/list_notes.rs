@@ -49,8 +49,7 @@ pub async fn action_list_notes(state: &mut SessionState) -> Result<(), String> {
             );
 
             // Check for consumable statuses (both Consumable and ConsumableWithAuthorization)
-            if is_our_account
-                && (status == "Consumable" || status == "ConsumableWithAuthorization")
+            if is_our_account && (status == "Consumable" || status == "ConsumableWithAuthorization")
             {
                 consumable_count += 1;
             }

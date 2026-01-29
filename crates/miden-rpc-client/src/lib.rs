@@ -69,10 +69,7 @@ impl MidenRpcClient {
     }
 
     /// Submit a proven transaction to the network
-    pub async fn submit_transaction(
-        &mut self,
-        proven_tx_bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    pub async fn submit_transaction(&mut self, proven_tx_bytes: Vec<u8>) -> Result<(), String> {
         let request = transaction::ProvenTransaction {
             transaction: proven_tx_bytes,
             transaction_inputs: None,

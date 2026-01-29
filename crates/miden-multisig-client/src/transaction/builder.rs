@@ -413,8 +413,13 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the consume notes transaction request (no signatures for proposal)
-        let tx_request =
-            build_consume_notes_transaction_request(miden_client, note_ids.clone(), salt, std::iter::empty()).await?;
+        let tx_request = build_consume_notes_transaction_request(
+            miden_client,
+            note_ids.clone(),
+            salt,
+            std::iter::empty(),
+        )
+        .await?;
 
         // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;

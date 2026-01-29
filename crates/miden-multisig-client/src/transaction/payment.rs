@@ -3,12 +3,12 @@
 //! Functions for building P2ID (pay-to-id) and other payment transactions.
 
 use miden_client::transaction::{OutputNote, TransactionRequest, TransactionRequestBuilder};
-use miden_standards::note::create_p2id_note;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::rand::RpoRandomCoin;
 use miden_protocol::note::NoteType;
 use miden_protocol::{Felt, Word};
+use miden_standards::note::create_p2id_note;
 
 use crate::error::{MultisigError, Result};
 

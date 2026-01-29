@@ -33,7 +33,11 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     let miden_endpoint = match network_choice.trim() {
         "" | "1" => Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291)),
         "2" => Endpoint::new("https".to_string(), "rpc.devnet.miden.io".to_string(), None),
-        "3" => Endpoint::new("https".to_string(), "rpc.testnet.miden.io".to_string(), None),
+        "3" => Endpoint::new(
+            "https".to_string(),
+            "rpc.testnet.miden.io".to_string(),
+            None,
+        ),
         "4" => {
             let custom_url = prompt_input(editor, "Enter Miden Node URL: ")?;
             parse_miden_endpoint(&custom_url)?
