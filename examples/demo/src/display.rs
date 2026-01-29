@@ -1,4 +1,4 @@
-use miden_multisig_client::MultisigAccount;
+use miden_multisig_client::{Asset, MultisigAccount};
 
 pub fn shorten_hex(hex: &str) -> String {
     if hex.len() <= 12 {
@@ -56,6 +56,39 @@ pub fn print_storage_overview(account: &MultisigAccount) {
     }
 
     println!("  PSM Endpoint: {}", account.psm_endpoint());
+}
+
+pub fn print_vault(account: &MultisigAccount) {
+    print_section("Vault (Account Balance)");
+
+    let vault = account.inner().vault();
+    let assets: Vec<Asset> = vault.assets().collect();
+
+    if assets.is_empty() {
+        println!("  (empty)");
+        print_info("Tip: Consume notes to add assets to your vault before sending transfers.");
+        return;
+    }
+
+    for (i, asset) in assets.iter().enumerate() {
+        match asset {
+            Asset::Fungible(fungible) => {
+                println!(
+                    "  [{}] {} tokens (faucet: {})",
+                    i + 1,
+                    fungible.amount(),
+                    shorten_hex(&fungible.faucet_id().to_hex())
+                );
+            }
+            Asset::NonFungible(nft) => {
+                println!(
+                    "  [{}] NFT (faucet prefix: {})",
+                    i + 1,
+                    shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                );
+            }
+        }
+    }
 }
 
 pub fn print_full_hex(label: &str, hex: &str) {

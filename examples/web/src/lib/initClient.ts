@@ -19,8 +19,6 @@ export async function createWebClient(rpcUrl = MIDEN_RPC_URL): Promise<WebClient
 
 export async function initializeSigner(_webClient: WebClient): Promise<SignerInfo> {
   const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
-  // Note: In v0.13, addAccountSecretKeyToWebStore requires an account_id.
-  // The key is stored in memory and will be associated with accounts when they're created.
   const publicKey = secretKey.publicKey();
   const commitment = publicKey.toCommitment().toHex();
   return { commitment, secretKey };

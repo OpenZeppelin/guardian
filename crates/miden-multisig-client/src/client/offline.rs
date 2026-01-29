@@ -83,7 +83,7 @@ impl MultisigClient {
                 })?;
 
                 let tx_request = crate::transaction::build_p2id_transaction_request(
-                    account.inner(),
+                    account.id(),
                     *recipient,
                     vec![asset.into()],
                     salt,

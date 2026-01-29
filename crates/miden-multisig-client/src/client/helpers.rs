@@ -123,10 +123,13 @@ impl MultisigClient {
                 ))
             })?;
 
-        // Sync with network to get the updated account state
-        self.sync().await?;
+        // Try to sync with the network to ensure consistent state.
+        if let Err(_e) = self.miden_client.sync_state().await {
+            // Log but don't fail - the transaction was executed successfully
+            // Sync failed - PSM may not have canonicalized yet.
+        }
 
-        // Update local account cache from miden-client
+        // Get updated account from miden-client's local state
         let account_record = self
             .miden_client
             .get_account(account_id)
@@ -135,7 +138,7 @@ impl MultisigClient {
                 MultisigError::MidenClient(format!("failed to get updated account: {}", e))
             })?
             .ok_or_else(|| {
-                MultisigError::MissingConfig("account not found after sync".to_string())
+                MultisigError::MissingConfig("account not found after execution".to_string())
             })?;
 
         let updated_account: Account = account_record.try_into().map_err(|e| {

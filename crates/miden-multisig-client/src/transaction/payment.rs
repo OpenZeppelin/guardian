@@ -2,11 +2,9 @@
 //!
 //! Functions for building P2ID (pay-to-id) and other payment transactions.
 
-use miden_client::account::AccountInterfaceExt;
-use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
-use miden_standards::account::interface::AccountInterface;
+use miden_client::transaction::{OutputNote, TransactionRequest, TransactionRequestBuilder};
 use miden_standards::note::create_p2id_note;
-use miden_protocol::account::{Account, AccountId};
+use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::rand::RpoRandomCoin;
 use miden_protocol::note::NoteType;
@@ -17,9 +15,8 @@ use crate::error::{MultisigError, Result};
 /// Builds a P2ID transaction request.
 ///
 /// Creates a pay-to-id note and builds a transaction request to send it.
-/// This uses the low-level `create_p2id_note` and `build_send_notes_script`
 pub fn build_p2id_transaction_request<I>(
-    sender_account: &Account,
+    sender_id: AccountId,
     recipient: AccountId,
     assets: Vec<Asset>,
     salt: Word,
@@ -31,7 +28,7 @@ where
     let mut rng = RpoRandomCoin::new(salt);
 
     let note = create_p2id_note(
-        sender_account.id(),
+        sender_id,
         recipient,
         assets,
         NoteType::Public,
@@ -42,18 +39,9 @@ where
         MultisigError::TransactionExecution(format!("failed to create P2ID note: {}", e))
     })?;
 
-    // Build the send notes script using AccountInterface
-    let account_interface = AccountInterface::from_account(sender_account);
-    let send_script = account_interface
-        .build_send_notes_script(&[note.clone().into()], None)
-        .map_err(|e| {
-            MultisigError::TransactionExecution(format!("failed to build send script: {}", e))
-        })?;
-
-    // Build the transaction request with signature advice
+    // Build the transaction request using own_output_notes
     let request = TransactionRequestBuilder::new()
-        .custom_script(send_script)
-        .expected_output_recipients(vec![note.recipient().clone()])
+        .own_output_notes(vec![OutputNote::Full(note)])
         .extend_advice_map(signature_advice)
         .auth_arg(salt)
         .build()?;

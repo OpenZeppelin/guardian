@@ -105,14 +105,19 @@ impl MultisigClient {
                 MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
             })?;
 
-        // Convert to our wrapper type, filtering for notes consumable "Consumable"
+        // Convert to our wrapper type, filtering for notes consumable
         let notes = consumable
             .into_iter()
             .filter_map(|(record, relevances)| {
                 // Only include notes consumable now by our account
-                let can_consume_now = relevances
-                    .iter()
-                    .any(|(id, status)| *id == account_id && matches!(status, NoteConsumptionStatus::Consumable));
+                let can_consume_now = relevances.iter().any(|(id, status)| {
+                    *id == account_id
+                        && matches!(
+                            status,
+                            NoteConsumptionStatus::Consumable
+                                | NoteConsumptionStatus::ConsumableWithAuthorization
+                        )
+                });
                 if can_consume_now {
                     Some(ConsumableNote {
                         id: record.id(),
@@ -125,6 +130,37 @@ impl MultisigClient {
             .collect();
 
         Ok(notes)
+    }
+
+    /// Returns a list of all notes with their consumption status
+    pub async fn list_notes_with_status(
+        &mut self,
+    ) -> Result<Vec<(ConsumableNote, Vec<(AccountId, String)>)>> {
+        let account_id = self.require_account()?.id();
+
+        let notes = self
+            .miden_client
+            .get_consumable_notes(Some(account_id))
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+
+        let result = notes
+            .into_iter()
+            .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
+            .map(|(record, relevances)| {
+                let note = ConsumableNote {
+                    id: record.id(),
+                    assets: record.assets().iter().cloned().collect(),
+                };
+                let statuses: Vec<(AccountId, String)> = relevances
+                    .into_iter()
+                    .map(|(id, status)| (id, format!("{:?}", status)))
+                    .collect();
+                (note, statuses)
+            })
+            .collect();
+
+        Ok(result)
     }
 
     /// Returns a list of all committed notes (not just consumable).

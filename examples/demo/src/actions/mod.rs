@@ -11,4 +11,4 @@ pub use list_notes::action_list_notes;
 pub use proposal_management::action_proposal_management;
 pub use show_account::action_show_account;
 pub use show_status::action_show_status;
-pub use sync_account::action_sync_account;
+pub use sync_account::{action_sync_account, sync_with_retry};

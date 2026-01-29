@@ -98,7 +98,7 @@ pub async fn build_final_transaction_request(
             })?;
 
             crate::transaction::build_p2id_transaction_request(
-                account,
+                account.id(),
                 *recipient,
                 vec![asset.into()],
                 salt,

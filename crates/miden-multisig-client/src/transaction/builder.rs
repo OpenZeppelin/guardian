@@ -331,7 +331,7 @@ impl ProposalBuilder {
 
         // Build the P2ID transaction request (no signature advice needed for proposal)
         let tx_request = build_p2id_transaction_request(
-            account.inner(),
+            account_id,
             recipient,
             vec![asset.into()],
             salt,

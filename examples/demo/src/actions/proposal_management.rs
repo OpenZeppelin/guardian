@@ -119,7 +119,7 @@ async fn action_create_proposal(
     let transaction_type = match choice.as_str() {
         "1" => prompt_add_cosigner(editor)?,
         "2" => prompt_remove_cosigner(state, editor)?,
-        "3" => prompt_p2id(editor)?,
+        "3" => prompt_p2id(state, editor)?,
         "4" => prompt_consume_notes(state, editor).await?,
         "5" => prompt_switch_psm(state, editor)?,
         "b" | "B" => return Ok(()),
@@ -128,11 +128,10 @@ async fn action_create_proposal(
 
     print_waiting("Creating proposal on PSM");
 
-    let client = state.get_client_mut()?;
-    let result = client.propose_transaction(transaction_type.clone()).await;
-
-    match result {
+    // Try to create proposal with retry for non-canonical delta pending errors
+    match create_proposal_with_retry(state, transaction_type.clone(), editor).await {
         Ok(proposal) => {
+            let client = state.get_client()?;
             print_success("Proposal created on PSM server");
             print_full_hex("Proposal ID", &proposal.id);
             print_success(&format!(
@@ -146,17 +145,118 @@ async fn action_create_proposal(
             Ok(())
         }
         Err(e) => {
-            print_error(&format!("PSM proposal creation failed: {}", e));
-            print_info("\nWould you like to create this proposal offline instead? [y/N]");
-            let fallback = prompt_input(editor, "Choice: ")?;
+            // Check if this is a non-retriable error and offer offline fallback
+            if !is_pending_candidate_error(&e) {
+                print_error(&format!("PSM proposal creation failed: {}", e));
+                print_info("\nWould you like to create this proposal offline instead? [y/N]");
+                let fallback = prompt_input(editor, "Choice: ")?;
 
-            if fallback.to_lowercase() == "y" {
-                create_proposal_offline(state, editor, transaction_type).await
-            } else {
-                Err(format!("Proposal creation failed: {}", e))
+                if fallback.to_lowercase() == "y" {
+                    return create_proposal_offline(state, editor, transaction_type).await;
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Helper to check if an error is related to pending candidate delta.
+fn is_pending_candidate_error(error: &str) -> bool {
+    error.contains("non-canonical delta pending")
+        || error.contains("ConflictPendingDelta")
+        || error.contains("Cannot push new delta")
+}
+
+/// Helper to check if an error is a commitment mismatch (account updated on-chain).
+fn is_commitment_mismatch_error(error: &str) -> bool {
+    error.contains("doesn't match the imported account commitment")
+        || error.contains("commitment mismatch")
+}
+
+/// Maximum number of retries for proposal creation when delta is pending.
+const MAX_PROPOSAL_RETRIES: u32 = 6;
+/// Delay between retries in seconds.
+const PROPOSAL_RETRY_DELAY_SECS: u64 = 10;
+
+/// Create a proposal with retry logic for handling non-canonical delta pending errors
+/// and commitment mismatch errors.
+async fn create_proposal_with_retry(
+    state: &mut SessionState,
+    transaction_type: TransactionType,
+    _editor: &mut DefaultEditor,
+) -> Result<miden_multisig_client::Proposal, String> {
+    let mut last_error = String::new();
+    let mut commitment_mismatch_retried = false;
+
+    for attempt in 1..=MAX_PROPOSAL_RETRIES {
+        let client = state.get_client_mut()?;
+        let result = client.propose_transaction(transaction_type.clone()).await;
+
+        match result {
+            Ok(proposal) => return Ok(proposal),
+            Err(e) => {
+                last_error = e.to_string();
+
+                if is_commitment_mismatch_error(&last_error) && !commitment_mismatch_retried {
+                    // Account was updated on-chain - need to re-sync and re-pull from PSM
+                    print_info("  Account was updated on-chain. Re-syncing...");
+                    commitment_mismatch_retried = true;
+
+                    // Get account ID before reinitializing
+                    let account_id = {
+                        let client = state.get_client()?;
+                        client.account().map(|a| a.id())
+                    };
+
+                    if let Some(account_id) = account_id {
+                        // Reinitialize the client to clear stale state
+                        if let Err(e) = state.reinitialize_client().await {
+                            print_error(&format!("Failed to reinitialize client: {}", e));
+                            return Err(last_error);
+                        }
+
+                        // Re-pull account from PSM
+                        let client = state.get_client_mut()?;
+                        if let Err(e) = client.pull_account(account_id).await {
+                            print_error(&format!("Failed to re-pull account: {}", e));
+                            return Err(last_error);
+                        }
+
+                        // Sync with network
+                        if let Err(e) = client.sync().await {
+                            print_error(&format!("Failed to sync: {}", e));
+                            return Err(last_error);
+                        }
+
+                        print_success("Re-synced with latest state. Retrying...");
+                        continue;
+                    } else {
+                        return Err(last_error);
+                    }
+                } else if is_pending_candidate_error(&last_error) {
+                    if attempt < MAX_PROPOSAL_RETRIES {
+                        print_info(&format!(
+                            "  Previous transaction still pending. Waiting {} seconds before retry ({}/{})...",
+                            PROPOSAL_RETRY_DELAY_SECS, attempt, MAX_PROPOSAL_RETRIES
+                        ));
+                        tokio::time::sleep(tokio::time::Duration::from_secs(PROPOSAL_RETRY_DELAY_SECS)).await;
+                    } else {
+                        print_error("Previous transaction is still pending on-chain.");
+                        print_info("Please wait for it to be confirmed and try again.");
+                        return Err(last_error);
+                    }
+                } else {
+                    // Non-retriable error - return the error (caller handles fallback)
+                    return Err(last_error);
+                }
             }
         }
     }
+
+    Err(format!(
+        "Proposal creation failed after {} attempts: {}",
+        MAX_PROPOSAL_RETRIES, last_error
+    ))
 }
 
 /// View pending proposals from PSM.
@@ -315,19 +415,40 @@ async fn action_execute_proposal(
     print_waiting("Executing proposal");
 
     let client = state.get_client_mut()?;
-    client
-        .execute_proposal(&proposal_id)
-        .await
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let execute_result = client.execute_proposal(&proposal_id).await;
 
-    print_success("Transaction executed successfully!");
+    match execute_result {
+        Ok(()) => {
+            print_success("Transaction executed successfully!");
 
-    let account = client
-        .account()
-        .ok_or_else(|| "No account loaded".to_string())?;
-    print_success(&format!("Account updated. New nonce: {}", account.nonce()));
+            let client = state.get_client()?;
+            let account = client
+                .account()
+                .ok_or_else(|| "No account loaded".to_string())?;
+            print_success(&format!("Account updated. New nonce: {}", account.nonce()));
 
-    Ok(())
+            // Sync state after execution (with retry for potential SMT issues)
+            print_waiting("Syncing state after execution");
+            if let Err(sync_err) = crate::actions::sync_with_retry(state).await {
+                print_info(&format!(
+                    "  Note: Post-execution sync had issues ({}). State should still be correct.",
+                    sync_err
+                ));
+            } else {
+                print_success("State synced successfully");
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            let error_str = e.to_string();
+            if is_pending_candidate_error(&error_str) {
+                print_error("A previous transaction is still being processed on-chain.");
+                print_info("Please wait for it to be confirmed before executing proposals.");
+            }
+            Err(format!("Failed to execute: {}", e))
+        }
+    }
 }
 
 // =============================================================================
@@ -688,28 +809,97 @@ fn prompt_remove_cosigner(
     Ok(TransactionType::remove_cosigner(commitment))
 }
 
-fn prompt_p2id(editor: &mut DefaultEditor) -> Result<TransactionType, String> {
+fn prompt_p2id(
+    state: &SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<TransactionType, String> {
+    let client = state.get_client()?;
+    let account = client
+        .account()
+        .ok_or_else(|| "No account loaded".to_string())?;
+
+    // Get vault assets
+    let vault = account.inner().vault();
+    let assets: Vec<Asset> = vault.assets().collect();
+
+    if assets.is_empty() {
+        print_error("Vault is empty - no assets to transfer");
+        print_info("Tip: First consume notes to add assets to your vault.");
+        return Err("No assets in vault".to_string());
+    }
+
+    // Show available assets
+    println!("\nAvailable assets in vault:");
+    let mut fungible_assets: Vec<(usize, &miden_protocol::asset::FungibleAsset)> = Vec::new();
+
+    for (i, asset) in assets.iter().enumerate() {
+        match asset {
+            Asset::Fungible(fungible) => {
+                println!(
+                    "  [{}] {} tokens (faucet: {})",
+                    i + 1,
+                    fungible.amount(),
+                    shorten_hex(&fungible.faucet_id().to_hex())
+                );
+                fungible_assets.push((i + 1, fungible));
+            }
+            Asset::NonFungible(nft) => {
+                println!(
+                    "  [{}] NFT (faucet prefix: {}) - NOT SUPPORTED for P2ID",
+                    i + 1,
+                    shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                );
+            }
+        }
+    }
+
+    if fungible_assets.is_empty() {
+        return Err("No fungible assets available for transfer".to_string());
+    }
+
+    // Select asset
+    let selection = prompt_input(editor, "\nSelect asset to transfer (number): ")?;
+    let idx: usize = selection
+        .trim()
+        .parse()
+        .map_err(|_| "Invalid selection".to_string())?;
+
+    let (_, selected_asset) = fungible_assets
+        .iter()
+        .find(|(i, _)| *i == idx)
+        .ok_or_else(|| "Invalid selection".to_string())?;
+
+    let faucet_id = selected_asset.faucet_id();
+    let max_amount = selected_asset.amount();
+
+    println!("\nSelected: {} tokens from faucet {}", max_amount, shorten_hex(&faucet_id.to_hex()));
+
+    // Get recipient
     print_info("Enter the recipient account ID:");
     let recipient_hex = prompt_input(editor, "  Recipient account ID: ")?;
     let recipient =
         AccountId::from_hex(&recipient_hex).map_err(|e| format!("Invalid recipient: {}", e))?;
 
-    print_info("Enter the faucet/asset ID:");
-    let faucet_hex = prompt_input(editor, "  Faucet ID: ")?;
-    let faucet_id =
-        AccountId::from_hex(&faucet_hex).map_err(|e| format!("Invalid faucet: {}", e))?;
-
-    print_info("Enter the amount:");
+    // Get amount
+    print_info(&format!("Enter amount to transfer (max: {}):", max_amount));
     let amount_str = prompt_input(editor, "  Amount: ")?;
     let amount: u64 = amount_str
         .trim()
         .parse()
         .map_err(|e| format!("Invalid amount: {}", e))?;
 
+    if amount > max_amount {
+        return Err(format!("Amount {} exceeds available balance {}", amount, max_amount));
+    }
+
+    if amount == 0 {
+        return Err("Amount must be greater than 0".to_string());
+    }
+
     println!("\nTransfer details:");
     println!("  Recipient: {}", shorten_hex(&recipient_hex));
-    println!("  Faucet:    {}", shorten_hex(&faucet_hex));
-    println!("  Amount:    {}", amount);
+    println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
+    println!("  Amount:    {} / {} available", amount, max_amount);
 
     let confirm = prompt_input(editor, "\nConfirm? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
