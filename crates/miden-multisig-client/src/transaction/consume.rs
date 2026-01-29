@@ -1,8 +1,9 @@
 //! Note consumption transaction utilities.
 
-use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
-use miden_objects::note::NoteId;
-use miden_objects::{Felt, Word};
+use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequestBuilder};
+use miden_client::Client;
+use miden_protocol::note::{Note, NoteId};
+use miden_protocol::{Felt, Word};
 
 use crate::error::{MultisigError, Result};
 
@@ -13,10 +14,19 @@ use crate::error::{MultisigError, Result};
 ///
 /// # Arguments
 ///
+/// * `client` - Miden client used to fetch full note objects from local store
 /// * `note_ids` - IDs of the notes to consume
 /// * `salt` - Salt for replay protection
 /// * `signature_advice` - Iterator of (key, values) pairs for signature advice map
-pub fn build_consume_notes_transaction_request<I>(
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - No note IDs are provided
+/// - Any note is not found in the local store
+/// - Any note cannot be converted to a full Note object (missing metadata)
+pub async fn build_consume_notes_transaction_request<I>(
+    client: &Client<()>,
     note_ids: Vec<NoteId>,
     salt: Word,
     signature_advice: I,
@@ -30,11 +40,42 @@ where
         ));
     }
 
-    let request = TransactionRequestBuilder::new()
-        .authenticated_input_notes(note_ids.iter().map(|id| (*id, None)).collect::<Vec<_>>())
-        .extend_advice_map(signature_advice)
-        .auth_arg(salt)
-        .build()?;
+    // Fetch full Note objects from the client's local store
+    let mut notes: Vec<(Note, Option<NoteArgs>)> = Vec::new();
+    for note_id in &note_ids {
+        let input_note_record = client
+            .get_input_note(*note_id)
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to fetch note: {}", e)))?
+            .ok_or_else(|| {
+                MultisigError::InvalidConfig(format!(
+                    "note not found in local store: {}",
+                    note_id.to_hex()
+                ))
+            })?;
 
-    Ok(request)
+        // Convert InputNoteRecord to Note using TryInto
+        let note: Note = input_note_record.try_into().map_err(|e| {
+            MultisigError::InvalidConfig(format!(
+                "failed to convert note record to note: {:?}",
+                e
+            ))
+        })?;
+
+        notes.push((note, None));
+    }
+
+    // Build the transaction request with full Note objects
+    let mut builder = TransactionRequestBuilder::new()
+        .input_notes(notes)
+        .auth_arg(salt);
+
+    // Add signature advice entries
+    for (key, values) in signature_advice {
+        builder = builder.extend_advice_map([(key, values)]);
+    }
+
+    builder.build().map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to build transaction request: {}", e))
+    })
 }

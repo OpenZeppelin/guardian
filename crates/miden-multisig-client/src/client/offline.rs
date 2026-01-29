@@ -102,10 +102,12 @@ impl MultisigClient {
             }
             TransactionType::ConsumeNotes { note_ids } => {
                 let tx_request = crate::transaction::build_consume_notes_transaction_request(
+                    &self.miden_client,
                     note_ids.clone(),
                     salt,
                     std::iter::empty(),
-                )?;
+                )
+                .await?;
 
                 let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
                 let metadata = ExportedMetadata {
@@ -391,13 +393,15 @@ impl MultisigClient {
         };
 
         let final_tx_request = build_final_transaction_request(
+            &self.miden_client,
             &proposal.transaction_type,
             account.inner(),
             salt,
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
-        )?;
+        )
+        .await?;
 
         // Execute and finalize
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)

@@ -245,13 +245,15 @@ impl MultisigClient {
         };
 
         let final_tx_request = build_final_transaction_request(
+            &self.miden_client,
             &proposal.transaction_type,
             account.inner(),
             salt,
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
-        )?;
+        )
+        .await?;
 
         // Execute and finalize
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)

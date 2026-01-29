@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
+use miden_client::Client;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
@@ -77,7 +78,8 @@ pub fn collect_signature_advice(
 }
 
 /// Builds the final transaction request based on transaction type.
-pub fn build_final_transaction_request(
+pub async fn build_final_transaction_request(
+    client: &Client<()>,
     transaction_type: &TransactionType,
     account: &Account,
     salt: Word,
@@ -105,10 +107,12 @@ pub fn build_final_transaction_request(
         }
         TransactionType::ConsumeNotes { note_ids } => {
             crate::transaction::build_consume_notes_transaction_request(
+                client,
                 note_ids.clone(),
                 salt,
                 signature_advice,
             )
+            .await
         }
         TransactionType::SwitchPsm { new_commitment, .. } => {
             crate::transaction::build_update_psm_transaction_request(

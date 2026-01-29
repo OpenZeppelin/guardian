@@ -73,10 +73,10 @@ impl MultisigAccount {
     /// Helper to get a storage item by trying multiple slot names
     fn get_item_by_names(&self, names: &[&str]) -> Option<Word> {
         for name in names {
-            if let Ok(slot_name) = StorageSlotName::new(*name) {
-                if let Ok(value) = self.account.storage().get_item(&slot_name) {
-                    return Some(value);
-                }
+            if let Ok(slot_name) = StorageSlotName::new(*name)
+                && let Ok(value) = self.account.storage().get_item(&slot_name)
+            {
+                return Some(value);
             }
         }
         None
