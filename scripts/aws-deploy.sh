@@ -5,7 +5,7 @@ set -e
 # Usage: ./scripts/aws-deploy.sh [command] [options]
 #
 # Commands:
-#   deploy   - Deploy PSM server behind an ALB
+#   deploy   - Build/push image and run Terraform apply
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
@@ -14,27 +14,26 @@ set -e
 #   --skip-build - Skip Docker build and push (use existing image)
 #
 # Optional environment variables:
-#   AWS_REGION  - AWS region (default: us-east-1)
+#   AWS_REGION            - AWS region (default: us-east-1)
+#   DOMAIN_NAME           - Root domain (default: openzeppelin.com)
+#   SUBDOMAIN             - Subdomain (default: psm)
+#   ROUTE53_ZONE_ID       - Route 53 hosted zone ID (optional)
+#   CLOUDFLARE_ZONE_ID    - Cloudflare zone ID (optional)
+#   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
+#   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
+#   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
+#   IMPORT_EXISTING       - Import existing AWS resources (true/false)
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
-CLUSTER_NAME="psm-cluster"
 ECR_REPO_NAME="psm-server"
-SERVICE_NAME="psm-server"
-POSTGRES_SERVICE_NAME="psm-postgres"
-POSTGRES_TASK_FAMILY="psm-postgres"
-POSTGRES_DB="${POSTGRES_DB:-psm}"
-POSTGRES_USER="${POSTGRES_USER:-psm}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-psm_dev_password}"
-SD_NAMESPACE_NAME="psm.local"
-SD_SERVICE_NAME="psm-postgres"
-ALB_NAME="psm-alb"
-ALB_SG_NAME="psm-alb-sg"
-ALB_TG_NAME="psm-server-tg"
-ALB_LISTENER_PORT="${ALB_LISTENER_PORT:-80}"
-ACM_CERT_ARN="${ACM_CERT_ARN:-}"
-LOG_GROUP_SERVER="/ecs/psm-server"
-LOG_GROUP_POSTGRES="/ecs/psm-postgres"
+DOMAIN_NAME="${DOMAIN_NAME-openzeppelin.com}"
+SUBDOMAIN="${SUBDOMAIN-psm}"
+ROUTE53_ZONE_ID="${ROUTE53_ZONE_ID-}"
+CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
+CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
+ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
+IMPORT_EXISTING="${IMPORT_EXISTING:-false}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,52 +48,198 @@ get_aws_account_id() {
   aws sts get-caller-identity --query Account --output text
 }
 
-wait_for_service() {
-  local service_name="${1:-$SERVICE_NAME}"
-  log_info "Waiting for service to stabilize ($service_name)..."
-
-  if aws ecs wait services-stable \
-    --cluster $CLUSTER_NAME \
-    --services $service_name \
-    --region $AWS_REGION >/dev/null 2>&1; then
-    log_info "Service is stable"
-    return 0
-  fi
-
-  log_error "Service failed to stabilize"
-  aws ecs describe-services \
-    --cluster $CLUSTER_NAME \
-    --services $service_name \
-    --region $AWS_REGION \
-    --query 'services[0].{status:status,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,deployments:deployments}' \
-    --output json 2>/dev/null || true
-  return 1
+tf_state_has() {
+  local tf_dir="$1"
+  local address="$2"
+  terraform -chdir="$tf_dir" state list 2>/dev/null | grep -q "^${address}$"
 }
 
-cleanup_old_task_definitions() {
-  local family="$1"
-  local keep_count="${2:-3}"
+tf_import_if_exists() {
+  local tf_dir="$1"
+  local address="$2"
+  local resource_id="$3"
 
-  log_info "Cleaning up old task definitions for $family (keeping last $keep_count)..."
-
-  local revisions=$(aws ecs list-task-definitions \
-    --family-prefix $family \
-    --sort DESC \
-    --region $AWS_REGION \
-    --query 'taskDefinitionArns' --output json 2>/dev/null)
-
-  local count=$(echo "$revisions" | jq length)
-  if [ "$count" -le "$keep_count" ]; then
-    log_info "No old task definitions to clean up"
+  if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
     return 0
   fi
 
-  echo "$revisions" | jq -r ".[$keep_count:][]" | while read -r arn; do
-    local revision=$(echo "$arn" | grep -oE ':[0-9]+$' | tr -d ':')
-    log_info "Deregistering $family:$revision..."
-    aws ecs deregister-task-definition --task-definition "$arn" --region $AWS_REGION >/dev/null 2>&1 || true
-    aws ecs delete-task-definitions --task-definitions "$arn" --region $AWS_REGION >/dev/null 2>&1 || true
-  done
+  if tf_state_has "$tf_dir" "$address"; then
+    return 0
+  fi
+
+  log_info "Importing existing resource: $address"
+  if ! terraform -chdir="$tf_dir" import -input=false "$address" "$resource_id"; then
+    log_error "Failed to import $address"
+    return 1
+  fi
+}
+
+cmd_import_existing_resources() {
+  local tf_dir="$1"
+  local image_uri="$2"
+  local aws_region="$3"
+  local domain_name="$4"
+  local subdomain="$5"
+  local route53_zone_id="$6"
+
+  export TF_VAR_server_image_uri="$image_uri"
+  export TF_VAR_aws_region="$aws_region"
+  export TF_VAR_domain_name="$domain_name"
+  export TF_VAR_subdomain="$subdomain"
+  export TF_VAR_route53_zone_id="$route53_zone_id"
+  export TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"
+  export TF_VAR_cloudflare_proxied="$CLOUDFLARE_PROXIED"
+  export TF_VAR_acm_certificate_arn="$ACM_CERTIFICATE_ARN"
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    export TF_VAR_cloudflare_api_token="$CLOUDFLARE_API_TOKEN"
+  fi
+
+  local failed=0
+  local cluster_name="${TF_CLUSTER_NAME:-psm-cluster}"
+  local alb_name="${TF_ALB_NAME:-psm-alb}"
+  local target_group_name="${TF_TG_NAME:-psm-server-tg}"
+  local alb_sg_name="${TF_ALB_SG_NAME:-psm-alb-sg}"
+  local server_sg_name="${TF_SERVER_SG_NAME:-psm-server-sg}"
+  local postgres_sg_name="${TF_POSTGRES_SG_NAME:-psm-postgres-sg}"
+  local namespace_name="${TF_SD_NAMESPACE_NAME:-psm.local}"
+  local sd_service_name="${TF_SD_SERVICE_NAME:-psm-postgres}"
+  local server_service_name="${TF_SERVER_SERVICE_NAME:-psm-server}"
+  local postgres_service_name="${TF_POSTGRES_SERVICE_NAME:-psm-postgres}"
+  local log_group_server="/ecs/psm-server"
+  local log_group_postgres="/ecs/psm-postgres"
+  local log_group_cluster="/aws/ecs/${cluster_name}/cluster"
+
+  local cluster_status
+  cluster_status=$(aws ecs describe-clusters \
+    --clusters "$cluster_name" \
+    --region "$AWS_REGION" \
+    --query 'clusters[0].status' --output text 2>/dev/null || true)
+  if [ -n "$cluster_status" ] && [ "$cluster_status" != "None" ]; then
+    tf_import_if_exists "$tf_dir" "aws_ecs_cluster.main" "$cluster_name" || failed=1
+    tf_import_if_exists "$tf_dir" "aws_ecs_cluster_capacity_providers.main" "$cluster_name" || failed=1
+  fi
+
+  local role_name="psm-ecs-task-execution"
+  local role_arn
+  role_arn=$(aws iam get-role --role-name "$role_name" --query 'Role.Arn' --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_iam_role.ecs_task_execution" "$role_name" || failed=1
+
+  local alb_arn
+  alb_arn=$(aws elbv2 describe-load-balancers \
+    --names "$alb_name" \
+    --region "$AWS_REGION" \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_lb.main" "$alb_arn" || failed=1
+
+  local tg_arn
+  tg_arn=$(aws elbv2 describe-target-groups \
+    --names "$target_group_name" \
+    --region "$AWS_REGION" \
+    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_lb_target_group.server" "$tg_arn" || failed=1
+
+  if [ -n "$alb_arn" ] && [ "$alb_arn" != "None" ]; then
+    local http_listener_arn
+    http_listener_arn=$(aws elbv2 describe-listeners \
+      --load-balancer-arn "$alb_arn" \
+      --region "$AWS_REGION" \
+      --query "Listeners[?Port==\`80\`].ListenerArn" --output text 2>/dev/null || true)
+    tf_import_if_exists "$tf_dir" "aws_lb_listener.http" "$http_listener_arn" || failed=1
+
+    if [ -n "$domain_name" ]; then
+      local https_listener_arn
+      https_listener_arn=$(aws elbv2 describe-listeners \
+        --load-balancer-arn "$alb_arn" \
+        --region "$AWS_REGION" \
+        --query "Listeners[?Port==\`443\`].ListenerArn" --output text 2>/dev/null || true)
+      tf_import_if_exists "$tf_dir" "aws_lb_listener.https[0]" "$https_listener_arn" || failed=1
+    fi
+  fi
+
+  local alb_sg_id
+  alb_sg_id=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=${alb_sg_name}" \
+    --region "$AWS_REGION" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_security_group.alb" "$alb_sg_id" || failed=1
+
+  local server_sg_id
+  server_sg_id=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=${server_sg_name}" \
+    --region "$AWS_REGION" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_security_group.server" "$server_sg_id" || failed=1
+
+  local postgres_sg_id
+  postgres_sg_id=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=${postgres_sg_name}" \
+    --region "$AWS_REGION" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_security_group.postgres" "$postgres_sg_id" || failed=1
+
+  local namespace_id
+  namespace_id=$(aws servicediscovery list-namespaces \
+    --region "$AWS_REGION" \
+    --query "Namespaces[?Name=='${namespace_name}'].Id" --output text 2>/dev/null || true)
+  local namespace_vpc_id="${TF_VPC_ID:-}"
+  if [ -z "$namespace_vpc_id" ]; then
+    namespace_vpc_id=$(aws ec2 describe-vpcs \
+      --filters "Name=is-default,Values=true" \
+      --region "$AWS_REGION" \
+      --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+  fi
+  if [ -n "$namespace_id" ] && [ "$namespace_id" != "None" ] && [ -n "$namespace_vpc_id" ] && [ "$namespace_vpc_id" != "None" ]; then
+    tf_import_if_exists "$tf_dir" "aws_service_discovery_private_dns_namespace.main" "${namespace_id}:${namespace_vpc_id}" || failed=1
+  fi
+
+  local sd_service_id
+  sd_service_id=$(aws servicediscovery list-services \
+    --region "$AWS_REGION" \
+    --query "Services[?Name=='${sd_service_name}'].Id" --output text 2>/dev/null || true)
+  tf_import_if_exists "$tf_dir" "aws_service_discovery_service.postgres" "$sd_service_id" || failed=1
+
+  tf_import_if_exists "$tf_dir" "aws_cloudwatch_log_group.cluster" "$log_group_cluster" || failed=1
+  tf_import_if_exists "$tf_dir" "aws_cloudwatch_log_group.server" "$log_group_server" || failed=1
+  tf_import_if_exists "$tf_dir" "aws_cloudwatch_log_group.postgres" "$log_group_postgres" || failed=1
+
+  local server_service_status
+  local server_service_arn
+  server_service_status=$(aws ecs describe-services \
+    --cluster "$cluster_name" \
+    --services "$server_service_name" \
+    --region "$AWS_REGION" \
+    --query 'services[0].status' --output text 2>/dev/null || true)
+  server_service_arn=$(aws ecs describe-services \
+    --cluster "$cluster_name" \
+    --services "$server_service_name" \
+    --region "$AWS_REGION" \
+    --query 'services[0].serviceArn' --output text 2>/dev/null || true)
+  if [ -n "$server_service_status" ] && [ "$server_service_status" != "INACTIVE" ] && [ "$server_service_status" != "None" ] && \
+     [ -n "$server_service_arn" ] && [ "$server_service_arn" != "None" ]; then
+    tf_import_if_exists "$tf_dir" "aws_ecs_service.server" "${cluster_name}/${server_service_name}" || failed=1
+  fi
+
+  local postgres_service_status
+  local postgres_service_arn
+  postgres_service_status=$(aws ecs describe-services \
+    --cluster "$cluster_name" \
+    --services "$postgres_service_name" \
+    --region "$AWS_REGION" \
+    --query 'services[0].status' --output text 2>/dev/null || true)
+  postgres_service_arn=$(aws ecs describe-services \
+    --cluster "$cluster_name" \
+    --services "$postgres_service_name" \
+    --region "$AWS_REGION" \
+    --query 'services[0].serviceArn' --output text 2>/dev/null || true)
+  if [ -n "$postgres_service_status" ] && [ "$postgres_service_status" != "INACTIVE" ] && [ "$postgres_service_status" != "None" ] && \
+     [ -n "$postgres_service_arn" ] && [ "$postgres_service_arn" != "None" ]; then
+    tf_import_if_exists "$tf_dir" "aws_ecs_service.postgres" "${cluster_name}/${postgres_service_name}" || failed=1
+  fi
+
+  if [ "$failed" -ne 0 ]; then
+    log_error "One or more imports failed. Fix import errors and rerun deploy."
+    return 1
+  fi
 }
 
 cmd_build_and_push() {
@@ -119,628 +264,171 @@ cmd_build_and_push() {
   log_info "Image pushed successfully"
 }
 
-cmd_create_cluster() {
-  log_info "Creating ECS cluster..."
-  aws ecs create-cluster \
-    --cluster-name $CLUSTER_NAME \
-    --region $AWS_REGION \
-    --capacity-providers FARGATE FARGATE_SPOT \
-    --default-capacity-provider-strategy capacityProvider=FARGATE,weight=1 2>/dev/null || \
-    log_warn "Cluster already exists"
-}
-
-cmd_create_task_definition() {
-  local AWS_ACCOUNT_ID=$(get_aws_account_id)
-
-  log_info "Creating IAM role..."
-  aws iam create-role \
-    --role-name ecsTaskExecutionRole \
-    --assume-role-policy-document '{
-      "Version": "2012-10-17",
-      "Statement": [{
-        "Effect": "Allow",
-        "Principal": {"Service": "ecs-tasks.amazonaws.com"},
-        "Action": "sts:AssumeRole"
-      }]
-    }' 2>/dev/null || log_warn "IAM role already exists"
-
-  aws iam attach-role-policy \
-    --role-name ecsTaskExecutionRole \
-    --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy 2>/dev/null || true
-
-  log_info "Creating CloudWatch log group..."
-  aws logs create-log-group --log-group-name $LOG_GROUP_SERVER --region $AWS_REGION 2>/dev/null || \
-    log_warn "Log group already exists"
-
-  log_info "Registering task definition..."
-  cat > /tmp/task-definition.json << EOF
-{
-  "family": "psm-server",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "512",
-  "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
-  "containerDefinitions": [
-    {
-      "name": "psm-server",
-      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/psm-server:latest",
-      "essential": true,
-      "portMappings": [
-        {"containerPort": 3000, "protocol": "tcp"},
-        {"containerPort": 50051, "protocol": "tcp"}
-      ],
-      "environment": [
-        {"name": "RUST_LOG", "value": "info"},
-        {"name": "DATABASE_URL", "value": "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${SD_SERVICE_NAME}.${SD_NAMESPACE_NAME}:5432/${POSTGRES_DB}"}
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "${LOG_GROUP_SERVER}",
-          "awslogs-region": "${AWS_REGION}",
-          "awslogs-stream-prefix": "ecs"
-        }
-      }
-    }
-  ]
-}
-EOF
-
-  aws ecs register-task-definition --cli-input-json file:///tmp/task-definition.json --region $AWS_REGION
-  rm /tmp/task-definition.json
-}
-
-cmd_create_postgres_task_definition() {
-  local AWS_ACCOUNT_ID=$(get_aws_account_id)
-
-  log_info "Creating CloudWatch log group for Postgres..."
-  aws logs create-log-group --log-group-name $LOG_GROUP_POSTGRES --region $AWS_REGION 2>/dev/null || \
-    log_warn "Log group already exists"
-
-  log_info "Registering Postgres task definition..."
-  cat > /tmp/postgres-task-definition.json << EOF
-{
-  "family": "${POSTGRES_TASK_FAMILY}",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "512",
-  "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
-  "containerDefinitions": [
-    {
-      "name": "${POSTGRES_SERVICE_NAME}",
-      "image": "postgres:16-alpine",
-      "essential": true,
-      "portMappings": [
-        {"containerPort": 5432, "protocol": "tcp"}
-      ],
-      "environment": [
-        {"name": "POSTGRES_USER", "value": "${POSTGRES_USER}"},
-        {"name": "POSTGRES_PASSWORD", "value": "${POSTGRES_PASSWORD}"},
-        {"name": "POSTGRES_DB", "value": "${POSTGRES_DB}"}
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "${LOG_GROUP_POSTGRES}",
-          "awslogs-region": "${AWS_REGION}",
-          "awslogs-stream-prefix": "ecs"
-        }
-      }
-    }
-  ]
-}
-EOF
-
-  aws ecs register-task-definition --cli-input-json file:///tmp/postgres-task-definition.json --region $AWS_REGION
-  rm /tmp/postgres-task-definition.json
-}
-
-cmd_create_service_discovery() {
-  local vpc_id="$1"
-
-  local namespace_id=$(aws servicediscovery list-namespaces \
-    --region $AWS_REGION \
-    --query "Namespaces[?Name=='${SD_NAMESPACE_NAME}'].Id" --output text 2>/dev/null)
-
-  if [ -z "$namespace_id" ] || [ "$namespace_id" == "None" ]; then
-    log_info "Creating Cloud Map namespace (${SD_NAMESPACE_NAME})..." >&2
-    local operation_id=$(aws servicediscovery create-private-dns-namespace \
-      --name $SD_NAMESPACE_NAME \
-      --vpc $vpc_id \
-      --region $AWS_REGION \
-      --query 'OperationId' --output text)
-
-    local status="PENDING"
-    local attempt=0
-    while [ "$status" != "SUCCESS" ] && [ $attempt -lt 30 ]; do
-      status=$(aws servicediscovery get-operation \
-        --operation-id $operation_id \
-        --region $AWS_REGION \
-        --query 'Operation.Status' --output text 2>/dev/null)
-      attempt=$((attempt + 1))
-      sleep 2
-    done
-
-    namespace_id=$(aws servicediscovery list-namespaces \
-      --region $AWS_REGION \
-      --query "Namespaces[?Name=='${SD_NAMESPACE_NAME}'].Id" --output text 2>/dev/null)
-  fi
-
-  local service_arn=$(aws servicediscovery list-services \
-    --region $AWS_REGION \
-    --query "Services[?Name=='${SD_SERVICE_NAME}'].Arn" --output text 2>/dev/null)
-
-  if [ -z "$service_arn" ] || [ "$service_arn" == "None" ]; then
-    log_info "Creating Cloud Map service (${SD_SERVICE_NAME})..." >&2
-    service_arn=$(aws servicediscovery create-service \
-      --name $SD_SERVICE_NAME \
-      --dns-config "NamespaceId=${namespace_id},DnsRecords=[{Type=A,TTL=10}]" \
-      --health-check-custom-config FailureThreshold=1 \
-      --region $AWS_REGION \
-      --query 'Service.Arn' --output text)
-  fi
-
-  printf '%s' "$service_arn"
-}
-
-cmd_create_postgres_service() {
-  local subnet_id="$1"
-  local postgres_sg_id="$2"
-  local sd_service_arn="$3"
-
-  if [ -z "$subnet_id" ] || [ -z "$postgres_sg_id" ]; then
-    log_error "Missing subnet or security group id for Postgres service"
-    return 1
-  fi
-  if [[ "$postgres_sg_id" != sg-* ]]; then
-    log_error "Invalid Postgres security group id: $postgres_sg_id"
-    return 1
-  fi
-
-  local service_registries=""
-  if [ -n "$sd_service_arn" ] && [ "$sd_service_arn" != "None" ]; then
-    service_registries="--service-registries registryArn=$sd_service_arn"
-  else
-    log_warn "Cloud Map service not available; creating Postgres service without service discovery"
-  fi
-
-  local existing=$(aws ecs describe-services \
-    --cluster $CLUSTER_NAME \
-    --services $POSTGRES_SERVICE_NAME \
-    --region $AWS_REGION \
-    --query 'services[0].serviceName' --output text 2>/dev/null)
-
-  if [ "$existing" != "$POSTGRES_SERVICE_NAME" ]; then
-    log_info "Creating Postgres ECS service..."
-    aws ecs create-service \
-      --cluster $CLUSTER_NAME \
-      --service-name $POSTGRES_SERVICE_NAME \
-      --task-definition $POSTGRES_TASK_FAMILY \
-      --desired-count 1 \
-      --launch-type FARGATE \
-      --platform-version LATEST \
-      --region $AWS_REGION \
-      $service_registries \
-      --network-configuration "awsvpcConfiguration={subnets=[$subnet_id],securityGroups=[$postgres_sg_id],assignPublicIp=ENABLED}"
-  else
-    log_info "Postgres service already exists, updating..."
-    aws ecs update-service \
-      --cluster $CLUSTER_NAME \
-      --service $POSTGRES_SERVICE_NAME \
-      --task-definition $POSTGRES_TASK_FAMILY \
-      --force-new-deployment \
-      --region $AWS_REGION >/dev/null
-  fi
-}
-
-cmd_create_alb() {
-  local subnet_ids="$1"
-  local alb_sg_id="$2"
-
-  local alb_arn=$(aws elbv2 describe-load-balancers \
-    --names $ALB_NAME \
-    --region $AWS_REGION \
-    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
-
-  if [ -z "$alb_arn" ] || [ "$alb_arn" == "None" ]; then
-    log_info "Creating ALB..." >&2
-    alb_arn=$(aws elbv2 create-load-balancer \
-      --name $ALB_NAME \
-      --subnets $subnet_ids \
-      --security-groups $alb_sg_id \
-      --scheme internet-facing \
-      --type application \
-      --ip-address-type ipv4 \
-      --region $AWS_REGION \
-      --query 'LoadBalancers[0].LoadBalancerArn' --output text)
-  else
-    log_info "ALB already exists" >&2
-  fi
-
-  printf '%s' "$alb_arn"
-}
-
-cmd_create_alb_target_group() {
-  local vpc_id="$1"
-
-  local tg_arn=$(aws elbv2 describe-target-groups \
-    --names $ALB_TG_NAME \
-    --region $AWS_REGION \
-    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)
-
-  if [ -z "$tg_arn" ] || [ "$tg_arn" == "None" ]; then
-    log_info "Creating ALB target group..." >&2
-    tg_arn=$(aws elbv2 create-target-group \
-      --name $ALB_TG_NAME \
-      --protocol HTTP \
-      --port 3000 \
-      --vpc-id $vpc_id \
-      --target-type ip \
-      --health-check-path / \
-      --region $AWS_REGION \
-      --query 'TargetGroups[0].TargetGroupArn' --output text)
-  else
-    log_info "ALB target group already exists" >&2
-  fi
-
-  printf '%s' "$tg_arn"
-}
-
-cmd_create_alb_listener() {
-  local alb_arn="$1"
-  local tg_arn="$2"
-
-  if [ -n "$ACM_CERT_ARN" ]; then
-    # HTTPS listener on 443
-    local https_listener_arn=$(aws elbv2 describe-listeners \
-      --load-balancer-arn $alb_arn \
-      --region $AWS_REGION \
-      --query "Listeners[?Port==\`443\`].ListenerArn" --output text 2>/dev/null)
-
-    if [ -z "$https_listener_arn" ] || [ "$https_listener_arn" == "None" ]; then
-      log_info "Creating ALB HTTPS listener on port 443..." >&2
-      aws elbv2 create-listener \
-        --load-balancer-arn $alb_arn \
-        --protocol HTTPS \
-        --port 443 \
-        --certificates CertificateArn=$ACM_CERT_ARN \
-        --ssl-policy ELBSecurityPolicy-2016-08 \
-        --default-actions Type=forward,TargetGroupArn=$tg_arn \
-        --region $AWS_REGION >/dev/null
-    else
-      log_info "Updating ALB HTTPS listener on port 443..." >&2
-      aws elbv2 modify-listener \
-        --listener-arn $https_listener_arn \
-        --certificates CertificateArn=$ACM_CERT_ARN \
-        --ssl-policy ELBSecurityPolicy-2016-08 \
-        --default-actions Type=forward,TargetGroupArn=$tg_arn \
-        --region $AWS_REGION >/dev/null
-    fi
-
-    # HTTP listener on 80 redirects to HTTPS
-    local http_listener_arn=$(aws elbv2 describe-listeners \
-      --load-balancer-arn $alb_arn \
-      --region $AWS_REGION \
-      --query "Listeners[?Port==\`80\`].ListenerArn" --output text 2>/dev/null)
-
-    if [ -z "$http_listener_arn" ] || [ "$http_listener_arn" == "None" ]; then
-      log_info "Creating ALB HTTP listener on port 80 (redirect to HTTPS)..." >&2
-      aws elbv2 create-listener \
-        --load-balancer-arn $alb_arn \
-        --protocol HTTP \
-        --port 80 \
-        --default-actions Type=redirect,RedirectConfig='{Protocol=HTTPS,Port=443,StatusCode=HTTP_301}' \
-        --region $AWS_REGION >/dev/null
-    else
-      log_info "Updating ALB HTTP listener on port 80 (redirect to HTTPS)..." >&2
-      aws elbv2 modify-listener \
-        --listener-arn $http_listener_arn \
-        --default-actions Type=redirect,RedirectConfig='{Protocol=HTTPS,Port=443,StatusCode=HTTP_301}' \
-        --region $AWS_REGION >/dev/null
-    fi
-  else
-    local listener_port="$ALB_LISTENER_PORT"
-    local listener_arn=$(aws elbv2 describe-listeners \
-      --load-balancer-arn $alb_arn \
-      --region $AWS_REGION \
-      --query "Listeners[?Port==\`$listener_port\`].ListenerArn" --output text 2>/dev/null)
-
-    if [ -z "$listener_arn" ] || [ "$listener_arn" == "None" ]; then
-      log_info "Creating ALB listener on port $listener_port..." >&2
-      aws elbv2 create-listener \
-        --load-balancer-arn $alb_arn \
-        --protocol HTTP \
-        --port $listener_port \
-        --default-actions Type=forward,TargetGroupArn=$tg_arn \
-        --region $AWS_REGION >/dev/null
-    else
-      log_info "Updating ALB listener on port $listener_port..." >&2
-      aws elbv2 modify-listener \
-        --listener-arn $listener_arn \
-        --default-actions Type=forward,TargetGroupArn=$tg_arn \
-        --region $AWS_REGION >/dev/null
-    fi
-  fi
-}
-
 cmd_deploy() {
-  log_info "Deploying PSM server behind an ALB..."
+  log_info "Deploying PSM server with Terraform..."
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
   else
     log_info "Skipping Docker build (--skip-build)"
   fi
-  cmd_create_cluster
-  cmd_create_task_definition
 
-  local VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" \
-    --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION)
-  local SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query 'Subnets[].SubnetId' --output text --region $AWS_REGION)
-  local SUBNET_ID=$(echo "$SUBNET_IDS" | awk '{print $1}')
+  local AWS_ACCOUNT_ID=$(get_aws_account_id)
+  local IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest"
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local TF_DIR="${SCRIPT_DIR}/../infra"
 
-  log_info "Creating security group for server..."
-  local SG_ID
-  SG_ID=$(aws ec2 create-security-group \
-    --group-name psm-server-sg \
-    --description "PSM server" \
-    --vpc-id $VPC_ID \
-    --region $AWS_REGION \
-    --query 'GroupId' --output text 2>/dev/null) || \
-    SG_ID=$(aws ec2 describe-security-groups --region $AWS_REGION \
-      --filters "Name=group-name,Values=psm-server-sg" \
-      --query 'SecurityGroups[0].GroupId' --output text)
-
-  log_info "Creating security group for ALB..."
-  local ALB_SG_ID
-  ALB_SG_ID=$(aws ec2 create-security-group \
-    --group-name $ALB_SG_NAME \
-    --description "PSM ALB" \
-    --vpc-id $VPC_ID \
-    --region $AWS_REGION \
-    --query 'GroupId' --output text 2>/dev/null) || \
-    ALB_SG_ID=$(aws ec2 describe-security-groups --region $AWS_REGION \
-      --filters "Name=group-name,Values=$ALB_SG_NAME" \
-      --query 'SecurityGroups[0].GroupId' --output text)
-
-  log_info "Creating security group for Postgres..."
-  local PG_SG_ID
-  PG_SG_ID=$(aws ec2 create-security-group \
-    --group-name psm-postgres-sg \
-    --description "PSM postgres" \
-    --vpc-id $VPC_ID \
-    --region $AWS_REGION \
-    --query 'GroupId' --output text 2>/dev/null) || \
-    PG_SG_ID=$(aws ec2 describe-security-groups --region $AWS_REGION \
-      --filters "Name=group-name,Values=psm-postgres-sg" \
-      --query 'SecurityGroups[0].GroupId' --output text)
-
-  # Allow ALB ingress
-  aws ec2 authorize-security-group-ingress --group-id $ALB_SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
-  aws ec2 authorize-security-group-ingress --group-id $ALB_SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
-
-  # Allow ALB to reach the server HTTP port
-  aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 3000 --source-group $ALB_SG_ID --region $AWS_REGION 2>/dev/null || true
-  aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 50051 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
-
-  # Allow server to access Postgres
-  aws ec2 authorize-security-group-ingress --group-id $PG_SG_ID --protocol tcp --port 5432 --source-group $SG_ID --region $AWS_REGION 2>/dev/null || true
-
-  local ALB_ARN=$(cmd_create_alb "$SUBNET_IDS" "$ALB_SG_ID")
-  local TG_ARN=$(cmd_create_alb_target_group "$VPC_ID")
-  cmd_create_alb_listener "$ALB_ARN" "$TG_ARN"
-
-  cmd_create_postgres_task_definition
-  local SD_SERVICE_ARN=$(cmd_create_service_discovery $VPC_ID)
-  cmd_create_postgres_service $SUBNET_ID $PG_SG_ID $SD_SERVICE_ARN
-  wait_for_service $POSTGRES_SERVICE_NAME
-
-  log_info "Creating ECS service..."
-  if aws ecs create-service \
-    --cluster $CLUSTER_NAME \
-    --service-name $SERVICE_NAME \
-    --task-definition psm-server \
-    --desired-count 1 \
-    --launch-type FARGATE \
-    --platform-version LATEST \
-    --region $AWS_REGION \
-    --health-check-grace-period-seconds 30 \
-    --load-balancers "targetGroupArn=$TG_ARN,containerName=psm-server,containerPort=3000" \
-    --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" 2>/dev/null; then
-    log_info "Service created"
-  else
-    log_info "Service already exists, updating to latest task definition..."
-    aws ecs update-service \
-      --cluster $CLUSTER_NAME \
-      --service $SERVICE_NAME \
-      --task-definition psm-server \
-      --load-balancers "targetGroupArn=$TG_ARN,containerName=psm-server,containerPort=3000" \
-      --force-new-deployment \
-      --region $AWS_REGION >/dev/null
+  if [ ! -d "$TF_DIR" ]; then
+    log_error "Terraform directory not found: $TF_DIR"
+    return 1
   fi
 
-  wait_for_service $SERVICE_NAME
+  if [ ! -d "$TF_DIR/.terraform" ]; then
+    log_info "Initializing Terraform..."
+    terraform -chdir="$TF_DIR" init
+  fi
 
-  local ALB_DNS=$(aws elbv2 describe-load-balancers \
-    --load-balancer-arns $ALB_ARN \
-    --region $AWS_REGION \
-    --query 'LoadBalancers[0].DNSName' --output text)
+  if [ "$IMPORT_EXISTING" = true ]; then
+    cmd_import_existing_resources "$TF_DIR" "$IMAGE_URI" "$AWS_REGION" \
+      "$DOMAIN_NAME" "$SUBDOMAIN" "$ROUTE53_ZONE_ID"
+  else
+    log_info "Skipping resource imports (IMPORT_EXISTING=false)"
+  fi
 
-  # Clean up old task definitions
-  cleanup_old_task_definitions "psm-server"
-  cleanup_old_task_definitions "psm-postgres"
+  log_info "Applying Terraform..."
+  local tf_vars=()
+  tf_vars+=("-var" "aws_region=${AWS_REGION}")
+  tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
+  if [ -n "$DOMAIN_NAME" ]; then
+    tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
+    tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
+    tf_vars+=("-var" "acm_certificate_arn=${ACM_CERTIFICATE_ARN}")
+    if [ -n "$CLOUDFLARE_ZONE_ID" ]; then
+      tf_vars+=("-var" "cloudflare_zone_id=${CLOUDFLARE_ZONE_ID}")
+      tf_vars+=("-var" "cloudflare_proxied=${CLOUDFLARE_PROXIED}")
+    fi
+    if [ -n "$ROUTE53_ZONE_ID" ]; then
+      tf_vars+=("-var" "route53_zone_id=${ROUTE53_ZONE_ID}")
+    fi
+  fi
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    tf_vars+=("-var" "cloudflare_api_token=${CLOUDFLARE_API_TOKEN}")
+  fi
+
+  terraform -chdir="$TF_DIR" apply -auto-approve "${tf_vars[@]}"
+
+  local ALB_URL
+  local ALB_DNS
+  local HTTPS_URL
+  local CUSTOM_DOMAIN_URL
+  ALB_URL=$(terraform -chdir="$TF_DIR" output -raw alb_url 2>/dev/null || true)
+  ALB_DNS=$(terraform -chdir="$TF_DIR" output -raw alb_dns_name 2>/dev/null || true)
+  CUSTOM_DOMAIN_URL=$(terraform -chdir="$TF_DIR" output -raw custom_domain_url 2>/dev/null || true)
+  if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
+    HTTPS_URL="https://${ALB_DNS}"
+  fi
 
   echo ""
   log_info "Deployment complete!"
-  echo ""
-  local scheme="http"
-  if [ -n "$ACM_CERT_ARN" ]; then
-    scheme="https"
+  if [ -n "$ALB_URL" ]; then
+    echo ""
+    echo "  URL: ${ALB_URL}"
+    if [ -n "$HTTPS_URL" ]; then
+      echo "  HTTPS URL: ${HTTPS_URL}"
+    fi
+    if [ -n "$CUSTOM_DOMAIN_URL" ]; then
+      echo "  Custom domain: ${CUSTOM_DOMAIN_URL}"
+    fi
+    echo ""
+    echo "  Health check: curl ${ALB_URL}/"
+    echo "  Public key:   curl ${ALB_URL}/pubkey"
   fi
-  echo "  URL: ${scheme}://$ALB_DNS"
-  echo ""
-  echo "  Health check: curl ${scheme}://$ALB_DNS/health"
-  echo "  Public key:   curl ${scheme}://$ALB_DNS/pubkey"
   echo ""
 }
 
 cmd_status() {
-  log_info "Checking deployment status..."
+  log_info "Checking Terraform outputs..."
 
-  echo ""
-  echo "=== ECS Service ==="
-  aws ecs describe-services \
-    --cluster $CLUSTER_NAME \
-    --services $SERVICE_NAME \
-    --region $AWS_REGION \
-    --query 'services[0].{status:status,runningCount:runningCount,desiredCount:desiredCount,taskDefinition:taskDefinition}' 2>/dev/null || \
-    echo "Service not found"
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local TF_DIR="${SCRIPT_DIR}/../infra"
 
-  echo ""
-  echo "=== Running Tasks ==="
-  local TASK_ARN=$(aws ecs list-tasks \
-    --cluster $CLUSTER_NAME \
-    --service-name $SERVICE_NAME \
-    --region $AWS_REGION \
-    --query 'taskArns[0]' --output text 2>/dev/null)
-
-  if [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
-    local ENI_ID=$(aws ecs describe-tasks \
-      --cluster $CLUSTER_NAME \
-      --tasks $TASK_ARN \
-      --region $AWS_REGION \
-      --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text 2>/dev/null)
-
-    if [ -n "$ENI_ID" ] && [ "$ENI_ID" != "None" ]; then
-      local PSM_IP=$(aws ec2 describe-network-interfaces \
-        --network-interface-ids $ENI_ID \
-        --region $AWS_REGION \
-        --query 'NetworkInterfaces[0].Association.PublicIp' --output text 2>/dev/null)
-      echo "Task Public IP: $PSM_IP"
-    fi
-  else
-    echo "No running tasks"
+  if [ ! -d "$TF_DIR" ]; then
+    log_error "Terraform directory not found: $TF_DIR"
+    return 1
   fi
 
-  echo ""
-  echo "=== ALB ==="
-  local ALB_ARN=$(aws elbv2 describe-load-balancers \
-    --names $ALB_NAME \
-    --region $AWS_REGION \
-    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
-
-  if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-    local ALB_DNS=$(aws elbv2 describe-load-balancers \
-      --load-balancer-arns $ALB_ARN \
-      --region $AWS_REGION \
-      --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null)
-    echo "ALB DNS: $ALB_DNS"
-  else
-    echo "No ALB configured"
-  fi
+  terraform -chdir="$TF_DIR" output 2>/dev/null || log_warn "No Terraform outputs found (run deploy first)"
 }
 
 cmd_logs() {
   log_info "Tailing CloudWatch logs (Ctrl+C to exit)..."
-  aws logs tail /ecs/psm-server --follow --region $AWS_REGION
+
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local TF_DIR="${SCRIPT_DIR}/../infra"
+
+  if [ ! -d "$TF_DIR" ]; then
+    log_error "Terraform directory not found: $TF_DIR"
+    return 1
+  fi
+
+  local LOG_GROUP
+  LOG_GROUP=$(terraform -chdir="$TF_DIR" output -raw server_log_group 2>/dev/null || true)
+  if [ -z "$LOG_GROUP" ]; then
+    log_warn "Log group not found. Run deploy first."
+    return 0
+  fi
+
+  aws logs tail "$LOG_GROUP" --follow --region $AWS_REGION
 }
 
 cmd_cleanup() {
-  log_warn "This will delete ALL PSM server AWS resources"
+  log_warn "This will delete ALL PSM server AWS resources (Terraform destroy)"
   read -p "Are you sure? (yes/no): " confirm
   if [ "$confirm" != "yes" ]; then
     echo "Aborted"
     exit 0
   fi
 
-  log_info "Scaling down ECS services..."
-  aws ecs update-service --cluster $CLUSTER_NAME --service $POSTGRES_SERVICE_NAME --desired-count 0 --region $AWS_REGION 2>/dev/null || true
-  aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --desired-count 0 --region $AWS_REGION 2>/dev/null || true
+  local AWS_ACCOUNT_ID=$(get_aws_account_id)
+  local IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest"
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local TF_DIR="${SCRIPT_DIR}/../infra"
 
-  log_info "Deleting ECS services..."
-  aws ecs delete-service --cluster $CLUSTER_NAME --service $POSTGRES_SERVICE_NAME --region $AWS_REGION 2>/dev/null || true
-  aws ecs delete-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --region $AWS_REGION 2>/dev/null || true
-
-  log_info "Waiting for service to stop..."
-  sleep 30
-
-  # Delete ALB resources
-  local ALB_ARN=$(aws elbv2 describe-load-balancers \
-    --names $ALB_NAME \
-    --region $AWS_REGION \
-    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
-  if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-    log_info "Deleting ALB listeners..."
-    local LISTENER_ARNS=$(aws elbv2 describe-listeners \
-      --load-balancer-arn $ALB_ARN \
-      --region $AWS_REGION \
-      --query 'Listeners[].ListenerArn' --output text 2>/dev/null)
-    for listener_arn in $LISTENER_ARNS; do
-      aws elbv2 delete-listener --listener-arn $listener_arn --region $AWS_REGION 2>/dev/null || true
-    done
-
-    log_info "Deleting ALB..."
-    aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN --region $AWS_REGION 2>/dev/null || true
-    aws elbv2 wait load-balancers-deleted --load-balancer-arns $ALB_ARN --region $AWS_REGION 2>/dev/null || true
+  if [ ! -d "$TF_DIR" ]; then
+    log_error "Terraform directory not found: $TF_DIR"
+    return 1
   fi
 
-  local TG_ARN=$(aws elbv2 describe-target-groups \
-    --names $ALB_TG_NAME \
-    --region $AWS_REGION \
-    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)
-  if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-    log_info "Deleting ALB target group..."
-    aws elbv2 delete-target-group --target-group-arn $TG_ARN --region $AWS_REGION 2>/dev/null || true
+  if [ ! -d "$TF_DIR/.terraform" ]; then
+    log_info "Initializing Terraform..."
+    terraform -chdir="$TF_DIR" init
   fi
 
-  # Delete security groups
-  local pg_sg_id=$(aws ec2 describe-security-groups --region $AWS_REGION \
-    --filters "Name=group-name,Values=psm-postgres-sg" \
-    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
-  if [ -n "$pg_sg_id" ] && [ "$pg_sg_id" != "None" ]; then
-    aws ec2 delete-security-group --group-id $pg_sg_id --region $AWS_REGION 2>/dev/null || true
+  log_info "Running Terraform destroy..."
+  local tf_vars=()
+  tf_vars+=("-var" "aws_region=${AWS_REGION}")
+  tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
+  if [ -n "$DOMAIN_NAME" ]; then
+    tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
+    tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
+    tf_vars+=("-var" "acm_certificate_arn=${ACM_CERTIFICATE_ARN}")
+    if [ -n "$CLOUDFLARE_ZONE_ID" ]; then
+      tf_vars+=("-var" "cloudflare_zone_id=${CLOUDFLARE_ZONE_ID}")
+      tf_vars+=("-var" "cloudflare_proxied=${CLOUDFLARE_PROXIED}")
+    fi
+    if [ -n "$ROUTE53_ZONE_ID" ]; then
+      tf_vars+=("-var" "route53_zone_id=${ROUTE53_ZONE_ID}")
+    fi
+  fi
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    tf_vars+=("-var" "cloudflare_api_token=${CLOUDFLARE_API_TOKEN}")
   fi
 
-  local sg_id=$(aws ec2 describe-security-groups --region $AWS_REGION \
-    --filters "Name=group-name,Values=psm-server-sg" \
-    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
-  if [ -n "$sg_id" ] && [ "$sg_id" != "None" ]; then
-    aws ec2 delete-security-group --group-id $sg_id --region $AWS_REGION 2>/dev/null || true
-  fi
-
-  local alb_sg_id=$(aws ec2 describe-security-groups --region $AWS_REGION \
-    --filters "Name=group-name,Values=$ALB_SG_NAME" \
-    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
-  if [ -n "$alb_sg_id" ] && [ "$alb_sg_id" != "None" ]; then
-    aws ec2 delete-security-group --group-id $alb_sg_id --region $AWS_REGION 2>/dev/null || true
-  fi
-
-  log_info "Deleting ECS cluster..."
-  aws ecs delete-cluster --cluster $CLUSTER_NAME --region $AWS_REGION 2>/dev/null || true
-
-  log_info "Deleting ECR repository..."
-  aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS_REGION 2>/dev/null || true
-
-  log_info "Deleting CloudWatch log groups..."
-  aws logs delete-log-group --log-group-name $LOG_GROUP_SERVER --region $AWS_REGION 2>/dev/null || true
-  aws logs delete-log-group --log-group-name $LOG_GROUP_POSTGRES --region $AWS_REGION 2>/dev/null || true
-
-  log_info "Deleting Cloud Map service and namespace..."
-  local sd_service_id=$(aws servicediscovery list-services \
-    --region $AWS_REGION \
-    --query "Services[?Name=='${SD_SERVICE_NAME}'].Id" --output text 2>/dev/null)
-  if [ -n "$sd_service_id" ] && [ "$sd_service_id" != "None" ]; then
-    aws servicediscovery delete-service --id $sd_service_id --region $AWS_REGION 2>/dev/null || true
-  fi
-  local namespace_id=$(aws servicediscovery list-namespaces \
-    --region $AWS_REGION \
-    --query "Namespaces[?Name=='${SD_NAMESPACE_NAME}'].Id" --output text 2>/dev/null)
-  if [ -n "$namespace_id" ] && [ "$namespace_id" != "None" ]; then
-    aws servicediscovery delete-namespace --id $namespace_id --region $AWS_REGION 2>/dev/null || true
-  fi
+  terraform -chdir="$TF_DIR" destroy -auto-approve "${tf_vars[@]}"
 
   log_info "Cleanup complete!"
 }
@@ -751,6 +439,27 @@ for arg in "$@"; do
   case "$arg" in
     --skip-build)
       SKIP_BUILD=true
+      ;;
+    --domain=*)
+      DOMAIN_NAME="${arg#*=}"
+      ;;
+    --subdomain=*)
+      SUBDOMAIN="${arg#*=}"
+      ;;
+    --route53-zone-id=*)
+      ROUTE53_ZONE_ID="${arg#*=}"
+      ;;
+    --cloudflare-zone-id=*)
+      CLOUDFLARE_ZONE_ID="${arg#*=}"
+      ;;
+    --cloudflare-proxied=*)
+      CLOUDFLARE_PROXIED="${arg#*=}"
+      ;;
+    --acm-certificate-arn=*)
+      ACM_CERTIFICATE_ARN="${arg#*=}"
+      ;;
+    --import-existing)
+      IMPORT_EXISTING=true
       ;;
     *)
       if [ -z "$COMMAND" ]; then
@@ -780,13 +489,20 @@ case "${COMMAND:-}" in
     echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  deploy   Deploy PSM server behind an ALB"
+    echo "  deploy   Build/push image and run Terraform apply"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"
     echo "  cleanup  Remove all AWS resources"
     echo ""
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
+    echo "  --domain=     Override root domain (default: openzeppelin.com)"
+    echo "  --subdomain=  Override subdomain (default: psm)"
+    echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"
+    echo "  --cloudflare-zone-id=  Cloudflare zone ID (optional)"
+    echo "  --cloudflare-proxied=  Cloudflare proxied setting (true/false)"
+    echo "  --acm-certificate-arn= ACM certificate ARN for HTTPS"
+    echo "  --import-existing Import existing AWS resources into state"
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
