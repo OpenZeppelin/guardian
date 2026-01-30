@@ -1,56 +1,33 @@
 locals {
-  route53_zone_id = var.route53_zone_id != "" ? var.route53_zone_id : data.aws_route53_zone.existing[0].zone_id
+  route53_zone_id        = var.domain_name != "" ? var.route53_zone_id : ""
+  cloudflare_record_name = var.subdomain != "" ? var.subdomain : "@"
 }
 
-data "aws_route53_zone" "existing" {
-  count = var.domain_name != "" && var.route53_zone_id == "" ? 1 : 0
-
-  name         = var.domain_name
-  private_zone = false
+data "cloudflare_zone" "domain" {
+  count   = local.domain_enabled && var.cloudflare_zone_id != "" ? 1 : 0
+  zone_id = var.cloudflare_zone_id
 }
 
-# ACM certificate for the custom domain (DNS validated)
-resource "aws_acm_certificate" "main" {
-  count = local.domain_enabled ? 1 : 0
-
-  domain_name       = local.service_fqdn
-  validation_method = "DNS"
-}
-
-resource "aws_route53_record" "acm_validation" {
-  for_each = local.domain_enabled ? {
-    for dvo in aws_acm_certificate.main[0].domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      type   = dvo.resource_record_type
-      record = dvo.resource_record_value
-    }
-  } : {}
-
-  zone_id = local.route53_zone_id
-  name    = each.value.name
-  type    = each.value.type
-  ttl     = 300
-  records = [each.value.record]
-}
-
-resource "aws_acm_certificate_validation" "main" {
-  count = local.domain_enabled ? 1 : 0
-
-  certificate_arn         = aws_acm_certificate.main[0].arn
-  validation_record_fqdns = [for record in aws_route53_record.acm_validation : record.fqdn]
-}
-
-# Alias record for ALB
-resource "aws_route53_record" "alb_alias" {
-  count = local.domain_enabled ? 1 : 0
+# Route 53 CNAME -> Cloudflare CDN (optional)
+resource "aws_route53_record" "cloudflare_cname" {
+  count = local.domain_enabled && local.route53_zone_id != "" ? 1 : 0
 
   zone_id = local.route53_zone_id
   name    = local.service_fqdn
-  type    = "A"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["${local.service_fqdn}.cdn.cloudflare.net"]
+}
 
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
+# Cloudflare CNAME -> ALB (optional)
+resource "cloudflare_dns_record" "service" {
+  count = local.domain_enabled && var.cloudflare_zone_id != "" ? 1 : 0
+
+  zone_id = data.cloudflare_zone.domain[0].zone_id
+  comment = "PSM service domain"
+  content = aws_lb.main.dns_name
+  name    = local.cloudflare_record_name
+  proxied = var.cloudflare_proxied
+  ttl     = 1
+  type    = "CNAME"
 }

@@ -32,6 +32,7 @@
     "@demox-labs/miden-sdk": "^0.12.5"
   },
   "devDependencies": {
+    "@demox-labs/miden-sdk": "file:./vendor/demox-labs-miden-sdk-0.12.6.tgz",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

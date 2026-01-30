@@ -52,6 +52,9 @@ resource "aws_lb_listener" "http" {
     dynamic "redirect" {
       for_each = local.acm_certificate_arn != "" ? [1] : []
       content {
+        host        = "#{host}"
+        path        = "/#{path}"
+        query       = "#{query}"
         port        = "443"
         protocol    = "HTTPS"
         status_code = "HTTP_301"
