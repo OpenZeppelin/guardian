@@ -2531,9 +2531,9 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto"
-version = "0.12.5"
+version = "0.12.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "182325b34dde7fdebb6f2b05f2a9420c8fdedea29d2111ef7e03ac5f232770fe"
+checksum = "08abfd6b2dc6938c5724472bdd54a8c9e8831754cf973b73363542a5237dc188"
 dependencies = [
  "anyhow",
  "fs-err",
