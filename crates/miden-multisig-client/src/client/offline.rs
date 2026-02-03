@@ -334,12 +334,9 @@ impl MultisigClient {
             });
         }
 
-        // Parse the proposal
+        // Parse the proposal (includes parsed tx_summary)
         let proposal = exported.to_proposal()?;
-        let tx_summary = TransactionSummary::from_json(&exported.tx_summary).map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
-        })?;
-        let tx_summary_commitment = tx_summary.to_commitment();
+        let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         // Convert exported signatures to SignatureInput format
         let signature_inputs: Vec<SignatureInput> = exported
@@ -369,7 +366,12 @@ impl MultisigClient {
         if !is_switch_psm {
             // Get PSM ack signature and add to advice
             let psm_advice = self
-                .get_psm_ack_signature(&account, proposal.nonce, &tx_summary, tx_summary_commitment)
+                .get_psm_ack_signature(
+                    &account,
+                    proposal.nonce,
+                    &proposal.tx_summary,
+                    tx_summary_commitment,
+                )
                 .await?;
             signature_advice.push(psm_advice);
         }
