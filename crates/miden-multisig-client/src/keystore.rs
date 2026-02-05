@@ -420,4 +420,113 @@ mod tests {
         let result = hex::encode(bytes);
         assert_eq!(original, result);
     }
+
+    // --- EcdsaPsmKeyStore tests ---
+
+    #[test]
+    fn ecdsa_generate_creates_valid_keystore() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        assert!(keystore.commitment_hex().starts_with("0x"));
+        assert_eq!(keystore.commitment_hex().len(), 66);
+    }
+
+    #[test]
+    fn ecdsa_new_from_secret_key_derives_correct_commitment() {
+        let secret_key = miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
+        let expected_commitment = secret_key.public_key().to_commitment();
+        let keystore = EcdsaPsmKeyStore::new(secret_key);
+        assert_eq!(keystore.commitment(), expected_commitment);
+    }
+
+    #[test]
+    fn ecdsa_commitment_hex_is_consistent() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        let hex1 = keystore.commitment_hex();
+        let hex2 = keystore.commitment_hex();
+        assert_eq!(hex1, hex2);
+    }
+
+    #[test]
+    fn ecdsa_commitment_roundtrip_via_hex() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        let hex = keystore.commitment_hex();
+        let parsed = commitment_from_hex(&hex).unwrap();
+        assert_eq!(parsed, keystore.commitment());
+    }
+
+    #[test]
+    fn ecdsa_sign_hex_returns_hex_encoded_signature() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        let message = Word::default();
+        let sig_hex = keystore.sign_hex(message);
+        assert!(sig_hex.starts_with("0x"));
+        assert!(hex::decode(sig_hex.strip_prefix("0x").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn ecdsa_sign_produces_verifiable_signature() {
+        use miden_objects::utils::Deserializable;
+
+        let keystore = EcdsaPsmKeyStore::generate();
+        let message = Word::default();
+        let sig_hex = keystore.sign_hex(message);
+
+        let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap()).unwrap();
+        let signature =
+            miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
+                .unwrap();
+        let pk = keystore.public_key();
+        assert!(pk.verify(message, &signature));
+    }
+
+    #[test]
+    fn ecdsa_secret_key_returns_ecdsa_variant() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        match keystore.secret_key() {
+            SchemeSecretKey::Ecdsa(_) => {}
+            SchemeSecretKey::Falcon(_) => panic!("expected Ecdsa variant"),
+        }
+    }
+
+    #[test]
+    fn ecdsa_scheme_returns_ecdsa() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        assert_eq!(keystore.scheme(), SignatureScheme::Ecdsa);
+    }
+
+    #[test]
+    fn ecdsa_public_key_hex_returns_some() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        let pk_hex = keystore.public_key_hex();
+        assert!(pk_hex.is_some());
+        let hex_str = pk_hex.unwrap();
+        assert!(hex_str.starts_with("0x"));
+        assert!(hex::decode(hex_str.strip_prefix("0x").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn falcon_public_key_hex_returns_none() {
+        let keystore = PsmKeyStore::generate();
+        assert!(keystore.public_key_hex().is_none());
+    }
+
+    #[test]
+    fn falcon_scheme_returns_falcon() {
+        let keystore = PsmKeyStore::generate();
+        assert_eq!(keystore.scheme(), SignatureScheme::Falcon);
+    }
+
+    #[test]
+    fn ecdsa_clone_secret_key_produces_same_public_key() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        let sk = keystore.clone_ecdsa_secret_key();
+        assert_eq!(sk.public_key().to_commitment(), keystore.commitment());
+    }
+
+    #[test]
+    fn ecdsa_public_key_matches_commitment() {
+        let keystore = EcdsaPsmKeyStore::generate();
+        let pk = keystore.public_key();
+        assert_eq!(pk.to_commitment(), keystore.commitment());
+    }
 }

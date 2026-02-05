@@ -281,3 +281,458 @@ impl From<miden_keystore::KeyStoreError> for MidenEcdsaError {
         }
     }
 }
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+
+    // --- PsmError::http_status ---
+
+    #[test]
+    fn http_status_not_found_variants() {
+        assert_eq!(
+            PsmError::AccountNotFound("x".into()).http_status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            PsmError::DeltaNotFound {
+                account_id: "x".into(),
+                nonce: 1
+            }
+            .http_status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            PsmError::StateNotFound("x".into()).http_status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            PsmError::ProposalNotFound {
+                account_id: "x".into(),
+                commitment: "c".into()
+            }
+            .http_status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn http_status_conflict_variants() {
+        assert_eq!(
+            PsmError::AccountAlreadyExists("x".into()).http_status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            PsmError::ConflictPendingDelta.http_status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            PsmError::ConflictPendingProposal.http_status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            PsmError::ProposalAlreadySigned {
+                signer_id: "s".into()
+            }
+            .http_status(),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[test]
+    fn http_status_auth_variants() {
+        assert_eq!(
+            PsmError::AuthenticationFailed("x".into()).http_status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            PsmError::AuthorizationFailed("x".into()).http_status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn http_status_bad_request_variants() {
+        assert_eq!(
+            PsmError::InvalidInput("x".into()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            PsmError::InvalidAccountId("x".into()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            PsmError::InvalidDelta("x".into()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            PsmError::InvalidCommitment("x".into()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            PsmError::CommitmentMismatch {
+                expected: "a".into(),
+                actual: "b".into()
+            }
+            .http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            PsmError::InvalidProposalSignature("x".into()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            PsmError::InsufficientSignatures {
+                required: 3,
+                got: 1
+            }
+            .http_status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn http_status_server_error_variants() {
+        assert_eq!(
+            PsmError::NetworkError("x".into()).http_status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            PsmError::SigningError("x".into()).http_status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            PsmError::StorageError("x".into()).http_status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            PsmError::ConfigurationError("x".into()).http_status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    // --- PsmError::grpc_status ---
+
+    #[test]
+    fn grpc_status_not_found() {
+        assert_eq!(
+            PsmError::AccountNotFound("x".into()).grpc_status(),
+            tonic::Code::NotFound
+        );
+        assert_eq!(
+            PsmError::StateNotFound("x".into()).grpc_status(),
+            tonic::Code::NotFound
+        );
+    }
+
+    #[test]
+    fn grpc_status_already_exists() {
+        assert_eq!(
+            PsmError::AccountAlreadyExists("x".into()).grpc_status(),
+            tonic::Code::AlreadyExists
+        );
+        assert_eq!(
+            PsmError::ProposalAlreadySigned {
+                signer_id: "s".into()
+            }
+            .grpc_status(),
+            tonic::Code::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn grpc_status_failed_precondition() {
+        assert_eq!(
+            PsmError::ConflictPendingDelta.grpc_status(),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            PsmError::ConflictPendingProposal.grpc_status(),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            PsmError::InsufficientSignatures {
+                required: 2,
+                got: 1
+            }
+            .grpc_status(),
+            tonic::Code::FailedPrecondition
+        );
+    }
+
+    #[test]
+    fn grpc_status_auth() {
+        assert_eq!(
+            PsmError::AuthenticationFailed("x".into()).grpc_status(),
+            tonic::Code::Unauthenticated
+        );
+        assert_eq!(
+            PsmError::AuthorizationFailed("x".into()).grpc_status(),
+            tonic::Code::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn grpc_status_invalid_argument() {
+        assert_eq!(
+            PsmError::InvalidInput("x".into()).grpc_status(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            PsmError::InvalidAccountId("x".into()).grpc_status(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            PsmError::InvalidDelta("x".into()).grpc_status(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            PsmError::InvalidCommitment("x".into()).grpc_status(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            PsmError::CommitmentMismatch {
+                expected: "a".into(),
+                actual: "b".into()
+            }
+            .grpc_status(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            PsmError::InvalidProposalSignature("x".into()).grpc_status(),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn grpc_status_internal() {
+        assert_eq!(
+            PsmError::SigningError("x".into()).grpc_status(),
+            tonic::Code::Internal
+        );
+        assert_eq!(
+            PsmError::StorageError("x".into()).grpc_status(),
+            tonic::Code::Internal
+        );
+        assert_eq!(
+            PsmError::ConfigurationError("x".into()).grpc_status(),
+            tonic::Code::Internal
+        );
+    }
+
+    // --- Display ---
+
+    #[test]
+    fn display_account_not_found() {
+        let err = PsmError::AccountNotFound("abc".into());
+        assert_eq!(err.to_string(), "Account 'abc' not found");
+    }
+
+    #[test]
+    fn display_account_already_exists() {
+        let err = PsmError::AccountAlreadyExists("abc".into());
+        assert_eq!(err.to_string(), "Account 'abc' already exists");
+    }
+
+    #[test]
+    fn display_delta_not_found() {
+        let err = PsmError::DeltaNotFound {
+            account_id: "acc".into(),
+            nonce: 42,
+        };
+        assert_eq!(
+            err.to_string(),
+            "Delta not found for account 'acc' at nonce 42"
+        );
+    }
+
+    #[test]
+    fn display_commitment_mismatch() {
+        let err = PsmError::CommitmentMismatch {
+            expected: "0xaa".into(),
+            actual: "0xbb".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Commitment mismatch: expected 0xaa, got 0xbb"
+        );
+    }
+
+    #[test]
+    fn display_conflict_pending_delta() {
+        assert!(
+            PsmError::ConflictPendingDelta
+                .to_string()
+                .contains("non-canonical delta pending")
+        );
+    }
+
+    #[test]
+    fn display_conflict_pending_proposal() {
+        assert!(
+            PsmError::ConflictPendingProposal
+                .to_string()
+                .contains("pending proposals")
+        );
+    }
+
+    #[test]
+    fn display_proposal_not_found() {
+        let err = PsmError::ProposalNotFound {
+            account_id: "acc".into(),
+            commitment: "c".into(),
+        };
+        assert!(err.to_string().contains("acc"));
+        assert!(err.to_string().contains("c"));
+    }
+
+    #[test]
+    fn display_proposal_already_signed() {
+        let err = PsmError::ProposalAlreadySigned {
+            signer_id: "signer".into(),
+        };
+        assert!(err.to_string().contains("signer"));
+    }
+
+    #[test]
+    fn display_insufficient_signatures() {
+        let err = PsmError::InsufficientSignatures {
+            required: 3,
+            got: 1,
+        };
+        assert!(err.to_string().contains("3"));
+        assert!(err.to_string().contains("1"));
+    }
+
+    // --- From conversions ---
+
+    #[test]
+    fn from_string_creates_invalid_input() {
+        let err: PsmError = "some error".to_string().into();
+        assert_eq!(err, PsmError::InvalidInput("some error".into()));
+    }
+
+    #[test]
+    fn from_str_creates_invalid_input() {
+        let err: PsmError = "some error".into();
+        assert_eq!(err, PsmError::InvalidInput("some error".into()));
+    }
+
+    #[test]
+    fn from_miden_falcon_rpo_error() {
+        let err = MidenFalconRpoError::StorageError("storage fail".into());
+        let psm: PsmError = err.into();
+        assert!(matches!(psm, PsmError::SigningError(_)));
+        assert!(psm.to_string().contains("storage fail"));
+    }
+
+    #[test]
+    fn from_miden_ecdsa_error() {
+        let err = MidenEcdsaError::DecodingError("decode fail".into());
+        let psm: PsmError = err.into();
+        assert!(matches!(psm, PsmError::SigningError(_)));
+        assert!(psm.to_string().contains("decode fail"));
+    }
+
+    #[test]
+    fn from_keystore_error_to_psm() {
+        let err = miden_keystore::KeyStoreError::KeyNotFound("key123".into());
+        let psm: PsmError = err.into();
+        assert!(matches!(psm, PsmError::SigningError(_)));
+    }
+
+    // --- MidenFalconRpoError Display ---
+
+    #[test]
+    fn falcon_rpo_error_display() {
+        assert!(
+            MidenFalconRpoError::StorageError("x".into())
+                .to_string()
+                .contains("Storage error")
+        );
+        assert!(
+            MidenFalconRpoError::DecodingError("y".into())
+                .to_string()
+                .contains("Decoding error")
+        );
+    }
+
+    // --- MidenEcdsaError Display ---
+
+    #[test]
+    fn ecdsa_error_display() {
+        assert!(
+            MidenEcdsaError::StorageError("x".into())
+                .to_string()
+                .contains("ECDSA storage error")
+        );
+        assert!(
+            MidenEcdsaError::DecodingError("y".into())
+                .to_string()
+                .contains("ECDSA decoding error")
+        );
+    }
+
+    // --- KeyStoreError -> MidenFalconRpoError ---
+
+    #[test]
+    fn keystore_error_to_falcon_rpo_storage() {
+        let err = miden_keystore::KeyStoreError::StorageError("s".into());
+        let falcon: MidenFalconRpoError = err.into();
+        assert!(matches!(falcon, MidenFalconRpoError::StorageError(_)));
+    }
+
+    #[test]
+    fn keystore_error_to_falcon_rpo_decoding() {
+        let err = miden_keystore::KeyStoreError::DecodingError("d".into());
+        let falcon: MidenFalconRpoError = err.into();
+        assert!(matches!(falcon, MidenFalconRpoError::DecodingError(_)));
+    }
+
+    #[test]
+    fn keystore_error_to_falcon_rpo_key_not_found() {
+        let err = miden_keystore::KeyStoreError::KeyNotFound("k".into());
+        let falcon: MidenFalconRpoError = err.into();
+        assert!(matches!(falcon, MidenFalconRpoError::StorageError(_)));
+    }
+
+    // --- KeyStoreError -> MidenEcdsaError ---
+
+    #[test]
+    fn keystore_error_to_ecdsa_storage() {
+        let err = miden_keystore::KeyStoreError::StorageError("s".into());
+        let ecdsa: MidenEcdsaError = err.into();
+        assert!(matches!(ecdsa, MidenEcdsaError::StorageError(_)));
+    }
+
+    #[test]
+    fn keystore_error_to_ecdsa_decoding() {
+        let err = miden_keystore::KeyStoreError::DecodingError("d".into());
+        let ecdsa: MidenEcdsaError = err.into();
+        assert!(matches!(ecdsa, MidenEcdsaError::DecodingError(_)));
+    }
+
+    #[test]
+    fn keystore_error_to_ecdsa_key_not_found() {
+        let err = miden_keystore::KeyStoreError::KeyNotFound("k".into());
+        let ecdsa: MidenEcdsaError = err.into();
+        assert!(matches!(ecdsa, MidenEcdsaError::StorageError(_)));
+    }
+
+    // --- IntoResponse / tonic::Status ---
+
+    #[test]
+    fn into_response_returns_correct_status() {
+        let err = PsmError::AccountNotFound("x".into());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn into_tonic_status() {
+        let err = PsmError::AuthenticationFailed("bad creds".into());
+        let status: tonic::Status = err.into();
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        assert!(status.message().contains("bad creds"));
+    }
+}

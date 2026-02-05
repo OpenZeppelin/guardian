@@ -248,4 +248,106 @@ mod tests {
         let hex2 = word.into_hex();
         assert_eq!(hex1, hex2);
     }
+
+    // --- ECDSA PublicKey tests ---
+
+    #[test]
+    fn test_ecdsa_public_key_into_hex() {
+        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+
+        let hex1 = (&pk).into_hex();
+        assert!(hex1.starts_with("0x"));
+
+        let hex2 = pk.into_hex();
+        assert_eq!(hex1, hex2);
+    }
+
+    #[test]
+    fn test_ecdsa_public_key_from_hex_roundtrip() {
+        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let hex = pk.into_hex();
+
+        let parsed = EcdsaPublicKey::from_hex(&hex).expect("Failed to parse ECDSA public key");
+        assert_eq!(hex, parsed.into_hex());
+    }
+
+    #[test]
+    fn test_ecdsa_public_key_from_hex_without_prefix() {
+        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let hex_with_prefix = pk.into_hex();
+        let hex_without_prefix = hex_with_prefix.strip_prefix("0x").unwrap();
+
+        let pk1 = EcdsaPublicKey::from_hex(&hex_with_prefix).unwrap();
+        let pk2 = EcdsaPublicKey::from_hex(hex_without_prefix).unwrap();
+        assert_eq!(pk1.into_hex(), pk2.into_hex());
+    }
+
+    #[test]
+    fn test_ecdsa_public_key_from_hex_invalid() {
+        let result = EcdsaPublicKey::from_hex("0xinvalid");
+        assert!(result.is_err());
+    }
+
+    // --- ECDSA Signature tests ---
+
+    #[test]
+    fn test_ecdsa_signature_into_hex() {
+        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        let sk = EcdsaSecretKey::new();
+        let message = Word::from([1u32, 2, 3, 4]);
+        let sig = sk.sign(message);
+
+        let hex = sig.into_hex();
+        assert!(hex.starts_with("0x"));
+    }
+
+    #[test]
+    fn test_ecdsa_signature_from_hex_roundtrip() {
+        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        let sk = EcdsaSecretKey::new();
+        let message = Word::from([1u32, 2, 3, 4]);
+        let sig = sk.sign(message);
+
+        let hex = sig.into_hex();
+        let parsed = EcdsaSignature::from_hex(&hex).expect("Failed to parse ECDSA signature");
+        assert_eq!(hex, parsed.into_hex());
+    }
+
+    #[test]
+    fn test_ecdsa_signature_from_hex_invalid() {
+        let result = EcdsaSignature::from_hex("0x1234");
+        assert!(result.is_err());
+    }
+
+    // --- Error case tests ---
+
+    #[test]
+    fn test_falcon_public_key_from_hex_invalid() {
+        let result = PublicKey::from_hex("0xnotvalidhex!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_falcon_public_key_from_hex_wrong_length() {
+        let result = PublicKey::from_hex("0xabcd");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_word_from_hex_invalid() {
+        let result = Word::from_hex("0xnotvalidhex!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_word_from_hex_wrong_length() {
+        let result = Word::from_hex("0xabcd");
+        assert!(result.is_err());
+    }
 }
