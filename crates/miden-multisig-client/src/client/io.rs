@@ -108,6 +108,8 @@ impl MultisigClient {
                 signatures.push(ExportedSignature {
                     signer_commitment: cosigner_sig.signer_id.clone(),
                     signature: sig.signature.clone(),
+                    scheme: sig.scheme.clone(),
+                    public_key_hex: String::new(),
                 });
             }
         }

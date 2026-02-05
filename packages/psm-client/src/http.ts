@@ -5,8 +5,10 @@ import type {
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
+  PubkeyResponse,
   PushDeltaResponse,
   SignProposalRequest,
+  SignatureScheme,
   Signer,
   StateObject,
 } from './types.js';
@@ -49,6 +51,7 @@ export class PsmHttpError extends Error {
 export class PsmHttpClient {
   private signer: Signer | null = null;
   private readonly baseUrl: string;
+  private lastTimestamp = 0;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -58,10 +61,11 @@ export class PsmHttpClient {
     this.signer = signer;
   }
 
-  async getPubkey(): Promise<string> {
-    const response = await this.fetch('/pubkey', { method: 'GET' });
+  async getPubkey(scheme?: SignatureScheme): Promise<PubkeyResponse> {
+    const query = scheme ? `?scheme=${scheme}` : '';
+    const response = await this.fetch(`/pubkey${query}`, { method: 'GET' });
     const data = (await response.json()) as ServerPubkeyResponse;
-    return data.pubkey;
+    return { commitment: data.commitment, pubkey: data.pubkey };
   }
 
   async configure(request: ConfigureRequest): Promise<ConfigureResponse> {
@@ -127,6 +131,8 @@ export class PsmHttpClient {
       nonce: server.nonce,
       newCommitment: server.new_commitment,
       ackSig: server.ack_sig,
+      ackPubkey: server.ack_pubkey,
+      ackScheme: server.ack_scheme,
     };
   }
 
@@ -175,23 +181,34 @@ export class PsmHttpClient {
   private async fetchAuthenticated(
     path: string,
     init: RequestInit,
-    accountId: string
+    accountId: string,
+    retries = 2
   ): Promise<Response> {
     if (!this.signer) {
       throw new Error('No signer configured. Call setSigner() first.');
     }
 
-    const timestamp = Date.now();
+    const now = Date.now();
+    const timestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
+    this.lastTimestamp = timestamp;
     const signature = this.signer.signAccountIdWithTimestamp(accountId, timestamp);
 
-    return this.fetch(path, {
-      ...init,
-      headers: {
-        ...init.headers,
-        'x-pubkey': this.signer.publicKey,
-        'x-signature': signature,
-        'x-timestamp': timestamp.toString(),
-      },
-    });
+    try {
+      return await this.fetch(path, {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-pubkey': this.signer.publicKey,
+          'x-signature': signature,
+          'x-timestamp': timestamp.toString(),
+        },
+      });
+    } catch (err) {
+      if (retries > 0 && err instanceof PsmHttpError && err.body.includes('Replay attack')) {
+        await new Promise((r) => setTimeout(r, 50));
+        return this.fetchAuthenticated(path, init, accountId, retries - 1);
+      }
+      throw err;
+    }
   }
 }

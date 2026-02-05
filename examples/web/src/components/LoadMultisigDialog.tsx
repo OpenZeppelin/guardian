@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -11,7 +11,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { truncateHex } from '@/lib/helpers';
-import type { DetectedMultisigConfig } from '@openzeppelin/miden-multisig-client';
+import type { DetectedMultisigConfig, SignatureScheme } from '@openzeppelin/miden-multisig-client';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface LoadMultisigDialogProps {
   open: boolean;
@@ -19,7 +26,8 @@ interface LoadMultisigDialogProps {
   loading: boolean;
   detectedConfig: DetectedMultisigConfig | null;
   error: string | null;
-  onLoad: (accountId: string) => void;
+  defaultScheme: SignatureScheme;
+  onLoad: (accountId: string, scheme: SignatureScheme) => void;
 }
 
 export function LoadMultisigDialog({
@@ -28,19 +36,28 @@ export function LoadMultisigDialog({
   loading,
   detectedConfig,
   error,
+  defaultScheme,
   onLoad,
 }: LoadMultisigDialogProps) {
   const [accountIdInput, setAccountIdInput] = useState('');
+  const [signatureScheme, setSignatureScheme] = useState<SignatureScheme>(defaultScheme);
+
+  useEffect(() => {
+    if (open) {
+      setSignatureScheme(defaultScheme);
+    }
+  }, [open, defaultScheme]);
 
   const handleLoad = () => {
     if (accountIdInput.trim()) {
-      onLoad(accountIdInput.trim());
+      onLoad(accountIdInput.trim(), signatureScheme);
     }
   };
 
   const handleClose = () => {
     if (!loading) {
       setAccountIdInput('');
+      setSignatureScheme(defaultScheme);
       onOpenChange(false);
     }
   };
@@ -67,6 +84,19 @@ export function LoadMultisigDialog({
             />
           </div>
 
+          <div className="space-y-2">
+            <Label>Signature Scheme</Label>
+            <Select value={signatureScheme} onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}>
+              <SelectTrigger className="w-full" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="falcon">Falcon</SelectItem>
+                <SelectItem value="ecdsa">ECDSA</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           {error && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
@@ -80,6 +110,9 @@ export function LoadMultisigDialog({
                   <div>
                     <strong>Detected:</strong> {detectedConfig.threshold}-of-
                     {detectedConfig.numSigners} multisig
+                  </div>
+                  <div>
+                    <strong>Scheme:</strong> {detectedConfig.signatureScheme}
                   </div>
                   <div>
                     <strong>PSM:</strong> {detectedConfig.psmEnabled ? 'Enabled' : 'Disabled'}

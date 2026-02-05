@@ -1,14 +1,12 @@
 export { PsmHttpClient, PsmHttpError } from './http.js';
 
 export type {
-  // Signer interface
   Signer,
-
-  // Signature types
   FalconSignature,
+  EcdsaSignature,
+  ProposalSignature,
+  SignatureScheme,
   CosignerSignature,
-
-  // PSM API types
   AuthConfig,
   DeltaStatus,
   DeltaObject,
@@ -16,8 +14,6 @@ export type {
   StateObject,
   ProposalType,
   ProposalMetadata,
-
-  // Request/Response types
   ConfigureRequest,
   ConfigureResponse,
   PubkeyResponse,

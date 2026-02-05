@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { signatureHexToBytes, buildSignatureAdviceEntry, mergeSignatureAdviceMaps, toWord } from './signature.js';
+import {
+  signatureHexToBytes,
+  buildSignatureAdviceEntry,
+  mergeSignatureAdviceMaps,
+  toWord,
+  tryComputeEcdsaCommitmentHex,
+} from './signature.js';
 
 // Mock the Miden SDK
 vi.mock('@demox-labs/miden-sdk', () => ({
@@ -29,6 +35,11 @@ vi.mock('@demox-labs/miden-sdk', () => ({
       ],
     })),
   },
+  PublicKey: {
+    deserialize: vi.fn().mockReturnValue({
+      toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+    }),
+  },
 }));
 
 describe('signature utilities', () => {
@@ -40,6 +51,11 @@ describe('signature utilities', () => {
     it('prepends auth scheme byte (0 = RpoFalcon512)', () => {
       const result = signatureHexToBytes('deadbeef');
       expect(result[0]).toBe(0); // RpoFalcon512 scheme byte
+    });
+
+    it('prepends auth scheme byte (1 = ECDSA)', () => {
+      const result = signatureHexToBytes('deadbeef', 'ecdsa');
+      expect(result[0]).toBe(1); // ECDSA scheme byte
     });
 
     it('converts hex to bytes after prefix', () => {
@@ -182,6 +198,13 @@ describe('signature utilities', () => {
       toWord(fullHex);
 
       expect(Word.fromHex).toHaveBeenCalledWith('0x' + fullHex);
+    });
+  });
+
+  describe('tryComputeEcdsaCommitmentHex', () => {
+    it('returns normalized commitment when SDK supports ECDSA public keys', () => {
+      const commitment = tryComputeEcdsaCommitmentHex('0x' + 'aa'.repeat(33));
+      expect(commitment).toBe('0x' + 'c'.repeat(64));
     });
   });
 });

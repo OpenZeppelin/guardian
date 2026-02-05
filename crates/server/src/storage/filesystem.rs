@@ -420,7 +420,9 @@ mod tests {
             prev_commitment: "0x123".to_string(),
             new_commitment: Some("0x456".to_string()),
             delta_payload: serde_json::json!({"test": "payload"}),
-            ack_sig: Some("0xsig".to_string()),
+            ack_sig: "0xsig".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Canonical {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
             },
@@ -434,6 +436,7 @@ mod tests {
             state_json: serde_json::json!({"test": "state"}),
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 

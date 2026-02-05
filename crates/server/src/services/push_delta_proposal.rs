@@ -35,14 +35,12 @@ pub async fn push_delta_proposal(
 
     let resolved = resolve_account(state, &account_id, &credentials).await?;
 
-    // Fetch current state to validate delta
     let current_state = resolved
         .storage
         .pull_state(&account_id)
         .await
         .map_err(|_| PsmError::StateNotFound(account_id.clone()))?;
 
-    // Check for pending candidates before accepting new proposal
     let has_pending = resolved
         .storage
         .has_pending_candidate(&account_id)
@@ -60,7 +58,6 @@ pub async fn push_delta_proposal(
         return Err(PsmError::ConflictPendingDelta);
     }
 
-    // Extract tx_summary and signatures from delta_payload
     let tx_summary = delta_payload
         .get("tx_summary")
         .ok_or_else(|| PsmError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
@@ -71,8 +68,6 @@ pub async fn push_delta_proposal(
         .cloned()
         .unwrap_or_default();
 
-    // Validate delta using network client (check validity but don't apply)
-    // and compute the delta commitment
     let commitment = {
         let client = state.network_client.lock().await;
         client
@@ -83,18 +78,15 @@ pub async fn push_delta_proposal(
             )
             .map_err(PsmError::InvalidDelta)?;
 
-        // Compute the delta proposal ID from the tx_summary
         client
             .delta_proposal_id(&account_id, nonce, tx_summary)
             .map_err(PsmError::InvalidDelta)?
     };
 
-    // Extract proposer ID from credentials
     let proposer_id = match &credentials {
         Credentials::Signature { pubkey, .. } => pubkey.clone(),
     };
 
-    // Parse cosigner signatures from the payload and add timestamp
     let signature_timestamp = state.clock.now_rfc3339();
     let mut cosigner_sigs = Vec::new();
     for sig_value in signatures {
@@ -120,7 +112,6 @@ pub async fn push_delta_proposal(
         "push_delta_proposal received"
     );
 
-    // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
         account_id: account_id.clone(),
@@ -128,7 +119,9 @@ pub async fn push_delta_proposal(
         prev_commitment: current_state.commitment.clone(),
         new_commitment: None,
         delta_payload,
-        ack_sig: None,
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
         status: DeltaStatus::Pending {
             timestamp,
             proposer_id,
@@ -136,7 +129,6 @@ pub async fn push_delta_proposal(
         },
     };
 
-    // Store the delta proposal in the proposals directory using the commitment as ID
     resolved
         .storage
         .submit_delta_proposal(&commitment, &delta_proposal)
@@ -220,6 +212,7 @@ mod tests {
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 
@@ -234,7 +227,6 @@ mod tests {
 
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
-        // Generate valid Falcon signature
         let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
@@ -304,7 +296,6 @@ mod tests {
 
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
 
-        // Generate valid Falcon signatures for two cosigners
         let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
         let (_, cosigner_commitment, _, _) =
@@ -355,6 +346,7 @@ mod tests {
                     ProposalSignature::Falcon { signature } => {
                         assert_eq!(*signature, dummy_sig);
                     }
+                    _ => panic!("Expected Falcon signature"),
                 }
             }
             _ => panic!("Expected Pending status"),
@@ -518,14 +510,15 @@ mod tests {
             account_json.clone(),
         )));
 
-        // Mock pull_deltas_after to return a candidate delta (this triggers has_pending_candidate)
         let candidate_delta = DeltaObject {
             account_id: account_id.clone(),
             nonce: 1,
             prev_commitment: test_commitment.to_string(),
             new_commitment: Some("0xnewcommitment".to_string()),
             delta_payload: serde_json::json!({}),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Candidate {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 retry_count: 0,
@@ -551,9 +544,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::ConflictPendingDelta => {
-                // Expected - proposal creation blocked because there's a pending candidate
-            }
+            PsmError::ConflictPendingDelta => {}
             e => panic!("Expected ConflictPendingDelta error, got: {:?}", e),
         }
     }

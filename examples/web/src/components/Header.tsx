@@ -10,9 +10,12 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { copyToClipboard, truncateHex } from '@/lib/helpers';
+import type { SignatureScheme } from '@openzeppelin/miden-multisig-client';
 
 interface HeaderProps {
-  signerCommitment: string | null;
+  falconCommitment: string | null;
+  ecdsaCommitment: string | null;
+  activeScheme: SignatureScheme | null;
   generatingSigner: boolean;
   psmStatus: 'connected' | 'connecting' | 'error';
   psmUrl: string;
@@ -21,7 +24,9 @@ interface HeaderProps {
 }
 
 export function Header({
-  signerCommitment,
+  falconCommitment,
+  ecdsaCommitment,
+  activeScheme,
   generatingSigner,
   psmStatus,
   psmUrl,
@@ -46,21 +51,68 @@ export function Header({
     <header className="flex items-center justify-between py-4 px-6 border-b">
       <h1 className="text-xl font-bold">Miden Multisig</h1>
 
-      <div className="flex items-center gap-4">
-        {/* Signer commitment */}
+      <div className="flex items-center gap-2">
+        {/* Signer Keys Popover */}
         {generatingSigner ? (
           <span className="text-sm text-muted-foreground">Generating signer...</span>
-        ) : signerCommitment ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Signer:</span>
-            <code
-              onClick={() => copyToClipboard(signerCommitment, () => toast.success('Commitment copied'))}
-              className="text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80 font-mono"
-              title="Click to copy full commitment"
-            >
-              {truncateHex(signerCommitment, 8, 4)}
-            </code>
-          </div>
+        ) : falconCommitment || ecdsaCommitment ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" className="p-0 h-auto">
+                <Badge variant="outline" className="cursor-pointer">
+                  Keys {activeScheme ? `(${activeScheme})` : ''}
+                </Badge>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80" align="end">
+              <div className="space-y-3">
+                <h4 className="font-medium">Signer Keys</h4>
+                {falconCommitment && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={activeScheme === 'falcon' ? 'default' : 'secondary'} className="text-xs">
+                        Falcon
+                      </Badge>
+                      {activeScheme === 'falcon' && (
+                        <span className="text-xs text-muted-foreground">active</span>
+                      )}
+                    </div>
+                    <code
+                      onClick={() =>
+                        copyToClipboard(falconCommitment, () => toast.success('Falcon commitment copied'))
+                      }
+                      className="block text-xs bg-muted px-2 py-1.5 rounded cursor-pointer hover:bg-muted/80 font-mono truncate"
+                      title="Click to copy full commitment"
+                    >
+                      {truncateHex(falconCommitment, 10, 6)}
+                    </code>
+                  </div>
+                )}
+                {ecdsaCommitment && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={activeScheme === 'ecdsa' ? 'default' : 'secondary'} className="text-xs">
+                        ECDSA
+                      </Badge>
+                      {activeScheme === 'ecdsa' && (
+                        <span className="text-xs text-muted-foreground">active</span>
+                      )}
+                    </div>
+                    <code
+                      onClick={() =>
+                        copyToClipboard(ecdsaCommitment, () => toast.success('ECDSA commitment copied'))
+                      }
+                      className="block text-xs bg-muted px-2 py-1.5 rounded cursor-pointer hover:bg-muted/80 font-mono truncate"
+                      title="Click to copy full commitment"
+                    >
+                      {truncateHex(ecdsaCommitment, 10, 6)}
+                    </code>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">Click a commitment to copy</p>
+              </div>
+            </PopoverContent>
+          </Popover>
         ) : null}
 
         {/* PSM Status Badge with Popover */}

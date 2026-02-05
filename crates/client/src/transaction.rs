@@ -83,6 +83,8 @@ mod tests {
             canonical_at: None,
             discarded_at: None,
             status: None,
+            ack_pubkey: None,
+            ack_scheme: None,
         };
 
         let extracted = delta.try_into_tx_summary().expect("should extract");
@@ -110,6 +112,8 @@ mod tests {
             canonical_at: None,
             discarded_at: None,
             status: None,
+            ack_pubkey: None,
+            ack_scheme: None,
         };
 
         let extracted = delta.try_into_tx_summary().expect("should extract");

@@ -63,6 +63,7 @@ pub trait NetworkClient: Send + Sync {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
+        current_auth: &Auth,
     ) -> Result<Option<Auth>, String>;
 }
 

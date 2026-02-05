@@ -60,7 +60,7 @@ impl MidenFalconRpoSigner {
 
         let tx_commitment = tx_summary.to_commitment();
         let signature = self.sign_with_server_key(tx_commitment)?;
-        delta.ack_sig = Some(hex::encode(signature.to_bytes()));
+        delta.ack_sig = hex::encode(signature.to_bytes());
         Ok(delta)
     }
 }

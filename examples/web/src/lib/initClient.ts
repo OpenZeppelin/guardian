@@ -18,13 +18,17 @@ export async function createWebClient(rpcUrl = MIDEN_RPC_URL): Promise<WebClient
 }
 
 export async function initializeSigner(webClient: WebClient): Promise<SignerInfo> {
-  const secretKey = SecretKey.rpoFalconWithRNG(undefined);
+  const falconSecretKey = SecretKey.rpoFalconWithRNG(undefined);
+  const ecdsaSecretKey = SecretKey.ecdsaWithRNG(undefined);
   try {
-    await webClient.addAccountSecretKeyToWebStore(secretKey);
-  } catch {
-    // Key may already exist on reload; ignore
-  }
-  const publicKey = secretKey.publicKey();
-  const commitment = publicKey.toCommitment().toHex();
-  return { commitment, secretKey };
+    await webClient.addAccountSecretKeyToWebStore(falconSecretKey);
+    await webClient.addAccountSecretKeyToWebStore(ecdsaSecretKey);
+  } catch {}
+  const falconCommitment = falconSecretKey.publicKey().toCommitment().toHex();
+  const ecdsaCommitment = ecdsaSecretKey.publicKey().toCommitment().toHex();
+  return {
+    falcon: { commitment: falconCommitment, secretKey: falconSecretKey },
+    ecdsa: { commitment: ecdsaCommitment, secretKey: ecdsaSecretKey },
+    activeScheme: 'falcon',
+  };
 }

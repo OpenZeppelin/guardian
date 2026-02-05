@@ -1,4 +1,7 @@
 use miden_objects::Word;
+use miden_objects::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
+};
 use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, Signature};
 use miden_objects::utils::{Deserializable, Serializable};
 
@@ -57,6 +60,47 @@ impl FromHex for Signature {
 
         Signature::read_from_bytes(&bytes)
             .map_err(|e| format!("Failed to deserialize signature: {e}"))
+    }
+}
+
+impl IntoHex for &EcdsaPublicKey {
+    fn into_hex(self) -> String {
+        let mut pubkey_bytes = Vec::new();
+        self.write_into(&mut pubkey_bytes);
+        format!("0x{}", hex::encode(pubkey_bytes))
+    }
+}
+
+impl IntoHex for EcdsaPublicKey {
+    fn into_hex(self) -> String {
+        (&self).into_hex()
+    }
+}
+
+impl FromHex for EcdsaPublicKey {
+    fn from_hex(hex: &str) -> Result<Self, String> {
+        let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
+        let bytes =
+            hex::decode(hex_str).map_err(|e| format!("Invalid ECDSA public key hex: {e}"))?;
+        EcdsaPublicKey::read_from_bytes(&bytes)
+            .map_err(|e| format!("Failed to deserialize ECDSA public key: {e}"))
+    }
+}
+
+impl IntoHex for EcdsaSignature {
+    fn into_hex(self) -> String {
+        let signature_bytes = self.to_bytes();
+        format!("0x{}", hex::encode(&signature_bytes))
+    }
+}
+
+impl FromHex for EcdsaSignature {
+    fn from_hex(hex: &str) -> Result<Self, String> {
+        let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
+        let bytes =
+            hex::decode(hex_str).map_err(|e| format!("Invalid ECDSA signature hex: {e}"))?;
+        EcdsaSignature::read_from_bytes(&bytes)
+            .map_err(|e| format!("Failed to deserialize ECDSA signature: {e}"))
     }
 }
 

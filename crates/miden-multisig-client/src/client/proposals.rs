@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use private_state_manager_client::delta_status::Status;
-use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::{DeltaPayload, ProposalSignature, SignatureScheme};
 
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
@@ -35,8 +35,6 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
 
-        // Parse all proposals, propagating any parse errors rather than silently dropping them.
-        // This ensures malformed PSM payloads are surfaced for debugging.
         let proposals: Result<Vec<Proposal>> = response
             .proposals
             .iter()
@@ -50,43 +48,35 @@ impl MultisigClient {
     pub async fn sign_proposal(&mut self, proposal_id: &str) -> Result<Proposal> {
         let account = self.require_account()?;
 
-        // Check if user is a cosigner
         let user_commitment = self.key_manager.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
 
-        // Get the proposal to sign
         let proposals = self.list_proposals().await?;
         let proposal = proposals
             .iter()
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
-        // Check if already signed
         if proposal.has_signed(&self.key_manager.commitment_hex()) {
             return Err(MultisigError::AlreadySigned);
         }
 
-        // Sign the transaction summary commitment
         let tx_commitment = proposal.tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
-        // Build the ProposalSignature
-        let signature = ProposalSignature::Falcon {
-            signature: signature_hex,
-        };
+        let signature =
+            ProposalSignature::from_scheme(self.key_manager.scheme(), signature_hex);
 
         let account_id = self.require_account()?.id();
 
-        // Push signature to PSM
         let mut psm_client = self.create_authenticated_psm_client().await?;
         psm_client
             .sign_delta_proposal(&account_id, proposal_id, signature)
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to sign proposal: {}", e)))?;
 
-        // Refresh and return updated proposal
         let proposals = self.list_proposals().await?;
         proposals
             .into_iter()
@@ -104,20 +94,17 @@ impl MultisigClient {
     /// 5. Execute the transaction on-chain
     /// 6. Sync and update local account state
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
-        // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        // Get the raw proposal from PSM (need access to signatures)
         let mut psm_client = self.create_authenticated_psm_client().await?;
         let proposals_response = psm_client
             .get_delta_proposals(&account_id)
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
 
-        // Find the proposal by ID
         let proposal = self
             .list_proposals()
             .await?
@@ -125,7 +112,6 @@ impl MultisigClient {
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
-        // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {
             let (collected, required) = proposal.signature_counts();
             return Err(MultisigError::ProposalNotReady {
@@ -134,7 +120,6 @@ impl MultisigClient {
             });
         }
 
-        // Find the raw delta object to get signatures
         let raw_proposal = proposals_response
             .proposals
             .iter()
@@ -143,34 +128,41 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        // Collect signatures from the delta payload (available even after READY)
         let mut signature_inputs: Vec<SignatureInput> = {
-            let payload_json: serde_json::Value = serde_json::from_str(&raw_proposal.delta_payload)
-                .map_err(|e| {
+            let payload: DeltaPayload =
+                serde_json::from_str(&raw_proposal.delta_payload).map_err(|e| {
                     MultisigError::MidenClient(format!(
                         "failed to parse delta payload signatures: {}",
                         e
                     ))
                 })?;
-            payload_json
-                .get("signatures")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|sig| {
-                            let signer = sig.get("signer_id")?.as_str()?;
-                            let sig_hex = sig.get("signature")?.get("signature")?.as_str()?;
-                            Some(SignatureInput {
-                                signer_commitment: signer.to_string(),
-                                signature_hex: sig_hex.to_string(),
-                            })
-                        })
-                        .collect()
+            payload
+                .signatures
+                .iter()
+                .map(|ds| {
+                    let (scheme, sig_hex, pk_hex) = match &ds.signature {
+                        ProposalSignature::Falcon { signature } => {
+                            (SignatureScheme::Falcon, signature.clone(), None)
+                        }
+                        ProposalSignature::Ecdsa {
+                            signature,
+                            public_key,
+                        } => (
+                            SignatureScheme::Ecdsa,
+                            signature.clone(),
+                            public_key.clone(),
+                        ),
+                    };
+                    SignatureInput {
+                        signer_commitment: ds.signer_id.clone(),
+                        signature_hex: sig_hex,
+                        scheme,
+                        public_key_hex: pk_hex,
+                    }
                 })
-                .unwrap_or_default()
+                .collect()
         };
 
-        // Also collect any signatures present in pending status from PSM (if still pending)
         if let Some(ref status) = raw_proposal.status
             && let Some(ref status_oneof) = status.status
             && let Status::Pending(pending) = status_oneof
@@ -187,20 +179,27 @@ impl MultisigClient {
                     })?
                     .signature
                     .clone();
+                let scheme_str = cosigner_sig
+                    .signature
+                    .as_ref()
+                    .map(|s| s.scheme.as_str())
+                    .unwrap_or("falcon");
+                let scheme = match scheme_str {
+                    "ecdsa" => SignatureScheme::Ecdsa,
+                    _ => SignatureScheme::Falcon,
+                };
                 signature_inputs.push(SignatureInput {
                     signer_commitment: cosigner_sig.signer_id.clone(),
                     signature_hex: sig_hex,
+                    scheme,
+                    public_key_hex: None,
                 });
             }
         }
 
-        // Deduplicate by signer commitment
         signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
         signature_inputs.dedup_by(|a, b| a.signer_commitment == b.signer_commitment);
 
-        // Build signature advice from cosigner signatures
-        // Important: Use CURRENT account signers for validation, not proposal's new signers.
-        // The on-chain MASM verifies signatures against the currently stored public keys.
         let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
         let mut signature_advice = collect_signature_advice(
@@ -209,14 +208,12 @@ impl MultisigClient {
             tx_summary_commitment,
         )?;
 
-        // SwitchPsm does NOT require PSM signature - skip push_delta for this transaction type
         let is_switch_psm = matches!(
             &proposal.transaction_type,
             TransactionType::SwitchPsm { .. }
         );
 
         if !is_switch_psm {
-            // Get PSM ack signature and add to advice
             let psm_advice = self
                 .get_psm_ack_signature(
                     &account,
@@ -228,11 +225,8 @@ impl MultisigClient {
             signature_advice.push(psm_advice);
         }
 
-        // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
-        // For signer-update transactions, we must propagate parse errors for signer commitments
-        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
         let signer_commitments = if matches!(
             &proposal.transaction_type,
             TransactionType::AddCosigner { .. }
@@ -253,7 +247,6 @@ impl MultisigClient {
             signer_commitments.as_deref(),
         )?;
 
-        // Execute and finalize
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
     }
@@ -282,7 +275,6 @@ impl MultisigClient {
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<Proposal> {
-        // Sync with the network before executing transaction
         self.sync().await?;
 
         let account = self.require_account()?.clone();
@@ -334,11 +326,9 @@ impl MultisigClient {
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<ProposalResult> {
-        // Try online first
         match self.propose_transaction(transaction_type.clone()).await {
             Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
             Err(MultisigError::PsmConnection(_) | MultisigError::PsmServer(_)) => {
-                // PSM unavailable, fall back to offline
                 let exported = self.create_proposal_offline(transaction_type).await?;
                 Ok(ProposalResult::Offline(Box::new(exported)))
             }

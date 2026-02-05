@@ -10,7 +10,13 @@ use miden_objects::{
     account::{Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot},
 };
 
-use crate::masm_builder::{build_multisig_component, build_psm_component};
+use crate::masm_builder::{
+    build_multisig_component,
+    build_multisig_ecdsa_component,
+    build_psm_component,
+    build_psm_ecdsa_component,
+};
+use private_state_manager_shared::SignatureScheme;
 
 /// Configuration for creating a MultisigPsm account.
 #[derive(Debug, Clone)]
@@ -23,6 +29,8 @@ pub struct MultisigPsmConfig {
     pub psm_commitment: Word,
     /// Whether PSM verification is enabled (true = ON, false = OFF).
     pub psm_enabled: bool,
+    /// Signature scheme for the account (Falcon or ECDSA).
+    pub signature_scheme: SignatureScheme,
     /// Account storage mode (defaults to Private).
     pub storage_mode: AccountStorageMode,
     /// Optional procedure-specific threshold overrides.
@@ -48,6 +56,7 @@ impl MultisigPsmConfig {
             signer_commitments,
             psm_commitment,
             psm_enabled: true,
+            signature_scheme: SignatureScheme::Falcon,
             storage_mode: AccountStorageMode::Private,
             proc_threshold_overrides: Vec::new(),
         }
@@ -56,6 +65,12 @@ impl MultisigPsmConfig {
     /// Sets whether PSM verification is enabled.
     pub fn with_psm_enabled(mut self, enabled: bool) -> Self {
         self.psm_enabled = enabled;
+        self
+    }
+
+    /// Sets the signature scheme for the account.
+    pub fn with_signature_scheme(mut self, signature_scheme: SignatureScheme) -> Self {
+        self.signature_scheme = signature_scheme;
         self
     }
 
@@ -148,8 +163,16 @@ impl MultisigPsmBuilder {
         let multisig_slots = self.build_multisig_slots()?;
         let psm_slots = self.build_psm_slots()?;
 
-        let multisig_component = build_multisig_component(multisig_slots)?;
-        let psm_component = build_psm_component(psm_slots)?;
+        let (multisig_component, psm_component) = match self.config.signature_scheme {
+            SignatureScheme::Falcon => (
+                build_multisig_component(multisig_slots)?,
+                build_psm_component(psm_slots)?,
+            ),
+            SignatureScheme::Ecdsa => (
+                build_multisig_ecdsa_component(multisig_slots)?,
+                build_psm_ecdsa_component(psm_slots)?,
+            ),
+        };
 
         let account = AccountBuilder::new(self.seed)
             .with_auth_component(multisig_component)
@@ -170,8 +193,16 @@ impl MultisigPsmBuilder {
         let multisig_slots = self.build_multisig_slots()?;
         let psm_slots = self.build_psm_slots()?;
 
-        let multisig_component = build_multisig_component(multisig_slots)?;
-        let psm_component = build_psm_component(psm_slots)?;
+        let (multisig_component, psm_component) = match self.config.signature_scheme {
+            SignatureScheme::Falcon => (
+                build_multisig_component(multisig_slots)?,
+                build_psm_component(psm_slots)?,
+            ),
+            SignatureScheme::Ecdsa => (
+                build_multisig_ecdsa_component(multisig_slots)?,
+                build_psm_ecdsa_component(psm_slots)?,
+            ),
+        };
 
         let account = AccountBuilder::new(self.seed)
             .with_auth_component(multisig_component)

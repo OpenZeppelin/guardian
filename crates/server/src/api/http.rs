@@ -1,4 +1,5 @@
 use crate::delta_object::DeltaObject;
+use crate::error::PsmError;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalsParams, GetDeltaSinceParams,
@@ -7,7 +8,7 @@ use crate::services::{
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use axum::{Json, extract::Query, extract::State, http::StatusCode};
-use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::{ProposalSignature, SignatureScheme};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -65,135 +66,94 @@ pub struct ConfigureResponse {
     pub success: bool,
     pub message: String,
     pub ack_pubkey: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    pub success: bool,
-    pub error: String,
+    pub ack_commitment: Option<String>,
 }
 
 pub async fn configure(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<ConfigureRequest>,
-) -> (StatusCode, Json<ConfigureResponse>) {
+) -> Result<Json<ConfigureResponse>, PsmError> {
     let mut params = ConfigureAccountParams::from(payload);
     params.credential = credentials;
 
-    match services::configure_account(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(ConfigureResponse {
-                success: true,
-                message: format!("Account '{}' configured successfully", response.account_id),
-                ack_pubkey: Some(response.ack_pubkey),
-            }),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ConfigureResponse {
-                success: false,
-                message: e.to_string(),
-                ack_pubkey: None,
-            }),
-        ),
-    }
+    let response = services::configure_account(&state, params).await?;
+    Ok(Json(ConfigureResponse {
+        success: true,
+        message: format!("Account '{}' configured successfully", response.account_id),
+        ack_pubkey: Some(response.ack_pubkey),
+        ack_commitment: Some(response.ack_commitment),
+    }))
 }
 
 pub async fn push_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<DeltaObject>,
-) -> (StatusCode, Json<DeltaObject>) {
+) -> Result<Json<DeltaObject>, PsmError> {
     let params = PushDeltaParams {
         delta: payload,
         credentials,
     };
 
-    match services::push_delta(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.delta)),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::push_delta(&state, params).await?;
+    Ok(Json(response.delta))
 }
 
 pub async fn get_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
-) -> (StatusCode, Json<DeltaObject>) {
+) -> Result<Json<DeltaObject>, PsmError> {
     let params = GetDeltaParams {
         account_id: query.account_id,
         nonce: query.nonce,
         credentials,
     };
 
-    match services::get_delta(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.delta)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_delta(&state, params).await?;
+    Ok(Json(response.delta))
 }
 
 pub async fn get_delta_since(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
-) -> (StatusCode, Json<DeltaObject>) {
+) -> Result<Json<DeltaObject>, PsmError> {
     let params = GetDeltaSinceParams {
         account_id: query.account_id,
         from_nonce: query.nonce,
         credentials,
     };
 
-    match services::get_delta_since(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.merged_delta)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_delta_since(&state, params).await?;
+    Ok(Json(response.merged_delta))
 }
 
 pub async fn get_state(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<StateQuery>,
-) -> (StatusCode, Json<StateObject>) {
+) -> Result<Json<StateObject>, PsmError> {
     let params = GetStateParams {
         account_id: query.account_id,
         credentials,
     };
 
-    match services::get_state(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.state)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(StateObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_state(&state, params).await?;
+    Ok(Json(response.state))
+}
+
+#[derive(Deserialize)]
+pub struct PubkeyQuery {
+    pub scheme: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct PubkeyResponse {
-    pub pubkey: String,
+    pub commitment: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -201,22 +161,41 @@ pub struct ProposalsResponse {
     pub proposals: Vec<DeltaObject>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct DeltaProposalResponse {
     pub delta: DeltaObject,
     pub commitment: String,
 }
 
-pub async fn get_pubkey(State(state): State<AppState>) -> (StatusCode, Json<PubkeyResponse>) {
-    let pubkey = state.ack.commitment();
-    (StatusCode::OK, Json(PubkeyResponse { pubkey }))
+pub async fn get_pubkey(
+    State(state): State<AppState>,
+    Query(query): Query<PubkeyQuery>,
+) -> (StatusCode, Json<PubkeyResponse>) {
+    let scheme = match query.scheme.as_deref() {
+        Some(s) if s.eq_ignore_ascii_case("ecdsa") => SignatureScheme::Ecdsa,
+        _ => SignatureScheme::Falcon,
+    };
+    let commitment = state.ack.commitment(&scheme);
+    let pubkey = if matches!(scheme, SignatureScheme::Ecdsa) {
+        Some(state.ack.pubkey(&scheme))
+    } else {
+        None
+    };
+
+    (
+        StatusCode::OK,
+        Json(PubkeyResponse {
+            commitment,
+            pubkey,
+        }),
+    )
 }
 
 pub async fn push_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<DeltaProposalRequest>,
-) -> (StatusCode, Json<DeltaProposalResponse>) {
+) -> Result<Json<DeltaProposalResponse>, PsmError> {
     let params = PushDeltaProposalParams {
         account_id: payload.account_id,
         nonce: payload.nonce,
@@ -224,58 +203,34 @@ pub async fn push_delta_proposal(
         credentials,
     };
 
-    match services::push_delta_proposal(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(DeltaProposalResponse {
-                delta: response.delta,
-                commitment: response.commitment,
-            }),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(DeltaProposalResponse {
-                delta: DeltaObject {
-                    account_id: e.to_string(),
-                    ..Default::default()
-                },
-                commitment: String::new(),
-            }),
-        ),
-    }
+    let response = services::push_delta_proposal(&state, params).await?;
+    Ok(Json(DeltaProposalResponse {
+        delta: response.delta,
+        commitment: response.commitment,
+    }))
 }
 
 pub async fn get_delta_proposals(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<ProposalQuery>,
-) -> (StatusCode, Json<ProposalsResponse>) {
+) -> Result<Json<ProposalsResponse>, PsmError> {
     let params = GetDeltaProposalsParams {
         account_id: query.account_id,
         credentials,
     };
 
-    match services::get_delta_proposals(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(ProposalsResponse {
-                proposals: response.proposals,
-            }),
-        ),
-        Err(_e) => (
-            StatusCode::OK,
-            Json(ProposalsResponse {
-                proposals: Vec::new(),
-            }),
-        ),
-    }
+    let response = services::get_delta_proposals(&state, params).await?;
+    Ok(Json(ProposalsResponse {
+        proposals: response.proposals,
+    }))
 }
 
 pub async fn sign_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<SignProposalRequest>,
-) -> (StatusCode, Json<DeltaObject>) {
+) -> Result<Json<DeltaObject>, PsmError> {
     let params = SignDeltaProposalParams {
         account_id: payload.account_id,
         commitment: payload.commitment,
@@ -283,16 +238,8 @@ pub async fn sign_delta_proposal(
         credentials,
     };
 
-    match services::sign_delta_proposal(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.delta)),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::sign_delta_proposal(&state, params).await?;
+    Ok(Json(response.delta))
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -353,6 +300,7 @@ mod tests {
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 
@@ -368,7 +316,9 @@ mod tests {
                 "0x8fa68eabc9817e17900a7f1f705c1ecdeef6ab64c15ca1b66447272fb8fa49b2".to_string(),
             ),
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::canonical("2024-11-14T12:00:00Z".to_string()),
         }
     }
@@ -376,11 +326,16 @@ mod tests {
     #[tokio::test]
     async fn test_get_pubkey_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
-        let (status, Json(response)) = get_pubkey(State(state)).await;
+        let (status, Json(response)) = get_pubkey(
+            State(state),
+            Query(PubkeyQuery { scheme: None }),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::OK);
-        assert!(!response.pubkey.is_empty());
-        assert!(response.pubkey.starts_with("0x"));
+        assert!(!response.commitment.is_empty());
+        assert!(response.commitment.starts_with("0x"));
+        assert!(response.pubkey.is_none());
     }
 
     #[tokio::test]
@@ -400,10 +355,10 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            configure(State(state), AuthHeader(credentials), Json(request)).await;
+        let Json(response) = configure(State(state), AuthHeader(credentials), Json(request))
+            .await
+            .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert!(response.success);
         assert!(response.ack_pubkey.is_some());
         assert!(response.message.contains("configured successfully"));
@@ -440,10 +395,11 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            push_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
+        let Json(response) =
+            push_delta_proposal(State(state), AuthHeader(credentials), Json(request))
+                .await
+                .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.delta.nonce, 1);
         assert!(!response.commitment.is_empty());
     }
@@ -474,10 +430,11 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, _response) =
-            push_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
+        let err = push_delta_proposal(State(state), AuthHeader(credentials), Json(request))
+            .await
+            .unwrap_err();
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -501,7 +458,9 @@ mod tests {
                 .to_string(),
             new_commitment: None,
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::pending("2024-11-14T12:00:00Z".to_string(), pubkey.clone()),
         };
 
@@ -512,10 +471,11 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            get_delta_proposals(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) =
+            get_delta_proposals(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.proposals.len(), 1);
         assert_eq!(response.proposals[0].account_id, account_id);
     }
@@ -536,10 +496,11 @@ mod tests {
         let query = ProposalQuery { account_id };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            get_delta_proposals(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) =
+            get_delta_proposals(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.proposals.len(), 0);
     }
 
@@ -566,10 +527,11 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, _response) =
-            sign_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
+        let err = sign_delta_proposal(State(state), AuthHeader(credentials), Json(request))
+            .await
+            .unwrap_err();
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -595,10 +557,10 @@ mod tests {
         let _storage = storage.with_pull_deltas_after(Ok(vec![]));
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            push_delta(State(state), AuthHeader(credentials), Json(test_delta)).await;
+        let Json(response) = push_delta(State(state), AuthHeader(credentials), Json(test_delta))
+            .await
+            .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
     }
 
@@ -622,10 +584,10 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            get_delta(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) = get_delta(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
         assert_eq!(response.nonce, 1);
     }
@@ -649,10 +611,11 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, _response) =
-            get_delta(State(state), AuthHeader(credentials), Query(query)).await;
+        let err = get_delta(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .unwrap_err();
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -679,10 +642,10 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            get_state(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) = get_state(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
     }
 
@@ -702,10 +665,11 @@ mod tests {
         let query = StateQuery { account_id };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, _response) =
-            get_state(State(state), AuthHeader(credentials), Query(query)).await;
+        let err = get_state(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .unwrap_err();
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -731,10 +695,11 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            get_delta_since(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) =
+            get_delta_since(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
     }
 }

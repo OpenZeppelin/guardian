@@ -6,7 +6,7 @@ import type {
   DeltaProposalRequest,
   DeltaStatus,
   ExecutionDelta,
-  FalconSignature,
+  ProposalSignature,
   ProposalMetadata,
   SignProposalRequest,
   StateObject,
@@ -19,7 +19,7 @@ import type {
   ServerDeltaProposalRequest,
   ServerDeltaStatus,
   ServerExecutionDelta,
-  ServerFalconSignature,
+  ServerProposalSignature,
   ServerProposalMetadata,
   ServerSignProposalRequest,
   ServerStateObject,
@@ -27,13 +27,13 @@ import type {
 
 type ServerProposalDeltaPayload = {
   tx_summary: { data: string };
-  signatures?: Array<{ signer_id: string; signature: ServerFalconSignature }>;
+  signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
   metadata?: ServerProposalMetadata;
 };
 
 type ServerExecutionDeltaPayload = {
   data: string;
-  signatures?: Array<{ signer_id: string; signature: ServerFalconSignature }>;
+  signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
   metadata?: ServerProposalMetadata;
 };
 
@@ -41,7 +41,7 @@ type ServerDeltaPayload = ServerProposalDeltaPayload | ServerExecutionDeltaPaylo
 
 function extractDeltaPayload(payload: ServerDeltaPayload): {
   txSummary: { data: string };
-  signatures: Array<{ signer_id: string; signature: ServerFalconSignature }>;
+  signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
   metadata?: ServerProposalMetadata;
 } {
   const txSummary = 'tx_summary' in payload ? payload.tx_summary : { data: payload.data };
@@ -50,14 +50,21 @@ function extractDeltaPayload(payload: ServerDeltaPayload): {
   return { txSummary, signatures, metadata };
 }
 
-export function fromServerFalconSignature(server: ServerFalconSignature): FalconSignature {
-  return server;
+export function fromServerSignature(signature: ServerProposalSignature): ProposalSignature {
+  if (signature.scheme === 'ecdsa') {
+    return {
+      scheme: 'ecdsa',
+      signature: signature.signature,
+      publicKey: signature.public_key,
+    };
+  }
+  return signature;
 }
 
 export function fromServerCosignerSignature(server: ServerCosignerSignature): CosignerSignature {
   return {
     signerId: server.signer_id,
-    signature: fromServerFalconSignature(server.signature),
+    signature: fromServerSignature(server.signature),
     timestamp: server.timestamp,
   };
 }
@@ -108,11 +115,13 @@ export function fromServerDeltaObject(server: ServerDeltaObject): DeltaObject {
       txSummary,
       signatures: signatures.map((s) => ({
         signerId: s.signer_id,
-        signature: fromServerFalconSignature(s.signature),
+        signature: fromServerSignature(s.signature),
       })),
       metadata: metadata ? fromServerProposalMetadata(metadata) : undefined,
     },
     ackSig: server.ack_sig,
+    ackPubkey: server.ack_pubkey,
+    ackScheme: server.ack_scheme,
     status: fromServerDeltaStatus(server.status),
   };
 }
@@ -124,6 +133,7 @@ export function fromServerStateObject(server: ServerStateObject): StateObject {
     stateJson: server.state_json,
     createdAt: server.created_at,
     updatedAt: server.updated_at,
+    authScheme: server.auth_scheme,
   };
 }
 
@@ -132,21 +142,25 @@ export function fromServerConfigureResponse(server: ServerConfigureResponse): Co
     success: server.success,
     message: server.message,
     ackPubkey: server.ack_pubkey,
+    ackCommitment: server.ack_commitment,
   };
 }
 
-// ============================================================================
-// Request conversions (camelCase → server)
-// ============================================================================
-
-export function toServerFalconSignature(sig: FalconSignature): ServerFalconSignature {
+export function toServerSignature(sig: ProposalSignature): ServerProposalSignature {
+  if (sig.scheme === 'ecdsa') {
+    return {
+      scheme: 'ecdsa',
+      signature: sig.signature,
+      public_key: sig.publicKey,
+    };
+  }
   return sig;
 }
 
 export function toServerCosignerSignature(sig: CosignerSignature): ServerCosignerSignature {
   return {
     signer_id: sig.signerId,
-    signature: toServerFalconSignature(sig.signature),
+    signature: toServerSignature(sig.signature),
     timestamp: sig.timestamp,
   };
 }
@@ -201,7 +215,7 @@ export function toServerDeltaProposalRequest(req: DeltaProposalRequest): ServerD
       tx_summary: req.deltaPayload.txSummary,
       signatures: req.deltaPayload.signatures.map((s) => ({
         signer_id: s.signerId,
-        signature: toServerFalconSignature(s.signature),
+        signature: toServerSignature(s.signature),
       })),
       metadata: req.deltaPayload.metadata ? toServerProposalMetadata(req.deltaPayload.metadata) : undefined,
     },
@@ -212,7 +226,7 @@ export function toServerSignProposalRequest(req: SignProposalRequest): ServerSig
   return {
     account_id: req.accountId,
     commitment: req.commitment,
-    signature: toServerFalconSignature(req.signature),
+    signature: toServerSignature(req.signature),
   };
 }
 

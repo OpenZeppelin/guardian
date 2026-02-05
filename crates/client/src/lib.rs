@@ -45,7 +45,7 @@ mod transaction;
 #[cfg(test)]
 pub mod testing;
 
-pub use auth::{Auth, FalconRpoSigner, verify_commitment_signature};
+pub use auth::{Auth, EcdsaSigner, FalconRpoSigner, verify_commitment_signature};
 pub use client::PsmClient;
 pub use error::{ClientError, ClientResult};
 pub use proto::*;

@@ -59,6 +59,7 @@ async fn test_configure_success() {
         success: true,
         message: "Account configured".to_string(),
         ack_pubkey: "test_pubkey_123".to_string(),
+        ack_commitment: String::new(),
     }));
 
     let endpoint = start_mock_server(service).await.unwrap();
@@ -90,6 +91,7 @@ async fn test_configure_server_error() {
         success: false,
         message: "Account already exists".to_string(),
         ack_pubkey: String::new(),
+        ack_commitment: String::new(),
     }));
 
     let endpoint = start_mock_server(service).await.unwrap();

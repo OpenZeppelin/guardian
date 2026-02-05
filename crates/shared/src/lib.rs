@@ -7,6 +7,23 @@ use serde::{Deserialize, Serialize};
 pub mod auth;
 pub mod hex;
 
+/// Supported signature schemes
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureScheme {
+    Falcon,
+    Ecdsa,
+}
+
+impl std::fmt::Display for SignatureScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SignatureScheme::Falcon => write!(f, "falcon"),
+            SignatureScheme::Ecdsa => write!(f, "ecdsa"),
+        }
+    }
+}
+
 /// Signature type for delta proposals
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "scheme", rename_all = "snake_case")]
@@ -15,7 +32,34 @@ pub enum ProposalSignature {
         /// Hex-encoded Falcon signature
         signature: String,
     },
-    // Future schemes can extend this enum.
+    Ecdsa {
+        /// Hex-encoded ECDSA secp256k1 signature
+        signature: String,
+        /// Hex-encoded ECDSA public key (required for signature preparation)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_key: Option<String>,
+    },
+}
+
+impl ProposalSignature {
+    /// Creates a ProposalSignature from a scheme and hex-encoded signature.
+    pub fn from_scheme(scheme: SignatureScheme, signature: String) -> Self {
+        match scheme {
+            SignatureScheme::Falcon => ProposalSignature::Falcon { signature },
+            SignatureScheme::Ecdsa => ProposalSignature::Ecdsa {
+                signature,
+                public_key: None,
+            },
+        }
+    }
+
+    /// Returns the public key hex if this is an ECDSA signature with a public key.
+    pub fn public_key(&self) -> Option<&str> {
+        match self {
+            ProposalSignature::Ecdsa { public_key, .. } => public_key.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// Delta payload structure containing transaction summary and signatures
@@ -152,7 +196,5 @@ mod tests {
             account.code().commitment(),
             deserialized_account.code().commitment()
         );
-
-        println!("Round-trip test passed!");
     }
 }

@@ -5,11 +5,11 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { copyToClipboard } from '@/lib/helpers';
 import { getEffectiveThreshold } from '@/lib/procedures';
-import type { Proposal, ProposalType, ProcedureName } from '@openzeppelin/miden-multisig-client';
+import type { TransactionProposal, ProposalType, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface ProposalCardProps {
-  proposal: Proposal;
+  proposal: TransactionProposal;
   signer: SignerInfo | null;
   defaultThreshold: number;
   procedureThresholds?: Map<ProcedureName, number>;
@@ -78,15 +78,20 @@ export function ProposalCard({
 
   const meta = proposal.metadata as { proposalType?: ProposalType; description?: string };
   const proposalType = meta.proposalType;
+  const activeCommitment = signer
+    ? signer.activeScheme === 'ecdsa'
+      ? signer.ecdsa.commitment
+      : signer.falcon.commitment
+    : null;
 
   // Calculate effective threshold for this proposal type
   const effectiveThreshold = proposalType
     ? getEffectiveThreshold(proposalType, defaultThreshold, procedureThresholds)
     : defaultThreshold;
 
-  const userSigned = signer
+  const userSigned = activeCommitment
     ? proposal.signatures.some(
-        (sig) => sig.signerId.toLowerCase() === signer.commitment.toLowerCase()
+        (sig) => sig.signerId.toLowerCase() === activeCommitment.toLowerCase()
       )
     : false;
 
@@ -148,7 +153,7 @@ export function ProposalCard({
             <div className="flex flex-wrap gap-1 mt-1">
               {proposal.signatures.map((sig) => {
                 const isYou =
-                  signer && sig.signerId.toLowerCase() === signer.commitment.toLowerCase();
+                  activeCommitment && sig.signerId.toLowerCase() === activeCommitment.toLowerCase();
                 return (
                   <Badge
                     key={sig.signerId}

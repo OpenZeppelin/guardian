@@ -12,7 +12,7 @@ use miden_objects::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
-use crate::keystore::{KeyManager, PsmKeyStore};
+use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
 
 /// Builder for constructing MultisigClient instances.
 ///
@@ -86,9 +86,24 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Generates a new random key for PSM authentication.
+    /// Uses an ECDSA key store with the given secret key.
+    pub fn with_ecdsa_secret_key(
+        mut self,
+        secret_key: miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey,
+    ) -> Self {
+        self.key_manager = Some(Box::new(EcdsaPsmKeyStore::new(secret_key)));
+        self
+    }
+
+    /// Generates a new random Falcon key for PSM authentication.
     pub fn generate_key(mut self) -> Self {
         self.key_manager = Some(Box::new(PsmKeyStore::generate()));
+        self
+    }
+
+    /// Generates a new random ECDSA key for PSM authentication.
+    pub fn generate_ecdsa_key(mut self) -> Self {
+        self.key_manager = Some(Box::new(EcdsaPsmKeyStore::generate()));
         self
     }
 
@@ -108,7 +123,6 @@ impl MultisigClientBuilder {
 
         let key_manager = self.key_manager.ok_or(MultisigError::NoKeyManager)?;
 
-        // Ensure account directory exists
         std::fs::create_dir_all(&account_dir).map_err(|e| {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;

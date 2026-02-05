@@ -1,7 +1,9 @@
 //! Authentication types for PSM client requests.
 
+pub mod miden_ecdsa;
 pub mod miden_falcon_rpo;
 
+pub use miden_ecdsa::EcdsaSigner;
 pub use miden_falcon_rpo::{
     FalconRpoSigner, account_id_timestamp_to_word, verify_commitment_signature,
 };
@@ -14,6 +16,8 @@ use miden_objects::account::AccountId;
 pub enum Auth {
     /// Falcon-based authentication using RPO hashing.
     FalconRpoSigner(FalconRpoSigner),
+    /// ECDSA secp256k1-based authentication.
+    EcdsaSigner(EcdsaSigner),
 }
 
 impl Auth {
@@ -21,6 +25,7 @@ impl Auth {
     pub fn public_key_hex(&self) -> String {
         match self {
             Auth::FalconRpoSigner(signer) => signer.public_key_hex(),
+            Auth::EcdsaSigner(signer) => signer.public_key_hex(),
         }
     }
 
@@ -28,6 +33,9 @@ impl Auth {
     pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
         match self {
             Auth::FalconRpoSigner(signer) => {
+                signer.sign_account_id_with_timestamp(account_id, timestamp)
+            }
+            Auth::EcdsaSigner(signer) => {
                 signer.sign_account_id_with_timestamp(account_id, timestamp)
             }
         }

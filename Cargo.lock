@@ -2206,6 +2206,7 @@ dependencies = [
  "miden-objects 0.12.4",
  "miden-testing 0.12.4",
  "miden-tx 0.12.4",
+ "private-state-manager-shared",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
  "serde",

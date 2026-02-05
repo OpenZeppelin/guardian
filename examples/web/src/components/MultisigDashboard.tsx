@@ -8,17 +8,19 @@ import { CreateProposalForm } from './CreateProposalForm';
 import { CandidateWarningBanner } from './CandidateWarningBanner';
 import { copyToClipboard } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
-import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
+import type { Multisig, TransactionProposal, AccountState, ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
 
 interface MultisigDashboardProps {
   multisig: Multisig;
   signer: SignerInfo;
   psmState: AccountState | null;
-  proposals: Proposal[];
+  proposals: TransactionProposal[];
   consumableNotes: ConsumableNote[];
   vaultBalances: VaultBalance[];
   procedureThresholds?: Map<ProcedureName, number>;
+  detectedThreshold?: number;
+  detectedSignerCommitments?: string[];
   creatingProposal: boolean;
   syncing: boolean;
   signingProposal: string | null;
@@ -49,6 +51,8 @@ export function MultisigDashboard({
   consumableNotes,
   vaultBalances,
   procedureThresholds,
+  detectedThreshold,
+  detectedSignerCommitments,
   creatingProposal,
   syncing,
   signingProposal,
@@ -70,6 +74,10 @@ export function MultisigDashboard({
   onImportProposal,
   onDisconnect,
 }: MultisigDashboardProps) {
+  const threshold = detectedThreshold ?? multisig.threshold;
+  const signerCommitments = detectedSignerCommitments ?? multisig.signerCommitments;
+  const activeProposals = proposals.filter((p) => p.status.type !== 'finalized');
+
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">
       {/* Account Info Card */}
@@ -98,7 +106,7 @@ export function MultisigDashboard({
               <span className="text-muted-foreground">Configuration</span>
               <div className="mt-1">
                 <Badge variant="outline">
-                  {multisig.threshold}-of-{multisig.signerCommitments.length}
+                  {threshold}-of-{signerCommitments.length}
                 </Badge>
               </div>
             </div>
@@ -111,7 +119,7 @@ export function MultisigDashboard({
               <div className="mt-1 flex flex-wrap gap-2">
                 {USER_PROCEDURES.filter((proc) => procedureThresholds.has(proc.name)).map((proc) => (
                   <Badge key={proc.name} variant="secondary" className="text-xs">
-                    {proc.label}: {procedureThresholds.get(proc.name)}-of-{multisig.signerCommitments.length}
+                    {proc.label}: {procedureThresholds.get(proc.name)}-of-{signerCommitments.length}
                   </Badge>
                 ))}
               </div>
@@ -180,8 +188,8 @@ export function MultisigDashboard({
 
       {/* Create Proposal Form */}
       <CreateProposalForm
-        currentThreshold={multisig.threshold}
-        signerCommitments={multisig.signerCommitments}
+        currentThreshold={threshold}
+        signerCommitments={signerCommitments}
         creatingProposal={creatingProposal}
         consumableNotes={consumableNotes}
         vaultBalances={vaultBalances}
@@ -194,18 +202,18 @@ export function MultisigDashboard({
       />
 
       {/* Proposals List */}
-      {proposals.length > 0 && (
+      {activeProposals.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-lg">Proposals ({proposals.length})</CardTitle>
+            <CardTitle className="text-lg">Proposals ({activeProposals.length})</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {proposals.map((proposal) => (
+            {activeProposals.map((proposal) => (
               <ProposalCard
                 key={proposal.id}
                 proposal={proposal}
                 signer={signer}
-                defaultThreshold={multisig.threshold}
+                defaultThreshold={threshold}
                 procedureThresholds={procedureThresholds}
                 signingProposal={signingProposal}
                 executingProposal={executingProposal}

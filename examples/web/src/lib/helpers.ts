@@ -1,4 +1,3 @@
-// Normalize commitment to lowercase hex with 0x prefix
 export function normalizeCommitment(hex: string): string {
   const trimmed = hex.trim();
   if (!trimmed) throw new Error('Commitment is required');
@@ -10,14 +9,12 @@ export function normalizeCommitment(hex: string): string {
   return `0x${withoutPrefix.toLowerCase()}`;
 }
 
-// Copy text to clipboard with optional callback
 export function copyToClipboard(text: string, onSuccess?: () => void): void {
   navigator.clipboard.writeText(text).then(() => {
     onSuccess?.();
   });
 }
 
-// Clear all IndexedDB databases (resets miden-sdk state)
 export async function clearIndexedDB(): Promise<void> {
   const databases = await indexedDB.databases();
   const deletePromises = databases
@@ -34,7 +31,6 @@ export async function clearIndexedDB(): Promise<void> {
   await Promise.all(deletePromises);
 }
 
-// Truncate hex string for display
 export function truncateHex(hex: string, start = 16, end = 8): string {
   if (hex.length <= start + end) return hex;
   return `${hex.slice(0, start)}...${hex.slice(-end)}`;

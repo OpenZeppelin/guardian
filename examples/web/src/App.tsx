@@ -6,11 +6,12 @@ import {
   type MultisigClient,
   type AccountState,
   type DetectedMultisigConfig,
-  type Proposal,
+  type TransactionProposal,
+  type SignatureScheme,
 } from '@openzeppelin/miden-multisig-client';
 import { PsmHttpError } from '@openzeppelin/psm-client';
 
-import { WebClient, AccountId } from '@demox-labs/miden-sdk';
+import { WebClient } from '@demox-labs/miden-sdk';
 
 import {
   Header,
@@ -28,26 +29,10 @@ import {
   initMultisigClient,
   createMultisigAccount,
   loadMultisigAccount,
-  registerOnPsm,
-  switchMultisigPsm,
-  fetchAccountState,
-  syncAll,
-  createAddSignerProposal,
-  createRemoveSignerProposal,
-  createChangeThresholdProposal,
-  createConsumeNotesProposal,
-  createP2idProposal,
-  createSwitchPsmProposal,
-  signProposal,
-  executeProposal,
-  exportProposalToJson,
-  signProposalOffline,
-  importProposal,
 } from '@/lib/multisigApi';
 import { PSM_ENDPOINT } from '@/config';
 import type { SignerInfo } from '@/types';
 
-// Helper to check if an error is related to pending candidate delta
 function isPendingCandidateError(error: unknown): boolean {
   const errorStr = error instanceof Error ? error.message : String(error);
   return (
@@ -57,7 +42,6 @@ function isPendingCandidateError(error: unknown): boolean {
 }
 
 export default function App() {
-  // Core state
   const [webClient, setWebClient] = useState<WebClient | null>(null);
   const [multisigClient, setMultisigClient] = useState<MultisigClient | null>(null);
   const [signer, setSigner] = useState<SignerInfo | null>(null);
@@ -66,35 +50,31 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [pendingCandidateWarning, setPendingCandidateWarning] = useState<string | null>(null);
 
-  // PSM state
   const [psmUrl, setPsmUrl] = useState(PSM_ENDPOINT);
   const [psmStatus, setPsmStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
-  const [psmPubkey, setPsmPubkey] = useState('');
+  const [psmCommitment, setPsmCommitment] = useState('');
+  const [psmPublicKey, setPsmPublicKey] = useState<string | undefined>(undefined);
   const [psmState, setPsmState] = useState<AccountState | null>(null);
 
-  // Dialog state
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importJson, setImportJson] = useState('');
 
-  // Operation state
   const [creating, setCreating] = useState(false);
   const [registeringOnPsm, setRegisteringOnPsm] = useState(false);
   const [loadingAccount, setLoadingAccount] = useState(false);
   const [detectedConfig, setDetectedConfig] = useState<DetectedMultisigConfig | null>(null);
   const [syncingState, setSyncingState] = useState(false);
 
-  // Proposal state
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposals, setProposals] = useState<TransactionProposal[]>([]);
   const [creatingProposal, setCreatingProposal] = useState(false);
   const [signingProposal, setSigningProposal] = useState<string | null>(null);
   const [executingProposal, setExecutingProposal] = useState<string | null>(null);
 
-  // Notes state
   const [consumableNotes, setConsumableNotes] = useState<Array<{ id: string; assets: Array<{ faucetId: string; amount: bigint }> }>>([]);
 
-  // Connect to PSM server
+
   const connectToPsm = useCallback(
     async (url: string, client?: WebClient): Promise<void> => {
       setPsmStatus('connecting');
@@ -102,51 +82,58 @@ export default function App() {
       try {
         const wc = client ?? webClient;
         if (!wc) {
-          // Fallback when no WebClient - just fetch pubkey
           const response = await fetch(`${url}/pubkey`);
           const data = await response.json();
-          setPsmPubkey(data.pubkey || '');
+          setPsmCommitment(data.commitment ?? '');
+          setPsmPublicKey(data.pubkey);
           setPsmStatus('connected');
           return;
         }
 
-        const { client: msClient, psmPubkey: pubkey } = await initMultisigClient(wc, url);
-        setPsmPubkey(pubkey);
+        const { client: msClient, psmCommitment: commitment, psmPubkey: pubkey } =
+          await initMultisigClient(wc, url);
+        setPsmCommitment(commitment);
+        setPsmPublicKey(pubkey);
         setMultisigClient(msClient);
         setPsmStatus('connected');
 
-        // If there's an active multisig, try to load or register on the new PSM
         if (multisig && signer && psmState?.stateDataBase64) {
           setRegisteringOnPsm(true);
           try {
-            // First, try to load from the new PSM
-            const reloadedMs = await loadMultisigAccount(msClient, multisig.accountId, signer);
+            let ackPublicKey = pubkey;
+            if (signer.activeScheme === 'ecdsa' && !ackPublicKey) {
+              const { pubkey: fetched } = await msClient.psmClient.getPubkey('ecdsa');
+              ackPublicKey = fetched;
+              setPsmPublicKey(fetched);
+            }
+            const reloadedMs = await loadMultisigAccount(
+              msClient,
+              multisig.accountId,
+              signer,
+              ackPublicKey,
+              signer.activeScheme
+            );
             setMultisig(reloadedMs);
 
-            const { state, config } = await fetchAccountState(reloadedMs);
+            const { proposals: synced, state, notes, config } = await reloadedMs.syncAll();
             setPsmState(state);
             setDetectedConfig(config);
+            setProposals(synced);
+            setConsumableNotes(notes);
 
             toast.success('Account loaded from PSM');
           } catch (loadErr) {
-            // Check if it's a 404 (account not found on this PSM)
             const isNotFound = loadErr instanceof PsmHttpError && loadErr.status === 404;
 
             if (isNotFound) {
               try {
-                const accountId = AccountId.fromHex(multisig.accountId);
-                const currentAccount = await wc.getAccount(accountId);
-                if (!currentAccount) {
-                  throw new Error('Account not found in local client');
-                }
-                const freshStateBytes = currentAccount.serialize();
-                const freshStateBase64 = btoa(String.fromCharCode(...freshStateBytes));
+                await multisig.switchPsm(msClient.psmClient);
 
-                await switchMultisigPsm(msClient, multisig, freshStateBase64);
-
-                const { state, config } = await fetchAccountState(multisig);
+                const { proposals: synced, state, notes, config } = await multisig.syncAll();
                 setPsmState(state);
                 setDetectedConfig(config);
+                setProposals(synced);
+                setConsumableNotes(notes);
 
                 toast.success('Account registered on new PSM');
               } catch (registerErr) {
@@ -161,20 +148,18 @@ export default function App() {
         }
       } catch (err) {
         const msg = formatError(err);
-        console.error('Failed to connect to PSM:', msg);
         setPsmStatus('error');
-        setPsmPubkey('');
+        setPsmCommitment('');
+        setPsmPublicKey(undefined);
         setError(`Failed to connect to PSM: ${msg}`);
       }
     },
     [webClient, multisig, signer, psmState]
   );
 
-  // Initialize on mount
   useEffect(() => {
     const init = async () => {
       try {
-        // Clear IndexedDB to start fresh on each page load
         await clearMidenDatabase();
 
         const client = await createWebClient();
@@ -192,32 +177,51 @@ export default function App() {
       }
     };
     init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Create multisig
   const handleCreate = async (
     otherSignerCommitments: string[],
     threshold: number,
     procedureThresholds?: import('@openzeppelin/miden-multisig-client').ProcedureThreshold[],
+    signatureScheme: SignatureScheme = 'falcon',
   ) => {
-    if (!multisigClient || !signer || !psmPubkey) return;
+    if (!multisigClient || !signer || !psmCommitment) return;
 
     setCreating(true);
     setError(null);
     try {
-      const ms = await createMultisigAccount(multisigClient, signer, otherSignerCommitments, threshold, psmPubkey, procedureThresholds);
+      setSigner((prev) => (prev ? { ...prev, activeScheme: signatureScheme } : prev));
+      let ackPublicKey = psmPublicKey;
+      let accountPsmCommitment = psmCommitment;
+      if (signatureScheme === 'ecdsa') {
+        const { pubkey, commitment } = await multisigClient.psmClient.getPubkey('ecdsa');
+        if (!ackPublicKey) {
+          ackPublicKey = pubkey;
+          setPsmPublicKey(pubkey);
+        }
+        accountPsmCommitment = commitment;
+        setPsmCommitment(commitment);
+      }
+      const ms = await createMultisigAccount(
+        multisigClient,
+        signer,
+        otherSignerCommitments,
+        threshold,
+        accountPsmCommitment,
+        ackPublicKey,
+        procedureThresholds,
+        signatureScheme
+      );
       setMultisig(ms);
 
-      // Auto-register on PSM
       setRegisteringOnPsm(true);
       try {
-        await registerOnPsm(ms);
-
-        // Fetch account state to populate detectedConfig with procedure thresholds
-        const { state, config } = await fetchAccountState(ms);
+        await ms.registerOnPsm();
+        const { proposals: synced, state, notes, config } = await ms.syncAll();
         setPsmState(state);
         setDetectedConfig(config);
+        setProposals(synced);
+        setConsumableNotes(notes);
       } catch (psmErr) {
         setError(`Created but failed to register on PSM: ${psmErr instanceof Error ? psmErr.message : 'Unknown'}`);
       } finally {
@@ -232,13 +236,12 @@ export default function App() {
     }
   };
 
-  // Load multisig from PSM
-  const handleLoad = async (accountId: string) => {
+  const handleLoad = async (accountId: string, signatureScheme: SignatureScheme = 'falcon') => {
     if (!multisigClient || !signer) {
       setError('Client not initialized. Try reconnecting to PSM.');
       return;
     }
-    if (!psmPubkey) {
+    if (!psmCommitment) {
       setPsmStatus('error');
       setError('Not connected to PSM. Check the endpoint and try again.');
       return;
@@ -253,12 +256,27 @@ export default function App() {
     setError(null);
     setDetectedConfig(null);
     try {
-      const ms = await loadMultisigAccount(multisigClient, normalizedId, signer);
+      setSigner((prev) => (prev ? { ...prev, activeScheme: signatureScheme } : prev));
+      let ackPublicKey = psmPublicKey;
+      if (signatureScheme === 'ecdsa' && !ackPublicKey) {
+        const { pubkey } = await multisigClient.psmClient.getPubkey('ecdsa');
+        ackPublicKey = pubkey;
+        setPsmPublicKey(pubkey);
+      }
+      const ms = await loadMultisigAccount(
+        multisigClient,
+        normalizedId,
+        signer,
+        ackPublicKey,
+        signatureScheme
+      );
       setMultisig(ms);
 
-      const { state, config } = await fetchAccountState(ms);
+      const { proposals: synced, state, notes, config } = await ms.syncAll();
       setDetectedConfig(config);
       setPsmState(state);
+      setProposals(synced);
+      setConsumableNotes(notes);
 
       setLoadDialogOpen(false);
     } catch (err) {
@@ -273,33 +291,23 @@ export default function App() {
     }
   };
 
-  // Sync state and proposals
   const handleSync = async () => {
-    if (!multisig || !multisigClient || !signer || !webClient) return;
+    if (!multisig || !webClient) return;
 
     setSyncingState(true);
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      // Sync miden client state first (with retry for IndexedDB race conditions)
       try {
         await webClient.syncState();
-      } catch (syncErr) {
-        // IndexedDB can have PrematureCommitError - retry once after a short delay
-        console.warn('First syncState attempt failed, retrying...', syncErr);
+      } catch {
         await new Promise(resolve => setTimeout(resolve, 500));
         await webClient.syncState();
       }
 
-      // Reload multisig with fresh state from PSM
-      const reloadedMs = await loadMultisigAccount(multisigClient, multisig.accountId, signer);
-      setMultisig(reloadedMs);
-
-      const { state, config } = await fetchAccountState(reloadedMs);
+      const { proposals: synced, state, notes, config } = await multisig.syncAll();
       setPsmState(state);
       setDetectedConfig(config);
-
-      const { proposals: synced, notes } = await syncAll(reloadedMs);
       setProposals(synced);
       setConsumableNotes(notes);
     } catch (err) {
@@ -318,7 +326,6 @@ export default function App() {
     }
   };
 
-  // Create add signer proposal
   const handleCreateAddSignerProposal = async (commitment: string, increaseThreshold: boolean) => {
     if (!multisig) return;
 
@@ -334,7 +341,8 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      const { proposals } = await createAddSignerProposal(multisig, normalizedCommitment, increaseThreshold);
+      const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
+      const { proposals } = await multisig.createAddSignerProposal(normalizedCommitment, { newThreshold });
       setProposals(proposals);
       toast.success('Add signer proposal created');
     } catch (err) {
@@ -351,7 +359,6 @@ export default function App() {
     }
   };
 
-  // Create remove signer proposal
   const handleCreateRemoveSignerProposal = async (signerToRemove: string, newThreshold?: number) => {
     if (!multisig) return;
 
@@ -359,7 +366,7 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      const { proposals } = await createRemoveSignerProposal(multisig, signerToRemove, newThreshold);
+      const { proposals } = await multisig.createRemoveSignerProposal(signerToRemove, { newThreshold });
       setProposals(proposals);
       toast.success('Remove signer proposal created');
     } catch (err) {
@@ -376,7 +383,6 @@ export default function App() {
     }
   };
 
-  // Create change threshold proposal
   const handleCreateChangeThresholdProposal = async (newThreshold: number) => {
     if (!multisig) return;
 
@@ -384,7 +390,7 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      const { proposals } = await createChangeThresholdProposal(multisig, newThreshold);
+      const { proposals } = await multisig.createChangeThresholdProposal(newThreshold);
       setProposals(proposals);
       toast.success('Change threshold proposal created');
     } catch (err) {
@@ -401,7 +407,6 @@ export default function App() {
     }
   };
 
-  // Create consume notes proposal
   const handleCreateConsumeNotesProposal = async (noteIds: string[]) => {
     if (!multisig) return;
 
@@ -409,7 +414,7 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      const { proposals } = await createConsumeNotesProposal(multisig, noteIds);
+      const { proposals } = await multisig.createConsumeNotesProposal(noteIds);
       setProposals(proposals);
       toast.success('Consume notes proposal created');
     } catch (err) {
@@ -426,7 +431,6 @@ export default function App() {
     }
   };
 
-  // Create P2ID (send payment) proposal
   const handleCreateP2idProposal = async (recipientId: string, faucetId: string, amount: bigint) => {
     if (!multisig) return;
 
@@ -434,7 +438,7 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      const { proposals } = await createP2idProposal(multisig, recipientId, faucetId, amount);
+      const { proposals } = await multisig.createSendProposal(recipientId, faucetId, amount);
       setProposals(proposals);
       toast.success('Send payment proposal created');
     } catch (err) {
@@ -451,7 +455,6 @@ export default function App() {
     }
   };
 
-  // Create switch PSM proposal
   const handleCreateSwitchPsmProposal = async (newEndpoint: string, newPubkey: string) => {
     if (!multisig) return;
 
@@ -459,7 +462,7 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      const { proposals } = await createSwitchPsmProposal(multisig, newEndpoint, newPubkey);
+      const { proposals } = await multisig.createSwitchPsmProposal(newEndpoint, newPubkey);
       setProposals(proposals);
       toast.success('Switch PSM proposal created');
     } catch (err) {
@@ -476,14 +479,13 @@ export default function App() {
     }
   };
 
-  // Sign proposal
   const handleSignProposal = async (proposalId: string) => {
     if (!multisig) return;
 
     setSigningProposal(proposalId);
     setError(null);
     try {
-      const proposals = await signProposal(multisig, proposalId);
+      const proposals = await multisig.signTransactionProposal(proposalId);
       setProposals(proposals);
     } catch (err) {
       setError(`Failed to sign: ${err instanceof Error ? err.message : 'Unknown'}`);
@@ -492,7 +494,6 @@ export default function App() {
     }
   };
 
-  // Execute proposal
   const handleExecuteProposal = async (proposalId: string) => {
     if (!multisig) return;
 
@@ -500,32 +501,31 @@ export default function App() {
     setError(null);
     setPendingCandidateWarning(null);
     try {
-      await executeProposal(multisig, proposalId);
+      await multisig.executeTransactionProposal(proposalId);
       toast.success('Proposal executed successfully');
 
-      // Sync to reload account state and proposals
       await handleSync();
     } catch (err) {
-      console.error('[Execute] Execution failed:', err);
+      const message = formatError(err, 'Execute failed');
       if (isPendingCandidateError(err)) {
         setPendingCandidateWarning(
           'A previous transaction is still being processed on-chain. ' +
           'Please wait for it to be confirmed before executing proposals.'
         );
       } else {
-        setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
+        setError(message);
+        toast.error(message);
       }
     } finally {
       setExecutingProposal(null);
     }
   };
 
-  // Export proposal to clipboard
   const handleExportProposal = (proposalId: string) => {
     if (!multisig) return;
 
     try {
-      const json = exportProposalToJson(multisig, proposalId);
+      const json = multisig.exportTransactionProposalToJson(proposalId);
       navigator.clipboard.writeText(json);
       toast.success('Proposal JSON copied to clipboard');
     } catch (err) {
@@ -533,21 +533,19 @@ export default function App() {
     }
   };
 
-  // Sign proposal offline and copy to clipboard
   const handleSignProposalOffline = (proposalId: string) => {
     if (!multisig) return;
 
     try {
-      const { json, proposals } = signProposalOffline(multisig, proposalId);
+      const json = multisig.signTransactionProposalOffline(proposalId);
       navigator.clipboard.writeText(json);
-      setProposals(proposals);
+      setProposals(multisig.listTransactionProposals());
       toast.success('Signed! Updated proposal JSON copied to clipboard');
     } catch (err) {
       setError(`Failed to sign offline: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
   };
 
-  // Import proposal from JSON
   const handleImportProposal = () => {
     setImportJson('');
     setImportDialogOpen(true);
@@ -557,7 +555,7 @@ export default function App() {
     if (!multisig || !importJson.trim()) return;
 
     try {
-      const { proposal, proposals } = importProposal(multisig, importJson.trim());
+      const { proposal, proposals } = multisig.importTransactionProposal(importJson.trim());
       setProposals(proposals);
       setImportDialogOpen(false);
       setImportJson('');
@@ -567,7 +565,6 @@ export default function App() {
     }
   };
 
-  // Disconnect
   const handleDisconnect = () => {
     setMultisig(null);
     setPsmState(null);
@@ -575,10 +572,8 @@ export default function App() {
     setError(null);
   };
 
-  // Reset and reload
   const handleResetData = () => {
     toast.success('Reloading with fresh signer key...');
-    // Reload the page to start fresh
     setTimeout(() => window.location.reload(), 500);
   };
 
@@ -587,7 +582,9 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <Header
-        signerCommitment={signer?.commitment ?? null}
+        falconCommitment={signer?.falcon.commitment ?? null}
+        ecdsaCommitment={signer?.ecdsa.commitment ?? null}
+        activeScheme={signer?.activeScheme ?? null}
         generatingSigner={generatingSigner}
         psmStatus={psmStatus}
         psmUrl={psmUrl}
@@ -612,6 +609,8 @@ export default function App() {
             consumableNotes={consumableNotes}
             vaultBalances={detectedConfig?.vaultBalances ?? []}
             procedureThresholds={detectedConfig?.procedureThresholds}
+            detectedThreshold={detectedConfig?.threshold}
+            detectedSignerCommitments={detectedConfig?.signerCommitments}
             creatingProposal={creatingProposal}
             syncing={syncingState}
             signingProposal={signingProposal}
@@ -636,13 +635,14 @@ export default function App() {
         ) : null}
       </main>
 
-      {/* Dialogs */}
       {signer && (
         <>
           <CreateMultisigDialog
             open={createDialogOpen}
             onOpenChange={setCreateDialogOpen}
-            signerCommitment={signer.commitment}
+            falconCommitment={signer.falcon.commitment}
+            ecdsaCommitment={signer.ecdsa.commitment}
+            defaultScheme={signer.activeScheme}
             creating={creating}
             registeringOnPsm={registeringOnPsm}
             onCreate={handleCreate}
@@ -653,6 +653,7 @@ export default function App() {
             loading={loadingAccount}
             detectedConfig={detectedConfig}
             error={error}
+            defaultScheme={signer.activeScheme}
             onLoad={handleLoad}
           />
           <ImportProposalDialog

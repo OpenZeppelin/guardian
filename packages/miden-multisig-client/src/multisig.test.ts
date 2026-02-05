@@ -94,6 +94,7 @@ describe('Multisig', () => {
     psm = new PsmHttpClient('http://localhost:3000');
 
     mockSigner = {
+      scheme: 'falcon',
       commitment: '0x' + '1'.repeat(64),
       publicKey: '0x' + '2'.repeat(64),
       signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
@@ -294,7 +295,7 @@ describe('Multisig', () => {
     });
   });
 
-  describe('syncProposals', () => {
+  describe('syncTransactionProposals', () => {
     it('should sync proposals from PSM', async () => {
       const config = {
         threshold: 2,
@@ -339,11 +340,12 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposals }),
       });
 
-      const proposals = await multisig.syncProposals();
+      const proposals = await multisig.syncTransactionProposals();
 
       expect(proposals.length).toBe(1);
       expect(proposals[0].nonce).toBe(1);
       expect(proposals[0].status.type).toBe('pending');
+      expect(proposals[0].commitment).toBe(proposals[0].id);
     });
 
     it('should return ready status when enough signatures', async () => {
@@ -390,13 +392,13 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposals }),
       });
 
-      const proposals = await multisig.syncProposals();
+      const proposals = await multisig.syncTransactionProposals();
 
       expect(proposals[0].status.type).toBe('ready');
     });
   });
 
-  describe('listProposals', () => {
+  describe('listTransactionProposals', () => {
     it('should return empty list initially', () => {
       const config = {
         threshold: 1,
@@ -405,7 +407,7 @@ describe('Multisig', () => {
       };
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
-      expect(multisig.listProposals()).toEqual([]);
+      expect(multisig.listTransactionProposals()).toEqual([]);
     });
   });
 
@@ -455,7 +457,7 @@ describe('Multisig', () => {
     });
   });
 
-  describe('signProposal', () => {
+  describe('signTransactionProposal', () => {
     it('should sign a proposal', async () => {
       const config = {
         threshold: 1,
@@ -471,7 +473,7 @@ describe('Multisig', () => {
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: 'AQID' },
           signatures: [],
         },
         status: {
@@ -523,21 +525,30 @@ describe('Multisig', () => {
         },
       };
 
+      // Mock for signDeltaProposal
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => signedDelta,
       });
 
+      // Mock for auto-sync (syncTransactionProposals)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [signedDelta] }),
+      });
+
       const proposalId = '0x' + 'd'.repeat(64);
-      const signedProposal = await multisig.signProposal(proposalId);
+      const proposals = await multisig.signTransactionProposal(proposalId);
 
       expect(mockSigner.signCommitment).toHaveBeenCalledWith(proposalId);
-      expect(signedProposal.signatures.length).toBe(1);
+      expect(proposals.length).toBeGreaterThanOrEqual(1);
+      expect(proposals[0].signatures.length).toBe(1);
+      expect(proposals[0].commitment).toBe(proposals[0].id);
     });
   });
 
-  describe('exportProposal', () => {
-    it('should export proposal for offline signing', async () => {
+  describe('exportTransactionProposalToJson', () => {
+    it('should export proposal to JSON from local cache', async () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -546,6 +557,7 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
+      // First sync proposals to populate local cache
       const mockProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
@@ -581,16 +593,20 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposals }),
       });
 
+      await multisig.syncTransactionProposals();
+
       // The proposal ID is computed from tx_summary, which is mocked to return 'c'.repeat(64)
-      const exported = await multisig.exportProposal('0x' + 'c'.repeat(64));
+      const json = multisig.exportTransactionProposalToJson('0x' + 'c'.repeat(64));
+      const exported = JSON.parse(json);
 
       expect(exported.accountId).toBe('0x' + 'a'.repeat(30));
       expect(exported.nonce).toBe(1);
       expect(exported.txSummaryBase64).toBe('AQID');
       expect(exported.signatures.length).toBe(1);
+      expect(exported.commitment).toBe('0x' + 'c'.repeat(64));
     });
 
-    it('should throw if proposal not found', async () => {
+    it('should throw if proposal not found in cache', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -599,18 +615,13 @@ describe('Multisig', () => {
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ proposals: [] }),
-      });
-
-      await expect(
-        multisig.exportProposal('0x' + 'nonexistent'.repeat(5))
-      ).rejects.toThrow('Proposal not found');
+      expect(() =>
+        multisig.exportTransactionProposalToJson('0x' + 'nonexistent'.repeat(5))
+      ).toThrow('Proposal not found');
     });
   });
 
-  describe('executeProposal', () => {
+  describe('executeTransactionProposal', () => {
     it('should throw if proposal not found locally', async () => {
       const config = {
         threshold: 1,
@@ -621,7 +632,7 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       await expect(
-        multisig.executeProposal('0x' + 'nonexistent'.repeat(5))
+        multisig.executeTransactionProposal('0x' + 'nonexistent'.repeat(5))
       ).rejects.toThrow('Proposal not found');
     });
 
@@ -670,11 +681,11 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposals }),
       });
 
-      await multisig.syncProposals();
+      await multisig.syncTransactionProposals();
 
       // Proposal ID is mocked to return 'c'.repeat(64)
       await expect(
-        multisig.executeProposal('0x' + 'c'.repeat(64))
+        multisig.executeTransactionProposal('0x' + 'c'.repeat(64))
       ).rejects.toThrow('not ready for execution');
     });
 
@@ -722,7 +733,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ proposals: [readyDelta] }),
       });
-      await multisig.syncProposals();
+      await multisig.syncTransactionProposals();
 
       // executeProposal: getDeltaProposals
       mockFetch.mockResolvedValueOnce({
@@ -735,7 +746,7 @@ describe('Multisig', () => {
         json: async () => ({ ...readyDelta, ack_sig: null }),
       });
 
-      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+      await expect(multisig.executeTransactionProposal(proposalId)).rejects.toThrow(
         'PSM did not return acknowledgment signature'
       );
     });
@@ -794,7 +805,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const syncedProposals = await multisig.syncProposals();
+      const syncedProposals = await multisig.syncTransactionProposals();
       const syncedProposal = syncedProposals.find(p => p.nonce === 1);
 
       expect(syncedProposal?.metadata?.proposalType).toBe('add_signer');
@@ -839,7 +850,7 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposals }),
       });
 
-      const proposals = await multisig.syncProposals();
+      const proposals = await multisig.syncTransactionProposals();
 
       expect(proposals.length).toBe(1);
       expect(proposals[0].metadata?.proposalType).toBe('p2id');
@@ -1041,7 +1052,7 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposalsPending }),
       });
 
-      let proposals = await multisig.syncProposals();
+      let proposals = await multisig.syncTransactionProposals();
       expect(proposals[0].status.type).toBe('pending');
 
       // Second sync with 2 signatures (ready)
@@ -1082,7 +1093,7 @@ describe('Multisig', () => {
         json: async () => ({ proposals: mockProposalsReady }),
       });
 
-      proposals = await multisig.syncProposals();
+      proposals = await multisig.syncTransactionProposals();
       expect(proposals[0].status.type).toBe('ready');
     });
   });
@@ -1175,7 +1186,7 @@ describe('Multisig', () => {
         json: async () => ({ proposals: rustProposals }),
       });
 
-      const proposals = await multisig.syncProposals();
+      const proposals = await multisig.syncTransactionProposals();
 
       expect(proposals.length).toBe(1);
       // The TS client should normalize snake_case to camelCase
@@ -1232,7 +1243,7 @@ describe('Multisig', () => {
         json: async () => ({ proposals: p2idProposals }),
       });
 
-      const proposals = await multisig.syncProposals();
+      const proposals = await multisig.syncTransactionProposals();
 
       expect(proposals.length).toBe(1);
       expect(proposals[0].metadata?.proposalType).toBe('p2id');
@@ -1281,7 +1292,7 @@ describe('Multisig', () => {
         json: async () => ({ proposals: switchPsmProposals }),
       });
 
-      const proposals = await multisig.syncProposals();
+      const proposals = await multisig.syncTransactionProposals();
 
       expect(proposals.length).toBe(1);
       expect(proposals[0].metadata?.proposalType).toBe('switch_psm');

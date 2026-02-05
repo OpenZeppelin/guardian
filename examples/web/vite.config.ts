@@ -9,8 +9,6 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@demox-labs/miden-sdk': path.resolve(__dirname, 'node_modules/@demox-labs/miden-sdk/dist/index.js'),
-      '@openzeppelin/psm-client': path.resolve(__dirname, '../../packages/psm-client/dist/index.js'),
-      '@openzeppelin/miden-multisig-client': path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
     },
   },
   server: {

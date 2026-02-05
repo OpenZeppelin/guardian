@@ -51,7 +51,9 @@ fn collect_all_masm_files(root: &Path) -> Result<Vec<PathBuf>> {
 ///
 /// Examples:
 /// - masm/auth/multisig.masm           -> openzeppelin::multisig
+/// - masm/auth/multisig_ecdsa.masm     -> openzeppelin::multisig_ecdsa
 /// - masm/auth/psm.masm                -> openzeppelin::psm
+/// - masm/auth/psm_ecdsa.masm          -> openzeppelin::psm_ecdsa
 /// - masm/account/access.masm          -> openzeppelin::access
 /// - masm/account/utils/example.masm   -> openzeppelin::example
 fn build_openzeppelin_library() -> Result<Library> {
@@ -136,6 +138,21 @@ pub fn build_multisig_component(slots: Vec<StorageSlot>) -> Result<AccountCompon
     Ok(component)
 }
 
+/// Build AccountComponent from masm/auth/multisig_ecdsa.masm.
+/// This component provides multi-signature authentication using ECDSA signatures.
+/// It requires the PSM component to be added separately if PSM verification is needed.
+/// Assembler comes with the openzeppelin library (all modules) loaded.
+pub fn build_multisig_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    let asm = build_assembler()?;
+
+    let path = auth_dir().join("multisig_ecdsa.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+
+    Ok(component)
+}
+
 /// Build AccountComponent from masm/auth/psm.masm.
 /// This component provides PSM (Private State Manager) signature verification.
 ///
@@ -146,6 +163,19 @@ pub fn build_psm_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> 
     let asm = build_assembler()?;
 
     let path = auth_dir().join("psm.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+
+    Ok(component)
+}
+
+/// Build AccountComponent from masm/auth/psm_ecdsa.masm.
+/// This component provides PSM (Private State Manager) signature verification using ECDSA.
+pub fn build_psm_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    let asm = build_assembler()?;
+
+    let path = auth_dir().join("psm_ecdsa.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
     let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
@@ -203,6 +233,22 @@ pub fn get_multisig_library() -> Result<Library> {
     Ok(library)
 }
 
+/// Builds a library for multisig ECDSA procedures for use in transaction scripts.
+/// The procedures are accessible via `call.::procedure_name` syntax.
+pub fn get_multisig_ecdsa_library() -> Result<Library> {
+    let path = auth_dir().join("multisig_ecdsa.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    // Build with openzeppelin library linked (for psm dependency)
+    let asm = build_assembler()?;
+
+    let library = asm
+        .assemble_library([code])
+        .map_err(|e| anyhow!("failed to assemble multisig ECDSA library: {e}"))?;
+
+    Ok(library)
+}
+
 /// Builds a library for PSM procedures for use in transaction scripts.
 /// The procedures are accessible via `call.::procedure_name` syntax.
 pub fn get_psm_library() -> Result<Library> {
@@ -215,6 +261,22 @@ pub fn get_psm_library() -> Result<Library> {
     let library = assembler
         .assemble_library([code])
         .map_err(|e| anyhow!("failed to assemble PSM library: {e}"))?;
+
+    Ok(library)
+}
+
+/// Builds a library for PSM ECDSA procedures for use in transaction scripts.
+/// The procedures are accessible via `call.::procedure_name` syntax.
+pub fn get_psm_ecdsa_library() -> Result<Library> {
+    let path = auth_dir().join("psm_ecdsa.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    // Pass source code directly to avoid namespace issues
+    let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
+
+    let library = assembler
+        .assemble_library([code])
+        .map_err(|e| anyhow!("failed to assemble PSM ECDSA library: {e}"))?;
 
     Ok(library)
 }

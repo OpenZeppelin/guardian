@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -21,21 +21,30 @@ import {
 import { normalizeCommitment, truncateHex } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
 import type { OtherSigner } from '@/types';
-import type { ProcedureThreshold, ProcedureName } from '@openzeppelin/miden-multisig-client';
+import type { ProcedureThreshold, ProcedureName, SignatureScheme } from '@openzeppelin/miden-multisig-client';
 
 interface CreateMultisigDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  signerCommitment: string;
+  falconCommitment: string;
+  ecdsaCommitment: string;
+  defaultScheme: SignatureScheme;
   creating: boolean;
   registeringOnPsm: boolean;
-  onCreate: (otherSigners: string[], threshold: number, procedureThresholds?: ProcedureThreshold[]) => void;
+  onCreate: (
+    otherSigners: string[],
+    threshold: number,
+    procedureThresholds: ProcedureThreshold[] | undefined,
+    signatureScheme: SignatureScheme
+  ) => void;
 }
 
 export function CreateMultisigDialog({
   open,
   onOpenChange,
-  signerCommitment,
+  falconCommitment,
+  ecdsaCommitment,
+  defaultScheme,
   creating,
   registeringOnPsm,
   onCreate,
@@ -44,6 +53,7 @@ export function CreateMultisigDialog({
   const [otherCommitmentInput, setOtherCommitmentInput] = useState('');
   const [threshold, setThreshold] = useState(1);
   const [error, setError] = useState<string | null>(null);
+  const [signatureScheme, setSignatureScheme] = useState<SignatureScheme>(defaultScheme);
 
   // Advanced settings state
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -52,6 +62,13 @@ export function CreateMultisigDialog({
   );
 
   const totalSigners = 1 + otherSigners.length;
+  const activeCommitment = signatureScheme === 'ecdsa' ? ecdsaCommitment : falconCommitment;
+
+  useEffect(() => {
+    if (open) {
+      setSignatureScheme(defaultScheme);
+    }
+  }, [open, defaultScheme]);
 
   const handleAddOtherSigner = () => {
     let normalizedCommitment: string;
@@ -62,7 +79,7 @@ export function CreateMultisigDialog({
       return;
     }
 
-    if (normalizedCommitment === signerCommitment.toLowerCase()) {
+    if (normalizedCommitment === activeCommitment.toLowerCase()) {
       setError("That's your own commitment");
       return;
     }
@@ -115,7 +132,8 @@ export function CreateMultisigDialog({
     onCreate(
       otherSigners.map((s) => s.commitment),
       threshold,
-      buildProcedureThresholds()
+      buildProcedureThresholds(),
+      signatureScheme
     );
   };
 
@@ -127,6 +145,7 @@ export function CreateMultisigDialog({
       setError(null);
       setShowAdvanced(false);
       setProcedureOverrides(new Map());
+      setSignatureScheme(defaultScheme);
       onOpenChange(false);
     }
   };
@@ -142,6 +161,20 @@ export function CreateMultisigDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Signature Scheme */}
+          <div className="space-y-2">
+            <Label>Signature Scheme</Label>
+            <Select value={signatureScheme} onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}>
+              <SelectTrigger className="w-full" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="falcon">Falcon</SelectItem>
+                <SelectItem value="ecdsa">ECDSA</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* Signers list */}
           <div className="space-y-2">
             <Label>Signers ({totalSigners} total)</Label>
@@ -149,7 +182,7 @@ export function CreateMultisigDialog({
               <div className="flex items-center justify-between">
                 <span>
                   <strong>You:</strong>{' '}
-                  <code className="text-xs">{truncateHex(signerCommitment, 12, 6)}</code>
+                  <code className="text-xs">{truncateHex(activeCommitment, 12, 6)}</code>
                 </span>
               </div>
               {otherSigners.map((s, i) => (

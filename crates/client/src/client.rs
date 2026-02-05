@@ -211,7 +211,7 @@ impl PsmClient {
 
     /// Retrieves the PSM server's public key (commitment hex).
     pub async fn get_pubkey(&mut self) -> ClientResult<String> {
-        let request = tonic::Request::new(GetPubkeyRequest {});
+        let request = tonic::Request::new(GetPubkeyRequest { scheme: None });
         let response = self.client.get_pubkey(request).await?;
         let inner = response.into_inner();
         Ok(inner.pubkey)
@@ -297,6 +297,10 @@ fn proto_signature_from_json(signature: &JsonProposalSignature) -> ProtoProposal
     match signature {
         JsonProposalSignature::Falcon { signature } => ProtoProposalSignature {
             scheme: "falcon".to_string(),
+            signature: signature.clone(),
+        },
+        JsonProposalSignature::Ecdsa { signature, .. } => ProtoProposalSignature {
+            scheme: "ecdsa".to_string(),
             signature: signature.clone(),
         },
     }

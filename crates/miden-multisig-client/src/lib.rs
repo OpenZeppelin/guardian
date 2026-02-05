@@ -66,8 +66,10 @@ pub use account::MultisigAccount;
 
 // Key management and hex utilities
 pub use keystore::{
+    EcdsaPsmKeyStore,
     KeyManager,
     PsmKeyStore,
+    SchemeSecretKey,
     // Hex utilities
     commitment_from_hex,
     ensure_hex_prefix,
@@ -93,3 +95,4 @@ pub use miden_objects::account::AccountId;
 pub use miden_objects::asset::Asset;
 pub use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
 pub use miden_objects::note::NoteId;
+pub use private_state_manager_shared::SignatureScheme;

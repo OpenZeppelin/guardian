@@ -1,15 +1,19 @@
-// Internal server format types (snake_case matching server API).
-// These are used internally for serialization/deserialization.
-// Public API uses camelCase types from types.ts.
-
 export interface ServerFalconSignature {
   scheme: 'falcon';
   signature: string;
 }
 
+export interface ServerEcdsaSignature {
+  scheme: 'ecdsa';
+  signature: string;
+  public_key?: string;
+}
+
+export type ServerProposalSignature = ServerFalconSignature | ServerEcdsaSignature;
+
 export interface ServerCosignerSignature {
   signer_id: string;
-  signature: ServerFalconSignature;
+  signature: ServerProposalSignature;
   timestamp: string;
 }
 
@@ -50,10 +54,12 @@ export interface ServerDeltaObject {
   delta_payload: {
     tx_summary?: { data: string };
     data?: string;
-    signatures?: Array<{ signer_id: string; signature: ServerFalconSignature }>;
+    signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
   };
   ack_sig?: string;
+  ack_pubkey?: string;
+  ack_scheme?: string;
   status: ServerDeltaStatus;
 }
 
@@ -62,6 +68,8 @@ export interface ServerPushDeltaResponse {
   nonce: number;
   new_commitment?: string;
   ack_sig?: string;
+  ack_pubkey?: string;
+  ack_scheme?: string;
 }
 
 export interface ServerExecutionDelta {
@@ -80,13 +88,12 @@ export interface ServerStateObject {
   state_json: { data: string };
   created_at: string;
   updated_at: string;
+  auth_scheme?: string;
 }
 
-export interface ServerAuthConfig {
-  MidenFalconRpo: {
-    cosigner_commitments: string[];
-  };
-}
+export type ServerAuthConfig =
+  | { MidenFalconRpo: { cosigner_commitments: string[] } }
+  | { MidenEcdsa: { cosigner_commitments: string[] } };
 
 export interface ServerConfigureRequest {
   account_id: string;
@@ -98,6 +105,7 @@ export interface ServerConfigureResponse {
   success: boolean;
   message: string;
   ack_pubkey?: string;
+  ack_commitment?: string;
 }
 
 export interface ServerDeltaProposalRequest {
@@ -105,7 +113,7 @@ export interface ServerDeltaProposalRequest {
   nonce: number;
   delta_payload: {
     tx_summary: { data: string };
-    signatures: Array<{ signer_id: string; signature: ServerFalconSignature }>;
+    signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
   };
 }
@@ -122,9 +130,10 @@ export interface ServerProposalsResponse {
 export interface ServerSignProposalRequest {
   account_id: string;
   commitment: string;
-  signature: ServerFalconSignature;
+  signature: ServerProposalSignature;
 }
 
 export interface ServerPubkeyResponse {
-  pubkey: string;
+  commitment: string;
+  pubkey?: string;
 }

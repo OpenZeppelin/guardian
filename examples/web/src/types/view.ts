@@ -1,14 +1,14 @@
-import type { Proposal, ConsumableNote } from '@openzeppelin/miden-multisig-client';
+import type { TransactionProposal, ConsumableNote } from '@openzeppelin/miden-multisig-client';
 
 export interface ProposalView {
   id: string;
   proposalType?: string;
   description?: string;
-  status: Proposal['status'];
+  status: TransactionProposal['status'];
   createdAt?: string;
 }
 
-export function toProposalView(proposal: Proposal): ProposalView {
+export function toProposalView(proposal: TransactionProposal): ProposalView {
   const meta = proposal.metadata as { proposalType: string; description?: string } | undefined;
   return {
     id: proposal.id,

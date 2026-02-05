@@ -123,7 +123,9 @@ pub struct DeltaObject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_commitment: Option<String>,
     pub delta_payload: serde_json::Value,
-    pub ack_sig: Option<String>,
+    pub ack_sig: String,
+    pub ack_pubkey: String,
+    pub ack_scheme: String,
     pub status: DeltaStatus,
 }
 
@@ -132,6 +134,13 @@ impl<'de> Deserialize<'de> for DeltaObject {
     where
         D: serde::Deserializer<'de>,
     {
+        fn nullable_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            Option::<String>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
+        }
+
         #[derive(Deserialize)]
         struct DeltaObjectHelper {
             account_id: String,
@@ -139,7 +148,12 @@ impl<'de> Deserialize<'de> for DeltaObject {
             prev_commitment: String,
             new_commitment: Option<String>,
             delta_payload: serde_json::Value,
-            ack_sig: Option<String>,
+            #[serde(default, deserialize_with = "nullable_string")]
+            ack_sig: String,
+            #[serde(default, deserialize_with = "nullable_string")]
+            ack_pubkey: String,
+            #[serde(default, deserialize_with = "nullable_string")]
+            ack_scheme: String,
             #[serde(default)]
             status: Option<DeltaStatus>,
             #[serde(default)]
@@ -171,6 +185,8 @@ impl<'de> Deserialize<'de> for DeltaObject {
             new_commitment: helper.new_commitment,
             delta_payload: helper.delta_payload,
             ack_sig: helper.ack_sig,
+            ack_pubkey: helper.ack_pubkey,
+            ack_scheme: helper.ack_scheme,
             status,
         })
     }

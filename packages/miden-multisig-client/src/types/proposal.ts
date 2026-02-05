@@ -1,14 +1,14 @@
-import type { ProposalType as PsmProposalType } from '@openzeppelin/psm-client';
+import type { ProposalType as PsmProposalType, SignatureScheme } from '@openzeppelin/psm-client';
 export type ProposalType = Exclude<PsmProposalType, 'custom'>;
 
-export type ProposalStatus =
+export type TransactionProposalStatus =
   | { type: 'pending'; signaturesCollected: number; signaturesRequired: number; signers: string[] }
   | { type: 'ready' }
   | { type: 'finalized' };
 
-export interface ProposalSignatureEntry {
+export interface TransactionProposalSignature {
   signerId: string;
-  signature: { scheme: 'falcon'; signature: string };
+  signature: { scheme: 'falcon' | 'ecdsa'; signature: string; publicKey?: string };
   timestamp: string;
 }
 
@@ -55,17 +55,18 @@ export type ProposalMetadata =
   | P2IdProposalMetadata
   | UnknownProposalMetadata;
 
-export interface Proposal {
+export interface TransactionProposal {
   id: string;
+  commitment: string;
   accountId: string;
   nonce: number;
-  status: ProposalStatus;
+  status: TransactionProposalStatus;
   txSummary: string;
-  signatures: ProposalSignatureEntry[];
+  signatures: TransactionProposalSignature[];
   metadata: ProposalMetadata;
 }
 
-export interface ExportedProposal {
+export interface ExportedTransactionProposal {
   accountId: string;
   nonce: number;
   commitment: string;
@@ -78,3 +79,9 @@ export interface ExportedProposal {
   metadata?: ProposalMetadata;
 }
 
+export interface SignTransactionProposalParams {
+  commitment: string;
+  signature: string;
+  publicKey?: string;
+  scheme?: SignatureScheme;
+}

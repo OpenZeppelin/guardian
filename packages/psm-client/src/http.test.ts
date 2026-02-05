@@ -8,6 +8,7 @@ vi.stubGlobal('fetch', mockFetch);
 
 // Mock signer for authenticated requests
 const mockSigner: Signer = {
+  scheme: 'falcon',
   commitment: '0x' + '1'.repeat(64),
   publicKey: '0x' + '2'.repeat(64),
   signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
@@ -34,18 +35,19 @@ describe('PsmHttpClient', () => {
   });
 
   describe('getPubkey', () => {
-    it('should return server public key', async () => {
-      const expectedPubkey = '0x' + 'abc123'.repeat(10);
+    it('should return commitment and pubkey when available', async () => {
+      const expectedCommitment = '0x' + 'abc123'.repeat(10);
+      const expectedPubkey = '0x' + 'def456'.repeat(10);
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ pubkey: expectedPubkey }),
+        json: async () => ({ commitment: expectedCommitment, pubkey: expectedPubkey }),
       });
 
-      const pubkey = await client.getPubkey();
+      const pubkey = await client.getPubkey('ecdsa');
 
-      expect(pubkey).toBe(expectedPubkey);
+      expect(pubkey).toEqual({ commitment: expectedCommitment, pubkey: expectedPubkey });
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/pubkey',
+        'http://localhost:3000/pubkey?scheme=ecdsa',
         expect.objectContaining({
           method: 'GET',
           headers: expect.objectContaining({

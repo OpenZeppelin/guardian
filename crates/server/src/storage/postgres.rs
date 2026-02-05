@@ -144,6 +144,7 @@ impl From<StateRow> for StateObject {
             commitment: row.commitment,
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
+            auth_scheme: String::new(),
         }
     }
 }
@@ -158,7 +159,9 @@ impl From<DeltaRow> for DeltaObject {
             prev_commitment: row.prev_commitment,
             new_commitment: row.new_commitment,
             delta_payload: row.delta_payload,
-            ack_sig: row.ack_sig,
+            ack_sig: row.ack_sig.unwrap_or_default(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status,
         }
     }
@@ -174,7 +177,9 @@ impl From<ProposalRow> for DeltaObject {
             prev_commitment: row.prev_commitment,
             new_commitment: row.new_commitment,
             delta_payload: row.delta_payload,
-            ack_sig: row.ack_sig,
+            ack_sig: row.ack_sig.unwrap_or_default(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status,
         }
     }
@@ -238,7 +243,7 @@ impl StorageBackend for PostgresService {
             prev_commitment: &delta.prev_commitment,
             new_commitment: delta.new_commitment.as_deref(),
             delta_payload: &delta.delta_payload,
-            ack_sig: delta.ack_sig.as_deref(),
+            ack_sig: Some(delta.ack_sig.as_str()),
             status: status_json.clone(),
         };
 
@@ -250,7 +255,7 @@ impl StorageBackend for PostgresService {
                 deltas::prev_commitment.eq(&delta.prev_commitment),
                 deltas::new_commitment.eq(&delta.new_commitment),
                 deltas::delta_payload.eq(&delta.delta_payload),
-                deltas::ack_sig.eq(&delta.ack_sig),
+                deltas::ack_sig.eq(Some(&delta.ack_sig)),
                 deltas::status.eq(&status_json),
             ))
             .execute(&mut conn)
@@ -386,7 +391,7 @@ impl StorageBackend for PostgresService {
             prev_commitment: &proposal.prev_commitment,
             new_commitment: proposal.new_commitment.as_deref(),
             delta_payload: &proposal.delta_payload,
-            ack_sig: proposal.ack_sig.as_deref(),
+            ack_sig: Some(proposal.ack_sig.as_str()),
             status: status_json,
         };
 
@@ -484,7 +489,7 @@ impl StorageBackend for PostgresService {
                 delta_proposals::prev_commitment.eq(&proposal.prev_commitment),
                 delta_proposals::new_commitment.eq(&proposal.new_commitment),
                 delta_proposals::delta_payload.eq(&proposal.delta_payload),
-                delta_proposals::ack_sig.eq(&proposal.ack_sig),
+                delta_proposals::ack_sig.eq(Some(&proposal.ack_sig)),
                 delta_proposals::status.eq(&status_json),
             ))
             .execute(&mut conn)
@@ -570,7 +575,9 @@ mod tests {
             prev_commitment: "0x123".to_string(),
             new_commitment: Some("0x456".to_string()),
             delta_payload: serde_json::json!({"test": "payload"}),
-            ack_sig: Some("0xsig".to_string()),
+            ack_sig: "0xsig".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Canonical {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
             },
@@ -584,6 +591,7 @@ mod tests {
             state_json: serde_json::json!({"test": "state"}),
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 

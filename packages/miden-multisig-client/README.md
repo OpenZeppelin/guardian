@@ -5,6 +5,7 @@ TypeScript SDK for private multisignature workflows on Miden. This package wraps
 - Create multisig accounts, register them with a PSM, and keep state off-chain
 - Propose, sign, and execute transactions with threshold enforcement
 - Export/import proposals as files for sharing using side channels
+- Integrate external wallets via the external signing API
 
 ## How Private Multisigs & PSM Work
 
@@ -33,31 +34,21 @@ const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443
 const secretKey = SecretKey.rpoFalconWithRNG(seed);
 const signer = new FalconSigner(secretKey);
 
-// Create MultisigClient
+// Create MultisigClient and fetch PSM info
 const client = new MultisigClient(webClient, {
   psmEndpoint: 'http://localhost:3000',
 });
+const { psmCommitment } = await client.initialize();
 ```
 
 ## Usage
-
-### Get PSM Public Key
-
-Before creating a multisig, get the PSM server's public key commitment:
-
-```typescript
-const psmCommitment = await client.psmClient.getPubkey();
-```
 
 ### Create a Multisig Account
 
 ```typescript
 const config = {
-  threshold: 2, // Require 2 signatures
-  signerCommitments: [
-    signer.commitment,      // Your commitment
-    otherSigner.commitment, // Cosigner's commitment
-  ],
+  threshold: 2,
+  signerCommitments: [signer.commitment, otherSignerCommitment],
   psmCommitment,
 };
 
@@ -81,52 +72,23 @@ The configuration is automatically detected from the account's on-chain storage:
 const multisig = await client.load(accountId, signer);
 ```
 
-### Fetch Account State
+### Sync Everything
+
+Fetch proposals, state, consumable notes, and config in one call:
 
 ```typescript
-const state = await multisig.fetchState();
-console.log('Commitment:', state.commitment);
-console.log('Created:', state.createdAt);
-```
-
-### Create a Proposal (Add Signer)
-
-```typescript
-// Create a proposal to add a new signer
-const nonce = Math.floor(Math.random() * 1_000_000_000);
-const proposal = await multisig.createAddSignerProposal(
-  webClient,
-  newSignerCommitment, // Commitment of signer to add
-  nonce,               // Optional nonce (random value)
-  3,                   // Optional new threshold
-);
-console.log('Proposal ID:', proposal.id);
-```
-
-### Sign a Proposal
-
-```typescript
-const signedProposal = await multisig.signProposal(proposal.id);
-console.log('Signatures:', signedProposal.signatures.length);
-```
-
-### Sync Proposals
-
-Fetches proposals from the PSM server and updates local state:
-
-```typescript
-const proposals = await multisig.syncProposals();
+const { proposals, state, notes, config } = await multisig.syncAll();
 for (const p of proposals) {
   console.log(`${p.id}: ${p.status.type}`);
 }
 ```
 
-### Check Proposal Status
+### List Cached Proposals
 
 Returns cached proposals without making a network request:
 
 ```typescript
-const proposals = multisig.listProposals();
+const proposals = multisig.listTransactionProposals();
 for (const p of proposals) {
   if (p.status.type === 'pending') {
     console.log(`Pending: ${p.status.signaturesCollected}/${p.status.signaturesRequired}`);
@@ -136,49 +98,82 @@ for (const p of proposals) {
 }
 ```
 
+### Create Proposals
+
+All create methods return `{ proposal, proposals }` — the new proposal plus an auto-synced full list:
+
+```typescript
+// Add a signer
+const { proposal, proposals } = await multisig.createAddSignerProposal(
+  newSignerCommitment,
+  { newThreshold: 3 },
+);
+
+// Remove a signer
+await multisig.createRemoveSignerProposal(signerToRemove);
+
+// Change threshold
+await multisig.createChangeThresholdProposal(3);
+
+// Consume notes
+await multisig.createConsumeNotesProposal(noteIds);
+
+// Send payment (P2ID)
+await multisig.createSendProposal(recipientId, faucetId, amount);
+
+// Switch PSM provider
+await multisig.createSwitchPsmProposal(newEndpoint, newPubkey);
+```
+
+### Sign a Proposal
+
+```typescript
+const proposals = await multisig.signTransactionProposal(proposal.commitment);
+```
+
 ### Execute a Proposal
 
 When a proposal has enough signatures:
 
 ```typescript
 if (proposal.status.type === 'ready') {
-  await multisig.executeProposal(proposal.id, webClient);
-  console.log('Transaction executed on-chain!');
+  await multisig.executeTransactionProposal(proposal.commitment);
 }
 ```
 
-### Export Proposal for Offline Signing
+### External Signing
+
+For wallet integrations where the signing key is external (e.g., a browser wallet):
 
 ```typescript
-const exported = await multisig.exportProposal(proposal.id);
-// Send `exported` to offline signer
-console.log('TX Summary:', exported.txSummaryBase64);
-console.log('Commitment to sign:', exported.commitment);
+// Fetch proposals
+const proposals = multisig.listTransactionProposals();
+
+// Sign the commitment externally
+const signature = await wallet.sign(proposals[0].commitment);
+
+// Submit the external signature
+await multisig.signTransactionProposalExternal({
+  commitment: proposals[0].commitment,
+  signature,
+  publicKey: wallet.publicKey,
+  scheme: 'ecdsa',
+});
 ```
 
-## Transaction Utilities
+### Export/Import Proposals
 
-The package also exports utility functions for building transactions:
+Share proposals via side channels for offline signing:
 
 ```typescript
-import {
-  normalizeHexWord,
-  hexToUint8Array,
-  signatureHexToBytes,
-  buildSignatureAdviceEntry,
-} from '@openzeppelin/miden-multisig-client';
+// Export
+const json = multisig.exportTransactionProposalToJson(proposal.commitment);
 
-// Normalize hex for Word.fromHex (pads to 64 chars)
-const normalized = normalizeHexWord('abc123');
-// => '0x0000...abc123'
+// Sign offline and get updated JSON
+const signedJson = multisig.signTransactionProposalOffline(proposal.commitment);
 
-// Convert hex to bytes
-const bytes = hexToUint8Array('deadbeef');
-// => Uint8Array([0xde, 0xad, 0xbe, 0xef])
-
-// Add auth scheme prefix to signature
-const sigBytes = signatureHexToBytes(signatureHex);
-// => Uint8Array with 0x00 prefix (RpoFalcon512)
+// Import
+const { proposal, proposals } = multisig.importTransactionProposal(json);
 ```
 
 ## Testing

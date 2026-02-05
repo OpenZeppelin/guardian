@@ -95,10 +95,11 @@ export function CreateProposalForm({
           throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
-        if (data.pubkey) {
-          setNewPsmPubkey(data.pubkey);
+        const commitment = data.commitment ?? data.pubkey;
+        if (commitment) {
+          setNewPsmPubkey(commitment);
         } else {
-          throw new Error('No pubkey in response');
+          throw new Error('No commitment in response');
         }
       } catch (err) {
         setPubkeyError(err instanceof Error ? err.message : 'Failed to fetch');

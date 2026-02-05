@@ -116,6 +116,12 @@ describe('transaction utilities', () => {
       expect(result.slice(1)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
     });
 
+    it('should prepend auth scheme byte (1 = ECDSA)', () => {
+      const result = signatureHexToBytes('deadbeef', 'ecdsa');
+      expect(result[0]).toBe(1); // ECDSA scheme byte
+      expect(result.slice(1)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+    });
+
     it('should handle 0x prefix', () => {
       const result = signatureHexToBytes('0xaabbccdd');
       expect(result[0]).toBe(0);

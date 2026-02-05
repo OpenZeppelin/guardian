@@ -1,8 +1,15 @@
+use miden_objects::crypto::dsa::ecdsa_k256_keccak::PublicKey as EcdsaPublicKey;
+use miden_objects::crypto::dsa::rpo_falcon512::PublicKey as FalconPublicKey;
+use miden_objects::utils::Serializable;
+use private_state_manager_shared::hex::FromHex;
+
 use crate::api::grpc::state_manager::auth_config;
 use crate::error::PsmError;
 use crate::metadata::MetadataStore;
+use private_state_manager_shared::SignatureScheme;
 
 mod credentials;
+mod miden_ecdsa;
 mod miden_falcon_rpo;
 
 pub use credentials::{AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP_SKEW_MS};
@@ -14,29 +21,100 @@ pub use credentials::{AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP
 pub enum Auth {
     /// Miden Falcon RPO signature scheme
     MidenFalconRpo { cosigner_commitments: Vec<String> },
+    /// Miden ECDSA secp256k1 signature scheme
+    MidenEcdsa { cosigner_commitments: Vec<String> },
 }
 
 impl Auth {
-    /// Verify credentials are authorized for account
+    pub fn scheme(&self) -> SignatureScheme {
+        match self {
+            Auth::MidenFalconRpo { .. } => SignatureScheme::Falcon,
+            Auth::MidenEcdsa { .. } => SignatureScheme::Ecdsa,
+        }
+    }
+
+    /// Verify credentials are authorized for account.
     ///
-    /// This verifies:
-    /// 1. The signature is valid for the account_id + timestamp payload
-    /// 2. The signer's commitment is in the authorized list
+    /// Tries the stored scheme first. If signature deserialization fails (e.g.
+    /// the account was configured with Falcon but the client now sends ECDSA),
+    /// falls back to the other scheme using the same cosigner commitments.
     ///
-    /// # Arguments
-    /// * `account_id` - The account ID
-    /// * `credentials` - The credentials to verify (includes timestamp)
+    /// This handles the migration case where an account's auth scheme changed
+    /// but the metadata hasn't been updated via `configure` yet.
     pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<(), String> {
+        let primary_result = self.verify_scheme(account_id, credentials);
+        if primary_result.is_ok() {
+            return primary_result;
+        }
+
+        // If the primary scheme failed with a deserialization error, try the alternate scheme.
+        let primary_err = primary_result.unwrap_err();
+        if !primary_err.contains("Failed to deserialize") {
+            return Err(primary_err);
+        }
+
+        let alternate = self.with_alternate_scheme();
+        tracing::warn!(
+            account_id = %account_id,
+            stored_scheme = ?self.scheme(),
+            fallback_scheme = ?alternate.scheme(),
+            "Primary auth scheme failed to deserialize signature, trying alternate scheme"
+        );
+
+        alternate.verify_scheme(account_id, credentials).map_err(|fallback_err| {
+            // Both schemes failed — return the original error
+            tracing::error!(
+                account_id = %account_id,
+                primary_error = %primary_err,
+                fallback_error = %fallback_err,
+                "Both auth schemes failed verification"
+            );
+            primary_err
+        })
+    }
+
+    pub fn compute_signer_commitment(&self, pubkey_hex: &str) -> Result<String, String> {
+        match self {
+            Auth::MidenFalconRpo { .. } => {
+                let public_key = FalconPublicKey::from_hex(pubkey_hex)
+                    .map_err(|e| format!("invalid Falcon public key: {}", e))?;
+                let commitment = public_key.to_commitment();
+                Ok(format!("0x{}", hex::encode(commitment.to_bytes())))
+            }
+            Auth::MidenEcdsa { .. } => {
+                let public_key = EcdsaPublicKey::from_hex(pubkey_hex)
+                    .map_err(|e| format!("invalid ECDSA public key: {}", e))?;
+                let commitment = public_key.to_commitment();
+                Ok(format!("0x{}", hex::encode(commitment.to_bytes())))
+            }
+        }
+    }
+
+    pub fn with_updated_commitments(&self, cosigner_commitments: Vec<String>) -> Self {
+        match self {
+            Auth::MidenFalconRpo { .. } => Auth::MidenFalconRpo { cosigner_commitments },
+            Auth::MidenEcdsa { .. } => Auth::MidenEcdsa { cosigner_commitments },
+        }
+    }
+
+    fn with_alternate_scheme(&self) -> Auth {
+        match self {
+            Auth::MidenFalconRpo { cosigner_commitments } => Auth::MidenEcdsa {
+                cosigner_commitments: cosigner_commitments.clone(),
+            },
+            Auth::MidenEcdsa { cosigner_commitments } => Auth::MidenFalconRpo {
+                cosigner_commitments: cosigner_commitments.clone(),
+            },
+        }
+    }
+
+    fn verify_scheme(&self, account_id: &str, credentials: &Credentials) -> Result<(), String> {
         match self {
             Auth::MidenFalconRpo {
                 cosigner_commitments,
             } => {
                 let (_pubkey, signature, timestamp) =
                     credentials.as_signature().ok_or_else(|| {
-                        tracing::error!(
-                            account_id = %account_id,
-                            "MidenFalconRpo requires signature credentials but got different type"
-                        );
                         "MidenFalconRpo requires signature credentials".to_string()
                     })?;
 
@@ -45,6 +123,22 @@ impl Auth {
                     timestamp,
                     cosigner_commitments,
                     signature,
+                )
+            }
+            Auth::MidenEcdsa {
+                cosigner_commitments,
+            } => {
+                let (pubkey, signature, timestamp) =
+                    credentials.as_signature().ok_or_else(|| {
+                        "MidenEcdsa requires signature credentials".to_string()
+                    })?;
+
+                miden_ecdsa::verify_request_signature(
+                    account_id,
+                    timestamp,
+                    cosigner_commitments,
+                    signature,
+                    pubkey,
                 )
             }
         }
@@ -59,6 +153,9 @@ impl TryFrom<crate::api::grpc::state_manager::AuthConfig> for Auth {
     ) -> Result<Self, Self::Error> {
         match auth_config.auth_type {
             Some(auth_config::AuthType::MidenFalconRpo(miden_auth)) => Ok(Auth::MidenFalconRpo {
+                cosigner_commitments: miden_auth.cosigner_commitments,
+            }),
+            Some(auth_config::AuthType::MidenEcdsa(miden_auth)) => Ok(Auth::MidenEcdsa {
                 cosigner_commitments: miden_auth.cosigner_commitments,
             }),
             None => {

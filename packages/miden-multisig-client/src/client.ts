@@ -1,49 +1,14 @@
-/**
- * MultisigClient - Factory for creating and loading multisig accounts.
- *
- * This is the main entry point for the multisig SDK. It provides methods
- * to create new multisig accounts and load existing ones.
- */
-
 import { type WebClient, Account, AccountId } from '@demox-labs/miden-sdk';
-import { PsmHttpClient } from '@openzeppelin/psm-client';
+import { PsmHttpClient, type SignatureScheme } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
 import { AccountInspector } from './inspector.js';
 import type { MultisigConfig, Signer } from './types.js';
 
-/**
- * Configuration for MultisigClient.
- */
 export interface MultisigClientConfig {
-  /** PSM server endpoint */
   psmEndpoint?: string;
 }
 
-/**
- * Client for creating and loading multisig accounts.
- *
- * @example
- * ```typescript
- * import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
- * import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
- *
- * // Initialize
- * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
- * const secretKey = SecretKey.rpoFalconWithRNG(seed);
- * const signer = new FalconSigner(secretKey);
- *
- * // Create client
- * const client = new MultisigClient(webClient, { psmEndpoint: 'http://localhost:3000' });
- *
- * // Get PSM pubkey for config
- * const psmCommitment = await client.psmClient.getPubkey();
- *
- * // Create multisig
- * const config = { threshold: 2, signerCommitments: [...], psmCommitment };
- * const multisig = await client.create(config, signer);
- * ```
- */
 export class MultisigClient {
   private readonly webClient: WebClient;
   private _psmClient: PsmHttpClient;
@@ -53,29 +18,19 @@ export class MultisigClient {
     this._psmClient = new PsmHttpClient(config.psmEndpoint ?? 'http://localhost:3000');
   }
 
-  /**
-   * Change the PSM endpoint.
-   * 
-   * @param endpoint - The new PSM server endpoint URL
-   */
   setPsmEndpoint(endpoint: string): void {
     this._psmClient = new PsmHttpClient(endpoint);
   }
 
-  /**
-   * Access the internal PSM client.
-   */
+  async initialize(scheme?: SignatureScheme): Promise<{ psmCommitment: string; psmPublicKey?: string }> {
+    const { commitment, pubkey } = await this._psmClient.getPubkey(scheme);
+    return { psmCommitment: commitment, psmPublicKey: pubkey };
+  }
+
   get psmClient(): PsmHttpClient {
     return this._psmClient;
   }
 
-  /**
-   * Create a new multisig account.
-   *
-   * @param config - Multisig configuration (threshold, signers, PSM commitment)
-   * @param signer - The signer for this client (one of the cosigners)
-   * @returns A Multisig instance wrapping the created account
-   */
   async create(config: MultisigConfig, signer: Signer): Promise<Multisig> {
     this._psmClient.setSigner(signer);
 
@@ -84,13 +39,6 @@ export class MultisigClient {
     return new Multisig(account, config, this._psmClient, signer, this.webClient);
   }
 
-  /**
-   * Load an existing multisig account from PSM.
-   *
-   * @param accountId - The account ID to load
-   * @param signer - The signer for this client
-   * @returns A Multisig instance for the loaded account
-   */
   async load(accountId: string, signer: Signer): Promise<Multisig> {
     this._psmClient.setSigner(signer);
 
@@ -108,12 +56,15 @@ export class MultisigClient {
     }
     const account = Account.deserialize(accountBytes);
 
-    const detected = AccountInspector.fromAccount(account);
+    const detectedScheme: SignatureScheme = signer.scheme;
+
+    const detected = AccountInspector.fromAccount(account, detectedScheme);
     const config: MultisigConfig = {
       threshold: detected.threshold,
       signerCommitments: detected.signerCommitments,
       psmCommitment: detected.psmCommitment ?? '',
       psmEnabled: detected.psmEnabled,
+      signatureScheme: detected.signatureScheme,
       procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
         ([procedure, threshold]) => ({ procedure, threshold })
       ),

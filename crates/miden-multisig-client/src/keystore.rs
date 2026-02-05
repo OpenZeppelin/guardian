@@ -1,30 +1,42 @@
 //! Key management for PSM authentication.
 
 use miden_client::Serializable;
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
+use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey};
 use miden_objects::{FieldElement, Word};
+use private_state_manager_shared::SignatureScheme;
+
+/// Scheme-specific secret key for creating PSM auth providers.
+pub enum SchemeSecretKey {
+    Falcon(SecretKey),
+    Ecdsa(miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey),
+}
 
 /// Trait for managing keys used in PSM authentication and transaction signing.
 pub trait KeyManager: Send + Sync {
+    /// Returns the signature scheme used by this key manager.
+    fn scheme(&self) -> SignatureScheme {
+        SignatureScheme::Falcon
+    }
+
     /// Returns the public key commitment as a Word.
     fn commitment(&self) -> Word;
 
     /// Returns the public key commitment as a hex string with 0x prefix.
     fn commitment_hex(&self) -> String;
 
-    /// Signs a message (Word) and returns the signature.
-    fn sign(&self, message: Word) -> Signature;
-
     /// Signs a message and returns the hex-encoded signature with 0x prefix.
-    fn sign_hex(&self, message: Word) -> String {
-        let sig = self.sign(message);
-        format!("0x{}", hex::encode(sig.to_bytes()))
-    }
+    fn sign_hex(&self, message: Word) -> String;
 
-    /// Returns a clone of the secret key for PSM authentication.
+    /// Returns the scheme-specific secret key for creating auth providers.
+    fn secret_key(&self) -> SchemeSecretKey;
+
+    /// Returns the hex-encoded public key (with 0x prefix), if available.
     ///
-    /// This is needed to authenticate PSM client requests.
-    fn clone_secret_key(&self) -> SecretKey;
+    /// Required for ECDSA signatures where the public key must be passed
+    /// explicitly for advice preparation. Returns `None` for Falcon.
+    fn public_key_hex(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Default key store implementation using Falcon keys.
@@ -42,7 +54,6 @@ impl PsmKeyStore {
     /// Creates a new key store with the given secret key.
     pub fn new(secret_key: SecretKey) -> Self {
         let public_key = secret_key.public_key();
-        // Use the same commitment computation as miden-objects (SequentialCommit trait
         let commitment = public_key.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
 
@@ -60,8 +71,8 @@ impl PsmKeyStore {
         Self::new(secret_key)
     }
 
-    /// Returns a reference to the secret key.
-    pub fn secret_key(&self) -> &SecretKey {
+    /// Returns a reference to the Falcon secret key.
+    pub fn falcon_secret_key(&self) -> &SecretKey {
         &self.secret_key
     }
 
@@ -80,12 +91,81 @@ impl KeyManager for PsmKeyStore {
         self.commitment_hex.clone()
     }
 
-    fn sign(&self, message: Word) -> Signature {
-        self.secret_key.sign(message)
+    fn sign_hex(&self, message: Word) -> String {
+        let sig = self.secret_key.sign(message);
+        format!("0x{}", hex::encode(sig.to_bytes()))
     }
 
-    fn clone_secret_key(&self) -> SecretKey {
-        self.secret_key.clone()
+    fn secret_key(&self) -> SchemeSecretKey {
+        SchemeSecretKey::Falcon(self.secret_key.clone())
+    }
+}
+
+/// ECDSA key store implementation using secp256k1 keys.
+pub struct EcdsaPsmKeyStore {
+    secret_key: std::sync::Mutex<miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey>,
+    commitment: Word,
+    commitment_hex: String,
+}
+
+impl EcdsaPsmKeyStore {
+    /// Creates a new ECDSA key store with the given secret key.
+    pub fn new(secret_key: miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey) -> Self {
+        let public_key = secret_key.public_key();
+        let commitment = public_key.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+
+        Self {
+            secret_key: std::sync::Mutex::new(secret_key),
+            commitment,
+            commitment_hex,
+        }
+    }
+
+    /// Generates a new random ECDSA key store.
+    pub fn generate() -> Self {
+        let secret_key = miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
+        Self::new(secret_key)
+    }
+
+    /// Returns the ECDSA public key.
+    pub fn public_key(&self) -> miden_objects::crypto::dsa::ecdsa_k256_keccak::PublicKey {
+        self.secret_key.lock().unwrap().public_key()
+    }
+
+    /// Returns a clone of the ECDSA secret key.
+    pub fn clone_ecdsa_secret_key(
+        &self,
+    ) -> miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey {
+        self.secret_key.lock().unwrap().clone()
+    }
+}
+
+impl KeyManager for EcdsaPsmKeyStore {
+    fn scheme(&self) -> SignatureScheme {
+        SignatureScheme::Ecdsa
+    }
+
+    fn commitment(&self) -> Word {
+        self.commitment
+    }
+
+    fn commitment_hex(&self) -> String {
+        self.commitment_hex.clone()
+    }
+
+    fn sign_hex(&self, message: Word) -> String {
+        let sig = self.secret_key.lock().unwrap().sign(message);
+        format!("0x{}", hex::encode(sig.to_bytes()))
+    }
+
+    fn secret_key(&self) -> SchemeSecretKey {
+        SchemeSecretKey::Ecdsa(self.secret_key.lock().unwrap().clone())
+    }
+
+    fn public_key_hex(&self) -> Option<String> {
+        let pk = self.public_key();
+        Some(format!("0x{}", hex::encode(pk.to_bytes())))
     }
 }
 
@@ -196,7 +276,7 @@ mod tests {
     fn sign_produces_verifiable_signature() {
         let keystore = PsmKeyStore::generate();
         let message = Word::default();
-        let signature = keystore.sign(message);
+        let signature = keystore.falcon_secret_key().sign(message);
         let result = keystore.public_key().verify(message, &signature);
         assert!(result);
     }
@@ -211,20 +291,22 @@ mod tests {
     }
 
     #[test]
-    fn clone_secret_key_produces_equivalent_key() {
+    fn secret_key_returns_falcon_variant() {
         let keystore = PsmKeyStore::generate();
-        let cloned = keystore.clone_secret_key();
         let message = Word::default();
-        let sig1 = keystore.sign(message);
-        let sig2 = cloned.sign(message);
-        assert!(keystore.public_key().verify(message, &sig1));
-        assert!(keystore.public_key().verify(message, &sig2));
+        match keystore.secret_key() {
+            SchemeSecretKey::Falcon(sk) => {
+                let sig = sk.sign(message);
+                assert!(keystore.public_key().verify(message, &sig));
+            }
+            SchemeSecretKey::Ecdsa(_) => panic!("expected Falcon variant"),
+        }
     }
 
     #[test]
-    fn secret_key_accessor_returns_key() {
+    fn falcon_secret_key_accessor_returns_key() {
         let keystore = PsmKeyStore::generate();
-        let key = keystore.secret_key();
+        let key = keystore.falcon_secret_key();
         assert!(key.public_key().to_commitment() == keystore.commitment());
     }
 

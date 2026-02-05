@@ -129,18 +129,15 @@ impl RateLimitStore {
             .entry(key.to_string())
             .or_insert_with(RateLimitEntry::new);
 
-        // Check and reset burst window (1 second)
         if now.duration_since(entry.burst_window_start) >= Duration::from_secs(1) {
             entry.burst_count = 0;
             entry.burst_window_start = now;
         }
 
-        // Check burst limit first (more restrictive short-term)
         if entry.burst_count >= self.config.burst_per_sec {
             return Err(RateLimitType::Burst);
         }
 
-        // Increment counters
         entry.burst_count += 1;
 
         Ok(())
@@ -157,18 +154,15 @@ impl RateLimitStore {
             .entry(key.to_string())
             .or_insert_with(RateLimitEntry::new);
 
-        // Check and reset sustained window (1 minute)
         if now.duration_since(entry.sustained_window_start) >= Duration::from_secs(60) {
             entry.sustained_count = 0;
             entry.sustained_window_start = now;
         }
 
-        // Check sustained limit
         if entry.sustained_count >= self.config.per_min {
             return Err(RateLimitType::Sustained);
         }
 
-        // Increment counters
         entry.sustained_count += 1;
 
         Ok(())
@@ -186,7 +180,6 @@ impl RateLimitStore {
             let mut entries = self.entries.write().unwrap();
             let mut last = self.last_cleanup.write().unwrap();
 
-            // Remove entries that haven't been used in over 2 minutes
             let stale_threshold = Duration::from_secs(120);
             entries.retain(|_, entry| {
                 now.duration_since(entry.sustained_window_start) < stale_threshold
@@ -282,10 +275,8 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
-            // Extract client IP
             let client_ip = extract_client_ip(&req);
 
-            // Extract optional account/signer for enhanced keying
             let enhanced_key = extract_enhanced_key(&req);
             let endpoint = req.uri().path().to_string();
 
@@ -323,7 +314,6 @@ where
                         RateLimitType::Sustained => 60,
                     };
 
-                    // Log the throttled request
                     tracing::warn!(
                         client_ip = %client_ip,
                         rate_limit_key = %key,
@@ -356,7 +346,6 @@ where
 
 /// Extract client IP from request, preferring forwarded headers.
 fn extract_client_ip<B>(req: &Request<B>) -> String {
-    // Prefer X-Forwarded-For (set by trusted load balancer).
     if let Some(forwarded) = req.headers().get("x-forwarded-for")
         && let Ok(value) = forwarded.to_str()
         && let Some(first_ip) = value.split(',').next()
@@ -364,25 +353,21 @@ fn extract_client_ip<B>(req: &Request<B>) -> String {
         return first_ip.trim().to_string();
     }
 
-    // Try X-Real-IP header (common with reverse proxies).
     if let Some(real_ip) = req.headers().get("x-real-ip")
         && let Ok(value) = real_ip.to_str()
     {
         return value.to_string();
     }
 
-    // Fall back to connection info.
     if let Some(connect_info) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
         return connect_info.0.ip().to_string();
     }
 
-    // Ultimate fallback
     "unknown".to_string()
 }
 
 /// Extract account_id or signer pubkey for enhanced rate limit keying
 fn extract_enhanced_key<B>(req: &Request<B>) -> Option<String> {
-    // Try to get account_id from query params or path
     if let Some(query) = req.uri().query() {
         for pair in query.split('&') {
             if let Some(value) = pair.strip_prefix("account_id=") {
@@ -391,11 +376,9 @@ fn extract_enhanced_key<B>(req: &Request<B>) -> Option<String> {
         }
     }
 
-    // Try to get signer pubkey from headers
     if let Some(pubkey) = req.headers().get("x-pubkey")
         && let Ok(value) = pubkey.to_str()
     {
-        // Use first 16 chars of pubkey to keep key short
         let short_key = if value.len() > 16 {
             &value[..16]
         } else {
@@ -428,7 +411,6 @@ mod tests {
 
     #[test]
     fn test_rate_limit_config_from_env_defaults() {
-        // Clear any existing env vars
         // SAFETY: This test runs single-threaded and these env vars are test-specific
         unsafe {
             env::remove_var("PSM_RATE_BURST_PER_SEC");
@@ -459,12 +441,10 @@ mod tests {
         let config = RateLimitConfig::new(3, 100);
         let store = RateLimitStore::new(config);
 
-        // First 3 should pass
         for _ in 0..3 {
             assert!(store.check_burst("burst_test").is_ok());
         }
 
-        // 4th should fail with burst limit
         match store.check_burst("burst_test") {
             Err(RateLimitType::Burst) => {}
             other => panic!("Expected burst limit, got {:?}", other),
@@ -476,12 +456,10 @@ mod tests {
         let config = RateLimitConfig::new(100, 5);
         let store = RateLimitStore::new(config);
 
-        // First 5 should pass
         for _ in 0..5 {
             assert!(store.check_sustained("sustained_test").is_ok());
         }
 
-        // 6th should fail with sustained limit
         match store.check_sustained("sustained_test") {
             Err(RateLimitType::Sustained) => {}
             other => panic!("Expected sustained limit, got {:?}", other),
@@ -493,12 +471,10 @@ mod tests {
         let config = RateLimitConfig::new(2, 10);
         let store = RateLimitStore::new(config);
 
-        // Each key has its own limit
         assert!(store.check_burst("key1").is_ok());
         assert!(store.check_burst("key1").is_ok());
-        assert!(store.check_burst("key1").is_err()); // key1 exceeded
+        assert!(store.check_burst("key1").is_err());
 
-        // key2 should still work
         assert!(store.check_burst("key2").is_ok());
         assert!(store.check_burst("key2").is_ok());
     }
@@ -508,14 +484,11 @@ mod tests {
         let config = RateLimitConfig::new(3, 5);
         let store = RateLimitStore::new(config);
 
-        // Use up burst limit
         for _ in 0..3 {
             assert!(store.check_burst("independent_test").is_ok());
         }
         assert!(store.check_burst("independent_test").is_err());
 
-        // Sustained should still work (different method, but same key creates new entry)
-        // Note: Using different key to test sustained independently
         for _ in 0..5 {
             assert!(store.check_sustained("independent_test_sustained").is_ok());
         }
@@ -527,7 +500,6 @@ mod tests {
         let config = RateLimitConfig::new(0, 0);
         let store = RateLimitStore::new(config);
 
-        // With 0 limits, first request should fail
         assert!(store.check_burst("zero_test").is_err());
         assert!(store.check_sustained("zero_test").is_err());
     }
@@ -544,7 +516,6 @@ mod tests {
 
     #[test]
     fn test_rate_limit_type_debug() {
-        // Ensure Debug trait is implemented
         let burst = RateLimitType::Burst;
         let sustained = RateLimitType::Sustained;
         assert!(format!("{:?}", burst).contains("Burst"));
@@ -576,7 +547,6 @@ mod tests {
     fn test_rate_limit_layer_new() {
         let config = RateLimitConfig::new(10, 60);
         let layer = RateLimitLayer::new(config);
-        // Verify layer is created (store is private, but we can check it works)
         assert!(format!("{:?}", layer).contains("RateLimitLayer"));
     }
 
@@ -607,7 +577,6 @@ mod tests {
     fn test_extract_client_ip_from_x_forwarded_for_multiple() {
         let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        // Multiple IPs - should take the first (original client)
         req.headers_mut().insert(
             "x-forwarded-for",
             HeaderValue::from_static("10.0.0.1, 192.168.1.1, 172.16.0.1"),
@@ -645,7 +614,6 @@ mod tests {
     fn test_extract_client_ip_x_forwarded_for_takes_precedence() {
         let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        // Both headers present - X-Forwarded-For should take precedence
         req.headers_mut()
             .insert("x-forwarded-for", HeaderValue::from_static("1.1.1.1"));
         req.headers_mut()
@@ -659,7 +627,6 @@ mod tests {
     fn test_extract_client_ip_fallback_to_unknown() {
         let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        // No headers, no connection info
         let ip = extract_client_ip(&req);
         assert_eq!(ip, "unknown");
     }
@@ -710,7 +677,6 @@ mod tests {
         );
 
         let key = extract_enhanced_key(&req);
-        // Should truncate to first 16 chars: "0x1234567890abcd"
         assert_eq!(key, Some("signer:0x1234567890abcd".to_string()));
     }
 
@@ -739,7 +705,6 @@ mod tests {
             .insert("x-pubkey", HeaderValue::from_static("0xpubkey456"));
 
         let key = extract_enhanced_key(&req);
-        // account_id should take precedence
         assert_eq!(key, Some("account:0xaccount123".to_string()));
     }
 
@@ -772,30 +737,25 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        // Should not match partial names
         let key = extract_enhanced_key(&req);
         assert_eq!(key, None);
     }
 
     #[test]
     fn test_rate_limit_key_generation() {
-        // Test that different requests generate appropriate keys
         let config = RateLimitConfig::new(5, 30);
         let store = RateLimitStore::new(config);
 
-        // Simulate key patterns that would be generated by the middleware
         let ip_key = "ip:192.168.1.1";
         let ip_endpoint_key = "ip:192.168.1.1|endpoint:/delta";
         let ip_account_key = "ip:192.168.1.1|account:0x123";
 
-        // All should be independent
         for _ in 0..5 {
             assert!(store.check_burst(ip_key).is_ok());
             assert!(store.check_burst(ip_endpoint_key).is_ok());
             assert!(store.check_burst(ip_account_key).is_ok());
         }
 
-        // Each should hit its own limit
         assert!(store.check_burst(ip_key).is_err());
         assert!(store.check_burst(ip_endpoint_key).is_err());
         assert!(store.check_burst(ip_account_key).is_err());
@@ -810,7 +770,6 @@ mod tests {
 
         let mut handles = vec![];
 
-        // Spawn multiple threads accessing the store
         for i in 0..10 {
             let store_clone = store.clone();
             let handle = thread::spawn(move || {
@@ -823,7 +782,6 @@ mod tests {
             handles.push(handle);
         }
 
-        // All threads should complete without panic
         for handle in handles {
             handle.join().expect("Thread panicked");
         }

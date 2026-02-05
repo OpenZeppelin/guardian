@@ -131,7 +131,7 @@ pub async fn resolve_account(
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
-    use crate::ack::{Acknowledger, MidenFalconRpoSigner};
+    use crate::ack::AckRegistry;
     use crate::builder::clock::Clock;
     use crate::builder::clock::test::MockClock;
     use crate::metadata::auth::Auth;
@@ -149,13 +149,13 @@ mod tests {
         let keystore_dir =
             std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
-        let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
+        let ack = AckRegistry::new(keystore_dir).expect("Failed to create ack registry");
 
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(Mutex::new(network)),
-            ack: Acknowledger::FilesystemMidenFalconRpo(signer),
+            ack,
             canonicalization: None,
             clock: Arc::new(clock),
         }

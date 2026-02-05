@@ -10,14 +10,21 @@ use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsm
 use miden_objects::Word;
 use miden_objects::account::AccountId;
 use private_state_manager_client::{
-    AuthConfig, ClientError as PsmClientError, MidenFalconRpoAuth, TryIntoTxSummary,
+    AuthConfig,
+    ClientError as PsmClientError,
+    MidenEcdsaAuth,
+    MidenFalconRpoAuth,
+    TryIntoTxSummary,
     auth_config::AuthType,
 };
+
+use private_state_manager_shared::SignatureScheme;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::config::ProcedureThreshold;
 use crate::error::{MultisigError, Result};
+use crate::keystore::commitment_from_hex;
 
 impl MultisigClient {
     /// Creates a new multisig account.
@@ -72,17 +79,19 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get PSM pubkey: {}", e)))?;
 
-        let psm_commitment = crate::keystore::commitment_from_hex(&psm_pubkey_hex)
+        let psm_commitment = commitment_from_hex(&psm_pubkey_hex)
             .map_err(MultisigError::HexDecode)?;
 
         // Convert procedure thresholds to (Word, u32) pairs
+        let signature_scheme = self.key_manager.scheme();
         let overrides: Vec<(Word, u32)> = proc_threshold_overrides
             .iter()
-            .map(|pt| (pt.procedure_root(), pt.threshold))
+            .map(|pt| (pt.procedure_root(signature_scheme), pt.threshold))
             .collect();
 
         // Create the multisig account config
         let psm_config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment)
+            .with_signature_scheme(signature_scheme)
             .with_proc_threshold_overrides(overrides);
 
         // Generate a random seed for account ID
@@ -160,9 +169,14 @@ impl MultisigClient {
 
         let cosigner_commitments = account.cosigner_commitments_hex();
         let auth_config = AuthConfig {
-            auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
-                cosigner_commitments,
-            })),
+            auth_type: Some(match self.key_manager.scheme() {
+                SignatureScheme::Falcon => {
+                    AuthType::MidenFalconRpo(MidenFalconRpoAuth { cosigner_commitments })
+                }
+                SignatureScheme::Ecdsa => {
+                    AuthType::MidenEcdsa(MidenEcdsaAuth { cosigner_commitments })
+                }
+            }),
         };
 
         let account_id = account.id();

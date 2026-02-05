@@ -73,6 +73,7 @@ describe('MultisigClient', () => {
     };
 
     mockSigner = {
+      scheme: 'falcon',
       commitment: '0x' + '1'.repeat(64),
       publicKey: '0x' + '2'.repeat(64),
       signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
@@ -172,6 +173,41 @@ describe('MultisigClient', () => {
       await expect(
         client.load('0xnonexistent', mockSigner)
       ).rejects.toThrow();
+    });
+  });
+
+  describe('initialize', () => {
+    it('should fetch PSM pubkey and return commitment', async () => {
+      const client = new MultisigClient(webClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          commitment: '0x' + 'f'.repeat(64),
+          pubkey: '0x' + 'e'.repeat(64),
+        }),
+      });
+
+      const result = await client.initialize('falcon');
+
+      expect(result.psmCommitment).toBe('0x' + 'f'.repeat(64));
+      expect(result.psmPublicKey).toBe('0x' + 'e'.repeat(64));
+    });
+
+    it('should work without specifying scheme', async () => {
+      const client = new MultisigClient(webClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          commitment: '0x' + 'f'.repeat(64),
+        }),
+      });
+
+      const result = await client.initialize();
+
+      expect(result.psmCommitment).toBe('0x' + 'f'.repeat(64));
+      expect(result.psmPublicKey).toBeUndefined();
     });
   });
 });

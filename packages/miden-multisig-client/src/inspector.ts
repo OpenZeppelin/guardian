@@ -1,11 +1,8 @@
-/**
- * Account Inspector - Inspects account storage to detect multisig configuration.
- */
-
 import { Account, Word } from '@demox-labs/miden-sdk';
 import { base64ToUint8Array } from './utils/encoding.js';
 import { wordElementToBigInt, wordToHex } from './utils/word.js';
 import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
+import type { SignatureScheme } from './types.js';
 
 export interface VaultBalance {
   faucetId: string;
@@ -20,44 +17,19 @@ export interface DetectedMultisigConfig {
   psmCommitment: string | null;
   vaultBalances: VaultBalance[];
   procedureThresholds: Map<ProcedureName, number>;
+  signatureScheme: SignatureScheme;
 }
 
-/**
- * Inspects an account to detect its multisig configuration.
- *
- * @example
- * ```typescript
- * // From base64-encoded state
- * const config = AccountInspector.fromBase64(stateDataBase64);
- * console.log(`${config.threshold}-of-${config.numSigners} multisig`);
- *
- * // From Miden SDK Account
- * const config = AccountInspector.fromAccount(account);
- * ```
- */
 export class AccountInspector {
   private constructor() {}
 
-  /**
-   * Inspect a base64-encoded serialized account.
-   *
-   * @param base64Data - Base64-encoded Account bytes
-   * @returns Detected multisig configuration
-   */
-  static fromBase64(base64Data: string): DetectedMultisigConfig {
+  static fromBase64(base64Data: string, signatureScheme: SignatureScheme = 'falcon'): DetectedMultisigConfig {
     const bytes = base64ToUint8Array(base64Data);
     const account = Account.deserialize(bytes);
-    return AccountInspector.fromAccount(account);
+    return AccountInspector.fromAccount(account, signatureScheme);
   }
 
-  /**
-   * Inspect a Miden SDK Account object.
-   *
-   * @param account - The Account object from Miden SDK
-   * @returns Detected multisig configuration
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  static fromAccount(account: Account): DetectedMultisigConfig {
+  static fromAccount(account: Account, signatureScheme: SignatureScheme = 'falcon'): DetectedMultisigConfig {
     const storage = account.storage();
 
     const slot0 = storage.getItem(0) as Word;
@@ -72,8 +44,8 @@ export class AccountInspector {
         if (commitment) {
           signerCommitments.push(wordToHex(commitment));
         }
-      } catch (error) {
-        console.warn(error);
+      } catch {
+        // Signer not found in storage map
       }
     }
 
@@ -92,8 +64,8 @@ export class AccountInspector {
           psmCommitment = wordToHex(psmKey);
         }
       }
-    } catch (error) {
-      console.warn(error);
+    } catch {
+      // PSM not configured
     }
 
     const vaultBalances: VaultBalance[] = [];
@@ -106,16 +78,14 @@ export class AccountInspector {
           amount: BigInt(asset.amount()),
         });
       }
-    } catch (error) {
-      console.warn(error);
+    } catch {
+      // Vault access failed
     }
 
-    // Read procedure threshold overrides from storage slot 3
-    // Storage layout: slot 3 is a map of PROC_ROOT => [threshold, 0, 0, 0]
     const procedureThresholds = new Map<ProcedureName, number>();
-    for (const procName of getProcedureNames()) {
+    for (const procName of getProcedureNames(signatureScheme)) {
       try {
-        const rootHex = getProcedureRoot(procName);
+        const rootHex = getProcedureRoot(procName, signatureScheme);
         const rootWord = Word.fromHex(rootHex);
         const value = storage.getMapItem(3, rootWord) as Word;
         if (value) {
@@ -125,7 +95,7 @@ export class AccountInspector {
           }
         }
       } catch {
-        // Procedure threshold not set - use default
+        // Not set
       }
     }
 
@@ -137,6 +107,7 @@ export class AccountInspector {
       psmCommitment,
       vaultBalances,
       procedureThresholds,
+      signatureScheme,
     };
   }
 }

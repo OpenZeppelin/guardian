@@ -7,7 +7,10 @@ mod payment;
 mod psm;
 
 pub use builder::ProposalBuilder;
-pub use configuration::{build_signature_advice_entry, build_update_signers_transaction_request};
+pub use configuration::{
+    build_ecdsa_signature_advice_entry, build_signature_advice_entry,
+    build_update_signers_transaction_request,
+};
 pub use consume::build_consume_notes_transaction_request;
 pub use payment::build_p2id_transaction_request;
 pub use psm::build_update_psm_transaction_request;

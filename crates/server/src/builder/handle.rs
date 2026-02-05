@@ -4,11 +4,13 @@ use tower_http::cors::CorsLayer;
 
 use crate::api::grpc::StateManagerService;
 use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
+use crate::api::grpc::state_manager::FILE_DESCRIPTOR_SET;
 use crate::api::http::{
     configure, get_delta, get_delta_proposals, get_delta_since, get_pubkey, get_state, push_delta,
     push_delta_proposal, sign_delta_proposal,
 };
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
+use crate::services::start_canonicalization_worker;
 use crate::state::AppState;
 
 /// Handle for a configured server instance
@@ -41,7 +43,7 @@ impl ServerHandle {
                 max_retries = config.max_retries,
                 "Starting canonicalization worker"
             );
-            crate::services::start_canonicalization_worker(self.app_state.clone());
+            start_canonicalization_worker(self.app_state.clone());
         } else {
             tracing::info!(
                 "Running in optimistic mode - deltas accepted without on-chain verification"
@@ -119,7 +121,7 @@ impl ServerHandle {
                 // Enable gRPC reflection
                 let reflection_service = tonic_reflection::server::Builder::configure()
                     .register_encoded_file_descriptor_set(
-                        crate::api::grpc::state_manager::FILE_DESCRIPTOR_SET,
+                        FILE_DESCRIPTOR_SET,
                     )
                     .build_v1()
                     .expect("Failed to build reflection service");

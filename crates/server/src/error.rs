@@ -57,6 +57,16 @@ pub type Result<T> = std::result::Result<T, PsmError>;
 /// Result type alias for Miden Falcon RPO signing operations
 pub type MidenFalconRpoResult<T> = std::result::Result<T, MidenFalconRpoError>;
 
+/// Signing-specific error type for Miden ECDSA operations
+#[derive(Debug)]
+pub enum MidenEcdsaError {
+    StorageError(String),
+    DecodingError(String),
+}
+
+/// Result type alias for Miden ECDSA signing operations
+pub type MidenEcdsaResult<T> = std::result::Result<T, MidenEcdsaError>;
+
 impl PsmError {
     pub fn http_status(&self) -> StatusCode {
         match self {
@@ -238,6 +248,39 @@ impl From<miden_keystore::KeyStoreError> for MidenFalconRpoError {
             }
             miden_keystore::KeyStoreError::KeyNotFound(msg) => {
                 MidenFalconRpoError::StorageError(msg)
+            }
+        }
+    }
+}
+
+impl fmt::Display for MidenEcdsaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MidenEcdsaError::StorageError(msg) => write!(f, "ECDSA storage error: {msg}"),
+            MidenEcdsaError::DecodingError(msg) => write!(f, "ECDSA decoding error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MidenEcdsaError {}
+
+impl From<MidenEcdsaError> for PsmError {
+    fn from(err: MidenEcdsaError) -> Self {
+        PsmError::SigningError(err.to_string())
+    }
+}
+
+impl From<miden_keystore::KeyStoreError> for MidenEcdsaError {
+    fn from(err: miden_keystore::KeyStoreError) -> Self {
+        match err {
+            miden_keystore::KeyStoreError::StorageError(msg) => {
+                MidenEcdsaError::StorageError(msg)
+            }
+            miden_keystore::KeyStoreError::DecodingError(msg) => {
+                MidenEcdsaError::DecodingError(msg)
+            }
+            miden_keystore::KeyStoreError::KeyNotFound(msg) => {
+                MidenEcdsaError::StorageError(msg)
             }
         }
     }

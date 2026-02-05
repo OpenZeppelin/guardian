@@ -663,9 +663,6 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 
     let expected_word: Word = _new_psm_public_key.to_commitment();
 
-    println!("Expected PSM Public Key: {:?}", expected_word);
-    println!("Stored PSM Public Key:   {:?}", storage_item);
-
     assert_eq!(
         storage_item, expected_word,
         "PSM Public key doesn't match expected value"

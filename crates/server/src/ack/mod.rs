@@ -1,37 +1,48 @@
+pub mod miden_ecdsa;
 pub mod miden_falcon_rpo;
 
 use crate::delta_object::DeltaObject;
 use crate::error::Result;
+use private_state_manager_shared::SignatureScheme;
+use std::path::PathBuf;
 
+pub use miden_ecdsa::MidenEcdsaSigner;
 pub use miden_falcon_rpo::MidenFalconRpoSigner;
 
-/// Acknowledger for server operations
+/// Registry holding both Falcon and ECDSA signers.
 ///
-/// Different acknowledgement methods can be used (signature-based, timestamp-based, etc.)
+/// Services pick the correct signer based on the account's auth scheme.
 #[derive(Clone)]
-pub enum Acknowledger {
-    FilesystemMidenFalconRpo(MidenFalconRpoSigner),
+pub struct AckRegistry {
+    falcon: MidenFalconRpoSigner,
+    ecdsa: MidenEcdsaSigner,
 }
 
-impl Acknowledger {
-    /// Get the server's public key as a hex string (deprecated - use commitment() instead)
-    pub fn pubkey(&self) -> String {
-        match self {
-            Acknowledger::FilesystemMidenFalconRpo(signer) => signer.pubkey_hex(),
+impl AckRegistry {
+    pub fn new(keystore_path: PathBuf) -> Result<Self> {
+        let falcon = MidenFalconRpoSigner::new(keystore_path.clone())?;
+        let ecdsa = MidenEcdsaSigner::new(keystore_path)?;
+        Ok(Self { falcon, ecdsa })
+    }
+
+    pub fn pubkey(&self, scheme: &SignatureScheme) -> String {
+        match scheme {
+            SignatureScheme::Falcon => self.falcon.pubkey_hex(),
+            SignatureScheme::Ecdsa => self.ecdsa.pubkey_hex(),
         }
     }
 
-    /// Get the server's public key commitment as a hex string
-    pub fn commitment(&self) -> String {
-        match self {
-            Acknowledger::FilesystemMidenFalconRpo(signer) => signer.commitment_hex(),
+    pub fn commitment(&self, scheme: &SignatureScheme) -> String {
+        match scheme {
+            SignatureScheme::Falcon => self.falcon.commitment_hex(),
+            SignatureScheme::Ecdsa => self.ecdsa.commitment_hex(),
         }
     }
 
-    /// Acknowledge a delta and return it with ack_sig loaded
-    pub fn ack_delta(&self, delta: DeltaObject) -> Result<DeltaObject> {
-        match self {
-            Acknowledger::FilesystemMidenFalconRpo(signer) => signer.ack_delta(delta),
+    pub fn ack_delta(&self, delta: DeltaObject, scheme: &SignatureScheme) -> Result<DeltaObject> {
+        match scheme {
+            SignatureScheme::Falcon => Ok(self.falcon.ack_delta(delta)?),
+            SignatureScheme::Ecdsa => Ok(self.ecdsa.ack_delta(delta)?),
         }
     }
 }

@@ -36,11 +36,17 @@ service StateManager {
 message AuthConfig {
   oneof auth_type {
     MidenFalconRpoAuth miden_falcon_rpo = 1;
+    MidenEcdsaAuth miden_ecdsa = 2;
   }
 }
 
 // Miden Falcon RPO authentication config
 message MidenFalconRpoAuth {
+  repeated string cosigner_commitments = 1;
+}
+
+// Miden ECDSA secp256k1 authentication config
+message MidenEcdsaAuth {
   repeated string cosigner_commitments = 1;
 }
 
@@ -55,6 +61,7 @@ message ConfigureResponse {
   bool success = 1;
   string message = 2;
   string ack_pubkey = 3;
+  string ack_commitment = 4;
 }
 
 // Push delta request
@@ -149,6 +156,8 @@ message DeltaObject {
   optional string canonical_at = 8;
   optional string discarded_at = 9;
   optional DeltaStatus status = 10;
+  optional string ack_pubkey = 11;
+  optional string ack_scheme = 12;
 }
 
 // Account state
@@ -161,10 +170,13 @@ message AccountState {
 }
 
 // Get pubkey request
-message GetPubkeyRequest {}
+message GetPubkeyRequest {
+  optional string scheme = 1;
+}
 
 message GetPubkeyResponse {
   string pubkey = 1;
+  optional string raw_pubkey = 2;
 }
 
 // Push delta proposal request
