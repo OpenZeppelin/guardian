@@ -43,7 +43,7 @@ pub async fn configure_account(
     }
 
     let commitment = {
-        let client = state.network_client.lock().await;
+        let mut client = state.network_client.lock().await;
 
         // Validates that the credential is valid for the account state.
         client
@@ -56,6 +56,34 @@ pub async fn configure_account(
                 );
                 PsmError::NetworkError(format!("Failed to validate credential: {e}"))
             })?;
+
+        let extracted_auth = client
+            .should_update_auth(&params.initial_state)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Failed to extract auth from initial state"
+                );
+                PsmError::NetworkError(format!("Failed to extract auth from initial state: {e}"))
+            })?
+            .unwrap_or(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![],
+            });
+
+        if extracted_auth != params.auth {
+            tracing::error!(
+                account_id = %params.account_id,
+                expected = ?extracted_auth,
+                provided = ?params.auth,
+                "Auth configuration mismatch in configure_account"
+            );
+            return Err(PsmError::InvalidInput(format!(
+                "Auth configuration mismatch: provided cosigner commitments do not match account state. Expected: {:?}, Provided: {:?}",
+                extracted_auth, params.auth
+            )));
+        }
 
         // Verifies the credential authorization.
         params
@@ -165,6 +193,9 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            })))
             .with_get_state_commitment(Ok("0x1234".to_string()));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
@@ -222,7 +253,11 @@ mod tests {
             last_auth_timestamp: None,
         };
 
-        let network_client = MockNetworkClient::new();
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            })));
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(Some(existing_metadata)));
 
@@ -258,6 +293,9 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            })))
             .with_get_state_commitment(Err("Network connection failed".to_string()));
 
         let storage_backend = MockStorageBackend::new();
@@ -282,6 +320,46 @@ mod tests {
         match result.unwrap_err() {
             PsmError::NetworkError(_) => {}
             e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_auth_mismatch() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let (pubkey_hex, _, signature_hex, timestamp) = generate_falcon_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xactual_commitment".to_string()],
+            })));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xmalicious_commitment".to_string()],
+            },
+            initial_state: serde_json::json!({"balance": 100}),
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PsmError::InvalidInput(msg) => {
+                assert!(msg.contains("Auth configuration mismatch"));
+            }
+            e => panic!("Expected InvalidInput error, got: {:?}", e),
         }
     }
 }
