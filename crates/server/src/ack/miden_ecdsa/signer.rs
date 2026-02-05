@@ -2,9 +2,7 @@ use crate::delta_object::DeltaObject;
 use crate::error::PsmError;
 use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, ecdsa_commitment_hex};
 use miden_objects::{
-    Word,
-    crypto::dsa::ecdsa_k256_keccak::Signature,
-    transaction::TransactionSummary,
+    Word, crypto::dsa::ecdsa_k256_keccak::Signature, transaction::TransactionSummary,
     utils::Serializable,
 };
 use private_state_manager_shared::FromJson;

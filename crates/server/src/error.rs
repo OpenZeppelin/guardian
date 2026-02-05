@@ -273,15 +273,11 @@ impl From<MidenEcdsaError> for PsmError {
 impl From<miden_keystore::KeyStoreError> for MidenEcdsaError {
     fn from(err: miden_keystore::KeyStoreError) -> Self {
         match err {
-            miden_keystore::KeyStoreError::StorageError(msg) => {
-                MidenEcdsaError::StorageError(msg)
-            }
+            miden_keystore::KeyStoreError::StorageError(msg) => MidenEcdsaError::StorageError(msg),
             miden_keystore::KeyStoreError::DecodingError(msg) => {
                 MidenEcdsaError::DecodingError(msg)
             }
-            miden_keystore::KeyStoreError::KeyNotFound(msg) => {
-                MidenEcdsaError::StorageError(msg)
-            }
+            miden_keystore::KeyStoreError::KeyNotFound(msg) => MidenEcdsaError::StorageError(msg),
         }
     }
 }

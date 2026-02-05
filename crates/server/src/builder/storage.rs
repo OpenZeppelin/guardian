@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::metadata::MetadataStore;
 #[cfg(not(feature = "postgres"))]
 use crate::metadata::filesystem::FilesystemMetadataStore;
 #[cfg(feature = "postgres")]
 use crate::metadata::postgres::PostgresMetadataStore;
-use crate::metadata::MetadataStore;
 use crate::storage::StorageBackend;
 #[cfg(not(feature = "postgres"))]
 use crate::storage::filesystem::FilesystemService;

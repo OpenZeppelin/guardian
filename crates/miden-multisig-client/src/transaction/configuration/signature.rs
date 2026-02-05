@@ -55,9 +55,8 @@ pub fn build_signature_advice_entry(
     let values = match signature {
         Signature::RpoFalcon512(_) => signature.to_prepared_signature(message),
         Signature::EcdsaK256Keccak(ecdsa_sig) => {
-            let pk = ecdsa_pubkey.expect(
-                "ECDSA public key must be provided for ECDSA signature advice preparation",
-            );
+            let pk = ecdsa_pubkey
+                .expect("ECDSA public key must be provided for ECDSA signature advice preparation");
             let encoded = encode_ecdsa_signature_felts(pk, ecdsa_sig);
             let mut reversed = encoded;
             reversed.reverse();

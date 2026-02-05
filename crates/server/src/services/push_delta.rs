@@ -87,7 +87,8 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     result_delta.ack_scheme = match scheme {
         SignatureScheme::Falcon => "falcon",
         SignatureScheme::Ecdsa => "ecdsa",
-    }.to_string();
+    }
+    .to_string();
 
     let now = state.clock.now_rfc3339();
     let commit_strategy = DeltaCommitStrategy::from_app_state(state);

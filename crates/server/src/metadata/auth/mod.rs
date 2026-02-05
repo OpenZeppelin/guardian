@@ -61,16 +61,18 @@ impl Auth {
             "Primary auth scheme failed to deserialize signature, trying alternate scheme"
         );
 
-        alternate.verify_scheme(account_id, credentials).map_err(|fallback_err| {
-            // Both schemes failed — return the original error
-            tracing::error!(
-                account_id = %account_id,
-                primary_error = %primary_err,
-                fallback_error = %fallback_err,
-                "Both auth schemes failed verification"
-            );
-            primary_err
-        })
+        alternate
+            .verify_scheme(account_id, credentials)
+            .map_err(|fallback_err| {
+                // Both schemes failed — return the original error
+                tracing::error!(
+                    account_id = %account_id,
+                    primary_error = %primary_err,
+                    fallback_error = %fallback_err,
+                    "Both auth schemes failed verification"
+                );
+                primary_err
+            })
     }
 
     pub fn compute_signer_commitment(&self, pubkey_hex: &str) -> Result<String, String> {
@@ -92,17 +94,25 @@ impl Auth {
 
     pub fn with_updated_commitments(&self, cosigner_commitments: Vec<String>) -> Self {
         match self {
-            Auth::MidenFalconRpo { .. } => Auth::MidenFalconRpo { cosigner_commitments },
-            Auth::MidenEcdsa { .. } => Auth::MidenEcdsa { cosigner_commitments },
+            Auth::MidenFalconRpo { .. } => Auth::MidenFalconRpo {
+                cosigner_commitments,
+            },
+            Auth::MidenEcdsa { .. } => Auth::MidenEcdsa {
+                cosigner_commitments,
+            },
         }
     }
 
     fn with_alternate_scheme(&self) -> Auth {
         match self {
-            Auth::MidenFalconRpo { cosigner_commitments } => Auth::MidenEcdsa {
+            Auth::MidenFalconRpo {
+                cosigner_commitments,
+            } => Auth::MidenEcdsa {
                 cosigner_commitments: cosigner_commitments.clone(),
             },
-            Auth::MidenEcdsa { cosigner_commitments } => Auth::MidenFalconRpo {
+            Auth::MidenEcdsa {
+                cosigner_commitments,
+            } => Auth::MidenFalconRpo {
                 cosigner_commitments: cosigner_commitments.clone(),
             },
         }
@@ -113,10 +123,9 @@ impl Auth {
             Auth::MidenFalconRpo {
                 cosigner_commitments,
             } => {
-                let (_pubkey, signature, timestamp) =
-                    credentials.as_signature().ok_or_else(|| {
-                        "MidenFalconRpo requires signature credentials".to_string()
-                    })?;
+                let (_pubkey, signature, timestamp) = credentials
+                    .as_signature()
+                    .ok_or_else(|| "MidenFalconRpo requires signature credentials".to_string())?;
 
                 miden_falcon_rpo::verify_request_signature(
                     account_id,
@@ -128,10 +137,9 @@ impl Auth {
             Auth::MidenEcdsa {
                 cosigner_commitments,
             } => {
-                let (pubkey, signature, timestamp) =
-                    credentials.as_signature().ok_or_else(|| {
-                        "MidenEcdsa requires signature credentials".to_string()
-                    })?;
+                let (pubkey, signature, timestamp) = credentials
+                    .as_signature()
+                    .ok_or_else(|| "MidenEcdsa requires signature credentials".to_string())?;
 
                 miden_ecdsa::verify_request_signature(
                     account_id,

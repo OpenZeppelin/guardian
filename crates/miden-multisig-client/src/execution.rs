@@ -10,8 +10,8 @@ use miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
 use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
 use miden_objects::utils::Deserializable;
 use miden_objects::{Felt, Word};
-use private_state_manager_shared::hex::FromHex;
 use private_state_manager_shared::SignatureScheme;
+use private_state_manager_shared::hex::FromHex;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{commitment_from_hex, ensure_hex_prefix};
@@ -91,13 +91,12 @@ pub fn collect_signature_advice(
                 let sig_bytes = hex::decode(hex_str).map_err(|e| {
                     MultisigError::Signature(format!("invalid ECDSA signature hex: {}", e))
                 })?;
-                let ecdsa_sig =
-                    EcdsaSignature::read_from_bytes(&sig_bytes).map_err(|e| {
-                        MultisigError::Signature(format!(
-                            "failed to deserialize ECDSA signature: {}",
-                            e
-                        ))
-                    })?;
+                let ecdsa_sig = EcdsaSignature::read_from_bytes(&sig_bytes).map_err(|e| {
+                    MultisigError::Signature(format!(
+                        "failed to deserialize ECDSA signature: {}",
+                        e
+                    ))
+                })?;
 
                 let pubkey_hex = sig_input.public_key_hex.as_ref().ok_or_else(|| {
                     MultisigError::Signature(
@@ -146,18 +145,10 @@ pub fn build_final_transaction_request(
             )
         }
         TransactionType::ConsumeNotes { note_ids } => {
-            build_consume_notes_transaction_request(
-                note_ids.clone(),
-                salt,
-                signature_advice,
-            )
+            build_consume_notes_transaction_request(note_ids.clone(), salt, signature_advice)
         }
         TransactionType::SwitchPsm { new_commitment, .. } => {
-            build_update_psm_transaction_request(
-                *new_commitment,
-                salt,
-                signature_advice,
-            )
+            build_update_psm_transaction_request(*new_commitment, salt, signature_advice)
         }
         TransactionType::AddCosigner { .. }
         | TransactionType::RemoveCosigner { .. }

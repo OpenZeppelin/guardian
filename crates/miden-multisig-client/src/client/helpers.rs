@@ -31,12 +31,8 @@ impl MultisigClient {
         let client = self.create_psm_client().await?;
 
         let auth = match self.key_manager.secret_key() {
-            SchemeSecretKey::Falcon(sk) => {
-                Auth::FalconRpoSigner(FalconRpoSigner::new(sk))
-            }
-            SchemeSecretKey::Ecdsa(sk) => {
-                Auth::EcdsaSigner(EcdsaSigner::new(sk))
-            }
+            SchemeSecretKey::Falcon(sk) => Auth::FalconRpoSigner(FalconRpoSigner::new(sk)),
+            SchemeSecretKey::Ecdsa(sk) => Auth::EcdsaSigner(EcdsaSigner::new(sk)),
         };
 
         Ok(client.with_auth(auth))
@@ -90,8 +86,8 @@ impl MultisigClient {
             MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
         })?;
 
-        let psm_commitment = commitment_from_hex(&psm_commitment_hex)
-            .map_err(MultisigError::HexDecode)?;
+        let psm_commitment =
+            commitment_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         parse_ack_signature(
             &ack_sig,
@@ -219,11 +215,11 @@ fn parse_ack_signature(
         let ecdsa_sig =
             miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
                 .map_err(|e| {
-                    MultisigError::Signature(format!(
-                        "failed to deserialize ECDSA ack signature: {}",
-                        e
-                    ))
-                })?;
+                MultisigError::Signature(format!(
+                    "failed to deserialize ECDSA ack signature: {}",
+                    e
+                ))
+            })?;
         let pubkey_hex = ack_pubkey.ok_or_else(|| {
             MultisigError::Signature(
                 "ECDSA ack signature requires PSM public key (ack_pubkey not returned by server)"

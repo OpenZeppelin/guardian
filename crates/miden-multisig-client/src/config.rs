@@ -176,7 +176,10 @@ mod tests {
         let threshold = ProcedureThreshold::new(ProcedureName::SendAsset, 2);
         let root = threshold.procedure_root(SignatureScheme::Falcon);
         // The root should match the procedure's root for Falcon
-        assert_eq!(root, ProcedureName::SendAsset.root_for_scheme(SignatureScheme::Falcon));
+        assert_eq!(
+            root,
+            ProcedureName::SendAsset.root_for_scheme(SignatureScheme::Falcon)
+        );
     }
 
     #[test]

@@ -66,8 +66,7 @@ impl MultisigClient {
         let tx_commitment = proposal.tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
-        let signature =
-            ProposalSignature::from_scheme(self.key_manager.scheme(), signature_hex);
+        let signature = ProposalSignature::from_scheme(self.key_manager.scheme(), signature_hex);
 
         let account_id = self.require_account()?.id();
 

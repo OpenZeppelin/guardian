@@ -132,10 +132,8 @@ impl MultisigClient {
                     std::iter::empty(),
                 )?;
 
-                let signer_commitments_hex: Vec<String> = current_signers
-                    .iter()
-                    .map(word_to_hex)
-                    .collect();
+                let signer_commitments_hex: Vec<String> =
+                    current_signers.iter().map(word_to_hex).collect();
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
@@ -170,10 +168,8 @@ impl MultisigClient {
                     std::iter::empty(),
                 )?;
 
-                let signer_commitments_hex: Vec<String> = new_signers
-                    .iter()
-                    .map(word_to_hex)
-                    .collect();
+                let signer_commitments_hex: Vec<String> =
+                    new_signers.iter().map(word_to_hex).collect();
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
@@ -195,10 +191,8 @@ impl MultisigClient {
                     std::iter::empty(),
                 )?;
 
-                let signer_commitments_hex: Vec<String> = signer_commitments
-                    .iter()
-                    .map(word_to_hex)
-                    .collect();
+                let signer_commitments_hex: Vec<String> =
+                    signer_commitments.iter().map(word_to_hex).collect();
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
@@ -212,8 +206,7 @@ impl MultisigClient {
         };
 
         let tx_summary =
-            execute_for_summary(&mut self.miden_client, account_id, tx_request)
-                .await?;
+            execute_for_summary(&mut self.miden_client, account_id, tx_request).await?;
 
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
@@ -348,7 +341,11 @@ impl MultisigClient {
                     signer_commitment: sig.signer_commitment.clone(),
                     signature_hex: sig.signature.clone(),
                     scheme,
-                    public_key_hex: if sig.public_key_hex.is_empty() { None } else { Some(sig.public_key_hex.clone()) },
+                    public_key_hex: if sig.public_key_hex.is_empty() {
+                        None
+                    } else {
+                        Some(sig.public_key_hex.clone())
+                    },
                 }
             })
             .collect();

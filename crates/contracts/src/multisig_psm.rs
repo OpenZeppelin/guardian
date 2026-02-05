@@ -11,9 +11,7 @@ use miden_objects::{
 };
 
 use crate::masm_builder::{
-    build_multisig_component,
-    build_multisig_ecdsa_component,
-    build_psm_component,
+    build_multisig_component, build_multisig_ecdsa_component, build_psm_component,
     build_psm_ecdsa_component,
 };
 use private_state_manager_shared::SignatureScheme;

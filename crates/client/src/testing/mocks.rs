@@ -93,7 +93,12 @@ impl StateManager for MockStateManagerService {
             .take()
             .unwrap_or_else(|| Ok("mock_pubkey".to_string()));
 
-        response.map(|pubkey| Response::new(crate::proto::GetPubkeyResponse { pubkey, raw_pubkey: None }))
+        response.map(|pubkey| {
+            Response::new(crate::proto::GetPubkeyResponse {
+                pubkey,
+                raw_pubkey: None,
+            })
+        })
     }
 
     async fn configure(

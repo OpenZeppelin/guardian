@@ -182,13 +182,7 @@ pub async fn get_pubkey(
         None
     };
 
-    (
-        StatusCode::OK,
-        Json(PubkeyResponse {
-            commitment,
-            pubkey,
-        }),
-    )
+    (StatusCode::OK, Json(PubkeyResponse { commitment, pubkey }))
 }
 
 pub async fn push_delta_proposal(
@@ -326,11 +320,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_pubkey_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
-        let (status, Json(response)) = get_pubkey(
-            State(state),
-            Query(PubkeyQuery { scheme: None }),
-        )
-        .await;
+        let (status, Json(response)) =
+            get_pubkey(State(state), Query(PubkeyQuery { scheme: None })).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(!response.commitment.is_empty());
@@ -695,10 +686,9 @@ mod tests {
         };
 
         let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let Json(response) =
-            get_delta_since(State(state), AuthHeader(credentials), Query(query))
-                .await
-                .unwrap();
+        let Json(response) = get_delta_since(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .unwrap();
 
         assert_eq!(response.account_id, account_id);
     }

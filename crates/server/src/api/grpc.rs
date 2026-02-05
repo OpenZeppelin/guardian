@@ -224,7 +224,10 @@ impl StateManager for StateManagerService {
         } else {
             None
         };
-        Ok(Response::new(GetPubkeyResponse { pubkey: commitment, raw_pubkey }))
+        Ok(Response::new(GetPubkeyResponse {
+            pubkey: commitment,
+            raw_pubkey,
+        }))
     }
 
     async fn push_delta_proposal(

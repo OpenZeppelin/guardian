@@ -3,8 +3,8 @@ use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
 use crate::api::grpc::StateManagerService;
-use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
 use crate::api::grpc::state_manager::FILE_DESCRIPTOR_SET;
+use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
 use crate::api::http::{
     configure, get_delta, get_delta_proposals, get_delta_since, get_pubkey, get_state, push_delta,
     push_delta_proposal, sign_delta_proposal,
@@ -120,9 +120,7 @@ impl ServerHandle {
 
                 // Enable gRPC reflection
                 let reflection_service = tonic_reflection::server::Builder::configure()
-                    .register_encoded_file_descriptor_set(
-                        FILE_DESCRIPTOR_SET,
-                    )
+                    .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
                     .build_v1()
                     .expect("Failed to build reflection service");
 

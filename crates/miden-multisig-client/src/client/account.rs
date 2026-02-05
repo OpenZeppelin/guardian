@@ -10,12 +10,8 @@ use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsm
 use miden_objects::Word;
 use miden_objects::account::AccountId;
 use private_state_manager_client::{
-    AuthConfig,
-    ClientError as PsmClientError,
-    MidenEcdsaAuth,
-    MidenFalconRpoAuth,
-    TryIntoTxSummary,
-    auth_config::AuthType,
+    AuthConfig, ClientError as PsmClientError, MidenEcdsaAuth, MidenFalconRpoAuth,
+    TryIntoTxSummary, auth_config::AuthType,
 };
 
 use private_state_manager_shared::SignatureScheme;
@@ -79,8 +75,8 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get PSM pubkey: {}", e)))?;
 
-        let psm_commitment = commitment_from_hex(&psm_pubkey_hex)
-            .map_err(MultisigError::HexDecode)?;
+        let psm_commitment =
+            commitment_from_hex(&psm_pubkey_hex).map_err(MultisigError::HexDecode)?;
 
         // Convert procedure thresholds to (Word, u32) pairs
         let signature_scheme = self.key_manager.scheme();
@@ -170,12 +166,12 @@ impl MultisigClient {
         let cosigner_commitments = account.cosigner_commitments_hex();
         let auth_config = AuthConfig {
             auth_type: Some(match self.key_manager.scheme() {
-                SignatureScheme::Falcon => {
-                    AuthType::MidenFalconRpo(MidenFalconRpoAuth { cosigner_commitments })
-                }
-                SignatureScheme::Ecdsa => {
-                    AuthType::MidenEcdsa(MidenEcdsaAuth { cosigner_commitments })
-                }
+                SignatureScheme::Falcon => AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+                    cosigner_commitments,
+                }),
+                SignatureScheme::Ecdsa => AuthType::MidenEcdsa(MidenEcdsaAuth {
+                    cosigner_commitments,
+                }),
             }),
         };
 
