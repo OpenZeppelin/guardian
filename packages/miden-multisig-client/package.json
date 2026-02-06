@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/miden-multisig-client",
-  "version": "0.12.7",
+  "version": "0.12.8",
   "description": "TypeScript SDK for Miden multisig accounts with PSM integration",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@openzeppelin/psm-client": "file:../psm-client"
+    "@openzeppelin/psm-client": "^0.12.8"
   },
   "peerDependencies": {
     "@demox-labs/miden-sdk": "^0.12.5"
