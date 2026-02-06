@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@demox-labs/miden-sdk": "0.12.6",
-    "@openzeppelin/miden-multisig-client": "0.12.6",
+    "@demox-labs/miden-sdk": "0.12.7",
+    "@openzeppelin/miden-multisig-client": "0.12.7",
     "@openzeppelin/psm-client": "file:../../packages/psm-client",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-dialog": "^1.1.15",
