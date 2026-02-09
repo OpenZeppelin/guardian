@@ -646,5 +646,4 @@ mod tests {
         assert!(proposal_id.starts_with("0x"));
         assert_eq!(proposal_id.len(), 66); // 0x + 64 hex chars
     }
-
 }

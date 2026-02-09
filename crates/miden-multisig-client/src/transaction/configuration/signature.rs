@@ -196,5 +196,4 @@ mod tests {
         assert_eq!(felts[0], Felt::from(1u32));
         assert_eq!(felts[1], Felt::from(2u32));
     }
-
 }

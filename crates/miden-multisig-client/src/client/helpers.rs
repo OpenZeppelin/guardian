@@ -255,10 +255,10 @@ fn parse_ack_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miden_protocol::Word;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
     use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey as FalconSecretKey;
     use miden_protocol::utils::Serializable;
-    use miden_protocol::Word;
 
     #[test]
     fn parse_ack_signature_falcon_valid() {
@@ -298,13 +298,7 @@ mod tests {
         let sig = sk.sign(msg);
         let sig_hex = format!("0x{}", hex::encode(sig.to_bytes()));
 
-        let result = parse_ack_signature(
-            &sig_hex,
-            "ecdsa",
-            Some(pk_hex),
-            commitment,
-            msg,
-        );
+        let result = parse_ack_signature(&sig_hex, "ecdsa", Some(pk_hex), commitment, msg);
         assert!(result.is_ok());
         let (key, values) = result.unwrap();
         assert_ne!(key, Word::default());
@@ -340,5 +334,4 @@ mod tests {
         );
         assert!(result.is_err());
     }
-
 }
