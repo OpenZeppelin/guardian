@@ -42,9 +42,7 @@ pub async fn action_create_account(
     if state.is_ecdsa() {
         println!("Your commitment (full): {}", user_commitment_hex);
     }
-    println!(
-        "\nEnter commitments for other cosigners (must use the same signature scheme):"
-    );
+    println!("\nEnter commitments for other cosigners (must use the same signature scheme):");
 
     for i in 1..num_cosigners {
         let commitment = prompt_input(editor, &format!("  Cosigner {} commitment: ", i + 1))?;

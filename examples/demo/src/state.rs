@@ -56,8 +56,8 @@ impl SessionState {
             SignatureScheme::Ecdsa => builder.generate_ecdsa_key(),
         }
         .build()
-            .await
-            .map_err(|e| format!("Failed to create multisig client: {}", e))?;
+        .await
+        .map_err(|e| format!("Failed to create multisig client: {}", e))?;
 
         client
             .reset_miden_client()

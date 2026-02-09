@@ -2,7 +2,9 @@
 
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
-use miden_confidential_contracts::masm_builder::{get_multisig_ecdsa_library, get_multisig_library};
+use miden_confidential_contracts::masm_builder::{
+    get_multisig_ecdsa_library, get_multisig_library,
+};
 use miden_protocol::{Felt, Hasher, Word};
 use private_state_manager_shared::SignatureScheme;
 

@@ -167,7 +167,8 @@ impl MultisigClient {
 
         signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
         signature_inputs.dedup_by(|a, b| {
-            a.signer_commitment.eq_ignore_ascii_case(&b.signer_commitment)
+            a.signer_commitment
+                .eq_ignore_ascii_case(&b.signer_commitment)
         });
 
         let required_commitments: HashSet<String> =

@@ -264,5 +264,4 @@ mod tests {
         let felts = bytes_to_packed_u32_felts(&[]);
         assert!(felts.is_empty());
     }
-
 }
