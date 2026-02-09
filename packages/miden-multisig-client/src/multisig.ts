@@ -50,12 +50,12 @@ export interface AccountState {
 }
 
 export class Multisig {
-  readonly account: Account | null;
-  readonly threshold: number;
-  readonly signerCommitments: string[];
-  readonly psmCommitment: string;
+  account: Account | null;
+  threshold: number;
+  signerCommitments: string[];
+  psmCommitment: string;
   psmPublicKey?: string;
-  readonly procedureThresholds: Map<ProcedureName, number>;
+  procedureThresholds: Map<ProcedureName, number>;
   readonly signatureScheme: Signer['scheme'];
 
   private psm: PsmHttpClient;
@@ -203,8 +203,7 @@ export class Multisig {
       const server = normalizeHexWord(response.ackCommitment);
       if (onChain !== server) {
         throw new Error(
-          `PSM commitment mismatch: on-chain=${onChain}, server=${server}. ` +
-          `Re-create the account with getPubkey('${this.signatureScheme}') to get the correct PSM commitment.`
+          `PSM commitment mismatch: on-chain=${onChain}, server=${server}`
         );
       }
     }
@@ -215,6 +214,14 @@ export class Multisig {
     const state = await this.syncState();
     const notes = await this.getConsumableNotes();
     const config = AccountInspector.fromBase64(state.stateDataBase64, this.signatureScheme);
+
+    this.threshold = config.threshold;
+    this.signerCommitments = config.signerCommitments;
+    if (config.psmCommitment) {
+      this.psmCommitment = config.psmCommitment;
+    }
+    this.procedureThresholds = config.procedureThresholds;
+
     return { proposals, state, notes, config };
   }
 
@@ -224,9 +231,44 @@ export class Multisig {
   }
 
   async switchPsm(psmClient: PsmHttpClient): Promise<void> {
+    const accountId = AccountId.fromHex(this._accountId);
+    const localAccount = await this.webClient.getAccount(accountId);
+    if (localAccount) {
+      this.account = localAccount;
+      const config = AccountInspector.fromAccount(localAccount, this.signatureScheme);
+      if (config.psmCommitment) {
+        this.psmCommitment = config.psmCommitment;
+      }
+      this.threshold = config.threshold;
+      this.signerCommitments = config.signerCommitments;
+      this.procedureThresholds = config.procedureThresholds;
+    }
+
     this.setPsmClient(psmClient);
-    const state = await this.fetchState();
-    await this.registerOnPsm(state.stateDataBase64);
+
+    const accountBytes: Uint8Array = this.account!.serialize();
+    const stateData = uint8ArrayToBase64(accountBytes);
+
+    const auth: AuthConfig = this.signer.scheme === 'ecdsa'
+      ? { MidenEcdsa: { cosigner_commitments: this.signerCommitments } }
+      : { MidenFalconRpo: { cosigner_commitments: this.signerCommitments } };
+
+    const response = await this.psm.configure({
+      accountId: this._accountId,
+      auth,
+      initialState: { data: stateData, accountId: this._accountId },
+    });
+
+    if (!response.success) {
+      throw new Error(`Failed to register on PSM: ${response.message}`);
+    }
+
+    if (response.ackCommitment) {
+      this.psmCommitment = normalizeHexWord(response.ackCommitment);
+    }
+    if (response.ackPubkey) {
+      this.psmPublicKey = response.ackPubkey;
+    }
   }
 
   async syncTransactionProposals(): Promise<TransactionProposal[]> {

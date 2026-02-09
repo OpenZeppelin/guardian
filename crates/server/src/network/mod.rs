@@ -57,6 +57,7 @@ pub trait NetworkClient: Send + Sync {
         &self,
         state_json: &serde_json::Value,
         credential: &Credentials,
+        auth: &Auth,
     ) -> Result<(), String>;
 
     /// Determine if account auth should be updated given the state

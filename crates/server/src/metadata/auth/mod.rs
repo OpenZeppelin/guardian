@@ -33,46 +33,9 @@ impl Auth {
         }
     }
 
-    /// Verify credentials are authorized for account.
-    ///
-    /// Tries the stored scheme first. If signature deserialization fails (e.g.
-    /// the account was configured with Falcon but the client now sends ECDSA),
-    /// falls back to the other scheme using the same cosigner commitments.
-    ///
-    /// This handles the migration case where an account's auth scheme changed
-    /// but the metadata hasn't been updated via `configure` yet.
+    /// Verify credentials are authorized for account using the configured scheme.
     pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<(), String> {
-        let primary_result = self.verify_scheme(account_id, credentials);
-        if primary_result.is_ok() {
-            return primary_result;
-        }
-
-        // If the primary scheme failed with a deserialization error, try the alternate scheme.
-        let primary_err = primary_result.unwrap_err();
-        if !primary_err.contains("Failed to deserialize") {
-            return Err(primary_err);
-        }
-
-        let alternate = self.with_alternate_scheme();
-        tracing::warn!(
-            account_id = %account_id,
-            stored_scheme = ?self.scheme(),
-            fallback_scheme = ?alternate.scheme(),
-            "Primary auth scheme failed to deserialize signature, trying alternate scheme"
-        );
-
-        alternate
-            .verify_scheme(account_id, credentials)
-            .map_err(|fallback_err| {
-                // Both schemes failed — return the original error
-                tracing::error!(
-                    account_id = %account_id,
-                    primary_error = %primary_err,
-                    fallback_error = %fallback_err,
-                    "Both auth schemes failed verification"
-                );
-                primary_err
-            })
+        self.verify_scheme(account_id, credentials)
     }
 
     pub fn compute_signer_commitment(&self, pubkey_hex: &str) -> Result<String, String> {
@@ -99,21 +62,6 @@ impl Auth {
             },
             Auth::MidenEcdsa { .. } => Auth::MidenEcdsa {
                 cosigner_commitments,
-            },
-        }
-    }
-
-    fn with_alternate_scheme(&self) -> Auth {
-        match self {
-            Auth::MidenFalconRpo {
-                cosigner_commitments,
-            } => Auth::MidenEcdsa {
-                cosigner_commitments: cosigner_commitments.clone(),
-            },
-            Auth::MidenEcdsa {
-                cosigner_commitments,
-            } => Auth::MidenFalconRpo {
-                cosigner_commitments: cosigner_commitments.clone(),
             },
         }
     }
@@ -256,38 +204,6 @@ mod tests {
         } = updated
         {
             assert_eq!(cosigner_commitments, vec!["new"]);
-        }
-    }
-
-    // --- with_alternate_scheme() ---
-
-    #[test]
-    fn with_alternate_scheme_falcon_to_ecdsa() {
-        let auth = Auth::MidenFalconRpo {
-            cosigner_commitments: vec!["c1".into()],
-        };
-        let alt = auth.with_alternate_scheme();
-        assert!(matches!(alt, Auth::MidenEcdsa { .. }));
-        if let Auth::MidenEcdsa {
-            cosigner_commitments,
-        } = alt
-        {
-            assert_eq!(cosigner_commitments, vec!["c1"]);
-        }
-    }
-
-    #[test]
-    fn with_alternate_scheme_ecdsa_to_falcon() {
-        let auth = Auth::MidenEcdsa {
-            cosigner_commitments: vec!["c2".into()],
-        };
-        let alt = auth.with_alternate_scheme();
-        assert!(matches!(alt, Auth::MidenFalconRpo { .. }));
-        if let Auth::MidenFalconRpo {
-            cosigner_commitments,
-        } = alt
-        {
-            assert_eq!(cosigner_commitments, vec!["c2"]);
         }
     }
 

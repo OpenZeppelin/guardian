@@ -131,6 +131,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _credential: &crate::metadata::auth::Credentials,
+        _auth: &crate::metadata::auth::Auth,
     ) -> Result<(), String> {
         // For integration tests, skip actual validation since test keys won't match account fixture
         Ok(())

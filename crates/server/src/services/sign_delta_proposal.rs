@@ -3,10 +3,7 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalS
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
-use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
-use miden_protocol::utils::Serializable;
 use private_state_manager_shared::DeltaSignature;
-use private_state_manager_shared::hex::FromHex;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -65,18 +62,18 @@ pub async fn sign_delta_proposal(
         }
     };
 
-    // Extract signer ID from credentials
+    // Extract signer ID from credentials using the account's auth scheme
     let signer_commitment_hex = match &credentials {
-        Credentials::Signature { pubkey, .. } => {
-            let public_key = PublicKey::from_hex(pubkey).map_err(|e| {
+        Credentials::Signature { pubkey, .. } => resolved
+            .metadata
+            .auth
+            .compute_signer_commitment(pubkey)
+            .map_err(|e| {
                 PsmError::AuthenticationFailed(format!(
                     "invalid signer public key for {}: {}",
                     account_id, e
                 ))
-            })?;
-            let commitment = public_key.to_commitment();
-            format!("0x{}", hex::encode(commitment.to_bytes()))
-        }
+            })?,
     };
 
     // Check if already signed by this signer

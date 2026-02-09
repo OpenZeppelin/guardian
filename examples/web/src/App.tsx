@@ -124,8 +124,9 @@ export default function App() {
             toast.success('Account loaded from PSM');
           } catch (loadErr) {
             const isNotFound = loadErr instanceof PsmHttpError && loadErr.status === 404;
+            const isNonceTooLow = loadErr instanceof Error && loadErr.message.includes('nonce') && loadErr.message.includes('too low');
 
-            if (isNotFound) {
+            if (isNotFound || isNonceTooLow) {
               try {
                 await multisig.switchPsm(msClient.psmClient);
 

@@ -6,12 +6,13 @@ use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId, StorageSlotName};
-use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
+use miden_protocol::crypto::dsa::falcon512_rpo;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::transaction::{InputNote, InputNotes, OutputNote, OutputNotes};
 use miden_protocol::utils::{Deserializable, Serializable};
 use miden_rpc_client::MidenRpcClient;
-use private_state_manager_shared::{FromJson, ToJson};
+use private_state_manager_shared::{FromJson, SignatureScheme, ToJson};
 
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
@@ -326,6 +327,7 @@ impl NetworkClient for MidenNetworkClient {
         &self,
         state_json: &serde_json::Value,
         credential: &Credentials,
+        auth: &Auth,
     ) -> Result<(), String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
@@ -344,17 +346,27 @@ impl NetworkClient for MidenNetworkClient {
             );
             format!("Failed to decode credential pubkey: {e}")
         })?;
-        let pubkey = PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
-            tracing::error!(
-                error = %e,
-                "Failed to deserialize credential pubkey"
-            );
-            format!("Failed to deserialize credential pubkey: {e}")
-        })?;
 
-        // Compute the commitment to match against storage
-        let commitment = pubkey.to_commitment();
-        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let commitment_hex = match auth.scheme() {
+            SignatureScheme::Falcon => {
+                let pubkey =
+                    falcon512_rpo::PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
+                        tracing::error!(error = %e, "Failed to deserialize Falcon credential pubkey");
+                        format!("Failed to deserialize credential pubkey: {e}")
+                    })?;
+                let commitment = pubkey.to_commitment();
+                format!("0x{}", hex::encode(commitment.to_bytes()))
+            }
+            SignatureScheme::Ecdsa => {
+                let pubkey =
+                    ecdsa_k256_keccak::PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
+                        tracing::error!(error = %e, "Failed to deserialize ECDSA credential pubkey");
+                        format!("Failed to deserialize credential pubkey: {e}")
+                    })?;
+                let commitment = pubkey.to_commitment();
+                format!("0x{}", hex::encode(commitment.to_bytes()))
+            }
+        };
 
         if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
@@ -373,7 +385,7 @@ impl NetworkClient for MidenNetworkClient {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
-        _current_auth: &Auth,
+        current_auth: &Auth,
     ) -> Result<Option<Auth>, String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
@@ -383,9 +395,7 @@ impl NetworkClient for MidenNetworkClient {
         if commitments.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Auth::MidenFalconRpo {
-                cosigner_commitments: commitments,
-            }))
+            Ok(Some(current_auth.with_updated_commitments(commitments)))
         }
     }
 }

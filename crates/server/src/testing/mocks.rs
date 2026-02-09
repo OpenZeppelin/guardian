@@ -163,6 +163,7 @@ impl NetworkClient for MockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _credential: &Credentials,
+        _auth: &Auth,
     ) -> StdResult<(), String> {
         self.validate_credential_responses
             .lock()
