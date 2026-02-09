@@ -1,4 +1,4 @@
-import { Account, TransactionSummary } from '@demox-labs/miden-sdk';
+import { Account, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
 import { base64ToUint8Array } from '../utils/encoding.js';
 
 export function computeCommitmentFromTxSummary(txSummaryBase64: string): string {
@@ -7,6 +7,7 @@ export function computeCommitmentFromTxSummary(txSummaryBase64: string): string 
   const commitment = summary.toCommitment();
   return commitment.toHex();
 }
+
 export function accountIdToHex(account: Account): string {
   const accountId = account.id();
   const str = accountId.toString();

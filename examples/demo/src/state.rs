@@ -10,6 +10,9 @@ pub struct SessionState {
     pub account_directory: Arc<TempDir>,
     /// Imported proposal for offline workflow.
     pub imported_proposal: Option<ExportedProposal>,
+    /// Stored endpoints for reinitialization.
+    miden_endpoint: Option<Endpoint>,
+    psm_endpoint: Option<String>,
 }
 
 impl SessionState {
@@ -21,6 +24,8 @@ impl SessionState {
             client: None,
             account_directory: Arc::new(account_directory),
             imported_proposal: None,
+            miden_endpoint: None,
+            psm_endpoint: None,
         })
     }
 
@@ -30,6 +35,10 @@ impl SessionState {
         miden_endpoint: Endpoint,
         psm_endpoint: &str,
     ) -> Result<(), String> {
+        // Store endpoints for potential reinitialization
+        self.miden_endpoint = Some(miden_endpoint.clone());
+        self.psm_endpoint = Some(psm_endpoint.to_string());
+
         let account_dir = self.account_directory.path().to_path_buf();
 
         let mut client = MultisigClient::builder()
@@ -47,6 +56,25 @@ impl SessionState {
             .map_err(|e| format!("Failed to reset miden client: {}", e))?;
 
         self.client = Some(client);
+        Ok(())
+    }
+
+    /// Reinitializes the MultisigClient with fresh database connections.
+    ///
+    /// This is useful when the connection pool gets poisoned due to panics.
+    /// It preserves the key manager and account state but creates a new miden-client.
+    pub async fn reinitialize_client(&mut self) -> Result<(), String> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| "Client not initialized".to_string())?;
+
+        // Reset the miden client (creates a fresh SQLite connection)
+        client
+            .reset_miden_client()
+            .await
+            .map_err(|e| format!("Failed to reinitialize client: {}", e))?;
+
         Ok(())
     }
 

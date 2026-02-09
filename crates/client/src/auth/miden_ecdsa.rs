@@ -1,8 +1,8 @@
 //! ECDSA secp256k1 signature-based authentication.
 
-use miden_objects::account::AccountId;
-use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey;
-use miden_objects::utils::Serializable;
+use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
+use miden_protocol::utils::Serializable;
 
 use super::miden_falcon_rpo::account_id_timestamp_to_word;
 
@@ -39,7 +39,7 @@ impl EcdsaSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::utils::Deserializable;
+    use miden_protocol::utils::Deserializable;
 
     #[test]
     fn test_ecdsa_signer_creates_valid_signature_with_timestamp() {
@@ -56,7 +56,7 @@ mod tests {
         // Verify the signature by recovering public key
         let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature =
-            miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
+            miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
                 .unwrap();
 
         let message = account_id_timestamp_to_word(account_id, timestamp);

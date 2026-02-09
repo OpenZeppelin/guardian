@@ -21,25 +21,49 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
 
     print_section("Configuration");
 
-    let psm_endpoint = prompt_input(editor, "PSM Server endpoint [http://localhost:50051]: ")?;
-    let psm_endpoint = if psm_endpoint.is_empty() {
-        "http://localhost:50051".to_string()
-    } else {
-        psm_endpoint
-    };
+    // Network selection menu
+    println!("\n  Select Miden network:");
+    println!("    [1] Local (http://localhost:57291)");
+    println!("    [2] Devnet (https://rpc.devnet.miden.io)");
+    println!("    [3] Testnet (https://rpc.testnet.miden.io)");
+    println!("    [4] Custom URL");
+    println!();
 
-    let miden_input = prompt_input(
-        editor,
-        "Miden Node endpoint [https://rpc.testnet.miden.io:443]: ",
-    )?;
-    let miden_endpoint = if miden_input.is_empty() {
-        Endpoint::new(
+    let network_choice = prompt_input(editor, "Network [1]: ")?;
+    let miden_endpoint = match network_choice.trim() {
+        "" | "1" => Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291)),
+        "2" => Endpoint::new("https".to_string(), "rpc.devnet.miden.io".to_string(), None),
+        "3" => Endpoint::new(
             "https".to_string(),
             "rpc.testnet.miden.io".to_string(),
             None,
-        )
-    } else {
-        parse_miden_endpoint(&miden_input)?
+        ),
+        "4" => {
+            let custom_url = prompt_input(editor, "Enter Miden Node URL: ")?;
+            parse_miden_endpoint(&custom_url)?
+        }
+        _ => {
+            println!("  Invalid choice, using local");
+            Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
+        }
+    };
+
+    // PSM endpoint selection
+    println!("\n  Select PSM server:");
+    println!("    [1] Local gRPC (http://localhost:50051)");
+    println!("    [2] Local HTTP (http://localhost:3000)");
+    println!("    [3] Custom URL");
+    println!();
+
+    let psm_choice = prompt_input(editor, "PSM Server [1]: ")?;
+    let psm_endpoint = match psm_choice.trim() {
+        "" | "1" => "http://localhost:50051".to_string(),
+        "2" => "http://localhost:3000".to_string(),
+        "3" => prompt_input(editor, "Enter PSM Server URL: ")?,
+        _ => {
+            println!("  Invalid choice, using local gRPC");
+            "http://localhost:50051".to_string()
+        }
     };
 
     println!("\n  PSM Server: {}", psm_endpoint);

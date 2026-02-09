@@ -9,7 +9,7 @@ import {
   WebClient,
   Word,
   Word as WordType,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import { MULTISIG_ECDSA_MASM, MULTISIG_MASM, PSM_ECDSA_MASM, PSM_MASM } from '../account/masm.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
@@ -36,7 +36,7 @@ function buildMultisigConfigAdvice(
 }
 
 function buildUpdateSignersFalconScript(webClient: WebClient): TransactionScript {
-  const libBuilder = webClient.createScriptBuilder();
+  const libBuilder = webClient.createCodeBuilder();
   const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
   libBuilder.linkStaticLibrary(psmLib);
 
@@ -44,7 +44,7 @@ function buildUpdateSignersFalconScript(webClient: WebClient): TransactionScript
   libBuilder.linkDynamicLibrary(multisigLib);
 
   const scriptSource = `
-use.auth::multisig
+use auth::multisig
 
 begin
     call.multisig::update_signers_and_threshold
@@ -55,7 +55,7 @@ end
 }
 
 function buildUpdateSignersEcdsaScript(webClient: WebClient): TransactionScript {
-  const libBuilder = webClient.createScriptBuilder();
+  const libBuilder = webClient.createCodeBuilder();
   const psmLib = libBuilder.buildLibrary('openzeppelin::psm_ecdsa', PSM_ECDSA_MASM);
   libBuilder.linkStaticLibrary(psmLib);
 
@@ -63,7 +63,7 @@ function buildUpdateSignersEcdsaScript(webClient: WebClient): TransactionScript 
   libBuilder.linkDynamicLibrary(multisigLib);
 
   const scriptSource = `
-use.auth::multisig
+use auth::multisig
 
 begin
     call.multisig::update_signers_and_threshold
@@ -115,4 +115,3 @@ export async function buildUpdateSignersTransactionRequest(
     configHash: configHashForReturn,
   };
 }
-

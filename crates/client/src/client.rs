@@ -10,7 +10,7 @@ use crate::proto::{
     SignDeltaProposalResponse,
 };
 use chrono::Utc;
-use miden_objects::account::AccountId;
+use miden_protocol::account::AccountId;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;

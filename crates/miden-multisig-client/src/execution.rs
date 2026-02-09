@@ -2,14 +2,15 @@
 
 use std::collections::HashSet;
 
+use miden_client::Client;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
-use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::asset::FungibleAsset;
-use miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
-use miden_objects::utils::Deserializable;
-use miden_objects::{Felt, Word};
+use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::utils::Deserializable;
+use miden_protocol::{Felt, Word};
 use private_state_manager_shared::SignatureScheme;
 use private_state_manager_shared::hex::FromHex;
 
@@ -118,7 +119,8 @@ pub fn collect_signature_advice(
 }
 
 /// Builds the final transaction request based on transaction type.
-pub fn build_final_transaction_request(
+pub async fn build_final_transaction_request(
+    client: &Client<()>,
     transaction_type: &TransactionType,
     account: &Account,
     salt: Word,
@@ -137,7 +139,7 @@ pub fn build_final_transaction_request(
             })?;
 
             build_p2id_transaction_request(
-                account,
+                account.id(),
                 *recipient,
                 vec![asset.into()],
                 salt,
@@ -145,7 +147,13 @@ pub fn build_final_transaction_request(
             )
         }
         TransactionType::ConsumeNotes { note_ids } => {
-            build_consume_notes_transaction_request(note_ids.clone(), salt, signature_advice)
+            build_consume_notes_transaction_request(
+                client,
+                note_ids.clone(),
+                salt,
+                signature_advice,
+            )
+            .await
         }
         TransactionType::SwitchPsm { new_commitment, .. } => {
             build_update_psm_transaction_request(*new_commitment, salt, signature_advice)
@@ -175,7 +183,7 @@ pub fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 
     #[test]
     fn test_collect_signature_advice_filters_by_required() {
@@ -241,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_collect_signature_advice_with_valid_ecdsa_signature() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
@@ -267,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_collect_signature_advice_ecdsa_missing_pubkey() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();

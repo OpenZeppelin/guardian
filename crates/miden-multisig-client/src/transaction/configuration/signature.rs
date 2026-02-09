@@ -1,9 +1,9 @@
 //! Signature advice entry building for multisig transactions.
 
-use miden_objects::account::auth::Signature;
-use miden_objects::crypto::dsa::ecdsa_k256_keccak;
-use miden_objects::utils::{Deserializable, Serializable};
-use miden_objects::{Felt, Hasher, Word};
+use miden_protocol::account::auth::Signature;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
+use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::{Felt, Hasher, Word};
 
 use crate::error::{MultisigError, Result};
 
@@ -53,7 +53,7 @@ pub fn build_signature_advice_entry(
     let key: Word = Hasher::hash_elements(&elements);
 
     let values = match signature {
-        Signature::RpoFalcon512(_) => signature.to_prepared_signature(message),
+        Signature::Falcon512Rpo(_) => signature.to_prepared_signature(message),
         Signature::EcdsaK256Keccak(ecdsa_sig) => {
             let pk = ecdsa_pubkey
                 .expect("ECDSA public key must be provided for ECDSA signature advice preparation");
@@ -94,12 +94,12 @@ pub fn build_ecdsa_signature_advice_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::account::auth::Signature as AccountSignature;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+    use miden_protocol::account::auth::Signature as AccountSignature;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 
     #[test]
     fn ecdsa_commitment_matches_packed_u32_hash() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn ecdsa_advice_entry_produces_non_empty_values() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn ecdsa_advice_entry_key_matches_expected() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn build_ecdsa_signature_advice_entry_valid() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();

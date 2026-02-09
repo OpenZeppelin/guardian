@@ -1,17 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AccountInspector } from './inspector.js';
 
+// Storage slot names matching the MASM definitions
+const MULTISIG_SLOT_NAMES = {
+  THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
+  SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
+  EXECUTED_TRANSACTIONS: 'openzeppelin::multisig::executed_transactions',
+  PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
+} as const;
+
+const PSM_SLOT_NAMES = {
+  SELECTOR: 'openzeppelin::psm::selector',
+  PUBLIC_KEY: 'openzeppelin::psm::public_key',
+} as const;
+
 // Mock the Miden SDK
-vi.mock('@demox-labs/miden-sdk', () => {
+vi.mock('@miden-sdk/miden-sdk', () => {
   const createMockWord = (values: bigint[]) => ({
     toU64s: () => values,
     toHex: () => '0x' + values.map(v => v.toString(16).padStart(16, '0')).join(''),
   });
 
-  const createMockStorage = (slots: Map<number, any>, maps: Map<number, Map<string, any>>) => ({
-    getItem: (index: number) => slots.get(index) ?? createMockWord([0n, 0n, 0n, 0n]),
-    getMapItem: (slotIndex: number, key: any) => {
-      const map = maps.get(slotIndex);
+  const createMockStorage = (slots: Map<string, any>, maps: Map<string, Map<string, any>>) => ({
+    getItem: (slotName: string) => slots.get(slotName) ?? createMockWord([0n, 0n, 0n, 0n]),
+    getMapItem: (slotName: string, key: any) => {
+      const map = maps.get(slotName);
       if (!map) throw new Error('Map not found');
       const keyStr = key.toU64s?.()[0]?.toString() ?? '0';
       const value = map.get(keyStr);
@@ -43,13 +56,13 @@ vi.mock('@demox-labs/miden-sdk', () => {
         const psmMap = new Map<string, any>();
         psmMap.set('0', createMockWord([BigInt('0xeeeeeeeeeeeeeeee'), BigInt('0xffffffffffffffff'), BigInt('0x0000000000000001'), BigInt('0x0000000000000002')]));
 
-        const slots = new Map<number, any>();
-        slots.set(0, slot0);
-        slots.set(4, slot4);
+        const slots = new Map<string, any>();
+        slots.set('openzeppelin::multisig::threshold_config', slot0);
+        slots.set('openzeppelin::psm::selector', slot4);
 
-        const maps = new Map<number, Map<string, any>>();
-        maps.set(1, signerMap);
-        maps.set(5, psmMap);
+        const maps = new Map<string, Map<string, any>>();
+        maps.set('openzeppelin::multisig::signer_public_keys', signerMap);
+        maps.set('openzeppelin::psm::public_key', psmMap);
 
         return {
           storage: () => createMockStorage(slots, maps),
@@ -111,7 +124,7 @@ describe('AccountInspector', () => {
 
   describe('fromAccount', () => {
     it('extracts threshold from slot 0', async () => {
-      const { Account } = await import('@demox-labs/miden-sdk');
+      const { Account } = await import('@miden-sdk/miden-sdk');
       const account = Account.deserialize(new Uint8Array([1, 2, 3]));
       const config = AccountInspector.fromAccount(account);
 
@@ -119,7 +132,7 @@ describe('AccountInspector', () => {
     });
 
     it('extracts numSigners from slot 0', async () => {
-      const { Account } = await import('@demox-labs/miden-sdk');
+      const { Account } = await import('@miden-sdk/miden-sdk');
       const account = Account.deserialize(new Uint8Array([1, 2, 3]));
       const config = AccountInspector.fromAccount(account);
 
@@ -134,18 +147,18 @@ describe('AccountInspector edge cases', () => {
   });
 
   it('handles account with PSM disabled', async () => {
-    const { Account } = await import('@demox-labs/miden-sdk');
+    const { Account } = await import('@miden-sdk/miden-sdk');
 
     // Override mock for this test
     vi.mocked(Account.deserialize).mockReturnValueOnce({
       storage: () => ({
-        getItem: (index: number) => {
-          if (index === 0) return { toU64s: () => [1n, 1n, 0n, 0n] };
-          if (index === 4) return { toU64s: () => [0n, 0n, 0n, 0n] }; // PSM disabled
+        getItem: (slotName: string) => {
+          if (slotName === 'openzeppelin::multisig::threshold_config') return { toU64s: () => [1n, 1n, 0n, 0n] };
+          if (slotName === 'openzeppelin::psm::selector') return { toU64s: () => [0n, 0n, 0n, 0n] }; // PSM disabled
           return { toU64s: () => [0n, 0n, 0n, 0n] };
         },
-        getMapItem: (slotIndex: number, key: any) => {
-          if (slotIndex === 1 && key.toU64s?.()[0] === 0n) {
+        getMapItem: (slotName: string, key: any) => {
+          if (slotName === 'openzeppelin::multisig::signer_public_keys' && key.toU64s?.()[0] === 0n) {
             return {
               toHex: () => '0x' + 'a'.repeat(64),
               toU64s: () => [1n, 2n, 3n, 4n],
@@ -167,7 +180,7 @@ describe('AccountInspector edge cases', () => {
   });
 
   it('handles account with empty vault', async () => {
-    const { Account } = await import('@demox-labs/miden-sdk');
+    const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
       storage: () => ({
@@ -188,13 +201,13 @@ describe('AccountInspector edge cases', () => {
   });
 
   it('handles missing signer map entries gracefully', async () => {
-    const { Account } = await import('@demox-labs/miden-sdk');
+    const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
       storage: () => ({
-        getItem: (index: number) => {
-          if (index === 0) return { toU64s: () => [2n, 5n, 0n, 0n] }; // threshold=2, numSigners=5
-          if (index === 4) return { toU64s: () => [0n, 0n, 0n, 0n] };
+        getItem: (slotName: string) => {
+          if (slotName === 'openzeppelin::multisig::threshold_config') return { toU64s: () => [2n, 5n, 0n, 0n] }; // threshold=2, numSigners=5
+          if (slotName === 'openzeppelin::psm::selector') return { toU64s: () => [0n, 0n, 0n, 0n] };
           return { toU64s: () => [0n, 0n, 0n, 0n] };
         },
         getMapItem: () => {
@@ -215,7 +228,7 @@ describe('AccountInspector edge cases', () => {
   });
 
   it('handles vault access error gracefully', async () => {
-    const { Account } = await import('@demox-labs/miden-sdk');
+    const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
       storage: () => ({

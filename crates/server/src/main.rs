@@ -23,6 +23,7 @@ async fn main() {
         .await
         .expect("Failed to initialize storage backends");
 
+    // Initialize acknowledger registry (supports both Falcon and ECDSA)
     let ack = AckRegistry::new(keystore_path).expect("Failed to initialize ack registry");
 
     let cors_layer = CorsLayer::new()
@@ -32,8 +33,8 @@ async fn main() {
 
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
-        .network(NetworkType::MidenLocal)
-        .with_canonicalization(Some(CanonicalizationConfig::new(10, 18)))
+        .network(NetworkType::MidenDevnet)
+        .with_canonicalization(Some(CanonicalizationConfig::new(10, 24)))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())
         .storage(storage_backend)

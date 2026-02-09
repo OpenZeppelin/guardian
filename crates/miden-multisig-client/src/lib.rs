@@ -90,9 +90,9 @@ pub use error::{MultisigError, Result};
 
 // Re-exports for convenience
 pub use miden_client::rpc::Endpoint;
-pub use miden_objects::Word;
-pub use miden_objects::account::AccountId;
-pub use miden_objects::asset::Asset;
-pub use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-pub use miden_objects::note::NoteId;
+pub use miden_protocol::Word;
+pub use miden_protocol::account::AccountId;
+pub use miden_protocol::asset::Asset;
+pub use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+pub use miden_protocol::note::NoteId;
 pub use private_state_manager_shared::SignatureScheme;

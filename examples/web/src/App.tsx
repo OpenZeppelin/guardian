@@ -11,7 +11,7 @@ import {
 } from '@openzeppelin/miden-multisig-client';
 import { PsmHttpError } from '@openzeppelin/psm-client';
 
-import { WebClient } from '@demox-labs/miden-sdk';
+import { WebClient } from '@miden-sdk/miden-sdk';
 
 import {
   Header,

@@ -4,10 +4,9 @@
 # ECDSA secp256k1 (k256/keccak) signatures.
 # It can be used standalone or in conjunction with other auth components like multisig.
 
-use miden::active_account
-use miden::native_account
+use miden::protocol::active_account
+use miden::protocol::native_account
 
-# Type definitions for v0.12 syntax
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # IMPORTANT SECURITY NOTES
@@ -49,22 +48,22 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # CONSTANTS
 # =================================================================================================
 
-# Slot where the PSM selector flag is stored:
+# Slot where the PSM selector flag is stored (using word() for named slot access):
 # - PSM_ON  => PSM signature required
 # - PSM_OFF => PSM signature skipped
-const PSM_SELECTOR_SLOT = 0
+const PSM_SELECTOR_SLOT=word("openzeppelin::psm::selector")
 
 # Map slot for PSM public key
 # Uses exactly one PSM public key at index [0, 0, 0, 0]
 # [0, 0, 0, 0] => PSM_PUBLIC_KEY
-const PSM_PUBLIC_KEY_MAP_SLOT = 1
+const PSM_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::psm::public_key")
 
 # Selector flag values
-const PSM_ON = [1, 0, 0, 0]
-const PSM_OFF = [0, 0, 0, 0]
+const PSM_ON=[1, 0, 0, 0]
+const PSM_OFF=[0, 0, 0, 0]
 
 # The event emitted when a signature is not found for a required signer.
-const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
+const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
 
 # PSM PROCEDURES
 # =================================================================================================
@@ -77,12 +76,12 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 #! Notes:
 #! - Sets PSM_SELECTOR_SLOT to PSM_ON (1)
 #! - After this, transactions will require PSM signature verification
-proc.enable_psm
+proc enable_psm
     push.PSM_ON
     # => [PSM_ON]
 
-    push.PSM_SELECTOR_SLOT
-    # => [PSM_SELECTOR_SLOT, PSM_ON]
+    push.PSM_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, PSM_ON]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -99,12 +98,12 @@ end
 #! Notes:
 #! - Sets PSM_SELECTOR_SLOT to PSM_OFF (0)
 #! - After this, transactions will NOT require PSM signature verification
-proc.disable_psm
+proc disable_psm
     push.PSM_OFF
     # => [PSM_OFF]
 
-    push.PSM_SELECTOR_SLOT
-    # => [PSM_SELECTOR_SLOT, PSM_OFF]
+    push.PSM_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, PSM_OFF]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -134,13 +133,13 @@ pub proc update_psm_public_key
     # => [MAP_KEY, PUB_KEY]
     # Note that MAP_KEY is [0, 0, 0, 0] for a single PSM_KEY
 
-    push.PSM_PUBLIC_KEY_MAP_SLOT
-    # => [index, MAP_KEY, PUB_KEY]
+    push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+    # => [pub_key_slot_prefix, pub_key_slot_suffix, MAP_KEY, PUB_KEY]
 
     exec.native_account::set_map_item
-    # => [OLD_MAP_ROOT, OLD_MAP_VALUE]
+    # => [OLD_MAP_VALUE]
 
-    dropw dropw
+    dropw
     # => []
 end
 
@@ -157,8 +156,8 @@ end
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
 #! - If selector is OFF (0), PSM verification is skipped
 #! - Selector value is read from initial storage state
-pub proc verify_psm_signature(msg: BeWord)
-    push.PSM_SELECTOR_SLOT
+pub proc verify_psm_signature(msg: BeWord) -> BeWord
+    push.PSM_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
     drop drop drop
     # => [selector, MSG]
@@ -166,8 +165,8 @@ pub proc verify_psm_signature(msg: BeWord)
     push.1 eq
     if.true
         push.1
-        push.PSM_PUBLIC_KEY_MAP_SLOT
-        exec.::miden::auth::ecdsa_k256_keccak::verify_signatures
+        push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+        exec.::miden::standards::auth::ecdsa_k256_keccak::verify_signatures
         push.1 neq
         if.true
             emit.AUTH_UNAUTHORIZED_EVENT

@@ -3,10 +3,10 @@
 //! This module handles listing consumable notes and filtering them
 //! by various criteria (faucet, amount, etc.).
 
-use miden_client::note::NoteRelevance;
-use miden_objects::account::AccountId;
-use miden_objects::asset::Asset;
-use miden_objects::note::NoteId;
+use miden_client::note::NoteConsumptionStatus;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::Asset;
+use miden_protocol::note::NoteId;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -105,14 +105,19 @@ impl MultisigClient {
                 MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
             })?;
 
-        // Convert to our wrapper type, filtering for notes consumable "Now"
+        // Convert to our wrapper type, filtering for notes consumable
         let notes = consumable
             .into_iter()
             .filter_map(|(record, relevances)| {
-                // Only include notes consumable "Now" by our account
-                let can_consume_now = relevances
-                    .iter()
-                    .any(|(id, rel)| *id == account_id && matches!(rel, NoteRelevance::Now));
+                // Only include notes consumable now by our account
+                let can_consume_now = relevances.iter().any(|(id, status)| {
+                    *id == account_id
+                        && matches!(
+                            status,
+                            NoteConsumptionStatus::Consumable
+                                | NoteConsumptionStatus::ConsumableWithAuthorization
+                        )
+                });
                 if can_consume_now {
                     Some(ConsumableNote {
                         id: record.id(),
@@ -125,6 +130,37 @@ impl MultisigClient {
             .collect();
 
         Ok(notes)
+    }
+
+    /// Returns a list of all notes with their consumption status
+    pub async fn list_notes_with_status(
+        &mut self,
+    ) -> Result<Vec<(ConsumableNote, Vec<(AccountId, String)>)>> {
+        let account_id = self.require_account()?.id();
+
+        let notes = self
+            .miden_client
+            .get_consumable_notes(Some(account_id))
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+
+        let result = notes
+            .into_iter()
+            .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
+            .map(|(record, relevances)| {
+                let note = ConsumableNote {
+                    id: record.id(),
+                    assets: record.assets().iter().cloned().collect(),
+                };
+                let statuses: Vec<(AccountId, String)> = relevances
+                    .into_iter()
+                    .map(|(id, status)| (id, format!("{:?}", status)))
+                    .collect();
+                (note, statuses)
+            })
+            .collect();
+
+        Ok(result)
     }
 
     /// Returns a list of all committed notes (not just consumable).
@@ -235,11 +271,11 @@ mod tests {
     #[test]
     fn test_consumable_note_empty_assets() {
         // Test with empty assets - amount should be 0, has_faucet should be false
-        use miden_objects::Word;
-        use miden_objects::note::NoteId;
+        use miden_protocol::Word;
+        use miden_protocol::note::NoteId;
 
         let note = ConsumableNote {
-            id: NoteId::from(Word::default()),
+            id: NoteId::from_raw(Word::default()),
             assets: vec![],
         };
 

@@ -6,11 +6,15 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use miden_lib::transaction::TransactionKernel;
-use miden_objects::{
+use miden_protocol::{
     account::{AccountComponent, StorageSlot},
-    assembly::{Assembler, DefaultSourceManager, Library, LibraryPath, Module, ModuleKind},
+    assembly::{
+        Assembler, DefaultSourceManager, Library, Module, ModuleKind, Path as LibraryPath,
+        SourceManager,
+    },
+    transaction::TransactionKernel,
 };
+use miden_standards::StandardsLib;
 
 /// MASM root set by build.rs
 fn masm_root() -> PathBuf {
@@ -58,7 +62,7 @@ fn collect_all_masm_files(root: &Path) -> Result<Vec<PathBuf>> {
 /// - masm/account/utils/example.masm   -> openzeppelin::example
 fn build_openzeppelin_library() -> Result<Library> {
     let root = masm_root();
-    let source_manager = Arc::new(DefaultSourceManager::default());
+    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
     let masm_files = collect_all_masm_files(&root)?;
     let mut modules = Vec::new();
@@ -84,14 +88,16 @@ fn build_openzeppelin_library() -> Result<Library> {
         let code = fs::read_to_string(&path)?;
 
         let module = Module::parser(ModuleKind::Library)
-            .parse_str(LibraryPath::new(&lib_path)?, code, &source_manager)
+            .parse_str(LibraryPath::new(&lib_path), code, source_manager.clone())
             .map_err(|e| anyhow!("failed to parse module {lib_path}: {e}"))?;
 
         modules.push(module);
     }
 
-    // Assemble library with debug mode enabled
-    let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
+    // Assemble library with miden-standards library linked (provides miden::standards::auth::*)
+    let mut assembler: Assembler = TransactionKernel::assembler();
+    let standards_lib: Library = StandardsLib::default().into();
+    let _ = assembler.link_dynamic_library(&standards_lib);
 
     let library: Library = assembler
         .clone()
@@ -101,16 +107,25 @@ fn build_openzeppelin_library() -> Result<Library> {
     Ok(library)
 }
 
-// Builds the assembler with the openzeppelin library linked.
+// Builds the assembler with the openzeppelin library and miden-standards library linked.
 fn build_assembler() -> Result<Assembler> {
     let oz_lib = build_openzeppelin_library()?;
+    let standards_lib: Library = StandardsLib::default().into();
 
-    let asm: Assembler = TransactionKernel::assembler()
-        .with_debug_mode(true)
-        .with_dynamic_library(oz_lib)
-        .map_err(|e| anyhow!("failed to link openzeppelin library: {e}"))?;
+    let mut asm: Assembler = TransactionKernel::assembler();
+    let _ = asm.link_dynamic_library(&oz_lib);
+    let _ = asm.link_dynamic_library(&standards_lib);
 
     Ok(asm)
+}
+
+/// Compiles MASM code into a Library using the given assembler
+fn compile_to_library(code: &str, assembler: &Assembler) -> Result<Library> {
+    let library = assembler
+        .clone()
+        .assemble_library([code])
+        .map_err(|e| anyhow!("failed to assemble library: {e}"))?;
+    Ok(library)
 }
 
 // ============================================================================
@@ -133,7 +148,10 @@ pub fn build_multisig_component(slots: Vec<StorageSlot>) -> Result<AccountCompon
     let path = auth_dir().join("multisig.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
 
     Ok(component)
 }
@@ -148,7 +166,10 @@ pub fn build_multisig_ecdsa_component(slots: Vec<StorageSlot>) -> Result<Account
     let path = auth_dir().join("multisig_ecdsa.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
 
     Ok(component)
 }
@@ -165,7 +186,10 @@ pub fn build_psm_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> 
     let path = auth_dir().join("psm.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
 
     Ok(component)
 }
@@ -178,7 +202,10 @@ pub fn build_psm_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountCompo
     let path = auth_dir().join("psm_ecdsa.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
 
     Ok(component)
 }
@@ -190,7 +217,10 @@ pub fn build_access_component(slots: Vec<StorageSlot>) -> Result<AccountComponen
     let path = masm_root().join("account").join("access.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    let component = AccountComponent::compile(code, asm, slots)?.with_supports_all_types();
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
 
     Ok(component)
 }
@@ -200,12 +230,12 @@ pub fn create_library(
     account_code: String,
     library_path: &str,
 ) -> Result<Library, Box<dyn std::error::Error>> {
-    let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
-    let source_manager = Arc::new(DefaultSourceManager::default());
+    let assembler: Assembler = TransactionKernel::assembler();
+    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
     let module = Module::parser(ModuleKind::Library).parse_str(
-        LibraryPath::new(library_path)?,
+        LibraryPath::new(library_path),
         account_code,
-        &source_manager,
+        source_manager,
     )?;
     let library = assembler.clone().assemble_library([module])?;
     Ok(library)
@@ -218,7 +248,7 @@ pub fn get_openzeppelin_library() -> Result<Library> {
 }
 
 /// Builds a library for multisig procedures for use in transaction scripts.
-/// The procedures are accessible via `call.::procedure_name` syntax.
+/// The procedures are accessible via `use oz_multisig::multisig` and `call.multisig::procedure_name` syntax.
 pub fn get_multisig_library() -> Result<Library> {
     let path = auth_dir().join("multisig.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
@@ -226,8 +256,17 @@ pub fn get_multisig_library() -> Result<Library> {
     // Build with openzeppelin library linked (for psm dependency)
     let asm = build_assembler()?;
 
+    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(ModuleKind::Library)
+        .parse_str(
+            LibraryPath::new("oz_multisig::multisig"),
+            code,
+            source_manager,
+        )
+        .map_err(|e| anyhow!("failed to parse multisig module: {e}"))?;
+
     let library = asm
-        .assemble_library([code])
+        .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig library: {e}"))?;
 
     Ok(library)
@@ -250,16 +289,21 @@ pub fn get_multisig_ecdsa_library() -> Result<Library> {
 }
 
 /// Builds a library for PSM procedures for use in transaction scripts.
-/// The procedures are accessible via `call.::procedure_name` syntax.
+/// The procedures are accessible via `use oz_psm::psm` and `call.psm::procedure_name` syntax.
 pub fn get_psm_library() -> Result<Library> {
     let path = auth_dir().join("psm.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    // Pass source code directly to avoid namespace issues
-    let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
+    // Build with openzeppelin library and miden-standards linked
+    let asm = build_assembler()?;
 
-    let library = assembler
-        .assemble_library([code])
+    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(ModuleKind::Library)
+        .parse_str(LibraryPath::new("oz_psm::psm"), code, source_manager)
+        .map_err(|e| anyhow!("failed to parse psm module: {e}"))?;
+
+    let library = asm
+        .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble PSM library: {e}"))?;
 
     Ok(library)
@@ -272,7 +316,7 @@ pub fn get_psm_ecdsa_library() -> Result<Library> {
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
     // Pass source code directly to avoid namespace issues
-    let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
+    let assembler: Assembler = TransactionKernel::assembler();
 
     let library = assembler
         .assemble_library([code])

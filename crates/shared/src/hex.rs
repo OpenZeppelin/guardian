@@ -1,9 +1,9 @@
-use miden_objects::Word;
-use miden_objects::crypto::dsa::ecdsa_k256_keccak::{
+use miden_protocol::Word;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, Signature};
-use miden_objects::utils::{Deserializable, Serializable};
+use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, Signature};
+use miden_protocol::utils::{Deserializable, Serializable};
 
 /// Trait for converting types to hex strings with `0x` prefix
 pub trait IntoHex {
@@ -128,7 +128,7 @@ impl FromHex for Word {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 
     #[test]
     fn test_public_key_into_hex() {
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_signature_into_hex() {
-        use miden_objects::Word;
+        use miden_protocol::Word;
         let secret_key = SecretKey::new();
         let message = Word::from([1u32, 2, 3, 4]);
         let signature = secret_key.sign(message);
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_signature_from_hex_roundtrip() {
-        use miden_objects::Word;
+        use miden_protocol::Word;
         let secret_key = SecretKey::new();
         let message = Word::from([1u32, 2, 3, 4]);
         let original_sig = secret_key.sign(message);
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_public_key_into_hex() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
 
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_public_key_from_hex_roundtrip() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
         let hex = pk.into_hex();
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_public_key_from_hex_without_prefix() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
         let hex_with_prefix = pk.into_hex();
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_signature_into_hex() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
         let sk = EcdsaSecretKey::new();
         let message = Word::from([1u32, 2, 3, 4]);
         let sig = sk.sign(message);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_signature_from_hex_roundtrip() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
         let sk = EcdsaSecretKey::new();
         let message = Word::from([1u32, 2, 3, 4]);
         let sig = sk.sign(message);

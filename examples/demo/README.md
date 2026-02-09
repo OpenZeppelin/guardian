@@ -5,7 +5,7 @@ Interactive CLI that exercises the `miden-multisig-client` SDK end-to-end: gener
 ## Requirements
 
 - Private State Manager server (default `http://localhost:50051`)
-- Miden node (default `http://localhost:57291`)
+- Miden node (default `https://rpc.testnet.miden.io:443` for testnet)
 
 ## Run
 

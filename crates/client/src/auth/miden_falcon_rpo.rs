@@ -1,10 +1,10 @@
 //! Falcon signature-based authentication using RPO hashing.
 
-use miden_objects::account::AccountId;
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
-use miden_objects::crypto::hash::rpo::Rpo256;
-use miden_objects::utils::{Deserializable, Serializable};
-use miden_objects::{Felt, FieldElement, Word};
+use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature};
+use miden_protocol::crypto::hash::rpo::Rpo256;
+use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::{Felt, FieldElement, Word};
 use private_state_manager_shared::hex::{FromHex, IntoHex};
 
 /// A signer that uses Falcon signatures with RPO hashing.
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_falcon_signer_creates_valid_signature_with_timestamp() {
-        use miden_objects::utils::Deserializable;
+        use miden_protocol::utils::Deserializable;
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn test_signature_fails_with_wrong_timestamp() {
-        use miden_objects::utils::Deserializable;
+        use miden_protocol::utils::Deserializable;
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();

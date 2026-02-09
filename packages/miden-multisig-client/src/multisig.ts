@@ -15,7 +15,7 @@ import type {
 } from './types.js';
 import type { ProcedureName } from './procedures.js';
 import { AccountInspector, type DetectedMultisigConfig } from './inspector.js';
-import type { WebClient, TransactionRequest } from '@demox-labs/miden-sdk';
+import type { WebClient, TransactionRequest } from '@miden-sdk/miden-sdk';
 import {
   Account,
   AccountId,
@@ -24,7 +24,7 @@ import {
   Signature,
   TransactionSummary,
   Word,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
@@ -452,7 +452,7 @@ export class Multisig {
       throw new Error('At least one note ID is required');
     }
 
-    const { request, salt } = buildConsumeNotesTransactionRequest(noteIds);
+    const { request, salt } = await buildConsumeNotesTransactionRequest(this.webClient, noteIds);
 
     const summary = await executeForSummary(this.webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -514,7 +514,7 @@ export class Multisig {
 
       const canConsumeNow = consumability.some(
         (c) => c.accountId().toString().toLowerCase() === this._accountId.toLowerCase() &&
-               c.consumableAfterBlock() === undefined
+               c.consumptionStatus().consumableAfterBlock() === undefined
       );
 
       if (canConsumeNow) {
@@ -716,7 +716,8 @@ export class Multisig {
         if (!metadata.noteIds || metadata.noteIds.length === 0) {
           throw new Error('Proposal missing noteIds. Was it created with createConsumeNotesProposal?');
         }
-        const { request } = buildConsumeNotesTransactionRequest(
+        const { request } = await buildConsumeNotesTransactionRequest(
+          this.webClient,
           metadata.noteIds,
           { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
         );

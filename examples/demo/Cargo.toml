@@ -8,7 +8,7 @@ publish = false
 miden-multisig-client = { path = "../../crates/miden-multisig-client" }
 
 miden-client = { workspace = true, features = ["tonic", "testing"] }
-miden-objects = { workspace = true }
+miden-protocol = { workspace = true }
 
 tokio = { workspace = true, features = ["full"] }
 hex = { workspace = true }

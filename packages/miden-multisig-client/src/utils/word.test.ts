@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { wordElementToBigInt, wordToHex } from './word.js';
-import { Word } from '@demox-labs/miden-sdk';
+import { Word } from '@miden-sdk/miden-sdk';
 
 // Mock the Miden SDK Word class
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   Word: {
     fromHex: (hex: string): { toU64s: () => BigUint64Array; toHex: () => string } => {
       // Parse hex string (remove 0x prefix if present)

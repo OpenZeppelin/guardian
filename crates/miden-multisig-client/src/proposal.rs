@@ -1,9 +1,9 @@
 //! Proposal types and utilities for multisig transactions.
 
-use miden_objects::account::AccountId;
-use miden_objects::note::NoteId;
-use miden_objects::transaction::TransactionSummary;
-use miden_objects::{Felt, Word};
+use miden_protocol::account::AccountId;
+use miden_protocol::note::NoteId;
+use miden_protocol::transaction::TransactionSummary;
+use miden_protocol::{Felt, Word};
 use private_state_manager_client::DeltaObject;
 use private_state_manager_shared::FromJson;
 use serde_json::Value;
@@ -143,7 +143,7 @@ impl ProposalMetadata {
     pub fn note_ids(&self) -> Result<Vec<NoteId>> {
         self.note_ids_hex
             .iter()
-            .map(|hex| Ok(NoteId::from(hex_to_word(hex)?)))
+            .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
             .collect()
     }
 }
@@ -224,7 +224,7 @@ impl Proposal {
 
         let parsed_note_ids: Vec<NoteId> = note_ids_hex
             .iter()
-            .map(|hex| Ok(NoteId::from(hex_to_word(hex)?)))
+            .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
             .collect::<Result<_>>()?;
 
         let new_psm_pubkey_hex = metadata_obj
@@ -500,9 +500,9 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::FieldElement;
-    use miden_objects::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_objects::transaction::{InputNotes, OutputNotes};
+    use miden_protocol::FieldElement;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{InputNotes, OutputNotes};
 
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a minimal valid account ID
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_transaction_type_consume_notes() {
-        let note_id = NoteId::from(Word::default());
+        let note_id = NoteId::from_raw(Word::default());
         let tx = TransactionType::consume_notes(vec![note_id]);
 
         assert_eq!(

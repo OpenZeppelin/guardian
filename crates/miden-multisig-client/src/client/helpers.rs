@@ -1,10 +1,10 @@
 //! Internal helper functions for PSM client interactions.
 
 use miden_client::account::Account;
-use miden_objects::account::AccountId;
-use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
-use miden_objects::utils::Deserializable;
+use miden_protocol::account::AccountId;
+use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::utils::Deserializable;
 use private_state_manager_client::{Auth, EcdsaSigner, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::ToJson;
 use private_state_manager_shared::hex::FromHex;
@@ -53,12 +53,12 @@ impl MultisigClient {
         account: &MultisigAccount,
         nonce: u64,
         tx_summary: &miden_client::transaction::TransactionSummary,
-        tx_summary_commitment: miden_objects::Word,
+        tx_summary_commitment: miden_protocol::Word,
     ) -> Result<SignatureAdvice> {
         let account_id = account.id();
         let prev_commitment = format!(
             "0x{}",
-            hex::encode(miden_objects::utils::serde::Serializable::to_bytes(
+            hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
                 &account.commitment(),
             ))
         );
@@ -124,7 +124,11 @@ impl MultisigClient {
                 ))
             })?;
 
-        self.sync().await?;
+        // Try to sync with the network to ensure consistent state.
+        if let Err(_e) = self.miden_client.sync_state().await {
+            // Log but don't fail - the transaction was executed successfully
+            // Sync failed - PSM may not have canonicalized yet.
+        }
 
         let account_record = self
             .miden_client
@@ -134,10 +138,12 @@ impl MultisigClient {
                 MultisigError::MidenClient(format!("failed to get updated account: {}", e))
             })?
             .ok_or_else(|| {
-                MultisigError::MissingConfig("account not found after sync".to_string())
+                MultisigError::MissingConfig("account not found after execution".to_string())
             })?;
 
-        let updated_account: Account = account_record.into();
+        let updated_account: Account = account_record.try_into().map_err(|e| {
+            MultisigError::MidenClient(format!("account record is not full: {}", e))
+        })?;
 
         if let Some(endpoint) = new_psm_endpoint {
             self.psm_endpoint = endpoint;
@@ -203,8 +209,8 @@ fn parse_ack_signature(
     ack_sig_hex: &str,
     ack_scheme: &str,
     ack_pubkey: Option<String>,
-    psm_commitment: miden_objects::Word,
-    tx_summary_commitment: miden_objects::Word,
+    psm_commitment: miden_protocol::Word,
+    tx_summary_commitment: miden_protocol::Word,
 ) -> Result<SignatureAdvice> {
     let ack_sig_with_prefix = ensure_hex_prefix(ack_sig_hex);
     if ack_scheme.eq_ignore_ascii_case("ecdsa") {
@@ -213,13 +219,13 @@ fn parse_ack_signature(
             MultisigError::Signature(format!("invalid ECDSA ack signature hex: {}", e))
         })?;
         let ecdsa_sig =
-            miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
+            miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
                 .map_err(|e| {
-                MultisigError::Signature(format!(
-                    "failed to deserialize ECDSA ack signature: {}",
-                    e
-                ))
-            })?;
+                    MultisigError::Signature(format!(
+                        "failed to deserialize ECDSA ack signature: {}",
+                        e
+                    ))
+                })?;
         let pubkey_hex = ack_pubkey.ok_or_else(|| {
             MultisigError::Signature(
                 "ECDSA ack signature requires PSM public key (ack_pubkey not returned by server)"

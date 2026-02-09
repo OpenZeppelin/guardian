@@ -1,6 +1,6 @@
 //! Error types for the multisig client SDK.
 
-use miden_objects::account::AccountId;
+use miden_protocol::account::AccountId;
 use thiserror::Error;
 
 /// Result type alias for multisig operations.

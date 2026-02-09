@@ -1,9 +1,9 @@
 //! Multisig configuration advice and transaction building.
 
-use miden_client::ScriptBuilder;
+use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
 use miden_confidential_contracts::masm_builder::get_multisig_library;
-use miden_objects::{Felt, Hasher, Word};
+use miden_protocol::{Felt, Hasher, Word};
 
 use crate::error::{MultisigError, Result};
 
@@ -40,13 +40,14 @@ pub fn build_update_signers_script() -> Result<TransactionScript> {
     })?;
 
     let tx_script_code = "
+        use oz_multisig::multisig
         begin
-            call.::update_signers_and_threshold
+            call.multisig::update_signers_and_threshold
         end
     ";
 
-    let tx_script = ScriptBuilder::new(true)
-        .with_dynamically_linked_library(&multisig_library)
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(multisig_library)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(tx_script_code)
         .map_err(|e| {

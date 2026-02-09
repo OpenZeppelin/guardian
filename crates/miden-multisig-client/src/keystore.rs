@@ -1,14 +1,14 @@
 //! Key management for PSM authentication.
 
 use miden_client::Serializable;
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey};
-use miden_objects::{FieldElement, Word};
+use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey};
+use miden_protocol::{FieldElement, Word};
 use private_state_manager_shared::SignatureScheme;
 
 /// Scheme-specific secret key for creating PSM auth providers.
 pub enum SchemeSecretKey {
     Falcon(SecretKey),
-    Ecdsa(miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey),
+    Ecdsa(miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey),
 }
 
 /// Trait for managing keys used in PSM authentication and transaction signing.
@@ -103,14 +103,14 @@ impl KeyManager for PsmKeyStore {
 
 /// ECDSA key store implementation using secp256k1 keys.
 pub struct EcdsaPsmKeyStore {
-    secret_key: std::sync::Mutex<miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey>,
+    secret_key: std::sync::Mutex<miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey>,
     commitment: Word,
     commitment_hex: String,
 }
 
 impl EcdsaPsmKeyStore {
     /// Creates a new ECDSA key store with the given secret key.
-    pub fn new(secret_key: miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey) -> Self {
+    pub fn new(secret_key: miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey) -> Self {
         let public_key = secret_key.public_key();
         let commitment = public_key.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
@@ -124,19 +124,19 @@ impl EcdsaPsmKeyStore {
 
     /// Generates a new random ECDSA key store.
     pub fn generate() -> Self {
-        let secret_key = miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
+        let secret_key = miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
         Self::new(secret_key)
     }
 
     /// Returns the ECDSA public key.
-    pub fn public_key(&self) -> miden_objects::crypto::dsa::ecdsa_k256_keccak::PublicKey {
+    pub fn public_key(&self) -> miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey {
         self.secret_key.lock().unwrap().public_key()
     }
 
     /// Returns a clone of the ECDSA secret key.
     pub fn clone_ecdsa_secret_key(
         &self,
-    ) -> miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey {
+    ) -> miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey {
         self.secret_key.lock().unwrap().clone()
     }
 }
@@ -226,12 +226,12 @@ pub fn commitment_from_hex(hex_str: &str) -> Result<Word, String> {
         ));
     }
 
-    let mut felts = [miden_objects::Felt::ZERO; 4];
+    let mut felts = [miden_protocol::Felt::ZERO; 4];
     #[allow(clippy::needless_range_loop)]
     for (i, chunk) in bytes.chunks(8).enumerate() {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(chunk);
-        felts[i] = miden_objects::Felt::new(u64::from_le_bytes(arr));
+        felts[i] = miden_protocol::Felt::new(u64::from_le_bytes(arr));
     }
 
     Ok(felts.into())
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn ecdsa_new_from_secret_key_derives_correct_commitment() {
-        let secret_key = miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
+        let secret_key = miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
         let expected_commitment = secret_key.public_key().to_commitment();
         let keystore = EcdsaPsmKeyStore::new(secret_key);
         assert_eq!(keystore.commitment(), expected_commitment);
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn ecdsa_sign_produces_verifiable_signature() {
-        use miden_objects::utils::Deserializable;
+        use miden_protocol::utils::Deserializable;
 
         let keystore = EcdsaPsmKeyStore::generate();
         let message = Word::default();
@@ -473,7 +473,7 @@ mod tests {
 
         let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature =
-            miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
+            miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
                 .unwrap();
         let pk = keystore.public_key();
         assert!(pk.verify(message, &signature));

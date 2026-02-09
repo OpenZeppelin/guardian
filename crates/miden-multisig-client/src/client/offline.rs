@@ -5,22 +5,15 @@
 
 use std::collections::HashSet;
 
-use miden_objects::asset::FungibleAsset;
-use miden_objects::transaction::TransactionSummary;
-use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::{FromJson, ToJson};
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::transaction::TransactionSummary;
+use private_state_manager_shared::{FromJson, SignatureScheme, ToJson};
 
 use super::MultisigClient;
-
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
 use crate::export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
 use crate::proposal::TransactionType;
-use crate::transaction::{
-    build_consume_notes_transaction_request, build_p2id_transaction_request,
-    build_update_psm_transaction_request, build_update_signers_transaction_request,
-    execute_for_summary, generate_salt, word_to_hex,
-};
 
 impl MultisigClient {
     /// Creates a proposal offline without pushing to PSM.
@@ -48,21 +41,24 @@ impl MultisigClient {
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<ExportedProposal> {
+        // Sync with the network before executing transaction
         self.sync().await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
         let current_threshold = account.threshold()?;
 
-        let salt = generate_salt();
-        let salt_hex = word_to_hex(&salt);
+        // Generate salt for replay protection
+        let salt = crate::transaction::generate_salt();
+        let salt_hex = crate::transaction::word_to_hex(&salt);
 
+        // Build transaction request based on type
         let (tx_request, metadata) = match &transaction_type {
             TransactionType::SwitchPsm {
                 new_endpoint,
                 new_commitment,
             } => {
-                let tx_request = build_update_psm_transaction_request(
+                let tx_request = crate::transaction::build_update_psm_transaction_request(
                     *new_commitment,
                     salt,
                     std::iter::empty(),
@@ -70,7 +66,7 @@ impl MultisigClient {
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
-                    new_psm_pubkey_hex: Some(word_to_hex(new_commitment)),
+                    new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(new_commitment)),
                     new_psm_endpoint: Some(new_endpoint.clone()),
                     ..Default::default()
                 };
@@ -86,8 +82,8 @@ impl MultisigClient {
                     MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
                 })?;
 
-                let tx_request = build_p2id_transaction_request(
-                    account.inner(),
+                let tx_request = crate::transaction::build_p2id_transaction_request(
+                    account.id(),
                     *recipient,
                     vec![asset.into()],
                     salt,
@@ -105,11 +101,13 @@ impl MultisigClient {
                 (tx_request, metadata)
             }
             TransactionType::ConsumeNotes { note_ids } => {
-                let tx_request = build_consume_notes_transaction_request(
+                let tx_request = crate::transaction::build_consume_notes_transaction_request(
+                    &self.miden_client,
                     note_ids.clone(),
                     salt,
                     std::iter::empty(),
-                )?;
+                )
+                .await?;
 
                 let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
                 let metadata = ExportedMetadata {
@@ -125,15 +123,17 @@ impl MultisigClient {
                 current_signers.push(*new_commitment);
                 let new_threshold = current_threshold as u64;
 
-                let (tx_request, _) = build_update_signers_transaction_request(
+                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
                     new_threshold,
                     &current_signers,
                     salt,
                     std::iter::empty(),
                 )?;
 
-                let signer_commitments_hex: Vec<String> =
-                    current_signers.iter().map(word_to_hex).collect();
+                let signer_commitments_hex: Vec<String> = current_signers
+                    .iter()
+                    .map(crate::transaction::word_to_hex)
+                    .collect();
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
@@ -161,15 +161,17 @@ impl MultisigClient {
                 let new_threshold =
                     std::cmp::min(current_threshold as u64, new_signers.len() as u64);
 
-                let (tx_request, _) = build_update_signers_transaction_request(
+                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
                     new_threshold,
                     &new_signers,
                     salt,
                     std::iter::empty(),
                 )?;
 
-                let signer_commitments_hex: Vec<String> =
-                    new_signers.iter().map(word_to_hex).collect();
+                let signer_commitments_hex: Vec<String> = new_signers
+                    .iter()
+                    .map(crate::transaction::word_to_hex)
+                    .collect();
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
@@ -184,15 +186,17 @@ impl MultisigClient {
                 new_threshold,
                 signer_commitments,
             } => {
-                let (tx_request, _) = build_update_signers_transaction_request(
+                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
                     *new_threshold as u64,
                     signer_commitments,
                     salt,
                     std::iter::empty(),
                 )?;
 
-                let signer_commitments_hex: Vec<String> =
-                    signer_commitments.iter().map(word_to_hex).collect();
+                let signer_commitments_hex: Vec<String> = signer_commitments
+                    .iter()
+                    .map(crate::transaction::word_to_hex)
+                    .collect();
 
                 let metadata = ExportedMetadata {
                     salt_hex: Some(salt_hex.clone()),
@@ -205,12 +209,16 @@ impl MultisigClient {
             }
         };
 
+        // Execute to get the TransactionSummary
         let tx_summary =
-            execute_for_summary(&mut self.miden_client, account_id, tx_request).await?;
+            crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
+                .await?;
 
+        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
+        // Build the proposal ID from commitment
         let id = format!(
             "0x{}",
             hex::encode(
@@ -221,6 +229,7 @@ impl MultisigClient {
             )
         );
 
+        // Determine transaction type string
         let tx_type_str = match &transaction_type {
             TransactionType::P2ID { .. } => "P2ID",
             TransactionType::ConsumeNotes { .. } => "ConsumeNotes",
@@ -230,6 +239,7 @@ impl MultisigClient {
             TransactionType::UpdateSigners { .. } => "UpdateSigners",
         };
 
+        // Create exported proposal with our signature
         let exported = ExportedProposal {
             version: EXPORT_VERSION,
             account_id: account_id.to_string(),
@@ -240,8 +250,6 @@ impl MultisigClient {
             signatures: vec![ExportedSignature {
                 signer_commitment: self.key_manager.commitment_hex(),
                 signature: signature_hex,
-                scheme: self.key_manager.scheme().to_string(),
-                public_key_hex: self.key_manager.public_key_hex().unwrap_or_default(),
             }],
             signatures_required: current_threshold as usize,
             metadata,
@@ -266,11 +274,13 @@ impl MultisigClient {
     pub fn sign_imported_proposal(&self, proposal: &mut ExportedProposal) -> Result<()> {
         let account = self.require_account()?;
 
+        // Check if user is a cosigner
         let user_commitment = self.key_manager.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
 
+        // Check if already signed
         let user_commitment_hex = self.key_manager.commitment_hex();
         if proposal.signatures.iter().any(|s| {
             s.signer_commitment
@@ -279,18 +289,19 @@ impl MultisigClient {
             return Err(MultisigError::AlreadySigned);
         }
 
+        // Parse the transaction summary to get the commitment
         let tx_summary = TransactionSummary::from_json(&proposal.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
 
+        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
+        // Add signature to proposal
         proposal.add_signature(ExportedSignature {
             signer_commitment: user_commitment_hex,
             signature: signature_hex,
-            scheme: self.key_manager.scheme().to_string(),
-            public_key_hex: self.key_manager.public_key_hex().unwrap_or_default(),
         })?;
 
         Ok(())
@@ -311,11 +322,13 @@ impl MultisigClient {
     /// client.execute_imported_proposal(&proposal).await?;
     /// ```
     pub async fn execute_imported_proposal(&mut self, exported: &ExportedProposal) -> Result<()> {
+        // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
+        // Verify proposal is ready
         if !exported.is_ready() {
             return Err(MultisigError::ProposalNotReady {
                 collected: exported.signatures_collected(),
@@ -323,33 +336,26 @@ impl MultisigClient {
             });
         }
 
+        // Parse the proposal
         let proposal = exported.to_proposal()?;
         let tx_summary = TransactionSummary::from_json(&exported.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
         let tx_summary_commitment = tx_summary.to_commitment();
 
+        // Convert exported signatures to SignatureInput format
         let signature_inputs: Vec<SignatureInput> = exported
             .signatures
             .iter()
-            .map(|sig| {
-                let scheme = match sig.scheme.as_str() {
-                    "ecdsa" => SignatureScheme::Ecdsa,
-                    _ => SignatureScheme::Falcon,
-                };
-                SignatureInput {
-                    signer_commitment: sig.signer_commitment.clone(),
-                    signature_hex: sig.signature.clone(),
-                    scheme,
-                    public_key_hex: if sig.public_key_hex.is_empty() {
-                        None
-                    } else {
-                        Some(sig.public_key_hex.clone())
-                    },
-                }
+            .map(|sig| SignatureInput {
+                signer_commitment: sig.signer_commitment.clone(),
+                signature_hex: sig.signature.clone(),
+                scheme: SignatureScheme::Falcon,
+                public_key_hex: None,
             })
             .collect();
 
+        // Build signature advice from cosigner signatures
         let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
         let mut signature_advice = collect_signature_advice(
@@ -358,20 +364,25 @@ impl MultisigClient {
             tx_summary_commitment,
         )?;
 
+        // SwitchPsm does NOT require PSM signature
         let is_switch_psm = matches!(
             &proposal.transaction_type,
             TransactionType::SwitchPsm { .. }
         );
 
         if !is_switch_psm {
+            // Get PSM ack signature and add to advice
             let psm_advice = self
                 .get_psm_ack_signature(&account, proposal.nonce, &tx_summary, tx_summary_commitment)
                 .await?;
             signature_advice.push(psm_advice);
         }
 
+        // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
+        // For signer-update transactions, we must propagate parse errors for signer commitments
+        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
         let signer_commitments = if matches!(
             &proposal.transaction_type,
             TransactionType::AddCosigner { .. }
@@ -384,14 +395,17 @@ impl MultisigClient {
         };
 
         let final_tx_request = build_final_transaction_request(
+            &self.miden_client,
             &proposal.transaction_type,
             account.inner(),
             salt,
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
-        )?;
+        )
+        .await?;
 
+        // Execute and finalize
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
     }

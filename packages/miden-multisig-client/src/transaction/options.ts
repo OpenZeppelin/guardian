@@ -1,9 +1,7 @@
-import type { AdviceMap, Word } from '@demox-labs/miden-sdk';
-import type { SignatureScheme } from '../types.js';
+import type { AdviceMap, Word } from '@miden-sdk/miden-sdk';
 
 export interface SignatureOptions {
   salt?: Word;
   signatureAdviceMap?: AdviceMap;
-  signatureScheme?: SignatureScheme;
 }
 

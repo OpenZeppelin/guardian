@@ -1,10 +1,10 @@
 //! Proposal builder for multisig transactions.
 
 use miden_client::Client;
-use miden_objects::Word;
-use miden_objects::account::AccountId;
-use miden_objects::asset::FungibleAsset;
-use miden_objects::note::NoteId;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::note::NoteId;
 use private_state_manager_client::PsmClient;
 use private_state_manager_shared::ToJson;
 
@@ -331,7 +331,7 @@ impl ProposalBuilder {
 
         // Build the P2ID transaction request (no signature advice needed for proposal)
         let tx_request = build_p2id_transaction_request(
-            account.inner(),
+            account_id,
             recipient,
             vec![asset.into()],
             salt,
@@ -413,8 +413,13 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the consume notes transaction request (no signatures for proposal)
-        let tx_request =
-            build_consume_notes_transaction_request(note_ids.clone(), salt, std::iter::empty())?;
+        let tx_request = build_consume_notes_transaction_request(
+            miden_client,
+            note_ids.clone(),
+            salt,
+            std::iter::empty(),
+        )
+        .await?;
 
         // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;

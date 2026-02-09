@@ -13,10 +13,10 @@ use miden_client::{
     Client, ClientError, Deserializable, ExecutionOptions, Felt, Serializable, Word,
 };
 use miden_client_sqlite_store::SqliteStore;
-use miden_objects::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
-use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RawFalconSignature;
+use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RawFalconSignature;
 
 use private_state_manager_client::auth_config::AuthType;
 use private_state_manager_client::{
@@ -26,8 +26,6 @@ use private_state_manager_client::{
 use private_state_manager_shared::hex::FromHex;
 use private_state_manager_shared::ToJson;
 
-use rand::SeedableRng;
-use rand_chacha::ChaCha20Rng;
 use tempfile::TempDir;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -104,9 +102,8 @@ async fn main() -> ClientResult<()> {
     println!("=== PSM Multi-Client E2E Flow ===\n");
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let rng = ChaCha20Rng::from_seed([42u8; 32]);
-    let keystore = FilesystemKeyStore::with_rng(temp_dir.path().to_path_buf(), rng)
-        .expect("Failed to create keystore");
+    let keystore =
+        FilesystemKeyStore::new(temp_dir.path().to_path_buf()).expect("Failed to create keystore");
 
     println!("Setup: Generating keys...");
 

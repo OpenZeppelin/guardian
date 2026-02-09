@@ -3,7 +3,10 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalS
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
+use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+use miden_protocol::utils::Serializable;
 use private_state_manager_shared::DeltaSignature;
+use private_state_manager_shared::hex::FromHex;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -30,8 +33,10 @@ pub async fn sign_delta_proposal(
         credentials,
     } = params;
 
+    // Resolve account and verify authentication
     let resolved = resolve_account(state, &account_id, &credentials).await?;
 
+    // Fetch the proposal by commitment
     let mut delta_proposal = resolved
         .storage
         .pull_delta_proposal(&account_id, &commitment)
@@ -41,6 +46,7 @@ pub async fn sign_delta_proposal(
             commitment: commitment.clone(),
         })?;
 
+    // Verify is a pending proposal
     let (timestamp, proposer_id, mut cosigner_sigs) = match &delta_proposal.status {
         DeltaStatus::Pending {
             timestamp,
@@ -59,19 +65,21 @@ pub async fn sign_delta_proposal(
         }
     };
 
+    // Extract signer ID from credentials
     let signer_commitment_hex = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(|e| {
+        Credentials::Signature { pubkey, .. } => {
+            let public_key = PublicKey::from_hex(pubkey).map_err(|e| {
                 PsmError::AuthenticationFailed(format!(
                     "invalid signer public key for {}: {}",
                     account_id, e
                 ))
-            })?,
+            })?;
+            let commitment = public_key.to_commitment();
+            format!("0x{}", hex::encode(commitment.to_bytes()))
+        }
     };
 
+    // Check if already signed by this signer
     if cosigner_sigs
         .iter()
         .any(|sig| sig.signer_id.eq_ignore_ascii_case(&signer_commitment_hex))
@@ -81,21 +89,8 @@ pub async fn sign_delta_proposal(
         });
     }
 
-    let signature = match signature {
-        ProposalSignature::Ecdsa {
-            signature: sig_hex, ..
-        } => {
-            let pubkey_hex = match &credentials {
-                Credentials::Signature { pubkey, .. } => Some(pubkey.clone()),
-            };
-            ProposalSignature::Ecdsa {
-                signature: sig_hex,
-                public_key: pubkey_hex,
-            }
-        }
-        other => other,
-    };
-
+    // Create the proposal signature based on scheme
+    // Add the new signature
     let new_signature = CosignerSignature {
         signature,
         timestamp: state.clock.now_rfc3339(),
@@ -137,12 +132,14 @@ pub async fn sign_delta_proposal(
         "sign_delta_proposal appended signature"
     );
 
+    // Update the delta proposal with the new signature
     delta_proposal.status = DeltaStatus::Pending {
         timestamp,
         proposer_id,
         cosigner_sigs,
     };
 
+    // Store the updated proposal
     resolved
         .storage
         .update_delta_proposal(&commitment, &delta_proposal)

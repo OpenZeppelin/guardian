@@ -1,6 +1,6 @@
-use miden_objects::crypto::dsa::ecdsa_k256_keccak::PublicKey as EcdsaPublicKey;
-use miden_objects::crypto::dsa::rpo_falcon512::PublicKey as FalconPublicKey;
-use miden_objects::utils::Serializable;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey as EcdsaPublicKey;
+use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey as FalconPublicKey;
+use miden_protocol::utils::Serializable;
 use private_state_manager_shared::hex::FromHex;
 
 use crate::api::grpc::state_manager::auth_config;
@@ -205,8 +205,8 @@ pub async fn update_credentials(
 mod tests {
     use super::*;
     use crate::api::grpc::state_manager::{AuthConfig, MidenEcdsaAuth, MidenFalconRpoAuth};
-    use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey as FalconSecretKey;
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey as FalconSecretKey;
     use private_state_manager_shared::hex::IntoHex;
 
     // --- scheme() ---

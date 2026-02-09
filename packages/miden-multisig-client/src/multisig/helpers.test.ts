@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './helpers.js';
 
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   Account: {},
   TransactionSummary: {
     deserialize: vi.fn((bytes: Uint8Array) => ({
@@ -27,7 +27,7 @@ describe('multisig helpers', () => {
     });
 
     it('deserializes the tx summary bytes', async () => {
-      const { TransactionSummary } = await import('@demox-labs/miden-sdk');
+      const { TransactionSummary } = await import('@miden-sdk/miden-sdk');
       const base64 = btoa(String.fromCharCode(...new Uint8Array([4, 5, 6])));
 
       computeCommitmentFromTxSummary(base64);

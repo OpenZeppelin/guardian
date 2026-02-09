@@ -5,9 +5,8 @@
 //! side channels (email, USB, etc.) when the PSM server is unavailable.
 //!
 
-use miden_objects::Felt;
-use miden_objects::account::AccountId;
-use miden_objects::transaction::TransactionSummary;
+use miden_protocol::account::AccountId;
+use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::FromJson;
 use serde::{Deserialize, Serialize};
 
@@ -41,9 +40,6 @@ pub struct ExportedProposal {
 pub struct ExportedSignature {
     pub signer_commitment: String,
     pub signature: String,
-    pub scheme: String,
-    #[serde(default)]
-    pub public_key_hex: String,
 }
 
 /// Metadata needed for proposal reconstruction.
@@ -341,7 +337,9 @@ impl ExportedProposal {
 }
 
 /// Converts a hex string to Word.
-fn hex_to_word(hex: &str) -> Result<miden_objects::Word> {
+fn hex_to_word(hex: &str) -> Result<miden_protocol::Word> {
+    use miden_protocol::Felt;
+
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
     let bytes = hex::decode(hex).map_err(|e| {
         MultisigError::InvalidConfig(format!("invalid hex string '{}': {}", hex, e))
@@ -361,7 +359,7 @@ fn hex_to_word(hex: &str) -> Result<miden_objects::Word> {
         arr.copy_from_slice(chunk);
         word[i] = u64::from_le_bytes(arr);
     }
-    Ok(miden_objects::Word::from(word.map(Felt::new)))
+    Ok(miden_protocol::Word::from(word.map(Felt::new)))
 }
 
 #[cfg(test)]
@@ -373,8 +371,6 @@ mod tests {
         let sig = ExportedSignature {
             signer_commitment: "0xabc123".to_string(),
             signature: "0xdef456".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         };
 
         let json = serde_json::to_string(&sig).expect("should serialize");
@@ -422,8 +418,6 @@ mod tests {
         let sig1 = ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         };
 
         // First signature should succeed
@@ -455,16 +449,12 @@ mod tests {
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         });
         assert!(!proposal.is_ready());
 
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner2".to_string(),
             signature: "0xsig2".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         });
         assert!(proposal.is_ready());
     }
@@ -507,8 +497,6 @@ mod tests {
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         });
 
         assert_eq!(proposal.signature_counts(), (1, 3));
@@ -528,14 +516,10 @@ mod tests {
                 ExportedSignature {
                     signer_commitment: "0xSigner1".to_string(),
                     signature: "0xsig1".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
             ],
             signatures_required: 3,
@@ -562,14 +546,10 @@ mod tests {
                 ExportedSignature {
                     signer_commitment: "0xsigner1".to_string(),
                     signature: "0xsig1".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
             ],
             signatures_required: 3,

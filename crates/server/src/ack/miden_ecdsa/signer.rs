@@ -1,7 +1,7 @@
 use crate::delta_object::DeltaObject;
 use crate::error::PsmError;
 use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, ecdsa_commitment_hex};
-use miden_objects::{
+use miden_protocol::{
     Word, crypto::dsa::ecdsa_k256_keccak::Signature, transaction::TransactionSummary,
     utils::Serializable,
 };

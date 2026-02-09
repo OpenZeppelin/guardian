@@ -26,10 +26,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@openzeppelin/psm-client": "^0.12.8"
-  },
-  "peerDependencies": {
-    "@demox-labs/miden-sdk": "^0.12.5"
+    "@openzeppelin/psm-client": "file:../psm-client",
+    "@miden-sdk/miden-sdk": "^0.13.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

@@ -1,8 +1,7 @@
 //! Configuration types for the multisig client.
 
-use miden_objects::Word;
-use miden_objects::account::AccountStorageMode;
-use private_state_manager_shared::SignatureScheme;
+use miden_protocol::Word;
+use miden_protocol::account::AccountStorageMode;
 
 use crate::procedures::ProcedureName;
 
@@ -53,8 +52,8 @@ impl ProcedureThreshold {
     }
 
     /// Returns the procedure root (MAST root hash) for this threshold.
-    pub fn procedure_root(&self, scheme: SignatureScheme) -> Word {
-        self.procedure.root_for_scheme(scheme)
+    pub fn procedure_root(&self) -> Word {
+        self.procedure.root()
     }
 }
 
@@ -64,7 +63,6 @@ pub struct MultisigConfig {
     pub threshold: u32,
     pub signer_commitments: Vec<Word>,
     pub psm_config: PsmConfig,
-    pub signature_scheme: SignatureScheme,
     pub storage_mode: AccountStorageMode,
     pub procedure_thresholds: Vec<ProcedureThreshold>,
 }
@@ -81,7 +79,6 @@ impl MultisigConfig {
             threshold,
             signer_commitments,
             psm_config,
-            signature_scheme: SignatureScheme::Falcon,
             storage_mode: AccountStorageMode::Private,
             procedure_thresholds: Vec::new(),
         }
@@ -90,12 +87,6 @@ impl MultisigConfig {
     /// Sets the account storage mode.
     pub fn with_storage_mode(mut self, storage_mode: AccountStorageMode) -> Self {
         self.storage_mode = storage_mode;
-        self
-    }
-
-    /// Sets the signature scheme for the multisig account.
-    pub fn with_signature_scheme(mut self, signature_scheme: SignatureScheme) -> Self {
-        self.signature_scheme = signature_scheme;
         self
     }
 
@@ -144,8 +135,8 @@ impl MultisigConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::Word;
-    use miden_objects::account::AccountStorageMode;
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountStorageMode;
 
     fn dummy_word() -> Word {
         Word::default()
@@ -174,12 +165,9 @@ mod tests {
     #[test]
     fn procedure_threshold_procedure_root_returns_correct_root() {
         let threshold = ProcedureThreshold::new(ProcedureName::SendAsset, 2);
-        let root = threshold.procedure_root(SignatureScheme::Falcon);
-        // The root should match the procedure's root for Falcon
-        assert_eq!(
-            root,
-            ProcedureName::SendAsset.root_for_scheme(SignatureScheme::Falcon)
-        );
+        let root = threshold.procedure_root();
+        // The root should match the procedure's root
+        assert_eq!(root, ProcedureName::SendAsset.root());
     }
 
     #[test]
@@ -193,7 +181,6 @@ mod tests {
         assert_eq!(config.psm_config.endpoint, "http://psm:50051");
         // Verify defaults
         assert!(matches!(config.storage_mode, AccountStorageMode::Private));
-        assert!(matches!(config.signature_scheme, SignatureScheme::Falcon));
         assert!(config.procedure_thresholds.is_empty());
     }
 

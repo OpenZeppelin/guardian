@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // Mock Miden SDK before importing transaction module
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: { fromHex: vi.fn() },
   AdviceMap: vi.fn(),
   Felt: vi.fn().mockImplementation((v) => ({ value: v })),

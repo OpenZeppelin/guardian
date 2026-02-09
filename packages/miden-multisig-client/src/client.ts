@@ -1,4 +1,4 @@
-import { type WebClient, Account, AccountId } from '@demox-labs/miden-sdk';
+import { type WebClient, Account, AccountId } from '@miden-sdk/miden-sdk';
 import { PsmHttpClient, type SignatureScheme } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';

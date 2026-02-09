@@ -21,8 +21,8 @@ use std::path::PathBuf;
 
 use miden_client::Client;
 use miden_client::rpc::Endpoint;
-use miden_objects::Word;
-use miden_objects::account::AccountId;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
