@@ -125,11 +125,7 @@ impl MultisigClient {
                 ))
             })?;
 
-        // Try to sync with the network to ensure consistent state.
-        if let Err(_e) = self.miden_client.sync_state().await {
-            // Log but don't fail - the transaction was executed successfully
-            // Sync failed - PSM may not have canonicalized yet.
-        }
+        if let Err(_e) = self.miden_client.sync_state().await {}
 
         let account_record = self
             .miden_client
@@ -312,13 +308,7 @@ mod tests {
         let sig = sk.sign(msg);
         let sig_hex = format!("0x{}", hex::encode(sig.to_bytes()));
 
-        let result = parse_ack_signature(
-            &sig_hex,
-            "ecdsa",
-            None, // missing pubkey
-            Word::default(),
-            msg,
-        );
+        let result = parse_ack_signature(&sig_hex, "ecdsa", None, Word::default(), msg);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("ack_pubkey"));
     }

@@ -6,13 +6,11 @@ use miden_protocol::account::{Account, AccountId, StorageSlotContent, StorageSlo
 
 use crate::error::{MultisigError, Result};
 
-// Storage slot names for OpenZeppelin multisig/psm components
 const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
 const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
 const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
 const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
 
-// Alternative slot names for miden-standards auth components
 const STD_THRESHOLD_CONFIG: &str =
     "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
 const STD_APPROVER_PUBKEYS: &str =
@@ -138,7 +136,6 @@ impl MultisigAccount {
     pub fn cosigner_commitments(&self) -> Vec<Word> {
         let mut commitments = Vec::new();
 
-        // Find the map slot name
         let Some(slot_name) =
             self.find_map_slot_name(&[OZ_MULTISIG_SIGNER_PUBKEYS, STD_APPROVER_PUBKEYS])
         else {

@@ -153,7 +153,6 @@ mod tests {
         let (key, values) = result.unwrap();
         assert!(!values.is_empty());
 
-        // key should match direct build
         let (expected_key, _) =
             build_signature_advice_entry(commitment, message, &account_sig, Some(&pk));
         assert_eq!(key, expected_key);
@@ -182,7 +181,6 @@ mod tests {
         let rpo_sig = secret_key.sign(message);
         let signature = AccountSignature::from(rpo_sig);
 
-        // Valid hex but not a valid ECDSA public key
         let bad_hex = format!("0x{}", "ab".repeat(33));
         let result = build_ecdsa_signature_advice_entry(commitment, message, &signature, &bad_hex);
         assert!(result.is_err());

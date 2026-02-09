@@ -21,21 +21,18 @@ impl ProcedureName {
     /// These roots are deterministic based on the MASM bytecode.
     pub fn root(&self) -> Word {
         match self {
-            // Multisig component procedures
             ProcedureName::UpdateSigners => {
                 word_from_hex("26905086c572765c44337002a961a4d69514889d7e55686dc31c00383b614c47")
             }
             ProcedureName::AuthTx => {
                 word_from_hex("2bc7664a9dd47b36e7c8b8c3df03412798e4410173f36acfe03d191a38add053")
             }
-            // PSM component procedures
             ProcedureName::UpdatePsm => {
                 word_from_hex("26ec27195f1fd3eb622b851dfc9eab038bca87522cfc7ec209bfe507682303b1")
             }
             ProcedureName::VerifyPsm => {
                 word_from_hex("878a1f70568f2c3798cfa0163fc085fa350f92c1b4a8fe78a605613cc27f7230")
             }
-            // BasicWallet procedures
             ProcedureName::SendAsset => {
                 word_from_hex("d6c130dba13c67ac4733915f24bea9d19f517f51a65c74ded7bcd27e066b400e")
             }
@@ -94,8 +91,6 @@ fn word_from_hex(hex_str: &str) -> Word {
     let bytes = hex::decode(hex_str).expect("invalid hex in procedure root constant");
     assert_eq!(bytes.len(), 32, "procedure root must be 32 bytes");
 
-    // The hex is in big-endian order: [e3_bytes, e2_bytes, e1_bytes, e0_bytes]
-    // Word is [e0, e1, e2, e3] where each element is a Felt
     let e3 = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
     let e2 = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
     let e1 = u64::from_be_bytes(bytes[16..24].try_into().unwrap());
@@ -119,7 +114,6 @@ mod tests {
 
     #[test]
     fn procedure_roots_are_valid() {
-        // Just verify we can get roots without panicking
         for name in ProcedureName::all() {
             let _root = name.root();
         }

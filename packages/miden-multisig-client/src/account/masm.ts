@@ -1,4 +1,3 @@
-// Embedded MASM constants - content from crates/contracts/masm/auth/*.masm (v0.13)
 
 export const MULTISIG_MASM = `# Multi-Signature RPO Falcon 512 Authentication Component
 #

@@ -210,13 +210,13 @@ mod tests {
 
         let signatures = vec![
             SignatureInput {
-                signer_commitment: "0xABC".to_string(), // uppercase
+                signer_commitment: "0xABC".to_string(),
                 signature_hex: "0x1234".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
             },
             SignatureInput {
-                signer_commitment: "0xabc".to_string(), // lowercase duplicate
+                signer_commitment: "0xabc".to_string(),
                 signature_hex: "0x5678".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
@@ -294,7 +294,7 @@ mod tests {
             signer_commitment: commitment_hex,
             signature_hex,
             scheme: SignatureScheme::Ecdsa,
-            public_key_hex: None, // missing!
+            public_key_hex: None,
         }];
 
         let result = collect_signature_advice(signatures, &required, msg);
@@ -336,7 +336,7 @@ mod tests {
         let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
         let signatures = vec![SignatureInput {
             signer_commitment: commitment_hex,
-            signature_hex: "0xdeadbeef".to_string(), // valid hex, invalid ECDSA sig
+            signature_hex: "0xdeadbeef".to_string(),
             scheme: SignatureScheme::Ecdsa,
             public_key_hex: Some(pk_hex),
         }];
@@ -355,7 +355,7 @@ mod tests {
         let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
         let signatures = vec![SignatureInput {
             signer_commitment: commitment_hex,
-            signature_hex: "0xdeadbeef".to_string(), // invalid
+            signature_hex: "0xdeadbeef".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
         }];

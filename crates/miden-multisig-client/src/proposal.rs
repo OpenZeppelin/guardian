@@ -196,7 +196,6 @@ impl Proposal {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Extract P2ID fields
         let recipient_hex = metadata_obj
             .and_then(|m| m.get("recipient_id"))
             .and_then(|v| v.as_str())
@@ -405,7 +404,6 @@ impl Proposal {
                     .cloned()
                     .collect()
             }
-            // Ready/Finalized proposals have no missing signers
             ProposalStatus::Ready | ProposalStatus::Finalized => Vec::new(),
         }
     }
@@ -505,7 +503,6 @@ mod tests {
     use miden_protocol::transaction::{InputNotes, OutputNotes};
 
     fn create_test_tx_summary() -> TransactionSummary {
-        // Use a minimal valid account ID
         let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
         let delta = AccountDelta::new(
             account_id,
@@ -549,7 +546,6 @@ mod tests {
 
     #[test]
     fn test_transaction_type_transfer() {
-        // Use valid Miden AccountId format
         let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
         let faucet_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594171").unwrap();
         let amount = 1000u64;
@@ -665,7 +661,7 @@ mod tests {
         let pending = ProposalStatus::Pending {
             signatures_collected: 1,
             signatures_required: 3,
-            signers: vec!["0xABC".to_string()], // uppercase to test case-insensitivity
+            signers: vec!["0xABC".to_string()],
         };
 
         let proposal = Proposal {
@@ -676,7 +672,7 @@ mod tests {
             tx_summary: create_test_tx_summary(),
             metadata: ProposalMetadata {
                 signer_commitments_hex: vec![
-                    "0xabc".to_string(), // lowercase
+                    "0xabc".to_string(),
                     "0xdef".to_string(),
                     "0x456".to_string(),
                 ],
@@ -688,7 +684,6 @@ mod tests {
         assert_eq!(missing.len(), 2);
         assert!(missing.contains(&"0xdef".to_string()));
         assert!(missing.contains(&"0x456".to_string()));
-        // 0xabc should NOT be in missing (already signed)
         assert!(!missing.contains(&"0xabc".to_string()));
     }
 
@@ -711,8 +706,6 @@ mod tests {
 
         assert_eq!(proposal.signatures_needed(), 0);
     }
-
-    // ==================== determine_transaction_type tests ====================
 
     fn word_from_u64(v: u64) -> Word {
         [Felt::new(v), Felt::ZERO, Felt::ZERO, Felt::ZERO].into()
@@ -766,7 +759,6 @@ mod tests {
     fn test_determine_no_change_returns_update_signers() {
         let signers = vec![word_from_u64(1), word_from_u64(2)];
 
-        // Same threshold, same signers → falls through to UpdateSigners
         let result = determine_transaction_type(2, 2, &signers, &signers);
 
         match result {
@@ -781,8 +773,6 @@ mod tests {
         }
     }
 
-    // ==================== ProposalMetadata parser tests ====================
-
     #[test]
     fn test_metadata_salt_valid() {
         let metadata = ProposalMetadata {
@@ -793,7 +783,6 @@ mod tests {
         };
 
         let salt = metadata.salt().expect("salt should parse");
-        // Verify it's not the default Word
         assert_ne!(salt, Word::default());
     }
 
@@ -831,7 +820,6 @@ mod tests {
 
     #[test]
     fn test_metadata_note_ids_valid() {
-        // NoteId is 32 bytes = 64 hex chars
         let note_hex = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         let metadata = ProposalMetadata {

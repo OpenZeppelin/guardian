@@ -29,30 +29,27 @@ impl MultisigClient {
     /// ```ignore
     /// use miden_multisig_client::TransactionType;
     ///
-    /// // Create proposal offline
+    ///
     /// let exported = client.create_proposal_offline(
     ///     TransactionType::SwitchPsm { new_endpoint, new_commitment }
     /// ).await?;
     ///
-    /// // Save to file for sharing
+    ///
     /// std::fs::write("proposal.json", exported.to_json()?)?;
     /// ```
     pub async fn create_proposal_offline(
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<ExportedProposal> {
-        // Sync with the network before executing transaction
         self.sync().await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
         let current_threshold = account.threshold()?;
 
-        // Generate salt for replay protection
         let salt = crate::transaction::generate_salt();
         let salt_hex = crate::transaction::word_to_hex(&salt);
 
-        // Build transaction request based on type
         let (tx_request, metadata) = match &transaction_type {
             TransactionType::SwitchPsm {
                 new_endpoint,
@@ -212,16 +209,13 @@ impl MultisigClient {
             }
         };
 
-        // Execute to get the TransactionSummary
         let tx_summary =
             crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
                 .await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
-        // Build the proposal ID from commitment
         let id = format!(
             "0x{}",
             hex::encode(
@@ -232,7 +226,6 @@ impl MultisigClient {
             )
         );
 
-        // Determine transaction type string
         let tx_type_str = match &transaction_type {
             TransactionType::P2ID { .. } => "P2ID",
             TransactionType::ConsumeNotes { .. } => "ConsumeNotes",
@@ -242,7 +235,6 @@ impl MultisigClient {
             TransactionType::UpdateSigners { .. } => "UpdateSigners",
         };
 
-        // Create exported proposal with our signature
         let exported = ExportedProposal {
             version: EXPORT_VERSION,
             account_id: account_id.to_string(),
@@ -277,13 +269,11 @@ impl MultisigClient {
     pub fn sign_imported_proposal(&self, proposal: &mut ExportedProposal) -> Result<()> {
         let account = self.require_account()?;
 
-        // Check if user is a cosigner
         let user_commitment = self.key_manager.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
 
-        // Check if already signed
         let user_commitment_hex = self.key_manager.commitment_hex();
         if proposal.signatures.iter().any(|s| {
             s.signer_commitment
@@ -292,16 +282,13 @@ impl MultisigClient {
             return Err(MultisigError::AlreadySigned);
         }
 
-        // Parse the transaction summary to get the commitment
         let tx_summary = TransactionSummary::from_json(&proposal.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
-        // Add signature to proposal
         proposal.add_signature(ExportedSignature {
             signer_commitment: user_commitment_hex,
             signature: signature_hex,
@@ -325,13 +312,11 @@ impl MultisigClient {
     /// client.execute_imported_proposal(&proposal).await?;
     /// ```
     pub async fn execute_imported_proposal(&mut self, exported: &ExportedProposal) -> Result<()> {
-        // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        // Verify proposal is ready
         if !exported.is_ready() {
             return Err(MultisigError::ProposalNotReady {
                 collected: exported.signatures_collected(),
@@ -339,14 +324,12 @@ impl MultisigClient {
             });
         }
 
-        // Parse the proposal
         let proposal = exported.to_proposal()?;
         let tx_summary = TransactionSummary::from_json(&exported.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
         let tx_summary_commitment = tx_summary.to_commitment();
 
-        // Convert exported signatures to SignatureInput format
         let signature_inputs: Vec<SignatureInput> = exported
             .signatures
             .iter()
@@ -358,7 +341,6 @@ impl MultisigClient {
             })
             .collect();
 
-        // Build signature advice from cosigner signatures
         let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
         let mut signature_advice = collect_signature_advice(
@@ -367,25 +349,20 @@ impl MultisigClient {
             tx_summary_commitment,
         )?;
 
-        // SwitchPsm does NOT require PSM signature
         let is_switch_psm = matches!(
             &proposal.transaction_type,
             TransactionType::SwitchPsm { .. }
         );
 
         if !is_switch_psm {
-            // Get PSM ack signature and add to advice
             let psm_advice = self
                 .get_psm_ack_signature(&account, proposal.nonce, &tx_summary, tx_summary_commitment)
                 .await?;
             signature_advice.push(psm_advice);
         }
 
-        // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
-        // For signer-update transactions, we must propagate parse errors for signer commitments
-        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
         let signer_commitments = if matches!(
             &proposal.transaction_type,
             TransactionType::AddCosigner { .. }
@@ -409,7 +386,6 @@ impl MultisigClient {
         )
         .await?;
 
-        // Execute and finalize
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
     }

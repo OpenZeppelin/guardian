@@ -3,7 +3,6 @@ import { StorageSlot, StorageMap, Word } from '@miden-sdk/miden-sdk';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { getProcedureRoot } from '../procedures.js';
 
-// Storage slot names matching the MASM definitions
 const MULTISIG_SLOT_NAMES = {
   THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
   SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',

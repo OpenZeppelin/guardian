@@ -199,8 +199,8 @@ pub fn ensure_hex_prefix(input: &str) -> String {
 ///
 /// # Example
 /// ```ignore
-/// validate_commitment_hex("0x1234...").unwrap(); // 64 hex chars after 0x
-/// validate_commitment_hex("abc").unwrap_err();   // too short
+/// validate_commitment_hex("0x1234...").unwrap();
+/// validate_commitment_hex("abc").unwrap_err();
 /// ```
 pub fn validate_commitment_hex(input: &str) -> Result<(), String> {
     let stripped = strip_hex_prefix(input);
@@ -420,8 +420,6 @@ mod tests {
         let result = hex::encode(bytes);
         assert_eq!(original, result);
     }
-
-    // --- EcdsaPsmKeyStore tests ---
 
     #[test]
     fn ecdsa_generate_creates_valid_keystore() {

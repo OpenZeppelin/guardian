@@ -57,21 +57,18 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        // Get the proposal
         let proposals = self.list_proposals().await?;
         let proposal = proposals
             .iter()
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
-        // Get raw delta to extract signatures
         let mut psm_client = self.create_authenticated_psm_client().await?;
         let proposals_response = psm_client
             .get_delta_proposals(&account_id)
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
 
-        // Find the raw proposal - fail if not found
         let raw_proposal = proposals_response
             .proposals
             .iter()
@@ -83,7 +80,6 @@ impl MultisigClient {
                 ))
             })?;
 
-        // Extract signatures - fail if status structure is missing
         let status = raw_proposal.status.as_ref().ok_or_else(|| {
             MultisigError::PsmServer(format!("proposal {} has no status field", proposal_id))
         })?;
@@ -145,7 +141,6 @@ impl MultisigClient {
     pub fn import_proposal_from_string(&self, json: &str) -> Result<ExportedProposal> {
         let exported = ExportedProposal::from_json(json)?;
 
-        // Validate account ID matches if we have an account loaded
         if let Some(account) = &self.account {
             let expected_id = account.id().to_string();
             if !exported.account_id.eq_ignore_ascii_case(&expected_id) {

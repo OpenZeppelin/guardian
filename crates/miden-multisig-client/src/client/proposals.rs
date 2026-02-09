@@ -3,13 +3,15 @@
 //! This module handles listing, signing, executing, and creating proposals
 //! via PSM (online mode).
 
-use std::collections::HashSet;
+use private_state_manager_shared::ProposalSignature;
 
-use private_state_manager_shared::{DeltaPayload, ProposalSignature, SignatureScheme};
-
+use super::proposal::execution::signer_commitments_for_transaction;
+use super::proposal::parser::{
+    parse_unique_signature_inputs, required_commitments,
+};
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
-use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
+use crate::execution::{build_final_transaction_request, collect_signature_advice};
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::ProposalBuilder;
 
@@ -89,12 +91,6 @@ impl MultisigClient {
     /// Executes a proposal when it has enough signatures.
     ///
     /// This will:
-    /// 1. Sync with the Miden network to get latest chain state
-    /// 2. Get the proposal and verify it has enough signatures
-    /// 3. Push delta to PSM to get acknowledgment signature
-    /// 4. Build the transaction with all cosigner signatures + PSM ack
-    /// 5. Execute the transaction on-chain
-    /// 6. Sync and update local account state
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
         self.sync().await?;
 
@@ -130,49 +126,8 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        let mut signature_inputs: Vec<SignatureInput> = {
-            let payload: DeltaPayload =
-                serde_json::from_str(&raw_proposal.delta_payload).map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to parse delta payload signatures: {}",
-                        e
-                    ))
-                })?;
-            payload
-                .signatures
-                .iter()
-                .map(|ds| {
-                    let (scheme, sig_hex, pk_hex) = match &ds.signature {
-                        ProposalSignature::Falcon { signature } => {
-                            (SignatureScheme::Falcon, signature.clone(), None)
-                        }
-                        ProposalSignature::Ecdsa {
-                            signature,
-                            public_key,
-                        } => (
-                            SignatureScheme::Ecdsa,
-                            signature.clone(),
-                            public_key.clone(),
-                        ),
-                    };
-                    SignatureInput {
-                        signer_commitment: ds.signer_id.clone(),
-                        signature_hex: sig_hex,
-                        scheme,
-                        public_key_hex: pk_hex,
-                    }
-                })
-                .collect()
-        };
-
-        signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
-        signature_inputs.dedup_by(|a, b| {
-            a.signer_commitment
-                .eq_ignore_ascii_case(&b.signer_commitment)
-        });
-
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let signature_inputs = parse_unique_signature_inputs(&raw_proposal.delta_payload)?;
+        let required_commitments = required_commitments(&account);
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
             &required_commitments,
@@ -197,17 +152,7 @@ impl MultisigClient {
         }
 
         let salt = proposal.metadata.salt()?;
-
-        let signer_commitments = if matches!(
-            &proposal.transaction_type,
-            TransactionType::AddCosigner { .. }
-                | TransactionType::RemoveCosigner { .. }
-                | TransactionType::UpdateSigners { .. }
-        ) {
-            Some(proposal.metadata.signer_commitments()?)
-        } else {
-            proposal.metadata.signer_commitments().ok()
-        };
+        let signer_commitments = signer_commitments_for_transaction(&proposal)?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
@@ -235,12 +180,12 @@ impl MultisigClient {
     /// ```ignore
     /// use miden_multisig_client::TransactionType;
     ///
-    /// // Add a new cosigner
+    ///
     /// let proposal = client.propose_transaction(
     ///     TransactionType::AddCosigner { new_commitment }
     /// ).await?;
     ///
-    /// // Remove a cosigner
+    ///
     /// let proposal = client.propose_transaction(
     ///     TransactionType::RemoveCosigner { commitment }
     /// ).await?;

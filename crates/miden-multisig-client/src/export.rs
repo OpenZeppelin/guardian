@@ -298,7 +298,6 @@ impl ExportedProposal {
     ///
     /// Returns an error if the signer has already signed.
     pub fn add_signature(&mut self, signature: ExportedSignature) -> Result<()> {
-        // Check if already signed
         if self.signatures.iter().any(|s| {
             s.signer_commitment
                 .eq_ignore_ascii_case(&signature.signer_commitment)
@@ -420,11 +419,9 @@ mod tests {
             signature: "0xsig1".to_string(),
         };
 
-        // First signature should succeed
         proposal.add_signature(sig1.clone()).expect("should add");
         assert_eq!(proposal.signatures.len(), 1);
 
-        // Duplicate should fail
         let result = proposal.add_signature(sig1);
         assert!(result.is_err());
         assert_eq!(proposal.signatures.len(), 1);
@@ -526,7 +523,6 @@ mod tests {
             metadata: ExportedMetadata::default(),
         };
 
-        // Test case-insensitive matching
         assert!(proposal.has_signed("0xsigner1"));
         assert!(proposal.has_signed("0xSIGNER1"));
         assert!(proposal.has_signed("0xSigner2"));
@@ -562,7 +558,6 @@ mod tests {
         assert!(signers.contains(&"0xsigner2"));
     }
 
-    // Helper for valid account ID (15 bytes = 30 hex chars)
     fn valid_account_id() -> String {
         "0x7bfb0f38b0fafa103f86a805594170".to_string()
     }
@@ -571,12 +566,10 @@ mod tests {
         "0x7bfb0f38b0fafa103f86a805594171".to_string()
     }
 
-    // Helper for valid 32-byte hex (Word)
     fn valid_word_hex() -> String {
         "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
     }
 
-    // Helper for valid note ID hex (32 bytes)
     fn valid_note_id_hex() -> String {
         "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
     }
@@ -738,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_hex_to_word_invalid_length() {
-        let hex = "0x1234"; // Too short
+        let hex = "0x1234";
         let result = hex_to_word(hex);
         assert!(result.is_err());
     }

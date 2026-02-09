@@ -39,7 +39,6 @@ where
         MultisigError::TransactionExecution(format!("failed to create P2ID note: {}", e))
     })?;
 
-    // Build the transaction request using own_output_notes
     let request = TransactionRequestBuilder::new()
         .own_output_notes(vec![OutputNote::Full(note)])
         .extend_advice_map(signature_advice)

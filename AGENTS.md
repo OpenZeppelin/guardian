@@ -171,3 +171,71 @@ Before finishing, confirm all are true:
   2. Update both multisig SDKs and both base clients as needed.
   3. Re-run cross-layer validation (including examples).
   4. Update docs and changelog/release notes to call out the dependency line change.
+
+## 11) Coding Style (Multisig Focus)
+
+Apply these rules especially to:
+- `crates/miden-multisig-client`
+- `packages/miden-multisig-client`
+
+### Function Design
+
+- Prefer small, single-purpose functions over long multi-step procedures.
+- Separate orchestration from transformation:
+  - Orchestrators coordinate calls and side effects.
+  - Helpers perform pure data transformation/validation.
+- Avoid mixing transport calls, business rules, and serialization in one function.
+- Target shape:
+  - Helper functions: short and focused.
+  - Long workflows should be split into named steps with explicit inputs/outputs.
+
+### Comment Style
+
+- Do not add inline comments (`// ...`) in implementation code.
+- Do not add step-by-step procedural comments (for example `1.`, `2.`, `3.`) in method docs.
+- Prefer clear naming and small functions over explanatory comments.
+- If documentation is required, keep it concise, high-level, and non-procedural.
+
+### Module Boundaries
+
+- Organize by capability, not by file size:
+  - Account lifecycle
+  - Proposal lifecycle (create/sign/list/execute)
+  - Signature/advice preparation
+  - PSM transport adapters
+  - Metadata mapping/normalization
+- Group files by concept using folders when two or more files belong to the same concern.
+  - TypeScript example: `multisig/proposal/parser.ts`, `multisig/proposal/execution.ts`
+  - Rust equivalent: `client/proposal/parser.rs`, `client/proposal/execution.rs`
+- Keep scheme-specific logic (Falcon/ECDSA) behind focused helpers/strategies.
+- Minimize cross-module reach; prefer narrow interfaces.
+
+### API and Type Discipline
+
+- Keep public APIs explicit and stable unless change is intentional.
+- Prefer typed structures/enums over ad-hoc maps or stringly-typed branching.
+- Model proposal state transitions explicitly (pending/ready/finalized).
+- Ensure Rust and TypeScript behavior remain semantically equivalent for the same workflow.
+
+### Error Handling
+
+- Use structured errors at boundaries; avoid losing context in generic string errors.
+- Add context at adapter edges (PSM, Miden node, serialization/parsing).
+- Fail fast on malformed signatures/metadata instead of silently coercing.
+
+### Testing Expectations for Refactors
+
+- Refactors must preserve behavior:
+  - Add characterization tests before moving complex logic.
+  - Keep or improve existing integration coverage.
+- For multisig changes:
+  - Validate both Falcon and ECDSA paths.
+  - Validate online and offline proposal flows.
+  - Validate both examples (`examples/demo`, `examples/web`) when applicable.
+
+### Propagation Rule
+
+- If a public API changes in either multisig client, propagate updates to:
+  - `examples/demo`
+  - `examples/web`
+  - any affected docs and tests in the same PR.

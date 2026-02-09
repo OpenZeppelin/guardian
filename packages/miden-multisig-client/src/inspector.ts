@@ -4,7 +4,6 @@ import { wordElementToBigInt, wordToHex } from './utils/word.js';
 import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
 import type { SignatureScheme } from './types.js';
 
-// Storage slot names matching the MASM definitions
 const MULTISIG_SLOT_NAMES = {
   THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
   SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
@@ -58,7 +57,6 @@ export class AccountInspector {
           signerCommitments.push(wordToHex(commitment));
         }
       } catch {
-        // Signer not found in storage map
       }
     }
 
@@ -78,7 +76,6 @@ export class AccountInspector {
         }
       }
     } catch {
-      // PSM not configured
     }
 
     const vaultBalances: VaultBalance[] = [];
@@ -92,7 +89,6 @@ export class AccountInspector {
         });
       }
     } catch {
-      // Vault access failed
     }
 
     const procedureThresholds = new Map<ProcedureName, number>();
@@ -108,7 +104,6 @@ export class AccountInspector {
           }
         }
       } catch {
-        // Not set
       }
     }
 

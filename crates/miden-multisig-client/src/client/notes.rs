@@ -105,11 +105,9 @@ impl MultisigClient {
                 MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
             })?;
 
-        // Convert to our wrapper type, filtering for notes consumable
         let notes = consumable
             .into_iter()
             .filter_map(|(record, relevances)| {
-                // Only include notes consumable now by our account
                 let can_consume_now = relevances.iter().any(|(id, status)| {
                     *id == account_id
                         && matches!(
@@ -196,7 +194,7 @@ impl MultisigClient {
     /// ```ignore
     /// use miden_multisig_client::NoteFilter;
     ///
-    /// // Find notes from a specific faucet with at least 1000 tokens
+    ///
     /// let filter = NoteFilter {
     ///     faucet_id: Some(my_faucet_id),
     ///     min_amount: Some(1000),
@@ -207,7 +205,6 @@ impl MultisigClient {
         &mut self,
         filter: NoteFilter,
     ) -> Result<Vec<ConsumableNote>> {
-        // Validate filter configuration
         filter.validate()?;
 
         let notes = self.list_consumable_notes().await?;
@@ -215,12 +212,10 @@ impl MultisigClient {
         let filtered = notes
             .into_iter()
             .filter(|note| {
-                // Filter by faucet
                 if let Some(faucet_id) = filter.faucet_id {
                     if !note.has_faucet(faucet_id) {
                         return false;
                     }
-                    // Filter by minimum amount (faucet_id is guaranteed to be set if min_amount is)
                     if let Some(min) = filter.min_amount
                         && note.amount_for_faucet(faucet_id) < min
                     {
@@ -239,7 +234,6 @@ impl MultisigClient {
 mod tests {
     use super::*;
 
-    // Use a regular account ID for filter validation tests (no FungibleAsset creation)
     fn test_account_id() -> AccountId {
         AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap()
     }
@@ -255,22 +249,18 @@ mod tests {
 
     #[test]
     fn test_note_filter_validate_valid() {
-        // No filter
         let filter = NoteFilter::default();
         assert!(filter.validate().is_ok());
 
-        // Faucet only (any account ID works for validation)
         let filter = NoteFilter::by_faucet(test_account_id());
         assert!(filter.validate().is_ok());
 
-        // Faucet + min_amount
         let filter = NoteFilter::by_faucet_min_amount(test_account_id(), 1000);
         assert!(filter.validate().is_ok());
     }
 
     #[test]
     fn test_consumable_note_empty_assets() {
-        // Test with empty assets - amount should be 0, has_faucet should be false
         use miden_protocol::Word;
         use miden_protocol::note::NoteId;
 

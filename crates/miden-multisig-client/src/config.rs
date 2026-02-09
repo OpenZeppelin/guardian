@@ -28,10 +28,10 @@ impl PsmConfig {
 /// ```
 /// use miden_multisig_client::{ProcedureThreshold, ProcedureName};
 ///
-/// // Require only 1 signature for receiving assets
+///
 /// let receive_threshold = ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1);
 ///
-/// // Require all signers for configuration changes
+///
 /// let config_threshold = ProcedureThreshold::new(ProcedureName::UpdateSigners, 3);
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -166,7 +166,6 @@ mod tests {
     fn procedure_threshold_procedure_root_returns_correct_root() {
         let threshold = ProcedureThreshold::new(ProcedureName::SendAsset, 2);
         let root = threshold.procedure_root();
-        // The root should match the procedure's root
         assert_eq!(root, ProcedureName::SendAsset.root());
     }
 
@@ -179,7 +178,6 @@ mod tests {
         assert_eq!(config.threshold, 2);
         assert_eq!(config.signer_commitments.len(), 2);
         assert_eq!(config.psm_config.endpoint, "http://psm:50051");
-        // Verify defaults
         assert!(matches!(config.storage_mode, AccountStorageMode::Private));
         assert!(config.procedure_thresholds.is_empty());
     }
