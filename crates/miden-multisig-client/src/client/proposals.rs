@@ -6,9 +6,7 @@
 use private_state_manager_shared::ProposalSignature;
 
 use super::proposal::execution::signer_commitments_for_transaction;
-use super::proposal::parser::{
-    parse_unique_signature_inputs, required_commitments,
-};
+use super::proposal::parser::{parse_unique_signature_inputs, required_commitments};
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
 use crate::execution::{build_final_transaction_request, collect_signature_advice};
