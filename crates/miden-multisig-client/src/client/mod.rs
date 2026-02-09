@@ -15,14 +15,16 @@ mod helpers;
 mod io;
 mod notes;
 mod offline;
+mod proposal;
 mod proposals;
+mod state_codec;
 
 use std::path::PathBuf;
 
 use miden_client::Client;
 use miden_client::rpc::Endpoint;
-use miden_objects::Word;
-use miden_objects::account::AccountId;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
@@ -30,7 +32,6 @@ use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
 
-// Re-export public types from submodules
 pub use notes::{ConsumableNote, NoteFilter};
 
 /// Result of a proposal creation attempt.
@@ -57,7 +58,7 @@ pub enum ProposalResult {
 /// use miden_multisig_client::{MultisigClient, MultisigConfig, PsmConfig};
 /// use miden_client::rpc::Endpoint;
 ///
-/// // Create a client
+///
 /// let mut client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
 ///     .psm_endpoint("http://localhost:50051")
@@ -66,7 +67,7 @@ pub enum ProposalResult {
 ///     .build()
 ///     .await?;
 ///
-/// // Create a multisig account
+///
 /// let account = client.create_account(2, vec![signer1, signer2]).await?;
 /// ```
 pub struct MultisigClient {

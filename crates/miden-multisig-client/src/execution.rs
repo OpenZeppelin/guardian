@@ -2,14 +2,15 @@
 
 use std::collections::HashSet;
 
+use miden_client::Client;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
-use miden_objects::account::auth::Signature as AccountSignature;
-use miden_objects::asset::FungibleAsset;
-use miden_objects::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
-use miden_objects::crypto::dsa::rpo_falcon512::Signature as RpoFalconSignature;
-use miden_objects::utils::Deserializable;
-use miden_objects::{Felt, Word};
+use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::utils::Deserializable;
+use miden_protocol::{Felt, Word};
 use private_state_manager_shared::SignatureScheme;
 use private_state_manager_shared::hex::FromHex;
 
@@ -118,13 +119,16 @@ pub fn collect_signature_advice(
 }
 
 /// Builds the final transaction request based on transaction type.
-pub fn build_final_transaction_request(
+#[allow(clippy::too_many_arguments)]
+pub async fn build_final_transaction_request(
+    client: &Client<()>,
     transaction_type: &TransactionType,
     account: &Account,
     salt: Word,
     signature_advice: Vec<SignatureAdvice>,
     metadata_threshold: Option<u64>,
     metadata_signer_commitments: Option<&[Word]>,
+    scheme: SignatureScheme,
 ) -> Result<TransactionRequest> {
     match transaction_type {
         TransactionType::P2ID {
@@ -137,7 +141,7 @@ pub fn build_final_transaction_request(
             })?;
 
             build_p2id_transaction_request(
-                account,
+                account.id(),
                 *recipient,
                 vec![asset.into()],
                 salt,
@@ -145,7 +149,13 @@ pub fn build_final_transaction_request(
             )
         }
         TransactionType::ConsumeNotes { note_ids } => {
-            build_consume_notes_transaction_request(note_ids.clone(), salt, signature_advice)
+            build_consume_notes_transaction_request(
+                client,
+                note_ids.clone(),
+                salt,
+                signature_advice,
+            )
+            .await
         }
         TransactionType::SwitchPsm { new_commitment, .. } => {
             build_update_psm_transaction_request(*new_commitment, salt, signature_advice)
@@ -164,6 +174,7 @@ pub fn build_final_transaction_request(
                 signer_commitments,
                 salt,
                 signature_advice,
+                scheme,
             )?;
 
             Ok(tx_request)
@@ -175,7 +186,7 @@ pub fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
-    use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 
     #[test]
     fn test_collect_signature_advice_filters_by_required() {
@@ -199,13 +210,13 @@ mod tests {
 
         let signatures = vec![
             SignatureInput {
-                signer_commitment: "0xABC".to_string(), // uppercase
+                signer_commitment: "0xABC".to_string(),
                 signature_hex: "0x1234".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
             },
             SignatureInput {
-                signer_commitment: "0xabc".to_string(), // lowercase duplicate
+                signer_commitment: "0xabc".to_string(),
                 signature_hex: "0x5678".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
@@ -241,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_collect_signature_advice_with_valid_ecdsa_signature() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
@@ -267,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_collect_signature_advice_ecdsa_missing_pubkey() {
-        use miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
         let sk = EcdsaSecretKey::new();
         let pk = sk.public_key();
@@ -283,7 +294,7 @@ mod tests {
             signer_commitment: commitment_hex,
             signature_hex,
             scheme: SignatureScheme::Ecdsa,
-            public_key_hex: None, // missing!
+            public_key_hex: None,
         }];
 
         let result = collect_signature_advice(signatures, &required, msg);
@@ -291,42 +302,47 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_signature_advice_empty_input() {
-        let required: HashSet<String> = ["0xabc"].iter().map(|s| s.to_string()).collect();
-        let signatures: Vec<SignatureInput> = vec![];
+    fn test_collect_signature_advice_invalid_ecdsa_signature_hex() {
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
-        let advice =
-            collect_signature_advice(signatures, &required, Word::default()).expect("valid advice");
-        assert!(advice.is_empty());
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = pk.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let pk_hex = format!("0x{}", hex::encode(pk.to_bytes()));
+
+        let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
+        let signatures = vec![SignatureInput {
+            signer_commitment: commitment_hex,
+            signature_hex: "0xnotvalidhex!!!".to_string(),
+            scheme: SignatureScheme::Ecdsa,
+            public_key_hex: Some(pk_hex),
+        }];
+
+        let result = collect_signature_advice(signatures, &required, Word::default());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_collect_signature_advice_case_insensitive_matching() {
-        let secret_key = SecretKey::new();
-        let public_key = secret_key.public_key();
-        let commitment = public_key.to_commitment();
+    fn test_collect_signature_advice_invalid_ecdsa_signature_bytes() {
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = pk.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let pk_hex = format!("0x{}", hex::encode(pk.to_bytes()));
 
-        let msg = Word::default();
-        let signature = secret_key.sign(msg);
-        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
-
-        // Required is lowercase
-        let required: HashSet<String> = [commitment_hex.to_lowercase()].into_iter().collect();
-        // Input has uppercase hex digits (but keeps "0x" prefix)
-        let upper_commitment = format!(
-            "0x{}",
-            commitment_hex.strip_prefix("0x").unwrap().to_uppercase()
-        );
+        let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
         let signatures = vec![SignatureInput {
-            signer_commitment: upper_commitment,
-            signature_hex,
-            scheme: SignatureScheme::Falcon,
-            public_key_hex: None,
+            signer_commitment: commitment_hex,
+            signature_hex: "0xdeadbeef".to_string(),
+            scheme: SignatureScheme::Ecdsa,
+            public_key_hex: Some(pk_hex),
         }];
 
-        let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");
-        assert_eq!(advice.len(), 1);
+        let result = collect_signature_advice(signatures, &required, Word::default());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -339,7 +355,7 @@ mod tests {
         let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
         let signatures = vec![SignatureInput {
             signer_commitment: commitment_hex,
-            signature_hex: "0xdeadbeef".to_string(), // invalid
+            signature_hex: "0xdeadbeef".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
         }];

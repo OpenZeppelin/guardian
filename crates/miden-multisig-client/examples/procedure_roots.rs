@@ -9,9 +9,8 @@
 //! ```
 
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_lib::account::wallets::BasicWallet;
-use miden_objects::{Felt, Word};
-use private_state_manager_shared::SignatureScheme;
+use miden_protocol::{Felt, Word};
+use miden_standards::account::wallets::BasicWallet;
 
 fn main() {
     // Helper to format Word as hex (big-endian)
@@ -33,25 +32,18 @@ fn main() {
         ])
     }
 
-    let scheme = std::env::var("PSM_SIGNATURE_SCHEME").unwrap_or_else(|_| "falcon".to_string());
-    let signature_scheme = match scheme.as_str() {
-        "ecdsa" => SignatureScheme::Ecdsa,
-        _ => SignatureScheme::Falcon,
-    };
+    println!("\n=== PROCEDURE ROOTS ===\n");
 
-    println!("\n=== PROCEDURE ROOTS ({}) ===\n", scheme);
-
-    // BasicWallet procedure roots (compile-time constants from miden_lib)
+    // BasicWallet procedure roots (compile-time constants from miden_standards)
     let receive_asset = BasicWallet::receive_asset_digest();
     let send_asset = BasicWallet::move_asset_to_note_digest();
 
-    println!("BasicWallet procedures (from miden_lib):");
+    println!("BasicWallet procedures (from miden_standards):");
     println!("  receive_asset: 0x{}", word_to_hex(&receive_asset));
     println!("  send_asset:    0x{}", word_to_hex(&send_asset));
 
     // Build a test account to extract component procedure roots
-    let config = MultisigPsmConfig::new(1, vec![mock_commitment(1)], mock_commitment(10))
-        .with_signature_scheme(signature_scheme);
+    let config = MultisigPsmConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
 
     let account = MultisigPsmBuilder::new(config)
         .with_seed([42u8; 32])

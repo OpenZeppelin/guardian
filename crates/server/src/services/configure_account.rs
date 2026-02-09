@@ -44,7 +44,7 @@ pub async fn configure_account(
 
         // Validates that the credential is valid for the account state.
         client
-            .validate_credential(&params.initial_state, &params.credential)
+            .validate_credential(&params.initial_state, &params.credential, &params.auth)
             .map_err(|e| {
                 tracing::error!(
                     account_id = %params.account_id,

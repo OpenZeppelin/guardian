@@ -1,4 +1,4 @@
-use miden_objects::transaction::TransactionSummary;
+use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::FromJson;
 use private_state_manager_shared::hex::IntoHex;
 
@@ -40,10 +40,10 @@ pub fn tx_summary_commitment_hex(tx_summary: &TransactionSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::account::delta::{AccountStorageDelta, AccountVaultDelta};
-    use miden_objects::account::{AccountDelta, AccountId};
-    use miden_objects::transaction::{InputNotes, OutputNotes};
-    use miden_objects::{Felt, FieldElement, Word, ZERO};
+    use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::{AccountDelta, AccountId};
+    use miden_protocol::transaction::{InputNotes, OutputNotes};
+    use miden_protocol::{Felt, FieldElement, Word, ZERO};
     use private_state_manager_shared::ToJson;
 
     fn create_test_tx_summary() -> TransactionSummary {

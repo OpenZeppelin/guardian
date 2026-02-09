@@ -1,4 +1,4 @@
-import { type WebClient, Account, AccountId } from '@demox-labs/miden-sdk';
+import { type WebClient, Account, AccountId } from '@miden-sdk/miden-sdk';
 import { PsmHttpClient, type SignatureScheme } from '@openzeppelin/psm-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
@@ -72,9 +72,9 @@ export class MultisigClient {
 
     const existingAccount = await this.webClient.getAccount(AccountId.fromHex(accountId));
     if (!existingAccount) {
-        await this.webClient.newAccount(account, true);
+      await this.webClient.newAccount(account, true);
     }
 
-    return new Multisig(null, config, this._psmClient, signer, this.webClient, accountId);
+    return new Multisig(account, config, this._psmClient, signer, this.webClient, accountId);
   }
 }

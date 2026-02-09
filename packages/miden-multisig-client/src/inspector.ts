@@ -1,8 +1,20 @@
-import { Account, Word } from '@demox-labs/miden-sdk';
+import { Account, Word } from '@miden-sdk/miden-sdk';
 import { base64ToUint8Array } from './utils/encoding.js';
 import { wordElementToBigInt, wordToHex } from './utils/word.js';
 import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
 import type { SignatureScheme } from './types.js';
+
+const MULTISIG_SLOT_NAMES = {
+  THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
+  SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
+  EXECUTED_TRANSACTIONS: 'openzeppelin::multisig::executed_transactions',
+  PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
+} as const;
+
+const PSM_SLOT_NAMES = {
+  SELECTOR: 'openzeppelin::psm::selector',
+  PUBLIC_KEY: 'openzeppelin::psm::public_key',
+} as const;
 
 export interface VaultBalance {
   faucetId: string;
@@ -32,7 +44,7 @@ export class AccountInspector {
   static fromAccount(account: Account, signatureScheme: SignatureScheme = 'falcon'): DetectedMultisigConfig {
     const storage = account.storage();
 
-    const slot0 = storage.getItem(0) as Word;
+    const slot0 = storage.getItem(MULTISIG_SLOT_NAMES.THRESHOLD_CONFIG) as Word;
     const threshold = Number(wordElementToBigInt(slot0, 0));
     const numSigners = Number(wordElementToBigInt(slot0, 1));
 
@@ -40,12 +52,11 @@ export class AccountInspector {
     for (let i = 0; i < numSigners; i++) {
       try {
         const key = new Word(new BigUint64Array([BigInt(i), 0n, 0n, 0n]));
-        const commitment = storage.getMapItem(1, key) as Word;
+        const commitment = storage.getMapItem(MULTISIG_SLOT_NAMES.SIGNER_PUBLIC_KEYS, key) as Word;
         if (commitment) {
           signerCommitments.push(wordToHex(commitment));
         }
       } catch {
-        // Signer not found in storage map
       }
     }
 
@@ -53,19 +64,18 @@ export class AccountInspector {
     let psmCommitment: string | null = null;
 
     try {
-      const psmSlot0 = storage.getItem(4) as Word;
+      const psmSlot0 = storage.getItem(PSM_SLOT_NAMES.SELECTOR) as Word;
       const selector = Number(wordElementToBigInt(psmSlot0, 0));
       psmEnabled = selector === 1;
 
       if (psmEnabled) {
         const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
-        const psmKey = storage.getMapItem(5, zeroKey) as Word;
+        const psmKey = storage.getMapItem(PSM_SLOT_NAMES.PUBLIC_KEY, zeroKey) as Word;
         if (psmKey) {
           psmCommitment = wordToHex(psmKey);
         }
       }
     } catch {
-      // PSM not configured
     }
 
     const vaultBalances: VaultBalance[] = [];
@@ -79,7 +89,6 @@ export class AccountInspector {
         });
       }
     } catch {
-      // Vault access failed
     }
 
     const procedureThresholds = new Map<ProcedureName, number>();
@@ -87,7 +96,7 @@ export class AccountInspector {
       try {
         const rootHex = getProcedureRoot(procName, signatureScheme);
         const rootWord = Word.fromHex(rootHex);
-        const value = storage.getMapItem(3, rootWord) as Word;
+        const value = storage.getMapItem(MULTISIG_SLOT_NAMES.PROCEDURE_THRESHOLDS, rootWord) as Word;
         if (value) {
           const procThreshold = Number(wordElementToBigInt(value, 0));
           if (procThreshold > 0) {
@@ -95,7 +104,6 @@ export class AccountInspector {
           }
         }
       } catch {
-        // Not set
       }
     }
 

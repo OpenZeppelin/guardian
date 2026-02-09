@@ -1,4 +1,4 @@
-use crate::display::{print_account_info, print_storage_overview};
+use crate::display::{print_account_info, print_storage_overview, print_vault};
 use crate::state::SessionState;
 
 pub async fn action_show_account(state: &SessionState) -> Result<(), String> {
@@ -8,7 +8,8 @@ pub async fn action_show_account(state: &SessionState) -> Result<(), String> {
         .ok_or_else(|| "No account loaded".to_string())?;
 
     print_account_info(account);
-    print_storage_overview(account);
+    print_vault(account);
+    print_storage_overview(account, state.is_ecdsa());
 
     Ok(())
 }

@@ -3,7 +3,7 @@ import { MultisigClient } from './client.js';
 import type { Signer } from './types.js';
 
 // Mock the Miden SDK
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
@@ -157,7 +157,7 @@ describe('MultisigClient', () => {
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)]);
       expect(multisig.psmCommitment).toBe('0x' + 'c'.repeat(64));
-      expect(multisig.account).toBeNull(); // Loaded accounts don't have the SDK Account
+      expect(multisig.account).not.toBeNull();
     });
 
     it('should throw if account not found on PSM', async () => {

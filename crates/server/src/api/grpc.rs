@@ -412,10 +412,15 @@ fn proposal_signature_to_proto(signature: &ProposalSignature) -> state_manager::
         ProposalSignature::Falcon { signature } => state_manager::ProposalSignature {
             scheme: "falcon".to_string(),
             signature: signature.clone(),
+            public_key: None,
         },
-        ProposalSignature::Ecdsa { signature, .. } => state_manager::ProposalSignature {
+        ProposalSignature::Ecdsa {
+            signature,
+            public_key,
+        } => state_manager::ProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
+            public_key: public_key.clone(),
         },
     }
 }
@@ -430,7 +435,7 @@ fn proto_signature_to_internal(
         }),
         "ecdsa" => Ok(ProposalSignature::Ecdsa {
             signature: signature.signature,
-            public_key: None,
+            public_key: signature.public_key,
         }),
         other => Err(Status::invalid_argument(format!(
             "Unknown signature scheme: {other}"
@@ -751,6 +756,7 @@ mod tests {
             signature: Some(state_manager::ProposalSignature {
                 scheme: "falcon".to_string(),
                 signature: dummy_sig,
+                public_key: None,
             }),
         };
 

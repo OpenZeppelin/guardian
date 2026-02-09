@@ -15,7 +15,7 @@
 //!
 //! ```rust,no_run
 //! use private_state_manager_client::{PsmClient, Auth, FalconRpoSigner};
-//! use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+//! use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

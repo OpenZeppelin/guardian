@@ -11,13 +11,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
+import type { ConsumableNote, SignatureScheme, VaultBalance } from '@openzeppelin/miden-multisig-client';
 
 type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes' | 'p2id' | 'switch_psm';
 
 interface CreateProposalFormProps {
   currentThreshold: number;
   signerCommitments: string[];
+  signatureScheme: SignatureScheme;
   creatingProposal: boolean;
   consumableNotes: ConsumableNote[];
   vaultBalances: VaultBalance[];
@@ -32,6 +33,7 @@ interface CreateProposalFormProps {
 export function CreateProposalForm({
   currentThreshold,
   signerCommitments,
+  signatureScheme,
   creatingProposal,
   consumableNotes,
   vaultBalances,
@@ -90,12 +92,16 @@ export function CreateProposalForm({
       setNewPsmPubkey('');
 
       try {
-        const response = await fetch(`${newPsmEndpoint.trim()}/pubkey`);
+        let base = newPsmEndpoint.trim().replace(/\/+$/, '');
+        if (!/^https?:\/\//i.test(base)) {
+          base = `http://${base}`;
+        }
+        const response = await fetch(`${base}/pubkey?scheme=${signatureScheme}`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
-        const commitment = data.commitment ?? data.pubkey;
+        const commitment = data.commitment;
         if (commitment) {
           setNewPsmPubkey(commitment);
         } else {
@@ -113,7 +119,7 @@ export function CreateProposalForm({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [newPsmEndpoint]);
+  }, [newPsmEndpoint, signatureScheme]);
 
   const handleCreate = () => {
     switch (proposalType) {

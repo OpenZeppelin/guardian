@@ -1,5 +1,5 @@
-use miden_objects::Word;
-use miden_objects::crypto::dsa::rpo_falcon512::{PublicKey, SecretKey, Signature};
+use miden_protocol::Word;
+use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature};
 
 /// Generate a new Falcon RPO-512 key pair
 ///
@@ -39,7 +39,7 @@ pub fn verify_signature(public_key: &PublicKey, message: Word, signature: &Signa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_objects::Felt;
+    use miden_protocol::Felt;
 
     #[test]
     fn test_keypair_generation() {

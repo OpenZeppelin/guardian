@@ -1,4 +1,4 @@
-use miden_multisig_client::MultisigAccount;
+use miden_multisig_client::{Asset, MultisigAccount};
 
 pub fn shorten_hex(hex: &str) -> String {
     if hex.len() <= 12 {
@@ -8,6 +8,15 @@ pub fn shorten_hex(hex: &str) -> String {
     let prefix = &hex[..6];
     let suffix = &hex[hex.len() - 4..];
     format!("{}...{}", prefix, suffix)
+}
+
+pub fn shorten_hex_32(hex: &str) -> String {
+    let stripped = hex
+        .strip_prefix("0x")
+        .or_else(|| hex.strip_prefix("0X"))
+        .unwrap_or(hex);
+    let truncated_len = stripped.len().min(32);
+    format!("0x{}", &stripped[..truncated_len])
 }
 
 pub fn print_banner() {
@@ -39,7 +48,7 @@ pub fn print_account_info(account: &MultisigAccount) {
     println!("  Nonce:          {}", account.nonce());
 }
 
-pub fn print_storage_overview(account: &MultisigAccount) {
+pub fn print_storage_overview(account: &MultisigAccount, ecdsa_mode: bool) {
     print_section("Storage Overview");
 
     match account.threshold() {
@@ -52,10 +61,48 @@ pub fn print_storage_overview(account: &MultisigAccount) {
 
     println!("  Cosigner Commitments:");
     for (i, commitment) in account.cosigner_commitments_hex().iter().enumerate() {
-        println!("    [{}] {}", i, shorten_hex(commitment));
+        let display = if ecdsa_mode {
+            shorten_hex_32(commitment)
+        } else {
+            shorten_hex(commitment)
+        };
+        println!("    [{}] {}", i, display);
     }
 
     println!("  PSM Endpoint: {}", account.psm_endpoint());
+}
+
+pub fn print_vault(account: &MultisigAccount) {
+    print_section("Vault (Account Balance)");
+
+    let vault = account.inner().vault();
+    let assets: Vec<Asset> = vault.assets().collect();
+
+    if assets.is_empty() {
+        println!("  (empty)");
+        print_info("Tip: Consume notes to add assets to your vault before sending transfers.");
+        return;
+    }
+
+    for (i, asset) in assets.iter().enumerate() {
+        match asset {
+            Asset::Fungible(fungible) => {
+                println!(
+                    "  [{}] {} tokens (faucet: {})",
+                    i + 1,
+                    fungible.amount(),
+                    shorten_hex(&fungible.faucet_id().to_hex())
+                );
+            }
+            Asset::NonFungible(nft) => {
+                println!(
+                    "  [{}] NFT (faucet prefix: {})",
+                    i + 1,
+                    shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                );
+            }
+        }
+    }
 }
 
 pub fn print_full_hex(label: &str, hex: &str) {

@@ -31,7 +31,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-miden-objects = { workspace = true, features = ["testing"] }
+miden-protocol = { workspace = true, features = ["testing"] }
 
 # internal crates
 private-state-manager-shared = { path = "../shared" }
@@ -52,7 +52,7 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 uuid = { version = "1.0", features = ["v4"] }
-miden-lib = { workspace = true }
+miden-standards = { workspace = true }
 
 [features]
 default = []

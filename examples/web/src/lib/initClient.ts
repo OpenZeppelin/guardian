@@ -1,4 +1,4 @@
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import { MIDEN_DB_NAME, MIDEN_RPC_URL } from '@/config';
 import type { SignerInfo } from '@/types';
 
@@ -18,8 +18,8 @@ export async function createWebClient(rpcUrl = MIDEN_RPC_URL): Promise<WebClient
 }
 
 export async function initializeSigner(webClient: WebClient): Promise<SignerInfo> {
-  const falconSecretKey = SecretKey.rpoFalconWithRNG(undefined);
-  const ecdsaSecretKey = SecretKey.ecdsaWithRNG(undefined);
+  const falconSecretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
+  const ecdsaSecretKey = AuthSecretKey.ecdsaWithRNG(undefined);
   try {
     await webClient.addAccountSecretKeyToWebStore(falconSecretKey);
     await webClient.addAccountSecretKeyToWebStore(ecdsaSecretKey);

@@ -57,6 +57,7 @@ pub trait NetworkClient: Send + Sync {
         &self,
         state_json: &serde_json::Value,
         credential: &Credentials,
+        auth: &Auth,
     ) -> Result<(), String>;
 
     /// Determine if account auth should be updated given the state
@@ -71,6 +72,7 @@ pub trait NetworkClient: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NetworkType {
     MidenTestnet,
+    MidenDevnet,
     MidenLocal,
 }
 
@@ -78,6 +80,7 @@ impl NetworkType {
     pub fn rpc_endpoint(&self) -> &str {
         match self {
             NetworkType::MidenTestnet => "https://rpc.testnet.miden.io",
+            NetworkType::MidenDevnet => "https://rpc.devnet.miden.io",
             NetworkType::MidenLocal => "http://localhost:57291",
         }
     }
@@ -93,6 +96,7 @@ impl std::fmt::Display for NetworkType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NetworkType::MidenTestnet => write!(f, "MidenTestnet"),
+            NetworkType::MidenDevnet => write!(f, "MidenDevnet"),
             NetworkType::MidenLocal => write!(f, "MidenLocal"),
         }
     }

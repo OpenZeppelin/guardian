@@ -1,9 +1,9 @@
-import type { SecretKey } from '@demox-labs/miden-sdk';
+import type { AuthSecretKey } from '@miden-sdk/miden-sdk';
 import type { SignatureScheme } from '@openzeppelin/miden-multisig-client';
 
 export interface SignerKeyInfo {
   commitment: string;
-  secretKey: SecretKey;
+  secretKey: AuthSecretKey;
 }
 
 // This tab's signer info

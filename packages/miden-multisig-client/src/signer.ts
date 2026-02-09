@@ -1,4 +1,4 @@
-import { SecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@demox-labs/miden-sdk';
+import { AuthSecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@miden-sdk/miden-sdk';
 import type { Signer, SignatureScheme } from './types.js';
 import { bytesToHex } from './utils/encoding.js';
 
@@ -6,9 +6,9 @@ export class FalconSigner implements Signer {
   readonly commitment: string;
   readonly publicKey: string;
   readonly scheme: SignatureScheme = 'falcon';
-  private readonly secretKey: SecretKey;
+  private readonly secretKey: AuthSecretKey;
 
-  constructor(secretKey: SecretKey) {
+  constructor(secretKey: AuthSecretKey) {
     this.secretKey = secretKey;
     const pubKey = secretKey.publicKey();
     this.commitment = pubKey.toCommitment().toHex();
@@ -52,9 +52,9 @@ export class EcdsaSigner implements Signer {
   readonly commitment: string;
   readonly publicKey: string;
   readonly scheme: SignatureScheme = 'ecdsa';
-  private readonly secretKey: SecretKey;
+  private readonly secretKey: AuthSecretKey;
 
-  constructor(secretKey: SecretKey) {
+  constructor(secretKey: AuthSecretKey) {
     this.secretKey = secretKey;
     const pubKey = secretKey.publicKey();
     this.commitment = pubKey.toCommitment().toHex();

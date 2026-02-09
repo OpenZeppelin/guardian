@@ -3,10 +3,10 @@
 //! This module handles listing consumable notes and filtering them
 //! by various criteria (faucet, amount, etc.).
 
-use miden_client::note::NoteRelevance;
-use miden_objects::account::AccountId;
-use miden_objects::asset::Asset;
-use miden_objects::note::NoteId;
+use miden_client::note::NoteConsumptionStatus;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::Asset;
+use miden_protocol::note::NoteId;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -105,14 +105,17 @@ impl MultisigClient {
                 MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
             })?;
 
-        // Convert to our wrapper type, filtering for notes consumable "Now"
         let notes = consumable
             .into_iter()
             .filter_map(|(record, relevances)| {
-                // Only include notes consumable "Now" by our account
-                let can_consume_now = relevances
-                    .iter()
-                    .any(|(id, rel)| *id == account_id && matches!(rel, NoteRelevance::Now));
+                let can_consume_now = relevances.iter().any(|(id, status)| {
+                    *id == account_id
+                        && matches!(
+                            status,
+                            NoteConsumptionStatus::Consumable
+                                | NoteConsumptionStatus::ConsumableWithAuthorization
+                        )
+                });
                 if can_consume_now {
                     Some(ConsumableNote {
                         id: record.id(),
@@ -125,6 +128,37 @@ impl MultisigClient {
             .collect();
 
         Ok(notes)
+    }
+
+    /// Returns a list of all notes with their consumption status
+    pub async fn list_notes_with_status(
+        &mut self,
+    ) -> Result<Vec<(ConsumableNote, Vec<(AccountId, String)>)>> {
+        let account_id = self.require_account()?.id();
+
+        let notes = self
+            .miden_client
+            .get_consumable_notes(Some(account_id))
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+
+        let result = notes
+            .into_iter()
+            .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
+            .map(|(record, relevances)| {
+                let note = ConsumableNote {
+                    id: record.id(),
+                    assets: record.assets().iter().cloned().collect(),
+                };
+                let statuses: Vec<(AccountId, String)> = relevances
+                    .into_iter()
+                    .map(|(id, status)| (id, format!("{:?}", status)))
+                    .collect();
+                (note, statuses)
+            })
+            .collect();
+
+        Ok(result)
     }
 
     /// Returns a list of all committed notes (not just consumable).
@@ -160,7 +194,7 @@ impl MultisigClient {
     /// ```ignore
     /// use miden_multisig_client::NoteFilter;
     ///
-    /// // Find notes from a specific faucet with at least 1000 tokens
+    ///
     /// let filter = NoteFilter {
     ///     faucet_id: Some(my_faucet_id),
     ///     min_amount: Some(1000),
@@ -171,7 +205,6 @@ impl MultisigClient {
         &mut self,
         filter: NoteFilter,
     ) -> Result<Vec<ConsumableNote>> {
-        // Validate filter configuration
         filter.validate()?;
 
         let notes = self.list_consumable_notes().await?;
@@ -179,12 +212,10 @@ impl MultisigClient {
         let filtered = notes
             .into_iter()
             .filter(|note| {
-                // Filter by faucet
                 if let Some(faucet_id) = filter.faucet_id {
                     if !note.has_faucet(faucet_id) {
                         return false;
                     }
-                    // Filter by minimum amount (faucet_id is guaranteed to be set if min_amount is)
                     if let Some(min) = filter.min_amount
                         && note.amount_for_faucet(faucet_id) < min
                     {
@@ -203,7 +234,6 @@ impl MultisigClient {
 mod tests {
     use super::*;
 
-    // Use a regular account ID for filter validation tests (no FungibleAsset creation)
     fn test_account_id() -> AccountId {
         AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap()
     }
@@ -219,27 +249,23 @@ mod tests {
 
     #[test]
     fn test_note_filter_validate_valid() {
-        // No filter
         let filter = NoteFilter::default();
         assert!(filter.validate().is_ok());
 
-        // Faucet only (any account ID works for validation)
         let filter = NoteFilter::by_faucet(test_account_id());
         assert!(filter.validate().is_ok());
 
-        // Faucet + min_amount
         let filter = NoteFilter::by_faucet_min_amount(test_account_id(), 1000);
         assert!(filter.validate().is_ok());
     }
 
     #[test]
     fn test_consumable_note_empty_assets() {
-        // Test with empty assets - amount should be 0, has_faucet should be false
-        use miden_objects::Word;
-        use miden_objects::note::NoteId;
+        use miden_protocol::Word;
+        use miden_protocol::note::NoteId;
 
         let note = ConsumableNote {
-            id: NoteId::from(Word::default()),
+            id: NoteId::from_raw(Word::default()),
             assets: vec![],
         };
 

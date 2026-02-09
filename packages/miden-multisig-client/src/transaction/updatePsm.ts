@@ -7,19 +7,19 @@ import {
   WebClient,
   Word,
   Word as WordType,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import { PSM_ECDSA_MASM, PSM_MASM } from '../account/masm.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
 
 function buildUpdatePsmFalconScript(webClient: WebClient): TransactionScript {
-  const libBuilder = webClient.createScriptBuilder();
+  const libBuilder = webClient.createCodeBuilder();
   const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
   libBuilder.linkDynamicLibrary(psmLib);
 
   const scriptSource = `
-use.openzeppelin::psm
+use openzeppelin::psm
 
 begin
     adv.push_mapval
@@ -32,12 +32,12 @@ end
 }
 
 function buildUpdatePsmEcdsaScript(webClient: WebClient): TransactionScript {
-  const libBuilder = webClient.createScriptBuilder();
+  const libBuilder = webClient.createCodeBuilder();
   const psmLib = libBuilder.buildLibrary('openzeppelin::psm_ecdsa', PSM_ECDSA_MASM);
   libBuilder.linkDynamicLibrary(psmLib);
 
   const scriptSource = `
-use.openzeppelin::psm_ecdsa
+use openzeppelin::psm_ecdsa
 
 begin
     adv.push_mapval
@@ -87,4 +87,3 @@ export async function buildUpdatePsmTransactionRequest(
     salt: authSaltForReturn,
   };
 }
-

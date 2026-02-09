@@ -8,8 +8,8 @@ use crate::{
     GetDeltaSinceResponse, GetStateResponse, PsmClient, PushDeltaProposalResponse,
     PushDeltaResponse, SignDeltaProposalResponse,
 };
-use miden_objects::account::AccountId;
-use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
+use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::Status;
 
@@ -30,10 +30,10 @@ async fn test_get_pubkey_success() {
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = PsmClient::connect(endpoint).await.unwrap();
 
-    let result = client.get_pubkey().await;
+    let result = client.get_pubkey(None).await;
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "test_pubkey_123");
+    assert_eq!(result.unwrap().0, "test_pubkey_123");
 }
 
 #[tokio::test]
@@ -44,7 +44,7 @@ async fn test_get_pubkey_error() {
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = PsmClient::connect(endpoint).await.unwrap();
 
-    let result = client.get_pubkey().await;
+    let result = client.get_pubkey(None).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {

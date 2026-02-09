@@ -8,7 +8,7 @@ import {
 } from './signature.js';
 
 // Mock the Miden SDK
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   AdviceMap: vi.fn().mockImplementation(() => ({
     insert: vi.fn(),
   })),
@@ -88,7 +88,7 @@ describe('signature utilities', () => {
 
   describe('buildSignatureAdviceEntry', () => {
     it('returns key and values', async () => {
-      const { Word, Signature } = await import('@demox-labs/miden-sdk');
+      const { Word, Signature } = await import('@miden-sdk/miden-sdk');
       const pubkeyCommitment = Word.fromHex('0x' + 'a'.repeat(64));
       const message = Word.fromHex('0x' + 'b'.repeat(64));
       const signature = Signature.deserialize(new Uint8Array([0, 1, 2, 3]));
@@ -100,7 +100,7 @@ describe('signature utilities', () => {
     });
 
     it('hashes pubkey commitment and message to produce key', async () => {
-      const { Word, Signature, Rpo256 } = await import('@demox-labs/miden-sdk');
+      const { Word, Signature, Rpo256 } = await import('@miden-sdk/miden-sdk');
       const pubkeyCommitment = Word.fromHex('0x' + 'a'.repeat(64));
       const message = Word.fromHex('0x' + 'b'.repeat(64));
       const signature = Signature.deserialize(new Uint8Array([0, 1, 2, 3]));
@@ -111,7 +111,7 @@ describe('signature utilities', () => {
     });
 
     it('uses toPreparedSignature to get values', async () => {
-      const { Word, Signature } = await import('@demox-labs/miden-sdk');
+      const { Word, Signature } = await import('@miden-sdk/miden-sdk');
       const pubkeyCommitment = Word.fromHex('0x' + 'a'.repeat(64));
       const message = Word.fromHex('0x' + 'b'.repeat(64));
       const signature = Signature.deserialize(new Uint8Array([0, 1, 2, 3]));
@@ -125,7 +125,7 @@ describe('signature utilities', () => {
 
   describe('mergeSignatureAdviceMaps', () => {
     it('inserts all entries into advice map', async () => {
-      const { AdviceMap, Word, Signature } = await import('@demox-labs/miden-sdk');
+      const { AdviceMap, Word, Signature } = await import('@miden-sdk/miden-sdk');
       const advice = new AdviceMap();
 
       const entries = [
@@ -146,7 +146,7 @@ describe('signature utilities', () => {
     });
 
     it('returns the same advice map', async () => {
-      const { AdviceMap } = await import('@demox-labs/miden-sdk');
+      const { AdviceMap } = await import('@miden-sdk/miden-sdk');
       const advice = new AdviceMap();
 
       const result = mergeSignatureAdviceMaps(advice, []);
@@ -155,7 +155,7 @@ describe('signature utilities', () => {
     });
 
     it('handles empty entries array', async () => {
-      const { AdviceMap } = await import('@demox-labs/miden-sdk');
+      const { AdviceMap } = await import('@miden-sdk/miden-sdk');
       const advice = new AdviceMap();
 
       mergeSignatureAdviceMaps(advice, []);
@@ -166,7 +166,7 @@ describe('signature utilities', () => {
 
   describe('toWord', () => {
     it('creates Word from hex string', async () => {
-      const { Word } = await import('@demox-labs/miden-sdk');
+      const { Word } = await import('@miden-sdk/miden-sdk');
 
       const word = toWord('abc123');
 
@@ -175,7 +175,7 @@ describe('signature utilities', () => {
     });
 
     it('normalizes hex before creating Word', async () => {
-      const { Word } = await import('@demox-labs/miden-sdk');
+      const { Word } = await import('@miden-sdk/miden-sdk');
 
       toWord('abc');
 
@@ -184,7 +184,7 @@ describe('signature utilities', () => {
     });
 
     it('handles 0x prefix', async () => {
-      const { Word } = await import('@demox-labs/miden-sdk');
+      const { Word } = await import('@miden-sdk/miden-sdk');
 
       toWord('0xdef');
 
@@ -192,7 +192,7 @@ describe('signature utilities', () => {
     });
 
     it('handles full 64-char hex', async () => {
-      const { Word } = await import('@demox-labs/miden-sdk');
+      const { Word } = await import('@miden-sdk/miden-sdk');
       const fullHex = 'f'.repeat(64);
 
       toWord(fullHex);

@@ -1,14 +1,14 @@
+
 export const MULTISIG_MASM = `# Multi-Signature RPO Falcon 512 Authentication Component
 #
 # This component provides multi-signature authentication for accounts.
 # It integrates with the PSM component for optional PSM signature verification.
 
-use miden::active_account
-use miden::native_account
-use miden::auth
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::standards::auth
 use openzeppelin::psm
 
-# Type definitions for v0.12 syntax
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # CONSTANTS
@@ -17,7 +17,7 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # Auth Request Constants
 
 # The event emitted when a signature is not found for a required signer.
-const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
+const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
 
 # Storage Layout Constants
 #
@@ -32,29 +32,29 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 # number of approvers are stored as:
 # [default_threshold, num_approvers, 0, 0].
 # The threshold is guaranteed to be less than or equal to num_approvers.
-const THRESHOLD_CONFIG_SLOT = 0
+const THRESHOLD_CONFIG_SLOT=word("openzeppelin::multisig::threshold_config")
 
 # The slot in this component's storage layout where the public keys map is stored.
 # Map entries: [key_index, 0, 0, 0] => APPROVER_PUBLIC_KEY
-const PUBLIC_KEYS_MAP_SLOT = 1
+const PUBLIC_KEYS_MAP_SLOT=word("openzeppelin::multisig::signer_public_keys")
 
 # The slot in this component's storage layout where executed transactions are stored.
 # Map entries: transaction_message => [is_executed, 0, 0, 0]
-const EXECUTED_TXS_SLOT = 2
+const EXECUTED_TXS_SLOT=word("openzeppelin::multisig::executed_transactions")
 
 # The slot in this component's storage layout where procedure thresholds are stored.
 # Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
-const PROC_THRESHOLD_ROOTS_SLOT = 3
+const PROC_THRESHOLD_ROOTS_SLOT=word("openzeppelin::multisig::procedure_thresholds")
 
 # Executed Transaction Flag Constant
-const IS_EXECUTED_FLAG = [1, 0, 0, 0]
+const IS_EXECUTED_FLAG=[1, 0, 0, 0]
 
 # ERRORS
-const ERR_TX_ALREADY_EXECUTED = "failed to approve multisig transaction as it was already executed"
+const ERR_TX_ALREADY_EXECUTED="failed to approve multisig transaction as it was already executed"
 
-const ERR_MALFORMED_MULTISIG_CONFIG = "number of approvers must be equal to or greater than threshold"
+const ERR_MALFORMED_MULTISIG_CONFIG="number of approvers must be equal to or greater than threshold"
 
-const ERR_ZERO_IN_MULTISIG_CONFIG = "number of approvers or threshold must not be zero"
+const ERR_ZERO_IN_MULTISIG_CONFIG="number of approvers or threshold must not be zero"
 
 # MULTISIG PROCEDURES
 # =================================================================================================
@@ -73,14 +73,14 @@ proc assert_new_tx(msg: BeWord)
     swapw
     # => [MSG, IS_EXECUTED_FLAG]
 
-    push.EXECUTED_TXS_SLOT
-    # => [index, MSG, IS_EXECUTED_FLAG]
+    push.EXECUTED_TXS_SLOT[0..2]
+    # => [txs_slot_prefix, txs_slot_suffix, MSG, IS_EXECUTED_FLAG]
 
     # Set the key value pair in the map to mark transaction as executed
     exec.native_account::set_map_item
-    # => [OLD_MAP_ROOT, [0, 0, 0, is_executed]]
+    # => [[0, 0, 0, is_executed]]
 
-    dropw drop drop drop
+    drop drop drop
     # => [is_executed]
 
     assertz.err=ERR_TX_ALREADY_EXECUTED
@@ -119,13 +119,13 @@ proc cleanup_pubkey_mapping(init_num_of_approvers: u32, new_num_of_approvers: u3
         padw swapw
         # => [[0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
 
-        push.PUBLIC_KEYS_MAP_SLOT
-        # => [pub_key_slot_idx, [0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
+        push.PUBLIC_KEYS_MAP_SLOT[0..2]
+        # => [pub_key_slot_prefix, pub_key_slot_suffix, [0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
 
         exec.native_account::set_map_item
-        # => [OLD_MAP_ROOT, OLD_MAP_VALUE, i-1, new_num_of_approvers]
+        # => [OLD_MAP_VALUE, i-1, new_num_of_approvers]
 
-        dropw dropw
+        dropw
         # => [i-1, new_num_of_approvers]
 
         dup.1 dup.1
@@ -155,7 +155,8 @@ end
 #! Locals:
 #! 0: new_num_of_approvers
 #! 1: init_num_of_approvers
-pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
+@locals(2)
+pub proc update_signers_and_threshold(multisig_config_hash: BeWord)
     adv.push_mapval
     # => [MULTISIG_CONFIG_HASH, pad(12)]
 
@@ -182,8 +183,8 @@ pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
     eq.0 assertz.err=ERR_ZERO_IN_MULTISIG_CONFIG
     # => [MULTISIG_CONFIG, pad(12)]
 
-    push.THRESHOLD_CONFIG_SLOT
-    # => [slot, MULTISIG_CONFIG, pad(12)]
+    push.THRESHOLD_CONFIG_SLOT[0..2]
+    # => [config_slot_prefix, config_slot_suffix, MULTISIG_CONFIG, pad(12)]
 
     exec.native_account::set_item
     # => [OLD_THRESHOLD_CONFIG, pad(12)]
@@ -209,13 +210,13 @@ pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
         swapw
         # => [[0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
 
-        push.PUBLIC_KEYS_MAP_SLOT
-        # => [pub_key_slot_idx, [0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
+        push.PUBLIC_KEYS_MAP_SLOT[0..2]
+        # => [pub_key_slot_prefix, pub_key_slot_suffix, [0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
 
         exec.native_account::set_map_item
-        # => [OLD_MAP_ROOT, OLD_MAP_VALUE, i-1, pad(12)]
+        # => [OLD_VALUE, i-1, pad(12)]
 
-        dropw dropw
+        dropw
         # => [i-1, pad(12)]
 
         dup neq.0
@@ -242,7 +243,8 @@ end
 #
 #! Inputs:  [default_threshold]
 #! Outputs: [transaction_threshold]
-proc compute_transaction_threshold.1(default_threshold: u32) -> u32
+@locals(1)
+proc compute_transaction_threshold(default_threshold: u32) -> u32
     # 1. initialize transaction_threshold = 0
     # 2. iterate through all account procedures
     #   a. check if the procedure was called during the transaction
@@ -281,8 +283,8 @@ proc compute_transaction_threshold.1(default_threshold: u32) -> u32
         if.true
             # => [PROC_ROOT, num_procedures-1, transaction_threshold]
 
-            push.PROC_THRESHOLD_ROOTS_SLOT
-            # => [PROC_THRESHOLD_ROOTS_SLOT, PROC_ROOT, num_procedures-1, transaction_threshold]
+            push.PROC_THRESHOLD_ROOTS_SLOT[0..2]
+            # => [PROC_THRESHOLD_ROOTS_SLOT_prefix, PROC_THRESHOLD_ROOTS_SLOT_suffix, PROC_ROOT, num_procedures-1, transaction_threshold]
 
             # 2b. get the override proc_threshold of that procedure
             # if the procedure has no override threshold, the returned map item will be [0, 0, 0, 0]
@@ -359,7 +361,8 @@ end
 #! - PSM signature verification fails (if PSM is enabled).
 #!
 #! Invocation: call
-pub proc auth_tx_rpo_falcon512_multisig.1(salt: BeWord)
+@locals(1)
+pub proc auth_tx_rpo_falcon512_multisig(salt: BeWord)
     exec.native_account::incr_nonce drop
     # => [SALT]
 
@@ -378,8 +381,8 @@ pub proc auth_tx_rpo_falcon512_multisig.1(salt: BeWord)
 
     # ------ Verifying approver signatures ------
 
-    push.THRESHOLD_CONFIG_SLOT
-    # => [index, TX_SUMMARY_COMMITMENT]
+    push.THRESHOLD_CONFIG_SLOT[0..2]
+    # => [config_slot_prefix, config_slot_suffix, TX_SUMMARY_COMMITMENT]
 
     exec.active_account::get_initial_item
     # => [0, 0, num_of_approvers, default_threshold, TX_SUMMARY_COMMITMENT]
@@ -390,10 +393,10 @@ pub proc auth_tx_rpo_falcon512_multisig.1(salt: BeWord)
     swap movdn.5
     # => [num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
 
-    push.PUBLIC_KEYS_MAP_SLOT
-    # => [pub_key_slot_idx, num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
+    push.PUBLIC_KEYS_MAP_SLOT[0..2]
+    # => [pub_key_slot_prefix, pub_key_slot_suffix, num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
 
-    exec.::miden::auth::rpo_falcon512::verify_signatures
+    exec.::miden::standards::auth::falcon512_rpo::verify_signatures
     # => [num_verified_signatures, TX_SUMMARY_COMMITMENT, default_threshold]
 
     # ------ Checking threshold is >= num_verified_signatures ------
@@ -429,12 +432,11 @@ export const MULTISIG_ECDSA_MASM = `# Multi-Signature ECDSA secp256k1 Authentica
 # ECDSA secp256k1 (k256/keccak) signatures instead of RPO Falcon 512.
 # It integrates with the PSM component for optional PSM signature verification.
 
-use miden::active_account
-use miden::native_account
-use miden::auth
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::standards::auth
 use openzeppelin::psm_ecdsa
 
-# Type definitions for v0.12 syntax
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # CONSTANTS
@@ -443,7 +445,7 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # Auth Request Constants
 
 # The event emitted when a signature is not found for a required signer.
-const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
+const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
 
 # Storage Layout Constants
 #
@@ -458,29 +460,29 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 # number of approvers are stored as:
 # [default_threshold, num_approvers, 0, 0].
 # The threshold is guaranteed to be less than or equal to num_approvers.
-const THRESHOLD_CONFIG_SLOT = 0
+const THRESHOLD_CONFIG_SLOT=word("openzeppelin::multisig::threshold_config")
 
 # The slot in this component's storage layout where the public keys map is stored.
 # Map entries: [key_index, 0, 0, 0] => APPROVER_PUBLIC_KEY
-const PUBLIC_KEYS_MAP_SLOT = 1
+const PUBLIC_KEYS_MAP_SLOT=word("openzeppelin::multisig::signer_public_keys")
 
 # The slot in this component's storage layout where executed transactions are stored.
 # Map entries: transaction_message => [is_executed, 0, 0, 0]
-const EXECUTED_TXS_SLOT = 2
+const EXECUTED_TXS_SLOT=word("openzeppelin::multisig::executed_transactions")
 
 # The slot in this component's storage layout where procedure thresholds are stored.
 # Map entries: PROC_ROOT => [proc_threshold, 0, 0, 0]
-const PROC_THRESHOLD_ROOTS_SLOT = 3
+const PROC_THRESHOLD_ROOTS_SLOT=word("openzeppelin::multisig::procedure_thresholds")
 
 # Executed Transaction Flag Constant
-const IS_EXECUTED_FLAG = [1, 0, 0, 0]
+const IS_EXECUTED_FLAG=[1, 0, 0, 0]
 
 # ERRORS
-const ERR_TX_ALREADY_EXECUTED = "failed to approve multisig transaction as it was already executed"
+const ERR_TX_ALREADY_EXECUTED="failed to approve multisig transaction as it was already executed"
 
-const ERR_MALFORMED_MULTISIG_CONFIG = "number of approvers must be equal to or greater than threshold"
+const ERR_MALFORMED_MULTISIG_CONFIG="number of approvers must be equal to or greater than threshold"
 
-const ERR_ZERO_IN_MULTISIG_CONFIG = "number of approvers or threshold must not be zero"
+const ERR_ZERO_IN_MULTISIG_CONFIG="number of approvers or threshold must not be zero"
 
 # MULTISIG PROCEDURES
 # =================================================================================================
@@ -499,14 +501,14 @@ proc assert_new_tx(msg: BeWord)
     swapw
     # => [MSG, IS_EXECUTED_FLAG]
 
-    push.EXECUTED_TXS_SLOT
-    # => [index, MSG, IS_EXECUTED_FLAG]
+    push.EXECUTED_TXS_SLOT[0..2]
+    # => [txs_slot_prefix, txs_slot_suffix, MSG, IS_EXECUTED_FLAG]
 
     # Set the key value pair in the map to mark transaction as executed
     exec.native_account::set_map_item
-    # => [OLD_MAP_ROOT, [0, 0, 0, is_executed]]
+    # => [[0, 0, 0, is_executed]]
 
-    dropw drop drop drop
+    drop drop drop
     # => [is_executed]
 
     assertz.err=ERR_TX_ALREADY_EXECUTED
@@ -545,13 +547,13 @@ proc cleanup_pubkey_mapping(init_num_of_approvers: u32, new_num_of_approvers: u3
         padw swapw
         # => [[0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
 
-        push.PUBLIC_KEYS_MAP_SLOT
-        # => [pub_key_slot_idx, [0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
+        push.PUBLIC_KEYS_MAP_SLOT[0..2]
+        # => [pub_key_slot_prefix, pub_key_slot_suffix, [0, 0, 0, i-1], EMPTY_WORD, i-1, new_num_of_approvers]
 
         exec.native_account::set_map_item
-        # => [OLD_MAP_ROOT, OLD_MAP_VALUE, i-1, new_num_of_approvers]
+        # => [OLD_MAP_VALUE, i-1, new_num_of_approvers]
 
-        dropw dropw
+        dropw
         # => [i-1, new_num_of_approvers]
 
         dup.1 dup.1
@@ -581,7 +583,8 @@ end
 #! Locals:
 #! 0: new_num_of_approvers
 #! 1: init_num_of_approvers
-pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
+@locals(2)
+pub proc update_signers_and_threshold(multisig_config_hash: BeWord)
     adv.push_mapval
     # => [MULTISIG_CONFIG_HASH, pad(12)]
 
@@ -608,8 +611,8 @@ pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
     eq.0 assertz.err=ERR_ZERO_IN_MULTISIG_CONFIG
     # => [MULTISIG_CONFIG, pad(12)]
 
-    push.THRESHOLD_CONFIG_SLOT
-    # => [slot, MULTISIG_CONFIG, pad(12)]
+    push.THRESHOLD_CONFIG_SLOT[0..2]
+    # => [config_slot_prefix, config_slot_suffix, MULTISIG_CONFIG, pad(12)]
 
     exec.native_account::set_item
     # => [OLD_THRESHOLD_CONFIG, pad(12)]
@@ -635,13 +638,13 @@ pub proc update_signers_and_threshold.2(multisig_config_hash: BeWord)
         swapw
         # => [[0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
 
-        push.PUBLIC_KEYS_MAP_SLOT
-        # => [pub_key_slot_idx, [0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
+        push.PUBLIC_KEYS_MAP_SLOT[0..2]
+        # => [pub_key_slot_prefix, pub_key_slot_suffix, [0, 0, 0, i-1], PUB_KEY, i-1, pad(12)]
 
         exec.native_account::set_map_item
-        # => [OLD_MAP_ROOT, OLD_MAP_VALUE, i-1, pad(12)]
+        # => [OLD_VALUE, i-1, pad(12)]
 
-        dropw dropw
+        dropw
         # => [i-1, pad(12)]
 
         dup neq.0
@@ -668,7 +671,8 @@ end
 #
 #! Inputs:  [default_threshold]
 #! Outputs: [transaction_threshold]
-proc compute_transaction_threshold.1(default_threshold: u32) -> u32
+@locals(1)
+proc compute_transaction_threshold(default_threshold: u32) -> u32
     # 1. initialize transaction_threshold = 0
     # 2. iterate through all account procedures
     #   a. check if the procedure was called during the transaction
@@ -707,8 +711,8 @@ proc compute_transaction_threshold.1(default_threshold: u32) -> u32
         if.true
             # => [PROC_ROOT, num_procedures-1, transaction_threshold]
 
-            push.PROC_THRESHOLD_ROOTS_SLOT
-            # => [PROC_THRESHOLD_ROOTS_SLOT, PROC_ROOT, num_procedures-1, transaction_threshold]
+            push.PROC_THRESHOLD_ROOTS_SLOT[0..2]
+            # => [PROC_THRESHOLD_ROOTS_SLOT_prefix, PROC_THRESHOLD_ROOTS_SLOT_suffix, PROC_ROOT, num_procedures-1, transaction_threshold]
 
             # 2b. get the override proc_threshold of that procedure
             # if the procedure has no override threshold, the returned map item will be [0, 0, 0, 0]
@@ -785,7 +789,8 @@ end
 #! - PSM signature verification fails (if PSM is enabled).
 #!
 #! Invocation: call
-pub proc auth_tx_ecdsa_multisig.1(salt: BeWord)
+@locals(1)
+pub proc auth_tx_ecdsa_multisig(salt: BeWord)
     exec.native_account::incr_nonce drop
     # => [SALT]
 
@@ -804,8 +809,8 @@ pub proc auth_tx_ecdsa_multisig.1(salt: BeWord)
 
     # ------ Verifying approver signatures ------
 
-    push.THRESHOLD_CONFIG_SLOT
-    # => [index, TX_SUMMARY_COMMITMENT]
+    push.THRESHOLD_CONFIG_SLOT[0..2]
+    # => [config_slot_prefix, config_slot_suffix, TX_SUMMARY_COMMITMENT]
 
     exec.active_account::get_initial_item
     # => [0, 0, num_of_approvers, default_threshold, TX_SUMMARY_COMMITMENT]
@@ -816,10 +821,10 @@ pub proc auth_tx_ecdsa_multisig.1(salt: BeWord)
     swap movdn.5
     # => [num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
 
-    push.PUBLIC_KEYS_MAP_SLOT
-    # => [pub_key_slot_idx, num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
+    push.PUBLIC_KEYS_MAP_SLOT[0..2]
+    # => [pub_key_slot_prefix, pub_key_slot_suffix, num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
 
-    exec.::miden::auth::ecdsa_k256_keccak::verify_signatures
+    exec.::miden::standards::auth::ecdsa_k256_keccak::verify_signatures
     # => [num_verified_signatures, TX_SUMMARY_COMMITMENT, default_threshold]
 
     # ------ Checking threshold is >= num_verified_signatures ------
@@ -854,10 +859,9 @@ export const PSM_MASM = `# Private State Manager (PSM) Authentication Component
 # This component provides PSM signature verification for accounts.
 # It can be used standalone or in conjunction with other auth components like multisig.
 
-use miden::active_account
-use miden::native_account
+use miden::protocol::active_account
+use miden::protocol::native_account
 
-# Type definitions for v0.12 syntax
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # IMPORTANT SECURITY NOTES
@@ -899,22 +903,22 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # CONSTANTS
 # =================================================================================================
 
-# Slot where the PSM selector flag is stored:
+# Slot where the PSM selector flag is stored (using word() for named slot access):
 # - PSM_ON  => PSM signature required
 # - PSM_OFF => PSM signature skipped
-const PSM_SELECTOR_SLOT = 0
+const PSM_SELECTOR_SLOT=word("openzeppelin::psm::selector")
 
 # Map slot for PSM public key
 # Uses exactly one PSM public key at index [0, 0, 0, 0]
 # [0, 0, 0, 0] => PSM_PUBLIC_KEY
-const PSM_PUBLIC_KEY_MAP_SLOT = 1
+const PSM_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::psm::public_key")
 
 # Selector flag values
-const PSM_ON = [1, 0, 0, 0]
-const PSM_OFF = [0, 0, 0, 0]
+const PSM_ON=[1, 0, 0, 0]
+const PSM_OFF=[0, 0, 0, 0]
 
 # The event emitted when a signature is not found for a required signer.
-const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
+const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
 
 # PSM PROCEDURES
 # =================================================================================================
@@ -927,12 +931,12 @@ const AUTH_UNAUTHORIZED_EVENT = event("miden::auth::unauthorized")
 #! Notes:
 #! - Sets PSM_SELECTOR_SLOT to PSM_ON (1)
 #! - After this, transactions will require PSM signature verification
-proc.enable_psm
+proc enable_psm
     push.PSM_ON
     # => [PSM_ON]
 
-    push.PSM_SELECTOR_SLOT
-    # => [PSM_SELECTOR_SLOT, PSM_ON]
+    push.PSM_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, PSM_ON]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -949,12 +953,12 @@ end
 #! Notes:
 #! - Sets PSM_SELECTOR_SLOT to PSM_OFF (0)
 #! - After this, transactions will NOT require PSM signature verification
-proc.disable_psm
+proc disable_psm
     push.PSM_OFF
     # => [PSM_OFF]
 
-    push.PSM_SELECTOR_SLOT
-    # => [PSM_SELECTOR_SLOT, PSM_OFF]
+    push.PSM_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, PSM_OFF]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -984,13 +988,13 @@ pub proc update_psm_public_key
     # => [MAP_KEY, PUB_KEY]
     # Note that MAP_KEY is [0, 0, 0, 0] for a single PSM_KEY
 
-    push.PSM_PUBLIC_KEY_MAP_SLOT
-    # => [index, MAP_KEY, PUB_KEY]
+    push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+    # => [pub_key_slot_prefix, pub_key_slot_suffix, MAP_KEY, PUB_KEY]
 
     exec.native_account::set_map_item
-    # => [OLD_MAP_ROOT, OLD_MAP_VALUE]
+    # => [OLD_MAP_VALUE]
 
-    dropw dropw
+    dropw
     # => []
 end
 
@@ -1007,8 +1011,8 @@ end
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
 #! - If selector is OFF (0), PSM verification is skipped
 #! - Selector value is read from initial storage state
-pub proc verify_psm_signature(msg: BeWord)
-    push.PSM_SELECTOR_SLOT
+pub proc verify_psm_signature(msg: BeWord) -> BeWord
+    push.PSM_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
     drop drop drop
     # => [selector, MSG]
@@ -1016,8 +1020,8 @@ pub proc verify_psm_signature(msg: BeWord)
     push.1 eq
     if.true
         push.1
-        push.PSM_PUBLIC_KEY_MAP_SLOT
-        exec.::miden::auth::rpo_falcon512::verify_signatures
+        push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+        exec.::miden::standards::auth::falcon512_rpo::verify_signatures
         push.1 neq
         if.true
             emit.AUTH_UNAUTHORIZED_EVENT
@@ -1032,6 +1036,6 @@ end
 export const PSM_ECDSA_MASM = PSM_MASM
   .replaceAll('RPO Falcon 512', 'ECDSA secp256k1')
   .replace(
-    'exec.::miden::auth::rpo_falcon512::verify_signatures',
-    'exec.::miden::auth::ecdsa_k256_keccak::verify_signatures',
+    'exec.::miden::standards::auth::falcon512_rpo::verify_signatures',
+    'exec.::miden::standards::auth::ecdsa_k256_keccak::verify_signatures',
   );

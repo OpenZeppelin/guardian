@@ -10,7 +10,7 @@ use crate::proto::{
     SignDeltaProposalResponse,
 };
 use chrono::Utc;
-use miden_objects::account::AccountId;
+use miden_protocol::account::AccountId;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
@@ -209,12 +209,17 @@ impl PsmClient {
         Ok(inner)
     }
 
-    /// Retrieves the PSM server's public key (commitment hex).
-    pub async fn get_pubkey(&mut self) -> ClientResult<String> {
-        let request = tonic::Request::new(GetPubkeyRequest { scheme: None });
+    /// Retrieves the PSM server's public key commitment (and optionally the raw public key).
+    pub async fn get_pubkey(
+        &mut self,
+        scheme: Option<&str>,
+    ) -> ClientResult<(String, Option<String>)> {
+        let request = tonic::Request::new(GetPubkeyRequest {
+            scheme: scheme.map(|s| s.to_string()),
+        });
         let response = self.client.get_pubkey(request).await?;
         let inner = response.into_inner();
-        Ok(inner.pubkey)
+        Ok((inner.pubkey, inner.raw_pubkey))
     }
 
     /// Push a delta proposal
@@ -298,10 +303,15 @@ fn proto_signature_from_json(signature: &JsonProposalSignature) -> ProtoProposal
         JsonProposalSignature::Falcon { signature } => ProtoProposalSignature {
             scheme: "falcon".to_string(),
             signature: signature.clone(),
+            public_key: None,
         },
-        JsonProposalSignature::Ecdsa { signature, .. } => ProtoProposalSignature {
+        JsonProposalSignature::Ecdsa {
+            signature,
+            public_key,
+        } => ProtoProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
+            public_key: public_key.clone(),
         },
     }
 }

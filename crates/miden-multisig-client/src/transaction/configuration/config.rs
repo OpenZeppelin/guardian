@@ -1,9 +1,12 @@
 //! Multisig configuration advice and transaction building.
 
-use miden_client::ScriptBuilder;
+use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
-use miden_confidential_contracts::masm_builder::get_multisig_library;
-use miden_objects::{Felt, Hasher, Word};
+use miden_confidential_contracts::masm_builder::{
+    get_multisig_ecdsa_library, get_multisig_library,
+};
+use miden_protocol::{Felt, Hasher, Word};
+use private_state_manager_shared::SignatureScheme;
 
 use crate::error::{MultisigError, Result};
 
@@ -34,19 +37,24 @@ pub fn build_multisig_config_advice(
 }
 
 /// Builds the update_signers transaction script.
-pub fn build_update_signers_script() -> Result<TransactionScript> {
-    let multisig_library = get_multisig_library().map_err(|e| {
+pub fn build_update_signers_script(scheme: SignatureScheme) -> Result<TransactionScript> {
+    let multisig_library = match scheme {
+        SignatureScheme::Falcon => get_multisig_library(),
+        SignatureScheme::Ecdsa => get_multisig_ecdsa_library(),
+    }
+    .map_err(|e| {
         MultisigError::TransactionExecution(format!("failed to get multisig library: {}", e))
     })?;
 
     let tx_script_code = "
+        use oz_multisig::multisig
         begin
-            call.::update_signers_and_threshold
+            call.multisig::update_signers_and_threshold
         end
     ";
 
-    let tx_script = ScriptBuilder::new(true)
-        .with_dynamically_linked_library(&multisig_library)
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(multisig_library)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(tx_script_code)
         .map_err(|e| {
@@ -64,12 +72,13 @@ pub fn build_update_signers_transaction_request<I>(
     signer_commitments: &[Word],
     salt: Word,
     extra_advice: I,
+    scheme: SignatureScheme,
 ) -> Result<(TransactionRequest, Word)>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
     let (config_hash, config_values) = build_multisig_config_advice(threshold, signer_commitments);
-    let script = build_update_signers_script()?;
+    let script = build_update_signers_script(scheme)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)

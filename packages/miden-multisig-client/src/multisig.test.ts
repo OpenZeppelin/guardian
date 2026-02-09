@@ -3,7 +3,7 @@ import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
 
 // Mock the Miden SDK
-vi.mock('@demox-labs/miden-sdk', () => ({
+vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
@@ -73,8 +73,12 @@ vi.mock('./utils/signature.js', () => ({
 vi.mock('./utils/encoding.js', async () => {
   const actual = await vi.importActual<typeof import('./utils/encoding.js')>('./utils/encoding.js');
   return {
-    ...actual,
+    ensureHexPrefix: actual.ensureHexPrefix,
     normalizeHexWord: vi.fn((hex: string) => '0x' + hex.replace(/^0x/i, '').padStart(64, '0')),
+    bytesToHex: actual.bytesToHex,
+    hexToBytes: actual.hexToBytes,
+    uint8ArrayToBase64: actual.uint8ArrayToBase64,
+    base64ToUint8Array: actual.base64ToUint8Array,
   };
 });
 

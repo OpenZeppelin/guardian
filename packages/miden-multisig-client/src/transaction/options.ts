@@ -1,5 +1,5 @@
-import type { AdviceMap, Word } from '@demox-labs/miden-sdk';
-import type { SignatureScheme } from '../types.js';
+import type { AdviceMap, Word } from '@miden-sdk/miden-sdk';
+import type { SignatureScheme } from '@openzeppelin/psm-client';
 
 export interface SignatureOptions {
   salt?: Word;

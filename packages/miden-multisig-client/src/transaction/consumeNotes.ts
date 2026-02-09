@@ -1,22 +1,27 @@
-import type { TransactionRequest, Word } from '@demox-labs/miden-sdk';
-import { NoteId, NoteIdAndArgs, NoteIdAndArgsArray, TransactionRequestBuilder, Word as WordType } from '@demox-labs/miden-sdk';
+import type { TransactionRequest, Word, WebClient } from '@miden-sdk/miden-sdk';
+import { NoteAndArgs, NoteAndArgsArray, TransactionRequestBuilder, Word as WordType } from '@miden-sdk/miden-sdk';
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
 
-export function buildConsumeNotesTransactionRequest(
+export async function buildConsumeNotesTransactionRequest(
+  webClient: WebClient,
   noteIds: string[],
   options: SignatureOptions = {},
-): { request: TransactionRequest; salt: Word } {
+): Promise<{ request: TransactionRequest; salt: Word }> {
   if (noteIds.length === 0) {
     throw new Error('At least one note ID is required');
   }
 
-  const noteIdAndArgsArray = new NoteIdAndArgsArray();
+  const noteAndArgsArray = new NoteAndArgsArray();
   for (const noteIdHex of noteIds) {
-    const noteId = NoteId.fromHex(noteIdHex);
-    const noteIdAndArgs = new NoteIdAndArgs(noteId, null);
-    noteIdAndArgsArray.push(noteIdAndArgs);
+    const inputNoteRecord = await webClient.getInputNote(noteIdHex);
+    if (!inputNoteRecord) {
+      throw new Error(`Note not found in local store: ${noteIdHex}`);
+    }
+    const note = inputNoteRecord.toNote();
+    const noteAndArgs = new NoteAndArgs(note, null);
+    noteAndArgsArray.push(noteAndArgs);
   }
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
@@ -24,7 +29,7 @@ export function buildConsumeNotesTransactionRequest(
   const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
   let txBuilder = new TransactionRequestBuilder();
-  txBuilder = txBuilder.withAuthenticatedInputNotes(noteIdAndArgsArray);
+  txBuilder = txBuilder.withInputNotes(noteAndArgsArray);
   txBuilder = txBuilder.withAuthArg(authSaltForBuilder);
 
   if (options.signatureAdviceMap) {
@@ -38,4 +43,3 @@ export function buildConsumeNotesTransactionRequest(
     salt: authSaltForReturn,
   };
 }
-

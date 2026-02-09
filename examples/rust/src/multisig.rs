@@ -1,16 +1,17 @@
 use std::fmt;
 
 use miden_client::account::Account;
+use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{
     TransactionAuthenticator, TransactionExecutorError, TransactionRequest,
     TransactionRequestBuilder, TransactionRequestError, TransactionScript, TransactionSummary,
 };
-use miden_client::{Client, ClientError, Deserializable, ScriptBuilder, Word};
+use miden_client::{Client, ClientError, Deserializable, Word};
 use miden_confidential_contracts::masm_builder::get_multisig_library;
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
-use miden_objects::account::auth::Signature;
-use miden_objects::account::AccountId;
-use miden_objects::{Felt, Hasher};
+use miden_protocol::account::auth::Signature;
+use miden_protocol::account::AccountId;
+use miden_protocol::{Felt, Hasher};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -125,13 +126,14 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
         get_multisig_library().map_err(|err| format!("Failed to get multisig library: {err}"))?;
 
     let tx_script_code = "
+        use oz_multisig::multisig
         begin
-            call.::update_signers_and_threshold
+            call.multisig::update_signers_and_threshold
         end
     ";
 
-    let tx_script = ScriptBuilder::new(true)
-        .with_dynamically_linked_library(&multisig_library)
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(multisig_library)
         .map_err(|err| format!("Failed to link multisig library: {err}"))?
         .compile_tx_script(tx_script_code)
         .map_err(|err| format!("Failed to compile transaction script: {err}"))?;

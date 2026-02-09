@@ -30,8 +30,10 @@ pub async fn sign_delta_proposal(
         credentials,
     } = params;
 
+    // Resolve account and verify authentication
     let resolved = resolve_account(state, &account_id, &credentials).await?;
 
+    // Fetch the proposal by commitment
     let mut delta_proposal = resolved
         .storage
         .pull_delta_proposal(&account_id, &commitment)
@@ -41,6 +43,7 @@ pub async fn sign_delta_proposal(
             commitment: commitment.clone(),
         })?;
 
+    // Verify is a pending proposal
     let (timestamp, proposer_id, mut cosigner_sigs) = match &delta_proposal.status {
         DeltaStatus::Pending {
             timestamp,
@@ -59,6 +62,7 @@ pub async fn sign_delta_proposal(
         }
     };
 
+    // Extract signer ID from credentials using the account's auth scheme
     let signer_commitment_hex = match &credentials {
         Credentials::Signature { pubkey, .. } => resolved
             .metadata
@@ -72,6 +76,7 @@ pub async fn sign_delta_proposal(
             })?,
     };
 
+    // Check if already signed by this signer
     if cosigner_sigs
         .iter()
         .any(|sig| sig.signer_id.eq_ignore_ascii_case(&signer_commitment_hex))
@@ -81,21 +86,8 @@ pub async fn sign_delta_proposal(
         });
     }
 
-    let signature = match signature {
-        ProposalSignature::Ecdsa {
-            signature: sig_hex, ..
-        } => {
-            let pubkey_hex = match &credentials {
-                Credentials::Signature { pubkey, .. } => Some(pubkey.clone()),
-            };
-            ProposalSignature::Ecdsa {
-                signature: sig_hex,
-                public_key: pubkey_hex,
-            }
-        }
-        other => other,
-    };
-
+    // Create the proposal signature based on scheme
+    // Add the new signature
     let new_signature = CosignerSignature {
         signature,
         timestamp: state.clock.now_rfc3339(),
@@ -137,12 +129,14 @@ pub async fn sign_delta_proposal(
         "sign_delta_proposal appended signature"
     );
 
+    // Update the delta proposal with the new signature
     delta_proposal.status = DeltaStatus::Pending {
         timestamp,
         proposer_id,
         cosigner_sigs,
     };
 
+    // Store the updated proposal
     resolved
         .storage
         .update_delta_proposal(&commitment, &delta_proposal)

@@ -12,8 +12,8 @@ miden-confidential-contracts = { path = "../../crates/contracts" }
 # Miden client for transaction execution and proving
 miden-client = { workspace = true, features = ["tonic", "testing"] }
 miden-client-sqlite-store = { workspace = true }
-# NamedSource is not exported by miden_client, so we need miden_objects directly
-miden-objects = { workspace = true }
+# miden-protocol is needed for types not re-exported by miden_client
+miden-protocol = { workspace = true }
 miden-tx = { workspace = true }
 
 tokio = { workspace = true, features = ["full"] }

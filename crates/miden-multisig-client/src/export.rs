@@ -5,9 +5,8 @@
 //! side channels (email, USB, etc.) when the PSM server is unavailable.
 //!
 
-use miden_objects::Felt;
-use miden_objects::account::AccountId;
-use miden_objects::transaction::TransactionSummary;
+use miden_protocol::account::AccountId;
+use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::FromJson;
 use serde::{Deserialize, Serialize};
 
@@ -41,9 +40,6 @@ pub struct ExportedProposal {
 pub struct ExportedSignature {
     pub signer_commitment: String,
     pub signature: String,
-    pub scheme: String,
-    #[serde(default)]
-    pub public_key_hex: String,
 }
 
 /// Metadata needed for proposal reconstruction.
@@ -302,7 +298,6 @@ impl ExportedProposal {
     ///
     /// Returns an error if the signer has already signed.
     pub fn add_signature(&mut self, signature: ExportedSignature) -> Result<()> {
-        // Check if already signed
         if self.signatures.iter().any(|s| {
             s.signer_commitment
                 .eq_ignore_ascii_case(&signature.signer_commitment)
@@ -341,7 +336,9 @@ impl ExportedProposal {
 }
 
 /// Converts a hex string to Word.
-fn hex_to_word(hex: &str) -> Result<miden_objects::Word> {
+fn hex_to_word(hex: &str) -> Result<miden_protocol::Word> {
+    use miden_protocol::Felt;
+
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
     let bytes = hex::decode(hex).map_err(|e| {
         MultisigError::InvalidConfig(format!("invalid hex string '{}': {}", hex, e))
@@ -361,7 +358,7 @@ fn hex_to_word(hex: &str) -> Result<miden_objects::Word> {
         arr.copy_from_slice(chunk);
         word[i] = u64::from_le_bytes(arr);
     }
-    Ok(miden_objects::Word::from(word.map(Felt::new)))
+    Ok(miden_protocol::Word::from(word.map(Felt::new)))
 }
 
 #[cfg(test)]
@@ -373,8 +370,6 @@ mod tests {
         let sig = ExportedSignature {
             signer_commitment: "0xabc123".to_string(),
             signature: "0xdef456".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         };
 
         let json = serde_json::to_string(&sig).expect("should serialize");
@@ -422,15 +417,11 @@ mod tests {
         let sig1 = ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         };
 
-        // First signature should succeed
         proposal.add_signature(sig1.clone()).expect("should add");
         assert_eq!(proposal.signatures.len(), 1);
 
-        // Duplicate should fail
         let result = proposal.add_signature(sig1);
         assert!(result.is_err());
         assert_eq!(proposal.signatures.len(), 1);
@@ -455,16 +446,12 @@ mod tests {
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         });
         assert!(!proposal.is_ready());
 
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner2".to_string(),
             signature: "0xsig2".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         });
         assert!(proposal.is_ready());
     }
@@ -507,8 +494,6 @@ mod tests {
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
-            scheme: "falcon".to_string(),
-            public_key_hex: String::new(),
         });
 
         assert_eq!(proposal.signature_counts(), (1, 3));
@@ -528,21 +513,16 @@ mod tests {
                 ExportedSignature {
                     signer_commitment: "0xSigner1".to_string(),
                     signature: "0xsig1".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
             ],
             signatures_required: 3,
             metadata: ExportedMetadata::default(),
         };
 
-        // Test case-insensitive matching
         assert!(proposal.has_signed("0xsigner1"));
         assert!(proposal.has_signed("0xSIGNER1"));
         assert!(proposal.has_signed("0xSigner2"));
@@ -562,14 +542,10 @@ mod tests {
                 ExportedSignature {
                     signer_commitment: "0xsigner1".to_string(),
                     signature: "0xsig1".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
-                    scheme: "falcon".to_string(),
-                    public_key_hex: String::new(),
                 },
             ],
             signatures_required: 3,
@@ -582,7 +558,6 @@ mod tests {
         assert!(signers.contains(&"0xsigner2"));
     }
 
-    // Helper for valid account ID (15 bytes = 30 hex chars)
     fn valid_account_id() -> String {
         "0x7bfb0f38b0fafa103f86a805594170".to_string()
     }
@@ -591,12 +566,10 @@ mod tests {
         "0x7bfb0f38b0fafa103f86a805594171".to_string()
     }
 
-    // Helper for valid 32-byte hex (Word)
     fn valid_word_hex() -> String {
         "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
     }
 
-    // Helper for valid note ID hex (32 bytes)
     fn valid_note_id_hex() -> String {
         "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
     }
@@ -758,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_hex_to_word_invalid_length() {
-        let hex = "0x1234"; // Too short
+        let hex = "0x1234";
         let result = hex_to_word(hex);
         assert!(result.is_err());
     }

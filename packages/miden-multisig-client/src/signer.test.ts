@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { FalconSigner } from './signer.js';
 
 // Mock the Miden SDK
-vi.mock('@demox-labs/miden-sdk', () => {
+vi.mock('@miden-sdk/miden-sdk', () => {
   const mockSignature = {
     serialize: () => new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
   };
@@ -20,7 +20,7 @@ vi.mock('@demox-labs/miden-sdk', () => {
   };
 
   return {
-    SecretKey: {
+    AuthSecretKey: {
       rpoFalconWithRNG: vi.fn().mockReturnValue(mockSecretKey),
     },
     Word: {
@@ -51,8 +51,8 @@ describe('FalconSigner', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    const { SecretKey } = await import('@demox-labs/miden-sdk');
-    mockSecretKey = SecretKey.rpoFalconWithRNG(new Uint8Array(32));
+    const { AuthSecretKey } = await import('@miden-sdk/miden-sdk');
+    mockSecretKey = AuthSecretKey.rpoFalconWithRNG(new Uint8Array(32));
     signer = new FalconSigner(mockSecretKey);
   });
 
@@ -94,7 +94,7 @@ describe('FalconSigner', () => {
     });
 
     it('includes timestamp in signed payload', async () => {
-      const { Felt, FeltArray } = await import('@demox-labs/miden-sdk');
+      const { Felt, FeltArray } = await import('@miden-sdk/miden-sdk');
       signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       // Verify FeltArray was called with timestamp in the third position
       expect(FeltArray).toHaveBeenCalledWith(expect.arrayContaining([

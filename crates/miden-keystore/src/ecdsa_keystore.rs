@@ -1,6 +1,6 @@
-use miden_objects::Word;
-use miden_objects::crypto::dsa::ecdsa_k256_keccak::{PublicKey, SecretKey, Signature};
-use miden_objects::utils::{Deserializable, Serializable};
+use miden_protocol::Word;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, SecretKey, Signature};
+use miden_protocol::utils::{Deserializable, Serializable};
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write};

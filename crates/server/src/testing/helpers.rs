@@ -12,12 +12,12 @@ use crate::storage::filesystem::FilesystemService;
 use crate::testing::mocks::MockNetworkClient;
 use async_trait::async_trait;
 use chrono::Utc;
-use miden_objects::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
-use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-use miden_objects::crypto::hash::rpo::Rpo256;
-use miden_objects::transaction::{InputNotes, OutputNotes, TransactionSummary};
-use miden_objects::utils::Serializable;
-use miden_objects::{Felt, FieldElement, Word, ZERO};
+use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
+use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use miden_protocol::crypto::hash::rpo::Rpo256;
+use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+use miden_protocol::utils::Serializable;
+use miden_protocol::{Felt, FieldElement, Word, ZERO};
 use private_state_manager_shared::hex::IntoHex;
 use private_state_manager_shared::{FromJson, ToJson};
 
@@ -49,7 +49,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         _account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<String, String> {
-        use miden_objects::account::Account;
+        use miden_protocol::account::Account;
 
         let account = Account::from_json(state_json)
             .map_err(|e| format!("Failed to deserialize account: {e}"))?;
@@ -65,7 +65,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<(), String> {
-        use miden_objects::account::Account;
+        use miden_protocol::account::Account;
 
         let account = Account::from_json(state_json)
             .map_err(|e| format!("Failed to deserialize account: {e}"))?;
@@ -131,6 +131,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _credential: &crate::metadata::auth::Credentials,
+        _auth: &crate::metadata::auth::Auth,
     ) -> Result<(), String> {
         // For integration tests, skip actual validation since test keys won't match account fixture
         Ok(())
@@ -393,8 +394,8 @@ pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, Strin
 }
 
 pub fn pubkey_hex_to_commitment_hex(pubkey_hex: &str) -> String {
-    use miden_objects::crypto::dsa::rpo_falcon512::PublicKey;
-    use miden_objects::utils::{Deserializable, Serializable};
+    use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+    use miden_protocol::utils::{Deserializable, Serializable};
 
     let pubkey_hex = pubkey_hex.strip_prefix("0x").unwrap_or(pubkey_hex);
     let pubkey_bytes = hex::decode(pubkey_hex).expect("Valid public key hex");

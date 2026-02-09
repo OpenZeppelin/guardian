@@ -1,6 +1,6 @@
-use miden_objects::Word;
-use miden_objects::crypto::dsa::rpo_falcon512::{SecretKey, Signature};
-use miden_objects::utils::{Deserializable, Serializable};
+use miden_protocol::Word;
+use miden_protocol::crypto::dsa::falcon512_rpo::{SecretKey, Signature};
+use miden_protocol::utils::{Deserializable, Serializable};
 use rand::{RngCore, SeedableRng};
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_hash_pub_key() {
-        use miden_objects::Felt;
+        use miden_protocol::Felt;
         let pub_key = [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)];
         let hash1 = hash_pub_key(pub_key.into());
         let hash2 = hash_pub_key(pub_key.into());

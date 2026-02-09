@@ -8,7 +8,7 @@ import {
   EcdsaSigner,
   type SignatureScheme,
 } from '@openzeppelin/miden-multisig-client';
-import type { WebClient } from '@demox-labs/miden-sdk';
+import type { WebClient } from '@miden-sdk/miden-sdk';
 import type { SignerInfo } from '@/types';
 
 /**

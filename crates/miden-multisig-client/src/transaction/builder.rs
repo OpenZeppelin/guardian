@@ -1,10 +1,10 @@
 //! Proposal builder for multisig transactions.
 
 use miden_client::Client;
-use miden_objects::Word;
-use miden_objects::account::AccountId;
-use miden_objects::asset::FungibleAsset;
-use miden_objects::note::NoteId;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::note::NoteId;
 use private_state_manager_client::PsmClient;
 use private_state_manager_shared::ToJson;
 
@@ -128,30 +128,24 @@ impl ProposalBuilder {
         let current_threshold = account.threshold()?;
         let mut current_signers = account.cosigner_commitments();
 
-        // Add the new signer
         current_signers.push(new_commitment);
 
-        // Keep same threshold
         let new_threshold = current_threshold as u64;
 
-        // Generate salt for replay protection
         let salt = generate_salt();
 
-        // Build the transaction request (without signatures - we just want the summary)
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
             &current_signers,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
 
-        // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
 
-        // Build proposal metadata
         let signer_commitments_hex: Vec<String> = current_signers.iter().map(word_to_hex).collect();
 
         let metadata = ProposalMetadata {
@@ -169,7 +163,6 @@ impl ProposalBuilder {
             collected_signatures: Some(1),
         };
 
-        // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_add_signer_metadata(
@@ -178,14 +171,12 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             );
 
-        // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
-        // Build the Proposal
         let proposal = Proposal {
             id: response.commitment,
             nonce,
@@ -214,7 +205,6 @@ impl ProposalBuilder {
         let current_threshold = account.threshold()?;
         let current_signers = account.cosigner_commitments();
 
-        // Remove the signer
         let new_signers: Vec<Word> = current_signers
             .iter()
             .filter(|&c| c != &commitment_to_remove)
@@ -227,7 +217,6 @@ impl ProposalBuilder {
             ));
         }
 
-        // Adjust threshold if needed (can't be more than signers)
         let new_threshold = std::cmp::min(current_threshold as u64, new_signers.len() as u64);
 
         if new_signers.is_empty() {
@@ -236,24 +225,20 @@ impl ProposalBuilder {
             ));
         }
 
-        // Generate salt for replay protection
         let salt = generate_salt();
 
-        // Build the transaction request
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
             &new_signers,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
 
-        // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
 
-        // Build proposal metadata
         let signer_commitments_hex: Vec<String> = new_signers.iter().map(word_to_hex).collect();
 
         let metadata = ProposalMetadata {
@@ -271,7 +256,6 @@ impl ProposalBuilder {
             collected_signatures: Some(1),
         };
 
-        // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_remove_signer_metadata(
@@ -280,14 +264,12 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             );
 
-        // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
-        // Build the Proposal
         let proposal = Proposal {
             id: response.commitment,
             nonce,
@@ -296,8 +278,6 @@ impl ProposalBuilder {
             },
             status: ProposalStatus::Pending {
                 signatures_collected: 1,
-                // Use current_threshold for required signatures since on-chain code
-                // verifies against the current config
                 signatures_required: current_threshold as usize,
                 signers: vec![key_manager.commitment_hex()],
             },
@@ -322,29 +302,23 @@ impl ProposalBuilder {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
 
-        // Create the fungible asset
         let asset = FungibleAsset::new(faucet_id, amount)
             .map_err(|e| MultisigError::InvalidConfig(format!("failed to create asset: {}", e)))?;
 
-        // Generate salt for replay protection
         let salt = generate_salt();
 
-        // Build the P2ID transaction request (no signature advice needed for proposal)
         let tx_request = build_p2id_transaction_request(
-            account.inner(),
+            account_id,
             recipient,
             vec![asset.into()],
             salt,
             std::iter::empty(),
         )?;
 
-        // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
 
-        // Build proposal metadata
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
             new_threshold: None,
@@ -360,7 +334,6 @@ impl ProposalBuilder {
             collected_signatures: Some(1),
         };
 
-        // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_payment_metadata(
@@ -370,14 +343,12 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             );
 
-        // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
-        // Build the Proposal
         let proposal = Proposal {
             id: response.commitment,
             nonce,
@@ -409,20 +380,20 @@ impl ProposalBuilder {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
 
-        // Generate salt for replay protection
         let salt = generate_salt();
 
-        // Build the consume notes transaction request (no signatures for proposal)
-        let tx_request =
-            build_consume_notes_transaction_request(note_ids.clone(), salt, std::iter::empty())?;
+        let tx_request = build_consume_notes_transaction_request(
+            miden_client,
+            note_ids.clone(),
+            salt,
+            std::iter::empty(),
+        )
+        .await?;
 
-        // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
 
-        // Build proposal metadata
         let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
 
         let metadata = ProposalMetadata {
@@ -440,19 +411,16 @@ impl ProposalBuilder {
             collected_signatures: Some(1),
         };
 
-        // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata(&note_ids_hex, word_to_hex(&salt));
 
-        // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
-        // Build the Proposal
         let proposal = Proposal {
             id: response.commitment,
             nonce,
@@ -482,20 +450,15 @@ impl ProposalBuilder {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
 
-        // Generate salt for replay protection
         let salt = generate_salt();
 
-        // Build the PSM update transaction request (no signatures for proposal)
         let tx_request =
             build_update_psm_transaction_request(new_psm_pubkey, salt, std::iter::empty())?;
 
-        // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
 
-        // Build proposal metadata
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
             new_threshold: None,
@@ -511,7 +474,6 @@ impl ProposalBuilder {
             collected_signatures: Some(1),
         };
 
-        // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_psm_update_metadata(
@@ -520,14 +482,12 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             );
 
-        // Push proposal to PSM
         let nonce = account.nonce() + 1;
         let response = psm_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
-        // Build the Proposal
         let proposal = Proposal {
             id: response.commitment,
             nonce,

@@ -11,7 +11,7 @@ import {
 } from '@openzeppelin/miden-multisig-client';
 import { PsmHttpError } from '@openzeppelin/psm-client';
 
-import { WebClient } from '@demox-labs/miden-sdk';
+import { WebClient } from '@miden-sdk/miden-sdk';
 
 import {
   Header,
@@ -124,8 +124,9 @@ export default function App() {
             toast.success('Account loaded from PSM');
           } catch (loadErr) {
             const isNotFound = loadErr instanceof PsmHttpError && loadErr.status === 404;
+            const isNonceTooLow = loadErr instanceof Error && loadErr.message.includes('nonce') && loadErr.message.includes('too low');
 
-            if (isNotFound) {
+            if (isNotFound || isNonceTooLow) {
               try {
                 await multisig.switchPsm(msClient.psmClient);
 

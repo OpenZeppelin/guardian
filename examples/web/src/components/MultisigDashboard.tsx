@@ -190,6 +190,7 @@ export function MultisigDashboard({
       <CreateProposalForm
         currentThreshold={threshold}
         signerCommitments={signerCommitments}
+        signatureScheme={multisig.signatureScheme}
         creatingProposal={creatingProposal}
         consumableNotes={consumableNotes}
         vaultBalances={vaultBalances}

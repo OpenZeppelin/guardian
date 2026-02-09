@@ -1,4 +1,4 @@
-import type { TransactionRequest, Word } from '@demox-labs/miden-sdk';
+import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   Felt,
@@ -7,7 +7,6 @@ import {
   MidenArrays,
   Note,
   NoteAssets,
-  NoteExecutionHint,
   NoteInputs,
   NoteMetadata,
   NoteRecipient,
@@ -18,7 +17,7 @@ import {
   Rpo256,
   TransactionRequestBuilder,
   Word as WordType,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
@@ -28,7 +27,6 @@ function buildP2idNote(
   recipient: AccountId,
   noteAssets: NoteAssets,
   noteType: NoteType,
-  aux: Felt,
   saltHex: string,
 ): Note {
   const salt = WordType.fromHex(normalizeHexWord(saltHex));
@@ -44,14 +42,12 @@ function buildP2idNote(
   ]));
 
   const noteRecipient = new NoteRecipient(serialNum, noteScript, noteInputs);
-  const noteTag = NoteTag.fromAccountId(recipient);
+  const noteTag = NoteTag.withAccountTarget(recipient);
 
   const noteMetadata = new NoteMetadata(
     sender,
     noteType,
     noteTag,
-    NoteExecutionHint.always(),
-    aux,
   );
 
   return new Note(noteAssets, noteMetadata, noteRecipient);
@@ -78,7 +74,6 @@ export function buildP2idTransactionRequest(
     recipient,
     noteAssets,
     NoteType.Public,
-    new Felt(0n),
     authSaltHex,
   );
 

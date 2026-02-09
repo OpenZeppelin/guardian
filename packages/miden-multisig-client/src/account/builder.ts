@@ -4,7 +4,7 @@ import {
   AccountType,
   AccountStorageMode,
   type WebClient,
-} from '@demox-labs/miden-sdk';
+} from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
 import { buildMultisigStorageSlots, buildPsmStorageSlots } from './storage.js';
 import { MULTISIG_MASM, MULTISIG_ECDSA_MASM, PSM_MASM, PSM_ECDSA_MASM } from './masm.js';
@@ -19,19 +19,21 @@ export async function createMultisigAccount(
   const multisigSlots = buildMultisigStorageSlots(config);
   const psmSlots = buildPsmStorageSlots(config);
 
-  const psmBuilder = webClient.createScriptBuilder();
+  const psmBuilder = webClient.createCodeBuilder();
   const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
+  const psmCode = psmBuilder.compileAccountComponentCode(psmMasm);
   const psmComponent = AccountComponent
-    .compile(psmMasm, psmBuilder, psmSlots)
+    .compile(psmCode, psmSlots)
     .withSupportsAllTypes();
 
   const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
   const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
-  const multisigBuilder = webClient.createScriptBuilder();
+  const multisigBuilder = webClient.createCodeBuilder();
   const psmLib = multisigBuilder.buildLibrary(psmLibraryPath, psmMasm);
   multisigBuilder.linkStaticLibrary(psmLib);
+  const multisigCode = multisigBuilder.compileAccountComponentCode(multisigMasm);
   const multisigComponent = AccountComponent
-    .compile(multisigMasm, multisigBuilder, multisigSlots)
+    .compile(multisigCode, multisigSlots)
     .withSupportsAllTypes();
 
   const seed = new Uint8Array(32);

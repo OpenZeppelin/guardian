@@ -7,8 +7,8 @@ use miden_client::crypto::RpoRandomCoin;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client::{Client, ExecutionOptions};
 use miden_client_sqlite_store::SqliteStore;
-use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-use miden_objects::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -89,7 +89,7 @@ impl MultisigClientBuilder {
     /// Uses an ECDSA key store with the given secret key.
     pub fn with_ecdsa_secret_key(
         mut self,
-        secret_key: miden_objects::crypto::dsa::ecdsa_k256_keccak::SecretKey,
+        secret_key: miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey,
     ) -> Self {
         self.key_manager = Some(Box::new(EcdsaPsmKeyStore::new(secret_key)));
         self
