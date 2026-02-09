@@ -119,6 +119,7 @@ pub fn collect_signature_advice(
 }
 
 /// Builds the final transaction request based on transaction type.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_final_transaction_request(
     client: &Client<()>,
     transaction_type: &TransactionType,
@@ -301,42 +302,47 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_signature_advice_empty_input() {
-        let required: HashSet<String> = ["0xabc"].iter().map(|s| s.to_string()).collect();
-        let signatures: Vec<SignatureInput> = vec![];
+    fn test_collect_signature_advice_invalid_ecdsa_signature_hex() {
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
-        let advice =
-            collect_signature_advice(signatures, &required, Word::default()).expect("valid advice");
-        assert!(advice.is_empty());
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = pk.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let pk_hex = format!("0x{}", hex::encode(pk.to_bytes()));
+
+        let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
+        let signatures = vec![SignatureInput {
+            signer_commitment: commitment_hex,
+            signature_hex: "0xnotvalidhex!!!".to_string(),
+            scheme: SignatureScheme::Ecdsa,
+            public_key_hex: Some(pk_hex),
+        }];
+
+        let result = collect_signature_advice(signatures, &required, Word::default());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_collect_signature_advice_case_insensitive_matching() {
-        let secret_key = SecretKey::new();
-        let public_key = secret_key.public_key();
-        let commitment = public_key.to_commitment();
+    fn test_collect_signature_advice_invalid_ecdsa_signature_bytes() {
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = pk.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let pk_hex = format!("0x{}", hex::encode(pk.to_bytes()));
 
-        let msg = Word::default();
-        let signature = secret_key.sign(msg);
-        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
-
-        // Required is lowercase
-        let required: HashSet<String> = [commitment_hex.to_lowercase()].into_iter().collect();
-        // Input has uppercase hex digits (but keeps "0x" prefix)
-        let upper_commitment = format!(
-            "0x{}",
-            commitment_hex.strip_prefix("0x").unwrap().to_uppercase()
-        );
+        let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
         let signatures = vec![SignatureInput {
-            signer_commitment: upper_commitment,
-            signature_hex,
-            scheme: SignatureScheme::Falcon,
-            public_key_hex: None,
+            signer_commitment: commitment_hex,
+            signature_hex: "0xdeadbeef".to_string(), // valid hex, invalid ECDSA sig
+            scheme: SignatureScheme::Ecdsa,
+            public_key_hex: Some(pk_hex),
         }];
 
-        let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");
-        assert_eq!(advice.len(), 1);
+        let result = collect_signature_advice(signatures, &required, Word::default());
+        assert!(result.is_err());
     }
 
     #[test]

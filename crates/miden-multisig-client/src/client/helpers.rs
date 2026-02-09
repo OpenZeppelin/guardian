@@ -251,3 +251,94 @@ fn parse_ack_signature(
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey as FalconSecretKey;
+    use miden_protocol::utils::Serializable;
+    use miden_protocol::Word;
+
+    #[test]
+    fn parse_ack_signature_falcon_valid() {
+        let sk = FalconSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = pk.to_commitment();
+        let msg = Word::default();
+        let sig = sk.sign(msg);
+        let sig_hex = format!("0x{}", hex::encode(sig.to_bytes()));
+
+        let result = parse_ack_signature(&sig_hex, "falcon", None, commitment, msg);
+        assert!(result.is_ok());
+        let (key, values) = result.unwrap();
+        assert_ne!(key, Word::default());
+        assert!(!values.is_empty());
+    }
+
+    #[test]
+    fn parse_ack_signature_falcon_invalid_hex() {
+        let result = parse_ack_signature(
+            "0xdeadbeef",
+            "falcon",
+            None,
+            Word::default(),
+            Word::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_ack_signature_ecdsa_valid() {
+        let sk = EcdsaSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = pk.to_commitment();
+        let pk_hex = format!("0x{}", hex::encode(pk.to_bytes()));
+        let msg = Word::default();
+        let sig = sk.sign(msg);
+        let sig_hex = format!("0x{}", hex::encode(sig.to_bytes()));
+
+        let result = parse_ack_signature(
+            &sig_hex,
+            "ecdsa",
+            Some(pk_hex),
+            commitment,
+            msg,
+        );
+        assert!(result.is_ok());
+        let (key, values) = result.unwrap();
+        assert_ne!(key, Word::default());
+        assert!(!values.is_empty());
+    }
+
+    #[test]
+    fn parse_ack_signature_ecdsa_missing_pubkey() {
+        let sk = EcdsaSecretKey::new();
+        let msg = Word::default();
+        let sig = sk.sign(msg);
+        let sig_hex = format!("0x{}", hex::encode(sig.to_bytes()));
+
+        let result = parse_ack_signature(
+            &sig_hex,
+            "ecdsa",
+            None, // missing pubkey
+            Word::default(),
+            msg,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("ack_pubkey"));
+    }
+
+    #[test]
+    fn parse_ack_signature_ecdsa_invalid_sig_hex() {
+        let result = parse_ack_signature(
+            "0xnotvalidhex!!!",
+            "ecdsa",
+            Some("0xdummy".to_string()),
+            Word::default(),
+            Word::default(),
+        );
+        assert!(result.is_err());
+    }
+
+}

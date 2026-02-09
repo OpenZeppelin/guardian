@@ -240,6 +240,7 @@ async fn test_grpc_sign_delta_proposal_not_found() {
         signature: Some(ProposalSignature {
             scheme: "falcon".to_string(),
             signature: dummy_sig,
+            public_key: None,
         }),
     };
 

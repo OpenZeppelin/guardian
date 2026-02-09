@@ -572,4 +572,79 @@ mod tests {
             "Commitment should be 32 bytes (64 hex chars + 0x prefix)"
         );
     }
+
+    #[tokio::test]
+    async fn test_merge_deltas_empty() {
+        let client = MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+            .await
+            .expect("Failed to create client");
+
+        let result = client.merge_deltas(vec![]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty delta list"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_deltas_invalid_payload() {
+        let client = MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+            .await
+            .expect("Failed to create client");
+
+        let result = client.merge_deltas(vec![serde_json::json!({"invalid": true})]);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_delta_commitment_mismatch() {
+        let client = MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+            .await
+            .expect("Failed to create client");
+
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON)
+                .expect("Failed to parse delta fixture");
+        let delta_payload = delta_fixture
+            .get("delta_payload")
+            .expect("delta_payload field missing");
+
+        let result = client.verify_delta("0xwrong_commitment", &account_json, delta_payload);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Previous commitment mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_account_id_invalid() {
+        let client = MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+            .await
+            .expect("Failed to create client");
+
+        let result = client.validate_account_id("not_valid");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid Miden account ID"));
+    }
+
+    #[tokio::test]
+    async fn test_delta_proposal_id() {
+        let client = MidenNetworkClient::from_network(NetworkType::MidenTestnet)
+            .await
+            .expect("Failed to create client");
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON)
+                .expect("Failed to parse delta fixture");
+        let delta_payload = delta_fixture
+            .get("delta_payload")
+            .expect("delta_payload field missing");
+
+        let result = client.delta_proposal_id("any_account", 1, delta_payload);
+        assert!(result.is_ok());
+        let proposal_id = result.unwrap();
+        assert!(proposal_id.starts_with("0x"));
+        assert_eq!(proposal_id.len(), 66); // 0x + 64 hex chars
+    }
+
 }

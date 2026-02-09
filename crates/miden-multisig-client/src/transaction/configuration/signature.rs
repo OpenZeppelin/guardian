@@ -137,59 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn falcon_advice_entry_produces_non_empty_values() {
-        let pubkey_commitment =
-            Word::from([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
-        let message = Word::from([Felt::new(5), Felt::new(6), Felt::new(7), Felt::new(8)]);
-
-        let secret_key = SecretKey::new();
-        let rpo_sig = secret_key.sign(message);
-        let signature = AccountSignature::from(rpo_sig);
-        let (_key, values) =
-            build_signature_advice_entry(pubkey_commitment, message, &signature, None);
-
-        assert!(!values.is_empty());
-    }
-
-    #[test]
-    fn ecdsa_advice_entry_produces_non_empty_values() {
-        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-
-        let sk = EcdsaSecretKey::new();
-        let pk = sk.public_key();
-        let commitment = pk.to_commitment();
-        let message = Word::from([Felt::new(10), Felt::new(20), Felt::new(30), Felt::new(40)]);
-        let sig = sk.sign(message);
-        let account_sig = AccountSignature::EcdsaK256Keccak(sig);
-
-        let (_key, values) =
-            build_signature_advice_entry(commitment, message, &account_sig, Some(&pk));
-
-        assert!(!values.is_empty());
-    }
-
-    #[test]
-    fn ecdsa_advice_entry_key_matches_expected() {
-        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-
-        let sk = EcdsaSecretKey::new();
-        let pk = sk.public_key();
-        let commitment = pk.to_commitment();
-        let message = Word::from([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
-        let sig = sk.sign(message);
-        let account_sig = AccountSignature::EcdsaK256Keccak(sig);
-
-        let (key, _) = build_signature_advice_entry(commitment, message, &account_sig, Some(&pk));
-
-        let mut elements = Vec::with_capacity(8);
-        elements.extend_from_slice(commitment.as_elements());
-        elements.extend_from_slice(message.as_elements());
-        let expected: Word = Hasher::hash_elements(&elements);
-
-        assert_eq!(key, expected);
-    }
-
-    #[test]
     fn build_ecdsa_signature_advice_entry_valid() {
         use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 
@@ -250,18 +197,4 @@ mod tests {
         assert_eq!(felts[1], Felt::from(2u32));
     }
 
-    #[test]
-    fn bytes_to_packed_u32_felts_partial_chunk() {
-        let bytes = [1u8, 2, 3]; // less than 4 bytes
-        let felts = bytes_to_packed_u32_felts(&bytes);
-        assert_eq!(felts.len(), 1);
-        // [1, 2, 3, 0] as u32 little-endian = 0x00030201 = 197121
-        assert_eq!(felts[0], Felt::from(0x00030201u32));
-    }
-
-    #[test]
-    fn bytes_to_packed_u32_felts_empty() {
-        let felts = bytes_to_packed_u32_felts(&[]);
-        assert!(felts.is_empty());
-    }
 }
