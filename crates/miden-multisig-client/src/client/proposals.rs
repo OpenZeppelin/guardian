@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_client::delta_status::Status;
 use private_state_manager_shared::{DeltaPayload, ProposalSignature, SignatureScheme};
 
 use super::{MultisigClient, ProposalResult};
@@ -66,7 +65,11 @@ impl MultisigClient {
         let tx_commitment = proposal.tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
-        let signature = ProposalSignature::from_scheme(self.key_manager.scheme(), signature_hex);
+        let signature = ProposalSignature::from_scheme(
+            self.key_manager.scheme(),
+            signature_hex,
+            self.key_manager.public_key_hex(),
+        );
 
         let account_id = self.require_account()?.id();
 
@@ -162,42 +165,10 @@ impl MultisigClient {
                 .collect()
         };
 
-        if let Some(ref status) = raw_proposal.status
-            && let Some(ref status_oneof) = status.status
-            && let Status::Pending(pending) = status_oneof
-        {
-            for cosigner_sig in &pending.cosigner_sigs {
-                let sig_hex = cosigner_sig
-                    .signature
-                    .as_ref()
-                    .ok_or_else(|| {
-                        MultisigError::Signature(format!(
-                            "missing signature for cosigner {}",
-                            cosigner_sig.signer_id
-                        ))
-                    })?
-                    .signature
-                    .clone();
-                let scheme_str = cosigner_sig
-                    .signature
-                    .as_ref()
-                    .map(|s| s.scheme.as_str())
-                    .unwrap_or("falcon");
-                let scheme = match scheme_str {
-                    "ecdsa" => SignatureScheme::Ecdsa,
-                    _ => SignatureScheme::Falcon,
-                };
-                signature_inputs.push(SignatureInput {
-                    signer_commitment: cosigner_sig.signer_id.clone(),
-                    signature_hex: sig_hex,
-                    scheme,
-                    public_key_hex: None,
-                });
-            }
-        }
-
         signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
-        signature_inputs.dedup_by(|a, b| a.signer_commitment == b.signer_commitment);
+        signature_inputs.dedup_by(|a, b| {
+            a.signer_commitment.eq_ignore_ascii_case(&b.signer_commitment)
+        });
 
         let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
@@ -245,6 +216,7 @@ impl MultisigClient {
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
+            self.key_manager.scheme(),
         )
         .await?;
 

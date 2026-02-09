@@ -57,6 +57,7 @@ pub fn build_signature_advice_entry(
         Signature::EcdsaK256Keccak(ecdsa_sig) => {
             let pk = ecdsa_pubkey
                 .expect("ECDSA public key must be provided for ECDSA signature advice preparation");
+
             let encoded = encode_ecdsa_signature_felts(pk, ecdsa_sig);
             let mut reversed = encoded;
             reversed.reverse();
@@ -263,4 +264,5 @@ mod tests {
         let felts = bytes_to_packed_u32_felts(&[]);
         assert!(felts.is_empty());
     }
+
 }

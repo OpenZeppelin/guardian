@@ -144,8 +144,8 @@ async fn main() -> ClientResult<()> {
         }
     };
 
-    let server_commitment_hex = match psm_client1.get_pubkey().await {
-        Ok(commitment) => {
+    let server_commitment_hex = match psm_client1.get_pubkey(None).await {
+        Ok((commitment, _)) => {
             println!("  ✓ Connected to PSM server");
             println!("  ✓ Server commitment: {}...", &commitment[..18]);
             commitment

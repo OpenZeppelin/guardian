@@ -1,7 +1,7 @@
 use miden_multisig_client::commitment_from_hex;
 use rustyline::DefaultEditor;
 
-use crate::display::{print_section, print_success, print_waiting, shorten_hex};
+use crate::display::{print_section, print_success, print_waiting, shorten_hex, shorten_hex_32};
 use crate::menu::prompt_input;
 use crate::state::SessionState;
 
@@ -28,8 +28,23 @@ pub async fn action_create_account(
     let user_commitment_hex = state.user_commitment_hex()?;
     cosigner_commitment_hexes.push(user_commitment_hex.clone());
 
-    println!("\nYour commitment: {}", shorten_hex(&user_commitment_hex));
-    println!("\nEnter commitments for other cosigners:");
+    let user_commitment_display = if state.is_ecdsa() {
+        shorten_hex_32(&user_commitment_hex)
+    } else {
+        shorten_hex(&user_commitment_hex)
+    };
+
+    println!(
+        "\nYour {} commitment: {}",
+        state.signature_scheme_name(),
+        user_commitment_display
+    );
+    if state.is_ecdsa() {
+        println!("Your commitment (full): {}", user_commitment_hex);
+    }
+    println!(
+        "\nEnter commitments for other cosigners (must use the same signature scheme):"
+    );
 
     for i in 1..num_cosigners {
         let commitment = prompt_input(editor, &format!("  Cosigner {} commitment: ", i + 1))?;

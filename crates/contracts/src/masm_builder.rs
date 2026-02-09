@@ -273,16 +273,25 @@ pub fn get_multisig_library() -> Result<Library> {
 }
 
 /// Builds a library for multisig ECDSA procedures for use in transaction scripts.
-/// The procedures are accessible via `call.::procedure_name` syntax.
+/// The procedures are accessible via `use oz_multisig::multisig` and `call.multisig::procedure_name` syntax.
 pub fn get_multisig_ecdsa_library() -> Result<Library> {
     let path = auth_dir().join("multisig_ecdsa.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    // Build with openzeppelin library linked (for psm dependency)
+    // Build with openzeppelin library linked (for psm_ecdsa dependency)
     let asm = build_assembler()?;
 
+    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(ModuleKind::Library)
+        .parse_str(
+            LibraryPath::new("oz_multisig::multisig"),
+            code,
+            source_manager,
+        )
+        .map_err(|e| anyhow!("failed to parse multisig ECDSA module: {e}"))?;
+
     let library = asm
-        .assemble_library([code])
+        .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig ECDSA library: {e}"))?;
 
     Ok(library)

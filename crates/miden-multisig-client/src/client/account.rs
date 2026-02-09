@@ -69,9 +69,10 @@ impl MultisigClient {
         proc_threshold_overrides: Vec<ProcedureThreshold>,
     ) -> Result<&MultisigAccount> {
         // Get PSM server's public key commitment
+        let signature_scheme = self.key_manager.scheme();
         let mut psm_client = self.create_psm_client().await?;
-        let psm_pubkey_hex = psm_client
-            .get_pubkey()
+        let (psm_pubkey_hex, _) = psm_client
+            .get_pubkey(Some(&signature_scheme.to_string()))
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get PSM pubkey: {}", e)))?;
 
@@ -79,7 +80,6 @@ impl MultisigClient {
             commitment_from_hex(&psm_pubkey_hex).map_err(MultisigError::HexDecode)?;
 
         // Convert procedure thresholds to (Word, u32) pairs
-        let signature_scheme = self.key_manager.scheme();
         let overrides: Vec<(Word, u32)> = proc_threshold_overrides
             .iter()
             .map(|pt| (pt.procedure_root(), pt.threshold))

@@ -128,6 +128,7 @@ impl MultisigClient {
                     &current_signers,
                     salt,
                     std::iter::empty(),
+                    self.key_manager.scheme(),
                 )?;
 
                 let signer_commitments_hex: Vec<String> = current_signers
@@ -166,6 +167,7 @@ impl MultisigClient {
                     &new_signers,
                     salt,
                     std::iter::empty(),
+                    self.key_manager.scheme(),
                 )?;
 
                 let signer_commitments_hex: Vec<String> = new_signers
@@ -191,6 +193,7 @@ impl MultisigClient {
                     signer_commitments,
                     salt,
                     std::iter::empty(),
+                    self.key_manager.scheme(),
                 )?;
 
                 let signer_commitments_hex: Vec<String> = signer_commitments
@@ -402,6 +405,7 @@ impl MultisigClient {
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
+            self.key_manager.scheme(),
         )
         .await?;
 

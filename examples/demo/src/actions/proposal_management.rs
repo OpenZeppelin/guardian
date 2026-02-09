@@ -11,10 +11,18 @@ use rustyline::DefaultEditor;
 
 use crate::display::{
     print_error, print_full_hex, print_info, print_section, print_success, print_waiting,
-    shorten_hex,
+    shorten_hex, shorten_hex_32,
 };
 use crate::menu::prompt_input;
 use crate::state::SessionState;
+
+fn format_commitment_hex(ecdsa_mode: bool, hex: &str) -> String {
+    if ecdsa_mode {
+        shorten_hex_32(hex)
+    } else {
+        shorten_hex(hex)
+    }
+}
 
 /// Proposal Management submenu - all proposal operations.
 pub async fn action_proposal_management(
@@ -136,7 +144,7 @@ async fn action_create_proposal(
             print_full_hex("Proposal ID", &proposal.id);
             print_success(&format!(
                 "Automatically signed with your key ({})",
-                shorten_hex(&client.user_commitment_hex())
+                format_commitment_hex(state.is_ecdsa(), &client.user_commitment_hex())
             ));
             print_info(&format!(
                 "\nNeed {} signatures total. Use [3] to sign, [4] to execute.",
@@ -345,6 +353,7 @@ async fn action_sign_proposal(
     }
 
     let proposal_id = proposals[idx].id.clone();
+    let ecdsa_mode = state.is_ecdsa();
 
     print_waiting("Signing proposal");
 
@@ -356,7 +365,7 @@ async fn action_sign_proposal(
 
     print_success(&format!(
         "Signed with key {}",
-        shorten_hex(&client.user_commitment_hex())
+        format_commitment_hex(ecdsa_mode, &client.user_commitment_hex())
     ));
 
     let (collected, required) = updated.signature_counts();
@@ -566,7 +575,7 @@ async fn action_import_and_work(
         .map_err(|e| format!("Failed to import: {}", e))?;
 
     print_success("Proposal imported successfully!");
-    print_proposal_details(&proposal);
+    print_proposal_details(&proposal, state.is_ecdsa());
 
     state.set_imported_proposal(proposal);
 
@@ -608,7 +617,7 @@ async fn sign_imported_proposal(
         .take_imported_proposal()
         .ok_or_else(|| "No imported proposal".to_string())?;
 
-    print_proposal_details(&proposal);
+    print_proposal_details(&proposal, state.is_ecdsa());
 
     let confirm = prompt_input(editor, "\nSign this proposal? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
@@ -661,7 +670,7 @@ async fn execute_imported_proposal(
         .ok_or_else(|| "No imported proposal".to_string())?
         .clone();
 
-    print_proposal_details(&proposal);
+    print_proposal_details(&proposal, state.is_ecdsa());
 
     if !proposal.is_ready() {
         return Err(format!(
@@ -741,7 +750,7 @@ async fn create_proposal_offline(
         .map_err(|e| format!("Failed to create offline proposal: {}", e))?;
 
     print_success("Proposal created offline!");
-    print_proposal_details(&proposal);
+    print_proposal_details(&proposal, state.is_ecdsa());
 
     // Ask to save
     let default_path = format!(
@@ -798,7 +807,11 @@ fn prompt_remove_cosigner(
 
     println!("\nCurrent cosigners:");
     for (i, commitment) in account.cosigner_commitments_hex().iter().enumerate() {
-        println!("  [{}] {}", i + 1, shorten_hex(commitment));
+        println!(
+            "  [{}] {}",
+            i + 1,
+            format_commitment_hex(state.is_ecdsa(), commitment)
+        );
     }
 
     let idx_str = prompt_input(editor, "\nSelect cosigner to remove: ")?;
@@ -1028,7 +1041,10 @@ fn prompt_switch_psm(
 
     println!("\nPSM switch details:");
     println!("  New endpoint: {}", new_endpoint);
-    println!("  New pubkey:   {}", shorten_hex(&pubkey_hex));
+    println!(
+        "  New pubkey:   {}",
+        format_commitment_hex(state.is_ecdsa(), &pubkey_hex)
+    );
 
     print_info("\n⚠️  WARNING: After execution, all future transactions use the new PSM.");
 
@@ -1041,7 +1057,7 @@ fn prompt_switch_psm(
 }
 
 /// Print details of an exported proposal.
-fn print_proposal_details(proposal: &ExportedProposal) {
+fn print_proposal_details(proposal: &ExportedProposal, ecdsa_mode: bool) {
     let (collected, required) = proposal.signature_counts();
 
     println!("\nProposal Details:");
@@ -1062,7 +1078,12 @@ fn print_proposal_details(proposal: &ExportedProposal) {
     if !signers.is_empty() {
         println!("  Signers:");
         for signer in signers {
-            println!("    - {}", shorten_hex(signer));
+            let display = if ecdsa_mode {
+                shorten_hex_32(signer)
+            } else {
+                shorten_hex(signer)
+            };
+            println!("    - {}", display);
         }
     }
 }

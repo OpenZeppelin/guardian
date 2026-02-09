@@ -143,6 +143,7 @@ impl ProposalBuilder {
             &current_signers,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
 
         // Execute to get the TransactionSummary
@@ -245,6 +246,7 @@ impl ProposalBuilder {
             &new_signers,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
 
         // Execute to get the TransactionSummary

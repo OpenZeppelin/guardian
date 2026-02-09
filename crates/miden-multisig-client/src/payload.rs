@@ -69,7 +69,11 @@ impl ProposalPayload {
         let signature_hex = key_manager.sign_hex(message);
         self.signatures.push(DeltaSignature {
             signer_id: key_manager.commitment_hex(),
-            signature: ProposalSignature::from_scheme(key_manager.scheme(), signature_hex),
+            signature: ProposalSignature::from_scheme(
+                key_manager.scheme(),
+                signature_hex,
+                key_manager.public_key_hex(),
+            ),
         });
         self
     }

@@ -42,13 +42,17 @@ pub enum ProposalSignature {
 }
 
 impl ProposalSignature {
-    /// Creates a ProposalSignature from a scheme and hex-encoded signature.
-    pub fn from_scheme(scheme: SignatureScheme, signature: String) -> Self {
+    /// Creates a ProposalSignature from a scheme, hex-encoded signature, and optional public key.
+    pub fn from_scheme(
+        scheme: SignatureScheme,
+        signature: String,
+        public_key: Option<String>,
+    ) -> Self {
         match scheme {
             SignatureScheme::Falcon => ProposalSignature::Falcon { signature },
             SignatureScheme::Ecdsa => ProposalSignature::Ecdsa {
                 signature,
-                public_key: None,
+                public_key,
             },
         }
     }

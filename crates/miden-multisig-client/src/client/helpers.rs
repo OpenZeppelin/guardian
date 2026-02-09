@@ -82,9 +82,10 @@ impl MultisigClient {
             .unwrap_or("falcon");
         let ack_pubkey = delta.as_ref().and_then(|d| d.ack_pubkey.clone());
 
-        let psm_commitment_hex = psm_client.get_pubkey().await.map_err(|e| {
-            MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
-        })?;
+        let (psm_commitment_hex, _) =
+            psm_client.get_pubkey(Some(ack_scheme)).await.map_err(|e| {
+                MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
+            })?;
 
         let psm_commitment =
             commitment_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;

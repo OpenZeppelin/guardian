@@ -4,6 +4,7 @@ mod menu;
 mod state;
 
 use miden_client::rpc::Endpoint;
+use miden_multisig_client::SignatureScheme;
 use rustyline::DefaultEditor;
 
 use actions::{
@@ -12,6 +13,7 @@ use actions::{
 };
 use display::{
     print_banner, print_error, print_full_hex, print_section, print_success, print_waiting,
+    shorten_hex_32,
 };
 use menu::{handle_invalid_choice, parse_menu_choice, prompt_input, MenuAction};
 use state::SessionState;
@@ -77,17 +79,49 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
             .unwrap_or_default()
     );
 
-    print_waiting("Initializing MultisigClient with new keypair");
+    println!("\n  Select signature scheme:");
+    println!("    [1] Falcon");
+    println!("    [2] ECDSA");
+    println!();
+
+    let scheme_choice = prompt_input(editor, "Signature scheme [1]: ")?;
+    let signature_scheme = match scheme_choice.trim() {
+        "" | "1" => SignatureScheme::Falcon,
+        "2" => SignatureScheme::Ecdsa,
+        _ => {
+            println!("  Invalid choice, using Falcon");
+            SignatureScheme::Falcon
+        }
+    };
+
+    let scheme_name = match signature_scheme {
+        SignatureScheme::Falcon => "Falcon",
+        SignatureScheme::Ecdsa => "ECDSA",
+    };
+
+    print_waiting(&format!(
+        "Initializing MultisigClient with new {} keypair",
+        scheme_name
+    ));
 
     let mut state = SessionState::new()?;
     state
-        .initialize_client(miden_endpoint, &psm_endpoint)
+        .initialize_client(miden_endpoint, &psm_endpoint, signature_scheme)
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;
 
     print_success("Client initialized!");
-    print_full_hex("  Your commitment", &commitment_hex);
+    println!("  Signature scheme: {}", state.signature_scheme_name());
+    match signature_scheme {
+        SignatureScheme::Ecdsa => {
+            println!("  Your commitment: {}", shorten_hex_32(&commitment_hex));
+            print_full_hex("  Your commitment (full)", &commitment_hex);
+        }
+        SignatureScheme::Falcon => {
+            print_full_hex("  Your commitment", &commitment_hex);
+        }
+    }
     println!("\n  Share this commitment with other cosigners to be added to multisig accounts.");
 
     Ok(state)

@@ -142,6 +142,7 @@ message CosignerSignature {
 message ProposalSignature {
   string scheme = 1;
   string signature = 2;
+  optional string public_key = 3;
 }
 
 // Delta object
