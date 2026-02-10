@@ -2,8 +2,8 @@ export interface Signer {
   readonly commitment: string;
   readonly publicKey: string;
   readonly scheme: SignatureScheme;
-  signAccountIdWithTimestamp(accountId: string, timestamp: number): string;
-  signCommitment(commitmentHex: string): string;
+  signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string>;
+  signCommitment(commitmentHex: string): Promise<string>;
 }
 
 export interface FalconSignature {

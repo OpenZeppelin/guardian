@@ -76,8 +76,8 @@ describe('MultisigClient', () => {
       scheme: 'falcon',
       commitment: '0x' + '1'.repeat(64),
       publicKey: '0x' + '2'.repeat(64),
-      signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
-      signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
+      signAccountIdWithTimestamp: vi.fn().mockResolvedValue('0x' + 'a'.repeat(128)),
+      signCommitment: vi.fn().mockResolvedValue('0x' + 'b'.repeat(128)),
     };
   });
 

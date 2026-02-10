@@ -72,30 +72,30 @@ describe('FalconSigner', () => {
   });
 
   describe('signAccountIdWithTimestamp', () => {
-    it('handles account ID with 0x prefix', () => {
-      const signature = signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+    it('handles account ID with 0x prefix', async () => {
+      const signature = await signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
-    it('handles account ID without 0x prefix', () => {
-      const signature = signer.signAccountIdWithTimestamp('a'.repeat(30), 1700000000);
+    it('handles account ID without 0x prefix', async () => {
+      const signature = await signer.signAccountIdWithTimestamp('a'.repeat(30), 1700000000);
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
-    it('calls sign method with hashed digest', () => {
-      signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+    it('calls sign method with hashed digest', async () => {
+      await signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(mockSecretKey.sign).toHaveBeenCalled();
     });
 
-    it('returns signature without first byte', () => {
+    it('returns signature without first byte', async () => {
       // Signature serialized is [0, 1, 2, ...9], slice(1) returns [1, 2, ...9]
-      const signature = signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+      const signature = await signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(signature).toBe('0x010203040506070809');
     });
 
     it('includes timestamp in signed payload', async () => {
       const { Felt, FeltArray } = await import('@miden-sdk/miden-sdk');
-      signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+      await signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       // Verify FeltArray was called with timestamp in the third position
       expect(FeltArray).toHaveBeenCalledWith(expect.arrayContaining([
         expect.anything(), // prefix
@@ -107,28 +107,28 @@ describe('FalconSigner', () => {
   });
 
   describe('signCommitment', () => {
-    it('handles commitment with 0x prefix', () => {
-      const signature = signer.signCommitment('0x' + 'c'.repeat(64));
+    it('handles commitment with 0x prefix', async () => {
+      const signature = await signer.signCommitment('0x' + 'c'.repeat(64));
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
-    it('handles commitment without 0x prefix', () => {
-      const signature = signer.signCommitment('c'.repeat(64));
+    it('handles commitment without 0x prefix', async () => {
+      const signature = await signer.signCommitment('c'.repeat(64));
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
-    it('pads short commitment hex to 64 characters', () => {
-      const signature = signer.signCommitment('abc');
+    it('pads short commitment hex to 64 characters', async () => {
+      const signature = await signer.signCommitment('abc');
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
-    it('calls sign method with word from hex', () => {
-      signer.signCommitment('0x' + 'c'.repeat(64));
+    it('calls sign method with word from hex', async () => {
+      await signer.signCommitment('0x' + 'c'.repeat(64));
       expect(mockSecretKey.sign).toHaveBeenCalled();
     });
 
-    it('returns signature without first byte', () => {
-      const signature = signer.signCommitment('0x' + 'c'.repeat(64));
+    it('returns signature without first byte', async () => {
+      const signature = await signer.signCommitment('0x' + 'c'.repeat(64));
       expect(signature).toBe('0x010203040506070809');
     });
   });
