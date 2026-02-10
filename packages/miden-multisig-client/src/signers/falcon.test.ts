@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { FalconSigner } from './signer.js';
+import { FalconSigner } from './falcon.js';
 
-// Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => {
   const mockSignature = {
     serialize: () => new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
@@ -62,7 +61,6 @@ describe('FalconSigner', () => {
     });
 
     it('extracts public key without first byte', () => {
-      // Public key serialized is [0, 1, 2, ...15], slice(1) removes first byte
       expect(signer.publicKey).toBe('0x0102030405060708090a0b0c0d0e0f');
     });
 
@@ -88,7 +86,6 @@ describe('FalconSigner', () => {
     });
 
     it('returns signature without first byte', async () => {
-      // Signature serialized is [0, 1, 2, ...9], slice(1) returns [1, 2, ...9]
       const signature = await signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
       expect(signature).toBe('0x010203040506070809');
     });
@@ -96,12 +93,11 @@ describe('FalconSigner', () => {
     it('includes timestamp in signed payload', async () => {
       const { Felt, FeltArray } = await import('@miden-sdk/miden-sdk');
       await signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
-      // Verify FeltArray was called with timestamp in the third position
       expect(FeltArray).toHaveBeenCalledWith(expect.arrayContaining([
-        expect.anything(), // prefix
-        expect.anything(), // suffix
-        expect.anything(), // timestamp
-        expect.anything(), // zero padding
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
       ]));
     });
   });

@@ -11,10 +11,14 @@ export {
 
 export { PsmHttpClient, PsmHttpError } from '@openzeppelin/psm-client';
 
-export { FalconSigner, EcdsaSigner } from './signer.js';
+export { FalconSigner, EcdsaSigner, ParaSigner, MidenWalletSigner } from './signers/index.js';
+export type { ParaSigningContext } from './signers/para.js';
+export type { WalletSigningContext } from './signers/miden-wallet.js';
 export { AuthDigest } from './utils/digest.js';
 export { EcdsaFormat } from './utils/ecdsa.js';
-export { tryComputeEcdsaCommitmentHex } from './utils/signature.js';
+export { PublicKeyFormat } from './utils/key.js';
+export { wordToBytes } from './utils/word.js';
+export { tryComputeEcdsaCommitmentHex, tryComputeCommitmentHex } from './utils/signature.js';
 
 export {
   createMultisigAccount,

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 
 import {
@@ -12,6 +12,7 @@ import {
 import { PsmHttpError } from '@openzeppelin/psm-client';
 
 import { WebClient } from '@miden-sdk/miden-sdk';
+import { ParaModal } from '@getpara/react-sdk-lite';
 
 import {
   Header,
@@ -23,15 +24,21 @@ import {
 } from '@/components';
 
 import { normalizeCommitment } from '@/lib/helpers';
-import { formatError } from '@/lib/errors';
+import { formatError, classifyWalletError } from '@/lib/errors';
 import { clearMidenDatabase, createWebClient, initializeSigner as initSigner } from '@/lib/initClient';
 import {
   initMultisigClient,
   createMultisigAccount,
   loadMultisigAccount,
+  createSigner,
 } from '@/lib/multisigApi';
+import type { ExternalSignerParams } from '@/lib/multisigApi';
 import { PSM_ENDPOINT } from '@/config';
-import type { SignerInfo } from '@/types';
+import type { SignerInfo, WalletSource } from '@/types';
+import { useParaSession } from '@/hooks/useParaSession';
+import { useMidenWallet } from '@/hooks/useMidenWallet';
+import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
+import type { ParaSigningContext } from '@openzeppelin/miden-multisig-client';
 
 function isPendingCandidateError(error: unknown): boolean {
   const errorStr = error instanceof Error ? error.message : String(error);
@@ -74,6 +81,75 @@ export default function App() {
 
   const [consumableNotes, setConsumableNotes] = useState<Array<{ id: string; assets: Array<{ faucetId: string; amount: bigint }> }>>([]);
 
+  const [walletSource, setWalletSource] = useState<WalletSource>('local');
+  const [paraModalOpen, setParaModalOpen] = useState(false);
+
+  const { session: paraSession, paraClient, getWalletId } = useParaSession();
+  const [midenWalletAdapter] = useState(() => new MidenWalletAdapter({ appName: 'Miden Multisig' }));
+  const { session: midenWalletSession, connect: connectMidenWallet, disconnect: disconnectMidenWallet, signBytes, connectError: midenWalletConnectError } = useMidenWallet(midenWalletAdapter);
+
+  // Show Miden Wallet connection errors
+  useEffect(() => {
+    if (midenWalletConnectError) {
+      toast.error(midenWalletConnectError);
+    }
+  }, [midenWalletConnectError]);
+
+  // Auto-switch to Para only when user explicitly triggered the Para modal
+  useEffect(() => {
+    if (paraSession.connected && paraModalOpen) {
+      setWalletSource('para');
+      setParaModalOpen(false);
+    }
+  }, [paraSession.connected, paraModalOpen]);
+
+  // Auto-switch to Miden Wallet when it connects
+  useEffect(() => {
+    if (midenWalletSession.connected) {
+      setWalletSource('miden-wallet');
+    }
+  }, [midenWalletSession.connected]);
+
+  const activeCommitment = useMemo(() => {
+    if (walletSource === 'para' && paraSession.connected) return paraSession.commitment;
+    if (walletSource === 'miden-wallet' && midenWalletSession.connected) return midenWalletSession.commitment;
+    if (!signer) return null;
+    return signer.activeScheme === 'ecdsa' ? signer.ecdsa.commitment : signer.falcon.commitment;
+  }, [walletSource, paraSession, midenWalletSession, signer]);
+
+  const activeScheme = useMemo((): SignatureScheme => {
+    if (walletSource === 'para') return 'ecdsa';
+    if (walletSource === 'miden-wallet' && midenWalletSession.scheme) return midenWalletSession.scheme;
+    return signer?.activeScheme ?? 'falcon';
+  }, [walletSource, midenWalletSession, signer]);
+
+  const buildExternalParams = useCallback((): ExternalSignerParams | undefined => {
+    if (walletSource === 'para' && paraSession.connected && paraClient) {
+      const walletId = getWalletId();
+      if (!walletId || !paraSession.commitment || !paraSession.publicKey) return undefined;
+      return {
+        walletSource: 'para',
+        paraContext: {
+          para: paraClient as ParaSigningContext,
+          walletId,
+          commitment: paraSession.commitment,
+          publicKey: paraSession.publicKey,
+        },
+      };
+    }
+    if (walletSource === 'miden-wallet' && midenWalletSession.connected) {
+      if (!midenWalletSession.commitment || !midenWalletSession.scheme) return undefined;
+      return {
+        walletSource: 'miden-wallet',
+        midenWalletContext: {
+          wallet: { signBytes },
+          commitment: midenWalletSession.commitment,
+          scheme: midenWalletSession.scheme,
+        },
+      };
+    }
+    return undefined;
+  }, [walletSource, paraSession, paraClient, getWalletId, midenWalletSession, signBytes]);
 
   const connectToPsm = useCallback(
     async (url: string, client?: WebClient): Promise<void> => {
@@ -106,12 +182,12 @@ export default function App() {
               ackPublicKey = fetched;
               setPsmPublicKey(fetched);
             }
+            const clientSigner = createSigner(signer, signer.activeScheme, buildExternalParams());
             const reloadedMs = await loadMultisigAccount(
               msClient,
               multisig.accountId,
-              signer,
+              clientSigner,
               ackPublicKey,
-              signer.activeScheme
             );
             setMultisig(reloadedMs);
 
@@ -155,7 +231,7 @@ export default function App() {
         setError(`Failed to connect to PSM: ${msg}`);
       }
     },
-    [webClient, multisig, signer, psmState]
+    [webClient, multisig, signer, psmState, buildExternalParams]
   );
 
   useEffect(() => {
@@ -169,7 +245,7 @@ export default function App() {
         await connectToPsm(psmUrl, client);
 
         setGeneratingSigner(true);
-        const signerInfo = await initSigner(client);
+        const signerInfo = initSigner();
         setSigner(signerInfo);
       } catch (err) {
         setError(formatError(err, 'Initialization failed'));
@@ -203,12 +279,20 @@ export default function App() {
         accountPsmCommitment = commitment;
         setPsmCommitment(commitment);
       }
+
+      const externalParams = buildExternalParams();
+      const clientSigner = createSigner(signer, signatureScheme, externalParams);
+      const signerCommitment = externalParams?.paraContext?.commitment
+        ?? externalParams?.midenWalletContext?.commitment
+        ?? (signatureScheme === 'ecdsa' ? signer.ecdsa.commitment : signer.falcon.commitment);
+
       const ms = await createMultisigAccount(
         multisigClient,
-        signer,
+        signerCommitment,
         otherSignerCommitments,
         threshold,
         accountPsmCommitment,
+        clientSigner,
         ackPublicKey,
         procedureThresholds,
         signatureScheme
@@ -218,11 +302,8 @@ export default function App() {
       setRegisteringOnPsm(true);
       try {
         await ms.registerOnPsm();
-        const { proposals: synced, state, notes, config } = await ms.syncAll();
-        setPsmState(state);
-        setDetectedConfig(config);
-        setProposals(synced);
-        setConsumableNotes(notes);
+        setProposals([]);
+        setConsumableNotes([]);
       } catch (psmErr) {
         setError(`Created but failed to register on PSM: ${psmErr instanceof Error ? psmErr.message : 'Unknown'}`);
       } finally {
@@ -231,7 +312,11 @@ export default function App() {
 
       setCreateDialogOpen(false);
     } catch (err) {
-      setError(formatError(err, 'Failed to create'));
+      if (walletSource !== 'local') {
+        setError(classifyWalletError(err));
+      } else {
+        setError(formatError(err, 'Failed to create'));
+      }
     } finally {
       setCreating(false);
     }
@@ -264,12 +349,15 @@ export default function App() {
         ackPublicKey = pubkey;
         setPsmPublicKey(pubkey);
       }
+
+      const externalParams = buildExternalParams();
+      const clientSigner = createSigner(signer, signatureScheme, externalParams);
+
       const ms = await loadMultisigAccount(
         multisigClient,
         normalizedId,
-        signer,
+        clientSigner,
         ackPublicKey,
-        signatureScheme
       );
       setMultisig(ms);
 
@@ -489,7 +577,11 @@ export default function App() {
       const proposals = await multisig.signTransactionProposal(proposalId);
       setProposals(proposals);
     } catch (err) {
-      setError(`Failed to sign: ${err instanceof Error ? err.message : 'Unknown'}`);
+      if (walletSource !== 'local') {
+        setError(classifyWalletError(err));
+      } else {
+        setError(`Failed to sign: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
     } finally {
       setSigningProposal(null);
     }
@@ -534,11 +626,11 @@ export default function App() {
     }
   };
 
-  const handleSignProposalOffline = (proposalId: string) => {
+  const handleSignProposalOffline = async (proposalId: string) => {
     if (!multisig) return;
 
     try {
-      const json = multisig.signTransactionProposalOffline(proposalId);
+      const json = await multisig.signTransactionProposalOffline(proposalId);
       navigator.clipboard.writeText(json);
       setProposals(multisig.listTransactionProposals());
       toast.success('Signed! Updated proposal JSON copied to clipboard');
@@ -585,12 +677,27 @@ export default function App() {
       <Header
         falconCommitment={signer?.falcon.commitment ?? null}
         ecdsaCommitment={signer?.ecdsa.commitment ?? null}
-        activeScheme={signer?.activeScheme ?? null}
+        activeScheme={activeScheme}
         generatingSigner={generatingSigner}
         psmStatus={psmStatus}
         psmUrl={psmUrl}
         onPsmUrlChange={setPsmUrl}
         onReconnect={(url) => connectToPsm(url)}
+        walletSource={walletSource}
+        onWalletSourceChange={setWalletSource}
+        paraConnected={paraSession.connected}
+        paraCommitment={paraSession.commitment}
+        midenWalletConnected={midenWalletSession.connected}
+        midenWalletCommitment={midenWalletSession.commitment}
+        onConnectMidenWallet={async () => {
+          try {
+            await connectMidenWallet();
+          } catch (err) {
+            toast.error(classifyWalletError(err));
+          }
+        }}
+        onDisconnectMidenWallet={disconnectMidenWallet}
+        onOpenParaModal={() => setParaModalOpen(true)}
       />
 
       <main className="flex-1">
@@ -632,6 +739,7 @@ export default function App() {
             onSignProposalOffline={handleSignProposalOffline}
             onImportProposal={handleImportProposal}
             onDisconnect={handleDisconnect}
+            walletSource={walletSource}
           />
         ) : null}
       </main>
@@ -643,10 +751,12 @@ export default function App() {
             onOpenChange={setCreateDialogOpen}
             falconCommitment={signer.falcon.commitment}
             ecdsaCommitment={signer.ecdsa.commitment}
-            defaultScheme={signer.activeScheme}
+            defaultScheme={activeScheme}
             creating={creating}
             registeringOnPsm={registeringOnPsm}
             onCreate={handleCreate}
+            walletSource={walletSource}
+            walletCommitment={walletSource !== 'local' ? activeCommitment : null}
           />
           <LoadMultisigDialog
             open={loadDialogOpen}
@@ -654,8 +764,9 @@ export default function App() {
             loading={loadingAccount}
             detectedConfig={detectedConfig}
             error={error}
-            defaultScheme={signer.activeScheme}
+            defaultScheme={activeScheme}
             onLoad={handleLoad}
+            walletSource={walletSource}
           />
           <ImportProposalDialog
             open={importDialogOpen}
@@ -666,6 +777,11 @@ export default function App() {
           />
         </>
       )}
+
+      <ParaModal
+        isOpen={paraModalOpen}
+        onClose={() => setParaModalOpen(false)}
+      />
     </div>
   );
 }

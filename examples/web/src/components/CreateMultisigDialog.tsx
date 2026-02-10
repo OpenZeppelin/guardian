@@ -22,6 +22,7 @@ import { normalizeCommitment, truncateHex } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
 import type { OtherSigner } from '@/types';
 import type { ProcedureThreshold, ProcedureName, SignatureScheme } from '@openzeppelin/miden-multisig-client';
+import type { WalletSource } from '@/wallets/types';
 
 interface CreateMultisigDialogProps {
   open: boolean;
@@ -37,6 +38,8 @@ interface CreateMultisigDialogProps {
     procedureThresholds: ProcedureThreshold[] | undefined,
     signatureScheme: SignatureScheme
   ) => void;
+  walletSource?: WalletSource;
+  walletCommitment?: string | null;
 }
 
 export function CreateMultisigDialog({
@@ -48,6 +51,8 @@ export function CreateMultisigDialog({
   creating,
   registeringOnPsm,
   onCreate,
+  walletSource = 'local',
+  walletCommitment,
 }: CreateMultisigDialogProps) {
   const [otherSigners, setOtherSigners] = useState<OtherSigner[]>([]);
   const [otherCommitmentInput, setOtherCommitmentInput] = useState('');
@@ -62,7 +67,10 @@ export function CreateMultisigDialog({
   );
 
   const totalSigners = 1 + otherSigners.length;
-  const activeCommitment = signatureScheme === 'ecdsa' ? ecdsaCommitment : falconCommitment;
+  const isExternalWallet = walletSource !== 'local' && !!walletCommitment;
+  const activeCommitment = isExternalWallet
+    ? walletCommitment!
+    : signatureScheme === 'ecdsa' ? ecdsaCommitment : falconCommitment;
 
   useEffect(() => {
     if (open) {
@@ -164,7 +172,11 @@ export function CreateMultisigDialog({
           {/* Signature Scheme */}
           <div className="space-y-2">
             <Label>Signature Scheme</Label>
-            <Select value={signatureScheme} onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}>
+            <Select
+              value={signatureScheme}
+              onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}
+              disabled={walletSource !== 'local'}
+            >
               <SelectTrigger className="w-full" size="sm">
                 <SelectValue />
               </SelectTrigger>
@@ -173,6 +185,12 @@ export function CreateMultisigDialog({
                 <SelectItem value="ecdsa">ECDSA</SelectItem>
               </SelectContent>
             </Select>
+            {walletSource === 'para' && (
+              <p className="text-xs text-muted-foreground">Para wallets use ECDSA</p>
+            )}
+            {walletSource === 'miden-wallet' && (
+              <p className="text-xs text-muted-foreground">Miden Wallet scheme: {defaultScheme}</p>
+            )}
           </div>
 
           {/* Signers list */}
@@ -181,7 +199,7 @@ export function CreateMultisigDialog({
             <div className="bg-muted/50 rounded-lg p-3 space-y-2 text-sm">
               <div className="flex items-center justify-between">
                 <span>
-                  <strong>You:</strong>{' '}
+                  <strong>You{isExternalWallet ? ` (${walletSource})` : ''}:</strong>{' '}
                   <code className="text-xs">{truncateHex(activeCommitment, 12, 6)}</code>
                 </span>
               </div>
@@ -305,7 +323,7 @@ export function CreateMultisigDialog({
           <Button onClick={handleCreate} className="w-full" disabled={creating}>
             {creating
               ? registeringOnPsm
-                ? 'Registering on PSM...'
+                ? walletSource !== 'local' ? 'Awaiting wallet approval...' : 'Registering on PSM...'
                 : 'Creating...'
               : `Create ${threshold}-of-${totalSigners} Multisig`}
           </Button>

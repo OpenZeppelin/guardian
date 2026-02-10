@@ -57,9 +57,16 @@ export function buildSignatureAdviceEntry(
 }
 
 export function tryComputeEcdsaCommitmentHex(pubkeyHex: string): string | null {
+  return tryComputeCommitmentHex(pubkeyHex, 'ecdsa');
+}
+
+export function tryComputeCommitmentHex(
+  pubkeyHex: string,
+  scheme: SignatureScheme,
+): string | null {
   const bytes = hexToBytes(pubkeyHex);
   const withPrefix = new Uint8Array(bytes.length + 1);
-  withPrefix[0] = 1;
+  withPrefix[0] = scheme === 'ecdsa' ? 1 : 0;
   withPrefix.set(bytes, 1);
 
   try {

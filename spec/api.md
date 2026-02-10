@@ -5,6 +5,7 @@
  - Per-account authentication: requests MUST include credentials authorised by the account's policy.
  - Credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` (and the same keys in gRPC metadata).
  - The supplied public key is hashed to a commitment and checked against the account's allowlist.
+ - For Falcon accounts, `x-pubkey` may contain either the full serialized public key or the 32-byte commitment hex (`0x` + 64 hex chars). The public key is recovered from the Falcon signature for verification. ECDSA accounts still require the full public key.
  - The signature is over a digest of `(account_id, timestamp)` to prevent both cross-account and replay attacks.
 
 ### Replay Protection

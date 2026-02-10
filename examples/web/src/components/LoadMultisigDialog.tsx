@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import type { WalletSource } from '@/wallets/types';
 
 interface LoadMultisigDialogProps {
   open: boolean;
@@ -28,6 +29,7 @@ interface LoadMultisigDialogProps {
   error: string | null;
   defaultScheme: SignatureScheme;
   onLoad: (accountId: string, scheme: SignatureScheme) => void;
+  walletSource?: WalletSource;
 }
 
 export function LoadMultisigDialog({
@@ -38,6 +40,7 @@ export function LoadMultisigDialog({
   error,
   defaultScheme,
   onLoad,
+  walletSource = 'local',
 }: LoadMultisigDialogProps) {
   const [accountIdInput, setAccountIdInput] = useState('');
   const [signatureScheme, setSignatureScheme] = useState<SignatureScheme>(defaultScheme);
@@ -86,7 +89,11 @@ export function LoadMultisigDialog({
 
           <div className="space-y-2">
             <Label>Signature Scheme</Label>
-            <Select value={signatureScheme} onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}>
+            <Select
+              value={signatureScheme}
+              onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}
+              disabled={walletSource !== 'local'}
+            >
               <SelectTrigger className="w-full" size="sm">
                 <SelectValue />
               </SelectTrigger>
@@ -95,6 +102,12 @@ export function LoadMultisigDialog({
                 <SelectItem value="ecdsa">ECDSA</SelectItem>
               </SelectContent>
             </Select>
+            {walletSource === 'para' && (
+              <p className="text-xs text-muted-foreground">Para wallets use ECDSA</p>
+            )}
+            {walletSource === 'miden-wallet' && (
+              <p className="text-xs text-muted-foreground">Miden Wallet scheme: {defaultScheme}</p>
+            )}
           </div>
 
           {error && (
@@ -136,7 +149,9 @@ export function LoadMultisigDialog({
             className="w-full"
             disabled={loading || !accountIdInput.trim()}
           >
-            {loading ? 'Loading...' : 'Load from PSM'}
+            {loading
+              ? walletSource !== 'local' ? 'Awaiting wallet approval...' : 'Loading...'
+              : 'Load from PSM'}
           </Button>
         </div>
       </DialogContent>

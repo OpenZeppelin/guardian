@@ -10,6 +10,7 @@ import { copyToClipboard } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
 import type { Multisig, TransactionProposal, AccountState, ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
+import type { WalletSource } from '@/wallets/types';
 
 interface MultisigDashboardProps {
   multisig: Multisig;
@@ -41,6 +42,7 @@ interface MultisigDashboardProps {
   onSignProposalOffline: (proposalId: string) => void;
   onImportProposal: () => void;
   onDisconnect: () => void;
+  walletSource?: WalletSource;
 }
 
 export function MultisigDashboard({
@@ -73,6 +75,7 @@ export function MultisigDashboard({
   onSignProposalOffline,
   onImportProposal,
   onDisconnect,
+  walletSource = 'local',
 }: MultisigDashboardProps) {
   const threshold = detectedThreshold ?? multisig.threshold;
   const signerCommitments = detectedSignerCommitments ?? multisig.signerCommitments;
@@ -218,6 +221,7 @@ export function MultisigDashboard({
                 procedureThresholds={procedureThresholds}
                 signingProposal={signingProposal}
                 executingProposal={executingProposal}
+                walletSource={walletSource}
                 onSign={onSignProposal}
                 onExecute={onExecuteProposal}
                 onExport={onExportProposal}

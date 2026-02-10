@@ -4,44 +4,27 @@ use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::utils::{Deserializable, Serializable};
 use miden_protocol::{Felt, FieldElement, Word};
 
-/// Verify an ECDSA secp256k1 signature for a request with timestamp
+/// Verify an ECDSA secp256k1 signature for a request with timestamp.
 ///
-/// # Arguments
-/// * `account_id` - The account ID (hex-encoded)
-/// * `timestamp` - Unix timestamp included in the signed payload
-/// * `authorized_commitments` - List of authorized public key commitments
-/// * `signature` - The signature to verify (hex-encoded)
-/// * `pubkey_hex` - The public key provided by the client (hex-encoded)
+/// The public key is recovered from the signature (secp256k1 supports recovery).
+/// The recovered key's commitment is checked against the authorized list.
 pub fn verify_request_signature(
     account_id: &str,
     timestamp: i64,
     authorized_commitments: &[String],
     signature: &str,
-    pubkey_hex: &str,
 ) -> Result<(), String> {
     let message = account_id_timestamp_to_digest(account_id, timestamp)?;
     let sig = parse_signature(signature)?;
 
-    // Recover the public key from the signature if supported.
-    // If recovery fails (e.g., non-recoverable signature), fall back to verifying
-    // against the provided public key.
-    let public_key = match PublicKey::recover_from(message, &sig) {
-        Ok(public_key) => public_key,
-        Err(e) => {
-            tracing::debug!(
-                account_id = %account_id,
-                error = ?e,
-                "ECDSA public key recovery failed; falling back to provided public key"
-            );
-            parse_public_key(pubkey_hex)?
-        }
-    };
+    let public_key = PublicKey::recover_from(message, &sig).map_err(|e| {
+        tracing::error!(account_id = %account_id, error = ?e, "ECDSA public key recovery failed");
+        format!("ECDSA public key recovery failed: {e}")
+    })?;
 
-    // Compute the commitment of the recovered public key
     let sig_pubkey_commitment = public_key.to_commitment();
     let sig_commitment_hex = format!("0x{}", hex::encode(sig_pubkey_commitment.to_bytes()));
 
-    // Check if this commitment is in the authorized list
     if !authorized_commitments.contains(&sig_commitment_hex) {
         tracing::error!(
             account_id = %account_id,
@@ -55,7 +38,6 @@ pub fn verify_request_signature(
         ));
     }
 
-    // Verify the signature cryptographically
     if public_key.verify(message, &sig) {
         Ok(())
     } else {
@@ -116,26 +98,6 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     })
 }
 
-/// Parse a hex-encoded ECDSA public key
-fn parse_public_key(hex_str: &str) -> Result<PublicKey, String> {
-    let hex_str = hex_str.trim_start_matches("0x");
-    let bytes = hex::decode(hex_str).map_err(|e| {
-        tracing::error!(
-            public_key = %hex_str,
-            error = %e,
-            "Invalid ECDSA public key hex"
-        );
-        format!("Invalid ECDSA public key hex: {e}")
-    })?;
-    PublicKey::read_from_bytes(&bytes).map_err(|e| {
-        tracing::error!(
-            error = %e,
-            "Failed to deserialize ECDSA public key"
-        );
-        format!("Failed to deserialize ECDSA public key: {e}")
-    })
-}
-
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
@@ -169,13 +131,11 @@ mod tests {
         let signature_bytes = signature.to_bytes();
         let signature_hex = format!("0x{}", hex::encode(&signature_bytes));
 
-        let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
         let result = verify_request_signature(
             &account_id_hex,
             timestamp,
             &[commitment_hex],
             &signature_hex,
-            &pubkey_hex,
         );
 
         assert!(
@@ -210,13 +170,11 @@ mod tests {
         let commitment2_hex = format!("0x{}", hex::encode(commitment2.to_bytes()));
         let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
 
-        let pubkey_hex = format!("0x{}", hex::encode(public_key2.to_bytes()));
         let result = verify_request_signature(
             &account_id_hex,
             timestamp,
             &[commitment2_hex],
             &signature_hex,
-            &pubkey_hex,
         );
 
         assert!(
@@ -250,13 +208,11 @@ mod tests {
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
         let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
 
-        let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
         let result = verify_request_signature(
             &account_id_hex,
             timestamp2,
             &[commitment_hex],
             &signature_hex,
-            &pubkey_hex,
         );
 
         assert!(

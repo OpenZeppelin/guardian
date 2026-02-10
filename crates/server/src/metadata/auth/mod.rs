@@ -41,12 +41,20 @@ impl Auth {
     pub fn compute_signer_commitment(&self, pubkey_hex: &str) -> Result<String, String> {
         match self {
             Auth::MidenFalconRpo { .. } => {
+                let clean = pubkey_hex.trim_start_matches("0x");
+                if clean.len() == 64 && hex::decode(clean).is_ok() {
+                    return Ok(format!("0x{}", clean));
+                }
                 let public_key = FalconPublicKey::from_hex(pubkey_hex)
                     .map_err(|e| format!("invalid Falcon public key: {}", e))?;
                 let commitment = public_key.to_commitment();
                 Ok(format!("0x{}", hex::encode(commitment.to_bytes())))
             }
             Auth::MidenEcdsa { .. } => {
+                let clean = pubkey_hex.trim_start_matches("0x");
+                if clean.len() == 64 && hex::decode(clean).is_ok() {
+                    return Ok(format!("0x{}", clean));
+                }
                 let public_key = EcdsaPublicKey::from_hex(pubkey_hex)
                     .map_err(|e| format!("invalid ECDSA public key: {}", e))?;
                 let commitment = public_key.to_commitment();
@@ -85,7 +93,7 @@ impl Auth {
             Auth::MidenEcdsa {
                 cosigner_commitments,
             } => {
-                let (pubkey, signature, timestamp) = credentials
+                let (_pubkey, signature, timestamp) = credentials
                     .as_signature()
                     .ok_or_else(|| "MidenEcdsa requires signature credentials".to_string())?;
 
@@ -94,7 +102,6 @@ impl Auth {
                     timestamp,
                     cosigner_commitments,
                     signature,
-                    pubkey,
                 )
             }
         }
@@ -242,6 +249,31 @@ mod tests {
     }
 
     #[test]
+    fn compute_signer_commitment_falcon_commitment_passthrough() {
+        let sk = FalconSecretKey::new();
+        let pk = sk.public_key();
+        let expected = format!("0x{}", hex::encode(pk.to_commitment().to_bytes()));
+
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![],
+        };
+        let result = auth.compute_signer_commitment(&expected);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn compute_signer_commitment_ecdsa_accepts_commitment_length() {
+        let auth = Auth::MidenEcdsa {
+            cosigner_commitments: vec![],
+        };
+        let input = format!("0x{}", "ab".repeat(32));
+        let result = auth.compute_signer_commitment(&input);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
     fn compute_signer_commitment_falcon_invalid_hex() {
         let auth = Auth::MidenFalconRpo {
             cosigner_commitments: vec![],
@@ -323,6 +355,28 @@ mod tests {
             cosigner_commitments: vec![commitment],
         };
         let creds = Credentials::signature("".to_string(), sig_hex, timestamp);
+        let result = auth.verify(account_id, &creds);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_falcon_with_commitment_only_pubkey() {
+        let sk = FalconSecretKey::new();
+        let pk = sk.public_key();
+        let commitment = format!("0x{}", hex::encode(pk.to_commitment().to_bytes()));
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let timestamp: i64 = 1700000000000;
+
+        let message =
+            miden_falcon_rpo::account_id_timestamp_to_digest(account_id, timestamp).unwrap();
+        let signature = sk.sign(message);
+        let sig_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![commitment.clone()],
+        };
+        let creds = Credentials::signature(commitment, sig_hex, timestamp);
         let result = auth.verify(account_id, &creds);
         assert!(result.is_ok());
     }

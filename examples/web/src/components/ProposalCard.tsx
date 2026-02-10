@@ -7,6 +7,7 @@ import { copyToClipboard } from '@/lib/helpers';
 import { getEffectiveThreshold } from '@/lib/procedures';
 import type { TransactionProposal, ProposalType, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from '@/types';
+import type { WalletSource } from '@/wallets/types';
 
 interface ProposalCardProps {
   proposal: TransactionProposal;
@@ -15,6 +16,7 @@ interface ProposalCardProps {
   procedureThresholds?: Map<ProcedureName, number>;
   signingProposal: string | null;
   executingProposal: string | null;
+  walletSource?: WalletSource;
   onSign: (proposalId: string) => void;
   onExecute: (proposalId: string) => void;
   onExport: (proposalId: string) => void;
@@ -66,6 +68,7 @@ export function ProposalCard({
   procedureThresholds,
   signingProposal,
   executingProposal,
+  walletSource = 'local',
   onSign,
   onExecute,
   onExport,
@@ -101,6 +104,7 @@ export function ProposalCard({
     (proposal.status.type === 'pending' && proposal.signatures.length >= effectiveThreshold);
   const isSigningThis = signingProposal === proposal.id;
   const isExecutingThis = executingProposal === proposal.id;
+  const isExternalWallet = walletSource !== 'local';
 
   const statusVariant =
     proposal.status.type === 'ready'
@@ -178,7 +182,9 @@ export function ProposalCard({
                 onClick={() => onSign(proposal.id)}
                 disabled={isSigningThis || !!signingProposal}
               >
-                {isSigningThis ? 'Signing...' : 'Sign'}
+                {isSigningThis
+                  ? isExternalWallet ? 'Awaiting wallet...' : 'Signing...'
+                  : 'Sign'}
               </Button>
               <Button
                 variant="outline"
@@ -196,7 +202,9 @@ export function ProposalCard({
               onClick={() => onExecute(proposal.id)}
               disabled={isExecutingThis || !!executingProposal}
             >
-              {isExecutingThis ? 'Executing...' : 'Execute'}
+              {isExecutingThis
+                ? isExternalWallet ? 'Awaiting wallet...' : 'Executing...'
+                : 'Execute'}
             </Button>
           )}
           <Button

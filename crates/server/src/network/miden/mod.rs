@@ -51,6 +51,43 @@ impl MidenNetworkClient {
     }
 }
 
+/// Resolves raw credential bytes to a commitment hex string.
+///
+/// If the bytes are exactly 32 bytes (a Word commitment), they are returned as-is.
+/// Otherwise, the bytes are deserialized as a full public key and the commitment is computed.
+fn credential_commitment_hex(
+    pubkey_bytes: &[u8],
+    scheme: SignatureScheme,
+) -> Result<String, String> {
+    if pubkey_bytes.len() == 32 {
+        return Ok(format!("0x{}", hex::encode(pubkey_bytes)));
+    }
+
+    match scheme {
+        SignatureScheme::Falcon => {
+            let pubkey = falcon512_rpo::PublicKey::read_from_bytes(pubkey_bytes).map_err(|e| {
+                tracing::error!(error = %e, "Failed to deserialize Falcon credential pubkey");
+                format!("Failed to deserialize credential pubkey: {e}")
+            })?;
+            Ok(format!(
+                "0x{}",
+                hex::encode(pubkey.to_commitment().to_bytes())
+            ))
+        }
+        SignatureScheme::Ecdsa => {
+            let pubkey =
+                ecdsa_k256_keccak::PublicKey::read_from_bytes(pubkey_bytes).map_err(|e| {
+                    tracing::error!(error = %e, "Failed to deserialize ECDSA credential pubkey");
+                    format!("Failed to deserialize credential pubkey: {e}")
+                })?;
+            Ok(format!(
+                "0x{}",
+                hex::encode(pubkey.to_commitment().to_bytes())
+            ))
+        }
+    }
+}
+
 #[async_trait]
 impl NetworkClient for MidenNetworkClient {
     fn get_state_commitment(
@@ -347,32 +384,15 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to decode credential pubkey: {e}")
         })?;
 
-        let commitment_hex = match auth.scheme() {
-            SignatureScheme::Falcon => {
-                let pubkey =
-                    falcon512_rpo::PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
-                        tracing::error!(error = %e, "Failed to deserialize Falcon credential pubkey");
-                        format!("Failed to deserialize credential pubkey: {e}")
-                    })?;
-                let commitment = pubkey.to_commitment();
-                format!("0x{}", hex::encode(commitment.to_bytes()))
-            }
-            SignatureScheme::Ecdsa => {
-                let pubkey =
-                    ecdsa_k256_keccak::PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
-                        tracing::error!(error = %e, "Failed to deserialize ECDSA credential pubkey");
-                        format!("Failed to deserialize credential pubkey: {e}")
-                    })?;
-                let commitment = pubkey.to_commitment();
-                format!("0x{}", hex::encode(commitment.to_bytes()))
-            }
-        };
+        let commitment_hex = credential_commitment_hex(&pubkey_bytes, auth.scheme())?;
 
         if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
         } else {
+            let all = inspector.extract_all_pubkeys();
             tracing::error!(
                 commitment = %commitment_hex,
+                all_storage = ?all,
                 "Credential public key commitment not found in account storage"
             );
             Err(format!(
@@ -645,5 +665,32 @@ mod tests {
         let proposal_id = result.unwrap();
         assert!(proposal_id.starts_with("0x"));
         assert_eq!(proposal_id.len(), 66); // 0x + 64 hex chars
+    }
+
+    #[test]
+    fn test_credential_commitment_hex_passthrough_32_bytes() {
+        let word_bytes = [0xABu8; 32];
+        let expected = format!("0x{}", hex::encode(&word_bytes));
+
+        let falcon = credential_commitment_hex(&word_bytes, SignatureScheme::Falcon).unwrap();
+        let ecdsa = credential_commitment_hex(&word_bytes, SignatureScheme::Ecdsa).unwrap();
+
+        assert_eq!(falcon, expected);
+        assert_eq!(ecdsa, expected);
+    }
+
+    #[test]
+    fn test_credential_commitment_hex_ecdsa_33_bytes() {
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
+
+        let sk = ecdsa_k256_keccak::SecretKey::new();
+        let pk = sk.public_key();
+        let mut pk_bytes = Vec::new();
+        pk.write_into(&mut pk_bytes);
+        assert_eq!(pk_bytes.len(), 33);
+
+        let result = credential_commitment_hex(&pk_bytes, SignatureScheme::Ecdsa).unwrap();
+        let expected = format!("0x{}", hex::encode(pk.to_commitment().to_bytes()));
+        assert_eq!(result, expected);
     }
 }

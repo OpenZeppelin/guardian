@@ -5,6 +5,8 @@ miden-client.toml
 templates/
 .env
 
+.agents/
+.cursor/
 .claude/
 CLAUDE.md
 

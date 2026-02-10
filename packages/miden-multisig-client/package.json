@@ -26,8 +26,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@openzeppelin/psm-client": "file:../psm-client",
-    "@miden-sdk/miden-sdk": "^0.13.0"
+    "@miden-sdk/miden-sdk": "^0.13.0",
+    "@noble/hashes": "^2.0.1",
+    "@openzeppelin/psm-client": "file:../psm-client"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

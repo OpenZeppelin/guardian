@@ -231,6 +231,39 @@ Apply these rules especially to:
   - Prefer patterns like:
     - `SignatureInputs::from_json(delta_payload_json)` instead of `parse_unique_signature_inputs(...)`
 
+### Immutability (TypeScript)
+
+- Prefer immutable variable bindings by default.
+- Use `const` unless reassignment is required.
+- Use `let` only when mutation/rebinding is intentionally needed.
+
+### Additional Style Rules
+
+- Hex/Bytes Boundary Rule:
+  - Validate and normalize external commitments, pubkeys, signatures, and account IDs at boundaries before domain logic.
+  - Enforce expected shape (`0x` prefix, canonical casing, expected length) at parse time.
+- No Implicit Crypto Conversions:
+  - Do not inline ad-hoc conversion between hex/base64/bytes/felts in feature code.
+  - Use dedicated codec/helper types/modules for conversions.
+- Exhaustive State Handling:
+  - Use exhaustive handling for status/scheme/proposal-type enums.
+  - TypeScript: use `never`-based exhaustiveness checks.
+  - Rust: use full `match` coverage.
+- Deterministic Time/Nonce Sources:
+  - In core logic, avoid direct `Date.now()` and random calls.
+  - Pass clock/nonce providers so logic remains testable and deterministic.
+- No Silent Fallbacks:
+  - Fallback behavior (for example online -> offline) must be explicit in API flow/return types.
+  - Do not hide fallback behavior in side effects.
+- Typed Errors With Stable Codes:
+  - Use structured errors with stable codes at module boundaries.
+  - Avoid branching on free-form error strings in core paths.
+- TypeScript Strictness:
+  - Do not use `any` in core modules.
+  - Avoid non-null assertions (`!`) where a guard/narrowing can be used.
+- Cross-Language Naming Parity:
+  - Keep Rust and TypeScript names/semantics aligned for equivalent workflows unless divergence is documented.
+
 ### Error Handling
 
 - Use structured errors at boundaries; avoid losing context in generic string errors.

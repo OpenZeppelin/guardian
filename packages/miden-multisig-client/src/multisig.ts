@@ -597,7 +597,7 @@ export class Multisig {
 
     this.proposals.set(proposal.id, proposal);
 
-    return this.syncTransactionProposals();
+    return this.listTransactionProposals();
   }
 
   async signTransactionProposalExternal(
@@ -633,7 +633,7 @@ export class Multisig {
 
     this.proposals.set(proposal.id, proposal);
 
-    return this.syncTransactionProposals();
+    return this.listTransactionProposals();
   }
 
   async executeTransactionProposal(commitment: string): Promise<void> {
@@ -783,20 +783,7 @@ export class Multisig {
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
     const proposal = await this.createProposal(proposalNonce, summaryBase64, metadata);
-    return this.syncAfterCreate(proposal);
-  }
-
-  private async syncAfterCreate(proposal: TransactionProposal): Promise<TransactionProposalResult> {
-    let proposals: TransactionProposal[];
-    try {
-      proposals = await this.syncTransactionProposals();
-      if (!proposals.find((p) => p.id === proposal.id)) {
-        proposals = [...proposals, proposal];
-      }
-    } catch {
-      proposals = this.listTransactionProposals();
-    }
-    return { proposal, proposals };
+    return { proposal, proposals: this.listTransactionProposals() };
   }
 
 }

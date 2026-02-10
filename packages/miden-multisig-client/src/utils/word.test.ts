@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { wordElementToBigInt, wordToHex } from './word.js';
+import { wordElementToBigInt, wordToHex, wordToBytes } from './word.js';
 import { Word } from '@miden-sdk/miden-sdk';
 
 // Mock the Miden SDK Word class
@@ -59,6 +59,60 @@ describe('word utilities', () => {
       const word = Word.fromHex(originalHex);
       const hex = wordToHex(word as Word);
       expect(hex).toBe(originalHex);
+    });
+  });
+
+  describe('wordToBytes', () => {
+    it('should convert a word with known felt values to LE bytes', () => {
+      const word = {
+        toFelts: () => [
+          { asInt: () => 1n },
+          { asInt: () => 2n },
+          { asInt: () => 3n },
+          { asInt: () => 4n },
+        ],
+      };
+      const bytes = wordToBytes(word);
+      expect(bytes.length).toBe(32);
+      expect(bytes[0]).toBe(1);
+      expect(bytes[1]).toBe(0);
+      expect(bytes[8]).toBe(2);
+      expect(bytes[16]).toBe(3);
+      expect(bytes[24]).toBe(4);
+    });
+
+    it('should encode felts in little-endian order', () => {
+      const word = {
+        toFelts: () => [
+          { asInt: () => 0x0102030405060708n },
+          { asInt: () => 0n },
+          { asInt: () => 0n },
+          { asInt: () => 0n },
+        ],
+      };
+      const bytes = wordToBytes(word);
+      expect(bytes[0]).toBe(0x08);
+      expect(bytes[1]).toBe(0x07);
+      expect(bytes[2]).toBe(0x06);
+      expect(bytes[3]).toBe(0x05);
+      expect(bytes[4]).toBe(0x04);
+      expect(bytes[5]).toBe(0x03);
+      expect(bytes[6]).toBe(0x02);
+      expect(bytes[7]).toBe(0x01);
+    });
+
+    it('should handle zero felts', () => {
+      const word = {
+        toFelts: () => [
+          { asInt: () => 0n },
+          { asInt: () => 0n },
+          { asInt: () => 0n },
+          { asInt: () => 0n },
+        ],
+      };
+      const bytes = wordToBytes(word);
+      expect(bytes.length).toBe(32);
+      expect(bytes.every((b) => b === 0)).toBe(true);
     });
   });
 });

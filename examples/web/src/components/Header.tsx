@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/popover';
 import { copyToClipboard, truncateHex } from '@/lib/helpers';
 import type { SignatureScheme } from '@openzeppelin/miden-multisig-client';
+import type { WalletSource } from '@/wallets/types';
 
 interface HeaderProps {
   falconCommitment: string | null;
@@ -21,7 +22,22 @@ interface HeaderProps {
   psmUrl: string;
   onPsmUrlChange: (url: string) => void;
   onReconnect: (url: string) => void;
+  walletSource: WalletSource;
+  onWalletSourceChange: (source: WalletSource) => void;
+  paraConnected: boolean;
+  paraCommitment: string | null;
+  midenWalletConnected: boolean;
+  midenWalletCommitment: string | null;
+  onConnectMidenWallet: () => void;
+  onDisconnectMidenWallet: () => void;
+  onOpenParaModal: () => void;
 }
+
+const SOURCE_LABELS: Record<WalletSource, string> = {
+  local: 'Local',
+  para: 'Para',
+  'miden-wallet': 'Miden Wallet',
+};
 
 export function Header({
   falconCommitment,
@@ -32,11 +48,19 @@ export function Header({
   psmUrl,
   onPsmUrlChange,
   onReconnect,
+  walletSource,
+  onWalletSourceChange,
+  paraConnected,
+  paraCommitment,
+  midenWalletConnected,
+  midenWalletCommitment,
+  onConnectMidenWallet,
+  onDisconnectMidenWallet,
+  onOpenParaModal,
 }: HeaderProps) {
   const [urlInput, setUrlInput] = useState(psmUrl);
   const [popoverOpen, setPopoverOpen] = useState(false);
 
-  // Sync urlInput when psmUrl changes externally
   useEffect(() => {
     setUrlInput(psmUrl);
   }, [psmUrl]);
@@ -52,6 +76,99 @@ export function Header({
       <h1 className="text-xl font-bold">Miden Multisig</h1>
 
       <div className="flex items-center gap-2">
+        {/* Wallet Source Selector */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" className="p-0 h-auto">
+              <Badge variant="outline" className="cursor-pointer">
+                {SOURCE_LABELS[walletSource]}
+              </Badge>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-80" align="end">
+            <div className="space-y-3">
+              <h4 className="font-medium">Wallet Source</h4>
+
+              <div className="space-y-2">
+                <Button
+                  variant={walletSource === 'local' ? 'default' : 'outline'}
+                  size="sm"
+                  className="w-full justify-start"
+                  onClick={() => onWalletSourceChange('local')}
+                >
+                  Local Keys
+                </Button>
+
+                <div className="space-y-1">
+                  {paraConnected ? (
+                    <Button
+                      variant={walletSource === 'para' ? 'default' : 'outline'}
+                      size="sm"
+                      className="w-full justify-start"
+                      onClick={() => onWalletSourceChange('para')}
+                    >
+                      Para Wallet (connected)
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start"
+                      onClick={onOpenParaModal}
+                    >
+                      Connect Para Wallet
+                    </Button>
+                  )}
+                  {paraConnected && paraCommitment && (
+                    <code
+                      onClick={() => copyToClipboard(paraCommitment, () => toast.success('Para commitment copied'))}
+                      className="block text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80 font-mono truncate"
+                    >
+                      {truncateHex(paraCommitment, 10, 6)}
+                    </code>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  {midenWalletConnected ? (
+                    <Button
+                      variant={walletSource === 'miden-wallet' ? 'default' : 'outline'}
+                      size="sm"
+                      className="w-full justify-between"
+                      onClick={() => onWalletSourceChange('miden-wallet')}
+                    >
+                      <span>Miden Wallet (connected)</span>
+                      <span
+                        className="text-xs underline ml-2"
+                        onClick={(e) => { e.stopPropagation(); onDisconnectMidenWallet(); }}
+                      >
+                        Disconnect
+                      </span>
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start"
+                      onClick={onConnectMidenWallet}
+                    >
+                      Connect Miden Wallet
+                    </Button>
+                  )}
+                  {midenWalletConnected && midenWalletCommitment && (
+                    <code
+                      onClick={() => copyToClipboard(midenWalletCommitment, () => toast.success('Wallet commitment copied'))}
+                      className="block text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80 font-mono truncate"
+                    >
+                      {truncateHex(midenWalletCommitment, 10, 6)}
+                    </code>
+                  )}
+                </div>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
+
         {/* Signer Keys Popover */}
         {generatingSigner ? (
           <span className="text-sm text-muted-foreground">Generating signer...</span>
@@ -66,14 +183,14 @@ export function Header({
             </PopoverTrigger>
             <PopoverContent className="w-80" align="end">
               <div className="space-y-3">
-                <h4 className="font-medium">Signer Keys</h4>
+                <h4 className="font-medium">Local Signer Keys</h4>
                 {falconCommitment && (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <Badge variant={activeScheme === 'falcon' ? 'default' : 'secondary'} className="text-xs">
+                      <Badge variant={activeScheme === 'falcon' && walletSource === 'local' ? 'default' : 'secondary'} className="text-xs">
                         Falcon
                       </Badge>
-                      {activeScheme === 'falcon' && (
+                      {activeScheme === 'falcon' && walletSource === 'local' && (
                         <span className="text-xs text-muted-foreground">active</span>
                       )}
                     </div>
@@ -91,10 +208,10 @@ export function Header({
                 {ecdsaCommitment && (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <Badge variant={activeScheme === 'ecdsa' ? 'default' : 'secondary'} className="text-xs">
+                      <Badge variant={activeScheme === 'ecdsa' && walletSource === 'local' ? 'default' : 'secondary'} className="text-xs">
                         ECDSA
                       </Badge>
-                      {activeScheme === 'ecdsa' && (
+                      {activeScheme === 'ecdsa' && walletSource === 'local' && (
                         <span className="text-xs text-muted-foreground">active</span>
                       )}
                     </div>
