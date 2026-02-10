@@ -6,7 +6,6 @@ import type {
   NoteAsset,
   TransactionProposal,
   ProposalMetadata,
-  TransactionProposalSignature,
   TransactionProposalStatus,
   ProposalType,
   SignTransactionProposalParams,
@@ -41,8 +40,8 @@ import {
   signatureRequirementForProposal,
 } from './multisig/proposal/parser.js';
 import {
-  buildServerSignatureExternal,
-  buildServerSignatureFromSigner,
+  toPsmSignature,
+  buildPsmSignatureFromSigner,
 } from './multisig/signing.js';
 import { executeProposalWorkflow } from './multisig/proposal/execution.js';
 
@@ -572,7 +571,7 @@ export class Multisig {
 
   async signTransactionProposal(commitment: string): Promise<TransactionProposal[]> {
     const existingProposal = this.proposals.get(commitment);
-    const signature = buildServerSignatureFromSigner(this.signer, commitment);
+    const signature = await buildPsmSignatureFromSigner(this.signer, commitment);
 
     const delta = await this.psm.signDeltaProposal({
       accountId: this._accountId,
@@ -608,11 +607,7 @@ export class Multisig {
     const resolvedScheme = scheme ?? this.signatureScheme;
 
     const existingProposal = this.proposals.get(commitment);
-    const signature = buildServerSignatureExternal(
-      resolvedScheme,
-      signatureHex,
-      publicKey,
-    );
+    const signature = toPsmSignature(resolvedScheme, signatureHex, publicKey);
 
     const delta = await this.psm.signDeltaProposal({
       accountId: this._accountId,
@@ -737,7 +732,7 @@ export class Multisig {
     return { proposal, proposals };
   }
 
-  signTransactionProposalOffline(commitment: string): string {
+  async signTransactionProposalOffline(commitment: string): Promise<string> {
     const proposal = this.proposals.get(commitment);
     if (!proposal) {
       throw new Error(`Proposal not found: ${commitment}`);
@@ -750,11 +745,9 @@ export class Multisig {
       throw new Error('You have already signed this proposal');
     }
 
-    const signatureHex = this.signer.signCommitment(commitment);
+    const signatureHex = await this.signer.signCommitment(commitment);
 
-    const sigEntry: TransactionProposalSignature['signature'] = this.signer.scheme === 'ecdsa'
-      ? { scheme: 'ecdsa', signature: signatureHex, publicKey: this.signer.publicKey }
-      : { scheme: 'falcon', signature: signatureHex };
+    const sigEntry = toPsmSignature(this.signer.scheme, signatureHex, this.signer.publicKey);
     proposal.signatures.push({
       signerId: this.signer.commitment,
       signature: sigEntry,

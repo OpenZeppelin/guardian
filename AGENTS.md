@@ -217,6 +217,20 @@ Apply these rules especially to:
 - Model proposal state transitions explicitly (pending/ready/finalized).
 - Ensure Rust and TypeScript behavior remain semantically equivalent for the same workflow.
 
+### Type-Centric Operations
+
+- Prefer type-driven operations over standalone procedural functions.
+- TypeScript:
+  - Prefer classes/types owning parsing and execution behavior.
+  - Prefer patterns like:
+    - `new CosignerAdviceMap(...)` instead of `buildCosignerAdviceMap(...)`
+    - `proposalWorkflow.execute()` instead of `executeProposalWorkflow(...)`
+    - `ProposalMetadata.fromPsmMetadata(...)` instead of `fromPsmMetadata(...)`
+- Rust:
+  - Apply the same principle with constructors/associated functions on domain types.
+  - Prefer patterns like:
+    - `SignatureInputs::from_json(delta_payload_json)` instead of `parse_unique_signature_inputs(...)`
+
 ### Error Handling
 
 - Use structured errors at boundaries; avoid losing context in generic string errors.

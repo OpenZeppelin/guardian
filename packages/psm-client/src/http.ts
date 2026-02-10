@@ -191,7 +191,7 @@ export class PsmHttpClient {
     const now = Date.now();
     const timestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
     this.lastTimestamp = timestamp;
-    const signature = this.signer.signAccountIdWithTimestamp(accountId, timestamp);
+    const signature = await this.signer.signAccountIdWithTimestamp(accountId, timestamp);
 
     try {
       return await this.fetch(path, {

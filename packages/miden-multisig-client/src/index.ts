@@ -12,6 +12,9 @@ export {
 export { PsmHttpClient, PsmHttpError } from '@openzeppelin/psm-client';
 
 export { FalconSigner, EcdsaSigner } from './signer.js';
+export { AuthDigest } from './utils/digest.js';
+export { EcdsaFormat } from './utils/ecdsa.js';
+export { tryComputeEcdsaCommitmentHex } from './utils/signature.js';
 
 export {
   createMultisigAccount,

@@ -1,6 +1,7 @@
-import { AuthSecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@miden-sdk/miden-sdk';
+import { AuthSecretKey } from '@miden-sdk/miden-sdk';
 import type { Signer, SignatureScheme } from './types.js';
 import { bytesToHex } from './utils/encoding.js';
+import { AuthDigest } from './utils/digest.js';
 
 export class FalconSigner implements Signer {
   readonly commitment: string;
@@ -17,30 +18,16 @@ export class FalconSigner implements Signer {
     this.publicKey = bytesToHex(falconPubKey);
   }
 
-  signAccountIdWithTimestamp(accountId: string, timestamp: number): string {
-    const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
-    const parsedAccountId = AccountId.fromHex(paddedHex);
-    const prefix = parsedAccountId.prefix();
-    const suffix = parsedAccountId.suffix();
-
-    const feltArray = new FeltArray([
-      prefix,
-      suffix,
-      new Felt(BigInt(timestamp)),
-      new Felt(BigInt(0)),
-    ]);
-
-    const digest = Rpo256.hashElements(feltArray);
+  async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
+    const digest = AuthDigest.fromAccountIdWithTimestamp(accountId, timestamp);
     const signature = this.secretKey.sign(digest);
     const signatureBytes = signature.serialize();
     const falconSignature = signatureBytes.slice(1);
     return bytesToHex(falconSignature);
   }
 
-  signCommitment(commitmentHex: string): string {
-    const paddedHex = commitmentHex.startsWith('0x') ? commitmentHex : `0x${commitmentHex}`;
-    const cleanHex = paddedHex.slice(2).padStart(64, '0');
-    const word = Word.fromHex(`0x${cleanHex}`);
+  async signCommitment(commitmentHex: string): Promise<string> {
+    const word = AuthDigest.fromCommitmentHex(commitmentHex);
     const signature = this.secretKey.sign(word);
     const signatureBytes = signature.serialize();
     const falconSignature = signatureBytes.slice(1);
@@ -63,30 +50,16 @@ export class EcdsaSigner implements Signer {
     this.publicKey = bytesToHex(ecdsaPubKey);
   }
 
-  signAccountIdWithTimestamp(accountId: string, timestamp: number): string {
-    const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
-    const parsedAccountId = AccountId.fromHex(paddedHex);
-    const prefix = parsedAccountId.prefix();
-    const suffix = parsedAccountId.suffix();
-
-    const feltArray = new FeltArray([
-      prefix,
-      suffix,
-      new Felt(BigInt(timestamp)),
-      new Felt(BigInt(0)),
-    ]);
-
-    const digest = Rpo256.hashElements(feltArray);
+  async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
+    const digest = AuthDigest.fromAccountIdWithTimestamp(accountId, timestamp);
     const signature = this.secretKey.sign(digest);
     const signatureBytes = signature.serialize();
     const ecdsaSignature = signatureBytes.slice(1);
     return bytesToHex(ecdsaSignature);
   }
 
-  signCommitment(commitmentHex: string): string {
-    const paddedHex = commitmentHex.startsWith('0x') ? commitmentHex : `0x${commitmentHex}`;
-    const cleanHex = paddedHex.slice(2).padStart(64, '0');
-    const word = Word.fromHex(`0x${cleanHex}`);
+  async signCommitment(commitmentHex: string): Promise<string> {
+    const word = AuthDigest.fromCommitmentHex(commitmentHex);
     const signature = this.secretKey.sign(word);
     const signatureBytes = signature.serialize();
     const ecdsaSignature = signatureBytes.slice(1);
