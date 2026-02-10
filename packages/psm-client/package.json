@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/psm-client",
-  "version": "0.12.8",
+  "version": "0.13.0",
   "description": "TypeScript HTTP client for Private State Manager (PSM) server",
   "type": "module",
   "main": "./dist/index.js",

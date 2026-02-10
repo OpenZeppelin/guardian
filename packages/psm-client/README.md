@@ -21,8 +21,11 @@ const client = new PsmHttpClient('http://localhost:3000');
 ### Get Server Public Key (Unauthenticated)
 
 ```typescript
-const pubkey = await client.getPubkey();
-console.log('PSM pubkey:', pubkey);
+// Default (Falcon)
+const { commitment, pubkey } = await client.getPubkey();
+
+// ECDSA
+const { commitment, pubkey } = await client.getPubkey('ecdsa');
 ```
 
 ### Set Signer for Authenticated Requests
@@ -30,14 +33,14 @@ console.log('PSM pubkey:', pubkey);
 All endpoints except `getPubkey()` require authentication. You must provide a signer that implements the `Signer` interface:
 
 ```typescript
-import type { Signer } from '@openzeppelin/psm-client';
+import type { Signer, SignatureScheme } from '@openzeppelin/psm-client';
 
 const signer: Signer = {
-  commitment: '0x...', // 64 hex chars
-  publicKey: '0x...',  // Full public key hex
-  // Sign account ID with timestamp (milliseconds) for replay-resistant auth
-  signAccountIdWithTimestamp: (accountId: string, timestamp: number) => '0x...', // Returns signature hex
-  signCommitment: (commitmentHex: string) => '0x...', // Returns signature hex
+  commitment: '0x...',
+  publicKey: '0x...',
+  scheme: 'falcon' as SignatureScheme, // 'falcon' or 'ecdsa'
+  signAccountIdWithTimestamp: async (accountId: string, timestamp: number) => '0x...',
+  signCommitment: async (commitmentHex: string) => '0x...',
 };
 
 client.setSigner(signer);

@@ -6,6 +6,7 @@ TypeScript SDK for private multisignature workflows on Miden. This package wraps
 - Propose, sign, and execute transactions with threshold enforcement
 - Export/import proposals as files for sharing using side channels
 - Integrate external wallets via the external signing API
+- Use Falcon or ECDSA signature schemes
 
 ## How Private Multisigs & PSM Work
 
@@ -18,20 +19,20 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @demox-labs/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```
 
 ## Setup
 
 ```typescript
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 
 // Initialize Miden WebClient
 const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
 
-// Create a signer from your secret key
-const secretKey = SecretKey.rpoFalconWithRNG(seed);
+// Create a Falcon signer
+const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
 // Create MultisigClient and fetch PSM info
@@ -39,6 +40,19 @@ const client = new MultisigClient(webClient, {
   psmEndpoint: 'http://localhost:3000',
 });
 const { psmCommitment } = await client.initialize();
+```
+
+### ECDSA Signer
+
+```typescript
+import { MultisigClient, EcdsaSigner } from '@openzeppelin/miden-multisig-client';
+import { AuthSecretKey } from '@miden-sdk/miden-sdk';
+
+const secretKey = AuthSecretKey.ecdsaWithRNG(undefined);
+const signer = new EcdsaSigner(secretKey);
+
+const client = new MultisigClient(webClient, { psmEndpoint: 'http://localhost:3000' });
+const { psmCommitment } = await client.initialize('ecdsa');
 ```
 
 ## Usage
@@ -50,6 +64,7 @@ const config = {
   threshold: 2,
   signerCommitments: [signer.commitment, otherSignerCommitment],
   psmCommitment,
+  signatureScheme: 'falcon', // or 'ecdsa'
 };
 
 const multisig = await client.create(config, signer);
@@ -161,6 +176,20 @@ await multisig.signTransactionProposalExternal({
 });
 ```
 
+### Wallet Signers
+
+For integrating with external wallets, use `ParaSigner` or `MidenWalletSigner`:
+
+```typescript
+import { ParaSigner, MidenWalletSigner } from '@openzeppelin/miden-multisig-client';
+
+// Para wallet integration
+const signer = new ParaSigner(paraContext, walletId, commitment, publicKey);
+
+// Miden wallet integration
+const signer = new MidenWalletSigner(walletContext, commitment, 'ecdsa');
+```
+
 ### Export/Import Proposals
 
 Share proposals via side channels for offline signing:
@@ -175,6 +204,15 @@ const signedJson = multisig.signTransactionProposalOffline(proposal.commitment);
 // Import
 const { proposal, proposals } = multisig.importTransactionProposal(json);
 ```
+
+## Signers
+
+| Signer | Scheme | Use case |
+|--------|--------|----------|
+| `FalconSigner` | `falcon` | Local Falcon key (default) |
+| `EcdsaSigner` | `ecdsa` | Local ECDSA key |
+| `ParaSigner` | `ecdsa` | External wallet via Para protocol |
+| `MidenWalletSigner` | any | Miden wallet browser extension |
 
 ## Testing
 

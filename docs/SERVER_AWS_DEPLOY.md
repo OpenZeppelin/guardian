@@ -22,6 +22,16 @@ terraform version
 ## Quick Start
 
 ```bash
+# Authenticate via SSO (if using AWS SSO)
+aws sso login --profile <your-profile>
+export AWS_PROFILE=<your-profile>
+
+# Load environment variables
+set -a && source .env && set +a
+
+# Verify AWS credentials
+aws sts get-caller-identity
+
 # Deploy infrastructure (builds/pushes image and runs Terraform)
 ./scripts/aws-deploy.sh deploy
 
