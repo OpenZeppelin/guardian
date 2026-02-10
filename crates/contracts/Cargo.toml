@@ -18,7 +18,7 @@ miden-testing = { workspace = true }
 
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
-private-state-manager-shared = { version = "0.12.7", path = "../shared" }
+private-state-manager-shared = { version = "0.13.0", path = "../shared" }
 
 [dev-dependencies]
 miden-client = { workspace = true, features = ["testing", "tonic"] }

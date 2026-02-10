@@ -11,7 +11,7 @@ description = "Client library for Private State Manager"
 include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "LICENSE", "README.md"]
 
 [dependencies]
-private-state-manager-shared = { version = "0.12.7", path = "../shared" }
+private-state-manager-shared = { version = "0.13.0", path = "../shared" }
 miden-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -11,9 +11,9 @@ description = "High-level SDK for interacting with multisig accounts on Miden vi
 
 [dependencies]
 # Internal crates
-private-state-manager-client = { version = "0.12.7", path = "../client" }
-private-state-manager-shared = { version = "0.12.7", path = "../shared" }
-miden-confidential-contracts = { version = "0.12.7", path = "../contracts" }
+private-state-manager-client = { version = "0.13.0", path = "../client" }
+private-state-manager-shared = { version = "0.13.0", path = "../shared" }
+miden-confidential-contracts = { version = "0.13.0", path = "../contracts" }
 
 # Miden
 miden-client = { workspace = true, features = ["tonic", "testing"] }

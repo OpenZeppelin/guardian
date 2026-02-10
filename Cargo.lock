@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "miden-confidential-contracts"
-version = "0.12.7"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "miden-multisig-client"
-version = "0.12.7"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "private-state-manager-client"
-version = "0.12.7"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "hex",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "private-state-manager-shared"
-version = "0.12.7"
+version = "0.13.0"
 dependencies = [
  "base64",
  "hex",
