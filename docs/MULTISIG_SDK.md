@@ -12,6 +12,7 @@ An SDK for creating and managing multisignature accounts on the Miden network. A
 - [Offline Workflow](#offline-workflow)
 - [Error Handling](#error-handling)
 - [Security Best Practices](#security-best-practices)
+- [Releasing](#releasing)
 
 ---
 
@@ -23,14 +24,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @demox-labs/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.12.5"
-miden-client = "0.12.5"
+miden-multisig-client = "0.13.0"
+miden-client = "0.13.0"
 ```
 
 ### 5-Minute Example
@@ -40,12 +41,12 @@ Create a 1-of-3 multisig account, propose a transfer, collect signatures, and ex
 #### TypeScript
 
 ```typescript
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 
 // 1. Setup clients
 const midenClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
-const secretKey = SecretKey.rpoFalconWithRNG(seed);
+const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 const client = new MultisigClient(midenClient, { psmEndpoint: 'http://localhost:3000' });
 
@@ -196,7 +197,7 @@ For air-gapped or offline signing scenarios:
 ### Installation & Setup
 
 ```typescript
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import {
   MultisigClient,
   Multisig,
@@ -209,7 +210,7 @@ import {
 const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
 
 // Create signer from secret key
-const secretKey = SecretKey.rpoFalconWithRNG(seed);
+const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
 // Initialize multisig client
@@ -806,11 +807,101 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
-| 0.1.x | 0.12.5 | ^0.12.5 | Current |
+| 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
+| 0.12.x | 0.12.5 | ^0.12.5 | Initial release |
 
 ### Breaking Changes
 
 Check the [CHANGELOG](../CHANGELOG.md) for breaking changes between versions.
+
+---
+
+## Releasing
+
+Steps for publishing a new version of the SDK (Rust crates + TypeScript packages).
+
+### Pre-Release Checklist
+
+1. All tests pass:
+
+```bash
+# Rust
+cargo test -p private-state-manager-shared
+cargo test -p private-state-manager-server --lib
+
+# TypeScript
+cd packages/psm-client && npm test
+cd packages/miden-multisig-client && npm test
+```
+
+2. TypeScript packages build cleanly:
+
+```bash
+cd packages/psm-client && npm run build
+cd packages/miden-multisig-client && npm run build
+```
+
+3. Version numbers are updated in all files (see below).
+
+### Version Bump
+
+Update the version in these files:
+
+| File | Field | Inherits |
+|------|-------|----------|
+| `Cargo.toml` (workspace root) | `[workspace.package] version` | `shared`, `client`, `contracts`, `miden-multisig-client` |
+| `crates/contracts/Cargo.toml` | `private-state-manager-shared` dep version | - |
+| `crates/client/Cargo.toml` | `private-state-manager-shared` dep version | - |
+| `crates/miden-multisig-client/Cargo.toml` | `private-state-manager-client`, `private-state-manager-shared`, `miden-confidential-contracts` dep versions | - |
+| `packages/psm-client/package.json` | `version` | - |
+| `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/psm-client` dep version | - |
+
+The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have their own independent versions and are not published.
+
+### Publishing Rust Crates
+
+Publish in dependency order (leaves first). Each crate must be available on crates.io before its dependents can be published.
+
+```bash
+# 1. No internal deps
+cargo publish -p private-state-manager-shared
+
+# 2. Depends on shared
+cargo publish -p private-state-manager-client
+cargo publish -p miden-confidential-contracts
+
+# 3. Depends on shared + client + contracts
+cargo publish -p miden-multisig-client
+```
+
+Wait for each step to finish before proceeding to the next (crates.io index needs to update).
+
+### Publishing TypeScript Packages
+
+Publish in dependency order:
+
+```bash
+# 1. Build both packages
+cd packages/psm-client && npm run build
+cd packages/miden-multisig-client && npm run build
+
+# 2. Publish psm-client first (no internal deps)
+cd packages/psm-client && npm publish --access public
+
+# 3. Publish miden-multisig-client (depends on psm-client)
+cd packages/miden-multisig-client && npm publish --access public
+```
+
+### Post-Release
+
+1. Tag the release:
+
+```bash
+git tag v0.13.0
+git push origin v0.13.0
+```
+
+2. Create a GitHub release from the tag with release notes.
 
 ---
 
