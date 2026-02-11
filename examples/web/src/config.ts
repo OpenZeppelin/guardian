@@ -1,4 +1,4 @@
-export const PSM_ENDPOINT = 'http://localhost:3000';
+export const PSM_ENDPOINT = 'https://psm-stg.openzeppelin.com';
 export const MIDEN_RPC_URL = 'https://rpc.devnet.miden.io';
 export const MIDEN_DB_NAME = 'MidenClientDB';
 

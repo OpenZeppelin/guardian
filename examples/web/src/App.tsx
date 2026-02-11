@@ -262,7 +262,12 @@ export default function App() {
     procedureThresholds?: import('@openzeppelin/miden-multisig-client').ProcedureThreshold[],
     signatureScheme: SignatureScheme = 'falcon',
   ) => {
-    if (!multisigClient || !signer || !psmCommitment) return;
+    console.log('handleCreate called', { otherSignerCommitments, threshold, signatureScheme, multisigClient: !!multisigClient, signer: !!signer, psmCommitment });
+    if (!multisigClient || !signer || !psmCommitment) {
+      console.error('handleCreate guard failed:', { multisigClient: !!multisigClient, signer: !!signer, psmCommitment });
+      setError('Client not initialized. Try reconnecting to PSM.');
+      return;
+    }
 
     setCreating(true);
     setError(null);
