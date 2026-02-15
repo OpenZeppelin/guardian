@@ -11,3 +11,6 @@ templates/
 CLAUDE.md
 
 .vscode/
+
+crates/server/bench/results/*
+!crates/server/bench/results/.gitkeep

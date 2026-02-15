@@ -3,6 +3,7 @@ members = [
     "crates/shared",
     "crates/client",
     "crates/server",
+    "crates/server/bench/loadgen",
     "crates/miden-rpc-client",
     "crates/miden-keystore",
     "crates/contracts",

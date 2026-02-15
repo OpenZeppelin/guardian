@@ -222,6 +222,27 @@ docker-compose up -d
 
 The Postgres service uses a health check and the server waits for it to be ready before starting.
 
+## Benchmarking
+
+Server benchmark harness lives in:
+
+- `crates/server/bench/README.md`
+
+It includes:
+- Filesystem vs Postgres comparison runs
+- scaling workloads (`state-read`, `state-write`, `mixed`)
+- rate-limiting and request-size checks
+
+Quick commands:
+
+```bash
+./crates/server/bench/scripts/run_fs.sh
+./crates/server/bench/scripts/run_postgres.sh
+./crates/server/bench/scripts/run_matrix.sh
+```
+
+For benchmark runs that need env-driven `PSM_NETWORK_TYPE` and `PSM_CANONICALIZATION_*`, use the runtime code switch documented in `crates/server/bench/README.md` under `Benchmark Runtime Code Switch (Main Branch)`.
+
 ## Testing
 
 Run all tests:

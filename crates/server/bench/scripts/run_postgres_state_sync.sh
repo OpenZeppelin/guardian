@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+export BENCH_SCENARIOS="${BENCH_SCENARIOS:-state-sync}"
+export BENCH_STATE_SYNC_READS_PER_PUSH="${BENCH_STATE_SYNC_READS_PER_PUSH:-4}"
+export BENCH_USERS="${BENCH_USERS:-1000}"
+export BENCH_ACCOUNTS="${BENCH_ACCOUNTS:-1000}"
+export BENCH_SIGNERS_PER_ACCOUNT="${BENCH_SIGNERS_PER_ACCOUNT:-2}"
+export BENCH_OPS_PER_USER="${BENCH_OPS_PER_USER:-5}"
+export BENCH_SKIP_PREBUILD="${BENCH_SKIP_PREBUILD:-true}"
+
+"$SCRIPT_DIR/run_postgres.sh"
