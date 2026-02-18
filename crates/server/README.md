@@ -31,6 +31,7 @@ let builder = ServerBuilder::new()
 #### Request Size Limits
 
 - `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
+- `PSM_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
 
 Requests exceeding this limit receive a 413 Payload Too Large response.
 
