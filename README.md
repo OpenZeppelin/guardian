@@ -43,6 +43,7 @@ See the [Server README](crates/server/README.md) for detailed API documentation 
   - Module-specific: `RUST_LOG=server::jobs::canonicalization=debug`
 - `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
 - `PSM_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
+- `PSM_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
 - `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
 
 ### Running
