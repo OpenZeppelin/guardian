@@ -559,7 +559,8 @@ mod tests {
         let dummy_sig = format!("0x{}", "a".repeat(666));
         let request = SignProposalRequest {
             account_id,
-            commitment: "nonexistent_proposal".to_string(),
+            commitment: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig,
             },
