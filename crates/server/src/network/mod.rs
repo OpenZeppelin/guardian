@@ -59,6 +59,13 @@ pub trait NetworkClient: Send + Sync {
         credential: &Credentials,
     ) -> Result<(), String>;
 
+    /// Validate that account storage is bound to this server's PSM public key commitment.
+    fn validate_psm_commitment(
+        &self,
+        state_json: &serde_json::Value,
+        expected_psm_commitment: &str,
+    ) -> Result<(), String>;
+
     /// Determine if account auth should be updated given the state
     async fn should_update_auth(
         &mut self,

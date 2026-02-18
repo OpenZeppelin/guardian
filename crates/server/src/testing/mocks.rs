@@ -23,6 +23,7 @@ pub struct MockNetworkClient {
     pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_psm_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
@@ -48,6 +49,14 @@ impl MockNetworkClient {
 
     pub fn with_validate_credential(self, response: StdResult<(), String>) -> Self {
         self.validate_credential_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_validate_psm_commitment(self, response: StdResult<(), String>) -> Self {
+        self.validate_psm_commitment_responses
             .lock()
             .unwrap()
             .push(response);
@@ -165,6 +174,18 @@ impl NetworkClient for MockNetworkClient {
         _credential: &Credentials,
     ) -> StdResult<(), String> {
         self.validate_credential_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
+    }
+
+    fn validate_psm_commitment(
+        &self,
+        _state_json: &serde_json::Value,
+        _expected_psm_commitment: &str,
+    ) -> StdResult<(), String> {
+        self.validate_psm_commitment_responses
             .lock()
             .unwrap()
             .pop()
