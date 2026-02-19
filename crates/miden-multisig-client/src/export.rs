@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
+use crate::transaction::word_to_hex;
+use crate::utils::hex_body_eq;
 
 /// Current export format version.
 pub const EXPORT_VERSION: u32 = 1;
@@ -129,6 +131,7 @@ impl ExportedProposal {
         let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
+        validate_proposal_id_matches_summary(&self.id, &tx_summary)?;
 
         let _account_id = AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
@@ -174,6 +177,14 @@ impl ExportedProposal {
             tx_summary,
             metadata,
         })
+    }
+
+    /// Validates that this proposal ID matches the commitment of its transaction summary.
+    pub fn validate_id_matches_summary(&self) -> Result<()> {
+        let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
+        })?;
+        validate_proposal_id_matches_summary(&self.id, &tx_summary)
     }
 
     /// Parses the transaction type from the string representation.
@@ -332,8 +343,21 @@ impl ExportedProposal {
             )));
         }
 
+        exported.validate_id_matches_summary()?;
+
         Ok(exported)
     }
+}
+
+fn validate_proposal_id_matches_summary(id: &str, tx_summary: &TransactionSummary) -> Result<()> {
+    let expected_id = word_to_hex(&tx_summary.to_commitment());
+    if !hex_body_eq(id, &expected_id) {
+        return Err(MultisigError::InvalidConfig(format!(
+            "proposal id {} does not match tx_summary commitment {}",
+            id, expected_id
+        )));
+    }
+    Ok(())
 }
 
 /// Converts a hex string to Word.
@@ -365,6 +389,28 @@ fn hex_to_word(hex: &str) -> Result<miden_protocol::Word> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{InputNotes, OutputNotes};
+    use miden_protocol::{Felt, FieldElement};
+    use private_state_manager_shared::ToJson;
+
+    fn valid_tx_summary_json() -> serde_json::Value {
+        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .expect("valid account delta");
+        let tx_summary = TransactionSummary::new(
+            delta,
+            InputNotes::new(Vec::new()).unwrap(),
+            OutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::Word::default(),
+        );
+        tx_summary.to_json()
+    }
 
     #[test]
     fn test_exported_signature_serialization() {
@@ -474,6 +520,64 @@ mod tests {
         }"#;
 
         let result = ExportedProposal::from_json(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_id_matches_summary_rejects_mismatch() {
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0x1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: valid_tx_summary_json(),
+            signatures: vec![],
+            signatures_required: 1,
+            metadata: ExportedMetadata::default(),
+        };
+
+        let result = proposal.validate_id_matches_summary();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_id_matches_summary_accepts_matching_id() {
+        let tx_summary = TransactionSummary::from_json(&valid_tx_summary_json()).unwrap();
+        let id = word_to_hex(&tx_summary.to_commitment());
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id,
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: valid_tx_summary_json(),
+            signatures: vec![],
+            signatures_required: 1,
+            metadata: ExportedMetadata::default(),
+        };
+
+        proposal
+            .validate_id_matches_summary()
+            .expect("matching id must be accepted");
+    }
+
+    #[test]
+    fn test_from_json_rejects_mismatched_id_and_summary() {
+        let json = serde_json::json!({
+            "version": EXPORT_VERSION,
+            "account_id": valid_account_id(),
+            "id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "nonce": 1,
+            "transaction_type": "UpdateSigners",
+            "tx_summary": valid_tx_summary_json(),
+            "signatures": [],
+            "signatures_required": 1,
+            "metadata": {},
+        })
+        .to_string();
+
+        let result = ExportedProposal::from_json(&json);
         assert!(result.is_err());
     }
 

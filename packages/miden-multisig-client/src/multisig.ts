@@ -289,7 +289,15 @@ export class Multisig {
       },
     });
 
-    const proposal = this.deltaToProposal(response.delta, response.commitment, metadata);
+    const computedCommitment = normalizeHexWord(
+      computeCommitmentFromTxSummary(response.delta.deltaPayload.txSummary.data)
+    );
+    const serverCommitment = normalizeHexWord(response.commitment);
+    if (computedCommitment !== serverCommitment) {
+      throw new Error('Invalid proposal response: commitment does not match tx_summary');
+    }
+
+    const proposal = this.deltaToProposal(response.delta, computedCommitment, metadata);
     this.proposals.set(proposal.id, proposal);
 
     return proposal;
@@ -598,9 +606,14 @@ export class Multisig {
    * @param proposalId - The proposal commitment/ID (this is also what gets signed)
    */
   async signProposal(proposalId: string): Promise<Proposal> {
-    const existingProposal = this.proposals.get(proposalId);
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    const existingProposal = await this.getProposalForSigning(proposalId, normalizedProposalId);
+    if (!existingProposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
 
-    const signatureHex = this.signer.signCommitment(proposalId);
+    const commitmentToSign = await this.verifyProposalMetadataBinding(existingProposal);
+    const signatureHex = this.signer.signCommitment(commitmentToSign);
 
     const signature: FalconSignature = {
       scheme: 'falcon',
@@ -609,19 +622,35 @@ export class Multisig {
 
     const delta = await this.psm.signDeltaProposal({
       accountId: this._accountId,
-      commitment: proposalId,
+      commitment: normalizedProposalId,
       signature,
     });
 
-    const proposal = this.deltaToProposal(delta, proposalId, undefined, existingProposal?.signatures);
+    const deltaCommitment = normalizeHexWord(
+      computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
+    );
+    const proposal = this.deltaToProposal(delta, deltaCommitment, undefined, existingProposal.signatures);
 
-    if (existingProposal?.metadata) {
+    if (existingProposal.metadata) {
       proposal.metadata = existingProposal.metadata;
     }
 
     this.proposals.set(proposal.id, proposal);
 
     return proposal;
+  }
+
+  private async getProposalForSigning(
+    proposalId: string,
+    normalizedProposalId: string,
+  ): Promise<Proposal | undefined> {
+    const cachedProposal = this.proposals.get(proposalId);
+    if (cachedProposal) {
+      return cachedProposal;
+    }
+
+    await this.syncProposals();
+    return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
   }
 
   /**
@@ -634,6 +663,8 @@ export class Multisig {
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
+
+    await this.verifyProposalMetadataBinding(proposal);
 
     const proposalType = proposal.metadata?.proposalType;
     const effectiveThreshold = proposalType
@@ -711,61 +742,12 @@ export class Multisig {
     if (!metadata) {
       throw new Error('Proposal missing metadata');
     }
-
-    let finalRequest: TransactionRequest;
-    switch (metadata.proposalType) {
-      case 'consume_notes': {
-        if (!metadata.noteIds || metadata.noteIds.length === 0) {
-          throw new Error('Proposal missing noteIds. Was it created with createConsumeNotesProposal?');
-        }
-        const { request } = await buildConsumeNotesTransactionRequest(
-          this.webClient,
-          metadata.noteIds,
-          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
-        );
-        finalRequest = request;
-        break;
-      }
-      case 'switch_psm': {
-        if (!metadata.newPsmPubkey) {
-          throw new Error('Proposal missing newPsmPubkey. Was it created with createSwitchPsmProposal?');
-        }
-        const { request } = await buildUpdatePsmTransactionRequest(
-          this.webClient,
-          metadata.newPsmPubkey,
-          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
-        );
-        finalRequest = request;
-        break;
-      }
-      case 'p2id': {
-        if (!metadata.recipientId || !metadata.faucetId || !metadata.amount) {
-          throw new Error('Proposal missing P2ID metadata (recipientId, faucetId, amount). Was it created with createP2idProposal?');
-        }
-        const { request } = buildP2idTransactionRequest(
-          this._accountId,
-          metadata.recipientId,
-          metadata.faucetId,
-          BigInt(metadata.amount),
-          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
-        );
-        finalRequest = request;
-        break;
-      }
-      case 'unknown': {
-        throw new Error('Cannot execute proposal with unknown type. The proposal must have been imported without proper metadata.');
-      }
-      default: {
-        const { request } = await buildUpdateSignersTransactionRequest(
-          this.webClient,
-          metadata.targetThreshold,
-          metadata.targetSignerCommitments,
-          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
-        );
-        finalRequest = request;
-        break;
-      }
-    }
+    const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
+    const finalRequest = await this.buildTransactionRequestFromMetadata(
+      metadata,
+      executionSalt,
+      adviceMap,
+    );
 
     const accountId = AccountId.fromHex(this._accountId);
     const result = await this.webClient.executeTransaction(accountId, finalRequest);
@@ -909,8 +891,10 @@ export class Multisig {
       throw new Error('You have already signed this proposal');
     }
 
+    const commitmentToSign = this.ensureProposalCommitmentMatchesSummary(proposal);
+
     // Sign the commitment
-    const signatureHex = this.signer.signCommitment(proposalId);
+    const signatureHex = this.signer.signCommitment(commitmentToSign);
 
     // Add signature to local proposal
     proposal.signatures.push({
@@ -941,12 +925,105 @@ export class Multisig {
     return this.exportProposalToJson(proposalId);
   }
 
+  private ensureProposalCommitmentMatchesSummary(proposal: Proposal): string {
+    const proposalId = normalizeHexWord(proposal.id);
+    const txSummaryCommitment = normalizeHexWord(
+      computeCommitmentFromTxSummary(proposal.txSummary)
+    );
+    if (proposalId !== txSummaryCommitment) {
+      throw new Error(
+        `Invalid proposal: id ${proposal.id} does not match tx_summary commitment ${txSummaryCommitment}`
+      );
+    }
+    return txSummaryCommitment;
+  }
+
+  private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
+    const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
+    if (proposal.metadata.proposalType === 'unknown') {
+      throw new Error(`Cannot verify proposal metadata for unknown proposal type: ${proposal.id}`);
+    }
+
+    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
+    const salt = proposal.metadata.saltHex
+      ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
+      : summary.salt();
+
+    const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
+    const reconstructed = await executeForSummary(this.webClient, this._accountId, request);
+    const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+
+    if (reconstructedCommitment !== txSummaryCommitment) {
+      throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
+    }
+
+    return txSummaryCommitment;
+  }
+
+  private async buildTransactionRequestFromMetadata(
+    metadata: ProposalMetadata,
+    salt: Word,
+    signatureAdviceMap?: AdviceMap,
+  ): Promise<TransactionRequest> {
+    switch (metadata.proposalType) {
+      case 'add_signer':
+      case 'remove_signer':
+      case 'change_threshold': {
+        const { request } = await buildUpdateSignersTransactionRequest(
+          this.webClient,
+          metadata.targetThreshold,
+          metadata.targetSignerCommitments,
+          { salt, signatureAdviceMap }
+        );
+        return request;
+      }
+      case 'switch_psm': {
+        const { request } = await buildUpdatePsmTransactionRequest(
+          this.webClient,
+          metadata.newPsmPubkey,
+          { salt, signatureAdviceMap }
+        );
+        return request;
+      }
+      case 'consume_notes': {
+        const { request } = await buildConsumeNotesTransactionRequest(
+          this.webClient,
+          metadata.noteIds,
+          { salt, signatureAdviceMap }
+        );
+        return request;
+      }
+      case 'p2id': {
+        const { request } = buildP2idTransactionRequest(
+          this._accountId,
+          metadata.recipientId,
+          metadata.faucetId,
+          BigInt(metadata.amount),
+          { salt, signatureAdviceMap }
+        );
+        return request;
+      }
+      case 'unknown':
+        throw new Error('Unsupported proposal type: unknown');
+    }
+  }
+
   private deltaToProposal(
     delta: DeltaObject,
     proposalId: string,
     metadata?: ProposalMetadata,
     existingSignatures?: ProposalSignatureEntry[],
   ): Proposal {
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    const computedProposalId = normalizeHexWord(
+      computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
+    );
+    if (normalizedProposalId !== computedProposalId) {
+      throw new Error(
+        `Invalid proposal: commitment ${proposalId} does not match tx_summary commitment ${computedProposalId}`
+      );
+    }
+
     const resolvedMetadata: ProposalMetadata | undefined =
       metadata ??
       (delta.deltaPayload.metadata ? this.fromPsmMetadata(delta.deltaPayload.metadata) : undefined);
@@ -960,7 +1037,14 @@ export class Multisig {
       delta.status.status === 'pending'
         ? delta.status.cosignerSigs.map((s) => ({
             signerId: s.signerId,
-            signature: s.signature,
+            signature: (() => {
+              if (s.signature.scheme !== 'falcon') {
+                throw new Error(
+                  `Unsupported signature scheme in proposal ${normalizedProposalId}: ${s.signature.scheme}`
+                );
+              }
+              return s.signature;
+            })(),
             timestamp: s.timestamp,
           }))
         : [];
@@ -975,7 +1059,7 @@ export class Multisig {
     const signatures = Array.from(signaturesMap.values());
 
     return {
-      id: proposalId,
+      id: normalizedProposalId,
       accountId: delta.accountId,
       nonce: delta.nonce,
       status,

@@ -63,6 +63,8 @@ impl MultisigClient {
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
+        self.verify_proposal_summary_binding(proposal).await?;
+
         // Check if already signed
         if proposal.has_signed(&self.key_manager.commitment_hex()) {
             return Err(MultisigError::AlreadySigned);
@@ -124,6 +126,8 @@ impl MultisigClient {
             .into_iter()
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+
+        self.verify_proposal_summary_binding(&proposal).await?;
 
         // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {

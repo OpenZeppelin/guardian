@@ -11,7 +11,9 @@ use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result};
-use crate::proposal::TransactionType;
+use crate::execution::build_final_transaction_request;
+use crate::proposal::{Proposal, TransactionType};
+use crate::transaction::word_to_hex;
 
 impl MultisigClient {
     /// Creates a PSM client (unauthenticated).
@@ -93,6 +95,53 @@ impl MultisigClient {
             tx_summary_commitment,
             &AccountSignature::from(ack_signature),
         ))
+    }
+
+    /// Verifies that a proposals metadata reconstructs the same tx_summary commitment.
+    pub(crate) async fn verify_proposal_summary_binding(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<()> {
+        let account = self.require_account()?.clone();
+        let tx_summary_commitment = proposal.tx_summary.to_commitment();
+
+        let proposal_id_commitment = word_to_hex(&tx_summary_commitment);
+        if !proposal.id.eq_ignore_ascii_case(&proposal_id_commitment) {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal id {} does not match tx_summary commitment {}",
+                proposal.id, proposal_id_commitment
+            )));
+        }
+
+        let salt = proposal.metadata.salt()?;
+        let signer_commitments = proposal.metadata.signer_commitments()?;
+
+        let tx_request = build_final_transaction_request(
+            &self.miden_client,
+            &proposal.transaction_type,
+            account.inner(),
+            salt,
+            Vec::new(),
+            proposal.metadata.new_threshold,
+            Some(signer_commitments.as_slice()),
+        )
+        .await?;
+
+        let reconstructed = crate::transaction::execute_for_summary(
+            &mut self.miden_client,
+            account.id(),
+            tx_request,
+        )
+        .await?;
+
+        if reconstructed.to_commitment() != tx_summary_commitment {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal {} metadata does not match tx_summary",
+                proposal.id
+            )));
+        }
+
+        Ok(())
     }
 
     /// Finalizes a transaction by executing it on-chain and updating local state.

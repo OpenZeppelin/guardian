@@ -273,6 +273,7 @@ impl MultisigClient {
     /// ```
     pub fn sign_imported_proposal(&self, proposal: &mut ExportedProposal) -> Result<()> {
         let account = self.require_account()?;
+        proposal.validate_id_matches_summary()?;
 
         // Check if user is a cosigner
         let user_commitment = self.key_manager.commitment();
@@ -324,6 +325,7 @@ impl MultisigClient {
     pub async fn execute_imported_proposal(&mut self, exported: &ExportedProposal) -> Result<()> {
         // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
+        exported.validate_id_matches_summary()?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
@@ -338,6 +340,7 @@ impl MultisigClient {
 
         // Parse the proposal
         let proposal = exported.to_proposal()?;
+        self.verify_proposal_summary_binding(&proposal).await?;
         let tx_summary = TransactionSummary::from_json(&exported.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
