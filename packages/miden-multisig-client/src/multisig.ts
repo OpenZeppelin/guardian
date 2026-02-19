@@ -1037,14 +1037,7 @@ export class Multisig {
       delta.status.status === 'pending'
         ? delta.status.cosignerSigs.map((s) => ({
             signerId: s.signerId,
-            signature: (() => {
-              if (s.signature.scheme !== 'falcon') {
-                throw new Error(
-                  `Unsupported signature scheme in proposal ${normalizedProposalId}: ${s.signature.scheme}`
-                );
-              }
-              return s.signature;
-            })(),
+            signature: s.signature,
             timestamp: s.timestamp,
           }))
         : [];
