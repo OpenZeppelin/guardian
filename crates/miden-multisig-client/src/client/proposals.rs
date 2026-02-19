@@ -209,13 +209,7 @@ impl MultisigClient {
             tx_summary_commitment,
         )?;
 
-        // SwitchPsm does NOT require PSM signature - skip push_delta for this transaction type
-        let is_switch_psm = matches!(
-            &proposal.transaction_type,
-            TransactionType::SwitchPsm { .. }
-        );
-
-        if !is_switch_psm {
+        if proposal.transaction_type.requires_psm_ack() {
             // Get PSM ack signature and add to advice
             let psm_advice = self
                 .get_psm_ack_signature(
@@ -303,7 +297,8 @@ impl MultisigClient {
     /// Proposes a transaction with automatic fallback to offline mode.
     ///
     /// First attempts to create the proposal via PSM. If PSM is unavailable
-    /// (connection error), automatically falls back to offline proposal creation.
+    /// (connection error), falls back to offline proposal creation only when
+    /// the transaction supports PSM-less execution (`SwitchPsm`).
     ///
     /// This is useful when you want to attempt online coordination but have a
     /// graceful fallback path for offline sharing.
@@ -311,15 +306,16 @@ impl MultisigClient {
     /// # Returns
     ///
     /// - `ProposalResult::Online(Proposal)` if PSM succeeded
-    /// - `ProposalResult::Offline(ExportedProposal)` if PSM failed
+    /// - `ProposalResult::Offline(ExportedProposal)` if PSM failed and transaction is `SwitchPsm`
     ///
     /// # Example
     ///
     /// ```ignore
     /// use miden_multisig_client::{TransactionType, ProposalResult};
     ///
+    /// let tx = TransactionType::switch_psm("https://new-psm.example.com", new_psm_commitment);
     /// let result = client.propose_with_fallback(
-    ///     TransactionType::add_cosigner(new_commitment)
+    ///     tx
     /// ).await?;
     ///
     /// match result {
@@ -339,10 +335,13 @@ impl MultisigClient {
         // Try online first
         match self.propose_transaction(transaction_type.clone()).await {
             Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
-            Err(MultisigError::PsmConnection(_) | MultisigError::PsmServer(_)) => {
-                // PSM unavailable, fall back to offline
-                let exported = self.create_proposal_offline(transaction_type).await?;
-                Ok(ProposalResult::Offline(Box::new(exported)))
+            Err(error @ (MultisigError::PsmConnection(_) | MultisigError::PsmServer(_))) => {
+                if transaction_type.supports_offline_execution() {
+                    let exported = self.create_proposal_offline(transaction_type).await?;
+                    Ok(ProposalResult::Offline(Box::new(exported)))
+                } else {
+                    Err(error)
+                }
             }
             Err(e) => Err(e),
         }

@@ -4,7 +4,7 @@ High-level Rust SDK built on top of `miden-client` for private multisignature wo
 
 - create multisig accounts, register them with a PSM, and keep state off-chain,
 - propose, sign, and execute transactions with threshold enforcement,
-- fall back to fully offline flows when connectivity is limited,
+- fall back to offline `SwitchPsm` workflows when connectivity is limited,
 - export/import proposals as files for sharing using side channels,
 
 ## How Private Multisigs & PSM Work
@@ -80,12 +80,12 @@ client.execute_proposal(&proposal.id).await?;
 
 ### Fallback to Offline (if PSM unavailable)
 
-If the PSM endpoint can’t be reached, the SDK automatically produces an offline proposal so you can continue via side-channel sharing:
+If the PSM endpoint can’t be reached, the SDK can produce an offline proposal only for `SwitchPsm` transactions:
 
 ```rust
 use miden_multisig_client::{ProposalResult, TransactionType};
 
-let tx = TransactionType::consume_notes(vec![note_id]);
+let tx = TransactionType::switch_psm("https://new-psm.example.com", new_psm_commitment);
 match client.propose_with_fallback(tx).await? {
     ProposalResult::Online(p) => {
         println!("Proposal {} is live on PSM", p.id);
@@ -141,4 +141,3 @@ let spendable = client.list_consumable_notes_filtered(filter).await?;
  Run the Terminal UI demo in [`examples/demo`](../../examples/demo/), which exercises the same APIs for account management, note listing, proposal signing, and offline export/import.
 
 Contributions and bug reports are welcome!
-

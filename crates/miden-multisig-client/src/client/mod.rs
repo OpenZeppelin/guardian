@@ -41,7 +41,7 @@ pub use notes::{ConsumableNote, NoteFilter};
 pub enum ProposalResult {
     /// Proposal successfully created on PSM and ready for cosigners to sign.
     Online(Box<Proposal>),
-    /// Proposal created offline (PSM unavailable). Share with cosigners via file.
+    /// Offline proposal created when PSM is unavailable (`SwitchPsm` transactions only).
     Offline(Box<ExportedProposal>),
 }
 

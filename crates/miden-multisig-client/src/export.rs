@@ -76,14 +76,7 @@ pub struct ExportedMetadata {
 impl ExportedProposal {
     /// Creates an ExportedProposal from a Proposal and account ID.
     pub fn from_proposal(proposal: &Proposal, account_id: AccountId) -> Self {
-        let tx_type_str = match &proposal.transaction_type {
-            TransactionType::P2ID { .. } => "P2ID",
-            TransactionType::ConsumeNotes { .. } => "ConsumeNotes",
-            TransactionType::AddCosigner { .. } => "AddCosigner",
-            TransactionType::RemoveCosigner { .. } => "RemoveCosigner",
-            TransactionType::SwitchPsm { .. } => "SwitchPsm",
-            TransactionType::UpdateSigners { .. } => "UpdateSigners",
-        };
+        let tx_type_str = proposal.transaction_type.type_name();
 
         let signatures_required = proposal.signatures_required();
 
