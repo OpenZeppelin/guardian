@@ -51,7 +51,7 @@ miden-confidential-contracts = { path = "../contracts", optional = true }
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.21", features = ["v4"] }
 miden-standards = { workspace = true }
 
 [features]
