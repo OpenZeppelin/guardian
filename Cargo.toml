@@ -41,7 +41,7 @@ incremental = false   # Disable incremental compilation for reproducibility
 [workspace.dependencies]
 # Core
 serde = "1.0.228"
-serde_json = "1.0.145"
+serde_json = "1.0.149"
 tokio = "1.47.1"
 tonic = "0.14.2"
 prost = "0.14.1"
