@@ -14,10 +14,11 @@ use private_state_manager_client::{
     auth_config::AuthType,
 };
 
-use super::MultisigClient;
+use super::{MultisigClient, StateVerificationResult};
 use crate::account::MultisigAccount;
 use crate::config::ProcedureThreshold;
 use crate::error::{MultisigError, Result};
+use crate::transaction::word_to_hex;
 
 impl MultisigClient {
     /// Creates a new multisig account.
@@ -231,6 +232,28 @@ impl MultisigClient {
         Ok(())
     }
 
+    /// Explicitly verifies that local account state commitment matches on-chain commitment.
+    pub async fn verify_state_commitment(&self) -> Result<StateVerificationResult> {
+        let account = self.require_account()?;
+        let account_id = account.id();
+        let local_commitment = account.commitment();
+        let on_chain_commitment = self.get_on_chain_account_commitment(account_id).await?;
+
+        if local_commitment != on_chain_commitment {
+            return Err(MultisigError::InvalidConfig(format!(
+                "local account commitment does not match on-chain commitment for account {}: local={}, on_chain={}",
+                account_id,
+                word_to_hex(&local_commitment),
+                word_to_hex(&on_chain_commitment)
+            )));
+        }
+
+        Ok(StateVerificationResult {
+            account_id,
+            local_commitment_hex: word_to_hex(&local_commitment),
+            on_chain_commitment_hex: word_to_hex(&on_chain_commitment),
+        })
+    }
     /// Internal sync from PSM that returns whether the account was updated.
     async fn sync_from_psm_internal(&mut self) -> Result<bool> {
         let account = self.require_account()?;

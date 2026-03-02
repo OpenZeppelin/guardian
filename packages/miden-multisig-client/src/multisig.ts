@@ -23,7 +23,9 @@ import {
   Account,
   AccountId,
   AdviceMap,
+  Endpoint,
   FeltArray,
+  RpcClient,
   Signature,
   TransactionSummary,
   Word,
@@ -57,6 +59,12 @@ export interface AccountState {
   updatedAt: string;
 }
 
+export interface AccountStateVerificationResult {
+  accountId: string;
+  localCommitment: string;
+  onChainCommitment: string;
+}
+
 /**
  * Represents a multisig account with PSM integration.
  */
@@ -71,6 +79,7 @@ export class Multisig {
   private readonly signer: Signer;
   private readonly webClient: WebClient;
   private readonly _accountId: string;
+  private readonly midenRpcEndpoint?: string;
   private proposals: Map<string, Proposal> = new Map();
 
   constructor(
@@ -79,7 +88,8 @@ export class Multisig {
     psm: PsmHttpClient,
     signer: Signer,
     webClient: WebClient,
-    accountId?: string
+    accountId?: string,
+    midenRpcEndpoint?: string
   ) {
     this.account = account;
     this.threshold = config.threshold;
@@ -92,6 +102,14 @@ export class Multisig {
     this.signer = signer;
     this.webClient = webClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
+    this.midenRpcEndpoint = midenRpcEndpoint;
+  }
+
+  private getMidenRpcEndpoint(): string {
+    if (!this.midenRpcEndpoint) {
+      throw new Error('Missing Miden RPC endpoint in MultisigClient configuration');
+    }
+    return this.midenRpcEndpoint;
   }
 
   /** The account ID as a string */
@@ -194,6 +212,49 @@ export class Multisig {
     }
 
     return state;
+  }
+
+  async verifyStateCommitment(): Promise<AccountStateVerificationResult> {
+    const accountId = AccountId.fromHex(this._accountId);
+    const localAccount = await this.webClient.getAccount(accountId);
+
+    if (!localAccount) {
+      throw new Error(
+        `Local account state not found for account ${this._accountId}. Sync the account before verifying.`
+      );
+    }
+
+    const localCommitment = normalizeHexWord(localAccount.commitment().toHex());
+    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
+    let accountDetails = null;
+
+    try {
+      accountDetails = await rpcClient.getAccountDetails(accountId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('null pointer passed to rust')) {
+        throw new Error(`On-chain account details not found for account ${this._accountId}`);
+      }
+      throw error;
+    }
+
+    if (!accountDetails) {
+      throw new Error(`On-chain account details not found for account ${this._accountId}`);
+    }
+
+    const onChainCommitment = normalizeHexWord(accountDetails.commitment().toHex());
+
+    if (localCommitment !== onChainCommitment) {
+      throw new Error(
+        `Local account commitment does not match on-chain commitment for account ${this._accountId}`
+      );
+    }
+
+    return {
+      accountId: this._accountId,
+      localCommitment,
+      onChainCommitment,
+    };
   }
 
   /**

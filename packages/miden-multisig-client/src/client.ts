@@ -18,6 +18,8 @@ import type { MultisigConfig, Signer } from './types.js';
 export interface MultisigClientConfig {
   /** PSM server endpoint */
   psmEndpoint?: string;
+  /** Miden node RPC endpoint used for state commitment verification */
+  midenRpcEndpoint?: string;
 }
 
 /**
@@ -34,7 +36,10 @@ export interface MultisigClientConfig {
  * const signer = new FalconSigner(secretKey);
  *
  * // Create client
- * const client = new MultisigClient(webClient, { psmEndpoint: 'http://localhost:3000' });
+ * const client = new MultisigClient(webClient, {
+ *   psmEndpoint: 'http://localhost:3000',
+ *   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+ * });
  *
  * // Get PSM pubkey for config
  * const psmCommitment = await client.psmClient.getPubkey();
@@ -46,10 +51,12 @@ export interface MultisigClientConfig {
  */
 export class MultisigClient {
   private readonly webClient: WebClient;
+  private readonly midenRpcEndpoint?: string;
   private _psmClient: PsmHttpClient;
 
   constructor(webClient: WebClient, config: MultisigClientConfig = {}) {
     this.webClient = webClient;
+    this.midenRpcEndpoint = config.midenRpcEndpoint;
     this._psmClient = new PsmHttpClient(config.psmEndpoint ?? 'http://localhost:3000');
   }
 
@@ -81,7 +88,15 @@ export class MultisigClient {
 
     const { account } = await createMultisigAccount(this.webClient, config);
 
-    return new Multisig(account, config, this._psmClient, signer, this.webClient);
+    return new Multisig(
+      account,
+      config,
+      this._psmClient,
+      signer,
+      this.webClient,
+      undefined,
+      this.midenRpcEndpoint
+    );
   }
 
   /**
@@ -124,6 +139,14 @@ export class MultisigClient {
         await this.webClient.newAccount(account, true);
     }
 
-    return new Multisig(null, config, this._psmClient, signer, this.webClient, accountId);
+    return new Multisig(
+      null,
+      config,
+      this._psmClient,
+      signer,
+      this.webClient,
+      accountId,
+      this.midenRpcEndpoint
+    );
   }
 }

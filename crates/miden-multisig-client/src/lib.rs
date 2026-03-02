@@ -54,7 +54,9 @@ mod utils;
 
 // Main client
 pub use builder::MultisigClientBuilder;
-pub use client::{ConsumableNote, MultisigClient, NoteFilter, ProposalResult};
+pub use client::{
+    ConsumableNote, MultisigClient, NoteFilter, ProposalResult, StateVerificationResult,
+};
 
 // Configuration
 pub use config::{MultisigConfig, ProcedureThreshold, PsmConfig};

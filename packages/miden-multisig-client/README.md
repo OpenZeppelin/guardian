@@ -36,6 +36,7 @@ const signer = new FalconSigner(secretKey);
 // Create MultisigClient
 const client = new MultisigClient(webClient, {
   psmEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
 });
 ```
 

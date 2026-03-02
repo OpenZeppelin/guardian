@@ -27,7 +27,10 @@
  * const signer = new FalconSigner(secretKey);
  *
  * // Create multisig client
- * const client = new MultisigClient(webClient, { psmEndpoint: 'http://localhost:3000' });
+ * const client = new MultisigClient(webClient, {
+ *   psmEndpoint: 'http://localhost:3000',
+ *   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+ * });
  *
  * // Get PSM pubkey for config
  * const psmCommitment = await client.psmClient.getPubkey();

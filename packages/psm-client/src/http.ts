@@ -184,14 +184,14 @@ export class PsmHttpClient {
     const timestamp = Date.now();
     const signature = this.signer.signAccountIdWithTimestamp(accountId, timestamp);
 
-    return this.fetch(path, {
-      ...init,
-      headers: {
-        ...init.headers,
-        'x-pubkey': this.signer.publicKey,
-        'x-signature': signature,
-        'x-timestamp': timestamp.toString(),
-      },
-    });
+      return this.fetch(path, {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-pubkey': this.signer.publicKey,
+          'x-signature': signature,
+          'x-timestamp': timestamp.toString(),
+        },
+      });
   }
 }

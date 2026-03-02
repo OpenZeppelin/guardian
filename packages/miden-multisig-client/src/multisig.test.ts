@@ -3,6 +3,10 @@ import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
 import { executeForSummary } from './transaction.js';
 
+const { mockRpcGetAccountDetails } = vi.hoisted(() => ({
+  mockRpcGetAccountDetails: vi.fn(),
+}));
+
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: {
@@ -39,6 +43,10 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       toHex: () => '0x' + 'e'.repeat(64),
     }),
   },
+  Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
+  RpcClient: vi.fn().mockImplementation(() => ({
+    getAccountDetails: mockRpcGetAccountDetails,
+  })),
 }));
 
 // Mock transaction module
@@ -97,6 +105,12 @@ describe('Multisig', () => {
       }),
       serialize: () => new Uint8Array([1, 2, 3]),
     } as any);
+    mockRpcGetAccountDetails.mockReset();
+    mockRpcGetAccountDetails.mockResolvedValue({
+      commitment: () => ({
+        toHex: () => '0x' + 'b'.repeat(64),
+      }),
+    });
 
     psm = new PsmHttpClient('http://localhost:3000');
 
@@ -125,6 +139,8 @@ describe('Multisig', () => {
       applyTransaction: vi.fn(),
       getConsumableNotes: vi.fn().mockResolvedValue([]),
       syncState: vi.fn(),
+      getAccount: vi.fn().mockResolvedValue(null),
+      newAccount: vi.fn(),
     };
   });
 
@@ -223,6 +239,92 @@ describe('Multisig', () => {
       expect(state.accountId).toBe('0x' + 'a'.repeat(30));
       expect(state.commitment).toBe('0x' + 'b'.repeat(64));
       expect(state.stateDataBase64).toBe('base64state');
+    });
+  });
+
+  describe('verifyStateCommitment', () => {
+    it('should pass when local and on-chain commitments match', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'b'.repeat(64),
+        }),
+      });
+
+      const multisigWithRpc = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      await expect(
+        multisigWithRpc.verifyStateCommitment()
+      ).resolves.toMatchObject({
+        accountId: multisigWithRpc.accountId,
+      });
+    });
+
+    it('should throw when local account state is missing', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+      mockWebClient.getAccount.mockResolvedValueOnce(null);
+
+      const multisigWithRpc = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      await expect(
+        multisigWithRpc.verifyStateCommitment()
+      ).rejects.toThrow('Local account state not found');
+    });
+
+    it('should throw when local and on-chain commitments differ', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'f'.repeat(64),
+        }),
+      });
+      mockRpcGetAccountDetails.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'b'.repeat(64),
+        }),
+      });
+
+      const multisigWithRpc = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      await expect(
+        multisigWithRpc.verifyStateCommitment()
+      ).rejects.toThrow('Local account commitment does not match on-chain commitment');
     });
   });
 

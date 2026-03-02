@@ -7,6 +7,7 @@ use crate::state::SessionState;
 pub enum MenuAction {
     CreateAccount,
     SyncAccount,
+    VerifyStateCommitment,
     ListNotes,
     ProposalManagement,
     ShowAccount,
@@ -18,6 +19,7 @@ pub fn print_menu(state: &SessionState) {
     print_menu_header();
     print_menu_option("1", "Create multisig account", !state.has_account());
     print_menu_option("2", "Sync account", true);
+    print_menu_option("v", "Verify state commitment", state.has_account());
     print_menu_option("3", "List consumable notes", state.has_account());
     print_menu_option("4", "Proposal management", state.has_account());
     print_menu_option("s", "Show account details", state.has_account());
@@ -40,6 +42,7 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
     match choice {
         "1" if !state.has_account() => Some(MenuAction::CreateAccount),
         "2" => Some(MenuAction::SyncAccount),
+        "v" if state.has_account() => Some(MenuAction::VerifyStateCommitment),
         "3" if state.has_account() => Some(MenuAction::ListNotes),
         "4" if state.has_account() => Some(MenuAction::ProposalManagement),
         "s" if state.has_account() => Some(MenuAction::ShowAccount),

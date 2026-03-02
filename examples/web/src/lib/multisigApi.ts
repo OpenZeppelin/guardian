@@ -20,8 +20,9 @@ import type { SignerInfo } from '@/types';
 export async function initMultisigClient(
   webClient: WebClient,
   psmEndpoint: string,
+  midenRpcEndpoint: string,
 ): Promise<{ client: MultisigClient; psmPubkey: string }> {
-  const client = new MultisigClientClass(webClient, { psmEndpoint });
+  const client = new MultisigClientClass(webClient, { psmEndpoint, midenRpcEndpoint });
   const psmPubkey = await client.psmClient.getPubkey();
   return { client, psmPubkey };
 }
@@ -113,6 +114,16 @@ export async function syncAll(
   const state = await multisig.syncState();
   const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
+}
+
+export async function verifyStateCommitment(
+  multisig: Multisig,
+): Promise<{
+  accountId: string;
+  localCommitment: string;
+  onChainCommitment: string;
+}> {
+  return multisig.verifyStateCommitment();
 }
 
 /**
