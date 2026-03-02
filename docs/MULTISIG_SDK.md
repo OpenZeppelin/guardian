@@ -47,7 +47,10 @@ import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-clien
 const midenClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
 const secretKey = SecretKey.rpoFalconWithRNG(seed);
 const signer = new FalconSigner(secretKey);
-const client = new MultisigClient(midenClient, { psmEndpoint: 'http://localhost:3000' });
+const client = new MultisigClient(midenClient, {
+  psmEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+});
 
 // 2. Get PSM server public key
 const psmCommitment = await client.psmClient.getPubkey();
@@ -214,7 +217,8 @@ const signer = new FalconSigner(secretKey);
 
 // Initialize multisig client
 const client = new MultisigClient(webClient, {
-  psmEndpoint: 'http://localhost:3000'
+  psmEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
 });
 ```
 

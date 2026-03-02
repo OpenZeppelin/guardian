@@ -37,7 +37,10 @@ export default defineConfig({
   },
   assetsInclude: ['**/*.wasm'],
   optimizeDeps: {
-    exclude: ['@miden-sdk/miden-sdk'],
+    exclude: [
+      '@miden-sdk/miden-sdk',
+      '@openzeppelin/psm-client',
+      '@openzeppelin/miden-multisig-client',
+    ],
   },
 });
-

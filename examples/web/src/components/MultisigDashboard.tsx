@@ -21,9 +21,11 @@ interface MultisigDashboardProps {
   procedureThresholds?: Map<ProcedureName, number>;
   creatingProposal: boolean;
   syncing: boolean;
+  verifying: boolean;
   signingProposal: string | null;
   executingProposal: string | null;
   error: string | null;
+  verificationStatus: string | null;
   pendingCandidateWarning: string | null;
   onDismissWarning: () => void;
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
@@ -33,6 +35,7 @@ interface MultisigDashboardProps {
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
   onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
   onSync: () => void;
+  onVerify: () => void;
   onSignProposal: (proposalId: string) => void;
   onExecuteProposal: (proposalId: string) => void;
   onExportProposal: (proposalId: string) => void;
@@ -51,9 +54,11 @@ export function MultisigDashboard({
   procedureThresholds,
   creatingProposal,
   syncing,
+  verifying,
   signingProposal,
   executingProposal,
   error,
+  verificationStatus,
   pendingCandidateWarning,
   onDismissWarning,
   onCreateAddSigner,
@@ -63,6 +68,7 @@ export function MultisigDashboard({
   onCreateP2id,
   onCreateSwitchPsm,
   onSync,
+  onVerify,
   onSignProposal,
   onExecuteProposal,
   onExportProposal,
@@ -128,10 +134,16 @@ export function MultisigDashboard({
             <Button variant="outline" size="sm" onClick={onSync} disabled={syncing}>
               {syncing ? 'Syncing...' : 'Sync'}
             </Button>
+            <Button variant="outline" size="sm" onClick={onVerify} disabled={verifying}>
+              {verifying ? 'Verifying...' : 'Verify State'}
+            </Button>
             <Button variant="outline" size="sm" onClick={onImportProposal}>
               Import Proposal
             </Button>
           </div>
+          {verificationStatus && (
+            <div className="text-xs text-muted-foreground">{verificationStatus}</div>
+          )}
         </CardContent>
       </Card>
 

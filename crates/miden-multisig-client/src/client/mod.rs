@@ -45,6 +45,17 @@ pub enum ProposalResult {
     Offline(Box<ExportedProposal>),
 }
 
+/// Result of explicit local-vs-on-chain account state verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateVerificationResult {
+    /// Account ID that was verified.
+    pub account_id: AccountId,
+    /// Local account commitment hex (with 0x prefix).
+    pub local_commitment_hex: String,
+    /// On-chain account commitment hex (with 0x prefix).
+    pub on_chain_commitment_hex: String,
+}
+
 /// Main client for interacting with multisig accounts.
 ///
 /// This client manages a single multisig account connected to a PSM server,

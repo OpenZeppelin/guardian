@@ -32,6 +32,7 @@ import {
   switchMultisigPsm,
   fetchAccountState,
   syncAll,
+  verifyStateCommitment,
   createAddSignerProposal,
   createRemoveSignerProposal,
   createChangeThresholdProposal,
@@ -44,7 +45,7 @@ import {
   signProposalOffline,
   importProposal,
 } from '@/lib/multisigApi';
-import { PSM_ENDPOINT } from '@/config';
+import { MIDEN_RPC_URL, PSM_ENDPOINT } from '@/config';
 import type { SignerInfo } from '@/types';
 
 // Helper to check if an error is related to pending candidate delta
@@ -84,6 +85,8 @@ export default function App() {
   const [loadingAccount, setLoadingAccount] = useState(false);
   const [detectedConfig, setDetectedConfig] = useState<DetectedMultisigConfig | null>(null);
   const [syncingState, setSyncingState] = useState(false);
+  const [verifyingState, setVerifyingState] = useState(false);
+  const [verificationStatus, setVerificationStatus] = useState<string | null>(null);
 
   // Proposal state
   const [proposals, setProposals] = useState<Proposal[]>([]);
@@ -110,7 +113,11 @@ export default function App() {
           return;
         }
 
-        const { client: msClient, psmPubkey: pubkey } = await initMultisigClient(wc, url);
+        const { client: msClient, psmPubkey: pubkey } = await initMultisigClient(
+          wc,
+          url,
+          MIDEN_RPC_URL
+        );
         setPsmPubkey(pubkey);
         setMultisigClient(msClient);
         setPsmStatus('connected');
@@ -280,6 +287,7 @@ export default function App() {
     setSyncingState(true);
     setError(null);
     setPendingCandidateWarning(null);
+    setVerificationStatus(null);
     try {
       // Sync miden client state first (with retry for IndexedDB race conditions)
       try {
@@ -315,6 +323,26 @@ export default function App() {
       }
     } finally {
       setSyncingState(false);
+    }
+  };
+
+  const handleVerifyState = async () => {
+    if (!multisig) return;
+
+    setVerifyingState(true);
+    setError(null);
+    setVerificationStatus(null);
+
+    try {
+      const result = await verifyStateCommitment(multisig);
+      setVerificationStatus(
+        `Verified local state against on-chain commitment (${result.onChainCommitment.slice(0, 10)}...)`
+      );
+      toast.success('State verification passed');
+    } catch (err) {
+      setError(`State verification failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setVerifyingState(false);
     }
   };
 
@@ -573,6 +601,7 @@ export default function App() {
     setPsmState(null);
     setProposals([]);
     setError(null);
+    setVerificationStatus(null);
   };
 
   // Reset and reload
@@ -614,9 +643,11 @@ export default function App() {
             procedureThresholds={detectedConfig?.procedureThresholds}
             creatingProposal={creatingProposal}
             syncing={syncingState}
+            verifying={verifyingState}
             signingProposal={signingProposal}
             executingProposal={executingProposal}
             error={error}
+            verificationStatus={verificationStatus}
             pendingCandidateWarning={pendingCandidateWarning}
             onDismissWarning={() => setPendingCandidateWarning(null)}
             onCreateAddSigner={handleCreateAddSignerProposal}
@@ -626,6 +657,7 @@ export default function App() {
             onCreateP2id={handleCreateP2idProposal}
             onCreateSwitchPsm={handleCreateSwitchPsmProposal}
             onSync={handleSync}
+            onVerify={handleVerifyState}
             onSignProposal={handleSignProposal}
             onExecuteProposal={handleExecuteProposal}
             onExportProposal={handleExportProposal}
