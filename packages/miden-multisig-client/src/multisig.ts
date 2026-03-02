@@ -207,8 +207,9 @@ export class Multisig {
 
     if (!localAccount || localCommitment !== psmCommitment) {
       const accountBytes = base64ToUint8Array(state.stateDataBase64);
-      const account = Account.deserialize(accountBytes);
-      await this.webClient.newAccount(account, true);
+      const incomingAccount = Account.deserialize(accountBytes);
+      await this.ensureSafeToOverwriteLocalState(incomingAccount);
+      await this.webClient.newAccount(incomingAccount, true);
     }
 
     return state;
@@ -225,24 +226,11 @@ export class Multisig {
     }
 
     const localCommitment = normalizeHexWord(localAccount.commitment().toHex());
-    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
-    let accountDetails = null;
+    const onChainCommitment = await this.getOnChainCommitment(accountId);
 
-    try {
-      accountDetails = await rpcClient.getAccountDetails(accountId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('null pointer passed to rust')) {
-        throw new Error(`On-chain account details not found for account ${this._accountId}`);
-      }
-      throw error;
-    }
-
-    if (!accountDetails) {
+    if (!onChainCommitment) {
       throw new Error(`On-chain account details not found for account ${this._accountId}`);
     }
-
-    const onChainCommitment = normalizeHexWord(accountDetails.commitment().toHex());
 
     if (localCommitment !== onChainCommitment) {
       throw new Error(
@@ -255,6 +243,43 @@ export class Multisig {
       localCommitment,
       onChainCommitment,
     };
+  }
+
+  private async ensureSafeToOverwriteLocalState(incomingAccount: Account): Promise<void> {
+    const accountId = AccountId.fromHex(this._accountId);
+    const onChainCommitment = await this.getOnChainCommitment(accountId);
+    if (!onChainCommitment) {
+      return;
+    }
+
+    const incomingCommitment = normalizeHexWord(incomingAccount.commitment().toHex());
+    if (incomingCommitment !== onChainCommitment) {
+      throw new Error(
+        `Refusing to overwrite local state: incoming commitment does not match on-chain commitment for account ${this._accountId}`
+      );
+    }
+  }
+
+  private async getOnChainCommitment(accountId: AccountId): Promise<string | null> {
+    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
+
+    try {
+      const accountDetails = await rpcClient.getAccountDetails(accountId);
+      if (!accountDetails) {
+        return null;
+      }
+      return normalizeHexWord(accountDetails.commitment().toHex());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes('null pointer passed to rust') ||
+        message.includes('No account header record found for given ID') ||
+        message.toLowerCase().includes('not found')
+      ) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   /**

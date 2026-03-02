@@ -58,7 +58,6 @@ export class AccountInspector {
    * @returns Detected multisig configuration
    */
   static fromBase64(base64Data: string): DetectedMultisigConfig {
-    try {
       const bytes = base64ToUint8Array(base64Data);
       const account = Account.deserialize(bytes);
       return AccountInspector.fromAccount(account);
