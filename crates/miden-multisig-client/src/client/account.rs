@@ -254,6 +254,23 @@ impl MultisigClient {
             on_chain_commitment_hex: word_to_hex(&on_chain_commitment),
         })
     }
+
+    async fn ensure_safe_to_overwrite_local_state(
+        &self,
+        account_id: AccountId,
+        incoming_commitment: Word,
+    ) -> Result<()> {
+        match self.try_get_on_chain_account_commitment(account_id).await? {
+            None => Ok(()),
+            Some(on_chain_commitment) if on_chain_commitment == incoming_commitment => Ok(()),
+            Some(on_chain_commitment) => Err(MultisigError::InvalidConfig(format!(
+                "refusing to overwrite local state: incoming commitment does not match on-chain commitment for account {}: incoming={}, on_chain={}",
+                account_id,
+                word_to_hex(&incoming_commitment),
+                word_to_hex(&on_chain_commitment)
+            ))),
+        }
+    }
     /// Internal sync from PSM that returns whether the account was updated.
     async fn sync_from_psm_internal(&mut self) -> Result<bool> {
         let account = self.require_account()?;
@@ -304,6 +321,9 @@ impl MultisigClient {
             return Ok(false);
         }
 
+        self.ensure_safe_to_overwrite_local_state(account_id, fresh_account.commitment())
+            .await?;
+
         // PSM has newer state - try to add/update.
         // If we get a commitment mismatch (locked state), reset and retry.
         match self.add_or_update_account(&fresh_account, true).await {
@@ -330,9 +350,10 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
         let current_nonce = account.nonce();
+        let from_nonce = current_nonce.saturating_add(1);
 
         let mut psm_client = self.create_authenticated_psm_client().await?;
-        let response = match psm_client.get_delta_since(&account_id, current_nonce).await {
+        let response = match psm_client.get_delta_since(&account_id, from_nonce).await {
             Ok(resp) => resp,
             Err(PsmClientError::ServerError(msg)) if msg.contains("not found") => {
                 // No new deltas since current nonce - this is not an error
@@ -349,6 +370,21 @@ impl MultisigClient {
         let merged_delta = response
             .merged_delta
             .ok_or_else(|| MultisigError::PsmServer("no merged_delta in response".to_string()))?;
+
+        let expected_prev_commitment = if merged_delta.prev_commitment.is_empty() {
+            None
+        } else {
+            Some(
+                crate::commitment_from_hex(&merged_delta.prev_commitment)
+                    .map_err(MultisigError::HexDecode)?,
+            )
+        };
+
+        if let Some(prev_commitment) = expected_prev_commitment
+            && account.commitment() != prev_commitment
+        {
+            return Ok(());
+        }
 
         let tx_summary = merged_delta.try_into_tx_summary().map_err(|e| {
             MultisigError::MidenClient(format!("failed to parse delta payload: {}", e))
@@ -370,6 +406,9 @@ impl MultisigClient {
             })?;
             acc
         };
+
+        self.ensure_safe_to_overwrite_local_state(account_id, updated_account.commitment())
+            .await?;
 
         // Try to add/update account. If we get a commitment mismatch, reset the miden client
         // and re-import the account fresh from PSM to recover from locked/stale state.
@@ -413,6 +452,9 @@ impl MultisigClient {
                 let fresh_account = Account::read_from_bytes(&account_bytes).map_err(|e| {
                     MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
                 })?;
+
+                self.ensure_safe_to_overwrite_local_state(account_id, fresh_account.commitment())
+                    .await?;
 
                 self.add_or_update_account(&fresh_account, true).await?;
 

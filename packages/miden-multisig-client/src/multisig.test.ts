@@ -3,12 +3,16 @@ import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
 import { executeForSummary } from './transaction.js';
 
-const { mockRpcGetAccountDetails } = vi.hoisted(() => ({
+const { mockRpcGetAccountDetails, mockAccountDeserialize } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
+  mockAccountDeserialize: vi.fn(),
 }));
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => ({
+  Account: {
+    deserialize: mockAccountDeserialize,
+  },
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
@@ -106,7 +110,13 @@ describe('Multisig', () => {
       serialize: () => new Uint8Array([1, 2, 3]),
     } as any);
     mockRpcGetAccountDetails.mockReset();
+    mockAccountDeserialize.mockReset();
     mockRpcGetAccountDetails.mockResolvedValue({
+      commitment: () => ({
+        toHex: () => '0x' + 'b'.repeat(64),
+      }),
+    });
+    mockAccountDeserialize.mockReturnValue({
       commitment: () => ({
         toHex: () => '0x' + 'b'.repeat(64),
       }),
@@ -239,6 +249,174 @@ describe('Multisig', () => {
       expect(state.accountId).toBe('0x' + 'a'.repeat(30));
       expect(state.commitment).toBe('0x' + 'b'.repeat(64));
       expect(state.stateDataBase64).toBe('base64state');
+    });
+  });
+
+  describe('syncState', () => {
+    it('should overwrite local state when account is missing locally', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await multisig.syncState();
+
+      expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+      expect(mockRpcGetAccountDetails).toHaveBeenCalledTimes(1);
+    });
+
+    it('should overwrite local state when incoming commitment matches on-chain commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'a'.repeat(64),
+        }),
+      });
+      mockRpcGetAccountDetails.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await multisig.syncState();
+
+      expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it('should overwrite local state when account is not found on-chain', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'a'.repeat(64),
+        }),
+      });
+      mockRpcGetAccountDetails.mockRejectedValueOnce(
+        new Error('No account header record found for given ID')
+      );
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await multisig.syncState();
+
+      expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throw when incoming commitment does not match on-chain commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'a'.repeat(64),
+        }),
+      });
+      mockAccountDeserialize.mockReturnValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockRpcGetAccountDetails.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(multisig.syncState()).rejects.toThrow('Refusing to overwrite local state');
+      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
     });
   });
 

@@ -1,7 +1,7 @@
 //! Internal helper functions for PSM client interactions.
 
 use miden_client::account::Account;
-use miden_client::rpc::{GrpcClient, NodeRpcClient};
+use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
 use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -58,22 +58,22 @@ impl MultisigClient {
         Ok(fetched_account.commitment())
     }
 
-    pub(crate) async fn get_on_chain_account_commitment(
+    pub(crate) async fn try_get_on_chain_account_commitment(
         &self,
         account_id: AccountId,
-    ) -> Result<Word> {
+    ) -> Result<Option<Word>> {
         let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
-        let fetched_account = rpc_client
-            .get_account_details(account_id)
-            .await
-            .map_err(|e| {
-                MultisigError::MidenClient(format!(
-                    "failed to fetch on-chain commitment for account {}: {}",
-                    account_id, e
-                ))
-            })?;
-
-        Ok(fetched_account.commitment())
+        match rpc_client.get_account_details(account_id).await {
+            Ok(fetched_account) => Ok(Some(fetched_account.commitment())),
+            Err(RpcError::GrpcError {
+                error_kind: GrpcError::NotFound,
+                ..
+            }) => Ok(None),
+            Err(e) => Err(MultisigError::MidenClient(format!(
+                "failed to fetch on-chain commitment for account {}: {}",
+                account_id, e
+            ))),
+        }
     }
 
     /// Returns a reference to the current account, or error if none loaded.

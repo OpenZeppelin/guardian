@@ -180,8 +180,11 @@ pub async fn action_sync_account(
                     .await
                     .map_err(|e| format!("Failed to re-pull account: {}", e))?;
             } else {
-                // Log but don't fail - deltas may not exist yet
-                print_info(&format!("  Note: No new deltas from PSM ({})", e));
+                // Log but don't fail - we still do full state sync below.
+                print_info(&format!(
+                    "  Note: Delta sync failed ({}). Continuing with full state sync.",
+                    e
+                ));
             }
         }
 
