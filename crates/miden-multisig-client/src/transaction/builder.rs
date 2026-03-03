@@ -12,6 +12,7 @@ use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
 use crate::payload::ProposalPayload;
+use crate::procedures::ProcedureName;
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
 use crate::psm_endpoint::verify_endpoint_commitment;
 
@@ -37,6 +38,18 @@ pub struct ProposalBuilder {
 }
 
 impl ProposalBuilder {
+    fn initial_proposal_status(required_signatures: usize, signer: String) -> ProposalStatus {
+        if required_signatures <= 1 {
+            ProposalStatus::Ready
+        } else {
+            ProposalStatus::Pending {
+                signatures_collected: 1,
+                signatures_required: required_signatures,
+                signers: vec![signer],
+            }
+        }
+    }
+
     /// Creates a new proposal builder for the given transaction type.
     pub fn new(transaction_type: TransactionType) -> Self {
         Self { transaction_type }
@@ -128,6 +141,8 @@ impl ProposalBuilder {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
         let mut current_signers = account.cosigner_commitments();
+        let required_signatures =
+            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
 
         // Add the new signer
         current_signers.push(new_commitment);
@@ -166,7 +181,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
-            required_signatures: Some(current_threshold as usize),
+            required_signatures: Some(required_signatures),
             collected_signatures: Some(1),
         };
 
@@ -191,11 +206,10 @@ impl ProposalBuilder {
             id: response.commitment,
             nonce,
             transaction_type: TransactionType::AddCosigner { new_commitment },
-            status: ProposalStatus::Pending {
-                signatures_collected: 1,
-                signatures_required: current_threshold as usize,
-                signers: vec![key_manager.commitment_hex()],
-            },
+            status: Self::initial_proposal_status(
+                required_signatures,
+                key_manager.commitment_hex(),
+            ),
             tx_summary,
             metadata,
         };
@@ -214,6 +228,8 @@ impl ProposalBuilder {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
         let current_signers = account.cosigner_commitments();
+        let required_signatures =
+            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
 
         // Remove the signer
         let new_signers: Vec<Word> = current_signers
@@ -268,7 +284,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
-            required_signatures: Some(current_threshold as usize),
+            required_signatures: Some(required_signatures),
             collected_signatures: Some(1),
         };
 
@@ -295,13 +311,10 @@ impl ProposalBuilder {
             transaction_type: TransactionType::RemoveCosigner {
                 commitment: commitment_to_remove,
             },
-            status: ProposalStatus::Pending {
-                signatures_collected: 1,
-                // Use current_threshold for required signatures since on-chain code
-                // verifies against the current config
-                signatures_required: current_threshold as usize,
-                signers: vec![key_manager.commitment_hex()],
-            },
+            status: Self::initial_proposal_status(
+                required_signatures,
+                key_manager.commitment_hex(),
+            ),
             tx_summary,
             metadata,
         };
@@ -321,7 +334,8 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
-        let current_threshold = account.threshold()?;
+        let required_signatures =
+            account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
         // Create the fungible asset
         let asset = FungibleAsset::new(faucet_id, amount)
@@ -357,7 +371,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
-            required_signatures: Some(current_threshold as usize),
+            required_signatures: Some(required_signatures),
             collected_signatures: Some(1),
         };
 
@@ -387,11 +401,10 @@ impl ProposalBuilder {
                 faucet_id,
                 amount,
             },
-            status: ProposalStatus::Pending {
-                signatures_collected: 1,
-                signatures_required: current_threshold as usize,
-                signers: vec![key_manager.commitment_hex()],
-            },
+            status: Self::initial_proposal_status(
+                required_signatures,
+                key_manager.commitment_hex(),
+            ),
             tx_summary,
             metadata,
         };
@@ -408,7 +421,8 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
-        let current_threshold = account.threshold()?;
+        let required_signatures =
+            account.effective_threshold_for_procedure(ProcedureName::ReceiveAsset)? as usize;
 
         // Generate salt for replay protection
         let salt = generate_salt();
@@ -442,7 +456,7 @@ impl ProposalBuilder {
             note_ids_hex: note_ids_hex.clone(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
-            required_signatures: Some(current_threshold as usize),
+            required_signatures: Some(required_signatures),
             collected_signatures: Some(1),
         };
 
@@ -463,11 +477,10 @@ impl ProposalBuilder {
             id: response.commitment,
             nonce,
             transaction_type: TransactionType::ConsumeNotes { note_ids },
-            status: ProposalStatus::Pending {
-                signatures_collected: 1,
-                signatures_required: current_threshold as usize,
-                signers: vec![key_manager.commitment_hex()],
-            },
+            status: Self::initial_proposal_status(
+                required_signatures,
+                key_manager.commitment_hex(),
+            ),
             tx_summary,
             metadata,
         };
@@ -486,7 +499,8 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
-        let current_threshold = account.threshold()?;
+        let required_signatures =
+            account.effective_threshold_for_procedure(ProcedureName::UpdatePsm)? as usize;
 
         verify_endpoint_commitment(&new_psm_endpoint, new_psm_pubkey).await?;
 
@@ -515,7 +529,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: Some(word_to_hex(&new_psm_pubkey)),
             new_psm_endpoint: Some(new_psm_endpoint.clone()),
-            required_signatures: Some(current_threshold as usize),
+            required_signatures: Some(required_signatures),
             collected_signatures: Some(1),
         };
 
@@ -543,11 +557,10 @@ impl ProposalBuilder {
                 new_endpoint: new_psm_endpoint,
                 new_commitment: new_psm_pubkey,
             },
-            status: ProposalStatus::Pending {
-                signatures_collected: 1,
-                signatures_required: current_threshold as usize,
-                signers: vec![key_manager.commitment_hex()],
-            },
+            status: Self::initial_proposal_status(
+                required_signatures,
+                key_manager.commitment_hex(),
+            ),
             tx_summary,
             metadata,
         };

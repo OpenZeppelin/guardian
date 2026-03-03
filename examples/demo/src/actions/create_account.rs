@@ -1,4 +1,4 @@
-use miden_multisig_client::commitment_from_hex;
+use miden_multisig_client::{commitment_from_hex, ProcedureName, ProcedureThreshold};
 use rustyline::DefaultEditor;
 
 use crate::display::{print_section, print_success, print_waiting, shorten_hex};
@@ -21,6 +21,51 @@ pub async fn action_create_account(
 
     if num_cosigners < threshold as usize {
         return Err("Number of cosigners must be >= threshold".to_string());
+    }
+
+    let mut procedure_thresholds = Vec::new();
+    let use_proc_thresholds = prompt_input(editor, "Configure per-procedure thresholds? [y/N]: ")?;
+    if use_proc_thresholds.to_lowercase() == "y" {
+        println!("\nAvailable procedures:");
+        for procedure in ProcedureName::all() {
+            println!("  - {}", procedure);
+        }
+        println!("Leave procedure name empty to finish.\n");
+
+        loop {
+            let procedure_name = prompt_input(editor, "  Procedure name: ")?;
+            if procedure_name.is_empty() {
+                break;
+            }
+
+            let procedure: ProcedureName = procedure_name
+                .parse()
+                .map_err(|_| format!("Unknown procedure: {}", procedure_name))?;
+
+            if procedure_thresholds
+                .iter()
+                .any(|pt: &ProcedureThreshold| pt.procedure == procedure)
+            {
+                return Err(format!("Duplicate threshold override for {}", procedure));
+            }
+
+            let procedure_threshold: u32 = prompt_input(editor, "  Threshold override: ")?
+                .parse()
+                .map_err(|_| "Invalid threshold override".to_string())?;
+
+            if procedure_threshold == 0 {
+                return Err("Threshold override must be >= 1".to_string());
+            }
+
+            if procedure_threshold as usize > num_cosigners {
+                return Err(format!(
+                    "Threshold override {} exceeds number of signers {}",
+                    procedure_threshold, num_cosigners
+                ));
+            }
+
+            procedure_thresholds.push(ProcedureThreshold::new(procedure, procedure_threshold));
+        }
     }
 
     let mut cosigner_commitment_hexes = Vec::new();
@@ -66,7 +111,7 @@ pub async fn action_create_account(
 
     let client = state.get_client_mut()?;
     let account = client
-        .create_account(threshold, signer_commitments)
+        .create_account_with_proc_thresholds(threshold, signer_commitments, procedure_thresholds)
         .await
         .map_err(|e| format!("Failed to create account: {}", e))?;
 

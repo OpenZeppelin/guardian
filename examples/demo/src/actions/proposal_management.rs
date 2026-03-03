@@ -138,9 +138,10 @@ async fn action_create_proposal(
                 "Automatically signed with your key ({})",
                 shorten_hex(&client.user_commitment_hex())
             ));
+            let (_, required) = proposal.signature_counts();
             print_info(&format!(
                 "\nNeed {} signatures total. Use [3] to sign, [4] to execute.",
-                threshold
+                required
             ));
             Ok(())
         }

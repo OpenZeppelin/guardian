@@ -55,6 +55,16 @@ pub fn print_storage_overview(account: &MultisigAccount) {
         println!("    [{}] {}", i, shorten_hex(commitment));
     }
 
+    match account.procedure_threshold_overrides() {
+        Ok(overrides) if !overrides.is_empty() => {
+            println!("  Procedure Threshold Overrides:");
+            for (procedure, threshold) in overrides {
+                println!("    - {} => {}", procedure, threshold);
+            }
+        }
+        _ => {}
+    }
+
     println!("  PSM Endpoint: {}", account.psm_endpoint());
 }
 

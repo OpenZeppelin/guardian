@@ -5,10 +5,13 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId, StorageSlotContent, StorageSlotName};
 
 use crate::error::{MultisigError, Result};
+use crate::procedures::ProcedureName;
+use crate::proposal::TransactionType;
 
 // Storage slot names for OpenZeppelin multisig/psm components
 const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
 const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
+const OZ_MULTISIG_PROCEDURE_THRESHOLDS: &str = "openzeppelin::multisig::procedure_thresholds";
 const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
 const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
 
@@ -131,6 +134,58 @@ impl MultisigAccount {
         Ok(slot_value[1].as_int() as u32)
     }
 
+    /// Returns the configured threshold override for a specific procedure, if present.
+    pub fn procedure_threshold(&self, procedure: ProcedureName) -> Result<Option<u32>> {
+        let value =
+            self.get_map_item_by_names(&[OZ_MULTISIG_PROCEDURE_THRESHOLDS], procedure.root());
+        let Some(value) = value else {
+            return Ok(None);
+        };
+
+        if value == Word::default() {
+            return Ok(None);
+        }
+
+        let threshold = value[0].as_int() as u32;
+        if threshold == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(threshold))
+    }
+
+    /// Returns all configured per-procedure threshold overrides.
+    pub fn procedure_threshold_overrides(&self) -> Result<Vec<(ProcedureName, u32)>> {
+        let mut overrides = Vec::new();
+        for procedure in ProcedureName::all() {
+            if let Some(threshold) = self.procedure_threshold(*procedure)? {
+                overrides.push((*procedure, threshold));
+            }
+        }
+        Ok(overrides)
+    }
+
+    /// Returns the effective threshold for a procedure (override if present, else default).
+    pub fn effective_threshold_for_procedure(&self, procedure: ProcedureName) -> Result<u32> {
+        Ok(self
+            .procedure_threshold(procedure)?
+            .unwrap_or(self.threshold()?))
+    }
+
+    /// Returns the effective threshold for a transaction type.
+    pub fn effective_threshold_for_transaction(&self, tx_type: &TransactionType) -> Result<u32> {
+        let procedure = match tx_type {
+            TransactionType::P2ID { .. } => ProcedureName::SendAsset,
+            TransactionType::ConsumeNotes { .. } => ProcedureName::ReceiveAsset,
+            TransactionType::AddCosigner { .. }
+            | TransactionType::RemoveCosigner { .. }
+            | TransactionType::UpdateSigners { .. } => ProcedureName::UpdateSigners,
+            TransactionType::SwitchPsm { .. } => ProcedureName::UpdatePsm,
+        };
+
+        self.effective_threshold_for_procedure(procedure)
+    }
+
     /// Extracts cosigner commitments from signer public keys map slot.
     ///
     /// Returns a vector of commitment Words. Returns empty vector if
@@ -204,5 +259,111 @@ impl MultisigAccount {
             .ok_or_else(|| {
                 MultisigError::AccountStorage("PSM public key slot not found".to_string())
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+    use miden_protocol::note::NoteId;
+
+    use super::*;
+
+    fn word(v: u32) -> Word {
+        Word::from([v, 0, 0, 0])
+    }
+
+    fn build_test_account() -> MultisigAccount {
+        let config = MultisigPsmConfig::new(2, vec![word(1), word(2), word(3)], word(99))
+            .with_proc_threshold_overrides(vec![
+                (ProcedureName::SendAsset.root(), 1),
+                (ProcedureName::UpdateSigners.root(), 3),
+                (ProcedureName::UpdatePsm.root(), 1),
+            ]);
+
+        let account = MultisigPsmBuilder::new(config)
+            .with_seed([7u8; 32])
+            .build()
+            .expect("account builds");
+
+        MultisigAccount::new(account, "http://localhost:50051")
+    }
+
+    #[test]
+    fn effective_threshold_for_procedure_uses_override_or_default() {
+        let account = build_test_account();
+
+        assert_eq!(
+            account
+                .effective_threshold_for_procedure(ProcedureName::SendAsset)
+                .expect("threshold"),
+            1
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_procedure(ProcedureName::ReceiveAsset)
+                .expect("threshold"),
+            2
+        );
+    }
+
+    #[test]
+    fn effective_threshold_for_transaction_maps_to_expected_procedures() {
+        let account = build_test_account();
+        let account_id =
+            AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").expect("account id");
+
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::P2ID {
+                    recipient: account_id,
+                    faucet_id: account_id,
+                    amount: 10,
+                })
+                .expect("threshold"),
+            1
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::ConsumeNotes {
+                    note_ids: vec![NoteId::from_raw(word(5))],
+                })
+                .expect("threshold"),
+            2
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::AddCosigner {
+                    new_commitment: word(10),
+                })
+                .expect("threshold"),
+            3
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::RemoveCosigner {
+                    commitment: word(2),
+                })
+                .expect("threshold"),
+            3
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::UpdateSigners {
+                    new_threshold: 2,
+                    signer_commitments: vec![word(1), word(2), word(3)],
+                })
+                .expect("threshold"),
+            3
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::SwitchPsm {
+                    new_endpoint: "http://new-psm.example.com".to_string(),
+                    new_commitment: word(11),
+                })
+                .expect("threshold"),
+            1
+        );
     }
 }
