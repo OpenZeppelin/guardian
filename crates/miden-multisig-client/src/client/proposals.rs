@@ -117,13 +117,25 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
 
-        // Find the proposal by ID
-        let proposal = self
-            .list_proposals()
-            .await?
-            .into_iter()
-            .find(|p| p.id == proposal_id)
-            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        let current_threshold = account.threshold()?;
+        let current_signers = account.cosigner_commitments();
+
+        let mut matched: Option<(&private_state_manager_client::DeltaObject, Proposal)> = None;
+        for raw_proposal in &proposals_response.proposals {
+            let parsed = Proposal::from(raw_proposal, current_threshold, &current_signers)?;
+            if parsed.id == proposal_id {
+                if matched.is_some() {
+                    return Err(MultisigError::InvalidConfig(format!(
+                        "multiple proposals returned with the same ID {}",
+                        proposal_id
+                    )));
+                }
+                matched = Some((raw_proposal, parsed));
+            }
+        }
+
+        let (raw_proposal, proposal) =
+            matched.ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
         // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {
@@ -133,13 +145,6 @@ impl MultisigClient {
                 required,
             });
         }
-
-        // Find the raw delta object to get signatures
-        let raw_proposal = proposals_response
-            .proposals
-            .iter()
-            .find(|p| p.nonce == proposal.nonce)
-            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
@@ -345,6 +350,121 @@ impl MultisigClient {
                 Ok(ProposalResult::Offline(Box::new(exported)))
             }
             Err(e) => Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::FieldElement;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, Word, ZERO};
+    use private_state_manager_client::DeltaObject;
+    use private_state_manager_shared::ToJson;
+
+    use crate::error::{MultisigError, Result};
+    use crate::proposal::Proposal;
+
+    fn create_test_tx_summary(account_id: &str, seed: u64) -> TransactionSummary {
+        let account_id = AccountId::from_hex(account_id).expect("valid account id");
+        let account_delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .expect("valid delta");
+
+        TransactionSummary::new(
+            account_delta,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            Word::from([Felt::new(seed), ZERO, ZERO, ZERO]),
+        )
+    }
+
+    fn proposal_delta(
+        account_id: &str,
+        nonce: u64,
+        new_commitment: &str,
+        seed: u64,
+    ) -> DeltaObject {
+        let payload = serde_json::json!({
+            "tx_summary": create_test_tx_summary(account_id, seed).to_json(),
+            "signatures": [],
+            "metadata": {
+                "new_psm_pubkey": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+                "new_psm_endpoint": "http://new-psm.example.com"
+            }
+        });
+
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: "0x000".to_string(),
+            delta_payload: serde_json::to_string(&payload).expect("payload serialization"),
+            new_commitment: new_commitment.to_string(),
+            ack_sig: String::new(),
+            candidate_at: String::new(),
+            canonical_at: None,
+            discarded_at: None,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn inline_iteration_selects_by_unique_id_when_nonce_collides() {
+        let same_nonce = 42;
+        let delta_a = proposal_delta("0x7bfb0f38b0fafa103f86a805594170", same_nonce, "0xaaa", 1);
+        let delta_b = proposal_delta("0x7bfb0f38b0fafa103f86a805594171", same_nonce, "0xbbb", 2);
+
+        let target = Proposal::from(&delta_b, 1, &[]).expect("proposal parses");
+
+        let proposals = [delta_a, delta_b.clone()];
+        let mut matched: Option<(&DeltaObject, Proposal)> = None;
+        for raw_proposal in &proposals {
+            let parsed = Proposal::from(raw_proposal, 1, &[]).expect("parses");
+            if parsed.id == target.id {
+                matched = Some((raw_proposal, parsed));
+            }
+        }
+        let (raw, parsed) = matched.expect("proposal should be found");
+
+        assert_eq!(parsed.id, target.id);
+        assert_eq!(parsed.nonce, same_nonce);
+        assert_eq!(raw.new_commitment, delta_b.new_commitment);
+    }
+
+    #[test]
+    fn inline_iteration_rejects_duplicate_ids() {
+        let delta = proposal_delta("0x7bfb0f38b0fafa103f86a805594170", 42, "0xaaa", 1);
+        let proposal_id = Proposal::from(&delta, 1, &[]).expect("proposal parses").id;
+
+        let mut matched: Option<(&DeltaObject, Proposal)> = None;
+        let err = (&[delta.clone(), delta] as &[DeltaObject])
+            .iter()
+            .try_for_each(|raw_proposal| -> Result<()> {
+                let parsed = Proposal::from(raw_proposal, 1, &[])?;
+                if parsed.id == proposal_id {
+                    if matched.is_some() {
+                        return Err(MultisigError::InvalidConfig(format!(
+                            "multiple proposals returned with the same ID {}",
+                            proposal_id
+                        )));
+                    }
+                    matched = Some((raw_proposal, parsed));
+                }
+                Ok(())
+            })
+            .expect_err("duplicate ids should fail");
+
+        match err {
+            MultisigError::InvalidConfig(message) => {
+                assert!(message.contains("multiple proposals returned with the same ID"));
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 }
