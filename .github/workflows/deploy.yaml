@@ -1,6 +1,14 @@
 name: Deploy to Cloud Run
 
 on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       environment:
@@ -29,8 +37,11 @@ env:
 
 jobs:
   deploy:
-    name: Deploy ${{ inputs.service_name }} (${{ inputs.environment }})
+    name: Deploy ${{ matrix.service }} (${{ inputs.environment }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ inputs.service_name && fromJson(format('["{0}"]', inputs.service_name)) || fromJson('["psm-server","psm-grpc"]') }}
     permissions:
       contents: read
       id-token: write
@@ -68,11 +79,11 @@ jobs:
       - name: Deploy to Cloud Run
         run: |
           EXTRA_FLAGS=""
-          if [ "${{ inputs.service_name }}" = "psm-grpc" ]; then
+          if [ "${{ matrix.service }}" = "psm-grpc" ]; then
             EXTRA_FLAGS="--use-http2"
           fi
 
-          gcloud run deploy ${{ inputs.service_name }} \
+          gcloud run deploy ${{ matrix.service }} \
             --image ${{ steps.img.outputs.uri }} \
             --region ${{ env.REGION }} \
             --platform managed \
@@ -85,7 +96,7 @@ jobs:
           channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
           slack-message: |
             :rocket: *[${{ inputs.environment }}] Deployed*
-            Service: `${{ inputs.service_name }}` | Image: `${{ steps.img.outputs.uri }}`
+            Service: `${{ matrix.service }}` | Image: `${{ steps.img.outputs.uri }}`
             Repo: ${{ github.repository }} | Branch: ${{ github.ref_name }}
             By: ${{ github.actor }}
         env:
@@ -98,7 +109,7 @@ jobs:
           channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
           slack-message: |
             :x: *[${{ inputs.environment }}] Deploy Failed*
-            Service: `${{ inputs.service_name }}` | Branch: ${{ github.ref_name }}
+            Service: `${{ matrix.service }}` | Branch: ${{ github.ref_name }}
             Repo: ${{ github.repository }}
             By: ${{ github.actor }} | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         env:

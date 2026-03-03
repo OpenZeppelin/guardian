@@ -108,3 +108,12 @@ jobs:
             By: ${{ github.actor }} | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+  deploy:
+    name: Deploy
+    needs: build
+    uses: ./.github/workflows/deploy.yaml
+    with:
+      environment: ${{ inputs.environment }}
+      image: ${{ needs.build.outputs.image }}
+    secrets: inherit
