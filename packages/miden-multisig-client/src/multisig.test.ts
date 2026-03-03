@@ -883,6 +883,64 @@ describe('Multisig', () => {
     });
   });
 
+  describe('createSwitchPsmProposal', () => {
+    it('should verify new endpoint commitment before creating proposal', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const newPsmPubkey = '0x' + '1'.repeat(64);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ pubkey: newPsmPubkey }),
+      });
+
+      const proposal = await multisig.createSwitchPsmProposal('http://new-psm.com', newPsmPubkey);
+
+      expect(proposal.metadata?.proposalType).toBe('switch_psm');
+      if (proposal.metadata?.proposalType === 'switch_psm') {
+        expect(proposal.metadata.newPsmEndpoint).toBe('http://new-psm.com');
+      }
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://new-psm.com/pubkey',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('should reject switch proposal when endpoint commitment does not match', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ pubkey: '0x' + '2'.repeat(64) }),
+      });
+
+      await expect(
+        multisig.createSwitchPsmProposal('http://new-psm.com', '0x' + '1'.repeat(64))
+      ).rejects.toThrow('Refusing to use PSM endpoint');
+    });
+  });
+
   describe('signProposal', () => {
     it('should sign a proposal', async () => {
       const config = {
@@ -1298,6 +1356,100 @@ describe('Multisig', () => {
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
         'PSM did not return acknowledgment signature'
       );
+    });
+
+    it('should verify switch_psm endpoint commitment before execution', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newPsmPubkey = '0x' + '1'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: { type: 'ready' },
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_psm',
+          newPsmPubkey,
+          newPsmEndpoint: 'http://new-psm.com',
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ pubkey: newPsmPubkey }),
+      });
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+      });
+      mockWebClient.executeTransaction.mockResolvedValueOnce({});
+      mockWebClient.proveTransaction.mockResolvedValueOnce({});
+      mockWebClient.submitProvenTransaction.mockResolvedValueOnce(1n);
+      mockWebClient.applyTransaction.mockResolvedValueOnce(undefined);
+
+      await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reject switch_psm execution when endpoint commitment mismatches', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: { type: 'ready' },
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_psm',
+          newPsmPubkey: '0x' + '1'.repeat(64),
+          newPsmEndpoint: 'http://new-psm.com',
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ pubkey: '0x' + '2'.repeat(64) }),
+      });
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        'Refusing to use PSM endpoint'
+      );
+      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
     });
   });
 

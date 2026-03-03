@@ -112,6 +112,22 @@ export class Multisig {
     return this.midenRpcEndpoint;
   }
 
+  private async verifyPsmEndpointCommitment(endpoint: string | undefined, expectedCommitment: string): Promise<void> {
+    if (!endpoint) {
+      throw new Error('Switch PSM proposal missing newPsmEndpoint');
+    }
+
+    const endpointClient = new PsmHttpClient(endpoint);
+    const endpointCommitment = normalizeHexWord(await endpointClient.getPubkey());
+    const normalizedExpected = normalizeHexWord(expectedCommitment);
+
+    if (endpointCommitment !== normalizedExpected) {
+      throw new Error(
+        `Refusing to use PSM endpoint ${endpoint}: endpoint pubkey commitment ${endpointCommitment} does not match expected ${normalizedExpected}`
+      );
+    }
+  }
+
   /** The account ID as a string */
   get accountId(): string {
     return this._accountId;
@@ -265,10 +281,16 @@ export class Multisig {
 
     try {
       const accountDetails = await rpcClient.getAccountDetails(accountId);
+      // If the account is not found or its commitment is zero, means that the account is not deployed yet
       if (!accountDetails) {
         return null;
       }
-      return normalizeHexWord(accountDetails.commitment().toHex());
+      const commitment = normalizeHexWord(accountDetails.commitment().toHex());
+      const zeroCommitment = `0x${'0'.repeat(64)}`;
+      if (commitment === zeroCommitment) {
+        return null;
+      }
+      return commitment;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -537,6 +559,8 @@ export class Multisig {
     newPsmPubkey: string,
     nonce?: number,
   ): Promise<Proposal> {
+    await this.verifyPsmEndpointCommitment(newPsmEndpoint, newPsmPubkey);
+
     const { request, salt } = await buildUpdatePsmTransactionRequest(
       this.webClient,
       newPsmPubkey,
@@ -849,6 +873,34 @@ export class Multisig {
     const submissionHeight = await this.webClient.submitProvenTransaction(proven, result);
     await this.webClient.applyTransaction(result, submissionHeight);
 
+    if (metadata.proposalType === 'switch_psm') {
+      if (!metadata.newPsmEndpoint || !metadata.newPsmPubkey) {
+        throw new Error('Switch PSM proposal metadata is incomplete after execution');
+      }
+
+      try {
+        await this.webClient.syncState();
+
+        const updatedAccount = await this.webClient.getAccount(accountId);
+        if (!updatedAccount) {
+          throw new Error(
+            `Updated account ${this._accountId} is missing from local client`
+          );
+        }
+
+        const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
+        const nextPsm = new PsmHttpClient(metadata.newPsmEndpoint);
+        this.setPsmClient(nextPsm);
+
+        await this.registerOnPsm(updatedStateBase64);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Transaction executed successfully but failed to register on new PSM: ${message}`
+        );
+      }
+    }
+
     proposal.status = { type: 'finalized' };
   }
 
@@ -1105,6 +1157,7 @@ export class Multisig {
         return request;
       }
       case 'switch_psm': {
+        await this.verifyPsmEndpointCommitment(metadata.newPsmEndpoint, metadata.newPsmPubkey);
         const { request } = await buildUpdatePsmTransactionRequest(
           this.webClient,
           metadata.newPsmPubkey,

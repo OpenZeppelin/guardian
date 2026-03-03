@@ -11,6 +11,8 @@ use miden_protocol::utils::serde::Serializable;
 use private_state_manager_client::{Auth, DeltaObject, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::hex::FromHex;
 use private_state_manager_shared::{FromJson, ToJson};
+use crate::psm_endpoint::verify_endpoint_commitment;
+use private_state_manager_shared::{FromJson, ToJson};
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
@@ -64,7 +66,14 @@ impl MultisigClient {
     ) -> Result<Option<Word>> {
         let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
         match rpc_client.get_account_details(account_id).await {
-            Ok(fetched_account) => Ok(Some(fetched_account.commitment())),
+            Ok(fetched_account) => {
+                let commitment = fetched_account.commitment();
+                if commitment == Word::default() {
+                    Ok(None)
+                } else {
+                    Ok(Some(commitment))
+                }
+            }
             Err(RpcError::GrpcError {
                 error_kind: GrpcError::NotFound,
                 ..
@@ -217,6 +226,14 @@ impl MultisigClient {
         tx_request: TransactionRequest,
         transaction_type: &TransactionType,
     ) -> Result<()> {
+        if let TransactionType::SwitchPsm {
+            new_endpoint,
+            new_commitment,
+        } = transaction_type
+        {
+            verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
+        }
+
         // Capture the new PSM endpoint if this is a SwitchPsm transaction
         let new_psm_endpoint =
             if let TransactionType::SwitchPsm { new_endpoint, .. } = transaction_type {

@@ -49,6 +49,7 @@ mod keystore;
 mod payload;
 mod procedures;
 mod proposal;
+mod psm_endpoint;
 mod transaction;
 mod utils;
 
