@@ -6,6 +6,8 @@ templates/
 .env
 
 .claude/
+.agents/
+.cursor/
 CLAUDE.md
 
 .vscode/
