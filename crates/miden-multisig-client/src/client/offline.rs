@@ -14,6 +14,7 @@ use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
 use crate::export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
 use crate::proposal::TransactionType;
+use crate::psm_endpoint::verify_endpoint_commitment;
 
 impl MultisigClient {
     /// Creates a proposal offline without pushing to PSM.
@@ -58,6 +59,9 @@ impl MultisigClient {
                 new_endpoint,
                 new_commitment,
             } => {
+                verify_endpoint_commitment(new_endpoint, *new_commitment)
+                    .await?;
+
                 let tx_request = crate::transaction::build_update_psm_transaction_request(
                     *new_commitment,
                     salt,

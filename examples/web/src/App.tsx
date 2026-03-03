@@ -282,7 +282,7 @@ export default function App() {
 
   // Sync state and proposals
   const handleSync = async () => {
-    if (!multisig || !multisigClient || !signer || !webClient) return;
+    if (!multisig || !webClient) return;
 
     setSyncingState(true);
     setError(null);
@@ -299,15 +299,11 @@ export default function App() {
         await webClient.syncState();
       }
 
-      // Reload multisig with fresh state from PSM
-      const reloadedMs = await loadMultisigAccount(multisigClient, multisig.accountId, signer);
-      setMultisig(reloadedMs);
-
-      const { state, config } = await fetchAccountState(reloadedMs);
+      const { state, config } = await fetchAccountState(multisig);
       setPsmState(state);
       setDetectedConfig(config);
 
-      const { proposals: synced, notes } = await syncAll(reloadedMs);
+      const { proposals: synced, notes } = await syncAll(multisig);
       setProposals(synced);
       setConsumableNotes(notes);
     } catch (err) {
