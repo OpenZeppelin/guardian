@@ -59,8 +59,7 @@ impl MultisigClient {
                 new_endpoint,
                 new_commitment,
             } => {
-                verify_endpoint_commitment(new_endpoint, *new_commitment)
-                    .await?;
+                verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
 
                 let tx_request = crate::transaction::build_update_psm_transaction_request(
                     *new_commitment,

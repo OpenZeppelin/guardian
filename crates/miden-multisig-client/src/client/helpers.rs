@@ -1,5 +1,6 @@
 //! Internal helper functions for PSM client interactions.
 
+use crate::psm_endpoint::verify_endpoint_commitment;
 use miden_client::account::Account;
 use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
 use miden_protocol::Word;
@@ -8,7 +9,6 @@ use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use private_state_manager_client::{Auth, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::hex::FromHex;
-use crate::psm_endpoint::verify_endpoint_commitment;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
