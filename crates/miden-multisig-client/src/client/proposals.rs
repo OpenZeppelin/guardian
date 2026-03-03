@@ -9,12 +9,48 @@ use private_state_manager_client::delta_status::Status;
 use private_state_manager_shared::ProposalSignature;
 
 use super::{MultisigClient, ProposalResult};
+use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
-use crate::proposal::{Proposal, TransactionType};
+use crate::proposal::{Proposal, ProposalStatus, TransactionType};
 use crate::transaction::ProposalBuilder;
 
 impl MultisigClient {
+    fn apply_effective_threshold(account: &MultisigAccount, proposal: &mut Proposal) -> Result<()> {
+        let signatures_required =
+            account.effective_threshold_for_transaction(&proposal.transaction_type)? as usize;
+        let signatures_collected = proposal.metadata.collected_signatures.ok_or_else(|| {
+            MultisigError::InvalidConfig("proposal missing collected signatures metadata".to_string())
+        })?;
+
+        // TODO: we will fix this in a later commit.
+        // The signers of the proposal must be stored at metadata level,
+        // not at the status level.
+        let signers = match &proposal.status {
+            ProposalStatus::Pending { signers, .. } => signers.clone(),
+            _ => Vec::new(),
+        };
+
+        proposal.metadata.required_signatures = Some(signatures_required);
+        proposal.metadata.collected_signatures = Some(signatures_collected);
+
+        // TODO: we will fix this in a later commit.
+        // The signers of the proposal must be stored at metadata level,
+        // not at the status level.
+        proposal.status = if signatures_collected >= signatures_required && signatures_required > 0
+        {
+            ProposalStatus::Ready
+        } else {
+            ProposalStatus::Pending {
+                signatures_collected,
+                signatures_required,
+                signers,
+            }
+        };
+
+        Ok(())
+    }
+
     /// Lists pending proposals for the current account.
     ///
     /// # Errors
@@ -37,8 +73,9 @@ impl MultisigClient {
 
         let mut proposals = Vec::with_capacity(response.proposals.len());
         for delta in &response.proposals {
-            let proposal = Proposal::from(delta, current_threshold, &current_signers)?;
+            let mut proposal = Proposal::from(delta, current_threshold, &current_signers)?;
             self.verify_proposal_summary_binding(&proposal).await?;
+            Self::apply_effective_threshold(account, &mut proposal)?;
             proposals.push(proposal);
         }
 
@@ -121,8 +158,9 @@ impl MultisigClient {
 
         let mut matched: Option<(&private_state_manager_client::DeltaObject, Proposal)> = None;
         for raw_proposal in &proposals_response.proposals {
-            let parsed = Proposal::from(raw_proposal, current_threshold, &current_signers)?;
+            let mut parsed = Proposal::from(raw_proposal, current_threshold, &current_signers)?;
             if parsed.id == proposal_id {
+                Self::apply_effective_threshold(&account, &mut parsed)?;
                 if matched.is_some() {
                     return Err(MultisigError::InvalidConfig(format!(
                         "multiple proposals returned with the same ID {}",
