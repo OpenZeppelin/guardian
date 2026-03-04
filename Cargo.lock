@@ -3148,6 +3148,7 @@ dependencies = [
  "hex",
  "miden-protocol",
  "miden-standards",
+ "prost",
  "rand 0.8.5",
  "serde",
  "serde_json",

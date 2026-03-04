@@ -1,5 +1,5 @@
 use crate::testing::helpers::{
-    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_request_with_auth,
+    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_signed_request_with_auth,
     create_test_app_state, load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
 };
 use tonic::Request;
@@ -14,7 +14,6 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
-    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Step 1: Configure account with the cosigner commitment
     let configure_req = ConfigureRequest {
@@ -26,18 +25,16 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     };
 
     let configure_response = service
-        .configure(create_request_with_auth(
+        .configure(create_signed_request_with_auth(
             configure_req,
-            &signer.pubkey_hex,
-            &signature_hex,
-            timestamp,
+            &account_id_hex,
+            &signer,
         ))
         .await;
     assert!(configure_response.is_ok(), "Configure should succeed");
     assert!(configure_response.unwrap().into_inner().success);
 
     // Step 2: Push a delta with authentication metadata
-    let (signature_hex_2, timestamp_2) = signer.sign(&account_id_hex);
     let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
         account_id: delta_1["account_id"].as_str().unwrap().to_string(),
@@ -46,8 +43,7 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
         delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
-    let request =
-        create_request_with_auth(push_req, &signer.pubkey_hex, &signature_hex_2, timestamp_2);
+    let request = create_signed_request_with_auth(push_req, &account_id_hex, &signer);
     let push_response = service.push_delta(request).await;
 
     assert!(
@@ -71,9 +67,7 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
 
     // Generate two different key pairs
     let authorized_signer = TestSigner::new();
-    let (authorized_sig, authorized_ts) = authorized_signer.sign(&account_id_hex);
     let unauthorized_signer = TestSigner::new();
-    let (unauthorized_sig, unauthorized_ts) = unauthorized_signer.sign(&account_id_hex);
 
     // Configure account with ONLY the authorized commitment
     let configure_req = ConfigureRequest {
@@ -85,11 +79,10 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     };
 
     let configure_response = service
-        .configure(create_request_with_auth(
+        .configure(create_signed_request_with_auth(
             configure_req,
-            &authorized_signer.pubkey_hex,
-            &authorized_sig,
-            authorized_ts,
+            &account_id_hex,
+            &authorized_signer,
         ))
         .await;
     assert!(configure_response.is_ok());
@@ -104,12 +97,7 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
         delta_payload: serde_json::to_string(&delta_1["delta_payload"]).unwrap(),
     };
 
-    let request = create_request_with_auth(
-        push_req,
-        &unauthorized_signer.pubkey_hex,
-        &unauthorized_sig,
-        unauthorized_ts,
-    );
+    let request = create_signed_request_with_auth(push_req, &account_id_hex, &unauthorized_signer);
     let push_response = service.push_delta(request).await;
 
     // Should succeed as a gRPC call but return failure in response
@@ -132,7 +120,6 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
-    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Configure account
     let configure_req = ConfigureRequest {
@@ -144,11 +131,10 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
     };
 
     let configure_response = service
-        .configure(create_request_with_auth(
+        .configure(create_signed_request_with_auth(
             configure_req,
-            &signer.pubkey_hex,
-            &signature_hex,
-            timestamp,
+            &account_id_hex,
+            &signer,
         ))
         .await;
     assert!(configure_response.is_ok());
@@ -190,7 +176,6 @@ async fn test_grpc_get_delta_with_auth() {
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
-    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Configure account
     let configure_req = ConfigureRequest {
@@ -202,17 +187,15 @@ async fn test_grpc_get_delta_with_auth() {
     };
 
     service
-        .configure(create_request_with_auth(
+        .configure(create_signed_request_with_auth(
             configure_req,
-            &signer.pubkey_hex,
-            &signature_hex,
-            timestamp,
+            &account_id_hex,
+            &signer,
         ))
         .await
         .unwrap();
 
     // Push a delta (nonce 1) - need fresh signature with new timestamp
-    let (signature_hex_2, timestamp_2) = signer.sign(&account_id_hex);
     let delta_1 = load_fixture_delta(1);
     let push_req = PushDeltaRequest {
         account_id: delta_1["account_id"].as_str().unwrap().to_string(),
@@ -222,24 +205,21 @@ async fn test_grpc_get_delta_with_auth() {
     };
 
     service
-        .push_delta(create_request_with_auth(
+        .push_delta(create_signed_request_with_auth(
             push_req,
-            &signer.pubkey_hex,
-            &signature_hex_2,
-            timestamp_2,
+            &account_id_hex,
+            &signer,
         ))
         .await
         .unwrap();
 
     // Get specific delta by nonce - need fresh signature with new timestamp
-    let (signature_hex_3, timestamp_3) = signer.sign(&account_id_hex);
     let get_req = GetDeltaRequest {
-        account_id: account_id_hex,
+        account_id: account_id_hex.clone(),
         nonce: 1,
     };
 
-    let request =
-        create_request_with_auth(get_req, &signer.pubkey_hex, &signature_hex_3, timestamp_3);
+    let request = create_signed_request_with_auth(get_req, &account_id_hex, &signer);
     let get_response = service.get_delta(request).await;
 
     assert!(

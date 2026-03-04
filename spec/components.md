@@ -14,7 +14,7 @@ The API exposes a simple interface for operating states and deltas over HTTP and
 
 - Request authentication is configured per account.
 - Current policy: Miden Falcon RPO with an allowlist of `cosigner_commitments` (commitments of authorised public keys).
-- Requests carry `x-pubkey`, `x-signature`, and `x-timestamp`; verification derives the commitment from the supplied public key, checks it is authorised, and verifies the signature over a digest of `(account_id, timestamp)`.
+- Requests carry `x-pubkey`, `x-signature`, and `x-timestamp`; verification derives the commitment from the supplied public key, checks it is authorised, and verifies the signature over a digest of `(account_id, timestamp, request_payload_digest)`.
 - Replay protection: the signed timestamp is validated against a 300-second skew window and must be strictly greater than the account's `last_auth_timestamp`.
 
 ## Acknowledger

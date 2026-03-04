@@ -30,13 +30,17 @@ console.log('PSM pubkey:', pubkey);
 All endpoints except `getPubkey()` require authentication. You must provide a signer that implements the `Signer` interface:
 
 ```typescript
-import type { Signer } from '@openzeppelin/psm-client';
+import type { Signer, RequestAuthPayload } from '@openzeppelin/psm-client';
 
 const signer: Signer = {
   commitment: '0x...', // 64 hex chars
   publicKey: '0x...',  // Full public key hex
-  // Sign account ID with timestamp (milliseconds) for replay-resistant auth
-  signAccountIdWithTimestamp: (accountId: string, timestamp: number) => '0x...', // Returns signature hex
+  // Sign account ID + timestamp + request payload digest
+  signRequest: (accountId: string, timestamp: number, requestPayload: RequestAuthPayload) => {
+    // requestPayload is canonicalized by the client before this call
+    // implement your signing logic here
+    return '0x...';
+  },
   signCommitment: (commitmentHex: string) => '0x...', // Returns signature hex
 };
 

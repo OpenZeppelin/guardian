@@ -5,6 +5,8 @@ use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::utils::{Deserializable, Serializable};
 use miden_protocol::{Felt, FieldElement, Word};
+use private_state_manager_shared::auth_request_message::AuthRequestMessage;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use private_state_manager_shared::hex::{FromHex, IntoHex};
 
 /// A signer that uses Falcon signatures with RPO hashing.
@@ -31,28 +33,26 @@ impl FalconRpoSigner {
         (&self.public_key).into_hex()
     }
 
-    /// Signs an account ID with a timestamp and returns the hex-encoded signature.
-    pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
-        let message = account_id_timestamp_to_word(*account_id, timestamp);
+    /// Signs an authenticated request and returns the hex-encoded signature.
+    pub fn sign_request(
+        &self,
+        account_id: &AccountId,
+        timestamp: i64,
+        request_payload: &AuthRequestPayload,
+    ) -> String {
+        let message = account_id_request_to_word(*account_id, timestamp, request_payload);
         let signature = self.secret_key.sign(message);
         signature.into_hex()
     }
 }
 
-/// Converts an account ID and timestamp to a Word for signing.
-pub fn account_id_timestamp_to_word(account_id: AccountId, timestamp: i64) -> Word {
-    let account_id_felts: [Felt; 2] = account_id.into();
-
-    let timestamp_felt = Felt::new(timestamp as u64);
-
-    let message_elements = vec![
-        account_id_felts[0],
-        account_id_felts[1],
-        timestamp_felt,
-        Felt::ZERO,
-    ];
-
-    Rpo256::hash_elements(&message_elements)
+/// Converts account id + timestamp + request payload to a signing message word.
+pub fn account_id_request_to_word(
+    account_id: AccountId,
+    timestamp: i64,
+    request_payload: &AuthRequestPayload,
+) -> Word {
+    AuthRequestMessage::new(account_id, timestamp, request_payload.clone()).to_word()
 }
 
 /// Trait for converting types to a [`Word`] for signing.
@@ -88,19 +88,14 @@ pub fn verify_commitment_signature(
     let message = commitment_hex.hex_into_word()?;
     let signature = Signature::from_hex(signature_hex)?;
 
-    // Extract the public key from the signature
     let pubkey = signature.public_key();
-
-    // Compute the commitment of the extracted public key
     let sig_pubkey_commitment = pubkey.to_commitment();
     let sig_commitment_hex = format!("0x{}", hex::encode(sig_pubkey_commitment.to_bytes()));
 
-    // Check if the computed commitment matches the expected server commitment
     if sig_commitment_hex != server_commitment_hex {
         return Ok(false);
     }
 
-    // Verify the signature cryptographically
     Ok(pubkey.verify(message, &signature))
 }
 
@@ -121,7 +116,6 @@ impl HexIntoWord for &str {
             return Err(format!("Commitment must be 32 bytes, got {}", bytes.len()));
         }
 
-        // Use Word::read_from_bytes to deserialize the commitment correctly
         Word::read_from_bytes(&bytes)
             .map_err(|e| format!("Failed to deserialize Word from bytes: {e}"))
     }
@@ -132,7 +126,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_falcon_signer_creates_valid_signature_with_timestamp() {
+    fn test_falcon_signer_creates_valid_signature_for_request() {
         use miden_protocol::utils::Deserializable;
 
         let secret_key = SecretKey::new();
@@ -141,19 +135,16 @@ mod tests {
 
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
         let timestamp: i64 = 1700000000;
-        let signature_hex = signer.sign_account_id_with_timestamp(&account_id, timestamp);
+        let payload =
+            AuthRequestPayload::from_json_bytes(br#"{"op":"get_state"}"#).expect("valid payload");
+        let signature_hex = signer.sign_request(&account_id, timestamp, &payload);
 
-        // Verify signature format
         assert!(signature_hex.starts_with("0x"));
 
-        // Verify the signature is valid
         let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
+        let message = account_id_request_to_word(account_id, timestamp, &payload);
 
-        // Create the message digest that was signed
-        let message = account_id_timestamp_to_word(account_id, timestamp);
-
-        // Verify signature with public key
         assert!(
             public_key.verify(message, &signature),
             "Signature verification failed"
@@ -171,13 +162,13 @@ mod tests {
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
         let timestamp1: i64 = 1700000000;
         let timestamp2: i64 = 1700000001;
-        let signature_hex = signer.sign_account_id_with_timestamp(&account_id, timestamp1);
+        let payload =
+            AuthRequestPayload::from_json_bytes(br#"{"op":"get_state"}"#).expect("valid payload");
+        let signature_hex = signer.sign_request(&account_id, timestamp1, &payload);
 
         let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
-
-        // Try to verify with wrong timestamp - should fail
-        let wrong_message = account_id_timestamp_to_word(account_id, timestamp2);
+        let wrong_message = account_id_request_to_word(account_id, timestamp2, &payload);
 
         assert!(
             !public_key.verify(wrong_message, &signature),
@@ -189,14 +180,8 @@ mod tests {
     fn test_public_key_from_hex_roundtrip() {
         let secret_key = SecretKey::new();
         let original_pubkey = secret_key.public_key();
-
-        // Convert to hex
         let hex = original_pubkey.into_hex();
-
-        // Parse back from hex
         let parsed_pubkey = PublicKey::from_hex(&hex).expect("Failed to parse public key from hex");
-
-        // Verify they produce the same hex representation
         let parsed_hex = parsed_pubkey.into_hex();
         assert_eq!(
             hex, parsed_hex,
@@ -209,16 +194,11 @@ mod tests {
         let secret_key = SecretKey::new();
         let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
         let timestamp: i64 = 1700000000;
-        let message = account_id_timestamp_to_word(account_id, timestamp);
+        let payload = AuthRequestPayload::empty();
+        let message = account_id_request_to_word(account_id, timestamp, &payload);
         let original_sig = secret_key.sign(message);
-
-        // Convert to hex
         let hex = original_sig.into_hex();
-
-        // Parse back from hex
         let parsed_sig = Signature::from_hex(&hex).expect("Failed to parse signature from hex");
-
-        // Verify they produce the same hex representation
         let parsed_hex = parsed_sig.into_hex();
         assert_eq!(
             hex, parsed_hex,
@@ -231,11 +211,7 @@ mod tests {
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
         let hex_with_prefix = public_key.into_hex();
-
-        // Remove 0x prefix
         let hex_without_prefix = hex_with_prefix.strip_prefix("0x").unwrap();
-
-        // Both should parse successfully
         let pubkey1 = PublicKey::from_hex(&hex_with_prefix).unwrap();
         let pubkey2 = PublicKey::from_hex(hex_without_prefix).unwrap();
 
@@ -243,6 +219,32 @@ mod tests {
             pubkey1.into_hex(),
             pubkey2.into_hex(),
             "Parsing with and without 0x prefix should produce same result"
+        );
+    }
+
+    #[test]
+    fn test_signature_fails_with_wrong_payload() {
+        use miden_protocol::utils::Deserializable;
+
+        let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
+        let signer = FalconRpoSigner::new(secret_key);
+
+        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let timestamp: i64 = 1700000000;
+        let signed_payload = AuthRequestPayload::from_json_bytes(br#"{"op":"get_delta"}"#)
+            .expect("valid signed payload");
+        let wrong_payload = AuthRequestPayload::from_json_bytes(br#"{"op":"push_delta"}"#)
+            .expect("valid wrong payload");
+        let signature_hex = signer.sign_request(&account_id, timestamp, &signed_payload);
+
+        let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
+        let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
+
+        let wrong_message = account_id_request_to_word(account_id, timestamp, &wrong_payload);
+        assert!(
+            !public_key.verify(wrong_message, &signature),
+            "Signature verification should fail with wrong payload"
         );
     }
 }

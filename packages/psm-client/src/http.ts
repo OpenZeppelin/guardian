@@ -10,6 +10,7 @@ import type {
   Signer,
   StateObject,
 } from './types.js';
+import { RequestAuthPayload } from './auth-request.js';
 import type {
   ServerDeltaObject,
   ServerDeltaProposalResponse,
@@ -69,25 +70,27 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated('/configure', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
-    }, request.accountId);
+    }, request.accountId, serverRequest);
     const server = (await response.json()) as ServerConfigureResponse;
     return fromServerConfigureResponse(server);
   }
 
   async getState(accountId: string): Promise<StateObject> {
-    const params = new URLSearchParams({ account_id: accountId });
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/state?${params}`, {
       method: 'GET',
-    }, accountId);
+    }, accountId, requestQuery);
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
   }
 
   async getDeltaProposals(accountId: string): Promise<DeltaObject[]> {
-    const params = new URLSearchParams({ account_id: accountId });
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/proposal?${params}`, {
       method: 'GET',
-    }, accountId);
+    }, accountId, requestQuery);
     const data = (await response.json()) as ServerProposalsResponse;
     return data.proposals.map(fromServerDeltaObject);
   }
@@ -97,7 +100,7 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
-    }, request.accountId);
+    }, request.accountId, serverRequest);
     const server = (await response.json()) as ServerDeltaProposalResponse;
     return {
       delta: fromServerDeltaObject(server.delta),
@@ -110,7 +113,7 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'PUT',
       body: JSON.stringify(serverRequest),
-    }, request.accountId);
+    }, request.accountId, serverRequest);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
@@ -120,7 +123,7 @@ export class PsmHttpClient {
     const response = await this.fetchAuthenticated('/delta', {
       method: 'POST',
       body: JSON.stringify(serverDelta),
-    }, delta.accountId);
+    }, delta.accountId, serverDelta);
     const server = (await response.json()) as ServerPushDeltaResponse;
     return {
       accountId: server.account_id,
@@ -131,25 +134,35 @@ export class PsmHttpClient {
   }
 
   async getDelta(accountId: string, nonce: number): Promise<DeltaObject> {
-    const params = new URLSearchParams({
+    const requestPayload = {
+      account_id: accountId,
+      nonce,
+    };
+    const requestQuery = {
       account_id: accountId,
       nonce: nonce.toString(),
-    });
+    };
+    const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta?${params}`, {
       method: 'GET',
-    }, accountId);
+    }, accountId, requestPayload);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
 
   async getDeltaSince(accountId: string, fromNonce: number): Promise<DeltaObject> {
-    const params = new URLSearchParams({
+    const requestPayload = {
+      account_id: accountId,
+      nonce: fromNonce,
+    };
+    const requestQuery = {
       account_id: accountId,
       nonce: fromNonce.toString(),
-    });
+    };
+    const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/since?${params}`, {
       method: 'GET',
-    }, accountId);
+    }, accountId, requestPayload);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
@@ -175,14 +188,16 @@ export class PsmHttpClient {
   private async fetchAuthenticated(
     path: string,
     init: RequestInit,
-    accountId: string
+    accountId: string,
+    requestPayload: unknown
   ): Promise<Response> {
     if (!this.signer) {
       throw new Error('No signer configured. Call setSigner() first.');
     }
 
     const timestamp = Date.now();
-    const signature = this.signer.signAccountIdWithTimestamp(accountId, timestamp);
+    const authPayload = RequestAuthPayload.fromRequest(requestPayload);
+    const signature = this.signer.signRequest(accountId, timestamp, authPayload);
 
       return this.fetch(path, {
         ...init,

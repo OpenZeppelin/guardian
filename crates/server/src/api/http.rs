@@ -8,9 +8,10 @@ use crate::state::AppState;
 use crate::state_object::StateObject;
 use axum::{Json, extract::Query, extract::State, http::StatusCode};
 use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ConfigureRequest {
     pub account_id: String,
     pub auth: Auth,
@@ -29,30 +30,30 @@ impl From<ConfigureRequest> for ConfigureAccountParams {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct DeltaQuery {
     pub account_id: String,
     pub nonce: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct StateQuery {
     pub account_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ProposalQuery {
     pub account_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct DeltaProposalRequest {
     pub account_id: String,
     pub nonce: u64,
     pub delta_payload: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SignProposalRequest {
     pub account_id: String,
     pub commitment: String,
@@ -78,8 +79,22 @@ pub async fn configure(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<ConfigureRequest>,
 ) -> (StatusCode, Json<ConfigureResponse>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&payload) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ConfigureResponse {
+                    success: false,
+                    message: e,
+                    ack_pubkey: None,
+                }),
+            );
+        }
+    };
+
     let mut params = ConfigureAccountParams::from(payload);
-    params.credential = credentials;
+    params.credential = credentials.with_request_payload(request_payload);
 
     match services::configure_account(&state, params).await {
         Ok(response) => (
@@ -104,11 +119,37 @@ pub async fn configure(
 pub async fn push_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
-    Json(payload): Json<DeltaObject>,
+    Json(payload): Json<serde_json::Value>,
 ) -> (StatusCode, Json<DeltaObject>) {
+    let request_payload = match AuthRequestPayload::from_json_value(&payload) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaObject {
+                    account_id: e,
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let delta: DeltaObject = match serde_json::from_value(payload) {
+        Ok(delta) => delta,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaObject {
+                    account_id: format!("Invalid delta payload: {e}"),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
     let params = PushDeltaParams {
-        delta: payload,
-        credentials,
+        delta,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::push_delta(&state, params).await {
@@ -128,10 +169,23 @@ pub async fn get_delta(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
 ) -> (StatusCode, Json<DeltaObject>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaObject {
+                    account_id: e,
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
     let params = GetDeltaParams {
         account_id: query.account_id,
         nonce: query.nonce,
-        credentials,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::get_delta(&state, params).await {
@@ -151,10 +205,23 @@ pub async fn get_delta_since(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
 ) -> (StatusCode, Json<DeltaObject>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaObject {
+                    account_id: e,
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
     let params = GetDeltaSinceParams {
         account_id: query.account_id,
         from_nonce: query.nonce,
-        credentials,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::get_delta_since(&state, params).await {
@@ -174,9 +241,22 @@ pub async fn get_state(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<StateQuery>,
 ) -> (StatusCode, Json<StateObject>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(StateObject {
+                    account_id: e,
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
     let params = GetStateParams {
         account_id: query.account_id,
-        credentials,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::get_state(&state, params).await {
@@ -217,11 +297,27 @@ pub async fn push_delta_proposal(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<DeltaProposalRequest>,
 ) -> (StatusCode, Json<DeltaProposalResponse>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&payload) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaProposalResponse {
+                    delta: DeltaObject {
+                        account_id: e,
+                        ..Default::default()
+                    },
+                    commitment: String::new(),
+                }),
+            );
+        }
+    };
+
     let params = PushDeltaProposalParams {
         account_id: payload.account_id,
         nonce: payload.nonce,
         delta_payload: payload.delta_payload,
-        credentials,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::push_delta_proposal(&state, params).await {
@@ -250,9 +346,21 @@ pub async fn get_delta_proposals(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<ProposalQuery>,
 ) -> (StatusCode, Json<ProposalsResponse>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+        Ok(request_payload) => request_payload,
+        Err(_e) => {
+            return (
+                StatusCode::OK,
+                Json(ProposalsResponse {
+                    proposals: Vec::new(),
+                }),
+            );
+        }
+    };
+
     let params = GetDeltaProposalsParams {
         account_id: query.account_id,
-        credentials,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::get_delta_proposals(&state, params).await {
@@ -276,11 +384,24 @@ pub async fn sign_delta_proposal(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<SignProposalRequest>,
 ) -> (StatusCode, Json<DeltaObject>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&payload) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaObject {
+                    account_id: e,
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
     let params = SignDeltaProposalParams {
         account_id: payload.account_id,
         commitment: payload.commitment,
         signature: payload.signature,
-        credentials,
+        credentials: credentials.with_request_payload(request_payload),
     };
 
     match services::sign_delta_proposal(&state, params).await {
@@ -302,7 +423,7 @@ mod tests {
     use crate::metadata::AccountMetadata;
     use crate::state_object::StateObject;
     use crate::testing::fixtures;
-    use crate::testing::helpers::{create_test_app_state_with_mocks, generate_falcon_signature};
+    use crate::testing::helpers::{TestSigner, create_test_app_state_with_mocks};
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -373,6 +494,15 @@ mod tests {
         }
     }
 
+    fn signed_credentials<T: serde::Serialize>(
+        signer: &TestSigner,
+        account_id: &str,
+        request: &T,
+    ) -> Credentials {
+        let (signature, timestamp) = signer.sign_json_payload(account_id, request);
+        Credentials::signature(signer.pubkey_hex.clone(), signature, timestamp)
+    }
+
     #[tokio::test]
     async fn test_get_pubkey_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
@@ -387,7 +517,8 @@ mod tests {
     async fn test_configure_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
@@ -399,7 +530,7 @@ mod tests {
             initial_state: account_json,
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &request);
         let (status, Json(response)) =
             configure(State(state), AuthHeader(credentials), Json(request)).await;
 
@@ -413,7 +544,8 @@ mod tests {
     async fn test_push_delta_proposal_success() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let delta_fixture: serde_json::Value =
@@ -431,7 +563,7 @@ mod tests {
         )));
 
         let request = DeltaProposalRequest {
-            account_id,
+            account_id: account_id.clone(),
             nonce: 1,
             delta_payload: serde_json::json!({
                 "tx_summary": delta_fixture["delta_payload"],
@@ -439,7 +571,7 @@ mod tests {
             }),
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &request);
         let (status, Json(response)) =
             push_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
 
@@ -452,7 +584,8 @@ mod tests {
     async fn test_push_delta_proposal_missing_tx_summary() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
@@ -468,12 +601,12 @@ mod tests {
         )));
 
         let request = DeltaProposalRequest {
-            account_id,
+            account_id: account_id.clone(),
             nonce: 1,
             delta_payload: serde_json::json!({"signatures": []}),
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &request);
         let (status, _response) =
             push_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
 
@@ -484,7 +617,8 @@ mod tests {
     async fn test_get_delta_proposals_success() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -502,7 +636,10 @@ mod tests {
             new_commitment: None,
             delta_payload: delta_fixture["delta_payload"].clone(),
             ack_sig: None,
-            status: DeltaStatus::pending("2024-11-14T12:00:00Z".to_string(), pubkey.clone()),
+            status: DeltaStatus::pending(
+                "2024-11-14T12:00:00Z".to_string(),
+                signer.pubkey_hex.clone(),
+            ),
         };
 
         let _storage = storage.with_pull_all_delta_proposals(Ok(vec![pending_delta]));
@@ -511,7 +648,7 @@ mod tests {
             account_id: account_id.clone(),
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, Json(response)) =
             get_delta_proposals(State(state), AuthHeader(credentials), Query(query)).await;
 
@@ -524,7 +661,8 @@ mod tests {
     async fn test_get_delta_proposals_empty() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -533,9 +671,11 @@ mod tests {
 
         let _storage = storage.with_pull_all_delta_proposals(Ok(vec![]));
 
-        let query = ProposalQuery { account_id };
+        let query = ProposalQuery {
+            account_id: account_id.clone(),
+        };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, Json(response)) =
             get_delta_proposals(State(state), AuthHeader(credentials), Query(query)).await;
 
@@ -547,7 +687,8 @@ mod tests {
     async fn test_sign_delta_proposal_not_found() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -558,15 +699,14 @@ mod tests {
 
         let dummy_sig = format!("0x{}", "a".repeat(666));
         let request = SignProposalRequest {
-            account_id,
-            commitment: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
+            account_id: account_id.clone(),
+            commitment: "nonexistent_proposal".to_string(),
             signature: ProposalSignature::Falcon {
                 signature: dummy_sig,
             },
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &request);
         let (status, _response) =
             sign_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
 
@@ -577,7 +717,8 @@ mod tests {
     async fn test_push_delta_success() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
@@ -595,9 +736,14 @@ mod tests {
         )));
         let _storage = storage.with_pull_deltas_after(Ok(vec![]));
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
-        let (status, Json(response)) =
-            push_delta(State(state), AuthHeader(credentials), Json(test_delta)).await;
+        let test_delta_value = serde_json::to_value(&test_delta).unwrap();
+        let credentials = signed_credentials(&signer, &account_id, &test_delta_value);
+        let (status, Json(response)) = push_delta(
+            State(state),
+            AuthHeader(credentials),
+            Json(test_delta_value),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
@@ -607,7 +753,8 @@ mod tests {
     async fn test_get_delta_success() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -622,7 +769,7 @@ mod tests {
             nonce: 1,
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, Json(response)) =
             get_delta(State(state), AuthHeader(credentials), Query(query)).await;
 
@@ -635,7 +782,8 @@ mod tests {
     async fn test_get_delta_not_found() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -645,11 +793,11 @@ mod tests {
         let _storage = storage.with_pull_delta(Err("Delta not found".to_string()));
 
         let query = DeltaQuery {
-            account_id,
+            account_id: account_id.clone(),
             nonce: 999,
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, _response) =
             get_delta(State(state), AuthHeader(credentials), Query(query)).await;
 
@@ -660,7 +808,8 @@ mod tests {
     async fn test_get_state_success() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
@@ -679,7 +828,7 @@ mod tests {
             account_id: account_id.clone(),
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, Json(response)) =
             get_state(State(state), AuthHeader(credentials), Query(query)).await;
 
@@ -691,7 +840,8 @@ mod tests {
     async fn test_get_state_not_found() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -700,9 +850,11 @@ mod tests {
 
         let _storage = storage.with_pull_state(Err("State not found".to_string()));
 
-        let query = StateQuery { account_id };
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, _response) =
             get_state(State(state), AuthHeader(credentials), Query(query)).await;
 
@@ -713,7 +865,8 @@ mod tests {
     async fn test_get_delta_since_success() {
         let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
-        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
 
         let _account_json: serde_json::Value =
             serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
@@ -731,7 +884,7 @@ mod tests {
             nonce: 0,
         };
 
-        let credentials = Credentials::signature(pubkey, signature, timestamp);
+        let credentials = signed_credentials(&signer, &account_id, &query);
         let (status, Json(response)) =
             get_delta_since(State(state), AuthHeader(credentials), Query(query)).await;
 

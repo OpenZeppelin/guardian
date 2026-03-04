@@ -12,6 +12,7 @@ use crate::proto::{
 use chrono::Utc;
 use miden_protocol::account::AccountId;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
@@ -59,13 +60,14 @@ impl PsmClient {
 
     fn add_auth_metadata(
         &self,
-        request: &mut tonic::Request<impl std::fmt::Debug>,
+        request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
     ) -> ClientResult<()> {
         if let Some(auth) = &self.auth {
             let pubkey_hex = auth.public_key_hex();
             let timestamp = Utc::now().timestamp_millis();
-            let signature_hex = auth.sign_account_id_with_timestamp(account_id, timestamp);
+            let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
+            let signature_hex = auth.sign_request(account_id, timestamp, &request_payload);
 
             let pubkey_metadata = MetadataValue::try_from(&pubkey_hex)
                 .map_err(|e| ClientError::InvalidResponse(format!("Invalid pubkey: {e}")))?;

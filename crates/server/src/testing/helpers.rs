@@ -14,12 +14,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
 use miden_protocol::utils::Serializable;
 use miden_protocol::{Felt, FieldElement, Word, ZERO};
+use private_state_manager_shared::auth_request_message::AuthRequestMessage;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use private_state_manager_shared::hex::IntoHex;
 use private_state_manager_shared::{FromJson, ToJson};
+use prost::Message;
 
 pub use crate::api::grpc::state_manager::*;
 pub use tonic::{Request, metadata::MetadataValue};
@@ -216,6 +218,16 @@ pub fn create_request_with_auth<T>(
     request
 }
 
+pub fn create_signed_request_with_auth<T: Message>(
+    payload: T,
+    account_id_hex: &str,
+    signer: &TestSigner,
+) -> Request<T> {
+    let request_payload = AuthRequestPayload::from_protobuf_message(&payload);
+    let (sig, timestamp) = signer.sign_request(account_id_hex, &request_payload);
+    create_request_with_auth(payload, &signer.pubkey_hex, &sig, timestamp)
+}
+
 pub fn create_miden_falcon_rpo_auth(cosigner_commitments: Vec<String>) -> AuthConfig {
     AuthConfig {
         auth_type: Some(auth_config::AuthType::MidenFalconRpo(MidenFalconRpoAuth {
@@ -352,22 +364,56 @@ impl TestSigner {
         self.sign_with_timestamp(account_id_hex, timestamp)
     }
 
+    /// Sign an account ID and request payload with an auto-incrementing timestamp.
+    /// Ensures each call returns a timestamp greater than the previous one.
+    /// Returns (signature_hex, timestamp_ms)
+    pub fn sign_request(
+        &self,
+        account_id_hex: &str,
+        request_payload: &AuthRequestPayload,
+    ) -> (String, i64) {
+        let current = Utc::now().timestamp_millis();
+        let last = self.last_timestamp.get();
+        let timestamp = if current <= last { last + 1 } else { current };
+        self.last_timestamp.set(timestamp);
+        self.sign_with_timestamp_and_request(account_id_hex, timestamp, request_payload)
+    }
+
+    pub fn sign_json_payload<T: serde::Serialize>(
+        &self,
+        account_id_hex: &str,
+        request_payload: &T,
+    ) -> (String, i64) {
+        let request_payload = AuthRequestPayload::from_json_serializable(request_payload)
+            .expect("Valid JSON payload");
+        self.sign_request(account_id_hex, &request_payload)
+    }
+
     /// Sign an account ID with a specific timestamp
     /// Returns (signature_hex, timestamp)
     pub fn sign_with_timestamp(&self, account_id_hex: &str, timestamp: i64) -> (String, i64) {
-        let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
-        let account_id_felts: [Felt; 2] = account_id.into();
+        self.sign_with_timestamp_and_request(
+            account_id_hex,
+            timestamp,
+            &AuthRequestPayload::empty(),
+        )
+    }
 
-        let timestamp_felt = Felt::new(timestamp as u64);
-        let message_elements = vec![
-            account_id_felts[0],
-            account_id_felts[1],
-            timestamp_felt,
-            Felt::ZERO,
-        ];
-
-        let digest = Rpo256::hash_elements(&message_elements);
-        let message: Word = digest;
+    /// Sign an account ID and request payload with a specific timestamp.
+    /// Returns (signature_hex, timestamp)
+    pub fn sign_with_timestamp_and_request(
+        &self,
+        account_id_hex: &str,
+        timestamp: i64,
+        request_payload: &AuthRequestPayload,
+    ) -> (String, i64) {
+        let message = AuthRequestMessage::from_account_id_hex(
+            account_id_hex,
+            timestamp,
+            request_payload.clone(),
+        )
+        .expect("Valid account ID")
+        .to_word();
 
         let signature = self.secret_key.sign(message);
         let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));

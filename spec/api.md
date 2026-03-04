@@ -5,15 +5,18 @@
  - Per-account authentication: requests MUST include credentials authorised by the account's policy.
  - Credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` (and the same keys in gRPC metadata).
  - The supplied public key is hashed to a commitment and checked against the account's allowlist.
- - The signature is over a digest of `(account_id, timestamp)` to prevent both cross-account and replay attacks.
+ - The signature is over a digest of `(account_id, timestamp, request_payload_digest)` to prevent cross-account, cross-request, and replay attacks.
 
 ### Replay Protection
 
- - The signed payload includes a Unix timestamp (milliseconds since epoch) alongside the account ID.
+ - The signed payload includes a Unix timestamp (milliseconds since epoch) alongside the account ID and request payload digest.
  - Server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes) from the current server time.
  - Server tracks `last_auth_timestamp` per account; requests with a timestamp ≤ the last seen timestamp are rejected.
  - The `last_auth_timestamp` is updated atomically using compare-and-swap when authentication succeeds.
- - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, 0])`
+ - Request payload digest format:
+   - HTTP: RPO256 over canonical JSON bytes of the request payload (`body` for POST/PUT, query object for GET).
+   - gRPC: RPO256 over protobuf-encoded request bytes.
+ - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`
 
 ## Data Shapes
 
@@ -111,8 +114,10 @@ The gRPC surface mirrors HTTP methods and data shapes. Credentials are provided 
 ## Examples
 
 ```bash
-# Note: x-signature must be over RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, 0])
-# where timestamp_ms is the same Unix epoch milliseconds value sent in x-timestamp
+# Note: x-signature must be over:
+# RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0..3])
+# where payload_hash is the RPO256 digest of canonical request payload bytes
+# and timestamp_ms is the same Unix epoch milliseconds value sent in x-timestamp
 
 curl -X POST http://localhost:3000/configure \
   -H 'content-type: application/json' \

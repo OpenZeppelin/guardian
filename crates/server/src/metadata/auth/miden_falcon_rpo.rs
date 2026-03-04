@@ -1,23 +1,25 @@
-use miden_protocol::account::AccountId;
+use miden_protocol::Word;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
-use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::utils::{Deserializable, Serializable};
-use miden_protocol::{Felt, FieldElement, Word};
+use private_state_manager_shared::auth_request_message::AuthRequestMessage;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
-/// Verify a Falcon RPO signature for a request with timestamp
+/// Verify a Falcon RPO signature for a request with timestamp.
 ///
 /// # Arguments
 /// * `account_id` - The account ID (hex-encoded)
 /// * `timestamp` - Unix timestamp included in the signed payload
 /// * `authorized_commitments` - List of authorized public key commitments
 /// * `signature` - The signature to verify
+/// * `request_payload` - Request payload digest to bind request intent
 pub fn verify_request_signature(
     account_id: &str,
     timestamp: i64,
     authorized_commitments: &[String],
     signature: &str,
+    request_payload: &AuthRequestPayload,
 ) -> Result<(), String> {
-    let message = account_id_timestamp_to_digest(account_id, timestamp)?;
+    let message = account_id_timestamp_to_digest(account_id, timestamp, request_payload)?;
     let sig = parse_signature(signature)?;
 
     // Extract the public key from the signature
@@ -55,10 +57,11 @@ pub fn verify_request_signature(
     }
 }
 
-/// Convert an account ID and timestamp to a message digest (Word)
+/// Convert account ID + timestamp + request payload to a message digest (Word)
 ///
 /// This parses the account ID from hex format and combines it with the timestamp
-/// to produce a unique message for signing that prevents replay attacks.
+/// to produce a unique message for signing that prevents replay attacks and binds
+/// the signature to a specific request payload.
 ///
 /// # Arguments
 /// * `account_id_hex` - The account ID in hex format (e.g., "0x1234...")
@@ -66,33 +69,18 @@ pub fn verify_request_signature(
 pub fn account_id_timestamp_to_digest(
     account_id_hex: &str,
     timestamp: i64,
+    request_payload: &AuthRequestPayload,
 ) -> Result<Word, String> {
-    let account_id = AccountId::from_hex(account_id_hex).map_err(|e| {
-        tracing::error!(
-            account_id = %account_id_hex,
-            error = %e,
-            "Invalid account ID hex in account_id_timestamp_to_digest"
-        );
-        format!("Invalid account ID hex: {e}")
-    })?;
-
-    // Convert AccountId to its field element representation [prefix, suffix]
-    let account_id_felts: [Felt; 2] = account_id.into();
-
-    // Convert timestamp to field element
-    let timestamp_felt = Felt::new(timestamp as u64);
-
-    // We use 4 elements: account_id (2 felts) + timestamp (1 felt) + padding (1 zero)
-    let message_elements = vec![
-        account_id_felts[0],
-        account_id_felts[1],
-        timestamp_felt,
-        Felt::ZERO,
-    ];
-
-    // Hash using RPO256 and return as Word
-    let digest = Rpo256::hash_elements(&message_elements);
-    Ok(digest)
+    AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, request_payload.clone())
+        .map(|request| request.to_word())
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %account_id_hex,
+                error = %e,
+                "Invalid account ID hex in account_id_timestamp_to_digest"
+            );
+            e
+        })
 }
 
 /// Parse a hex-encoded signature
@@ -118,6 +106,7 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use miden_protocol::account::AccountId;
     use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
     use miden_protocol::utils::Serializable;
 
@@ -137,7 +126,8 @@ mod tests {
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000; // Fixed timestamp for testing
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp)
+        let request_payload = AuthRequestPayload::empty();
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &request_payload)
             .expect("Failed to create message digest");
 
         let signature = secret_key.sign(message);
@@ -154,6 +144,7 @@ mod tests {
             timestamp,
             &[commitment_hex],
             &signature_hex,
+            &request_payload,
         );
 
         assert!(
@@ -179,7 +170,8 @@ mod tests {
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp)
+        let request_payload = AuthRequestPayload::empty();
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &request_payload)
             .expect("Failed to create message digest");
 
         // Sign with secret_key1
@@ -195,6 +187,7 @@ mod tests {
             timestamp,
             &[commitment2_hex],
             &signature_hex,
+            &request_payload,
         );
 
         assert!(
@@ -227,8 +220,10 @@ mod tests {
         let timestamp: i64 = 1700000000;
 
         // Sign account_id1
-        let message1 = account_id_timestamp_to_digest(&account_id1_hex, timestamp)
-            .expect("Failed to create message digest");
+        let request_payload = AuthRequestPayload::empty();
+        let message1 =
+            account_id_timestamp_to_digest(&account_id1_hex, timestamp, &request_payload)
+                .expect("Failed to create message digest");
         let signature = secret_key.sign(message1);
 
         let commitment = public_key.to_commitment();
@@ -241,6 +236,7 @@ mod tests {
             timestamp,
             &[commitment_hex],
             &signature_hex,
+            &request_payload,
         );
 
         assert!(
@@ -266,7 +262,8 @@ mod tests {
         let timestamp1: i64 = 1700000000;
         let timestamp2: i64 = 1700000001; // Different timestamp
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp1)
+        let request_payload = AuthRequestPayload::empty();
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp1, &request_payload)
             .expect("Failed to create message digest");
         let signature = secret_key.sign(message);
 
@@ -279,11 +276,54 @@ mod tests {
             timestamp2,
             &[commitment_hex],
             &signature_hex,
+            &request_payload,
         );
 
         assert!(
             result.is_err(),
             "Signature verification should fail with wrong timestamp"
+        );
+    }
+
+    #[test]
+    fn test_falcon_verify_with_wrong_payload() {
+        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+
+        let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
+
+        let account_id = AccountId::dummy(
+            [5u8; 15],
+            AccountIdVersion::Version0,
+            AccountType::RegularAccountImmutableCode,
+            AccountStorageMode::Private,
+        );
+        let account_id_hex = account_id.to_hex();
+        let timestamp: i64 = 1700000000;
+
+        let signed_payload = AuthRequestPayload::from_json_bytes(br#"{"op":"get_delta"}"#)
+            .expect("valid signed payload");
+        let wrong_payload = AuthRequestPayload::from_json_bytes(br#"{"op":"push_delta"}"#)
+            .expect("valid wrong payload");
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &signed_payload)
+            .expect("Failed to create message digest");
+        let signature = secret_key.sign(message);
+
+        let commitment = public_key.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+
+        let result = verify_request_signature(
+            &account_id_hex,
+            timestamp,
+            &[commitment_hex],
+            &signature_hex,
+            &wrong_payload,
+        );
+
+        assert!(
+            result.is_err(),
+            "Signature verification should fail with wrong payload"
         );
     }
 }

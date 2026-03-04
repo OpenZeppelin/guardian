@@ -7,7 +7,35 @@
 
 import { AuthSecretKey, Word, AccountId, Felt, FeltArray, Rpo256 } from '@miden-sdk/miden-sdk';
 import type { Signer } from './types.js';
+import { RequestAuthPayload } from '@openzeppelin/psm-client';
 import { bytesToHex } from './utils/encoding.js';
+
+class RequestAuthDigest {
+  private constructor(private readonly payload: RequestAuthPayload) {}
+
+  static fromPayload(payload: RequestAuthPayload): RequestAuthDigest {
+    return new RequestAuthDigest(payload);
+  }
+
+  toWord(): Word {
+    const bytes = this.payload.toBytes();
+    if (bytes.length === 0) {
+      return Word.fromHex(`0x${'0'.repeat(64)}`);
+    }
+
+    const elements: Felt[] = [];
+    for (let offset = 0; offset < bytes.length; offset += 8) {
+      let value = 0n;
+      const chunk = bytes.subarray(offset, Math.min(offset + 8, bytes.length));
+      for (let i = 0; i < chunk.length; i += 1) {
+        value |= BigInt(chunk[i]) << BigInt(i * 8);
+      }
+      elements.push(new Felt(value));
+    }
+
+    return Rpo256.hashElements(new FeltArray(elements));
+  }
+}
 
 /**
  * A Falcon signer that implements the Signer interface.
@@ -33,24 +61,22 @@ export class FalconSigner implements Signer {
     this.publicKey = bytesToHex(falconPubKey);
   }
 
-  /**
-   * Signs an account ID with a timestamp.
-   * @param accountId - The account ID to sign
-   * @param timestamp - Unix timestamp in milliseconds (use Date.now())
-   * @returns Hex-encoded Falcon signature
-   */
-  signAccountIdWithTimestamp(accountId: string, timestamp: number): string {
-    // Parse the account ID from hex
+  signRequest(accountId: string, timestamp: number, requestPayload: RequestAuthPayload): string {
     const paddedHex = accountId.startsWith('0x') ? accountId : `0x${accountId}`;
     const parsedAccountId = AccountId.fromHex(paddedHex);
     const prefix = parsedAccountId.prefix();
     const suffix = parsedAccountId.suffix();
+    const payloadWord = RequestAuthDigest.fromPayload(requestPayload).toWord();
+    const payloadFelts = payloadWord.toFelts();
 
     const feltArray = new FeltArray([
       prefix,
       suffix,
       new Felt(BigInt(timestamp)),
-      new Felt(BigInt(0)),
+      payloadFelts[0],
+      payloadFelts[1],
+      payloadFelts[2],
+      payloadFelts[3],
     ]);
 
     const digest = Rpo256.hashElements(feltArray);

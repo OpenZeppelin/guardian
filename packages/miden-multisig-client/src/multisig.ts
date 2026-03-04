@@ -44,6 +44,7 @@ import {
 } from './utils/encoding.js';
 import { buildSignatureAdviceEntry, signatureHexToBytes } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
+import { AccountInspector } from './inspector.js';
 
 /**
  * Result of fetching account state from PSM.
@@ -69,11 +70,11 @@ export interface AccountStateVerificationResult {
  * Represents a multisig account with PSM integration.
  */
 export class Multisig {
-  readonly account: Account | null;
-  readonly threshold: number;
-  readonly signerCommitments: string[];
-  readonly psmCommitment: string;
-  readonly procedureThresholds: Map<ProcedureName, number>;
+  account: Account | null;
+  threshold: number;
+  signerCommitments: string[];
+  psmCommitment: string;
+  procedureThresholds: Map<ProcedureName, number>;
 
   private psm: PsmHttpClient;
   private readonly signer: Signer;
@@ -219,6 +220,7 @@ export class Multisig {
     const state = await this.fetchState();
     const accountId = AccountId.fromHex(this._accountId);
     const localAccount = await this.webClient.getAccount(accountId);
+    let accountForConfigRefresh: Account | null = localAccount ?? null;
 
     const psmCommitment = normalizeHexWord(state.commitment);
     const localCommitment = localAccount
@@ -230,7 +232,10 @@ export class Multisig {
       const incomingAccount = Account.deserialize(accountBytes);
       await this.ensureSafeToOverwriteLocalState(incomingAccount);
       await this.webClient.newAccount(incomingAccount, true);
+      accountForConfigRefresh = incomingAccount;
     }
+
+    this.refreshConfigFromAccount(accountForConfigRefresh);
 
     return state;
   }
@@ -305,6 +310,25 @@ export class Multisig {
         return null;
       }
       throw error;
+    }
+  }
+
+  private refreshConfigFromAccount(account: Account | null): void {
+    if (!account) {
+      return;
+    }
+
+    try {
+      const detected = AccountInspector.fromAccount(account);
+      this.account = account;
+      this.threshold = detected.threshold;
+      this.signerCommitments = detected.signerCommitments;
+      if (detected.psmCommitment) {
+        this.psmCommitment = detected.psmCommitment;
+      }
+      this.procedureThresholds = new Map(detected.procedureThresholds);
+    } catch (error) {
+      console.warn('Failed to refresh multisig config from account state', error);
     }
   }
 
