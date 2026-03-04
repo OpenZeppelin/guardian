@@ -20,7 +20,8 @@ impl Auth {
     /// Verify credentials are authorized for account
     ///
     /// This verifies:
-    /// 1. The signature is valid for the account_id + timestamp payload
+    /// 1. The signature is valid for the account_id + timestamp payload,
+    ///    optionally bound to request bytes when provided by the transport layer
     /// 2. The signer's commitment is in the authorized list
     ///
     /// # Arguments
@@ -45,6 +46,7 @@ impl Auth {
                     timestamp,
                     cosigner_commitments,
                     signature,
+                    credentials.request_payload(),
                 )
             }
         }

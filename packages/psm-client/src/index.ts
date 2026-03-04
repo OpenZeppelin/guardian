@@ -1,4 +1,5 @@
 export { PsmHttpClient, PsmHttpError } from './http.js';
+export { RequestAuthPayload } from './auth-request.js';
 
 export type {
   // Signer interface

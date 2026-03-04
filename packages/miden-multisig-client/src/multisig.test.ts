@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
 
-const { mockRpcGetAccountDetails, mockAccountDeserialize } = vi.hoisted(() => ({
+const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
+  mockDetectConfig: vi.fn(),
 }));
 
 // Mock the Miden SDK
@@ -90,6 +91,12 @@ vi.mock('./utils/encoding.js', async () => {
   };
 });
 
+vi.mock('./inspector.js', () => ({
+  AccountInspector: {
+    fromAccount: mockDetectConfig,
+  },
+}));
+
 // Mock fetch for PSM client
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -114,13 +121,23 @@ describe('Multisig', () => {
         toHex: () => '0x' + 'b'.repeat(64),
       }),
     });
+    mockDetectConfig.mockReset();
+    mockDetectConfig.mockReturnValue({
+      threshold: 1,
+      numSigners: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      psmEnabled: true,
+      psmCommitment: '0x' + 'c'.repeat(64),
+      vaultBalances: [],
+      procedureThresholds: new Map(),
+    });
 
     psm = new PsmHttpClient('http://localhost:3000');
 
     mockSigner = {
       commitment: '0x' + '1'.repeat(64),
       publicKey: '0x' + '2'.repeat(64),
-      signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
+      signRequest: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
       signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
     };
 
@@ -322,6 +339,59 @@ describe('Multisig', () => {
       await multisig.syncState();
 
       expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes multisig config from synced account state', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        commitment: () => ({
+          toHex: () => '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+      mockDetectConfig.mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 2,
+        signerCommitments: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
+        psmEnabled: true,
+        psmCommitment: '0x' + 'd'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      await multisig.syncState();
+
+      expect(multisig.threshold).toBe(2);
+      expect(multisig.signerCommitments).toEqual([
+        '0x' + '1'.repeat(64),
+        '0x' + '2'.repeat(64),
+      ]);
+      expect(multisig.psmCommitment).toBe('0x' + 'd'.repeat(64));
+      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
     });
 
     it('should overwrite local state when account is not found on-chain', async () => {

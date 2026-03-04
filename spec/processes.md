@@ -22,7 +22,7 @@ sequenceDiagram
   C->>S: POST /configure {account_id, auth, initial_state} + credentials
   S->>S: verify timestamp (within 300s skew window)
   S->>N: validate_credential(initial_state, credential)
-  S->>S: auth.verify(account_id, timestamp, credential)
+  S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
   S->>M: set(account_id, auth, timestamps, last_auth_timestamp)
@@ -39,7 +39,7 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   C->>S: POST /delta {delta, credentials}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_state(account_id)
@@ -69,7 +69,7 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: GET /state?account_id=... {credentials}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_state(account_id)
@@ -85,7 +85,7 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: GET /delta?account_id=...&nonce=... {credentials}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_delta(account_id, nonce)
@@ -102,7 +102,7 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   C->>S: GET /delta/since?account_id=...&from_nonce=... {credentials}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_deltas_after(account_id, from_nonce)
@@ -122,7 +122,7 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   C->>S: POST /delta/proposal {account_id, nonce, delta_payload(tx_summary,...)}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_state(account_id)
@@ -141,7 +141,7 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: PUT /delta/proposal {account_id, commitment, signature,...}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_delta_proposal(account_id, commitment)
@@ -159,7 +159,7 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   C->>S: GET /delta/proposal?account_id=... {credentials}
-  S->>M: get(account_id) & verify(credentials, timestamp)
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_all_delta_proposals(account_id)

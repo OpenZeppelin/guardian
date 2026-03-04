@@ -16,11 +16,10 @@ async fn test_configure_and_push_delta_with_auth() {
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
-    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Step 1: Configure account with the cosigner commitment
     let configure_body = json!({
-        "account_id": account_id_hex,
+        "account_id": account_id_hex.clone(),
         "auth": {
             "MidenFalconRpo": {
                 "cosigner_commitments": [signer.commitment_hex]
@@ -28,6 +27,7 @@ async fn test_configure_and_push_delta_with_auth() {
         },
         "initial_state": initial_state
     });
+    let (signature_hex, timestamp) = signer.sign_json_payload(&account_id_hex, &configure_body);
 
     let configure_request = Request::builder()
         .uri("/configure")
@@ -48,8 +48,6 @@ async fn test_configure_and_push_delta_with_auth() {
         "Configure should succeed"
     );
 
-    let (signature_hex_2, timestamp_2) = signer.sign(&account_id_hex);
-
     let delta_1 = load_fixture_delta(1);
     let delta_body = json!({
         "account_id": delta_1["account_id"],
@@ -57,6 +55,7 @@ async fn test_configure_and_push_delta_with_auth() {
         "prev_commitment": delta_1["prev_commitment"],
         "delta_payload": delta_1["delta_payload"]
     });
+    let (signature_hex_2, timestamp_2) = signer.sign_json_payload(&account_id_hex, &delta_body);
 
     let push_request = Request::builder()
         .uri("/push_delta")
@@ -87,13 +86,11 @@ async fn test_push_delta_unauthorized_cosigner() {
 
     // Generate two different key pairs
     let authorized_signer = TestSigner::new();
-    let (authorized_sig, authorized_ts) = authorized_signer.sign(&account_id_hex);
     let unauthorized_signer = TestSigner::new();
-    let (unauthorized_sig, unauthorized_ts) = unauthorized_signer.sign(&account_id_hex);
 
     // Configure account with ONLY the authorized commitment
     let configure_body = json!({
-        "account_id": account_id_hex,
+        "account_id": account_id_hex.clone(),
         "auth": {
             "MidenFalconRpo": {
                 "cosigner_commitments": [authorized_signer.commitment_hex] // Only this commitment is authorized
@@ -101,6 +98,8 @@ async fn test_push_delta_unauthorized_cosigner() {
         },
         "initial_state": initial_state
     });
+    let (authorized_sig, authorized_ts) =
+        authorized_signer.sign_json_payload(&account_id_hex, &configure_body);
 
     let configure_request = Request::builder()
         .uri("/configure")
@@ -125,6 +124,8 @@ async fn test_push_delta_unauthorized_cosigner() {
         "prev_commitment": delta_1["prev_commitment"],
         "delta_payload": delta_1["delta_payload"]
     });
+    let (unauthorized_sig, unauthorized_ts) =
+        unauthorized_signer.sign_json_payload(&account_id_hex, &delta_body);
 
     let push_request = Request::builder()
         .uri("/push_delta")
@@ -154,11 +155,10 @@ async fn test_push_delta_missing_auth_headers() {
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
-    let (signature_hex, timestamp) = signer.sign(&account_id_hex);
 
     // Configure account
     let configure_body = json!({
-        "account_id": account_id_hex,
+        "account_id": account_id_hex.clone(),
         "auth": {
             "MidenFalconRpo": {
                 "cosigner_commitments": [signer.commitment_hex]
@@ -166,6 +166,7 @@ async fn test_push_delta_missing_auth_headers() {
         },
         "initial_state": initial_state
     });
+    let (signature_hex, timestamp) = signer.sign_json_payload(&account_id_hex, &configure_body);
 
     let configure_request = Request::builder()
         .uri("/configure")

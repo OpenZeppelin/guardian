@@ -1,14 +1,17 @@
 
+import type { RequestAuthPayload } from './auth-request.js';
+
 export interface Signer {
   readonly commitment: string;
   readonly publicKey: string;
   /**
-   * Signs an account ID with a timestamp.
+   * Signs an authenticated request.
    * @param accountId - The account ID to sign
    * @param timestamp - Unix timestamp in milliseconds (use Date.now())
+   * @param requestPayload - Canonicalized request payload wrapper
    * @returns Hex-encoded signature
    */
-  signAccountIdWithTimestamp(accountId: string, timestamp: number): string;
+  signRequest(accountId: string, timestamp: number, requestPayload: RequestAuthPayload): string;
   signCommitment(commitmentHex: string): string;
 }
 

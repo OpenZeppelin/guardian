@@ -75,7 +75,7 @@ describe('MultisigClient', () => {
     mockSigner = {
       commitment: '0x' + '1'.repeat(64),
       publicKey: '0x' + '2'.repeat(64),
-      signAccountIdWithTimestamp: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
+      signRequest: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
       signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
     };
   });

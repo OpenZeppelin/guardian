@@ -1,5 +1,6 @@
 use crate::error::PsmError;
 use axum::{extract::FromRequestParts, http::request::Parts};
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
 /// Maximum allowed clock skew in milliseconds between client and server timestamps
 pub const MAX_TIMESTAMP_SKEW_MS: i64 = 300_000; // 5 minutes in milliseconds
@@ -22,6 +23,7 @@ pub enum Credentials {
         pubkey: String,
         signature: String,
         timestamp: i64,
+        request_payload: AuthRequestPayload,
     },
 }
 
@@ -31,6 +33,7 @@ impl Credentials {
             pubkey,
             signature,
             timestamp,
+            request_payload: AuthRequestPayload::empty(),
         }
     }
 
@@ -40,6 +43,7 @@ impl Credentials {
                 pubkey,
                 signature,
                 timestamp,
+                ..
             } => Some((pubkey, signature, *timestamp)),
         }
     }
@@ -47,6 +51,26 @@ impl Credentials {
     pub fn timestamp(&self) -> i64 {
         match self {
             Self::Signature { timestamp, .. } => *timestamp,
+        }
+    }
+
+    pub fn with_request_payload(mut self, request_payload: AuthRequestPayload) -> Self {
+        match &mut self {
+            Self::Signature {
+                request_payload: payload,
+                ..
+            } => {
+                *payload = request_payload;
+            }
+        }
+        self
+    }
+
+    pub fn request_payload(&self) -> &AuthRequestPayload {
+        match self {
+            Self::Signature {
+                request_payload, ..
+            } => request_payload,
         }
     }
 }
@@ -146,10 +170,12 @@ mod tests {
                 pubkey,
                 signature,
                 timestamp,
+                request_payload,
             } => {
                 assert_eq!(pubkey, "pubkey123");
                 assert_eq!(signature, "sig456");
                 assert_eq!(timestamp, 1700000000000);
+                assert_eq!(request_payload, AuthRequestPayload::empty());
             }
         }
     }

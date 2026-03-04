@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { FalconSigner } from './signer.js';
+import { RequestAuthPayload } from '@openzeppelin/psm-client';
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => {
@@ -40,6 +41,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     Rpo256: {
       hashElements: vi.fn().mockReturnValue({
         toHex: () => '0x' + 'b'.repeat(64),
+        toFelts: () => [1, 2, 3, 4],
       }),
     },
   };
@@ -71,37 +73,41 @@ describe('FalconSigner', () => {
     });
   });
 
-  describe('signAccountIdWithTimestamp', () => {
+  describe('signRequest', () => {
     it('handles account ID with 0x prefix', () => {
-      const signature = signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+      const payload = RequestAuthPayload.fromRequest({ op: 'get_state' });
+      const signature = signer.signRequest('0x' + 'a'.repeat(30), 1700000000, payload);
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
     it('handles account ID without 0x prefix', () => {
-      const signature = signer.signAccountIdWithTimestamp('a'.repeat(30), 1700000000);
+      const payload = RequestAuthPayload.fromRequest({ op: 'get_state' });
+      const signature = signer.signRequest('a'.repeat(30), 1700000000, payload);
       expect(signature).toMatch(/^0x[a-f0-9]+$/);
     });
 
     it('calls sign method with hashed digest', () => {
-      signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+      const payload = RequestAuthPayload.fromRequest({ op: 'get_state' });
+      signer.signRequest('0x' + 'a'.repeat(30), 1700000000, payload);
       expect(mockSecretKey.sign).toHaveBeenCalled();
     });
 
     it('returns signature without first byte', () => {
       // Signature serialized is [0, 1, 2, ...9], slice(1) returns [1, 2, ...9]
-      const signature = signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
+      const payload = RequestAuthPayload.fromRequest({ op: 'get_state' });
+      const signature = signer.signRequest('0x' + 'a'.repeat(30), 1700000000, payload);
       expect(signature).toBe('0x010203040506070809');
     });
 
     it('includes timestamp in signed payload', async () => {
-      const { Felt, FeltArray } = await import('@miden-sdk/miden-sdk');
-      signer.signAccountIdWithTimestamp('0x' + 'a'.repeat(30), 1700000000);
-      // Verify FeltArray was called with timestamp in the third position
+      const { FeltArray } = await import('@miden-sdk/miden-sdk');
+      const payload = RequestAuthPayload.fromRequest({ op: 'get_state' });
+      signer.signRequest('0x' + 'a'.repeat(30), 1700000000, payload);
       expect(FeltArray).toHaveBeenCalledWith(expect.arrayContaining([
-        expect.anything(), // prefix
-        expect.anything(), // suffix
-        expect.anything(), // timestamp
-        expect.anything(), // zero padding
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
       ]));
     });
   });

@@ -20,7 +20,9 @@ impl MultisigClient {
         let signatures_required =
             account.effective_threshold_for_transaction(&proposal.transaction_type)? as usize;
         let signatures_collected = proposal.metadata.collected_signatures.ok_or_else(|| {
-            MultisigError::InvalidConfig("proposal missing collected signatures metadata".to_string())
+            MultisigError::InvalidConfig(
+                "proposal missing collected signatures metadata".to_string(),
+            )
         })?;
 
         // TODO: we will fix this in a later commit.

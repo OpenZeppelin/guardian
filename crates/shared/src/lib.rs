@@ -5,6 +5,8 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde::{Deserialize, Serialize};
 
 pub mod auth;
+pub mod auth_request_message;
+pub mod auth_request_payload;
 pub mod hex;
 
 /// Signature type for delta proposals
