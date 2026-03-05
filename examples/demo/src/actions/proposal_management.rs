@@ -3,8 +3,7 @@
 use std::path::Path;
 
 use miden_multisig_client::{
-    commitment_from_hex, ensure_hex_prefix, Asset, ExportedProposal, NoteId, ProposalStatus,
-    TransactionType,
+    commitment_from_hex, ensure_hex_prefix, Asset, ExportedProposal, NoteId, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use rustyline::DefaultEditor;
@@ -291,12 +290,10 @@ async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
         print_full_hex("      Proposal ID", &proposal.id);
         println!("      Signatures: {}/{}", collected, required);
 
-        if let ProposalStatus::Pending { signers, .. } = &proposal.status {
-            if !signers.is_empty() {
-                println!("      Signers:");
-                for signer in signers {
-                    println!("        - {}", shorten_hex(signer));
-                }
+        if proposal.status.is_pending() && !proposal.metadata.signers.is_empty() {
+            println!("      Signers:");
+            for signer in &proposal.metadata.signers {
+                println!("        - {}", shorten_hex(signer));
             }
         }
         println!();

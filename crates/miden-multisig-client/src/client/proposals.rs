@@ -5,54 +5,16 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_client::delta_status::Status;
 use private_state_manager_shared::ProposalSignature;
 
 use super::{MultisigClient, ProposalResult};
-use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
-use crate::proposal::{Proposal, ProposalStatus, TransactionType};
+use crate::payload::ProposalPayload;
+use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::ProposalBuilder;
 
 impl MultisigClient {
-    fn apply_effective_threshold(account: &MultisigAccount, proposal: &mut Proposal) -> Result<()> {
-        let signatures_required =
-            account.effective_threshold_for_transaction(&proposal.transaction_type)? as usize;
-        let signatures_collected = proposal.metadata.collected_signatures.ok_or_else(|| {
-            MultisigError::InvalidConfig(
-                "proposal missing collected signatures metadata".to_string(),
-            )
-        })?;
-
-        // TODO: we will fix this in a later commit.
-        // The signers of the proposal must be stored at metadata level,
-        // not at the status level.
-        let signers = match &proposal.status {
-            ProposalStatus::Pending { signers, .. } => signers.clone(),
-            _ => Vec::new(),
-        };
-
-        proposal.metadata.required_signatures = Some(signatures_required);
-        proposal.metadata.collected_signatures = Some(signatures_collected);
-
-        // TODO: we will fix this in a later commit.
-        // The signers of the proposal must be stored at metadata level,
-        // not at the status level.
-        proposal.status = if signatures_collected >= signatures_required && signatures_required > 0
-        {
-            ProposalStatus::Ready
-        } else {
-            ProposalStatus::Pending {
-                signatures_collected,
-                signatures_required,
-                signers,
-            }
-        };
-
-        Ok(())
-    }
-
     /// Lists pending proposals for the current account.
     ///
     /// # Errors
@@ -77,7 +39,9 @@ impl MultisigClient {
         for delta in &response.proposals {
             let mut proposal = Proposal::from(delta, current_threshold, &current_signers)?;
             self.verify_proposal_summary_binding(&proposal).await?;
-            Self::apply_effective_threshold(&account, &mut proposal)?;
+            proposal.set_required_signatures(
+                account.effective_threshold_for_transaction(&proposal.transaction_type)? as usize,
+            );
             proposals.push(proposal);
         }
 
@@ -162,7 +126,9 @@ impl MultisigClient {
         for raw_proposal in &proposals_response.proposals {
             let mut parsed = Proposal::from(raw_proposal, current_threshold, &current_signers)?;
             if parsed.id == proposal_id {
-                Self::apply_effective_threshold(&account, &mut parsed)?;
+                parsed.set_required_signatures(
+                    account.effective_threshold_for_transaction(&parsed.transaction_type)? as usize,
+                );
                 if matched.is_some() {
                     return Err(MultisigError::InvalidConfig(format!(
                         "multiple proposals returned with the same ID {}",
@@ -187,56 +153,24 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        // Collect signatures from the delta payload (available even after READY)
-        let mut signature_inputs: Vec<SignatureInput> = {
-            let payload_json: serde_json::Value = serde_json::from_str(&raw_proposal.delta_payload)
-                .map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to parse delta payload signatures: {}",
-                        e
-                    ))
-                })?;
-            payload_json
-                .get("signatures")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|sig| {
-                            let signer = sig.get("signer_id")?.as_str()?;
-                            let sig_hex = sig.get("signature")?.get("signature")?.as_str()?;
-                            Some(SignatureInput {
-                                signer_commitment: signer.to_string(),
-                                signature_hex: sig_hex.to_string(),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let payload: ProposalPayload =
+            serde_json::from_str(&raw_proposal.delta_payload).map_err(|e| {
+                MultisigError::MidenClient(format!("failed to parse proposal payload: {}", e))
+            })?;
+        let mut signature_inputs: Vec<SignatureInput> = payload
+            .signatures
+            .into_iter()
+            .map(|signature| {
+                let signature_hex = match signature.signature {
+                    ProposalSignature::Falcon { signature } => signature,
+                };
 
-        // Also collect any signatures present in pending status from PSM (if still pending)
-        if let Some(ref status) = raw_proposal.status
-            && let Some(ref status_oneof) = status.status
-            && let Status::Pending(pending) = status_oneof
-        {
-            for cosigner_sig in &pending.cosigner_sigs {
-                let sig_hex = cosigner_sig
-                    .signature
-                    .as_ref()
-                    .ok_or_else(|| {
-                        MultisigError::Signature(format!(
-                            "missing signature for cosigner {}",
-                            cosigner_sig.signer_id
-                        ))
-                    })?
-                    .signature
-                    .clone();
-                signature_inputs.push(SignatureInput {
-                    signer_commitment: cosigner_sig.signer_id.clone(),
-                    signature_hex: sig_hex,
-                });
-            }
-        }
+                SignatureInput {
+                    signer_commitment: signature.signer_id,
+                    signature_hex,
+                }
+            })
+            .collect();
 
         // Deduplicate by signer commitment
         signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));

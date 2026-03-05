@@ -1,5 +1,7 @@
 //! Proposal types and utilities for multisig transactions.
 
+use std::collections::HashSet;
+
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionSummary;
@@ -9,15 +11,12 @@ use private_state_manager_shared::FromJson;
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
+use crate::payload::ProposalPayload;
 
 /// Status of a proposal in the signing workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposalStatus {
-    Pending {
-        signatures_collected: usize,
-        signatures_required: usize,
-        signers: Vec<String>,
-    },
+    Pending,
     Ready,
     Finalized,
 }
@@ -28,7 +27,7 @@ impl ProposalStatus {
     }
 
     pub fn is_pending(&self) -> bool {
-        matches!(self, ProposalStatus::Pending { .. })
+        matches!(self, ProposalStatus::Pending)
     }
 }
 
@@ -153,7 +152,7 @@ pub struct ProposalMetadata {
     pub new_psm_endpoint: Option<String>,
 
     pub required_signatures: Option<usize>,
-    pub collected_signatures: Option<usize>,
+    pub signers: Vec<String>,
 }
 
 impl ProposalMetadata {
@@ -318,85 +317,40 @@ impl Proposal {
         current_threshold: u32,
         current_signers: &[Word],
     ) -> Result<Self> {
-        let payload_json: Value = serde_json::from_str(&delta.delta_payload)?;
+        let payload: ProposalPayload = serde_json::from_str(&delta.delta_payload)?;
 
-        let tx_summary_json = payload_json.get("tx_summary").ok_or_else(|| {
-            MultisigError::InvalidConfig("missing tx_summary in delta".to_string())
-        })?;
-
-        let tx_summary = TransactionSummary::from_json(tx_summary_json).map_err(|e| {
+        let tx_summary = TransactionSummary::from_json(&payload.tx_summary).map_err(|e| {
             MultisigError::MidenClient(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        let metadata_obj = payload_json.get("metadata");
-
-        let new_threshold = metadata_obj
-            .and_then(|m| m.get("target_threshold"))
-            .and_then(|v| v.as_u64());
-
-        let signer_commitments_hex: Vec<String> = metadata_obj
-            .and_then(|m| m.get("signer_commitments"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let salt_hex = metadata_obj
-            .and_then(|m| m.get("salt"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // Extract P2ID fields
-        let recipient_hex = metadata_obj
-            .and_then(|m| m.get("recipient_id"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let faucet_id_hex = metadata_obj
-            .and_then(|m| m.get("faucet_id"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let amount = metadata_obj.and_then(|m| m.get("amount")).and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-        });
-
-        let note_ids_hex: Vec<String> = metadata_obj
-            .and_then(|m| m.get("note_ids"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let metadata_payload = payload.metadata.clone().unwrap_or_default();
+        let new_threshold = metadata_payload.target_threshold;
+        let signer_commitments_hex = metadata_payload.signer_commitments;
+        let salt_hex = metadata_payload.salt;
+        let recipient_hex = metadata_payload.recipient_id;
+        let faucet_id_hex = metadata_payload.faucet_id;
+        let amount = metadata_payload
+            .amount
+            .as_deref()
+            .and_then(|value| value.parse().ok());
+        let note_ids_hex = metadata_payload.note_ids;
 
         let parsed_note_ids: Vec<NoteId> = note_ids_hex
             .iter()
             .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
             .collect::<Result<_>>()?;
 
-        let new_psm_pubkey_hex = metadata_obj
-            .and_then(|m| m.get("new_psm_pubkey"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let new_psm_pubkey_hex = metadata_payload.new_psm_pubkey;
+        let new_psm_endpoint = metadata_payload.new_psm_endpoint;
 
-        let new_psm_endpoint = metadata_obj
-            .and_then(|m| m.get("new_psm_endpoint"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let proposal_type = metadata_obj
-            .and_then(|m| m.get("proposal_type"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let proposal_type = if metadata_payload.proposal_type.is_empty() {
+            None
+        } else {
+            Some(metadata_payload.proposal_type.clone())
+        };
 
         let mut metadata = ProposalMetadata {
-            tx_summary_json: Some(tx_summary_json.clone()),
+            tx_summary_json: Some(payload.tx_summary.clone()),
             proposal_type: proposal_type.clone(),
             new_threshold,
             signer_commitments_hex: signer_commitments_hex.clone(),
@@ -408,7 +362,7 @@ impl Proposal {
             new_psm_pubkey_hex: new_psm_pubkey_hex.clone(),
             new_psm_endpoint: new_psm_endpoint.clone(),
             required_signatures: Some(current_threshold as usize),
-            collected_signatures: None,
+            signers: Vec::new(),
         };
 
         let transaction_type = if let Some(proposal_type) = metadata.proposal_type.as_deref() {
@@ -455,31 +409,33 @@ impl Proposal {
             }
         };
 
-        let (signatures_collected, signers) = count_signatures_from_delta(delta);
-        let signatures_required = current_threshold as usize;
-        metadata.collected_signatures = Some(signatures_collected);
-
-        let status = if signatures_collected >= signatures_required && signatures_required > 0 {
-            ProposalStatus::Ready
-        } else {
-            ProposalStatus::Pending {
-                signatures_collected,
-                signatures_required,
-                signers,
-            }
-        };
+        let mut seen_signers = HashSet::new();
+        metadata.signers = payload
+            .signatures
+            .iter()
+            .filter_map(|signature| {
+                let signer_id = signature.signer_id.clone();
+                if seen_signers.insert(signer_id.to_lowercase()) {
+                    Some(signer_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));
 
-        Ok(Proposal {
+        let mut proposal = Proposal {
             id,
             nonce: delta.nonce,
             transaction_type,
-            status,
+            status: ProposalStatus::Pending,
             tx_summary,
             metadata,
-        })
+        };
+        proposal.refresh_status();
+        Ok(proposal)
     }
 
     /// Creates a new Proposal
@@ -492,63 +448,48 @@ impl Proposal {
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));
 
-        let signatures_required = metadata.signer_commitments_hex.len();
+        let signatures_required = metadata
+            .required_signatures
+            .unwrap_or(metadata.signer_commitments_hex.len());
         metadata
             .required_signatures
             .get_or_insert(signatures_required);
-        metadata.collected_signatures.get_or_insert(0);
         if metadata.proposal_type.is_none() {
             metadata.proposal_type = transaction_type.proposal_type().map(str::to_string);
         }
 
-        Self {
+        let mut proposal = Self {
             id,
             nonce,
             transaction_type,
-            status: ProposalStatus::Pending {
-                signatures_collected: 0,
-                signatures_required,
-                signers: Vec::new(),
-            },
+            status: ProposalStatus::Pending,
             tx_summary,
             metadata,
-        }
+        };
+        proposal.refresh_status();
+        proposal
+    }
+
+    pub fn set_required_signatures(&mut self, required_signatures: usize) {
+        self.metadata.required_signatures = Some(required_signatures);
+        self.refresh_status();
     }
 
     pub fn has_signed(&self, signer_commitment_hex: &str) -> bool {
-        match &self.status {
-            ProposalStatus::Pending { signers, .. } => signers
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(signer_commitment_hex)),
-            _ => false,
-        }
+        self.metadata
+            .signers
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(signer_commitment_hex))
     }
 
     pub fn signatures_collected(&self) -> usize {
-        match &self.status {
-            ProposalStatus::Pending {
-                signatures_collected,
-                ..
-            } => *signatures_collected,
-            ProposalStatus::Ready | ProposalStatus::Finalized => self
-                .metadata
-                .collected_signatures
-                .or(self.metadata.required_signatures)
-                .unwrap_or(self.metadata.signer_commitments_hex.len()),
-        }
+        self.metadata.signers.len()
     }
 
     pub fn signatures_required(&self) -> usize {
-        match &self.status {
-            ProposalStatus::Pending {
-                signatures_required,
-                ..
-            } => *signatures_required,
-            _ => self
-                .metadata
-                .required_signatures
-                .unwrap_or(self.metadata.signer_commitments_hex.len()),
-        }
+        self.metadata
+            .required_signatures
+            .unwrap_or(self.metadata.signer_commitments_hex.len())
     }
 
     pub fn signature_counts(&self) -> (usize, usize) {
@@ -562,40 +503,34 @@ impl Proposal {
 
     /// Returns the commitment hex strings of signers who haven't signed yet.
     pub fn missing_signers(&self) -> Vec<String> {
-        match &self.status {
-            ProposalStatus::Pending { signers, .. } => {
-                let signed: std::collections::HashSet<_> =
-                    signers.iter().map(|s| s.to_lowercase()).collect();
-
-                self.metadata
-                    .signer_commitments_hex
-                    .iter()
-                    .filter(|c| !signed.contains(&c.to_lowercase()))
-                    .cloned()
-                    .collect()
-            }
-            // Ready/Finalized proposals have no missing signers
-            ProposalStatus::Ready | ProposalStatus::Finalized => Vec::new(),
+        if !self.status.is_pending() {
+            return Vec::new();
         }
-    }
-}
 
-/// Counts signatures from a DeltaObject's status.
-fn count_signatures_from_delta(delta: &DeltaObject) -> (usize, Vec<String>) {
-    if let Some(ref status) = delta.status
-        && let Some(ref status_oneof) = status.status
-    {
-        use private_state_manager_client::delta_status::Status;
-        if let Status::Pending(pending) = status_oneof {
-            let signers: Vec<String> = pending
-                .cosigner_sigs
-                .iter()
-                .map(|sig| sig.signer_id.clone())
-                .collect();
-            return (signers.len(), signers);
-        }
+        let signed: HashSet<_> = self
+            .metadata
+            .signers
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+
+        self.metadata
+            .signer_commitments_hex
+            .iter()
+            .filter(|c| !signed.contains(&c.to_lowercase()))
+            .cloned()
+            .collect()
     }
-    (0, Vec::new())
+
+    fn refresh_status(&mut self) {
+        let signatures_required = self.signatures_required();
+        self.status =
+            if self.metadata.signers.len() >= signatures_required && signatures_required > 0 {
+                ProposalStatus::Ready
+            } else {
+                ProposalStatus::Pending
+            };
+    }
 }
 
 fn determine_transaction_type(
@@ -703,11 +638,7 @@ mod tests {
 
     #[test]
     fn test_proposal_status_checks() {
-        let pending = ProposalStatus::Pending {
-            signatures_collected: 1,
-            signatures_required: 2,
-            signers: vec!["0xabc".to_string()],
-        };
+        let pending = ProposalStatus::Pending;
         assert!(pending.is_pending());
         assert!(!pending.is_ready());
 
@@ -825,11 +756,7 @@ mod tests {
 
     #[test]
     fn test_proposal_signature_counts() {
-        let pending = ProposalStatus::Pending {
-            signatures_collected: 1,
-            signatures_required: 3,
-            signers: vec!["0xabc".to_string()],
-        };
+        let pending = ProposalStatus::Pending;
 
         let proposal = Proposal {
             id: "0x123".to_string(),
@@ -838,6 +765,8 @@ mod tests {
             status: pending,
             tx_summary: create_test_tx_summary(),
             metadata: ProposalMetadata {
+                required_signatures: Some(3),
+                signers: vec!["0xabc".to_string()],
                 signer_commitments_hex: vec![
                     "0xabc".to_string(),
                     "0xdef".to_string(),
@@ -853,11 +782,7 @@ mod tests {
 
     #[test]
     fn test_proposal_missing_signers() {
-        let pending = ProposalStatus::Pending {
-            signatures_collected: 1,
-            signatures_required: 3,
-            signers: vec!["0xABC".to_string()], // uppercase to test case-insensitivity
-        };
+        let pending = ProposalStatus::Pending;
 
         let proposal = Proposal {
             id: "0x123".to_string(),
@@ -866,6 +791,7 @@ mod tests {
             status: pending,
             tx_summary: create_test_tx_summary(),
             metadata: ProposalMetadata {
+                signers: vec!["0xABC".to_string()], // uppercase to test case-insensitivity
                 signer_commitments_hex: vec![
                     "0xabc".to_string(), // lowercase
                     "0xdef".to_string(),
@@ -895,7 +821,7 @@ mod tests {
             tx_summary: create_test_tx_summary(),
             metadata: ProposalMetadata {
                 required_signatures: Some(2),
-                collected_signatures: Some(2),
+                signers: vec!["0xabc".to_string(), "0xdef".to_string()],
                 ..Default::default()
             },
         };

@@ -97,7 +97,11 @@ impl ExportedProposal {
             new_psm_pubkey_hex: self.metadata.new_psm_pubkey_hex.clone(),
             new_psm_endpoint: self.metadata.new_psm_endpoint.clone(),
             required_signatures: Some(self.signatures_required),
-            collected_signatures: Some(self.signatures.len()),
+            signers: self
+                .signatures
+                .iter()
+                .map(|signature| signature.signer_commitment.clone())
+                .collect(),
         }
     }
 
@@ -241,20 +245,10 @@ impl ExportedProposal {
         let metadata = self.metadata();
         let transaction_type = metadata.to_transaction_type(&self.metadata.proposal_type)?;
 
-        let signers: Vec<String> = self
-            .signatures
-            .iter()
-            .map(|s| s.signer_commitment.clone())
-            .collect();
-
         let status = if self.signatures.len() >= self.signatures_required {
             ProposalStatus::Ready
         } else {
-            ProposalStatus::Pending {
-                signatures_collected: self.signatures.len(),
-                signatures_required: self.signatures_required,
-                signers,
-            }
+            ProposalStatus::Pending
         };
 
         Ok(Proposal {
