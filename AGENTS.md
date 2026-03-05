@@ -130,7 +130,7 @@ cd examples/web && npm run dev
 ```
 
 Manual policy:
-- Treat `examples/demo` and `examples/web` as required manual smoke checks for changes affecting server/client/multisig behavior.
+- Treat `examples/demo` and `examples/web` as required manual smoke checks for user-facing flow changes or transport-affecting changes.
 - Document in PR notes what was exercised and any skipped path with reason.
 
 ## 7) High-Risk Areas (Require Extra Care)
@@ -184,13 +184,11 @@ Apply these rules especially to:
   - Orchestrators coordinate calls and side effects.
   - Helpers perform pure data transformation/validation.
 - Avoid mixing transport calls, business rules, and serialization in one function.
-- Target shape:
-  - Helper functions: short and focused.
-  - Long workflows should be split into named steps with explicit inputs/outputs.
+- Long workflows should be split into named steps with explicit inputs/outputs.
 
 ### Comment Style
 
-- Do not add inline comments (`// ...`) in implementation code.
+- Avoid inline comments (`// ...`) in implementation code unless they clarify non-obvious logic.
 - Do not add step-by-step procedural comments (for example `1.`, `2.`, `3.`) in method docs.
 - Prefer clear naming and small functions over explanatory comments.
 - If documentation is required, keep it concise, high-level, and non-procedural.
@@ -229,6 +227,24 @@ Apply these rules especially to:
   - Prefer patterns like:
     - `SignatureInputs::from_json(delta_payload_json)` instead of `parse_unique_signature_inputs(...)`
 
+### Structural Preferences (Rust + TypeScript)
+
+- Avoid top-level standalone helper functions for one-off logic.
+  - If logic is specific to one workflow/type, keep it inline at call site or as a private method in the owning `impl`/class.
+  - Use module-level free functions only for clearly reusable utilities.
+- Prefer domain wrapper types over raw primitives at boundaries.
+  - If a value has behavior (encoding, hashing, normalization, conversion), model it as a struct/class with methods instead of passing raw bytes/maps through multiple layers.
+- Use one canonical conversion path per concern.
+  - For each domain (auth payloads, metadata mapping, signature encoding), define a single encode/decode path and reuse it.
+  - Avoid parallel ad-hoc transforms for the same data.
+- Keep transport adapters orchestration-only.
+  - HTTP/gRPC handlers should parse, call domain methods, and map errors.
+  - Keep hashing/normalization/validation logic in dedicated domain types/modules.
+- Prefer explicit typed intermediates over dense transformation pipelines.
+  - Break multi-step conversions into named intermediate values when it improves readability and debugging.
+- Keep fallback/default behavior explicit.
+  - Do not hide default injection in intermediate transforms unless the behavior is represented in type constructors or clearly named APIs.
+
 ### Immutability (TypeScript)
 
 - Prefer immutable variable bindings by default.
@@ -249,9 +265,6 @@ Apply these rules especially to:
 - Deterministic Time/Nonce Sources:
   - In core logic, avoid direct `Date.now()` and random calls.
   - Pass clock/nonce providers so logic remains testable and deterministic.
-- No Silent Fallbacks:
-  - Fallback behavior (for example online -> offline) must be explicit in API flow/return types.
-  - Do not hide fallback behavior in side effects.
 - Typed Errors With Stable Codes:
   - Use structured errors with stable codes at module boundaries.
   - Avoid branching on free-form error strings in core paths.
@@ -273,7 +286,7 @@ Apply these rules especially to:
   - Add characterization tests before moving complex logic.
   - Keep or improve existing integration coverage.
 - For multisig changes:
-  - Validate both Falcon and ECDSA paths.
+  - Validate both Falcon and ECDSA paths when signature/auth/proposal-signing logic is touched.
   - Validate online and offline proposal flows.
   - Validate both examples (`examples/demo`, `examples/web`) when applicable.
 
@@ -283,3 +296,18 @@ Apply these rules especially to:
   - `examples/demo`
   - `examples/web`
   - any affected docs and tests in the same PR.
+
+## 12) Required Intake Before Implementation
+
+For change requests (especially audit/security issue reports), collect the following before implementation starts.
+
+- `Issue`: title + report text + severity/priority (if known)
+- `Scope`: layers, transports, languages, and explicit out-of-scope items
+- `Constraints`: backward-compatibility expectations, allowed refactor size (`lean`/`moderate`/`broad`), and style constraints
+- `Expected behavior`: success criteria and what must fail/reject
+- `Validation gates`: required automated test commands and manual smoke checks
+- `Deliverable`: plan only, implementation + tests, review only, or patch + commit message
+
+Agent behavior:
+- If any intake items are missing, ask concise follow-up questions before coding.
+- If the user explicitly says to proceed with assumptions, proceed and state assumptions clearly.
