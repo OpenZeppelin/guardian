@@ -13,7 +13,7 @@ use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
-use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
+use crate::proposal::{Proposal, ProposalMetadata, TransactionType};
 use crate::psm_endpoint::verify_endpoint_commitment;
 
 use super::{
@@ -38,18 +38,6 @@ pub struct ProposalBuilder {
 }
 
 impl ProposalBuilder {
-    fn initial_proposal_status(required_signatures: usize, signer: String) -> ProposalStatus {
-        if required_signatures <= 1 {
-            ProposalStatus::Ready
-        } else {
-            ProposalStatus::Pending {
-                signatures_collected: 1,
-                signatures_required: required_signatures,
-                signers: vec![signer],
-            }
-        }
-    }
-
     /// Creates a new proposal builder for the given transaction type.
     pub fn new(transaction_type: TransactionType) -> Self {
         Self { transaction_type }
@@ -182,7 +170,7 @@ impl ProposalBuilder {
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
             required_signatures: Some(required_signatures),
-            collected_signatures: Some(1),
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
@@ -202,17 +190,13 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let proposal = Proposal {
-            id: response.commitment,
-            nonce,
-            transaction_type: TransactionType::AddCosigner { new_commitment },
-            status: Self::initial_proposal_status(
-                required_signatures,
-                key_manager.commitment_hex(),
-            ),
+        let mut proposal = Proposal::new(
             tx_summary,
+            nonce,
+            TransactionType::AddCosigner { new_commitment },
             metadata,
-        };
+        );
+        proposal.id = response.commitment;
 
         Ok(proposal)
     }
@@ -285,7 +269,7 @@ impl ProposalBuilder {
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
             required_signatures: Some(required_signatures),
-            collected_signatures: Some(1),
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
@@ -305,19 +289,15 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let proposal = Proposal {
-            id: response.commitment,
+        let mut proposal = Proposal::new(
+            tx_summary,
             nonce,
-            transaction_type: TransactionType::RemoveCosigner {
+            TransactionType::RemoveCosigner {
                 commitment: commitment_to_remove,
             },
-            status: Self::initial_proposal_status(
-                required_signatures,
-                key_manager.commitment_hex(),
-            ),
-            tx_summary,
             metadata,
-        };
+        );
+        proposal.id = response.commitment;
 
         Ok(proposal)
     }
@@ -372,7 +352,7 @@ impl ProposalBuilder {
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
             required_signatures: Some(required_signatures),
-            collected_signatures: Some(1),
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
@@ -393,21 +373,17 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let proposal = Proposal {
-            id: response.commitment,
+        let mut proposal = Proposal::new(
+            tx_summary,
             nonce,
-            transaction_type: TransactionType::P2ID {
+            TransactionType::P2ID {
                 recipient,
                 faucet_id,
                 amount,
             },
-            status: Self::initial_proposal_status(
-                required_signatures,
-                key_manager.commitment_hex(),
-            ),
-            tx_summary,
             metadata,
-        };
+        );
+        proposal.id = response.commitment;
 
         Ok(proposal)
     }
@@ -457,7 +433,7 @@ impl ProposalBuilder {
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
             required_signatures: Some(required_signatures),
-            collected_signatures: Some(1),
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
@@ -473,17 +449,13 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let proposal = Proposal {
-            id: response.commitment,
-            nonce,
-            transaction_type: TransactionType::ConsumeNotes { note_ids },
-            status: Self::initial_proposal_status(
-                required_signatures,
-                key_manager.commitment_hex(),
-            ),
+        let mut proposal = Proposal::new(
             tx_summary,
+            nonce,
+            TransactionType::ConsumeNotes { note_ids },
             metadata,
-        };
+        );
+        proposal.id = response.commitment;
 
         Ok(proposal)
     }
@@ -530,7 +502,7 @@ impl ProposalBuilder {
             new_psm_pubkey_hex: Some(word_to_hex(&new_psm_pubkey)),
             new_psm_endpoint: Some(new_psm_endpoint.clone()),
             required_signatures: Some(required_signatures),
-            collected_signatures: Some(1),
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
@@ -550,20 +522,16 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let proposal = Proposal {
-            id: response.commitment,
+        let mut proposal = Proposal::new(
+            tx_summary,
             nonce,
-            transaction_type: TransactionType::SwitchPsm {
+            TransactionType::SwitchPsm {
                 new_endpoint: new_psm_endpoint,
                 new_commitment: new_psm_pubkey,
             },
-            status: Self::initial_proposal_status(
-                required_signatures,
-                key_manager.commitment_hex(),
-            ),
-            tx_summary,
             metadata,
-        };
+        );
+        proposal.id = response.commitment;
 
         Ok(proposal)
     }

@@ -9,6 +9,7 @@ use crate::keystore::KeyManager;
 /// Metadata for multisig transaction proposals.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct ProposalMetadataPayload {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub proposal_type: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,

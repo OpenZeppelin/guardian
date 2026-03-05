@@ -534,10 +534,11 @@ let proposals = client.list_proposals().await?;
 
 for proposal in &proposals {
     match &proposal.status {
-        ProposalStatus::Pending { signatures_collected, signatures_required, signers } => {
+        ProposalStatus::Pending => {
+            let (signatures_collected, signatures_required) = proposal.signature_counts();
             println!("{}: {}/{} signatures",
                 proposal.id, signatures_collected, signatures_required);
-            println!("  Signed by: {:?}", signers);
+            println!("  Signed by: {:?}", proposal.metadata.signers);
         }
         ProposalStatus::Ready => {
             println!("{}: Ready to execute", proposal.id);
@@ -653,7 +654,7 @@ for note in notes {
 
 | Variant | Description |
 |---------|-------------|
-| `Pending { signatures_collected, signatures_required, signers }` | Collecting sigs |
+| `Pending` | Collecting sigs (`proposal.signature_counts()`, `proposal.metadata.signers`) |
 | `Ready` | Threshold met |
 | `Finalized` | Executed |
 
