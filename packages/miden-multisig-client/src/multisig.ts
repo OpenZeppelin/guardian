@@ -628,7 +628,7 @@ export class Multisig {
       id: proposalId,
       accountId: this._accountId,
       nonce: proposalNonce,
-      status: { type: 'pending', signaturesCollected: 0, signaturesRequired: this.threshold, signers: [] },
+      status: 'pending',
       txSummary: summaryBase64,
       signatures: [],
       metadata,
@@ -990,7 +990,7 @@ export class Multisig {
       }
     }
 
-    proposal.status = { type: 'finalized' };
+    proposal.status = 'finalized';
   }
 
   /**
@@ -1089,7 +1089,10 @@ export class Multisig {
       signerCommitments,
       signatureContext,
     );
-    const status = this.pendingStatusFromSignatures(signatures, metadata.proposalType);
+    const signaturesRequired = metadata.proposalType
+      ? this.getEffectiveThreshold(metadata.proposalType)
+      : this.threshold;
+    const status = signatures.length >= signaturesRequired ? 'ready' : 'pending';
 
     const proposal: Proposal = {
       id: exported.commitment,
@@ -1164,10 +1167,10 @@ export class Multisig {
 
     // Update status
     const proposalType = proposal.metadata?.proposalType;
-    proposal.status = this.pendingStatusFromSignatures(
-      proposal.signatures,
-      proposalType,
-    );
+    const signaturesRequired = proposalType
+      ? this.getEffectiveThreshold(proposalType)
+      : this.threshold;
+    proposal.status = proposal.signatures.length >= signaturesRequired ? 'ready' : 'pending';
 
     // Return updated JSON
     return this.exportProposalToJson(proposalId);
@@ -1234,25 +1237,6 @@ export class Multisig {
       txSummary: delta.deltaPayload.txSummary.data,
       signatures,
       metadata: resolvedMetadata,
-    };
-  }
-
-  private pendingStatusFromSignatures(
-    signatures: ProposalSignatureEntry[],
-    proposalType?: ProposalType,
-  ): ProposalStatus {
-    const signaturesRequired = proposalType
-      ? this.getEffectiveThreshold(proposalType)
-      : this.threshold;
-    const signaturesCollected = signatures.length;
-    if (signaturesCollected >= signaturesRequired) {
-      return { type: 'ready' };
-    }
-    return {
-      type: 'pending',
-      signaturesCollected,
-      signaturesRequired,
-      signers: signatures.map((s) => s.signerId),
     };
   }
 
@@ -1349,12 +1333,17 @@ export class Multisig {
   ): ProposalStatus {
     switch (status.status) {
       case 'pending':
-        return this.pendingStatusFromSignatures(pendingSignatures, proposalType);
+        {
+          const signaturesRequired = proposalType
+            ? this.getEffectiveThreshold(proposalType)
+            : this.threshold;
+          return pendingSignatures.length >= signaturesRequired ? 'ready' : 'pending';
+        }
       case 'candidate':
-        return { type: 'ready' };
+        return 'ready';
       case 'canonical':
       case 'discarded':
-        return { type: 'finalized' };
+        return 'finalized';
     }
   }
 }

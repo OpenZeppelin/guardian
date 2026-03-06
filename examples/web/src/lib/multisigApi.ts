@@ -44,7 +44,7 @@ function filterVisibleProposals(
   const stateUpdatedAtMs = state ? Date.parse(state.updatedAt) : Number.NaN;
 
   return proposals.filter((proposal) => {
-    if (proposal.status.type === 'finalized') {
+    if (proposal.status === 'finalized') {
       return false;
     }
 

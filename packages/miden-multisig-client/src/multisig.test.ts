@@ -697,7 +697,7 @@ describe('Multisig', () => {
 
       expect(proposals.length).toBe(1);
       expect(proposals[0].nonce).toBe(1);
-      expect(proposals[0].status.type).toBe('pending');
+      expect(proposals[0].status).toBe('pending');
     });
 
     it('should return ready status when enough signatures', async () => {
@@ -746,7 +746,7 @@ describe('Multisig', () => {
 
       const proposals = await multisig.syncProposals();
 
-      expect(proposals[0].status.type).toBe('ready');
+      expect(proposals[0].status).toBe('ready');
     });
 
     it('should reject non-32-byte signer IDs from PSM proposals', async () => {
@@ -1295,7 +1295,7 @@ describe('Multisig', () => {
         id: proposalId,
         accountId: multisig.accountId,
         nonce: 1,
-        status: { type: 'ready' },
+        status: 'ready',
         txSummary: 'AQID',
         signatures: [
           {
@@ -1346,7 +1346,7 @@ describe('Multisig', () => {
         id: proposalId,
         accountId: multisig.accountId,
         nonce: 1,
-        status: { type: 'ready' },
+        status: 'ready',
         txSummary: 'AQID',
         signatures: [
           {
@@ -1388,7 +1388,7 @@ describe('Multisig', () => {
         id: proposalId,
         accountId: multisig.accountId,
         nonce: 1,
-        status: { type: 'ready' },
+        status: 'ready',
         txSummary: 'AQID',
         signatures: [
           {
@@ -1440,7 +1440,7 @@ describe('Multisig', () => {
         id: proposalId,
         accountId: multisig.accountId,
         nonce: 1,
-        status: { type: 'ready' },
+        status: 'ready',
         txSummary: 'AQID',
         signatures: [
           {
@@ -1769,7 +1769,7 @@ describe('Multisig', () => {
       });
 
       let proposals = await multisig.syncProposals();
-      expect(proposals[0].status.type).toBe('pending');
+      expect(proposals[0].status).toBe('pending');
 
       // Second sync with 2 signatures (ready)
       const mockProposalsReady = [
@@ -1810,7 +1810,7 @@ describe('Multisig', () => {
       });
 
       proposals = await multisig.syncProposals();
-      expect(proposals[0].status.type).toBe('ready');
+      expect(proposals[0].status).toBe('ready');
     });
   });
 

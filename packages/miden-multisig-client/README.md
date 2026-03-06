@@ -118,7 +118,7 @@ Fetches proposals from the PSM server and updates local state:
 ```typescript
 const proposals = await multisig.syncProposals();
 for (const p of proposals) {
-  console.log(`${p.id}: ${p.status.type}`);
+  console.log(`${p.id}: ${p.status}`);
 }
 ```
 
@@ -129,9 +129,9 @@ Returns cached proposals without making a network request:
 ```typescript
 const proposals = multisig.listProposals();
 for (const p of proposals) {
-  if (p.status.type === 'pending') {
-    console.log(`Pending: ${p.status.signaturesCollected}/${p.status.signaturesRequired}`);
-  } else if (p.status.type === 'ready') {
+  if (p.status === 'pending') {
+    console.log(`Pending signatures: ${p.signatures.length}`);
+  } else if (p.status === 'ready') {
     console.log('Ready to execute!');
   }
 }
@@ -142,7 +142,7 @@ for (const p of proposals) {
 When a proposal has enough signatures:
 
 ```typescript
-if (proposal.status.type === 'ready') {
+if (proposal.status === 'ready') {
   await multisig.executeProposal(proposal.id, webClient);
   console.log('Transaction executed on-chain!');
 }

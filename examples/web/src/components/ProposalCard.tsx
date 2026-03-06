@@ -90,17 +90,17 @@ export function ProposalCard({
       )
     : false;
 
-  const canSign = proposal.status.type === 'pending' && !userSigned;
+  const canSign = proposal.status === 'pending' && !userSigned;
   const canExecute =
-    proposal.status.type === 'ready' ||
-    (proposal.status.type === 'pending' && proposal.signatures.length >= effectiveThreshold);
+    proposal.status === 'ready' ||
+    (proposal.status === 'pending' && proposal.signatures.length >= effectiveThreshold);
   const isSigningThis = signingProposal === proposal.id;
   const isExecutingThis = executingProposal === proposal.id;
 
   const statusVariant =
-    proposal.status.type === 'ready'
+    proposal.status === 'ready'
       ? 'default'
-      : proposal.status.type === 'finalized'
+      : proposal.status === 'finalized'
         ? 'secondary'
         : 'outline';
 
@@ -123,7 +123,7 @@ export function ProposalCard({
             </code>
           </div>
           <Badge variant={statusVariant} className="uppercase">
-            {proposal.status.type}
+            {proposal.status}
           </Badge>
         </div>
 
@@ -202,7 +202,7 @@ export function ProposalCard({
           >
             Export
           </Button>
-          {!canSign && !canExecute && proposal.status.type === 'finalized' && (
+          {!canSign && !canExecute && proposal.status === 'finalized' && (
             <span className="text-sm text-muted-foreground italic">Finalized</span>
           )}
         </div>
