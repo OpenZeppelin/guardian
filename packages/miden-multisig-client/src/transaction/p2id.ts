@@ -1,7 +1,6 @@
 import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
-  Felt,
   FeltArray,
   FungibleAsset,
   MidenArrays,
@@ -14,13 +13,13 @@ import {
   NoteTag,
   NoteType,
   OutputNote,
-  Rpo256,
   TransactionRequestBuilder,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
+import { RpoRandomCoin } from './rpoRandomCoin.js';
 
 function buildP2idNote(
   sender: AccountId,
@@ -30,10 +29,7 @@ function buildP2idNote(
   saltHex: string,
 ): Note {
   const salt = WordType.fromHex(normalizeHexWord(saltHex));
-  const serialNum = Rpo256.hashElements(new FeltArray([
-    ...salt.toFelts(),
-    new Felt(0n),
-  ]));
+  const serialNum = new RpoRandomCoin(salt).drawWord();
 
   const noteScript = NoteScript.p2id();
   const noteInputs = new NoteInputs(new FeltArray([
@@ -97,4 +93,3 @@ export function buildP2idTransactionRequest(
     salt: authSaltForReturn,
   };
 }
-
