@@ -75,19 +75,23 @@ vi.mock('./transaction.js', () => ({
   }),
 }));
 
-vi.mock('./utils/signature.js', () => ({
-  buildSignatureAdviceEntry: vi.fn().mockReturnValue({
-    key: { toHex: () => '0x' + 'f'.repeat(64) },
-    values: [1, 2, 3],
-  }),
-  signatureHexToBytes: vi.fn((hex: string) => new Uint8Array([0, 1, 2, 3])),
-}));
+vi.mock('./utils/signature.js', async () => {
+  const actual = await vi.importActual<typeof import('./utils/signature.js')>('./utils/signature.js');
+  return {
+    ...actual,
+    buildSignatureAdviceEntry: vi.fn().mockImplementation((signerCommitment: { toHex?: () => string }) => ({
+      key: { toHex: () => signerCommitment.toHex ? signerCommitment.toHex() : '0x' + 'f'.repeat(64) },
+      values: [1, 2, 3],
+    })),
+    signatureHexToBytes: vi.fn((hex: string) => new Uint8Array([0, 1, 2, 3])),
+  };
+});
 
 vi.mock('./utils/encoding.js', async () => {
   const actual = await vi.importActual<typeof import('./utils/encoding.js')>('./utils/encoding.js');
   return {
     ...actual,
-    normalizeHexWord: vi.fn((hex: string) => '0x' + hex.replace(/^0x/i, '').padStart(64, '0')),
+    normalizeHexWord: vi.fn((hex: string) => '0x' + hex.replace(/^0x/i, '').toLowerCase().padStart(64, '0')),
   };
 });
 
@@ -675,7 +679,7 @@ describe('Multisig', () => {
             proposer_id: '0x' + 'c'.repeat(64),
             cosigner_sigs: [
               {
-                signer_id: '0x' + 'd'.repeat(64),
+                signer_id: '0x' + 'a'.repeat(64),
                 signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
                 timestamp: '2024-01-01T00:00:00Z',
               },
@@ -726,7 +730,7 @@ describe('Multisig', () => {
             proposer_id: '0x' + 'c'.repeat(64),
             cosigner_sigs: [
               {
-                signer_id: '0x' + 'd'.repeat(64),
+                signer_id: '0x' + 'a'.repeat(64),
                 signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
                 timestamp: '2024-01-01T00:00:00Z',
               },
@@ -743,6 +747,105 @@ describe('Multisig', () => {
       const proposals = await multisig.syncProposals();
 
       expect(proposals[0].status.type).toBe('ready');
+    });
+
+    it('should reject non-32-byte signer IDs from PSM proposals', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockProposals = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'add_signer',
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+              description: '',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x1',
+                signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+            ],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: mockProposals }),
+      });
+
+      await expect(multisig.syncProposals()).rejects.toThrow('expected signerId as 32-byte hex');
+    });
+
+    it('should reject duplicate normalized signer IDs from PSM proposals', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockProposals = [
+        {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'add_signer',
+              target_threshold: 2,
+              signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+              description: '',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'A'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'f'.repeat(128) },
+                timestamp: '2024-01-01T00:00:01Z',
+              },
+            ],
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: mockProposals }),
+      });
+
+      await expect(multisig.syncProposals()).rejects.toThrow('duplicate signatures for signer');
     });
   });
 
@@ -867,7 +970,7 @@ describe('Multisig', () => {
     it('should sign a proposal', async () => {
       const config = {
         threshold: 1,
-        signerCommitments: ['0x' + 'a'.repeat(64)],
+        signerCommitments: [mockSigner.commitment],
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
@@ -975,7 +1078,7 @@ describe('Multisig', () => {
             proposer_id: '0x' + 'c'.repeat(64),
             cosigner_sigs: [
               {
-                signer_id: '0x' + 'd'.repeat(64),
+                signer_id: '0x' + 'a'.repeat(64),
                 signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
                 timestamp: '2024-01-01T00:00:00Z',
               },
@@ -1015,6 +1118,35 @@ describe('Multisig', () => {
       await expect(
         multisig.exportProposal('0x' + 'nonexistent'.repeat(5))
       ).rejects.toThrow('Proposal not found');
+    });
+  });
+
+  describe('importProposal', () => {
+    it('should reject imported signatures with non-32-byte signer IDs', () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const exported = {
+        accountId: multisig.accountId,
+        nonce: 1,
+        commitment: '0x' + 'c'.repeat(64),
+        txSummaryBase64: 'AQID',
+        signatures: [
+          {
+            commitment: '0x1',
+            signatureHex: '0x' + 'b'.repeat(128),
+          },
+        ],
+      };
+
+      expect(() => multisig.importProposal(JSON.stringify(exported))).toThrow(
+        'expected signerId as 32-byte hex',
+      );
     });
   });
 
@@ -1064,7 +1196,7 @@ describe('Multisig', () => {
             proposer_id: '0x' + 'c'.repeat(64),
             cosigner_sigs: [
               {
-                signer_id: '0x' + 'd'.repeat(64),
+                signer_id: '0x' + 'a'.repeat(64),
                 signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
                 timestamp: '2024-01-01T00:00:00Z',
               },
@@ -1115,7 +1247,7 @@ describe('Multisig', () => {
           proposer_id: '0x' + 'c'.repeat(64),
           cosigner_sigs: [
             {
-              signer_id: '0x' + 'd'.repeat(64),
+              signer_id: '0x' + 'a'.repeat(64),
               signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
               timestamp: '2024-01-01T00:00:00Z',
             },
@@ -1240,6 +1372,99 @@ describe('Multisig', () => {
         'Refusing to use PSM endpoint'
       );
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
+    });
+
+    it('should reject duplicate normalized signer IDs during execution', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: { type: 'ready' },
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+          {
+            signerId: '0x' + 'A'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'c'.repeat(128) },
+            timestamp: '2024-01-01T00:00:01Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_psm',
+          newPsmPubkey: '0x' + '1'.repeat(64),
+          newPsmEndpoint: 'http://new-psm.com',
+          description: '',
+        },
+      });
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        'duplicate signatures for signer',
+      );
+    });
+
+    it('should reject advice-map key collisions during execution', async () => {
+      const { buildSignatureAdviceEntry } = await import('./utils/signature.js');
+      vi.mocked(buildSignatureAdviceEntry)
+        .mockImplementationOnce(() => ({
+          key: { toHex: () => '0x' + 'f'.repeat(64) },
+          values: [1, 2, 3],
+        }) as any)
+        .mockImplementationOnce(() => ({
+          key: { toHex: () => '0x' + 'f'.repeat(64) },
+          values: [1, 2, 3],
+        }) as any);
+
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: { type: 'ready' },
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+          {
+            signerId: '0x' + 'b'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'c'.repeat(128) },
+            timestamp: '2024-01-01T00:00:01Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_psm',
+          newPsmPubkey: '0x' + '1'.repeat(64),
+          newPsmEndpoint: 'http://new-psm.com',
+          description: '',
+        },
+      });
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        'Duplicate advice-map key detected',
+      );
     });
   });
 
