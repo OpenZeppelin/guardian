@@ -1,10 +1,7 @@
 import type { ProposalType as PsmProposalType } from '@openzeppelin/psm-client';
 export type ProposalType = Exclude<PsmProposalType, 'custom'>;
 
-export type ProposalStatus =
-  | { type: 'pending'; signaturesCollected: number; signaturesRequired: number; signers: string[] }
-  | { type: 'ready' }
-  | { type: 'finalized' };
+export type ProposalStatus = 'pending' | 'ready' | 'finalized';
 
 export interface ProposalSignatureEntry {
   signerId: string;
@@ -77,4 +74,3 @@ export interface ExportedProposal {
   }>;
   metadata?: ProposalMetadata;
 }
-
