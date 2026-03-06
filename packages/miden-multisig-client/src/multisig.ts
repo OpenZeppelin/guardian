@@ -42,7 +42,12 @@ import {
   uint8ArrayToBase64,
   normalizeHexWord,
 } from './utils/encoding.js';
-import { buildSignatureAdviceEntry, signatureHexToBytes } from './utils/signature.js';
+import {
+  buildSignatureAdviceEntry,
+  canonicalizeSignature,
+  normalizeSignerCommitment,
+  signatureHexToBytes,
+} from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
 import { AccountInspector } from './inspector.js';
 
@@ -111,6 +116,32 @@ export class Multisig {
       throw new Error('Missing Miden RPC endpoint in MultisigClient configuration');
     }
     return this.midenRpcEndpoint;
+  }
+
+  private canonicalizedProposalSignatures(
+    signatures: ProposalSignatureEntry[],
+    signerCommitments: Set<string>,
+    context: string,
+  ): ProposalSignatureEntry[] {
+    const signaturesBySigner = new Map<string, ProposalSignatureEntry>();
+
+    for (const signature of signatures) {
+      let canonicalized: ProposalSignatureEntry;
+      try {
+        canonicalized = canonicalizeSignature(signature, signerCommitments);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${context}: ${message}`);
+      }
+
+      if (signaturesBySigner.has(canonicalized.signerId)) {
+        throw new Error(`${context}: duplicate signatures for signer ${canonicalized.signerId}`);
+      }
+
+      signaturesBySigner.set(canonicalized.signerId, canonicalized);
+    }
+
+    return Array.from(signaturesBySigner.values());
   }
 
   private async verifyPsmEndpointCommitment(endpoint: string | undefined, expectedCommitment: string): Promise<void> {
@@ -817,7 +848,17 @@ export class Multisig {
       ? this.getEffectiveThreshold(proposalType)
       : this.threshold;
 
-    if (proposal.signatures.length < effectiveThreshold) {
+    const signatureContext = `Invalid proposal signatures for ${proposalId}`;
+    const signerCommitments = new Set(
+      this.signerCommitments.map((signerId) => normalizeSignerCommitment(signerId)),
+    );
+    const signaturesForExecution = this.canonicalizedProposalSignatures(
+      proposal.signatures,
+      signerCommitments,
+      signatureContext,
+    );
+
+    if (signaturesForExecution.length < effectiveThreshold) {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
@@ -846,9 +887,10 @@ export class Multisig {
     const txCommitmentHex = txSummary.toCommitment().toHex();
 
     const adviceMap = new AdviceMap();
+    const adviceMapKeys = new Set<string>();
 
-    for (const cosignerSig of proposal.signatures) {
-      const signerCommitment = Word.fromHex(normalizeHexWord(cosignerSig.signerId));
+    for (const cosignerSig of signaturesForExecution) {
+      const signerCommitment = Word.fromHex(cosignerSig.signerId);
       const sigBytes = signatureHexToBytes(cosignerSig.signature.signature);
       const signature = Signature.deserialize(sigBytes);
       const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
@@ -857,6 +899,11 @@ export class Multisig {
         txCommitment,
         signature
       );
+      const keyHex = normalizeHexWord(key.toHex());
+      if (adviceMapKeys.has(keyHex)) {
+        throw new Error(`Duplicate advice-map key detected for proposal ${proposalId}`);
+      }
+      adviceMapKeys.add(keyHex);
       adviceMap.insert(key, new FeltArray(values));
     }
 
@@ -881,6 +928,11 @@ export class Multisig {
         txCommitmentForAck,
         ackSignature
       );
+      const ackKeyHex = normalizeHexWord(ackKey.toHex());
+      if (adviceMapKeys.has(ackKeyHex)) {
+        throw new Error(`Duplicate advice-map key detected for PSM acknowledgment in proposal ${proposalId}`);
+      }
+      adviceMapKeys.add(ackKeyHex);
       adviceMap.insert(ackKey, new FeltArray(ackValues));
     }
 
@@ -1021,16 +1073,20 @@ export class Multisig {
     }
     const metadata = exported.metadata as ProposalMetadata;
 
-    const signaturesCollected = exported.signatures.length;
-    const signaturesRequired = this.getEffectiveThreshold(metadata.proposalType);
-    const status: ProposalStatus = signaturesCollected >= signaturesRequired
-      ? { type: 'ready' }
-      : {
-          type: 'pending',
-          signaturesCollected,
-          signaturesRequired,
-          signers: exported.signatures.map((s) => s.commitment),
-        };
+    const signatureContext = 'Invalid imported proposal signatures';
+    const signerCommitments = new Set(
+      this.signerCommitments.map((signerId) => normalizeSignerCommitment(signerId)),
+    );
+    const signatures = this.canonicalizedProposalSignatures(
+      exported.signatures.map((s) => ({
+        signerId: s.commitment,
+        signature: { scheme: 'falcon' as const, signature: s.signatureHex },
+        timestamp: s.timestamp || new Date().toISOString(),
+      })),
+      signerCommitments,
+      signatureContext,
+    );
+    const status = this.pendingStatusFromSignatures(signatures, metadata.proposalType);
 
     const proposal: Proposal = {
       id: exportedCommitment,
@@ -1038,11 +1094,7 @@ export class Multisig {
       nonce: exported.nonce,
       status,
       txSummary: exported.txSummaryBase64,
-      signatures: exported.signatures.map((s) => ({
-        signerId: s.commitment,
-        signature: { scheme: 'falcon' as const, signature: s.signatureHex },
-        timestamp: s.timestamp || new Date().toISOString(),
-      })),
+      signatures,
       metadata,
     };
 
@@ -1065,9 +1117,26 @@ export class Multisig {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
 
+    const localSignatureContext = `Invalid local proposal signatures for ${proposalId}`;
+    const signerCommitments = new Set(
+      this.signerCommitments.map((signerId) => normalizeSignerCommitment(signerId)),
+    );
+    const existingSignatures = this.canonicalizedProposalSignatures(
+      proposal.signatures,
+      signerCommitments,
+      localSignatureContext,
+    );
+    let signerCommitment: string;
+    try {
+      signerCommitment = normalizeSignerCommitment(this.signer.commitment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid local signer commitment: ${message}`);
+    }
+
     // Check if already signed
-    const alreadySigned = proposal.signatures.some(
-      (s) => s.signerId.toLowerCase() === this.signer.commitment.toLowerCase()
+    const alreadySigned = existingSignatures.some(
+      (s) => s.signerId === signerCommitment
     );
     if (alreadySigned) {
       throw new Error('You have already signed this proposal');
@@ -1079,29 +1148,27 @@ export class Multisig {
     const signatureHex = this.signer.signCommitment(commitmentToSign);
 
     // Add signature to local proposal
-    proposal.signatures.push({
-      signerId: this.signer.commitment,
-      signature: { scheme: 'falcon', signature: signatureHex },
-      timestamp: new Date().toISOString(),
-    });
+    const signatures = [
+      ...existingSignatures,
+      {
+        signerId: signerCommitment,
+        signature: { scheme: 'falcon' as const, signature: signatureHex },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const canonicalizedSignatures = this.canonicalizedProposalSignatures(
+      signatures,
+      signerCommitments,
+      localSignatureContext,
+    );
+    proposal.signatures = canonicalizedSignatures;
 
     // Update status
-    const signaturesCollected = proposal.signatures.length;
     const proposalType = proposal.metadata?.proposalType;
-    const effectiveThreshold = proposalType
-      ? this.getEffectiveThreshold(proposalType)
-      : this.threshold;
-
-    if (signaturesCollected >= effectiveThreshold) {
-      proposal.status = { type: 'ready' };
-    } else if (proposal.status.type === 'pending') {
-      proposal.status = {
-        type: 'pending',
-        signaturesCollected,
-        signaturesRequired: effectiveThreshold,
-        signers: proposal.signatures.map((s) => s.signerId),
-      };
-    }
+    proposal.status = this.pendingStatusFromSignatures(
+      proposal.signatures,
+      proposalType,
+    );
 
     // Return updated JSON
     return this.exportProposalToJson(proposal.id);
@@ -1241,25 +1308,45 @@ export class Multisig {
       throw new Error('Missing proposal metadata');
     }
 
-    const status = this.deltaStatusToProposalStatus(delta.status, resolvedMetadata.proposalType);
+    const localSignatureContext = `Invalid local proposal signatures for ${proposalId}`;
+    const signerCommitments = new Set(
+      this.signerCommitments.map((signerId) => normalizeSignerCommitment(signerId)),
+    );
+    const existingSignaturesCanonical = this.canonicalizedProposalSignatures(
+      existingSignatures ?? [],
+      signerCommitments,
+      localSignatureContext,
+    );
 
-    const signaturesFromStatus =
-      delta.status.status === 'pending'
-        ? delta.status.cosignerSigs.map((s) => ({
-            signerId: s.signerId,
-            signature: s.signature,
-            timestamp: s.timestamp,
-          }))
-        : [];
+    const pendingStatus = delta.status.status === 'pending' ? delta.status : null;
+    const serverSignatureContext = `Invalid server proposal signatures for ${proposalId}`;
+    let signaturesFromStatus: ProposalSignatureEntry[] = [];
+    if (pendingStatus !== null) {
+      signaturesFromStatus = this.canonicalizedProposalSignatures(
+        pendingStatus.cosignerSigs.map((s) => ({
+          signerId: s.signerId,
+          signature: s.signature,
+          timestamp: s.timestamp,
+        })),
+        signerCommitments,
+        serverSignatureContext,
+      );
+    }
 
     const signaturesMap = new Map<string, ProposalSignatureEntry>();
-    for (const sig of existingSignatures ?? []) {
+    for (const sig of existingSignaturesCanonical) {
       signaturesMap.set(sig.signerId, sig);
     }
     for (const sig of signaturesFromStatus) {
       signaturesMap.set(sig.signerId, sig);
     }
     const signatures = Array.from(signaturesMap.values());
+
+    const status = this.deltaStatusToProposalStatus(
+      delta.status,
+      resolvedMetadata.proposalType,
+      signatures,
+    );
 
     return {
       id: normalizedProposalId,
@@ -1269,6 +1356,25 @@ export class Multisig {
       txSummary: delta.deltaPayload.txSummary.data,
       signatures,
       metadata: resolvedMetadata,
+    };
+  }
+
+  private pendingStatusFromSignatures(
+    signatures: ProposalSignatureEntry[],
+    proposalType?: ProposalType,
+  ): ProposalStatus {
+    const signaturesRequired = proposalType
+      ? this.getEffectiveThreshold(proposalType)
+      : this.threshold;
+    const signaturesCollected = signatures.length;
+    if (signaturesCollected >= signaturesRequired) {
+      return { type: 'ready' };
+    }
+    return {
+      type: 'pending',
+      signaturesCollected,
+      signaturesRequired,
+      signers: signatures.map((s) => s.signerId),
     };
   }
 
@@ -1358,23 +1464,14 @@ export class Multisig {
     }
   }
 
-  private deltaStatusToProposalStatus(status: DeltaStatus, proposalType?: ProposalType): ProposalStatus {
+  private deltaStatusToProposalStatus(
+    status: DeltaStatus,
+    proposalType?: ProposalType,
+    pendingSignatures: ProposalSignatureEntry[] = [],
+  ): ProposalStatus {
     switch (status.status) {
-      case 'pending': {
-        const signaturesCollected = status.cosignerSigs.length;
-        const signaturesRequired = proposalType
-          ? this.getEffectiveThreshold(proposalType)
-          : this.threshold;
-        if (signaturesCollected >= signaturesRequired) {
-          return { type: 'ready' };
-        }
-        return {
-          type: 'pending',
-          signaturesCollected,
-          signaturesRequired,
-          signers: status.cosignerSigs.map((s) => s.signerId),
-        };
-      }
+      case 'pending':
+        return this.pendingStatusFromSignatures(pendingSignatures, proposalType);
       case 'candidate':
         return { type: 'ready' };
       case 'canonical':
