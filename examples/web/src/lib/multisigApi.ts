@@ -14,6 +14,66 @@ import {
 import type { WebClient } from '@miden-sdk/miden-sdk';
 import type { SignerInfo } from '@/types';
 
+function currentAccountNonce(multisig: Multisig): number | null {
+  if (!multisig.account) {
+    return null;
+  }
+
+  try {
+    const nonce = multisig.account.nonce().asInt();
+    if (nonce > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    return Number(nonce);
+  } catch {
+    return null;
+  }
+}
+
+function proposalNonce(multisig: Multisig): number | undefined {
+  const nonce = currentAccountNonce(multisig);
+  return nonce === null ? undefined : nonce;
+}
+
+function filterVisibleProposals(
+  multisig: Multisig,
+  proposals: Proposal[],
+  state?: AccountState,
+): Proposal[] {
+  const accountNonce = currentAccountNonce(multisig);
+  const stateUpdatedAtMs = state ? Date.parse(state.updatedAt) : Number.NaN;
+
+  return proposals.filter((proposal) => {
+    if (proposal.status.type === 'finalized') {
+      return false;
+    }
+
+    if (accountNonce !== null && proposal.nonce < accountNonce) {
+      return false;
+    }
+
+    const hasTimestampStyleNonce = proposal.nonce >= 1_000_000_000_000;
+    if (
+      hasTimestampStyleNonce &&
+      Number.isFinite(stateUpdatedAtMs) &&
+      proposal.nonce < stateUpdatedAtMs
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+async function syncVisibleProposals(multisig: Multisig): Promise<Proposal[]> {
+  const proposals = await multisig.syncProposals();
+  return filterVisibleProposals(multisig, proposals);
+}
+
+function listVisibleProposals(multisig: Multisig): Proposal[] {
+  return filterVisibleProposals(multisig, multisig.listProposals());
+}
+
 /**
  * Initialize MultisigClient and get PSM pubkey.
  */
@@ -110,8 +170,8 @@ export async function fetchAccountState(
 export async function syncAll(
   multisig: Multisig,
 ): Promise<{ proposals: Proposal[]; state: AccountState; notes: ConsumableNote[] }> {
-  const proposals = await multisig.syncProposals();
   const state = await multisig.syncState();
+  const proposals = filterVisibleProposals(multisig, await multisig.syncProposals(), state);
   const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
 }
@@ -135,11 +195,11 @@ export async function createAddSignerProposal(
   increaseThreshold: boolean,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-  const proposal = await multisig.createAddSignerProposal(commitment, undefined, newThreshold);
-  const proposals = await multisig.syncProposals();
+  const proposal = await multisig.createAddSignerProposal(commitment, proposalNonce(multisig), newThreshold);
+  const proposals = await syncVisibleProposals(multisig);
   // Ensure the new proposal is included
   if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: [...proposals, proposal] };
+    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
   }
   return { proposal, proposals };
 }
@@ -152,10 +212,14 @@ export async function createRemoveSignerProposal(
   signerToRemove: string,
   newThreshold?: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createRemoveSignerProposal(signerToRemove, undefined, newThreshold);
-  const proposals = await multisig.syncProposals();
+  const proposal = await multisig.createRemoveSignerProposal(
+    signerToRemove,
+    proposalNonce(multisig),
+    newThreshold,
+  );
+  const proposals = await syncVisibleProposals(multisig);
   if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: [...proposals, proposal] };
+    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
   }
   return { proposal, proposals };
 }
@@ -167,10 +231,10 @@ export async function createChangeThresholdProposal(
   multisig: Multisig,
   newThreshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createChangeThresholdProposal(newThreshold);
-  const proposals = await multisig.syncProposals();
+  const proposal = await multisig.createChangeThresholdProposal(newThreshold, proposalNonce(multisig));
+  const proposals = await syncVisibleProposals(multisig);
   if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: [...proposals, proposal] };
+    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
   }
   return { proposal, proposals };
 }
@@ -182,10 +246,10 @@ export async function createConsumeNotesProposal(
   multisig: Multisig,
   noteIds: string[],
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createConsumeNotesProposal(noteIds);
-  const proposals = await multisig.syncProposals();
+  const proposal = await multisig.createConsumeNotesProposal(noteIds, proposalNonce(multisig));
+  const proposals = await syncVisibleProposals(multisig);
   if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: [...proposals, proposal] };
+    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
   }
   return { proposal, proposals };
 }
@@ -199,10 +263,15 @@ export async function createP2idProposal(
   faucetId: string,
   amount: bigint,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createP2idProposal(recipientId, faucetId, amount);
-  const proposals = await multisig.syncProposals();
+  const proposal = await multisig.createP2idProposal(
+    recipientId,
+    faucetId,
+    amount,
+    proposalNonce(multisig),
+  );
+  const proposals = await syncVisibleProposals(multisig);
   if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: [...proposals, proposal] };
+    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
   }
   return { proposal, proposals };
 }
@@ -216,8 +285,12 @@ export async function createSwitchPsmProposal(
   newPsmEndpoint: string,
   newPsmPubkey: string,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createSwitchPsmProposal(newPsmEndpoint, newPsmPubkey);
-  const proposals = multisig.listProposals();
+  const proposal = await multisig.createSwitchPsmProposal(
+    newPsmEndpoint,
+    newPsmPubkey,
+    proposalNonce(multisig),
+  );
+  const proposals = listVisibleProposals(multisig);
   return { proposal, proposals };
 }
 
@@ -229,7 +302,7 @@ export async function signProposal(
   proposalId: string,
 ): Promise<Proposal[]> {
   await multisig.signProposal(proposalId);
-  return multisig.syncProposals();
+  return syncVisibleProposals(multisig);
 }
 
 /**
@@ -260,7 +333,7 @@ export function signProposalOffline(
   proposalId: string,
 ): { json: string; proposals: Proposal[] } {
   const json = multisig.signProposalOffline(proposalId);
-  const proposals = multisig.listProposals();
+  const proposals = listVisibleProposals(multisig);
   return { json, proposals };
 }
 
@@ -272,6 +345,6 @@ export function importProposal(
   json: string,
 ): { proposal: Proposal; proposals: Proposal[] } {
   const proposal = multisig.importProposal(json);
-  const proposals = multisig.listProposals();
+  const proposals = listVisibleProposals(multisig);
   return { proposal, proposals };
 }
