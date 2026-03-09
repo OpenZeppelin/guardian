@@ -61,9 +61,9 @@ pub enum MultisigError {
     #[error("proposal not ready: need {required} signatures, have {collected}")]
     ProposalNotReady { required: usize, collected: usize },
 
-    /// Key manager not configured.
-    #[error("key manager not configured")]
-    NoKeyManager,
+    /// Signer not configured.
+    #[error("signer not configured")]
+    NoSigner,
 
     /// Missing required configuration.
     #[error("missing required configuration: {0}")]

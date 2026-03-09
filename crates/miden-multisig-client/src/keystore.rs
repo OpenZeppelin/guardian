@@ -1,112 +1,15 @@
-//! Key management for PSM authentication.
+//! Signer re-exports and hex utilities used by the multisig client.
 
-use miden_client::Serializable;
-use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature};
 use miden_protocol::{FieldElement, Word};
 
-/// Trait for managing keys used in PSM authentication and transaction signing.
-pub trait KeyManager: Send + Sync {
-    /// Returns the public key commitment as a Word.
-    fn commitment(&self) -> Word;
-
-    /// Returns the public key commitment as a hex string with 0x prefix.
-    fn commitment_hex(&self) -> String;
-
-    /// Signs a message (Word) and returns the signature.
-    fn sign(&self, message: Word) -> Signature;
-
-    /// Signs a message and returns the hex-encoded signature with 0x prefix.
-    fn sign_hex(&self, message: Word) -> String {
-        let sig = self.sign(message);
-        format!("0x{}", hex::encode(sig.to_bytes()))
-    }
-
-    /// Returns a clone of the secret key for PSM authentication.
-    ///
-    /// This is needed to authenticate PSM client requests.
-    fn clone_secret_key(&self) -> SecretKey;
-}
-
-/// Default key store implementation using Falcon keys.
-///
-/// This stores a Falcon secret key and provides signing capabilities
-/// for PSM authentication and transaction signing.
-pub struct PsmKeyStore {
-    secret_key: SecretKey,
-    public_key: PublicKey,
-    commitment: Word,
-    commitment_hex: String,
-}
-
-impl PsmKeyStore {
-    /// Creates a new key store with the given secret key.
-    pub fn new(secret_key: SecretKey) -> Self {
-        let public_key = secret_key.public_key();
-        // Use the same commitment computation as miden-objects (SequentialCommit trait
-        let commitment = public_key.to_commitment();
-        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
-
-        Self {
-            secret_key,
-            public_key,
-            commitment,
-            commitment_hex,
-        }
-    }
-
-    /// Generates a new random key store.
-    pub fn generate() -> Self {
-        let secret_key = SecretKey::new();
-        Self::new(secret_key)
-    }
-
-    /// Returns a reference to the secret key.
-    pub fn secret_key(&self) -> &SecretKey {
-        &self.secret_key
-    }
-
-    /// Returns a reference to the public key.
-    pub fn public_key(&self) -> &PublicKey {
-        &self.public_key
-    }
-}
-
-impl KeyManager for PsmKeyStore {
-    fn commitment(&self) -> Word {
-        self.commitment
-    }
-
-    fn commitment_hex(&self) -> String {
-        self.commitment_hex.clone()
-    }
-
-    fn sign(&self, message: Word) -> Signature {
-        self.secret_key.sign(message)
-    }
-
-    fn clone_secret_key(&self) -> SecretKey {
-        self.secret_key.clone()
-    }
-}
+pub use private_state_manager_client::{FalconKeyStore, Signer};
 
 /// Strips the "0x" prefix from a hex string if present.
-///
-/// # Example
-/// ```ignore
-/// assert_eq!(strip_hex_prefix("0xabcd"), "abcd");
-/// assert_eq!(strip_hex_prefix("abcd"), "abcd");
-/// ```
 pub fn strip_hex_prefix(input: &str) -> &str {
     input.strip_prefix("0x").unwrap_or(input)
 }
 
 /// Ensures the hex string has a "0x" prefix.
-///
-/// # Example
-/// ```ignore
-/// assert_eq!(ensure_hex_prefix("abcd"), "0xabcd");
-/// assert_eq!(ensure_hex_prefix("0xabcd"), "0xabcd");
-/// ```
 pub fn ensure_hex_prefix(input: &str) -> String {
     if input.starts_with("0x") {
         input.to_string()
@@ -116,12 +19,6 @@ pub fn ensure_hex_prefix(input: &str) -> String {
 }
 
 /// Validates that a string is valid commitment hex (64 hex chars, optionally with 0x prefix).
-///
-/// # Example
-/// ```ignore
-/// validate_commitment_hex("0x1234...").unwrap(); // 64 hex chars after 0x
-/// validate_commitment_hex("abc").unwrap_err();   // too short
-/// ```
 pub fn validate_commitment_hex(input: &str) -> Result<(), String> {
     let stripped = strip_hex_prefix(input);
     if stripped.len() != 64 {
@@ -161,79 +58,65 @@ pub fn word_from_hex(hex_str: &str) -> Result<Word, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+    use private_state_manager_shared::hex::FromHex;
+    use private_state_manager_shared::hex::IntoHex;
 
     #[test]
-    fn generate_creates_valid_keystore() {
-        let keystore = PsmKeyStore::generate();
-        assert!(keystore.commitment_hex().starts_with("0x"));
-        assert_eq!(keystore.commitment_hex().len(), 66);
+    fn generate_creates_valid_signer() {
+        let signer = FalconKeyStore::generate();
+        assert!(signer.commitment_hex().starts_with("0x"));
+        assert_eq!(signer.commitment_hex().len(), 66);
     }
 
     #[test]
     fn new_from_secret_key_derives_correct_commitment() {
         let secret_key = SecretKey::new();
         let expected_commitment = secret_key.public_key().to_commitment();
-        let keystore = PsmKeyStore::new(secret_key);
-        assert_eq!(keystore.commitment(), expected_commitment);
+        let signer = FalconKeyStore::new(secret_key);
+        assert_eq!(signer.commitment(), expected_commitment);
     }
 
     #[test]
     fn commitment_hex_is_consistent() {
-        let keystore = PsmKeyStore::generate();
-        let hex1 = keystore.commitment_hex();
-        let hex2 = keystore.commitment_hex();
+        let signer = FalconKeyStore::generate();
+        let hex1 = signer.commitment_hex();
+        let hex2 = signer.commitment_hex();
         assert_eq!(hex1, hex2);
     }
 
     #[test]
     fn commitment_roundtrip_via_hex() {
-        let keystore = PsmKeyStore::generate();
-        let hex = keystore.commitment_hex();
+        let signer = FalconKeyStore::generate();
+        let hex = signer.commitment_hex();
         let parsed = word_from_hex(&hex).unwrap();
-        assert_eq!(parsed, keystore.commitment());
+        assert_eq!(parsed, signer.commitment());
     }
 
     #[test]
     fn sign_produces_verifiable_signature() {
-        let keystore = PsmKeyStore::generate();
+        let signer = FalconKeyStore::generate();
         let message = Word::default();
-        let signature = keystore.sign(message);
-        let result = keystore.public_key().verify(message, &signature);
-        assert!(result);
+        let signature = signer.sign_word(message);
+        let public_key = PublicKey::from_hex(&signer.public_key_hex()).unwrap();
+        assert!(public_key.verify(message, &signature));
     }
 
     #[test]
     fn sign_hex_returns_hex_encoded_signature() {
-        let keystore = PsmKeyStore::generate();
+        let signer = FalconKeyStore::generate();
         let message = Word::default();
-        let sig_hex = keystore.sign_hex(message);
+        let sig_hex = signer.sign_word(message).into_hex();
         assert!(sig_hex.starts_with("0x"));
         assert!(hex::decode(sig_hex.strip_prefix("0x").unwrap()).is_ok());
     }
 
     #[test]
-    fn clone_secret_key_produces_equivalent_key() {
-        let keystore = PsmKeyStore::generate();
-        let cloned = keystore.clone_secret_key();
-        let message = Word::default();
-        let sig1 = keystore.sign(message);
-        let sig2 = cloned.sign(message);
-        assert!(keystore.public_key().verify(message, &sig1));
-        assert!(keystore.public_key().verify(message, &sig2));
-    }
-
-    #[test]
-    fn secret_key_accessor_returns_key() {
-        let keystore = PsmKeyStore::generate();
-        let key = keystore.secret_key();
-        assert!(key.public_key().to_commitment() == keystore.commitment());
-    }
-
-    #[test]
-    fn public_key_accessor_returns_key() {
-        let keystore = PsmKeyStore::generate();
-        let pubkey = keystore.public_key();
-        assert_eq!(pubkey.to_commitment(), keystore.commitment());
+    fn public_key_hex_roundtrips() {
+        let signer = FalconKeyStore::new(SecretKey::new());
+        let public_key = PublicKey::from_hex(&signer.public_key_hex()).unwrap();
+        assert_eq!(public_key.to_commitment(), signer.commitment());
     }
 
     #[test]

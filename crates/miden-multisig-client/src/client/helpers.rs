@@ -8,7 +8,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::utils::serde::Serializable;
-use private_state_manager_client::{Auth, DeltaObject, FalconRpoSigner, PsmClient};
+use private_state_manager_client::{DeltaObject, PsmClient};
 use private_state_manager_shared::hex::FromHex;
 use crate::psm_endpoint::verify_endpoint_commitment;
 use private_state_manager_shared::{FromJson, ToJson};
@@ -33,13 +33,7 @@ impl MultisigClient {
     /// Creates an authenticated PSM client.
     pub(crate) async fn create_authenticated_psm_client(&self) -> Result<PsmClient> {
         let client = self.create_psm_client().await?;
-
-        // Create Auth from our key manager's secret key
-        let secret_key = self.key_manager.clone_secret_key();
-        let signer = FalconRpoSigner::new(secret_key);
-        let auth = Auth::FalconRpoSigner(signer);
-
-        Ok(client.with_auth(auth))
+        Ok(client.with_signer(self.signer.clone()))
     }
 
     pub(crate) async fn get_on_chain_account_commitment(

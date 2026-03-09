@@ -1,5 +1,5 @@
-use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
+use crate::keystore::Signer;
 use crate::proto::state_manager_client::StateManagerClient;
 use crate::proto::{
     AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaProposalsRequest,
@@ -12,7 +12,10 @@ use crate::proto::{
 use chrono::Utc;
 use miden_protocol::account::AccountId;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
+use private_state_manager_shared::auth_request_message::AuthRequestMessage;
 use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+use private_state_manager_shared::hex::IntoHex;
+use std::sync::Arc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
@@ -23,10 +26,10 @@ use tonic::transport::Channel;
 /// - Delta (state change) management
 /// - Multi-party proposal workflows
 ///
-/// All methods that interact with account data require authentication via [`Auth`].
+/// All methods that interact with account data require authentication via a configured signer.
 pub struct PsmClient {
     client: StateManagerClient<Channel>,
-    auth: Option<Auth>,
+    signer: Option<Arc<dyn Signer>>,
 }
 
 impl PsmClient {
@@ -37,24 +40,25 @@ impl PsmClient {
     pub async fn connect(endpoint: impl Into<String>) -> ClientResult<Self> {
         let endpoint = endpoint.into();
         let client = StateManagerClient::connect(endpoint).await?;
-        Ok(Self { client, auth: None })
+        Ok(Self {
+            client,
+            signer: None,
+        })
     }
 
-    /// Configures authentication for this client.
-    ///
-    /// Authentication is required for all account operations.
-    pub fn with_auth(mut self, auth: Auth) -> Self {
-        self.auth = Some(auth);
+    /// Configures the signer used for authenticated PSM requests.
+    pub fn with_signer(mut self, signer: Arc<dyn Signer>) -> Self {
+        self.signer = Some(signer);
         self
     }
 
-    /// Returns the hex-encoded public key of the configured auth, if any.
-    pub fn auth_pubkey_hex(&self) -> Result<String, ClientError> {
-        self.auth
+    /// Returns the hex-encoded public key of the configured signer, if any.
+    pub fn signer_pubkey_hex(&self) -> Result<String, ClientError> {
+        self.signer
             .as_ref()
-            .map(|auth| auth.public_key_hex())
+            .map(|signer| signer.public_key_hex())
             .ok_or_else(|| {
-                ClientError::InvalidResponse("PSM client has no auth configured".to_string())
+                ClientError::InvalidResponse("PSM client has no signer configured".to_string())
             })
     }
 
@@ -63,11 +67,13 @@ impl PsmClient {
         request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
     ) -> ClientResult<()> {
-        if let Some(auth) = &self.auth {
-            let pubkey_hex = auth.public_key_hex();
+        if let Some(signer) = &self.signer {
+            let pubkey_hex = signer.public_key_hex();
             let timestamp = Utc::now().timestamp_millis();
             let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
-            let signature_hex = auth.sign_request(account_id, timestamp, &request_payload);
+            let auth_message =
+                AuthRequestMessage::new(*account_id, timestamp, request_payload).to_word();
+            let signature_hex = signer.sign_word(auth_message).into_hex();
 
             let pubkey_metadata = MetadataValue::try_from(&pubkey_hex)
                 .map_err(|e| ClientError::InvalidResponse(format!("Invalid pubkey: {e}")))?;

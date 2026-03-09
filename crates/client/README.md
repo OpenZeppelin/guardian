@@ -7,12 +7,17 @@ A minimal Rust client library for interacting with the Private State Manager gRP
 ### Client Creation
 
 ```rust
+use std::sync::Arc;
+
+use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use private_state_manager_client::{FalconKeyStore, PsmClient};
+
 // Without authentication (only for configure endpoint)
 let client = PsmClient::connect("https://testnet-psm.miden.network:50051").await?;
 
-// With authentication (required for all other endpoints)
+// With request signing (required for all other endpoints)
 let secret_key = SecretKey::new();
-let signer = Signer::new(secret_key);
+let signer = Arc::new(FalconKeyStore::new(secret_key));
 let client = PsmClient::connect("https://testnet-psm.miden.network:50051")
     .await?
     .with_signer(signer);
@@ -20,17 +25,19 @@ let client = PsmClient::connect("https://testnet-psm.miden.network:50051")
 
 ## Authentication
 
-The client uses Falcon RPO signatures for authentication. Here is how to set it up:
+The client uses Falcon RPO signatures for authenticated requests. Here is how to set it up:
 
 ### 1. Create a Signer
 
 ```rust
-use miden_objects::crypto::dsa::rpo_falcon512::SecretKey;
-use private_state_manager_client::signature::Signer;
+use std::sync::Arc;
+
+use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use private_state_manager_client::FalconKeyStore;
 
 // Generate a new secret key
 let secret_key = SecretKey::new();
-let signer = Signer::new(secret_key);
+let signer = Arc::new(FalconKeyStore::new(secret_key));
 
 // Get the public key for authorization
 let pubkey_hex = signer.public_key_hex();
@@ -41,7 +48,7 @@ let pubkey_hex = signer.public_key_hex();
 ```rust
 let client = PsmClient::connect("https://testnet-psm.miden.network:50051")
     .await?
-    .with_signer(signer);
+    .with_signer(signer.clone());
 ```
 
 ### 3. Set Up Account Authorization

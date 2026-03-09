@@ -1,0 +1,96 @@
+use miden_protocol::Word;
+use miden_protocol::crypto::dsa::falcon512_rpo::{SecretKey, Signature};
+use miden_protocol::utils::Serializable;
+use private_state_manager_shared::hex::IntoHex;
+
+use super::Signer;
+
+/// In-memory Falcon signer used for PSM authentication and multisig signing.
+///
+/// The underlying Miden secret key zeroizes on drop. This type avoids exposing
+/// the key material through cloning or accessor APIs.
+pub struct FalconKeyStore {
+    secret_key: SecretKey,
+    commitment: Word,
+    commitment_hex: String,
+    public_key_hex: String,
+}
+
+impl FalconKeyStore {
+    /// Creates a new signer from a Falcon secret key.
+    pub fn new(secret_key: SecretKey) -> Self {
+        let public_key = secret_key.public_key();
+        let commitment = public_key.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let public_key_hex = (&public_key).into_hex();
+
+        Self {
+            secret_key,
+            commitment,
+            commitment_hex,
+            public_key_hex,
+        }
+    }
+
+    /// Generates a new random signer.
+    pub fn generate() -> Self {
+        Self::new(SecretKey::new())
+    }
+}
+
+impl Signer for FalconKeyStore {
+    fn commitment(&self) -> Word {
+        self.commitment
+    }
+
+    fn commitment_hex(&self) -> String {
+        self.commitment_hex.clone()
+    }
+
+    fn public_key_hex(&self) -> String {
+        self.public_key_hex.clone()
+    }
+
+    fn sign_word(&self, message: Word) -> Signature {
+        self.secret_key.sign(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+    use private_state_manager_shared::hex::FromHex;
+
+    use super::*;
+
+    #[test]
+    fn generate_creates_valid_signer() {
+        let signer = FalconKeyStore::generate();
+        assert!(signer.commitment_hex().starts_with("0x"));
+        assert_eq!(signer.commitment_hex().len(), 66);
+    }
+
+    #[test]
+    fn new_from_secret_key_derives_correct_commitment() {
+        let secret_key = SecretKey::new();
+        let expected_commitment = secret_key.public_key().to_commitment();
+        let signer = FalconKeyStore::new(secret_key);
+        assert_eq!(signer.commitment(), expected_commitment);
+    }
+
+    #[test]
+    fn sign_word_produces_verifiable_signature() {
+        let signer = FalconKeyStore::generate();
+        let message = Word::default();
+        let signature = signer.sign_word(message);
+        let public_key = PublicKey::from_hex(&signer.public_key_hex()).unwrap();
+        assert!(public_key.verify(message, &signature));
+    }
+
+    #[test]
+    fn public_key_hex_roundtrips() {
+        let signer = FalconKeyStore::generate();
+        let public_key = PublicKey::from_hex(&signer.public_key_hex()).unwrap();
+        assert_eq!(public_key.to_commitment(), signer.commitment());
+    }
+}

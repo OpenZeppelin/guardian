@@ -12,7 +12,7 @@ use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
-use crate::keystore::{KeyManager, PsmKeyStore};
+use crate::keystore::{FalconKeyStore, Signer};
 
 /// Builder for constructing MultisigClient instances.
 ///
@@ -34,7 +34,7 @@ pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
     psm_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
-    key_manager: Option<Box<dyn KeyManager>>,
+    signer: Option<Arc<dyn Signer>>,
 }
 
 impl Default for MultisigClientBuilder {
@@ -50,7 +50,7 @@ impl MultisigClientBuilder {
             miden_endpoint: None,
             psm_endpoint: None,
             account_dir: None,
-            key_manager: None,
+            signer: None,
         }
     }
 
@@ -74,21 +74,21 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Sets a custom key manager for PSM authentication.
-    pub fn key_manager(mut self, key_manager: impl KeyManager + 'static) -> Self {
-        self.key_manager = Some(Box::new(key_manager));
+    /// Sets a custom signer for PSM authentication and proposal signing.
+    pub fn signer(mut self, signer: Arc<dyn Signer>) -> Self {
+        self.signer = Some(signer);
         self
     }
 
-    /// Uses a PsmKeyStore with the given secret key.
+    /// Uses a FalconKeyStore with the given secret key.
     pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
-        self.key_manager = Some(Box::new(PsmKeyStore::new(secret_key)));
+        self.signer = Some(Arc::new(FalconKeyStore::new(secret_key)));
         self
     }
 
     /// Generates a new random key for PSM authentication.
     pub fn generate_key(mut self) -> Self {
-        self.key_manager = Some(Box::new(PsmKeyStore::generate()));
+        self.signer = Some(Arc::new(FalconKeyStore::generate()));
         self
     }
 
@@ -106,7 +106,7 @@ impl MultisigClientBuilder {
             .account_dir
             .ok_or_else(|| MultisigError::MissingConfig("account_dir".to_string()))?;
 
-        let key_manager = self.key_manager.ok_or(MultisigError::NoKeyManager)?;
+        let signer = self.signer.ok_or(MultisigError::NoSigner)?;
 
         // Ensure account directory exists
         std::fs::create_dir_all(&account_dir).map_err(|e| {
@@ -117,7 +117,7 @@ impl MultisigClientBuilder {
 
         Ok(MultisigClient::new(
             miden_client,
-            key_manager,
+            signer,
             psm_endpoint,
             account_dir,
             miden_endpoint,
