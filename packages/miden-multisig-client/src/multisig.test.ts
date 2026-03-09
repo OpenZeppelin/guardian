@@ -106,6 +106,17 @@ vi.mock('./inspector.js', () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+function mockedAccount(commitmentHex: string, nonce = 0): any {
+  return {
+    commitment: () => ({
+      toHex: () => commitmentHex,
+    }),
+    nonce: () => ({
+      asInt: () => BigInt(nonce),
+    }),
+  };
+}
+
 describe('Multisig', () => {
   let psm: PsmHttpClient;
   let mockSigner: Signer;
@@ -127,11 +138,7 @@ describe('Multisig', () => {
         toHex: () => '0x' + 'b'.repeat(64),
       }),
     });
-    mockAccountDeserialize.mockReturnValue({
-      commitment: () => ({
-        toHex: () => '0x' + 'b'.repeat(64),
-      }),
-    });
+    mockAccountDeserialize.mockReturnValue(mockedAccount('0x' + 'b'.repeat(64), 1));
     mockDetectConfig.mockReset();
     mockDetectConfig.mockReturnValue({
       threshold: 1,
@@ -326,11 +333,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'a'.repeat(64),
-        }),
-      });
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
       mockRpcGetAccountDetails.mockResolvedValueOnce({
         commitment: () => ({
           toHex: () => '0x' + 'b'.repeat(64),
@@ -422,11 +425,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'a'.repeat(64),
-        }),
-      });
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
       mockRpcGetAccountDetails.mockRejectedValueOnce(
         new Error('No account header record found for given ID')
       );
@@ -463,16 +462,8 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'a'.repeat(64),
-        }),
-      });
-      mockAccountDeserialize.mockReturnValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'b'.repeat(64),
-        }),
-      });
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
+      mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 1));
       mockRpcGetAccountDetails.mockResolvedValueOnce({
         commitment: () => ({
           toHex: () => '0x' + 'c'.repeat(64),
@@ -490,6 +481,78 @@ describe('Multisig', () => {
       });
 
       await expect(multisig.syncState()).rejects.toThrow('Refusing to overwrite local state');
+      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+    });
+
+    it('should throw when incoming state nonce is lower than local nonce', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 3));
+      mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 2));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(multisig.syncState()).rejects.toThrow(
+        'incoming nonce 2 is not greater than local nonce 3'
+      );
+      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+    });
+
+    it('should throw when incoming state nonce equals local nonce but commitment differs', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 2));
+      mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 2));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(multisig.syncState()).rejects.toThrow(
+        'incoming nonce 2 is not greater than local nonce 2'
+      );
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
     });
   });
