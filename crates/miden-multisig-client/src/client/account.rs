@@ -99,7 +99,7 @@ impl MultisigClient {
         self.add_or_update_account(&account, false).await?;
 
         // Wrap in MultisigAccount and store
-        let multisig_account = MultisigAccount::new(account, &self.psm_endpoint);
+        let multisig_account = MultisigAccount::new(account);
         self.account = Some(multisig_account);
 
         Ok(self.account.as_ref().unwrap())
@@ -136,7 +136,7 @@ impl MultisigClient {
 
         self.add_or_update_account(&account, true).await?;
 
-        let multisig_account = MultisigAccount::new(account, &self.psm_endpoint);
+        let multisig_account = MultisigAccount::new(account);
         self.account = Some(multisig_account);
 
         Ok(self.account.as_ref().unwrap())
@@ -220,7 +220,7 @@ impl MultisigClient {
             let account: Account = account_record.try_into().map_err(|e| {
                 MultisigError::MidenClient(format!("account record is not full: {}", e))
             })?;
-            let refreshed = MultisigAccount::new(account, &self.psm_endpoint);
+            let refreshed = MultisigAccount::new(account);
             self.account = Some(refreshed);
         }
 
@@ -349,7 +349,7 @@ impl MultisigClient {
             Err(e) => return Err(e),
         }
 
-        let multisig_account = MultisigAccount::new(fresh_account, &self.psm_endpoint);
+        let multisig_account = MultisigAccount::new(fresh_account);
         self.account = Some(multisig_account);
 
         Ok(true)
@@ -424,7 +424,7 @@ impl MultisigClient {
         // and re-import the account fresh from PSM to recover from locked/stale state.
         match self.add_or_update_account(&updated_account, true).await {
             Ok(()) => {
-                let multisig_account = MultisigAccount::new(updated_account, &self.psm_endpoint);
+                let multisig_account = MultisigAccount::new(updated_account);
                 self.account = Some(multisig_account);
                 Ok(())
             }
@@ -468,7 +468,7 @@ impl MultisigClient {
 
                 self.add_or_update_account(&fresh_account, true).await?;
 
-                let multisig_account = MultisigAccount::new(fresh_account, &self.psm_endpoint);
+                let multisig_account = MultisigAccount::new(fresh_account);
                 self.account = Some(multisig_account);
                 Ok(())
             }
@@ -504,12 +504,6 @@ impl MultisigClient {
     /// ```
     pub async fn set_psm_endpoint(&mut self, new_endpoint: &str, register: bool) -> Result<()> {
         self.psm_endpoint = new_endpoint.to_string();
-
-        // Update the account's PSM endpoint reference
-        if let Some(account) = self.account.take() {
-            let updated = MultisigAccount::new(account.into_inner(), &self.psm_endpoint);
-            self.account = Some(updated);
-        }
 
         if register {
             self.register_on_psm().await?;
