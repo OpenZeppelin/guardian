@@ -257,7 +257,7 @@ export class Multisig {
     if (!localAccount || localCommitment !== psmCommitment) {
       const accountBytes = base64ToUint8Array(state.stateDataBase64);
       const incomingAccount = Account.deserialize(accountBytes);
-      await this.ensureSafeToOverwriteLocalState(incomingAccount);
+      await this.ensureSafeToOverwriteLocalState(incomingAccount, localAccount);
       await this.webClient.newAccount(incomingAccount, true);
       accountForConfigRefresh = incomingAccount;
     }
@@ -297,7 +297,21 @@ export class Multisig {
     };
   }
 
-  private async ensureSafeToOverwriteLocalState(incomingAccount: Account): Promise<void> {
+  private async ensureSafeToOverwriteLocalState(
+    incomingAccount: Account,
+    localAccount?: Account,
+  ): Promise<void> {
+    if (localAccount) {
+      const localNonce = localAccount.nonce().asInt();
+      const incomingNonce = incomingAccount.nonce().asInt();
+
+      if (incomingNonce <= localNonce) {
+        throw new Error(
+          `Refusing to overwrite local state: incoming nonce ${incomingNonce.toString()} is not greater than local nonce ${localNonce.toString()} for account ${this._accountId}`
+        );
+      }
+    }
+
     const accountId = AccountId.fromHex(this._accountId);
     const onChainCommitment = await this.getOnChainCommitment(accountId);
     if (!onChainCommitment) {
