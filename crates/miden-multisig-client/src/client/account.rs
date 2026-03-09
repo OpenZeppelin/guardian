@@ -466,17 +466,6 @@ impl MultisigClient {
         }
     }
 
-    /// Syncs account state from PSM and updates the local cache.
-    pub async fn sync_account(&mut self) -> Result<()> {
-        if self.account().is_some() {
-            self.sync().await
-        } else {
-            let account_id = self.require_account()?.id();
-            self.pull_account(account_id).await?;
-            Ok(())
-        }
-    }
-
     /// Registers the current account on the PSM server.
     ///
     /// # Example
