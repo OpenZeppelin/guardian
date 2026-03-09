@@ -75,7 +75,7 @@ export interface AccountStateVerificationResult {
  * Represents a multisig account with PSM integration.
  */
 export class Multisig {
-  account: Account | null;
+  account: Account;
   threshold: number;
   signerCommitments: string[];
   psmCommitment: string;
@@ -89,7 +89,7 @@ export class Multisig {
   private proposals: Map<string, Proposal> = new Map();
 
   constructor(
-    account: Account | null,
+    account: Account,
     config: MultisigConfig,
     psm: PsmHttpClient,
     signer: Signer,
@@ -386,18 +386,9 @@ export class Multisig {
    * @param initialStateBase64 - Optional base64-encoded serialized Account.¡
    */
   async registerOnPsm(initialStateBase64?: string): Promise<void> {
-    if (!this.account && !initialStateBase64) {
-      throw new Error('Cannot register on PSM: no account available and no initial state provided');
-    }
-
     // Serialize the account to bytes and base64-encode
-    let stateData: string;
-    if (initialStateBase64) {
-      stateData = initialStateBase64;
-    } else {
-      const accountBytes: Uint8Array = this.account!.serialize();
-      stateData = uint8ArrayToBase64(accountBytes);
-    }
+    const stateData =
+      initialStateBase64 ?? uint8ArrayToBase64(this.account.serialize());
 
     const auth: AuthConfig = {
       MidenFalconRpo: {

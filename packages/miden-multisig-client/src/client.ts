@@ -140,7 +140,7 @@ export class MultisigClient {
     }
 
     return new Multisig(
-      null,
+      account,
       config,
       this._psmClient,
       signer,
