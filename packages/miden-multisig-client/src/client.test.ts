@@ -14,6 +14,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
         prefix: () => ({ asInt: () => BigInt(1) }),
         suffix: () => ({ asInt: () => BigInt(2) }),
       }),
+      serialize: () => new Uint8Array([1, 2, 3]),
       storage: vi.fn(),
       vault: vi.fn(),
     })),
@@ -156,7 +157,7 @@ describe('MultisigClient', () => {
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)]);
       expect(multisig.psmCommitment).toBe('0x' + 'c'.repeat(64));
-      expect(multisig.account).toBeNull(); // Loaded accounts don't have the SDK Account
+      expect(multisig.account).not.toBeNull();
     });
 
     it('should throw if account not found on PSM', async () => {
@@ -172,6 +173,35 @@ describe('MultisigClient', () => {
       await expect(
         client.load('0xnonexistent', mockSigner)
       ).rejects.toThrow();
+    });
+
+    it('should allow registerOnPsm after load without explicit initial state', async () => {
+      const client = new MultisigClient(webClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          success: true,
+          message: 'Account configured',
+          ack_pubkey: '0x' + 'f'.repeat(64),
+        }),
+      });
+
+      const accountId = '0x' + 'd'.repeat(30);
+      const multisig = await client.load(accountId, mockSigner);
+
+      await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
     });
   });
 });

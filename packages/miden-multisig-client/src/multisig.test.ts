@@ -191,7 +191,7 @@ describe('Multisig', () => {
       expect(multisig.account).toBe(mockAccount);
     });
 
-    it('should create Multisig without account (loaded)', () => {
+    it('should create Multisig with explicit accountId override', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -199,9 +199,9 @@ describe('Multisig', () => {
       };
 
       const accountId = '0x' + 'd'.repeat(30);
-      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, accountId);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient, accountId);
 
-      expect(multisig.account).toBeNull();
+      expect(multisig.account).toBe(mockAccount);
       expect(multisig.accountId).toBe(accountId);
     });
   });
@@ -218,7 +218,7 @@ describe('Multisig', () => {
       expect(multisig.accountId).toBe('0x' + 'a'.repeat(30));
     });
 
-    it('should return provided account ID for loaded multisig', () => {
+    it('should return provided account ID when constructor override is set', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -226,7 +226,7 @@ describe('Multisig', () => {
       };
 
       const accountId = '0x' + 'e'.repeat(30);
-      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, accountId);
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient, accountId);
       expect(multisig.accountId).toBe(accountId);
     });
   });
@@ -658,26 +658,21 @@ describe('Multisig', () => {
       await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
     });
 
-    it('should throw when no account and no initial state', async () => {
+    it('should accept explicit initial state base64', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
         psmCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, '0x' + 'e'.repeat(30));
-
-      await expect(multisig.registerOnPsm()).rejects.toThrow('Cannot register on PSM');
-    });
-
-    it('should accept initial state base64', async () => {
-      const config = {
-        threshold: 1,
-        signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
-      };
-
-      const multisig = new Multisig(null, config, psm, mockSigner, mockWebClient, '0x' + 'e'.repeat(30));
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        psm,
+        mockSigner,
+        mockWebClient,
+        '0x' + 'e'.repeat(30),
+      );
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
