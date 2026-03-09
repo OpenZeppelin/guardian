@@ -33,16 +33,12 @@ const STD_APPROVER_PUBKEYS: &str =
 #[derive(Debug, Clone)]
 pub struct MultisigAccount {
     account: Account,
-    psm_endpoint: String,
 }
 
 impl MultisigAccount {
     /// Creates a new MultisigAccount wrapper.
-    pub fn new(account: Account, psm_endpoint: impl Into<String>) -> Self {
-        Self {
-            account,
-            psm_endpoint: psm_endpoint.into(),
-        }
+    pub fn new(account: Account) -> Self {
+        Self { account }
     }
 
     /// Returns the account ID.
@@ -58,11 +54,6 @@ impl MultisigAccount {
     /// Returns the account commitment (hash).
     pub fn commitment(&self) -> Word {
         self.account.commitment()
-    }
-
-    /// Returns the associated PSM endpoint.
-    pub fn psm_endpoint(&self) -> &str {
-        &self.psm_endpoint
     }
 
     /// Returns a reference to the underlying Account.
@@ -286,7 +277,7 @@ mod tests {
             .build()
             .expect("account builds");
 
-        MultisigAccount::new(account, "http://localhost:50051")
+        MultisigAccount::new(account)
     }
 
     #[test]

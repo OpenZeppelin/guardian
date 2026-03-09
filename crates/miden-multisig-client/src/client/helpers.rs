@@ -278,9 +278,8 @@ impl MultisigClient {
         if let Some(endpoint) = new_psm_endpoint {
             self.psm_endpoint = endpoint;
 
-            // Update local account with new PSM endpoint
-            let multisig_account =
-                MultisigAccount::new(updated_account.clone(), &self.psm_endpoint);
+            // Refresh the local account after switching to the new PSM endpoint.
+            let multisig_account = MultisigAccount::new(updated_account.clone());
             self.account = Some(multisig_account);
 
             // Register the updated account on the new PSM server
@@ -291,7 +290,7 @@ impl MultisigClient {
                 ))
             })?;
         } else {
-            let multisig_account = MultisigAccount::new(updated_account, &self.psm_endpoint);
+            let multisig_account = MultisigAccount::new(updated_account);
             self.account = Some(multisig_account);
         }
 
