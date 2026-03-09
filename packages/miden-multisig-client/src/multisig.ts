@@ -43,7 +43,7 @@ import {
   toPsmSignature,
   buildPsmSignatureFromSigner,
 } from './multisig/signing.js';
-import { executeProposalWorkflow } from './multisig/proposal/execution.js';
+import { createTransactionProposalRequest, executeProposalWorkflow } from './multisig/proposal/execution.js';
 
 export interface AccountState {
   accountId: string;
@@ -678,6 +678,29 @@ export class Multisig {
     };
 
     return JSON.stringify(exported, null, 2);
+  }
+
+  async createTransactionProposalRequest(commitment: string): Promise<TransactionRequest> {
+
+    const proposal = this.proposals.get(commitment);
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${commitment}`);
+    }
+
+    const request = await createTransactionProposalRequest({
+      proposal,
+      accountId: this._accountId,
+      threshold: this.threshold,
+      signerCommitments: this.signerCommitments,
+      psmCommitment: this.psmCommitment,
+      psmPublicKey: this.psmPublicKey,
+      signatureScheme: this.signatureScheme,
+      getEffectiveThreshold: (proposalType) => this.getEffectiveThreshold(proposalType),
+      psm: this.psm,
+      webClient: this.webClient,
+    });
+
+    return request;
   }
 
   importTransactionProposal(json: string): TransactionProposalResult {

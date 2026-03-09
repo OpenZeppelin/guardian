@@ -91,6 +91,50 @@ export async function executeProposalWorkflow(
   await submitTransaction(params.webClient, params.accountId, finalRequest);
 }
 
+
+export async function createTransactionProposalRequest(
+  params: ExecuteProposalWorkflowParams,
+): Promise<TransactionRequest> {
+  ensureProposalReady(
+    params.proposal,
+    params.threshold,
+    params.getEffectiveThreshold,
+  );
+
+  const isSwitchPsm = params.proposal.metadata.proposalType === 'switch_psm';
+  const executionSource = await resolveExecutionSource(
+    params.psm,
+    params.accountId,
+    params.proposal,
+    isSwitchPsm,
+  );
+  const executionData = prepareExecutionData(executionSource.txSummaryBase64);
+
+  const adviceMap = buildCosignerAdviceMap(
+    params.proposal,
+    params.signerCommitments,
+    executionData.txCommitmentHex,
+  );
+
+  if (!isSwitchPsm && executionSource.delta) {
+    await appendPsmAckAdvice(
+      params.psm,
+      executionSource.delta,
+      params.psmCommitment,
+      params.psmPublicKey,
+      params.signatureScheme,
+      executionData.txCommitmentHex,
+      adviceMap,
+    );
+  }
+
+  return await buildFinalRequest(
+    params,
+    executionData.saltHex,
+    adviceMap,
+  );
+}
+
 function ensureProposalReady(
   proposal: TransactionProposal,
   defaultThreshold: number,
