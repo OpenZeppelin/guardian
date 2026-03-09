@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::hex::IntoHex;
 
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
@@ -59,7 +60,7 @@ impl MultisigClient {
         let account = self.require_account()?;
 
         // Check if user is a cosigner
-        let user_commitment = self.key_manager.commitment();
+        let user_commitment = self.signer.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
@@ -72,13 +73,13 @@ impl MultisigClient {
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
         // Check if already signed
-        if proposal.has_signed(&self.key_manager.commitment_hex()) {
+        if proposal.has_signed(&self.signer.commitment_hex()) {
             return Err(MultisigError::AlreadySigned);
         }
 
         // Sign the transaction summary commitment
         let tx_commitment = proposal.tx_summary.to_commitment();
-        let signature_hex = self.key_manager.sign_hex(tx_commitment);
+        let signature_hex = self.signer.sign_word(tx_commitment).into_hex();
 
         // Build the ProposalSignature
         let signature = ProposalSignature::Falcon {
@@ -279,7 +280,7 @@ impl MultisigClient {
                 &mut self.miden_client,
                 &mut psm_client,
                 &account,
-                self.key_manager.as_ref(),
+                self.signer.as_ref(),
             )
             .await
     }

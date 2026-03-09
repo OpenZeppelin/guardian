@@ -69,8 +69,8 @@ pub use account::MultisigAccount;
 
 // Key management and hex utilities
 pub use keystore::{
-    KeyManager,
-    PsmKeyStore,
+    FalconKeyStore,
+    Signer,
     // Hex utilities
     commitment_from_hex,
     ensure_hex_prefix,

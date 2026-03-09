@@ -7,14 +7,16 @@
 //!
 //! This crate provides:
 //! - [`PsmClient`] - The main client for communicating with PSM servers
-//! - [`Auth`] - Authentication types for signing requests
-//! - [`FalconRpoSigner`] - Falcon signature-based authentication
+//! - [`keystore::Signer`] - The signing boundary for authenticated requests
+//! - [`FalconKeyStore`] - The default in-memory Falcon signer
 //! - Error types for handling PSM-related failures
 //!
 //! # Quick Start
 //!
 //! ```rust,no_run
-//! use private_state_manager_client::{PsmClient, Auth, FalconRpoSigner};
+//! use std::sync::Arc;
+//!
+//! use private_state_manager_client::{FalconKeyStore, PsmClient};
 //! use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 //!
 //! #[tokio::main]
@@ -22,10 +24,10 @@
 //!     // Connect to PSM server
 //!     let mut client = PsmClient::connect("http://localhost:50051").await?;
 //!
-//!     // Configure authentication
+//!     // Configure request signing
 //!     let secret_key = SecretKey::new();
-//!     let auth = Auth::FalconRpoSigner(FalconRpoSigner::new(secret_key));
-//!     let client = client.with_auth(auth);
+//!     let signer = Arc::new(FalconKeyStore::new(secret_key));
+//!     let client = client.with_signer(signer);
 //!
 //!     Ok(())
 //! }
@@ -37,16 +39,16 @@ mod proto {
     tonic::include_proto!("state_manager");
 }
 
-pub mod auth;
 mod client;
 mod error;
+pub mod keystore;
 mod transaction;
 
 #[cfg(test)]
 pub mod testing;
 
-pub use auth::{Auth, FalconRpoSigner, verify_commitment_signature};
 pub use client::PsmClient;
 pub use error::{ClientError, ClientResult};
+pub use keystore::{FalconKeyStore, Signer, verify_commitment_signature};
 pub use proto::*;
 pub use transaction::{TryIntoTxSummary, tx_summary_commitment_hex};

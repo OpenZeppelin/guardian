@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::transaction::TransactionSummary;
+use private_state_manager_shared::hex::IntoHex;
 use private_state_manager_shared::{FromJson, ToJson};
 
 use super::MultisigClient;
@@ -219,7 +220,7 @@ impl MultisigClient {
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
-        let signature_hex = self.key_manager.sign_hex(tx_commitment);
+        let signature_hex = self.signer.sign_word(tx_commitment).into_hex();
 
         // Build the proposal ID from commitment
         let id = format!(
@@ -251,7 +252,7 @@ impl MultisigClient {
             transaction_type: tx_type_str.to_string(),
             tx_summary: tx_summary.to_json(),
             signatures: vec![ExportedSignature {
-                signer_commitment: self.key_manager.commitment_hex(),
+                signer_commitment: self.signer.commitment_hex(),
                 signature: signature_hex,
             }],
             signatures_required: current_threshold as usize,
@@ -278,13 +279,13 @@ impl MultisigClient {
         let account = self.require_account()?;
 
         // Check if user is a cosigner
-        let user_commitment = self.key_manager.commitment();
+        let user_commitment = self.signer.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
 
         // Check if already signed
-        let user_commitment_hex = self.key_manager.commitment_hex();
+        let user_commitment_hex = self.signer.commitment_hex();
         if proposal.signatures.iter().any(|s| {
             s.signer_commitment
                 .eq_ignore_ascii_case(&user_commitment_hex)
@@ -299,7 +300,7 @@ impl MultisigClient {
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
-        let signature_hex = self.key_manager.sign_hex(tx_commitment);
+        let signature_hex = self.signer.sign_word(tx_commitment).into_hex();
 
         // Add signature to proposal
         proposal.add_signature(ExportedSignature {

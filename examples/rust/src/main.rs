@@ -20,8 +20,8 @@ use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RawFalconSignature;
 
 use private_state_manager_client::auth_config::AuthType;
 use private_state_manager_client::{
-    verify_commitment_signature, Auth, AuthConfig, ClientResult, FalconRpoSigner,
-    MidenFalconRpoAuth, PsmClient,
+    verify_commitment_signature, AuthConfig, ClientResult, FalconKeyStore, MidenFalconRpoAuth,
+    PsmClient,
 };
 use private_state_manager_shared::hex::FromHex;
 use private_state_manager_shared::ToJson;
@@ -131,12 +131,11 @@ async fn main() -> ClientResult<()> {
         }
     };
 
-    let client1_signer = FalconRpoSigner::new(client1_secret_key.clone());
-    let client1_auth = Auth::FalconRpoSigner(client1_signer);
+    let client1_signer = Arc::new(FalconKeyStore::new(client1_secret_key.clone()));
 
     let psm_endpoint = "http://localhost:50051".to_string();
     let mut psm_client1 = match PsmClient::connect(psm_endpoint.clone()).await {
-        Ok(client) => client.with_auth(client1_auth),
+        Ok(client) => client.with_signer(client1_signer),
         Err(e) => {
             println!("  ✗ Failed to connect to PSM: {}", e);
             println!("  Hint: Start PSM server with: cargo run --package private-state-manager-server --bin server");
@@ -257,13 +256,12 @@ async fn main() -> ClientResult<()> {
 
     println!("Step 4: Client 2 - Pull state from PSM...");
 
-    let client2_signer = FalconRpoSigner::new(client2_secret_key.clone());
-    let client2_auth = Auth::FalconRpoSigner(client2_signer);
+    let client2_signer = Arc::new(FalconKeyStore::new(client2_secret_key.clone()));
 
     let mut psm_client2 = PsmClient::connect(psm_endpoint.clone())
         .await
         .expect("Failed to connect")
-        .with_auth(client2_auth);
+        .with_signer(client2_signer);
 
     let retrieved_account = match psm_client2.get_state(&account_id).await {
         Ok(response) => {
