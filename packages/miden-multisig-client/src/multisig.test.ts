@@ -1114,6 +1114,58 @@ describe('Multisig', () => {
     });
   });
 
+  describe('createP2idProposal', () => {
+    it('should include the faucet asset in the proposal description', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
+
+      expect(proposal.metadata.description).toBe('Send 100 of asset 0xfaucet... to 0xrecipien...');
+    });
+  });
+
   describe('createSwitchPsmProposal', () => {
     it('should verify new endpoint commitment before creating proposal', async () => {
       const { executeForSummary } = await import('./transaction.js');

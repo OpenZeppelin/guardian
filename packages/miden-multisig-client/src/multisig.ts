@@ -722,7 +722,7 @@ export class Multisig {
       recipientId,
       faucetId,
       amount: amount.toString(),
-      description: `Send ${amount} to ${recipientId.slice(0, 10)}...`,
+      description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
     return this.createProposal(proposalNonce, summaryBase64, metadata);
