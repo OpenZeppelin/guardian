@@ -3,6 +3,8 @@
 //! This module handles account creation, pulling/pushing from PSM,
 //! syncing, and registration operations.
 
+use std::collections::HashSet;
+
 use base64::Engine;
 use miden_client::account::Account;
 use miden_client::{Deserializable, Serializable};
@@ -22,6 +24,22 @@ use crate::procedures::ProcedureThreshold;
 use crate::transaction::word_to_hex;
 
 impl MultisigClient {
+    fn ensure_unique_signer_commitments(signer_commitments: &[Word]) -> Result<()> {
+        let mut seen = HashSet::new();
+
+        for commitment in signer_commitments {
+            let commitment_hex = word_to_hex(commitment);
+            if !seen.insert(commitment_hex.clone()) {
+                return Err(MultisigError::InvalidConfig(format!(
+                    "duplicate signer commitment: {}",
+                    commitment_hex
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Creates a new multisig account.
     ///
     /// # Arguments
@@ -67,6 +85,8 @@ impl MultisigClient {
         signer_commitments: Vec<Word>,
         proc_threshold_overrides: Vec<ProcedureThreshold>,
     ) -> Result<&MultisigAccount> {
+        Self::ensure_unique_signer_commitments(&signer_commitments)?;
+
         // Get PSM server's public key commitment
         let mut psm_client = self.create_psm_client().await?;
         let psm_pubkey_hex = psm_client
@@ -497,5 +517,26 @@ impl MultisigClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(value: u32) -> Word {
+        Word::from([value, 0, 0, 0])
+    }
+
+    #[test]
+    fn ensure_unique_signer_commitments_rejects_duplicates() {
+        let result = MultisigClient::ensure_unique_signer_commitments(&[word(1), word(2), word(1)]);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate signer commitment")
+        );
     }
 }

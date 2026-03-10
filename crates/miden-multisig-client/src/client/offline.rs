@@ -137,6 +137,7 @@ impl MultisigClient {
             .await?;
         let account = self.require_account()?;
         let account_id = account.id();
+        proposal.validate(Some(account_id))?;
 
         // Check if user is a cosigner
         let user_commitment = self.signer.commitment();
@@ -184,6 +185,7 @@ impl MultisigClient {
         self.sync_network_only().await?;
         let account = self.require_account()?.clone();
         let account_id = account.id();
+        exported.validate(Some(account_id))?;
 
         // Verify proposal is ready
         if !exported.is_ready() {

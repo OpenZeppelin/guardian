@@ -143,6 +143,14 @@ impl MultisigClient {
 
         let psm_commitment =
             word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
+        let expected_psm_commitment = account.psm_commitment()?;
+        if psm_commitment != expected_psm_commitment {
+            return Err(MultisigError::PsmServer(format!(
+                "PSM public key commitment {} does not match account commitment {}",
+                word_to_hex(&psm_commitment),
+                word_to_hex(&expected_psm_commitment)
+            )));
+        }
 
         Ok(crate::transaction::build_signature_advice_entry(
             psm_commitment,

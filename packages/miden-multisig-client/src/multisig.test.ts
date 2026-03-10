@@ -1021,7 +1021,7 @@ describe('Multisig', () => {
       expect(proposal.id).toBe('0x' + 'c'.repeat(64));
     });
 
-    it('should reject mismatched server commitment', async () => {
+    it('should reject a mismatched returned commitment', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1060,8 +1060,10 @@ describe('Multisig', () => {
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
-        })
-      ).rejects.toThrow('Invalid proposal response: commitment does not match tx_summary');
+        }),
+      ).rejects.toThrow(
+        'Invalid proposal: commitment 0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd does not match tx_summary 0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
     });
 
     it('should reject a response whose tx_summary does not match the provided metadata', async () => {
@@ -1448,6 +1450,12 @@ describe('Multisig', () => {
       };
 
       const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+      } as any);
 
       const proposal = await multisig.importProposal(
         JSON.stringify({

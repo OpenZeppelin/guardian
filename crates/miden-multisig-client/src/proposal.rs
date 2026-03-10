@@ -3,16 +3,18 @@
 use std::collections::HashSet;
 
 use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::{Felt, Word};
 use private_state_manager_client::DeltaObject;
 use private_state_manager_shared::FromJson;
 use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::hex::FromHex;
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
-use crate::keystore::word_from_hex;
+use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::payload::ProposalPayload;
 
 /// Status of a proposal in the signing workflow.
@@ -168,10 +170,22 @@ impl ProposalMetadata {
 
     /// Converts signer commitments to Words.
     pub fn signer_commitments(&self) -> Result<Vec<Word>> {
-        self.signer_commitments_hex
-            .iter()
-            .map(|hex| word_from_hex(hex).map_err(MultisigError::InvalidConfig))
-            .collect()
+        let mut seen = HashSet::new();
+        let mut commitments = Vec::with_capacity(self.signer_commitments_hex.len());
+
+        for hex in &self.signer_commitments_hex {
+            let commitment = word_from_hex(hex).map_err(MultisigError::InvalidConfig)?;
+            let key = ensure_hex_prefix(hex).to_lowercase();
+            if !seen.insert(key) {
+                return Err(MultisigError::InvalidConfig(format!(
+                    "duplicate signer commitment in metadata: {}",
+                    hex
+                )));
+            }
+            commitments.push(commitment);
+        }
+
+        Ok(commitments)
     }
 
     /// Converts note ID hex strings to NoteIds.
@@ -313,6 +327,18 @@ pub struct ProposalSignatureEntry {
     pub signature_hex: String,
 }
 
+impl ProposalSignatureEntry {
+    fn validate(&self) -> Result<()> {
+        word_from_hex(&self.signer_commitment).map_err(MultisigError::InvalidConfig)?;
+
+        let signature_hex = ensure_hex_prefix(&self.signature_hex);
+        RpoFalconSignature::from_hex(&signature_hex)
+            .map_err(|e| MultisigError::Signature(format!("invalid proposal signature: {}", e)))?;
+
+        Ok(())
+    }
+}
+
 /// A proposal for a multisig transaction.
 #[derive(Debug, Clone)]
 pub struct Proposal {
@@ -386,32 +412,30 @@ impl Proposal {
             signers: Vec::new(),
         };
         let transaction_type = metadata.to_transaction_type(&proposal_type)?;
-        let signatures: Vec<ProposalSignatureEntry> = payload
-            .signatures
-            .iter()
-            .map(|signature| {
-                let signature_hex = match &signature.signature {
-                    ProposalSignature::Falcon { signature } => signature.clone(),
-                };
-                ProposalSignatureEntry {
-                    signer_commitment: signature.signer_id.clone(),
-                    signature_hex,
-                }
-            })
-            .collect();
 
         let mut seen_signers = HashSet::new();
-        metadata.signers = signatures
-            .iter()
-            .filter_map(|signature| {
-                let signer_id = signature.signer_commitment.clone();
-                if seen_signers.insert(signer_id.to_lowercase()) {
-                    Some(signer_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut signatures = Vec::with_capacity(payload.signatures.len());
+        for signature in &payload.signatures {
+            let signature_hex = match &signature.signature {
+                ProposalSignature::Falcon { signature } => signature.clone(),
+            };
+
+            let entry = ProposalSignatureEntry {
+                signer_commitment: signature.signer_id.clone(),
+                signature_hex,
+            };
+            entry.validate()?;
+
+            if !seen_signers.insert(entry.signer_commitment.to_lowercase()) {
+                return Err(MultisigError::InvalidConfig(format!(
+                    "duplicate proposal signature for signer {}",
+                    entry.signer_commitment
+                )));
+            }
+
+            metadata.signers.push(entry.signer_commitment.clone());
+            signatures.push(entry);
+        }
 
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));

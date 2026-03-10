@@ -7,7 +7,6 @@
 
 use std::collections::HashSet;
 
-use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::transaction::TransactionSummary;
@@ -16,7 +15,7 @@ use private_state_manager_shared::hex::FromHex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
-use crate::keystore::ensure_hex_prefix;
+use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::{Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus};
 use crate::utils::hex_body_eq;
 
@@ -118,7 +117,7 @@ impl ExportedProposal {
         let mut seen_signers = HashSet::new();
 
         for signature in &self.signatures {
-            Word::from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
+            word_from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
 
             let signature_hex = ensure_hex_prefix(&signature.signature);
             RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
@@ -234,10 +233,11 @@ impl ExportedProposal {
 
     /// Converts the ExportedProposal back to a Proposal.
     pub fn to_proposal(&self) -> Result<Proposal> {
+        self.validate(None)?;
+
         let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
-        validate_proposal_id_matches_summary(&self.id, &tx_summary)?;
 
         AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
@@ -310,7 +310,7 @@ impl ExportedProposal {
     ///
     /// Returns an error if the signer has already signed.
     pub fn add_signature(&mut self, signature: ExportedSignature) -> Result<()> {
-        Word::from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
+        word_from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
 
         let signature_hex = ensure_hex_prefix(&signature.signature);
         RpoFalconSignature::from_hex(&signature_hex)
@@ -355,16 +355,6 @@ impl ExportedProposal {
     }
 }
 
-fn validate_proposal_id_matches_summary(id: &str, tx_summary: &TransactionSummary) -> Result<()> {
-    let expected_id = ExportedProposal::expected_id(tx_summary);
-    if !hex_body_eq(id, &expected_id) {
-        return Err(MultisigError::InvalidConfig(format!(
-            "proposal id {} does not match tx_summary commitment {}",
-            id, expected_id
-        )));
-    }
-    Ok(())
-}
 #[cfg(test)]
 mod tests {
     use miden_client::Serializable;
@@ -420,8 +410,8 @@ mod tests {
     fn test_add_signature_prevents_duplicates() {
         let mut proposal = ExportedProposal {
             version: EXPORT_VERSION,
-            account_id: "0x123".to_string(),
-            id: "0xabc".to_string(),
+            account_id: valid_account_id(),
+            id: valid_proposal_id(),
             nonce: 1,
             tx_summary: create_test_tx_summary().to_json(),
             signatures: vec![],
