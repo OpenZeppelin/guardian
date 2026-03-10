@@ -173,8 +173,7 @@ impl MultisigClient {
 
         // Try to sync with the network to ensure consistent state.
         if let Err(_e) = self.miden_client.sync_state().await {
-            // Log but don't fail - the transaction was executed successfully
-            // Sync failed - PSM may not have canonicalized yet.
+            // Intentionally ignored, PSM may not have canonicalized yet.
         }
 
         // Get updated account from miden-client's local state
