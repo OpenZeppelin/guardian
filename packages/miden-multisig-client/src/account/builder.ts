@@ -14,6 +14,7 @@ import {
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
 import { buildMultisigStorageSlots, buildPsmStorageSlots } from './storage.js';
 import { MULTISIG_MASM, PSM_MASM } from './masm.js';
+import { normalizeSignerCommitment } from '../utils/signature.js';
 
 /**
  * Creates a multisig account with PSM authentication.
@@ -80,6 +81,16 @@ export function validateMultisigConfig(config: MultisigConfig): void {
   if (config.signerCommitments.length === 0) {
     throw new Error('at least one signer commitment is required');
   }
+
+  const signerCommitments = new Set<string>();
+  for (const signerCommitment of config.signerCommitments) {
+    const normalizedCommitment = normalizeSignerCommitment(signerCommitment);
+    if (signerCommitments.has(normalizedCommitment)) {
+      throw new Error(`duplicate signer commitment: ${normalizedCommitment}`);
+    }
+    signerCommitments.add(normalizedCommitment);
+  }
+
   if (config.threshold > config.signerCommitments.length) {
     throw new Error(
       `threshold (${config.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`

@@ -935,7 +935,51 @@ describe('Multisig', () => {
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+
+      expect(proposal.nonce).toBe(1);
+      expect(proposal.id).toBe('0x' + 'c'.repeat(64));
+    });
+
+    it('should reject a mismatched returned commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
           signatures: [],
         },
         status: {
@@ -954,15 +998,16 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createProposal(1, 'AQID', {
-        proposalType: 'add_signer',
-        targetThreshold: 1,
-        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
-        description: '',
-      });
-
-      expect(proposal.nonce).toBe(1);
-      expect(proposal.id).toBe('0x' + 'd'.repeat(64));
+      await expect(
+        multisig.createProposal(1, 'AQID', {
+          proposalType: 'add_signer',
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          description: '',
+        }),
+      ).rejects.toThrow(
+        'Invalid proposal: commitment 0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd does not match tx_summary 0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
     });
   });
 
@@ -1008,7 +1053,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -1092,7 +1137,7 @@ describe('Multisig', () => {
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: 'AQID' },
           signatures: [],
         },
         status: {
@@ -1107,7 +1152,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -1153,7 +1198,7 @@ describe('Multisig', () => {
         json: async () => signedDelta,
       });
 
-      const proposalId = '0x' + 'd'.repeat(64);
+      const proposalId = '0x' + 'c'.repeat(64);
       const signedProposal = await multisig.signProposal(proposalId);
 
       expect(mockSigner.signCommitment).toHaveBeenCalledWith(proposalId);
@@ -1802,7 +1847,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -1850,7 +1895,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -1900,7 +1945,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 

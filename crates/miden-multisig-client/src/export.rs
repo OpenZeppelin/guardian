@@ -5,13 +5,17 @@
 //! side channels (email, USB, etc.) when the PSM server is unavailable.
 //!
 
+use std::collections::HashSet;
+
 use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::FromJson;
+use private_state_manager_shared::hex::FromHex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
-use crate::keystore::word_from_hex;
+use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::{
     Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, TransactionType,
 };
@@ -77,6 +81,97 @@ pub struct ExportedMetadata {
 }
 
 impl ExportedProposal {
+    fn metadata(&self) -> ProposalMetadata {
+        ProposalMetadata {
+            tx_summary_json: Some(self.tx_summary.clone()),
+            new_threshold: self.metadata.new_threshold,
+            signer_commitments_hex: self.metadata.signer_commitments_hex.clone(),
+            salt_hex: self.metadata.salt_hex.clone(),
+            recipient_hex: self.metadata.recipient_hex.clone(),
+            faucet_id_hex: self.metadata.faucet_id_hex.clone(),
+            amount: self.metadata.amount,
+            note_ids_hex: self.metadata.note_ids_hex.clone(),
+            new_psm_pubkey_hex: self.metadata.new_psm_pubkey_hex.clone(),
+            new_psm_endpoint: self.metadata.new_psm_endpoint.clone(),
+            required_signatures: Some(self.signatures_required),
+            signers: self
+                .signatures
+                .iter()
+                .map(|signature| signature.signer_commitment.clone())
+                .collect(),
+        }
+    }
+
+    fn expected_id(tx_summary: &TransactionSummary) -> String {
+        format!(
+            "0x{}",
+            hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
+                &tx_summary.to_commitment(),
+            ))
+        )
+    }
+
+    fn validate_signatures(&self) -> Result<()> {
+        let mut seen_signers = HashSet::new();
+
+        for signature in &self.signatures {
+            word_from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
+
+            let signature_hex = ensure_hex_prefix(&signature.signature);
+            RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
+                MultisigError::Signature(format!("invalid exported signature: {}", e))
+            })?;
+
+            if !seen_signers.insert(signature.signer_commitment.to_lowercase()) {
+                return Err(MultisigError::InvalidConfig(format!(
+                    "duplicate exported signature for signer {}",
+                    signature.signer_commitment
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn validate(&self, expected_account_id: Option<AccountId>) -> Result<()> {
+        let account_id = self.account_id()?;
+        if let Some(expected_account_id) = expected_account_id
+            && account_id != expected_account_id
+        {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal account {} does not match loaded account {}",
+                self.account_id, expected_account_id
+            )));
+        }
+
+        if self.id.is_empty() {
+            return Err(MultisigError::InvalidConfig(
+                "proposal id is required".to_string(),
+            ));
+        }
+
+        if self.signatures_required == 0 {
+            return Err(MultisigError::InvalidConfig(
+                "signatures_required must be greater than 0".to_string(),
+            ));
+        }
+
+        let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
+        })?;
+        let expected_id = Self::expected_id(&tx_summary);
+        if !self.id.eq_ignore_ascii_case(&expected_id) {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal id {} does not match tx_summary commitment {}",
+                self.id, expected_id
+            )));
+        }
+
+        let metadata = self.metadata();
+        self.parse_transaction_type(&metadata)?;
+        self.validate_signatures()
+    }
+
     /// Creates an ExportedProposal from a Proposal and account ID.
     pub fn from_proposal(proposal: &Proposal, account_id: AccountId) -> Self {
         let tx_type_str = match &proposal.transaction_type {
@@ -136,6 +231,8 @@ impl ExportedProposal {
 
     /// Converts the ExportedProposal back to a Proposal.
     pub fn to_proposal(&self) -> Result<Proposal> {
+        self.validate(None)?;
+
         let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
@@ -143,24 +240,7 @@ impl ExportedProposal {
         AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
 
-        let metadata = ProposalMetadata {
-            tx_summary_json: Some(self.tx_summary.clone()),
-            new_threshold: self.metadata.new_threshold,
-            signer_commitments_hex: self.metadata.signer_commitments_hex.clone(),
-            salt_hex: self.metadata.salt_hex.clone(),
-            recipient_hex: self.metadata.recipient_hex.clone(),
-            faucet_id_hex: self.metadata.faucet_id_hex.clone(),
-            amount: self.metadata.amount,
-            note_ids_hex: self.metadata.note_ids_hex.clone(),
-            new_psm_pubkey_hex: self.metadata.new_psm_pubkey_hex.clone(),
-            new_psm_endpoint: self.metadata.new_psm_endpoint.clone(),
-            required_signatures: Some(self.signatures_required),
-            signers: self
-                .signatures
-                .iter()
-                .map(|s| s.signer_commitment.clone())
-                .collect(),
-        };
+        let metadata = self.metadata();
 
         let transaction_type = self.parse_transaction_type(&metadata)?;
 
@@ -311,6 +391,12 @@ impl ExportedProposal {
     ///
     /// Returns an error if the signer has already signed.
     pub fn add_signature(&mut self, signature: ExportedSignature) -> Result<()> {
+        word_from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
+
+        let signature_hex = ensure_hex_prefix(&signature.signature);
+        RpoFalconSignature::from_hex(&signature_hex)
+            .map_err(|e| MultisigError::Signature(format!("invalid exported signature: {}", e)))?;
+
         // Check if already signed
         if self.signatures.iter().any(|s| {
             s.signer_commitment
@@ -345,12 +431,23 @@ impl ExportedProposal {
             )));
         }
 
+        exported.validate(None)?;
+
         Ok(exported)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use miden_client::Serializable;
+    use miden_protocol::FieldElement;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, Word, ZERO};
+    use private_state_manager_shared::ToJson;
+
     use super::*;
 
     #[test]
@@ -392,20 +489,21 @@ mod tests {
     fn test_add_signature_prevents_duplicates() {
         let mut proposal = ExportedProposal {
             version: EXPORT_VERSION,
-            account_id: "0x123".to_string(),
-            id: "0xabc".to_string(),
+            account_id: valid_account_id(),
+            id: valid_proposal_id(),
             nonce: 1,
             transaction_type: "UpdateSigners".to_string(),
-            tx_summary: serde_json::json!({}),
+            tx_summary: create_test_tx_summary().to_json(),
             signatures: vec![],
             signatures_required: 2,
-            metadata: ExportedMetadata::default(),
+            metadata: ExportedMetadata {
+                new_threshold: Some(2),
+                signer_commitments_hex: vec![valid_word_hex()],
+                ..Default::default()
+            },
         };
 
-        let sig1 = ExportedSignature {
-            signer_commitment: "0xsigner1".to_string(),
-            signature: "0xsig1".to_string(),
-        };
+        let sig1 = valid_exported_signature();
 
         // First signature should succeed
         proposal.add_signature(sig1.clone()).expect("should add");
@@ -566,6 +664,127 @@ mod tests {
     // Helper for valid note ID hex (32 bytes)
     fn valid_note_id_hex() -> String {
         "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string()
+    }
+
+    fn create_test_tx_summary() -> TransactionSummary {
+        let account_id = AccountId::from_hex(&valid_account_id()).expect("valid account id");
+        let account_delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .expect("valid delta");
+
+        TransactionSummary::new(
+            account_delta,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            Word::from([Felt::new(7), ZERO, ZERO, ZERO]),
+        )
+    }
+
+    fn valid_proposal_id() -> String {
+        ExportedProposal::expected_id(&create_test_tx_summary())
+    }
+
+    fn valid_exported_signature() -> ExportedSignature {
+        let secret_key = SecretKey::new();
+        let signature = secret_key.sign(create_test_tx_summary().to_commitment());
+        ExportedSignature {
+            signer_commitment: format!(
+                "0x{}",
+                hex::encode(secret_key.public_key().to_commitment().to_bytes())
+            ),
+            signature: format!("0x{}", hex::encode(signature.to_bytes())),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_commitment_mismatch() {
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: valid_word_hex(),
+            nonce: 1,
+            transaction_type: "ConsumeNotes".to_string(),
+            tx_summary: create_test_tx_summary().to_json(),
+            signatures: vec![],
+            signatures_required: 1,
+            metadata: ExportedMetadata {
+                note_ids_hex: vec![valid_note_id_hex()],
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.validate(None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match tx_summary commitment")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_signatures() {
+        let signature = valid_exported_signature();
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: valid_proposal_id(),
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: create_test_tx_summary().to_json(),
+            signatures: vec![signature.clone(), signature],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                new_threshold: Some(2),
+                signer_commitments_hex: vec![valid_word_hex()],
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.validate(None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate exported signature")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_invalid_signature_hex() {
+        let mut signature = valid_exported_signature();
+        signature.signature = "0x1234".to_string();
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: valid_proposal_id(),
+            nonce: 1,
+            transaction_type: "UpdateSigners".to_string(),
+            tx_summary: create_test_tx_summary().to_json(),
+            signatures: vec![signature],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                new_threshold: Some(2),
+                signer_commitments_hex: vec![valid_word_hex()],
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.validate(None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid exported signature")
+        );
     }
 
     #[test]

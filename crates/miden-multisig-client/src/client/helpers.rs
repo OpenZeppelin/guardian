@@ -16,6 +16,7 @@ use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result};
 use crate::keystore::word_from_hex;
 use crate::proposal::TransactionType;
+use crate::transaction::word_to_hex;
 
 impl MultisigClient {
     /// Creates a PSM client (unauthenticated).
@@ -142,6 +143,14 @@ impl MultisigClient {
 
         let psm_commitment =
             word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
+        let expected_psm_commitment = account.psm_commitment()?;
+        if psm_commitment != expected_psm_commitment {
+            return Err(MultisigError::PsmServer(format!(
+                "PSM public key commitment {} does not match account commitment {}",
+                word_to_hex(&psm_commitment),
+                word_to_hex(&expected_psm_commitment)
+            )));
+        }
 
         Ok(crate::transaction::build_signature_advice_entry(
             psm_commitment,

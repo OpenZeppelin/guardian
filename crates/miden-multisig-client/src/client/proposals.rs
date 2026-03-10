@@ -103,6 +103,7 @@ impl MultisigClient {
             .delta
             .as_ref()
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        Self::ensure_proposal_account_id(&updated_raw.account_id, &account_id)?;
         let updated = Proposal::from(updated_raw)?;
         Ok(updated)
     }

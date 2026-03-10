@@ -10,7 +10,7 @@ use private_state_manager_shared::ToJson;
 
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
-use crate::keystore::Signer;
+use crate::keystore::{Signer, ensure_hex_prefix};
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{Proposal, ProposalMetadata, TransactionType};
@@ -106,6 +106,18 @@ impl ProposalBuilder {
         }
     }
 
+    fn ensure_response_commitment(proposal: &Proposal, response_commitment: &str) -> Result<()> {
+        let response_commitment = ensure_hex_prefix(response_commitment);
+        if proposal.id.eq_ignore_ascii_case(&response_commitment) {
+            return Ok(());
+        }
+
+        Err(MultisigError::PsmServer(format!(
+            "PSM returned proposal commitment {} but transaction summary commitment is {}",
+            response_commitment, proposal.id
+        )))
+    }
+
     async fn build_add_cosigner(
         &self,
         miden_client: &mut Client<()>,
@@ -179,13 +191,13 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let mut proposal = Proposal::new(
+        let proposal = Proposal::new(
             tx_summary,
             nonce,
             TransactionType::AddCosigner { new_commitment },
             metadata,
         );
-        proposal.id = response.commitment;
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
 
         Ok(proposal)
     }
@@ -279,7 +291,7 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let mut proposal = Proposal::new(
+        let proposal = Proposal::new(
             tx_summary,
             nonce,
             TransactionType::RemoveCosigner {
@@ -287,7 +299,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        proposal.id = response.commitment;
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
 
         Ok(proposal)
     }
@@ -364,7 +376,7 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let mut proposal = Proposal::new(
+        let proposal = Proposal::new(
             tx_summary,
             nonce,
             TransactionType::P2ID {
@@ -374,7 +386,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        proposal.id = response.commitment;
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
 
         Ok(proposal)
     }
@@ -441,13 +453,13 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let mut proposal = Proposal::new(
+        let proposal = Proposal::new(
             tx_summary,
             nonce,
             TransactionType::ConsumeNotes { note_ids },
             metadata,
         );
-        proposal.id = response.commitment;
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
 
         Ok(proposal)
     }
@@ -515,7 +527,7 @@ impl ProposalBuilder {
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
 
         // Build the Proposal
-        let mut proposal = Proposal::new(
+        let proposal = Proposal::new(
             tx_summary,
             nonce,
             TransactionType::SwitchPsm {
@@ -524,8 +536,73 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        proposal.id = response.commitment;
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
 
         Ok(proposal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miden_protocol::FieldElement;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, ZERO};
+
+    fn test_proposal() -> Proposal {
+        let account_id =
+            AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").expect("valid account id");
+        let account_delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .expect("valid delta");
+        let tx_summary = TransactionSummary::new(
+            account_delta,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            Word::from([Felt::new(9), ZERO, ZERO, ZERO]),
+        );
+
+        Proposal::new(
+            tx_summary,
+            1,
+            TransactionType::ConsumeNotes {
+                note_ids: vec![miden_protocol::note::NoteId::from_raw(Word::from([
+                    Felt::new(1),
+                    ZERO,
+                    ZERO,
+                    ZERO,
+                ]))],
+            },
+            ProposalMetadata {
+                note_ids_hex: vec![
+                    "0x0100000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                ],
+                required_signatures: Some(1),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn ensure_response_commitment_rejects_mismatch() {
+        let proposal = test_proposal();
+        let result = ProposalBuilder::ensure_response_commitment(
+            &proposal,
+            "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("transaction summary commitment")
+        );
     }
 }

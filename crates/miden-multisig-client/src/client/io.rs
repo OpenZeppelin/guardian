@@ -128,17 +128,7 @@ impl MultisigClient {
     /// ```
     pub fn import_proposal_from_string(&self, json: &str) -> Result<ExportedProposal> {
         let exported = ExportedProposal::from_json(json)?;
-
-        // Validate account ID matches if we have an account loaded
-        if let Some(account) = &self.account {
-            let expected_id = account.id().to_string();
-            if !exported.account_id.eq_ignore_ascii_case(&expected_id) {
-                return Err(MultisigError::InvalidConfig(format!(
-                    "proposal account {} does not match loaded account {}",
-                    exported.account_id, expected_id
-                )));
-            }
-        }
+        exported.validate(self.account.as_ref().map(|account| account.id()))?;
 
         Ok(exported)
     }
