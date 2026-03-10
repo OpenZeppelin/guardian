@@ -6,7 +6,7 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use miden_multisig_client::{MultisigClient, MultisigConfig, PsmConfig};
+//! use miden_multisig_client::MultisigClient;
 //! use miden_client::rpc::Endpoint;
 //!
 //! #[tokio::main]
@@ -23,16 +23,10 @@
 //!     println!("Your commitment: {}", client.user_commitment_hex());
 //!
 //!     // Create a 2-of-3 multisig
-//!     let config = MultisigConfig::new(
-//!         2,  // threshold
-//!         vec![signer1, signer2, signer3],  // commitments
-//!         PsmConfig::new("http://localhost:50051"),
-//!     );
-//!     config.validate()?;
-//!     let account = client.create_account(config).await?;
+//!     let account = client.create_account(2, vec![signer1, signer2, signer3]).await?;
 //!
 //!     // Register with PSM so other cosigners can pull
-//!     client.push_account(&account).await?;
+//!     client.push_account().await?;
 //!
 //!     Ok(())
 //! }
@@ -42,7 +36,6 @@
 mod account;
 mod builder;
 mod client;
-mod config;
 mod error;
 mod execution;
 mod export;
@@ -60,11 +53,8 @@ pub use client::{
     ConsumableNote, MultisigClient, NoteFilter, ProposalResult, StateVerificationResult,
 };
 
-// Configuration
-pub use config::{MultisigConfig, ProcedureThreshold, PsmConfig};
-
 // Procedures
-pub use procedures::ProcedureName;
+pub use procedures::{ProcedureName, ProcedureThreshold};
 
 // Account types
 pub use account::MultisigAccount;

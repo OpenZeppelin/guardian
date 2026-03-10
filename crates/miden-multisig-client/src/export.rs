@@ -239,7 +239,7 @@ impl ExportedProposal {
         })?;
         validate_proposal_id_matches_summary(&self.id, &tx_summary)?;
 
-        let _account_id = AccountId::from_hex(&self.account_id)
+        AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
 
         let metadata = self.metadata();

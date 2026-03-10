@@ -58,6 +58,37 @@ impl ProcedureName {
     }
 }
 
+/// Per-procedure threshold override.
+///
+/// Allows specifying different signature thresholds for specific procedures.
+///
+/// # Example
+///
+/// ```
+/// use miden_multisig_client::{ProcedureThreshold, ProcedureName};
+///
+/// let receive_threshold = ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1);
+/// let config_threshold = ProcedureThreshold::new(ProcedureName::UpdateSigners, 3);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct ProcedureThreshold {
+    pub procedure: ProcedureName,
+    pub threshold: u32,
+}
+
+impl ProcedureThreshold {
+    pub fn new(procedure: ProcedureName, threshold: u32) -> Self {
+        Self {
+            procedure,
+            threshold,
+        }
+    }
+
+    pub fn procedure_root(&self) -> Word {
+        self.procedure.root()
+    }
+}
+
 impl std::fmt::Display for ProcedureName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -107,6 +138,19 @@ fn word_from_hex(hex_str: &str) -> Word {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procedure_threshold_new_creates_correctly() {
+        let threshold = ProcedureThreshold::new(ProcedureName::ReceiveAsset, 1);
+        assert_eq!(threshold.procedure, ProcedureName::ReceiveAsset);
+        assert_eq!(threshold.threshold, 1);
+    }
+
+    #[test]
+    fn procedure_threshold_procedure_root_returns_correct_root() {
+        let threshold = ProcedureThreshold::new(ProcedureName::SendAsset, 2);
+        assert_eq!(threshold.procedure_root(), ProcedureName::SendAsset.root());
+    }
 
     #[test]
     fn procedure_name_round_trip() {
