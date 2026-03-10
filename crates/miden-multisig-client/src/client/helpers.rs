@@ -14,6 +14,7 @@ use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result};
+use crate::keystore::word_from_hex;
 use crate::proposal::TransactionType;
 
 impl MultisigClient {
@@ -139,8 +140,7 @@ impl MultisigClient {
             MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
         })?;
 
-        let psm_commitment = crate::keystore::commitment_from_hex(&psm_commitment_hex)
-            .map_err(MultisigError::HexDecode)?;
+        let psm_commitment = word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         Ok(crate::transaction::build_signature_advice_entry(
             psm_commitment,

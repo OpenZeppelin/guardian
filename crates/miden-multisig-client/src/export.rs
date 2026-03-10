@@ -11,6 +11,7 @@ use private_state_manager_shared::FromJson;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
+use crate::keystore::word_from_hex;
 use crate::proposal::{
     Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, TransactionType,
 };
@@ -247,7 +248,7 @@ impl ExportedProposal {
                     .as_ref()
                     .ok_or_else(|| MultisigError::MissingConfig("new_psm_endpoint".to_string()))?;
 
-                let new_commitment = hex_to_word(pubkey_hex)?;
+                let new_commitment = word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
                 Ok(TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
@@ -345,32 +346,6 @@ impl ExportedProposal {
 
         Ok(exported)
     }
-}
-
-/// Converts a hex string to Word.
-fn hex_to_word(hex: &str) -> Result<miden_protocol::Word> {
-    use miden_protocol::Felt;
-
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    let bytes = hex::decode(hex).map_err(|e| {
-        MultisigError::InvalidConfig(format!("invalid hex string '{}': {}", hex, e))
-    })?;
-
-    if bytes.len() != 32 {
-        return Err(MultisigError::InvalidConfig(format!(
-            "invalid word length for '{}': expected 32 bytes, got {}",
-            hex,
-            bytes.len()
-        )));
-    }
-
-    let mut word = [0u64; 4];
-    for (i, chunk) in bytes.chunks(8).enumerate() {
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(chunk);
-        word[i] = u64::from_le_bytes(arr);
-    }
-    Ok(miden_protocol::Word::from(word.map(Felt::new)))
 }
 
 #[cfg(test)]
@@ -719,6 +694,35 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_transaction_type_switch_psm_rejects_non_canonical_commitment() {
+        let metadata = ProposalMetadata {
+            new_psm_pubkey_hex: Some(format!("0x{}{}", "ff".repeat(8), "00".repeat(24))),
+            new_psm_endpoint: Some("http://new-psm:50051".to_string()),
+            ..Default::default()
+        };
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "SwitchPsm".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                new_psm_pubkey_hex: metadata.new_psm_pubkey_hex.clone(),
+                new_psm_endpoint: metadata.new_psm_endpoint.clone(),
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid field element"));
+    }
+
+    #[test]
     fn test_parse_transaction_type_invalid() {
         let metadata = ProposalMetadata::default();
 
@@ -740,24 +744,4 @@ mod tests {
         assert!(matches!(err, MultisigError::UnknownTransactionType(_)));
     }
 
-    #[test]
-    fn test_hex_to_word_valid() {
-        let hex = valid_word_hex();
-        let result = hex_to_word(&hex);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_hex_to_word_invalid_length() {
-        let hex = "0x1234"; // Too short
-        let result = hex_to_word(hex);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_hex_to_word_invalid_chars() {
-        let hex = "0xGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG";
-        let result = hex_to_word(hex);
-        assert!(result.is_err());
-    }
 }

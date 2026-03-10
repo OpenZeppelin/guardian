@@ -73,10 +73,10 @@ pub use keystore::{
     FalconKeyStore,
     Signer,
     // Hex utilities
-    commitment_from_hex,
     ensure_hex_prefix,
     strip_hex_prefix,
     validate_commitment_hex,
+    word_from_hex,
 };
 
 // Proposals
