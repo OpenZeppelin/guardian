@@ -18,12 +18,13 @@
     "masm"
   ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit",
+    "generate:masm": "node ./scripts/generate-masm.mjs",
+    "build": "npm run generate:masm && tsc",
+    "dev": "npm run generate:masm && tsc --watch",
+    "typecheck": "npm run generate:masm && tsc --noEmit",
     "clean": "rm -rf dist",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "npm run generate:masm && vitest run",
+    "test:watch": "npm run generate:masm && vitest"
   },
   "dependencies": {
     "@openzeppelin/psm-client": "file:../psm-client",
