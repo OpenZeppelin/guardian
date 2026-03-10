@@ -1,5 +1,5 @@
 use miden_protocol::Word;
-use miden_protocol::account::{Account, StorageSlotContent, StorageSlotName};
+use miden_protocol::account::{Account, StorageSlotName};
 use miden_protocol::utils::Serializable;
 
 // Storage slot names for OpenZeppelin multisig/psm components
@@ -7,12 +7,6 @@ const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_co
 const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
 const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
 pub const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
-
-// Alternative slot names for miden-standards auth components
-const STD_THRESHOLD_CONFIG: &str =
-    "miden::standards::auth::falcon512_rpo_multisig::threshold_config";
-const STD_APPROVER_PUBKEYS: &str =
-    "miden::standards::auth::falcon512_rpo_multisig::approver_public_keys";
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -35,39 +29,10 @@ impl<'a> MidenAccountInspector<'a> {
         self.account.storage().get_map_item(&name, key).ok()
     }
 
-    /// Find a map slot by checking multiple possible names, returns slot name if found
-    fn find_map_slot_name(&self, candidates: &[&str]) -> Option<String> {
-        for slot in self.account.storage().slots() {
-            let name_str = slot.name().as_str();
-            if candidates.contains(&name_str)
-                && matches!(slot.content(), StorageSlotContent::Map(_))
-            {
-                return Some(name_str.to_string());
-            }
-        }
-        None
-    }
-
-    /// Find a value slot by checking multiple possible names, returns slot name if found
-    fn find_value_slot_name(&self, candidates: &[&str]) -> Option<String> {
-        for slot in self.account.storage().slots() {
-            let name_str = slot.name().as_str();
-            if candidates.contains(&name_str)
-                && matches!(slot.content(), StorageSlotContent::Value(_))
-            {
-                return Some(name_str.to_string());
-            }
-        }
-        None
-    }
-
     /// Extract public key from threshold config slot (single signer case)
     /// Returns None if slot is empty or default
-    pub fn extract_slot_0_pubkey(&self) -> Option<String> {
-        // Try both OpenZeppelin and miden-standards slot names
-        let candidates = [OZ_MULTISIG_THRESHOLD_CONFIG, STD_THRESHOLD_CONFIG];
-        let slot_name = self.find_value_slot_name(&candidates)?;
-        let value = self.get_item_by_name(&slot_name)?;
+    pub fn extract_single_pubkey(&self) -> Option<String> {
+        let value = self.get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)?;
 
         if value != Word::default() {
             let pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
@@ -76,28 +41,20 @@ impl<'a> MidenAccountInspector<'a> {
         None
     }
 
-    /// Extract public keys from signer public keys map slot (multisig mapping)
-    /// Returns empty vector if slot is empty or has no entries
-    pub fn extract_slot_1_pubkeys(&self) -> Vec<String> {
+    /// Extract public keys from the multisig signer map.
+    ///
+    /// Returns an empty vector if the signer map is empty or missing.
+    pub fn extract_pubkeys(&self) -> Vec<String> {
+        self.extract_map_pubkeys(OZ_MULTISIG_SIGNER_PUBKEYS)
+    }
+
+    fn extract_map_pubkeys(&self, slot_name: &str) -> Vec<String> {
         let mut pubkeys = Vec::new();
-
-        // Try both OpenZeppelin and miden-standards slot names
-        let candidates = [OZ_MULTISIG_SIGNER_PUBKEYS, STD_APPROVER_PUBKEYS];
-        let Some(slot_name) = self.find_map_slot_name(&candidates) else {
-            return pubkeys;
-        };
-
-        let key_zero = Word::from([0u32, 0, 0, 0]);
-        let first_entry = self.get_map_item_by_name(&slot_name, key_zero);
-
-        if first_entry.is_none() || first_entry.as_ref().unwrap() == &Word::default() {
-            return pubkeys;
-        }
 
         let mut index = 0u32;
         loop {
             let key = Word::from([index, 0, 0, 0]);
-            match self.get_map_item_by_name(&slot_name, key) {
+            match self.get_map_item_by_name(slot_name, key) {
                 Some(value) if value != Word::default() => {
                     let pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
                     pubkeys.push(pubkey_hex);
@@ -110,32 +67,17 @@ impl<'a> MidenAccountInspector<'a> {
         pubkeys
     }
 
-    /// Extract all public keys from account storage
-    /// Checks both threshold config slot (single signer) and signer pubkeys map (multisig mapping)
-    pub fn extract_all_pubkeys(&self) -> Vec<String> {
-        let mut all_pubkeys = Vec::new();
-
-        if let Some(pubkey) = self.extract_slot_0_pubkey() {
-            all_pubkeys.push(pubkey);
-        }
-
-        let signer_pubkeys = self.extract_slot_1_pubkeys();
-        all_pubkeys.extend(signer_pubkeys);
-
-        all_pubkeys
-    }
-
     /// Check if a public key exists in account storage
     /// Returns true if the pubkey is found in either threshold config or signer pubkeys map
     pub fn pubkey_exists(&self, target_pubkey: &str) -> bool {
-        if let Some(slot_0_pubkey) = self.extract_slot_0_pubkey()
-            && slot_0_pubkey == target_pubkey
+        if let Some(single_pubkey) = self.extract_single_pubkey()
+            && single_pubkey == target_pubkey
         {
             return true;
         }
 
-        let slot_1_pubkeys = self.extract_slot_1_pubkeys();
-        slot_1_pubkeys.iter().any(|pk| pk == target_pubkey)
+        let signer_pubkeys = self.extract_pubkeys();
+        signer_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
     /// Check if the account has PSM auth enabled by checking the PSM selector storage slot.
@@ -155,9 +97,8 @@ impl<'a> MidenAccountInspector<'a> {
     /// Extract PSM public key commitment from the OpenZeppelin PSM public key map.
     /// Requires the exact slot name `openzeppelin::psm::public_key`.
     pub fn extract_psm_public_key(&self) -> Option<String> {
-        let slot_name = self.find_map_slot_name(&[OZ_PSM_PUBLIC_KEY])?;
         let key_zero = Word::from([0u32, 0, 0, 0]);
-        let value = self.get_map_item_by_name(&slot_name, key_zero)?;
+        let value = self.get_map_item_by_name(OZ_PSM_PUBLIC_KEY, key_zero)?;
 
         if value == Word::default() {
             return None;
@@ -170,10 +111,55 @@ impl<'a> MidenAccountInspector<'a> {
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use miden_protocol::account::{
+        AccountCode, AccountId, AccountIdVersion, AccountStorage, AccountStorageMode, AccountType,
+        StorageMap, StorageSlot, StorageSlotName,
+    };
+    use miden_protocol::asset::AssetVault;
     use private_state_manager_shared::FromJson;
 
+    fn word(v: u32) -> Word {
+        Word::from([v, 0, 0, 0])
+    }
+
+    fn build_account_with_signer_slots(oz_pubkeys: Vec<Word>) -> Account {
+        fn signer_slot(slot_name: &str, pubkeys: Vec<Word>) -> StorageSlot {
+            let slot_name = StorageSlotName::new(slot_name).expect("valid slot name");
+            let entries = pubkeys
+                .into_iter()
+                .enumerate()
+                .map(|(index, pubkey)| (Word::from([index as u32, 0, 0, 0]), pubkey));
+            let map = StorageMap::with_entries(entries).expect("valid signer map");
+            StorageSlot::with_map(slot_name, map)
+        }
+
+        let threshold_slot = StorageSlot::with_value(
+            StorageSlotName::new(OZ_MULTISIG_THRESHOLD_CONFIG).expect("valid slot name"),
+            Word::from([1u32, 1, 0, 0]),
+        );
+        let storage = AccountStorage::new(vec![
+            threshold_slot,
+            signer_slot(OZ_MULTISIG_SIGNER_PUBKEYS, oz_pubkeys),
+        ])
+        .expect("valid storage");
+        let account_id = AccountId::dummy(
+            [3u8; 15],
+            AccountIdVersion::Version0,
+            AccountType::RegularAccountUpdatableCode,
+            AccountStorageMode::Private,
+        );
+
+        Account::new_existing(
+            account_id,
+            AssetVault::new(&[]).expect("empty vault"),
+            storage,
+            AccountCode::mock(),
+            miden_protocol::Felt::new(1),
+        )
+    }
+
     #[test]
-    fn test_extract_slot_0_pubkey() {
+    fn test_extract_single_pubkey() {
         let fixture_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
                 .expect("Failed to parse fixture");
@@ -181,29 +167,12 @@ mod tests {
         let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
         let inspector = MidenAccountInspector::new(&account);
 
-        let pubkey = inspector.extract_slot_0_pubkey();
+        let pubkey = inspector.extract_single_pubkey();
         assert!(pubkey.is_some(), "Expected pubkey in threshold config slot");
         assert!(
             pubkey.unwrap().starts_with("0x"),
             "Pubkey should be hex format"
         );
-    }
-
-    #[test]
-    fn test_extract_all_pubkeys() {
-        let fixture_json: serde_json::Value =
-            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
-                .expect("Failed to parse fixture");
-
-        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
-        let inspector = MidenAccountInspector::new(&account);
-
-        let pubkeys = inspector.extract_all_pubkeys();
-        assert!(!pubkeys.is_empty(), "Expected at least one pubkey");
-
-        for pubkey in pubkeys {
-            assert!(pubkey.starts_with("0x"), "Pubkey should be hex format");
-        }
     }
 
     #[test]
@@ -216,7 +185,7 @@ mod tests {
         let inspector = MidenAccountInspector::new(&account);
 
         let pubkey = inspector
-            .extract_slot_0_pubkey()
+            .extract_single_pubkey()
             .expect("Expected pubkey in threshold config slot");
 
         assert!(
@@ -242,6 +211,20 @@ mod tests {
         assert!(
             inspector.has_psm_auth(),
             "Fixture account should have PSM auth enabled (auth_tx_falcon512_rpo_multisig procedure)"
+        );
+    }
+
+    #[test]
+    fn test_extract_pubkeys_reads_openzeppelin_signer_map() {
+        let account = build_account_with_signer_slots(vec![word(11), word(12)]);
+        let inspector = MidenAccountInspector::new(&account);
+
+        assert_eq!(
+            inspector.extract_pubkeys(),
+            vec![
+                format!("0x{}", hex::encode(word(11).to_bytes())),
+                format!("0x{}", hex::encode(word(12).to_bytes())),
+            ]
         );
     }
 
@@ -286,5 +269,13 @@ mod tests {
             inspector.extract_psm_public_key().is_none(),
             "Expected None for empty/default PSM public key value"
         );
+    }
+
+    #[test]
+    fn test_extract_pubkeys_returns_empty_when_openzeppelin_signer_map_is_empty() {
+        let account = build_account_with_signer_slots(Vec::new());
+        let inspector = MidenAccountInspector::new(&account);
+
+        assert!(inspector.extract_pubkeys().is_empty());
     }
 }
