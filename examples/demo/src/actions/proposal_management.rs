@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use miden_multisig_client::{
-    commitment_from_hex, ensure_hex_prefix, Asset, ExportedProposal, NoteId, TransactionType,
+    ensure_hex_prefix, word_from_hex, Asset, ExportedProposal, NoteId, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use rustyline::DefaultEditor;
@@ -774,7 +774,7 @@ fn prompt_add_cosigner(editor: &mut DefaultEditor) -> Result<TransactionType, St
         return Err("Commitment is required".to_string());
     }
 
-    let new_commitment = commitment_from_hex(&ensure_hex_prefix(&hex))
+    let new_commitment = word_from_hex(&ensure_hex_prefix(&hex))
         .map_err(|e| format!("Invalid commitment: {}", e))?;
 
     Ok(TransactionType::add_cosigner(new_commitment))
@@ -1021,7 +1021,7 @@ fn prompt_switch_psm(
         return Err("Pubkey commitment is required".to_string());
     }
 
-    let new_commitment = commitment_from_hex(&ensure_hex_prefix(&pubkey_hex))
+    let new_commitment = word_from_hex(&ensure_hex_prefix(&pubkey_hex))
         .map_err(|e| format!("Invalid pubkey: {}", e))?;
 
     println!("\nPSM switch details:");

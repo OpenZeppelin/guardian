@@ -1,4 +1,4 @@
-use miden_multisig_client::{commitment_from_hex, ProcedureName, ProcedureThreshold};
+use miden_multisig_client::{word_from_hex, ProcedureName, ProcedureThreshold};
 use rustyline::DefaultEditor;
 
 use crate::display::{print_section, print_success, print_waiting, shorten_hex};
@@ -103,7 +103,7 @@ pub async fn action_create_account(
     // Convert hex strings to Words
     let signer_commitments: Vec<_> = cosigner_commitment_hexes
         .iter()
-        .map(|hex| commitment_from_hex(hex))
+        .map(|hex| word_from_hex(hex))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to parse commitment: {}", e))?;
 

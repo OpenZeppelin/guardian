@@ -377,7 +377,7 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let commitments = inspector.extract_slot_1_pubkeys();
+        let commitments = inspector.extract_pubkeys();
 
         if commitments.is_empty() {
             Ok(None)
