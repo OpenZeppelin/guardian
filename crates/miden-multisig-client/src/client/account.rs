@@ -16,9 +16,9 @@ use private_state_manager_client::{
 
 use super::{MultisigClient, StateVerificationResult};
 use crate::account::MultisigAccount;
-use crate::config::ProcedureThreshold;
 use crate::error::{MultisigError, Result};
 use crate::keystore::word_from_hex;
+use crate::procedures::ProcedureThreshold;
 use crate::transaction::word_to_hex;
 
 impl MultisigClient {
@@ -28,7 +28,7 @@ impl MultisigClient {
     /// * `threshold` - Minimum number of signatures required (default threshold)
     /// * `signer_commitments` - Public key commitments of all signers
     ///
-    /// For per-procedure thresholds, use `create_account_with_config` instead.
+    /// For per-procedure thresholds, use `create_account_with_proc_thresholds` instead.
     pub async fn create_account(
         &mut self,
         threshold: u32,

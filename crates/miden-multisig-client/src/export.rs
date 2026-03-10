@@ -140,7 +140,7 @@ impl ExportedProposal {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        let _account_id = AccountId::from_hex(&self.account_id)
+        AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
 
         let metadata = ProposalMetadata {

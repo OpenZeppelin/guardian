@@ -66,7 +66,7 @@ pub struct StateVerificationResult {
 /// # Example
 ///
 /// ```ignore
-/// use miden_multisig_client::{MultisigClient, MultisigConfig, PsmConfig};
+/// use miden_multisig_client::MultisigClient;
 /// use miden_client::rpc::Endpoint;
 ///
 /// // Create a client
