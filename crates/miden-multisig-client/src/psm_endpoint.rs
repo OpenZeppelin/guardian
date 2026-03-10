@@ -2,7 +2,7 @@ use miden_protocol::Word;
 use private_state_manager_client::PsmClient;
 
 use crate::error::{MultisigError, Result};
-use crate::keystore::commitment_from_hex;
+use crate::keystore::word_from_hex;
 use crate::transaction::word_to_hex;
 
 pub(crate) async fn verify_endpoint_commitment(
@@ -23,8 +23,7 @@ pub(crate) async fn verify_endpoint_commitment(
         ))
     })?;
 
-    let endpoint_commitment =
-        commitment_from_hex(&endpoint_commitment_hex).map_err(MultisigError::HexDecode)?;
+    let endpoint_commitment = word_from_hex(&endpoint_commitment_hex).map_err(MultisigError::HexDecode)?;
 
     ensure_commitment_match(endpoint, expected_commitment, endpoint_commitment)
 }

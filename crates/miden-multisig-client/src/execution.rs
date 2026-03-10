@@ -12,7 +12,7 @@ use miden_protocol::{Felt, Word};
 use private_state_manager_shared::hex::FromHex;
 
 use crate::error::{MultisigError, Result};
-use crate::keystore::{commitment_from_hex, ensure_hex_prefix};
+use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
 
 /// Signature advice entry: (key, prepared_signature_values)
@@ -65,7 +65,7 @@ pub fn collect_signature_advice(
             .map_err(|e| MultisigError::Signature(format!("invalid signature: {}", e)))?;
 
         let commitment =
-            commitment_from_hex(&sig_input.signer_commitment).map_err(MultisigError::HexDecode)?;
+            word_from_hex(&sig_input.signer_commitment).map_err(MultisigError::HexDecode)?;
 
         advice.push(crate::transaction::build_signature_advice_entry(
             commitment,

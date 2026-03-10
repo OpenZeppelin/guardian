@@ -11,6 +11,7 @@ use private_state_manager_shared::FromJson;
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
+use crate::keystore::word_from_hex;
 use crate::payload::ProposalPayload;
 
 /// Status of a proposal in the signing workflow.
@@ -159,7 +160,7 @@ impl ProposalMetadata {
     /// Converts salt hex to Word.
     pub fn salt(&self) -> Result<Word> {
         match &self.salt_hex {
-            Some(value) => hex_to_word(value),
+            Some(value) => word_from_hex(value).map_err(MultisigError::InvalidConfig),
             None => Ok(Word::from([Felt::new(0); 4])),
         }
     }
@@ -168,7 +169,7 @@ impl ProposalMetadata {
     pub fn signer_commitments(&self) -> Result<Vec<Word>> {
         self.signer_commitments_hex
             .iter()
-            .map(|h| hex_to_word(h))
+            .map(|hex| word_from_hex(hex).map_err(MultisigError::InvalidConfig))
             .collect()
     }
 
@@ -176,7 +177,10 @@ impl ProposalMetadata {
     pub fn note_ids(&self) -> Result<Vec<NoteId>> {
         self.note_ids_hex
             .iter()
-            .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
+            .map(|hex| {
+                let word = word_from_hex(hex).map_err(MultisigError::InvalidConfig)?;
+                Ok(NoteId::from_raw(word))
+            })
             .collect()
     }
 
@@ -237,7 +241,7 @@ impl ProposalMetadata {
                         "switch_psm proposal requires metadata.new_psm_endpoint".to_string(),
                     )
                 })?;
-                let new_commitment = hex_to_word(pubkey_hex)?;
+                let new_commitment = word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
                 Ok(TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
@@ -337,7 +341,10 @@ impl Proposal {
 
         let parsed_note_ids: Vec<NoteId> = note_ids_hex
             .iter()
-            .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
+            .map(|hex| {
+                let word = word_from_hex(hex).map_err(MultisigError::InvalidConfig)?;
+                Ok(NoteId::from_raw(word))
+            })
             .collect::<Result<_>>()?;
 
         let new_psm_pubkey_hex = metadata_payload.new_psm_pubkey;
@@ -389,7 +396,8 @@ impl Proposal {
             } else if let (Some(pubkey_hex), Some(endpoint)) =
                 (&new_psm_pubkey_hex, &new_psm_endpoint)
             {
-                let new_commitment = hex_to_word(pubkey_hex)?;
+                let new_commitment =
+                    word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
                 TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
@@ -569,31 +577,6 @@ fn determine_transaction_type(
         signer_commitments: proposed_signers.to_vec(),
     }
 }
-
-/// Converts a hex string to Word.
-fn hex_to_word(hex: &str) -> Result<Word> {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    let bytes = hex::decode(hex).map_err(|e| {
-        MultisigError::InvalidConfig(format!("invalid hex string '{}': {}", hex, e))
-    })?;
-
-    if bytes.len() != 32 {
-        return Err(MultisigError::InvalidConfig(format!(
-            "invalid word length for '{}': expected 32 bytes, got {}",
-            hex,
-            bytes.len()
-        )));
-    }
-
-    let mut word = [0u64; 4];
-    for (i, chunk) in bytes.chunks(8).enumerate() {
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(chunk);
-        word[i] = u64::from_le_bytes(arr);
-    }
-    Ok(Word::from(word.map(Felt::new)))
-}
-
 /// Converts a Word to bytes.
 fn word_to_bytes(word: &Word) -> Vec<u8> {
     word.iter()
@@ -628,12 +611,19 @@ mod tests {
     }
 
     #[test]
-    fn test_hex_to_word_roundtrip() {
+    fn test_word_from_hex_roundtrip() {
         let original = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-        let word = hex_to_word(original).expect("hex should decode");
+        let word = word_from_hex(original).expect("hex should decode");
         let bytes = word_to_bytes(&word);
         let result = format!("0x{}", hex::encode(bytes));
         assert_eq!(original, result);
+    }
+
+    #[test]
+    fn test_word_from_hex_rejects_non_canonical_field_element() {
+        let invalid = format!("0x{}{}", "ff".repeat(8), "00".repeat(24));
+        let err = word_from_hex(&invalid).expect_err("non-canonical field element should fail");
+        assert!(err.contains("invalid field element"));
     }
 
     #[test]
@@ -714,6 +704,20 @@ mod tests {
                 new_commitment: commitment
             }
         );
+    }
+
+    #[test]
+    fn test_transaction_type_switch_psm_rejects_non_canonical_commitment() {
+        let metadata = ProposalMetadata {
+            new_psm_pubkey_hex: Some(format!("0x{}{}", "ff".repeat(8), "00".repeat(24))),
+            new_psm_endpoint: Some("http://new-psm.example.com".to_string()),
+            ..Default::default()
+        };
+
+        let err = metadata
+            .to_transaction_type("switch_psm")
+            .expect_err("non-canonical PSM commitment should be rejected");
+        assert!(err.to_string().contains("invalid field element"));
     }
 
     #[test]
@@ -912,6 +916,19 @@ mod tests {
         let salt = metadata.salt().expect("salt should parse");
         // Verify it's not the default Word
         assert_ne!(salt, Word::default());
+    }
+
+    #[test]
+    fn test_metadata_salt_rejects_non_canonical_field_element() {
+        let metadata = ProposalMetadata {
+            salt_hex: Some(format!("0x{}{}", "ff".repeat(8), "00".repeat(24))),
+            ..Default::default()
+        };
+
+        let err = metadata
+            .salt()
+            .expect_err("non-canonical salt should be rejected");
+        assert!(err.to_string().contains("invalid field element"));
     }
 
     #[test]

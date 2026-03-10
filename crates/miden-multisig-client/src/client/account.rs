@@ -17,6 +17,7 @@ use private_state_manager_client::{
 use super::{MultisigClient, StateVerificationResult};
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
+use crate::keystore::word_from_hex;
 use crate::procedures::ProcedureThreshold;
 use crate::transaction::word_to_hex;
 
@@ -73,8 +74,7 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get PSM pubkey: {}", e)))?;
 
-        let psm_commitment = crate::keystore::commitment_from_hex(&psm_pubkey_hex)
-            .map_err(MultisigError::HexDecode)?;
+        let psm_commitment = word_from_hex(&psm_pubkey_hex).map_err(MultisigError::HexDecode)?;
 
         // Convert procedure thresholds to (Word, u32) pairs
         let overrides: Vec<(Word, u32)> = proc_threshold_overrides
@@ -291,8 +291,7 @@ impl MultisigClient {
 
         // Parse PSM commitment
         let psm_commitment_hex = &state_obj.commitment;
-        let psm_commitment =
-            crate::commitment_from_hex(psm_commitment_hex).map_err(MultisigError::HexDecode)?;
+        let psm_commitment = word_from_hex(psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         // Compare commitments - if they match, no update needed
         if local_commitment == psm_commitment {
@@ -375,10 +374,7 @@ impl MultisigClient {
         let expected_prev_commitment = if merged_delta.prev_commitment.is_empty() {
             None
         } else {
-            Some(
-                crate::commitment_from_hex(&merged_delta.prev_commitment)
-                    .map_err(MultisigError::HexDecode)?,
-            )
+            Some(word_from_hex(&merged_delta.prev_commitment).map_err(MultisigError::HexDecode)?)
         };
 
         if let Some(prev_commitment) = expected_prev_commitment

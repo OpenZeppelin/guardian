@@ -357,7 +357,6 @@ fn validate_proposal_id_matches_summary(id: &str, tx_summary: &TransactionSummar
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use miden_client::Serializable;
@@ -796,7 +795,6 @@ mod tests {
                 .contains("proposal metadata.proposal_type is required")
         );
     }
-
     #[test]
     fn from_proposal_roundtrip_preserves_proposal_type() {
         let new_commitment = Word::from_hex(&valid_word_hex()).expect("valid signer commitment");

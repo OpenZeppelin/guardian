@@ -134,14 +134,14 @@ pub fn validate_commitment_hex(input: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Parses a hex-encoded commitment string to a Word.
-pub fn commitment_from_hex(hex_str: &str) -> Result<Word, String> {
+/// Parses a hex-encoded word string to a Word.
+pub fn word_from_hex(hex_str: &str) -> Result<Word, String> {
     let trimmed = strip_hex_prefix(hex_str);
     let bytes = hex::decode(trimmed).map_err(|e| format!("invalid hex: {}", e))?;
 
     if bytes.len() != 32 {
         return Err(format!(
-            "invalid commitment length: expected 32 bytes, got {}",
+            "invalid word length: expected 32 bytes, got {}",
             bytes.len()
         ));
     }
@@ -151,7 +151,8 @@ pub fn commitment_from_hex(hex_str: &str) -> Result<Word, String> {
     for (i, chunk) in bytes.chunks(8).enumerate() {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(chunk);
-        felts[i] = miden_protocol::Felt::new(u64::from_le_bytes(arr));
+        felts[i] = miden_protocol::Felt::try_from(u64::from_le_bytes(arr))
+            .map_err(|e| format!("invalid field element in word '{}': {}", hex_str, e))?;
     }
 
     Ok(felts.into())
@@ -188,7 +189,7 @@ mod tests {
     fn commitment_roundtrip_via_hex() {
         let keystore = PsmKeyStore::generate();
         let hex = keystore.commitment_hex();
-        let parsed = commitment_from_hex(&hex).unwrap();
+        let parsed = word_from_hex(&hex).unwrap();
         assert_eq!(parsed, keystore.commitment());
     }
 
@@ -303,39 +304,46 @@ mod tests {
     }
 
     #[test]
-    fn commitment_from_hex_valid_with_prefix() {
+    fn word_from_hex_valid_with_prefix() {
         let hex = format!("0x{}", "a".repeat(64));
-        let result = commitment_from_hex(&hex);
+        let result = word_from_hex(&hex);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn commitment_from_hex_valid_without_prefix() {
+    fn word_from_hex_valid_without_prefix() {
         let hex = "b".repeat(64);
-        let result = commitment_from_hex(&hex);
+        let result = word_from_hex(&hex);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn commitment_from_hex_invalid_length() {
+    fn word_from_hex_invalid_length() {
         let hex = "abcd";
-        let err = commitment_from_hex(hex).unwrap_err();
+        let err = word_from_hex(hex).unwrap_err();
         assert!(err.contains("expected 32 bytes"));
     }
 
     #[test]
-    fn commitment_from_hex_invalid_chars() {
+    fn word_from_hex_invalid_chars() {
         let hex = "g".repeat(64);
-        let err = commitment_from_hex(&hex).unwrap_err();
+        let err = word_from_hex(&hex).unwrap_err();
         assert!(err.contains("invalid hex"));
     }
 
     #[test]
-    fn commitment_from_hex_roundtrip() {
+    fn word_from_hex_roundtrip() {
         let original = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-        let word = commitment_from_hex(original).unwrap();
+        let word = word_from_hex(original).unwrap();
         let bytes: Vec<u8> = word.iter().flat_map(|f| f.as_int().to_le_bytes()).collect();
         let result = hex::encode(bytes);
         assert_eq!(original, result);
+    }
+
+    #[test]
+    fn word_from_hex_rejects_non_canonical_felt() {
+        let hex = format!("{}{}", "ff".repeat(8), "00".repeat(24));
+        let err = word_from_hex(&hex).unwrap_err();
+        assert!(err.contains("invalid field element"));
     }
 }
