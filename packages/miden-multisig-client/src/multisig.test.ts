@@ -1066,7 +1066,11 @@ describe('Multisig', () => {
         description: '',
       });
 
-      // Now sign it
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockDelta,
+      });
+
       const signedDelta = {
         ...mockDelta,
         status: {
@@ -1102,6 +1106,41 @@ describe('Multisig', () => {
 
       expect(mockSigner.signCommitment).toHaveBeenCalledWith(proposalId);
       expect(signedProposal.signatures.length).toBe(1);
+    });
+
+    it('should reject proposals for a different account before signing', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const proposalId = '0x' + 'd'.repeat(64);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'f'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
+      await expect(multisig.signProposal(proposalId)).rejects.toThrow(
+        'Proposal is for a different account: 0x' + 'f'.repeat(30),
+      );
+      expect(mockSigner.signCommitment).not.toHaveBeenCalled();
     });
   });
 
@@ -1213,6 +1252,38 @@ describe('Multisig', () => {
       expect(() => multisig.importProposal(JSON.stringify(exported))).toThrow(
         'expected signerId as 32-byte hex',
       );
+    });
+
+    it('should reject offline signing if an imported proposal account is changed', () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), mockSigner.commitment],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const exported = {
+        accountId: multisig.accountId,
+        nonce: 1,
+        commitment: '0x' + 'c'.repeat(64),
+        txSummaryBase64: 'AQID',
+        signatures: [],
+        metadata: {
+          proposalType: 'add_signer' as const,
+          targetThreshold: 2,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+          description: '',
+        },
+      };
+
+      const proposal = multisig.importProposal(JSON.stringify(exported));
+      proposal.accountId = '0x' + 'f'.repeat(30);
+
+      expect(() => multisig.signProposalOffline(proposal.id)).toThrow(
+        'Proposal is for a different account: 0x' + 'f'.repeat(30),
+      );
+      expect(mockSigner.signCommitment).not.toHaveBeenCalled();
     });
   });
 

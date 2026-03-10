@@ -767,6 +767,13 @@ export class Multisig {
    */
   async signProposal(proposalId: string): Promise<Proposal> {
     const existingProposal = this.proposals.get(proposalId);
+    const proposalDelta = await this.psm.getDeltaProposal(this._accountId, proposalId);
+    const proposal = this.deltaToProposal(
+      proposalDelta,
+      proposalId,
+      existingProposal?.metadata,
+      existingProposal?.signatures,
+    );
 
     const signatureHex = this.signer.signCommitment(proposalId);
 
@@ -775,22 +782,22 @@ export class Multisig {
       signature: signatureHex,
     };
 
-    const delta = await this.psm.signDeltaProposal({
+    const signedDelta = await this.psm.signDeltaProposal({
       accountId: this._accountId,
       commitment: proposalId,
       signature,
     });
 
-    const proposal = this.deltaToProposal(
-      delta,
+    const signedProposal = this.deltaToProposal(
+      signedDelta,
       proposalId,
-      existingProposal?.metadata,
-      existingProposal?.signatures,
+      proposal.metadata,
+      proposal.signatures,
     );
 
-    this.proposals.set(proposal.id, proposal);
+    this.proposals.set(signedProposal.id, signedProposal);
 
-    return proposal;
+    return signedProposal;
   }
 
   /**
@@ -1062,9 +1069,7 @@ export class Multisig {
       throw new Error('Invalid proposal JSON: metadata.proposalType is required');
     }
 
-    if (exported.accountId.toLowerCase() !== this._accountId.toLowerCase()) {
-      throw new Error(`Proposal is for a different account: ${exported.accountId}`);
-    }
+    this.assertProposalAccountId(exported.accountId);
 
     const computedCommitment = computeCommitmentFromTxSummary(exported.txSummaryBase64);
     if (computedCommitment !== exported.commitment) {
@@ -1118,6 +1123,7 @@ export class Multisig {
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
+    this.assertProposalAccountId(proposal.accountId);
 
     const localSignatureContext = `Invalid local proposal signatures for ${proposalId}`;
     const signerCommitments = new Set(
@@ -1233,6 +1239,14 @@ export class Multisig {
       signatures,
       metadata: resolvedMetadata,
     };
+  }
+
+  private assertProposalAccountId(accountId: string): void {
+    if (accountId.toLowerCase() === this._accountId.toLowerCase()) {
+      return;
+    }
+
+    throw new Error(`Proposal is for a different account: ${accountId}`);
   }
 
   private buildPsmMetadata(metadata: ProposalMetadata): PsmProposalMetadata {

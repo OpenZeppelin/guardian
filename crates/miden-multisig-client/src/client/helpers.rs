@@ -80,6 +80,20 @@ impl MultisigClient {
             .ok_or_else(|| MultisigError::MissingConfig("no account loaded".to_string()))
     }
 
+    pub(crate) fn ensure_proposal_account_id(
+        proposal_account_id: &str,
+        expected_account_id: &AccountId,
+    ) -> Result<()> {
+        if proposal_account_id.eq_ignore_ascii_case(&expected_account_id.to_string()) {
+            return Ok(());
+        }
+
+        Err(MultisigError::InvalidConfig(format!(
+            "proposal is for account {} instead of {}",
+            proposal_account_id, expected_account_id
+        )))
+    }
+
     /// Gets the PSM acknowledgment signature for a transaction.
     ///
     /// This pushes the delta to PSM and retrieves the server's signature.
@@ -250,5 +264,40 @@ impl MultisigClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::account::AccountId;
+
+    use super::MultisigClient;
+
+    #[test]
+    fn ensure_proposal_account_id_accepts_matching_account() {
+        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+
+        let result = MultisigClient::ensure_proposal_account_id(
+            "0x7bfb0f38b0fafa103f86a805594170",
+            &account_id,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_proposal_account_id_rejects_mismatched_account() {
+        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+
+        let error = MultisigClient::ensure_proposal_account_id(
+            "0x8a65fc5a39e4cd106d648e3eb4ab5f",
+            &account_id,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "invalid configuration: proposal is for account 0x8a65fc5a39e4cd106d648e3eb4ab5f instead of 0x7bfb0f38b0fafa103f86a805594170"
+        );
     }
 }

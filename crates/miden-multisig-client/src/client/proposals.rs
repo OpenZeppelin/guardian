@@ -29,6 +29,7 @@ impl MultisigClient {
         let raw_proposal = response
             .proposal
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
         let proposal = Proposal::from(&raw_proposal)?;
         Ok(proposal)
     }
@@ -53,7 +54,14 @@ impl MultisigClient {
         // Parse all proposals, propagating any parse errors rather than silently dropping them.
         // This ensures malformed PSM payloads are surfaced for debugging.
         let proposals: Result<Vec<Proposal>> =
-            response.proposals.iter().map(Proposal::from).collect();
+            response
+                .proposals
+                .iter()
+                .map(|delta| {
+                    Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
+                    Proposal::from(delta)
+                })
+                .collect();
 
         proposals
     }

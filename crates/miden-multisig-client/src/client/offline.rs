@@ -277,12 +277,15 @@ impl MultisigClient {
     /// ```
     pub fn sign_imported_proposal(&self, proposal: &mut ExportedProposal) -> Result<()> {
         let account = self.require_account()?;
+        let account_id = account.id();
 
         // Check if user is a cosigner
         let user_commitment = self.signer.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
+
+        Self::ensure_proposal_account_id(&proposal.account_id, &account_id)?;
 
         // Check if already signed
         let user_commitment_hex = self.signer.commitment_hex();
