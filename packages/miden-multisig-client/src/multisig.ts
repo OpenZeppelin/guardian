@@ -779,14 +779,15 @@ export class Multisig {
    * The proposalId is the tx_summary commitment hex, which is what gets signed.
    * This matches the Rust client behavior where proposal.id == tx_summary.to_commitment().
    *
-   * @param proposalId - The proposal commitment/ID (this is also what gets signed)
-   */
+  * @param proposalId - The proposal commitment/ID (this is also what gets signed)
+  */
   async signProposal(proposalId: string): Promise<Proposal> {
     const normalizedProposalId = normalizeHexWord(proposalId);
     const existingProposal = await this.getProposalForSigning(proposalId, normalizedProposalId);
     if (!existingProposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
+    this.assertProposalAccountId(existingProposal.accountId);
 
     const commitmentToSign = await this.verifyProposalMetadataBinding(existingProposal);
     const signatureHex = this.signer.signCommitment(commitmentToSign);
@@ -796,30 +797,30 @@ export class Multisig {
       signature: signatureHex,
     };
 
-    const delta = await this.psm.signDeltaProposal({
+    const signedDelta = await this.psm.signDeltaProposal({
       accountId: this._accountId,
       commitment: normalizedProposalId,
       signature,
     });
 
     const deltaCommitment = normalizeHexWord(
-      computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
+      computeCommitmentFromTxSummary(signedDelta.deltaPayload.txSummary.data)
     );
-    const proposal = await this.parseValidatedProposalFromDelta(
-      delta,
+    const signedProposal = await this.parseValidatedProposalFromDelta(
+      signedDelta,
       deltaCommitment,
-      this.resolveProposalMetadata(delta, existingProposal),
+      this.resolveProposalMetadata(signedDelta, existingProposal),
       existingProposal.signatures
     );
-    if (proposal.id !== normalizedProposalId) {
+    if (signedProposal.id !== normalizedProposalId) {
       throw new Error(
-        `Invalid proposal response: server returned ${proposal.id} while signing ${normalizedProposalId}`
+        `Invalid proposal response: server returned ${signedProposal.id} while signing ${normalizedProposalId}`
       );
     }
 
-    this.proposals.set(proposal.id, proposal);
+    this.proposals.set(signedProposal.id, signedProposal);
 
-    return proposal;
+    return signedProposal;
   }
 
   private async getProposalForSigning(
@@ -1061,9 +1062,7 @@ export class Multisig {
       throw new Error('Invalid proposal JSON: missing required fields');
     }
 
-    if (exported.accountId.toLowerCase() !== this._accountId.toLowerCase()) {
-      throw new Error(`Proposal is for a different account: ${exported.accountId}`);
-    }
+    this.assertProposalAccountId(exported.accountId);
 
     const computedCommitment = normalizeHexWord(
       computeCommitmentFromTxSummary(exported.txSummaryBase64)
@@ -1124,6 +1123,7 @@ export class Multisig {
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
+    this.assertProposalAccountId(proposal.accountId);
 
     const localSignatureContext = `Invalid local proposal signatures for ${proposalId}`;
     const signerCommitments = new Set(
@@ -1308,6 +1308,7 @@ export class Multisig {
         `Invalid proposal: commitment ${proposalId} does not match tx_summary commitment ${computedProposalId}`
       );
     }
+    this.assertProposalAccountId(delta.accountId);
 
     const resolvedMetadata: ProposalMetadata | undefined =
       metadata ??
@@ -1365,6 +1366,14 @@ export class Multisig {
       signatures,
       metadata: resolvedMetadata,
     };
+  }
+
+  private assertProposalAccountId(accountId: string): void {
+    if (accountId.toLowerCase() === this._accountId.toLowerCase()) {
+      return;
+    }
+
+    throw new Error(`Proposal is for a different account: ${accountId}`);
   }
 
   private buildPsmMetadata(metadata: ProposalMetadata): PsmProposalMetadata {

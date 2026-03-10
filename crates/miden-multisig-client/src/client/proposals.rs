@@ -37,6 +37,7 @@ impl MultisigClient {
 
         let mut proposals = Vec::with_capacity(response.proposals.len());
         for delta in &response.proposals {
+            Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
             let mut proposal = Proposal::from(delta, current_threshold, &current_signers)?;
             self.verify_proposal_summary_binding(&proposal).await?;
             proposal.set_required_signatures(
@@ -124,6 +125,7 @@ impl MultisigClient {
 
         let mut matched: Option<(&private_state_manager_client::DeltaObject, Proposal)> = None;
         for raw_proposal in &proposals_response.proposals {
+            Self::ensure_proposal_account_id(&raw_proposal.account_id, &account_id)?;
             let mut parsed = Proposal::from(raw_proposal, current_threshold, &current_signers)?;
             if parsed.id == proposal_id {
                 parsed.set_required_signatures(

@@ -136,12 +136,15 @@ impl MultisigClient {
         self.verify_proposal_summary_binding(&bound_proposal)
             .await?;
         let account = self.require_account()?;
+        let account_id = account.id();
 
         // Check if user is a cosigner
         let user_commitment = self.key_manager.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
+
+        Self::ensure_proposal_account_id(&proposal.account_id, &account_id)?;
 
         // Check if already signed
         let user_commitment_hex = self.key_manager.commitment_hex();
