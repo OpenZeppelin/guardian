@@ -240,6 +240,45 @@ describe('PsmHttpClient', () => {
     });
   });
 
+  describe('getDeltaProposal', () => {
+    it('should get a single delta proposal by commitment', async () => {
+      client.setSigner(mockSigner);
+
+      const serverProposal = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'base64summary' },
+          signatures: [],
+          metadata: { proposal_type: 'change_threshold' as const, target_threshold: 2, signer_commitments: [] },
+        },
+        status: {
+          status: 'pending' as const,
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => serverProposal,
+      });
+
+      const accountId = '0x' + 'a'.repeat(30);
+      const commitment = '0x' + 'd'.repeat(64);
+      const proposal = await client.getDeltaProposal(accountId, commitment);
+
+      expect(proposal.accountId).toBe(accountId);
+      expect(proposal.nonce).toBe(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/delta/proposal/single?'),
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+  });
+
   describe('pushDeltaProposal', () => {
     it('should push a new delta proposal', async () => {
       client.setSigner(mockSigner);

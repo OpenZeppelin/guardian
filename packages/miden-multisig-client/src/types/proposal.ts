@@ -13,6 +13,7 @@ interface BaseProposalMetadata {
   proposalType: ProposalType;
   description: string;
   saltHex?: string;
+  requiredSignatures?: number;
 }
 
 export interface UpdateSignersProposalMetadata extends BaseProposalMetadata {
@@ -72,5 +73,5 @@ export interface ExportedProposal {
     signatureHex: string;
     timestamp?: string;
   }>;
-  metadata?: ProposalMetadata;
+  metadata: ProposalMetadata;
 }

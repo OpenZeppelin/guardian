@@ -84,6 +84,7 @@ export function fromServerProposalMetadata(server: ServerProposalMetadata): Prop
   return {
     proposalType: server.proposal_type,
     targetThreshold: server.target_threshold,
+    requiredSignatures: server.required_signatures,
     signerCommitments: server.signer_commitments,
     salt: server.salt,
     description: server.description,
@@ -173,6 +174,7 @@ export function toServerProposalMetadata(meta: ProposalMetadata): ServerProposal
   return {
     proposal_type: meta.proposalType === 'unknown' ? undefined : meta.proposalType,
     target_threshold: meta.targetThreshold,
+    required_signatures: meta.requiredSignatures,
     signer_commitments: meta.signerCommitments,
     salt: meta.salt,
     description: meta.description,

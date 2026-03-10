@@ -6,8 +6,8 @@ use tonic::Request;
 
 use crate::api::grpc::state_manager::state_manager_server::StateManager;
 use crate::api::grpc::state_manager::{
-    ConfigureRequest, GetDeltaProposalsRequest, ProposalSignature, PushDeltaProposalRequest,
-    SignDeltaProposalRequest,
+    ConfigureRequest, GetDeltaProposalRequest, GetDeltaProposalsRequest, ProposalSignature,
+    PushDeltaProposalRequest, SignDeltaProposalRequest,
 };
 
 #[tokio::test]
@@ -41,7 +41,12 @@ async fn test_grpc_push_delta_proposal_success() {
     let delta_1 = load_fixture_delta(1);
     let delta_payload = serde_json::json!({
         "tx_summary": delta_1["delta_payload"],
-        "signatures": []
+        "signatures": [],
+        "metadata": {
+            "proposal_type": "change_threshold",
+            "target_threshold": 1,
+            "signer_commitments": [signer.commitment_hex.clone()]
+        }
     });
 
     let push_proposal_req = PushDeltaProposalRequest {
@@ -140,7 +145,12 @@ async fn test_grpc_get_delta_proposals_with_proposals() {
     let delta_1 = load_fixture_delta(1);
     let delta_payload = serde_json::json!({
         "tx_summary": delta_1["delta_payload"],
-        "signatures": []
+        "signatures": [],
+        "metadata": {
+            "proposal_type": "change_threshold",
+            "target_threshold": 1,
+            "signer_commitments": [signer.commitment_hex.clone()]
+        }
     });
 
     let push_proposal_req = PushDeltaProposalRequest {
@@ -175,6 +185,70 @@ async fn test_grpc_get_delta_proposals_with_proposals() {
         "Should return one proposal"
     );
     assert_eq!(get_response.proposals[0].nonce, 1);
+}
+
+#[tokio::test]
+async fn test_grpc_get_delta_proposal_by_commitment() {
+    let state = create_test_app_state().await;
+    let service = create_grpc_service(state);
+
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
+    let signer = TestSigner::new();
+
+    let configure_req = ConfigureRequest {
+        account_id: account_id_hex.clone(),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
+        initial_state,
+    };
+
+    service
+        .configure(create_signed_request_with_auth(
+            configure_req,
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap();
+
+    let delta_1 = load_fixture_delta(1);
+    let delta_payload = serde_json::json!({
+        "tx_summary": delta_1["delta_payload"],
+        "signatures": [],
+        "metadata": { "proposal_type": "change_threshold", "target_threshold": 2, "signer_commitments": [] }
+    });
+
+    let push_proposal_req = PushDeltaProposalRequest {
+        account_id: account_id_hex.clone(),
+        nonce: 1,
+        delta_payload: serde_json::to_string(&delta_payload).unwrap(),
+    };
+
+    let push_response = service
+        .push_delta_proposal(create_signed_request_with_auth(
+            push_proposal_req,
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(push_response.success);
+    let commitment = push_response.commitment;
+
+    let get_proposal_req = GetDeltaProposalRequest {
+        account_id: account_id_hex.clone(),
+        commitment,
+    };
+    let request = create_signed_request_with_auth(get_proposal_req, &account_id_hex, &signer);
+    let get_response = service.get_delta_proposal(request).await;
+
+    assert!(get_response.is_ok());
+    let get_response = get_response.unwrap().into_inner();
+    assert!(get_response.success);
+    assert!(get_response.proposal.is_some());
+    assert_eq!(get_response.proposal.unwrap().nonce, 1);
 }
 
 #[tokio::test]
@@ -262,7 +336,12 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
     let delta_1 = load_fixture_delta(1);
     let delta_payload = serde_json::json!({
         "tx_summary": delta_1["delta_payload"],
-        "signatures": []
+        "signatures": [],
+        "metadata": {
+            "proposal_type": "change_threshold",
+            "target_threshold": 1,
+            "signer_commitments": [unauthorized_signer.commitment_hex.clone()]
+        }
     });
 
     let push_proposal_req = PushDeltaProposalRequest {

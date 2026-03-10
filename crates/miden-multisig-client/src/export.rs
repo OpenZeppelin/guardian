@@ -11,7 +11,9 @@ use private_state_manager_shared::FromJson;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
-use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
+use crate::proposal::{
+    Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, TransactionType,
+};
 
 /// Current export format version.
 pub const EXPORT_VERSION: u32 = 1;
@@ -87,7 +89,14 @@ impl ExportedProposal {
 
         let signatures_required = proposal.signatures_required();
 
-        let signatures = Vec::new();
+        let signatures: Vec<ExportedSignature> = proposal
+            .signatures
+            .iter()
+            .map(|signature| ExportedSignature {
+                signer_commitment: signature.signer_commitment.clone(),
+                signature: signature.signature_hex.clone(),
+            })
+            .collect();
 
         let metadata = ExportedMetadata {
             salt_hex: proposal.metadata.salt_hex.clone(),
@@ -166,6 +175,14 @@ impl ExportedProposal {
             transaction_type,
             status,
             tx_summary,
+            signatures: self
+                .signatures
+                .iter()
+                .map(|signature| ProposalSignatureEntry {
+                    signer_commitment: signature.signer_commitment.clone(),
+                    signature_hex: signature.signature.clone(),
+                })
+                .collect(),
             metadata,
         })
     }

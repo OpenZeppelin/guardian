@@ -202,7 +202,7 @@ impl MultisigClient {
             self.account = Some(multisig_account);
 
             // Register the updated account on the new PSM server
-            self.push_account().await.map_err(|e| {
+            self.register_on_psm().await.map_err(|e| {
                 MultisigError::PsmServer(format!(
                     "transaction executed successfully but failed to register on new PSM: {}",
                     e

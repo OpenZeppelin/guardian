@@ -246,6 +246,10 @@ pub fn create_router(state: AppState) -> axum::Router {
             axum::routing::get(http::get_delta_proposals),
         )
         .route(
+            "/get_delta_proposal",
+            axum::routing::get(http::get_delta_proposal),
+        )
+        .route(
             "/sign_delta_proposal",
             axum::routing::post(http::sign_delta_proposal),
         )

@@ -33,6 +33,9 @@ pub struct ProposalMetadataPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_signatures: Option<u64>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
 
@@ -169,6 +172,14 @@ impl ProposalPayload {
             salt: Some(salt),
             ..Default::default()
         });
+        self
+    }
+
+    pub fn with_required_signatures(mut self, required_signatures: usize) -> Self {
+        let metadata = self
+            .metadata
+            .get_or_insert_with(ProposalMetadataPayload::default);
+        metadata.required_signatures = Some(required_signatures as u64);
         self
     }
 

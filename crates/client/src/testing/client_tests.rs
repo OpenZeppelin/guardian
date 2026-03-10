@@ -3,9 +3,9 @@ use crate::testing::mocks::{
     MockStateManagerService, create_mock_account_state, create_mock_delta, start_mock_server,
 };
 use crate::{
-    AuthConfig, ClientError, ConfigureResponse, FalconKeyStore, GetDeltaProposalsResponse,
-    GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse, PsmClient,
-    PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse, Signer,
+    AuthConfig, ClientError, ConfigureResponse, FalconKeyStore, GetDeltaProposalResponse,
+    GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse,
+    PsmClient, PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse, Signer,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
@@ -211,6 +211,35 @@ async fn test_get_delta_proposals_empty() {
     let response = result.unwrap();
     assert!(response.success);
     assert_eq!(response.proposals.len(), 0);
+}
+
+#[tokio::test]
+async fn test_get_delta_proposal_success() {
+    let mock_delta = create_mock_delta();
+    let service =
+        MockStateManagerService::default().with_get_delta_proposal(Ok(GetDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            proposal: Some(mock_delta),
+        }));
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let signer = create_test_signer();
+    let mut client = PsmClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+
+    let account_id = create_test_account_id();
+
+    let result = client
+        .get_delta_proposal(&account_id, "proposal_commitment_123")
+        .await;
+
+    assert!(result.is_ok());
+    let response = result.unwrap();
+    assert!(response.success);
+    assert!(response.proposal.is_some());
 }
 
 #[tokio::test]

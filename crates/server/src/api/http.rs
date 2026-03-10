@@ -1,8 +1,9 @@
 use crate::delta_object::DeltaObject;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalsParams, GetDeltaSinceParams,
-    GetStateParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
+    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetDeltaProposalsParams,
+    GetDeltaSinceParams, GetStateParams, PushDeltaParams, PushDeltaProposalParams,
+    SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -44,6 +45,12 @@ pub struct StateQuery {
 #[derive(Deserialize, Serialize)]
 pub struct ProposalQuery {
     pub account_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ProposalItemQuery {
+    pub account_id: String,
+    pub commitment: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -379,6 +386,42 @@ pub async fn get_delta_proposals(
     }
 }
 
+pub async fn get_delta_proposal(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<ProposalItemQuery>,
+) -> (StatusCode, Json<DeltaObject>) {
+    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+        Ok(request_payload) => request_payload,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeltaObject {
+                    account_id: e,
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let params = GetDeltaProposalParams {
+        account_id: query.account_id,
+        commitment: query.commitment,
+        credentials: credentials.with_request_payload(request_payload),
+    };
+
+    match services::get_delta_proposal(&state, params).await {
+        Ok(response) => (StatusCode::OK, Json(response.proposal)),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(DeltaObject {
+                account_id: e.to_string(),
+                ..Default::default()
+            }),
+        ),
+    }
+}
+
 pub async fn sign_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -567,7 +610,12 @@ mod tests {
             nonce: 1,
             delta_payload: serde_json::json!({
                 "tx_summary": delta_fixture["delta_payload"],
-                "signatures": []
+                "signatures": [],
+                "metadata": {
+                    "proposal_type": "change_threshold",
+                    "target_threshold": 1,
+                    "signer_commitments": [signer.commitment_hex.clone()]
+                }
             }),
         };
 
@@ -603,7 +651,14 @@ mod tests {
         let request = DeltaProposalRequest {
             account_id: account_id.clone(),
             nonce: 1,
-            delta_payload: serde_json::json!({"signatures": []}),
+            delta_payload: serde_json::json!({
+                "signatures": [],
+                "metadata": {
+                    "proposal_type": "change_threshold",
+                    "target_threshold": 1,
+                    "signer_commitments": [signer.commitment_hex.clone()]
+                }
+            }),
         };
 
         let credentials = signed_credentials(&signer, &account_id, &request);
@@ -681,6 +736,103 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response.proposals.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_delta_proposal_success() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment.clone()],
+        ))));
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let pending_delta = DeltaObject {
+            account_id: account_id.clone(),
+            nonce: 1,
+            prev_commitment: "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392"
+                .to_string(),
+            new_commitment: None,
+            delta_payload: delta_fixture["delta_payload"].clone(),
+            ack_sig: None,
+            status: DeltaStatus::pending(
+                "2024-11-14T12:00:00Z".to_string(),
+                signer.pubkey_hex.clone(),
+            ),
+        };
+
+        let _storage = storage.with_pull_delta_proposal(Ok(pending_delta));
+
+        let query = ProposalItemQuery {
+            account_id: account_id.clone(),
+            commitment: "0xproposal".to_string(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let (status, Json(response)) =
+            get_delta_proposal(State(state), AuthHeader(credentials), Query(query)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response.account_id, account_id);
+        assert_eq!(response.nonce, 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_delta_proposal_not_found() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+
+        let _storage = storage.with_pull_delta_proposal(Err("Proposal not found".to_string()));
+
+        let query = ProposalItemQuery {
+            account_id: account_id.clone(),
+            commitment: "0xmissing".to_string(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let (status, _response) =
+            get_delta_proposal(State(state), AuthHeader(credentials), Query(query)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_delta_proposal_unauthorized() {
+        let (state, _storage, _network, metadata) = create_test_state();
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let signer = TestSigner::new();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![signer.commitment_hex.clone()],
+        ))));
+
+        let query = ProposalItemQuery {
+            account_id: account_id.clone(),
+            commitment: "0xproposal".to_string(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let (pubkey, _signature, timestamp) = credentials.as_signature().unwrap();
+        let invalid_credentials =
+            Credentials::signature(pubkey.to_string(), "0xdeadbeef".to_string(), timestamp);
+        let (status, Json(response)) =
+            get_delta_proposal(State(state), AuthHeader(invalid_credentials), Query(query)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(response.account_id.contains("Authentication failed"));
     }
 
     #[tokio::test]

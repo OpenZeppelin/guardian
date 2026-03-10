@@ -8,6 +8,7 @@ use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::{Felt, Word};
 use private_state_manager_client::DeltaObject;
 use private_state_manager_shared::FromJson;
+use private_state_manager_shared::ProposalSignature;
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
@@ -145,6 +146,132 @@ impl ProposalMetadata {
             .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
             .collect()
     }
+
+    fn to_transaction_type(&self, proposal_type: &str) -> Result<TransactionType> {
+        if proposal_type.is_empty() {
+            return Err(MultisigError::InvalidConfig(
+                "proposal metadata.proposal_type is required".to_string(),
+            ));
+        }
+
+        match proposal_type {
+            "consume_notes" => {
+                if self.note_ids_hex.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "consume_notes proposal requires metadata.note_ids".to_string(),
+                    ));
+                }
+                Ok(TransactionType::ConsumeNotes {
+                    note_ids: self.note_ids()?,
+                })
+            }
+            "p2id" => {
+                let recipient_str = self.recipient_hex.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "p2id proposal requires metadata.recipient_id".to_string(),
+                    )
+                })?;
+                let faucet_str = self.faucet_id_hex.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "p2id proposal requires metadata.faucet_id".to_string(),
+                    )
+                })?;
+                let parsed_amount = self.amount.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "p2id proposal requires metadata.amount".to_string(),
+                    )
+                })?;
+                let recipient = AccountId::from_hex(recipient_str).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid recipient: {}", e))
+                })?;
+                let faucet_id = AccountId::from_hex(faucet_str).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e))
+                })?;
+                Ok(TransactionType::P2ID {
+                    recipient,
+                    faucet_id,
+                    amount: parsed_amount,
+                })
+            }
+            "switch_psm" => {
+                let pubkey_hex = self.new_psm_pubkey_hex.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "switch_psm proposal requires metadata.new_psm_pubkey".to_string(),
+                    )
+                })?;
+                let endpoint = self.new_psm_endpoint.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "switch_psm proposal requires metadata.new_psm_endpoint".to_string(),
+                    )
+                })?;
+                let new_commitment = hex_to_word(pubkey_hex)?;
+                Ok(TransactionType::SwitchPsm {
+                    new_endpoint: endpoint.clone(),
+                    new_commitment,
+                })
+            }
+            "add_signer" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "add_signer proposal requires metadata.target_threshold".to_string(),
+                    )
+                })?;
+                let proposed_signers = self.signer_commitments()?;
+                if proposed_signers.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "add_signer proposal requires metadata.signer_commitments".to_string(),
+                    ));
+                }
+                Ok(TransactionType::UpdateSigners {
+                    new_threshold: threshold as u32,
+                    signer_commitments: proposed_signers,
+                })
+            }
+            "remove_signer" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "remove_signer proposal requires metadata.target_threshold".to_string(),
+                    )
+                })?;
+                let proposed_signers = self.signer_commitments()?;
+                if proposed_signers.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "remove_signer proposal requires metadata.signer_commitments".to_string(),
+                    ));
+                }
+                Ok(TransactionType::UpdateSigners {
+                    new_threshold: threshold as u32,
+                    signer_commitments: proposed_signers,
+                })
+            }
+            "change_threshold" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "change_threshold proposal requires metadata.target_threshold".to_string(),
+                    )
+                })?;
+                let proposed_signers = self.signer_commitments()?;
+                if proposed_signers.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "change_threshold proposal requires metadata.signer_commitments"
+                            .to_string(),
+                    ));
+                }
+                Ok(TransactionType::UpdateSigners {
+                    new_threshold: threshold as u32,
+                    signer_commitments: proposed_signers,
+                })
+            }
+            other => Err(MultisigError::UnknownTransactionType(other.to_string())),
+        }
+    }
+}
+
+/// A proposal for a multisig transaction.
+#[derive(Debug, Clone)]
+pub struct ProposalSignatureEntry {
+    pub signer_commitment: String,
+    pub signature_hex: String,
 }
 
 /// A proposal for a multisig transaction.
@@ -155,37 +282,51 @@ pub struct Proposal {
     pub transaction_type: TransactionType,
     pub status: ProposalStatus,
     pub tx_summary: TransactionSummary,
+    pub signatures: Vec<ProposalSignatureEntry>,
     pub metadata: ProposalMetadata,
 }
 
 impl Proposal {
-    pub fn from(
-        delta: &DeltaObject,
-        current_threshold: u32,
-        current_signers: &[Word],
-    ) -> Result<Self> {
+    pub fn from(delta: &DeltaObject) -> Result<Self> {
         let payload: ProposalPayload = serde_json::from_str(&delta.delta_payload)?;
 
         let tx_summary = TransactionSummary::from_json(&payload.tx_summary).map_err(|e| {
             MultisigError::MidenClient(format!("failed to parse tx_summary: {}", e))
         })?;
 
-        let metadata_payload = payload.metadata.clone().unwrap_or_default();
+        let metadata_payload = payload.metadata.clone().ok_or_else(|| {
+            MultisigError::InvalidConfig("proposal is missing metadata".to_string())
+        })?;
+        let proposal_type = metadata_payload.proposal_type.clone();
+        let required_signatures = metadata_payload.required_signatures.ok_or_else(|| {
+            MultisigError::InvalidConfig(
+                "proposal metadata.required_signatures is required".to_string(),
+            )
+        })?;
+        let required_signatures: usize = usize::try_from(required_signatures).map_err(|_| {
+            MultisigError::InvalidConfig(
+                "proposal metadata.required_signatures exceeds platform limits".to_string(),
+            )
+        })?;
+
         let new_threshold = metadata_payload.target_threshold;
         let signer_commitments_hex = metadata_payload.signer_commitments;
         let salt_hex = metadata_payload.salt;
         let recipient_hex = metadata_payload.recipient_id;
         let faucet_id_hex = metadata_payload.faucet_id;
-        let amount = metadata_payload
-            .amount
-            .as_deref()
-            .and_then(|value| value.parse().ok());
+        let amount = metadata_payload.amount.as_deref().map(|value| {
+            value.parse::<u64>().map_err(|e| {
+                MultisigError::InvalidConfig(format!(
+                    "invalid metadata.amount value '{}': {}",
+                    value, e
+                ))
+            })
+        });
+        let amount = match amount {
+            Some(parsed) => Some(parsed?),
+            None => None,
+        };
         let note_ids_hex = metadata_payload.note_ids;
-
-        let parsed_note_ids: Vec<NoteId> = note_ids_hex
-            .iter()
-            .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
-            .collect::<Result<_>>()?;
 
         let new_psm_pubkey_hex = metadata_payload.new_psm_pubkey;
         let new_psm_endpoint = metadata_payload.new_psm_endpoint;
@@ -201,53 +342,30 @@ impl Proposal {
             note_ids_hex: note_ids_hex.clone(),
             new_psm_pubkey_hex: new_psm_pubkey_hex.clone(),
             new_psm_endpoint: new_psm_endpoint.clone(),
-            required_signatures: Some(current_threshold as usize),
+            required_signatures: Some(required_signatures),
             signers: Vec::new(),
         };
+        let transaction_type = metadata.to_transaction_type(&proposal_type)?;
 
-        let transaction_type = if !parsed_note_ids.is_empty() {
-            TransactionType::ConsumeNotes {
-                note_ids: parsed_note_ids,
-            }
-        } else if let (Some(recipient_str), Some(faucet_str), Some(amt)) =
-            (&recipient_hex, &faucet_id_hex, amount)
-        {
-            let recipient = AccountId::from_hex(recipient_str)
-                .map_err(|e| MultisigError::InvalidConfig(format!("invalid recipient: {}", e)))?;
-            let faucet_id = AccountId::from_hex(faucet_str)
-                .map_err(|e| MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e)))?;
-            TransactionType::P2ID {
-                recipient,
-                faucet_id,
-                amount: amt,
-            }
-        } else if let (Some(pubkey_hex), Some(endpoint)) = (&new_psm_pubkey_hex, &new_psm_endpoint)
-        {
-            let new_commitment = hex_to_word(pubkey_hex)?;
-            TransactionType::SwitchPsm {
-                new_endpoint: endpoint.clone(),
-                new_commitment,
-            }
-        } else if let Some(threshold) = new_threshold {
-            let proposed_signers = metadata.signer_commitments()?;
-            determine_transaction_type(
-                threshold as u32,
-                current_threshold,
-                current_signers,
-                &proposed_signers,
-            )
-        } else {
-            return Err(MultisigError::UnknownTransactionType(
-                "could not determine transaction type from proposal metadata".to_string(),
-            ));
-        };
-
-        let mut seen_signers = HashSet::new();
-        metadata.signers = payload
+        let signatures: Vec<ProposalSignatureEntry> = payload
             .signatures
             .iter()
+            .map(|signature| {
+                let signature_hex = match &signature.signature {
+                    ProposalSignature::Falcon { signature } => signature.clone(),
+                };
+                ProposalSignatureEntry {
+                    signer_commitment: signature.signer_id.clone(),
+                    signature_hex,
+                }
+            })
+            .collect();
+
+        let mut seen_signers = HashSet::new();
+        metadata.signers = signatures
+            .iter()
             .filter_map(|signature| {
-                let signer_id = signature.signer_id.clone();
+                let signer_id = signature.signer_commitment.clone();
                 if seen_signers.insert(signer_id.to_lowercase()) {
                     Some(signer_id)
                 } else {
@@ -265,6 +383,7 @@ impl Proposal {
             transaction_type,
             status: ProposalStatus::Pending,
             tx_summary,
+            signatures,
             metadata,
         };
         proposal.refresh_status();
@@ -294,15 +413,11 @@ impl Proposal {
             transaction_type,
             status: ProposalStatus::Pending,
             tx_summary,
+            signatures: Vec::new(),
             metadata,
         };
         proposal.refresh_status();
         proposal
-    }
-
-    pub fn set_required_signatures(&mut self, required_signatures: usize) {
-        self.metadata.required_signatures = Some(required_signatures);
-        self.refresh_status();
     }
 
     pub fn has_signed(&self, signer_commitment_hex: &str) -> bool {
@@ -360,43 +475,6 @@ impl Proposal {
             } else {
                 ProposalStatus::Pending
             };
-    }
-}
-
-fn determine_transaction_type(
-    proposed_threshold: u32,
-    current_threshold: u32,
-    current_signers: &[Word],
-    proposed_signers: &[Word],
-) -> TransactionType {
-    if proposed_signers.len() > current_signers.len() {
-        if let Some(new_commitment) = proposed_signers
-            .iter()
-            .find(|candidate| !current_signers.iter().any(|c| c == *candidate))
-        {
-            return TransactionType::AddCosigner {
-                new_commitment: *new_commitment,
-            };
-        }
-    } else if proposed_signers.len() < current_signers.len() {
-        if let Some(removed_commitment) = current_signers
-            .iter()
-            .find(|candidate| !proposed_signers.iter().any(|c| c == *candidate))
-        {
-            return TransactionType::RemoveCosigner {
-                commitment: *removed_commitment,
-            };
-        }
-    } else if proposed_threshold != current_threshold {
-        return TransactionType::UpdateSigners {
-            new_threshold: proposed_threshold,
-            signer_commitments: proposed_signers.to_vec(),
-        };
-    }
-
-    TransactionType::UpdateSigners {
-        new_threshold: proposed_threshold,
-        signer_commitments: proposed_signers.to_vec(),
     }
 }
 
@@ -572,6 +650,7 @@ mod tests {
             transaction_type: TransactionType::add_cosigner(Word::default()),
             status: pending,
             tx_summary: create_test_tx_summary(),
+            signatures: Vec::new(),
             metadata: ProposalMetadata {
                 required_signatures: Some(3),
                 signers: vec!["0xabc".to_string()],
@@ -598,6 +677,7 @@ mod tests {
             transaction_type: TransactionType::add_cosigner(Word::default()),
             status: pending,
             tx_summary: create_test_tx_summary(),
+            signatures: Vec::new(),
             metadata: ProposalMetadata {
                 signers: vec!["0xABC".to_string()], // uppercase to test case-insensitivity
                 signer_commitments_hex: vec![
@@ -627,6 +707,7 @@ mod tests {
             transaction_type: TransactionType::add_cosigner(Word::default()),
             status: ready,
             tx_summary: create_test_tx_summary(),
+            signatures: Vec::new(),
             metadata: ProposalMetadata {
                 required_signatures: Some(2),
                 signers: vec!["0xabc".to_string(), "0xdef".to_string()],
@@ -635,75 +716,6 @@ mod tests {
         };
 
         assert_eq!(proposal.signatures_needed(), 0);
-    }
-
-    // ==================== determine_transaction_type tests ====================
-
-    fn word_from_u64(v: u64) -> Word {
-        [Felt::new(v), Felt::ZERO, Felt::ZERO, Felt::ZERO].into()
-    }
-
-    #[test]
-    fn test_determine_add_cosigner() {
-        let current = vec![word_from_u64(1), word_from_u64(2)];
-        let proposed = vec![word_from_u64(1), word_from_u64(2), word_from_u64(3)];
-
-        let result = determine_transaction_type(2, 2, &current, &proposed);
-
-        match result {
-            TransactionType::AddCosigner { new_commitment } => {
-                assert_eq!(new_commitment, word_from_u64(3));
-            }
-            _ => panic!("expected AddCosigner, got {:?}", result),
-        }
-    }
-
-    #[test]
-    fn test_determine_remove_cosigner() {
-        let current = vec![word_from_u64(1), word_from_u64(2), word_from_u64(3)];
-        let proposed = vec![word_from_u64(1), word_from_u64(3)];
-
-        let result = determine_transaction_type(2, 2, &current, &proposed);
-
-        match result {
-            TransactionType::RemoveCosigner { commitment } => {
-                assert_eq!(commitment, word_from_u64(2));
-            }
-            _ => panic!("expected RemoveCosigner, got {:?}", result),
-        }
-    }
-
-    #[test]
-    fn test_determine_update_signers_threshold_change() {
-        let signers = vec![word_from_u64(1), word_from_u64(2)];
-
-        let result = determine_transaction_type(3, 2, &signers, &signers);
-
-        match result {
-            TransactionType::UpdateSigners { new_threshold, .. } => {
-                assert_eq!(new_threshold, 3);
-            }
-            _ => panic!("expected UpdateSigners, got {:?}", result),
-        }
-    }
-
-    #[test]
-    fn test_determine_no_change_returns_update_signers() {
-        let signers = vec![word_from_u64(1), word_from_u64(2)];
-
-        // Same threshold, same signers → falls through to UpdateSigners
-        let result = determine_transaction_type(2, 2, &signers, &signers);
-
-        match result {
-            TransactionType::UpdateSigners {
-                new_threshold,
-                signer_commitments,
-            } => {
-                assert_eq!(new_threshold, 2);
-                assert_eq!(signer_commitments.len(), 2);
-            }
-            _ => panic!("expected UpdateSigners, got {:?}", result),
-        }
     }
 
     // ==================== ProposalMetadata parser tests ====================

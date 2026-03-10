@@ -11,11 +11,28 @@ use private_state_manager_shared::hex::IntoHex;
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
-use crate::payload::ProposalPayload;
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::ProposalBuilder;
 
 impl MultisigClient {
+    async fn get_proposal(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<Proposal> {
+        let mut psm_client = self.create_authenticated_psm_client().await?;
+        let response = psm_client
+            .get_delta_proposal(account_id, proposal_id)
+            .await
+            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposal: {}", e)))?;
+
+        let raw_proposal = response
+            .proposal
+            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        let proposal = Proposal::from(&raw_proposal)?;
+        Ok(proposal)
+    }
+
     /// Lists pending proposals for the current account.
     ///
     /// # Errors
@@ -28,9 +45,6 @@ impl MultisigClient {
 
         let mut psm_client = self.create_authenticated_psm_client().await?;
 
-        let current_threshold = account.threshold()?;
-        let current_signers = account.cosigner_commitments();
-
         let response = psm_client
             .get_delta_proposals(&account_id)
             .await
@@ -38,19 +52,8 @@ impl MultisigClient {
 
         // Parse all proposals, propagating any parse errors rather than silently dropping them.
         // This ensures malformed PSM payloads are surfaced for debugging.
-        let proposals: Result<Vec<Proposal>> = response
-            .proposals
-            .iter()
-            .map(|delta| {
-                let mut proposal: Proposal =
-                    Proposal::from(delta, current_threshold, &current_signers)?;
-                proposal.set_required_signatures(
-                    account.effective_threshold_for_transaction(&proposal.transaction_type)?
-                        as usize,
-                );
-                Ok(proposal)
-            })
-            .collect();
+        let proposals: Result<Vec<Proposal>> =
+            response.proposals.iter().map(Proposal::from).collect();
 
         proposals
     }
@@ -65,12 +68,8 @@ impl MultisigClient {
             return Err(MultisigError::NotCosigner);
         }
 
-        // Get the proposal to sign
-        let proposals = self.list_proposals().await?;
-        let proposal = proposals
-            .iter()
-            .find(|p| p.id == proposal_id)
-            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        let account_id = account.id();
+        let proposal = self.get_proposal(&account_id, proposal_id).await?;
 
         // Check if already signed
         if proposal.has_signed(&self.signer.commitment_hex()) {
@@ -86,21 +85,19 @@ impl MultisigClient {
             signature: signature_hex,
         };
 
-        let account_id = self.require_account()?.id();
-
         // Push signature to PSM
         let mut psm_client = self.create_authenticated_psm_client().await?;
-        psm_client
+        let sign_response = psm_client
             .sign_delta_proposal(&account_id, proposal_id, signature)
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to sign proposal: {}", e)))?;
 
-        // Refresh and return updated proposal
-        let proposals = self.list_proposals().await?;
-        proposals
-            .into_iter()
-            .find(|p| p.id == proposal_id)
-            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))
+        let updated_raw = sign_response
+            .delta
+            .as_ref()
+            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        let updated = Proposal::from(updated_raw)?;
+        Ok(updated)
     }
 
     /// Executes a proposal when it has enough signatures.
@@ -119,35 +116,7 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        // Get the raw proposal from PSM (need access to signatures)
-        let mut psm_client = self.create_authenticated_psm_client().await?;
-        let proposals_response = psm_client
-            .get_delta_proposals(&account_id)
-            .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
-
-        let current_threshold = account.threshold()?;
-        let current_signers = account.cosigner_commitments();
-
-        let mut matched: Option<(&private_state_manager_client::DeltaObject, Proposal)> = None;
-        for raw_proposal in &proposals_response.proposals {
-            let mut parsed = Proposal::from(raw_proposal, current_threshold, &current_signers)?;
-            if parsed.id == proposal_id {
-                parsed.set_required_signatures(
-                    account.effective_threshold_for_transaction(&parsed.transaction_type)? as usize,
-                );
-                if matched.is_some() {
-                    return Err(MultisigError::InvalidConfig(format!(
-                        "multiple proposals returned with the same ID {}",
-                        proposal_id
-                    )));
-                }
-                matched = Some((raw_proposal, parsed));
-            }
-        }
-
-        let (raw_proposal, proposal) =
-            matched.ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        let proposal = self.get_proposal(&account_id, proposal_id).await?;
 
         // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {
@@ -160,22 +129,12 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        let payload: ProposalPayload =
-            serde_json::from_str(&raw_proposal.delta_payload).map_err(|e| {
-                MultisigError::MidenClient(format!("failed to parse proposal payload: {}", e))
-            })?;
-        let mut signature_inputs: Vec<SignatureInput> = payload
+        let mut signature_inputs: Vec<SignatureInput> = proposal
             .signatures
             .into_iter()
-            .map(|signature| {
-                let signature_hex = match signature.signature {
-                    ProposalSignature::Falcon { signature } => signature,
-                };
-
-                SignatureInput {
-                    signer_commitment: signature.signer_id,
-                    signature_hex,
-                }
+            .map(|signature| SignatureInput {
+                signer_commitment: signature.signer_commitment,
+                signature_hex: signature.signature_hex,
             })
             .collect();
 
@@ -375,6 +334,8 @@ mod tests {
             "tx_summary": create_test_tx_summary(account_id, seed).to_json(),
             "signatures": [],
             "metadata": {
+                "proposal_type": "switch_psm",
+                "required_signatures": 1,
                 "new_psm_pubkey": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
                 "new_psm_endpoint": "http://new-psm.example.com"
             }
@@ -400,12 +361,12 @@ mod tests {
         let delta_a = proposal_delta("0x7bfb0f38b0fafa103f86a805594170", same_nonce, "0xaaa", 1);
         let delta_b = proposal_delta("0x7bfb0f38b0fafa103f86a805594171", same_nonce, "0xbbb", 2);
 
-        let target = Proposal::from(&delta_b, 1, &[]).expect("proposal parses");
+        let target = Proposal::from(&delta_b).expect("proposal parses");
 
         let proposals = [delta_a, delta_b.clone()];
         let mut matched: Option<(&DeltaObject, Proposal)> = None;
         for raw_proposal in &proposals {
-            let parsed = Proposal::from(raw_proposal, 1, &[]).expect("parses");
+            let parsed = Proposal::from(raw_proposal).expect("parses");
             if parsed.id == target.id {
                 matched = Some((raw_proposal, parsed));
             }
@@ -420,13 +381,13 @@ mod tests {
     #[test]
     fn inline_iteration_rejects_duplicate_ids() {
         let delta = proposal_delta("0x7bfb0f38b0fafa103f86a805594170", 42, "0xaaa", 1);
-        let proposal_id = Proposal::from(&delta, 1, &[]).expect("proposal parses").id;
+        let proposal_id = Proposal::from(&delta).expect("proposal parses").id;
 
         let mut matched: Option<(&DeltaObject, Proposal)> = None;
         let err = (&[delta.clone(), delta] as &[DeltaObject])
             .iter()
             .try_for_each(|raw_proposal| -> Result<()> {
-                let parsed = Proposal::from(raw_proposal, 1, &[])?;
+                let parsed = Proposal::from(raw_proposal)?;
                 if parsed.id == proposal_id {
                     if matched.is_some() {
                         return Err(MultisigError::InvalidConfig(format!(

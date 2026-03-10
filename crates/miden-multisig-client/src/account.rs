@@ -191,20 +191,10 @@ impl MultisigAccount {
             return commitments;
         };
 
-        let key_zero = Word::from([0u32, 0, 0, 0]);
         let slot_name_ref = StorageSlotName::new(slot_name.clone()).ok();
         let Some(slot_name_ref) = slot_name_ref else {
             return commitments;
         };
-
-        let first_entry = self
-            .account
-            .storage()
-            .get_map_item(&slot_name_ref, key_zero);
-
-        if first_entry.is_err() || first_entry.as_ref().unwrap() == &Word::default() {
-            return commitments;
-        }
 
         let mut index = 0u32;
         loop {

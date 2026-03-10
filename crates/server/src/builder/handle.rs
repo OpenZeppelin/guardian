@@ -5,8 +5,8 @@ use tower_http::cors::CorsLayer;
 use crate::api::grpc::StateManagerService;
 use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
 use crate::api::http::{
-    configure, get_delta, get_delta_proposals, get_delta_since, get_pubkey, get_state, push_delta,
-    push_delta_proposal, sign_delta_proposal,
+    configure, get_delta, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
+    get_state, push_delta, push_delta_proposal, sign_delta_proposal,
 };
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
 use crate::state::AppState;
@@ -64,6 +64,7 @@ impl ServerHandle {
                     .route("/delta/since", get(get_delta_since))
                     .route("/delta/proposal", post(push_delta_proposal))
                     .route("/delta/proposal", get(get_delta_proposals))
+                    .route("/delta/proposal/single", get(get_delta_proposal))
                     .route("/delta/proposal", put(sign_delta_proposal))
                     .route("/configure", post(configure))
                     .route("/state", get(get_state))

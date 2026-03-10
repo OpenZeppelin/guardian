@@ -1147,7 +1147,7 @@ describe('Multisig', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ proposals: mockProposals }),
+        json: async () => mockProposals[0],
       });
 
       // The proposal ID is computed from tx_summary, which is mocked to return 'c'.repeat(64)
@@ -1169,8 +1169,10 @@ describe('Multisig', () => {
       const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ proposals: [] }),
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () => 'Proposal not found',
       });
 
       await expect(
@@ -1200,6 +1202,12 @@ describe('Multisig', () => {
             signatureHex: '0x' + 'b'.repeat(128),
           },
         ],
+        metadata: {
+          proposalType: 'add_signer' as const,
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          description: '',
+        },
       };
 
       expect(() => multisig.importProposal(JSON.stringify(exported))).toThrow(
@@ -1322,10 +1330,10 @@ describe('Multisig', () => {
       });
       await multisig.syncProposals();
 
-      // executeProposal: getDeltaProposals
+      // executeProposal: getDeltaProposal
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ proposals: [readyDelta] }),
+        json: async () => readyDelta,
       });
       // executeProposal: pushDelta without ack_sig
       mockFetch.mockResolvedValueOnce({
@@ -1544,7 +1552,11 @@ describe('Multisig', () => {
         delta_payload: {
           tx_summary: { data: 'AQID' },
           signatures: [],
-          metadata: { proposal_type: 'add_signer' },
+          metadata: {
+            proposal_type: 'add_signer',
+            target_threshold: 2,
+            signer_commitments: ['0x1', '0x2'],
+          },
         },
         status: {
           status: 'pending',
@@ -1558,7 +1570,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
