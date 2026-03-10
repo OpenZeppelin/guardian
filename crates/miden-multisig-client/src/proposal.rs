@@ -208,7 +208,8 @@ impl ProposalMetadata {
                         "switch_psm proposal requires metadata.new_psm_endpoint".to_string(),
                     )
                 })?;
-                let new_commitment = word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
+                let new_commitment =
+                    word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
                 Ok(TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,

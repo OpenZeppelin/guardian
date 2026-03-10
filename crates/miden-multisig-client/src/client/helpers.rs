@@ -140,7 +140,8 @@ impl MultisigClient {
             MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
         })?;
 
-        let psm_commitment = word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
+        let psm_commitment =
+            word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         Ok(crate::transaction::build_signature_advice_entry(
             psm_commitment,

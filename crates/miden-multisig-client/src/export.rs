@@ -248,7 +248,8 @@ impl ExportedProposal {
                     .as_ref()
                     .ok_or_else(|| MultisigError::MissingConfig("new_psm_endpoint".to_string()))?;
 
-                let new_commitment = word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
+                let new_commitment =
+                    word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
                 Ok(TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
@@ -719,7 +720,12 @@ mod tests {
 
         let result = proposal.parse_transaction_type(&metadata);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid field element"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid field element")
+        );
     }
 
     #[test]
@@ -743,5 +749,4 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, MultisigError::UnknownTransactionType(_)));
     }
-
 }

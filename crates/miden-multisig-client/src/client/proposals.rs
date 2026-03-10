@@ -53,15 +53,14 @@ impl MultisigClient {
 
         // Parse all proposals, propagating any parse errors rather than silently dropping them.
         // This ensures malformed PSM payloads are surfaced for debugging.
-        let proposals: Result<Vec<Proposal>> =
-            response
-                .proposals
-                .iter()
-                .map(|delta| {
-                    Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
-                    Proposal::from(delta)
-                })
-                .collect();
+        let proposals: Result<Vec<Proposal>> = response
+            .proposals
+            .iter()
+            .map(|delta| {
+                Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
+                Proposal::from(delta)
+            })
+            .collect();
 
         proposals
     }

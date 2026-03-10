@@ -23,7 +23,8 @@ pub(crate) async fn verify_endpoint_commitment(
         ))
     })?;
 
-    let endpoint_commitment = word_from_hex(&endpoint_commitment_hex).map_err(MultisigError::HexDecode)?;
+    let endpoint_commitment =
+        word_from_hex(&endpoint_commitment_hex).map_err(MultisigError::HexDecode)?;
 
     ensure_commitment_match(endpoint, expected_commitment, endpoint_commitment)
 }
