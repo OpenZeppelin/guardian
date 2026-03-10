@@ -28,6 +28,7 @@
 //!         vec![signer1, signer2, signer3],  // commitments
 //!         PsmConfig::new("http://localhost:50051"),
 //!     );
+//!     config.validate()?;
 //!     let account = client.create_account(config).await?;
 //!
 //!     // Register with PSM so other cosigners can pull
