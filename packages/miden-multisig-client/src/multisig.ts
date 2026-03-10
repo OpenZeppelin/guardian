@@ -507,6 +507,7 @@ export class Multisig {
       targetThreshold,
       targetSignerCommitments,
       saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('add_signer'),
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
@@ -526,16 +527,12 @@ export class Multisig {
     newThreshold?: number,
   ): Promise<Proposal> {
     const normalizedRemove = signerToRemove.toLowerCase();
-    const signerExists = this.signerCommitments.some(
-      (c) => c.toLowerCase() === normalizedRemove
-    );
-    if (!signerExists) {
-      throw new Error(`Signer ${signerToRemove} is not in the current signer list`);
-    }
-
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
     );
+    if (targetSignerCommitments.length === this.signerCommitments.length) {
+      throw new Error(`Signer ${signerToRemove} is not in the current signer list`);
+    }
 
     if (targetSignerCommitments.length === 0) {
       throw new Error('Cannot remove the last signer');
@@ -564,6 +561,7 @@ export class Multisig {
       targetThreshold,
       targetSignerCommitments,
       saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('remove_signer'),
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
@@ -605,6 +603,7 @@ export class Multisig {
       targetThreshold: newThreshold,
       targetSignerCommitments: this.signerCommitments,
       saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('change_threshold'),
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
@@ -637,6 +636,7 @@ export class Multisig {
     const metadata: ProposalMetadata = {
       proposalType: 'switch_psm',
       saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('switch_psm'),
       newPsmPubkey,
       newPsmEndpoint,
       description: `Switch PSM to ${newPsmEndpoint}`,
@@ -681,6 +681,7 @@ export class Multisig {
       proposalType: 'consume_notes',
       noteIds,
       saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('consume_notes'),
       description: `Consume ${noteIds.length} note(s)`,
     };
 
@@ -719,6 +720,7 @@ export class Multisig {
     const metadata: ProposalMetadata = {
       proposalType: 'p2id',
       saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('p2id'),
       recipientId,
       faucetId,
       amount: amount.toString(),
@@ -876,14 +878,7 @@ export class Multisig {
     if (isSwitchPsm) {
       txSummaryBase64 = proposal.txSummary;
     } else {
-      const deltas = await this.psm.getDeltaProposals(this._accountId);
-      delta = deltas.find(
-        (d) => computeCommitmentFromTxSummary(d.deltaPayload.txSummary.data) === proposalId
-      );
-
-      if (!delta) {
-        throw new Error(`Proposal not found on server: ${proposalId}`);
-      }
+      delta = await this.psm.getDeltaProposal(this._accountId, proposalId);
       txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
 
@@ -997,12 +992,8 @@ export class Multisig {
    * Export a proposal for offline signing
    */
   async exportProposal(proposalId: string): Promise<ExportedProposal> {
-    const deltas = await this.psm.getDeltaProposals(this._accountId);
-    const delta = deltas.find((d) => computeCommitmentFromTxSummary(d.deltaPayload.txSummary.data) === proposalId);
-
-    if (!delta) {
-      throw new Error(`Proposal not found: ${proposalId}`);
-    }
+    const delta = await this.psm.getDeltaProposal(this._accountId, proposalId);
+    const proposal = this.deltaToProposal(delta, proposalId);
 
     const signatures =
       delta.status.status === 'pending'
@@ -1018,6 +1009,7 @@ export class Multisig {
       commitment: proposalId,
       txSummaryBase64: delta.deltaPayload.txSummary.data,
       signatures,
+      metadata: proposal.metadata,
     };
   }
 
@@ -1061,6 +1053,12 @@ export class Multisig {
     if (!exported.accountId || !exported.txSummaryBase64 || !exported.commitment) {
       throw new Error('Invalid proposal JSON: missing required fields');
     }
+    if (typeof exported.nonce !== 'number' || !Number.isInteger(exported.nonce) || exported.nonce < 0) {
+      throw new Error('Invalid proposal JSON: nonce is required');
+    }
+    if (!exported.metadata?.proposalType || exported.metadata.proposalType === 'unknown') {
+      throw new Error('Invalid proposal JSON: metadata.proposalType is required');
+    }
 
     this.assertProposalAccountId(exported.accountId);
 
@@ -1072,10 +1070,8 @@ export class Multisig {
       throw new Error('Invalid proposal: commitment does not match tx_summary');
     }
 
-    if (!exported.metadata) {
-      throw new Error('Invalid proposal JSON: missing proposal metadata');
-    }
     const metadata = exported.metadata as ProposalMetadata;
+    this.assertValidProposalMetadata(metadata);
 
     const signatureContext = 'Invalid imported proposal signatures';
     const signerCommitments = new Set(
@@ -1316,6 +1312,7 @@ export class Multisig {
     if (!resolvedMetadata) {
       throw new Error('Missing proposal metadata');
     }
+    this.assertValidProposalMetadata(resolvedMetadata);
 
     const localSignatureContext = `Invalid local proposal signatures for ${proposalId}`;
     const signerCommitments = new Set(
@@ -1381,6 +1378,7 @@ export class Multisig {
       proposalType: metadata.proposalType,
       description: metadata.description,
       salt: metadata.saltHex,
+      requiredSignatures: metadata.requiredSignatures,
     };
 
     switch (metadata.proposalType) {
@@ -1417,33 +1415,45 @@ export class Multisig {
     }
   }
 
-  private fromPsmMetadata(psm: PsmProposalMetadata): ProposalMetadata | undefined {
-    if (!psm.proposalType) return undefined;
+  private fromPsmMetadata(psm?: PsmProposalMetadata): ProposalMetadata {
+    if (!psm?.proposalType) {
+      throw new Error('Missing proposal metadata.proposalType');
+    }
     const base = {
       description: psm.description ?? '',
       saltHex: psm.salt,
+      requiredSignatures: psm.requiredSignatures,
     };
 
     switch (psm.proposalType) {
       case 'p2id':
+        if (!psm.recipientId || !psm.faucetId || !psm.amount) {
+          throw new Error('p2id proposal is missing required metadata fields');
+        }
         return {
           ...base,
           proposalType: 'p2id',
-          recipientId: psm.recipientId ?? '',
-          faucetId: psm.faucetId ?? '',
-          amount: psm.amount ?? '0',
+          recipientId: psm.recipientId,
+          faucetId: psm.faucetId,
+          amount: psm.amount,
         };
       case 'consume_notes':
+        if (!psm.noteIds || psm.noteIds.length === 0) {
+          throw new Error('consume_notes proposal is missing noteIds');
+        }
         return {
           ...base,
           proposalType: 'consume_notes',
-          noteIds: psm.noteIds ?? [],
+          noteIds: psm.noteIds,
         };
       case 'switch_psm':
+        if (!psm.newPsmPubkey || !psm.newPsmEndpoint) {
+          throw new Error('switch_psm proposal is missing required metadata fields');
+        }
         return {
           ...base,
           proposalType: 'switch_psm',
-          newPsmPubkey: psm.newPsmPubkey ?? '',
+          newPsmPubkey: psm.newPsmPubkey,
           newPsmEndpoint: psm.newPsmEndpoint,
           targetThreshold: psm.targetThreshold,
           targetSignerCommitments: psm.signerCommitments,
@@ -1451,14 +1461,50 @@ export class Multisig {
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold':
+        if (psm.targetThreshold === undefined || !psm.signerCommitments || psm.signerCommitments.length === 0) {
+          throw new Error(`${psm.proposalType} proposal is missing required metadata fields`);
+        }
         return {
           ...base,
           proposalType: psm.proposalType,
-          targetThreshold: psm.targetThreshold ?? 0,
-          targetSignerCommitments: psm.signerCommitments ?? [],
+          targetThreshold: psm.targetThreshold,
+          targetSignerCommitments: psm.signerCommitments,
         };
       default:
-        return undefined;
+        throw new Error(`Unsupported proposal type: ${psm.proposalType as string}`);
+    }
+  }
+
+  private assertValidProposalMetadata(metadata: ProposalMetadata): void {
+    switch (metadata.proposalType) {
+      case 'add_signer':
+      case 'remove_signer':
+      case 'change_threshold':
+        if (
+          metadata.targetThreshold === undefined ||
+          !metadata.targetSignerCommitments ||
+          metadata.targetSignerCommitments.length === 0
+        ) {
+          throw new Error(`${metadata.proposalType} proposal metadata is incomplete`);
+        }
+        return;
+      case 'switch_psm':
+        if (!metadata.newPsmPubkey || !metadata.newPsmEndpoint) {
+          throw new Error('switch_psm proposal metadata is incomplete');
+        }
+        return;
+      case 'consume_notes':
+        if (!metadata.noteIds || metadata.noteIds.length === 0) {
+          throw new Error('consume_notes proposal metadata is incomplete');
+        }
+        return;
+      case 'p2id':
+        if (!metadata.recipientId || !metadata.faucetId || !metadata.amount) {
+          throw new Error('p2id proposal metadata is incomplete');
+        }
+        return;
+      case 'unknown':
+        throw new Error('unknown proposal type is not supported');
     }
   }
 

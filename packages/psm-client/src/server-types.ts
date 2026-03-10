@@ -31,6 +31,7 @@ export type ServerProposalType =
 export interface ServerProposalMetadata {
   proposal_type?: ServerProposalType;
   target_threshold?: number;
+  required_signatures?: number;
   signer_commitments?: string[];
   salt?: string;
   description?: string;

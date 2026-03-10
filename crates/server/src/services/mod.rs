@@ -3,15 +3,17 @@ use crate::metadata::AccountMetadata;
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
+use base64::Engine;
+use serde_json::Value;
 use std::sync::Arc;
 
 mod configure_account;
 mod delta_commit;
 mod get_delta;
+mod get_delta_proposal;
 mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
-mod payload_normalize;
 mod push_delta;
 mod push_delta_proposal;
 mod sign_delta_proposal;
@@ -21,12 +23,12 @@ pub use crate::jobs::canonicalization::{
 };
 pub use configure_account::{ConfigureAccountParams, ConfigureAccountResult, configure_account};
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
+pub use get_delta_proposal::{GetDeltaProposalParams, GetDeltaProposalResult, get_delta_proposal};
 pub use get_delta_proposals::{
     GetDeltaProposalsParams, GetDeltaProposalsResult, get_delta_proposals,
 };
 pub use get_delta_since::{GetDeltaSinceParams, GetDeltaSinceResult, get_delta_since};
 pub use get_state::{GetStateParams, GetStateResult, get_state};
-pub use payload_normalize::normalize_payload;
 pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use push_delta_proposal::{
     PushDeltaProposalParams, PushDeltaProposalResult, push_delta_proposal,
@@ -126,6 +128,114 @@ pub async fn resolve_account(
     let storage = state.storage.clone();
 
     Ok(ResolvedAccount { metadata, storage })
+}
+
+const VALID_PROPOSAL_TYPES: &[&str] = &[
+    "add_signer",
+    "remove_signer",
+    "change_threshold",
+    "switch_psm",
+    "consume_notes",
+    "p2id",
+];
+
+pub fn normalize_payload(payload: Value) -> Result<Value> {
+    let mut obj = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| PsmError::InvalidDelta("delta_payload must be an object".to_string()))?;
+
+    let tx_summary = obj
+        .get("tx_summary")
+        .ok_or_else(|| PsmError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
+    validate_tx_summary(tx_summary)?;
+
+    let metadata = obj
+        .remove("metadata")
+        .ok_or_else(|| PsmError::InvalidDelta("Missing 'metadata' field".to_string()))?;
+    let normalized_metadata = normalize_metadata(metadata)?;
+    obj.insert("metadata".to_string(), normalized_metadata);
+
+    Ok(Value::Object(obj))
+}
+
+fn validate_tx_summary(tx_summary: &Value) -> Result<()> {
+    let obj = tx_summary.as_object().ok_or_else(|| {
+        PsmError::InvalidDelta("tx_summary must be an object with 'data' field".to_string())
+    })?;
+
+    let data = obj
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PsmError::InvalidDelta("tx_summary.data must be a string".to_string()))?;
+
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| PsmError::InvalidDelta(format!("tx_summary.data is not valid base64: {e}")))?;
+    Ok(())
+}
+
+fn normalize_metadata(metadata: Value) -> Result<Value> {
+    let mut obj = metadata
+        .as_object()
+        .cloned()
+        .ok_or_else(|| PsmError::InvalidDelta("metadata must be a JSON object".to_string()))?;
+
+    let proposal_type = obj
+        .get("proposal_type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PsmError::InvalidDelta("metadata.proposal_type is required".to_string()))?;
+    if !VALID_PROPOSAL_TYPES.contains(&proposal_type) {
+        return Err(PsmError::InvalidDelta(format!(
+            "Unknown proposal_type '{}'. Must be one of: {}",
+            proposal_type,
+            VALID_PROPOSAL_TYPES.join(", ")
+        )));
+    }
+    obj.insert(
+        "proposal_type".to_string(),
+        Value::String(proposal_type.to_string()),
+    );
+
+    obj.entry("description")
+        .or_insert_with(|| Value::String(String::new()));
+
+    if let Some(amount) = obj.get("amount") {
+        if let Some(num) = amount.as_u64() {
+            obj.insert("amount".to_string(), Value::String(num.to_string()));
+        } else if let Some(num) = amount.as_i64() {
+            obj.insert("amount".to_string(), Value::String(num.to_string()));
+        }
+    }
+
+    if let Some(required_signatures) = obj.get("required_signatures") {
+        let normalized = if let Some(num) = required_signatures.as_u64() {
+            num
+        } else if let Some(text) = required_signatures.as_str() {
+            text.parse::<u64>().map_err(|_| {
+                PsmError::InvalidDelta(
+                    "metadata.required_signatures must be a positive integer".to_string(),
+                )
+            })?
+        } else {
+            return Err(PsmError::InvalidDelta(
+                "metadata.required_signatures must be a positive integer".to_string(),
+            ));
+        };
+
+        if normalized == 0 {
+            return Err(PsmError::InvalidDelta(
+                "metadata.required_signatures must be greater than zero".to_string(),
+            ));
+        }
+
+        obj.insert(
+            "required_signatures".to_string(),
+            Value::Number(serde_json::Number::from(normalized)),
+        );
+    }
+
+    Ok(Value::Object(obj))
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]

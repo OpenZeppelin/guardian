@@ -52,6 +52,7 @@ export type ProposalType =
 export interface ProposalMetadata {
   proposalType?: ProposalType;
   targetThreshold?: number;
+  requiredSignatures?: number;
   signerCommitments?: string[];
   salt?: string;
   description?: string;

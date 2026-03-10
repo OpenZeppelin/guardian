@@ -75,6 +75,9 @@ console.log('State data:', state.state_json.data);
 // Get all proposals for an account
 const proposals = await client.getDeltaProposals(accountId);
 
+// Get one proposal by commitment
+const proposal = await client.getDeltaProposal(accountId, '0x...');
+
 // Push a new proposal
 const response = await client.pushDeltaProposal({
   account_id: accountId,

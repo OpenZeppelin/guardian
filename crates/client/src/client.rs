@@ -2,12 +2,12 @@ use crate::error::{ClientError, ClientResult};
 use crate::keystore::Signer;
 use crate::proto::state_manager_client::StateManagerClient;
 use crate::proto::{
-    AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaProposalsRequest,
-    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
-    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
-    SignDeltaProposalResponse,
+    AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaProposalRequest,
+    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
+    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
+    GetStateRequest, GetStateResponse, ProposalSignature as ProtoProposalSignature,
+    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use miden_protocol::account::AccountId;
@@ -264,6 +264,29 @@ impl PsmClient {
         self.add_auth_metadata(&mut request, account_id)?;
 
         let response = self.client.get_delta_proposals(request).await?;
+        let inner = response.into_inner();
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Get a specific delta proposal for an account by commitment.
+    pub async fn get_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        commitment: impl Into<String>,
+    ) -> ClientResult<GetDeltaProposalResponse> {
+        let mut request = tonic::Request::new(GetDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            commitment: commitment.into(),
+        });
+
+        self.add_auth_metadata(&mut request, account_id)?;
+
+        let response = self.client.get_delta_proposal(request).await?;
         let inner = response.into_inner();
 
         if !inner.success {

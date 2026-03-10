@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use miden_multisig_client::word_from_hex;
-use miden_protocol::crypto::rand::{FeltRng, RpoRandomCoin};
 use miden_protocol::Word;
+use miden_protocol::crypto::rand::{FeltRng, RpoRandomCoin};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -23,7 +23,8 @@ fn fixture_path() -> PathBuf {
 }
 
 fn load_vectors() -> Vec<P2idSerialVector> {
-    let fixture = fs::read_to_string(fixture_path()).expect("p2id serial vector fixture should exist");
+    let fixture =
+        fs::read_to_string(fixture_path()).expect("p2id serial vector fixture should exist");
     serde_json::from_str(&fixture).expect("p2id serial vector fixture should parse")
 }
 

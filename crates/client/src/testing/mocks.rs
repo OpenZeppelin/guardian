@@ -1,10 +1,11 @@
 use crate::proto::state_manager_server::{StateManager, StateManagerServer};
 use crate::proto::{
     AccountState, ConfigureRequest, ConfigureResponse, DeltaObject as ProtoDeltaObject,
-    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
-    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest,
-    PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
+    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
+    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
+    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -16,6 +17,7 @@ pub struct MockStateManagerService {
     get_pubkey_response: Arc<StdMutex<Option<Result<String, Status>>>>,
     configure_response: Arc<StdMutex<Option<Result<ConfigureResponse, Status>>>>,
     push_delta_proposal_response: Arc<StdMutex<Option<Result<PushDeltaProposalResponse, Status>>>>,
+    get_delta_proposal_response: Arc<StdMutex<Option<Result<GetDeltaProposalResponse, Status>>>>,
     get_delta_proposals_response: Arc<StdMutex<Option<Result<GetDeltaProposalsResponse, Status>>>>,
     sign_delta_proposal_response: Arc<StdMutex<Option<Result<SignDeltaProposalResponse, Status>>>>,
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
@@ -48,6 +50,14 @@ impl MockStateManagerService {
         response: Result<GetDeltaProposalsResponse, Status>,
     ) -> Self {
         *self.get_delta_proposals_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    pub fn with_get_delta_proposal(
+        self,
+        response: Result<GetDeltaProposalResponse, Status>,
+    ) -> Self {
+        *self.get_delta_proposal_response.lock().unwrap() = Some(response);
         self
     }
 
@@ -151,6 +161,26 @@ impl StateManager for MockStateManagerService {
                     success: true,
                     message: String::new(),
                     proposals: vec![],
+                })
+            });
+
+        response.map(Response::new)
+    }
+
+    async fn get_delta_proposal(
+        &self,
+        _request: Request<GetDeltaProposalRequest>,
+    ) -> Result<Response<GetDeltaProposalResponse>, Status> {
+        let response = self
+            .get_delta_proposal_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Ok(GetDeltaProposalResponse {
+                    success: true,
+                    message: String::new(),
+                    proposal: Some(create_mock_delta()),
                 })
             });
 

@@ -306,7 +306,12 @@ mod tests {
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex.clone()]
+            }
         });
 
         let params = PushDeltaProposalParams {
@@ -387,7 +392,12 @@ mod tests {
                         "signature": dummy_sig
                     }
                 }
-            ]
+            ],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex.clone(), cosigner_commitment.clone()]
+            }
         });
 
         let params = PushDeltaProposalParams {
@@ -425,7 +435,7 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex],
+            vec![test_commitment_hex.clone()],
         ))));
 
         let _storage = storage.with_pull_state(Ok(create_state_object(
@@ -435,7 +445,12 @@ mod tests {
         )));
 
         let delta_payload = serde_json::json!({
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex]
+            }
         });
 
         let params = PushDeltaProposalParams {
@@ -470,7 +485,7 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex],
+            vec![test_commitment_hex.clone()],
         ))));
 
         let _storage = storage.with_pull_state(Ok(create_state_object(
@@ -483,7 +498,12 @@ mod tests {
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex]
+            }
         });
 
         let params = PushDeltaProposalParams {
@@ -517,14 +537,19 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex],
+            vec![test_commitment_hex.clone()],
         ))));
 
         let _storage = storage.with_pull_state(Err("State not found".to_string()));
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex]
+            }
         });
 
         let params = PushDeltaProposalParams {
@@ -589,7 +614,12 @@ mod tests {
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex]
+            }
         });
 
         let params = PushDeltaProposalParams {

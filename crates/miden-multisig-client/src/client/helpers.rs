@@ -1,5 +1,6 @@
 //! Internal helper functions for PSM client interactions.
 
+use crate::psm_endpoint::verify_endpoint_commitment;
 use miden_client::account::Account;
 use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
 use miden_client::transaction::{TransactionRequest, TransactionSummary};
@@ -8,9 +9,8 @@ use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::utils::serde::Serializable;
-use private_state_manager_client::{DeltaObject, PsmClient};
+use private_state_manager_client::PsmClient;
 use private_state_manager_shared::hex::FromHex;
-use crate::psm_endpoint::verify_endpoint_commitment;
 use private_state_manager_shared::{FromJson, ToJson};
 
 use super::MultisigClient;
@@ -141,7 +141,8 @@ impl MultisigClient {
             MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
         })?;
 
-        let psm_commitment = word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
+        let psm_commitment =
+            word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         Ok(crate::transaction::build_signature_advice_entry(
             psm_commitment,
@@ -210,20 +211,6 @@ impl MultisigClient {
         Ok(word_to_hex(&tx_summary.to_commitment()))
     }
 
-    pub(crate) fn find_raw_proposal_by_id<'a>(
-        proposals: &'a [DeltaObject],
-        proposal_id: &str,
-    ) -> Result<Option<&'a DeltaObject>> {
-        for proposal in proposals {
-            let candidate_id = Self::proposal_id_from_delta_payload(&proposal.delta_payload)?;
-            if candidate_id.eq_ignore_ascii_case(proposal_id) {
-                return Ok(Some(proposal));
-            }
-        }
-
-        Ok(None)
-    }
-
     /// Finalizes a transaction by executing it on-chain and updating local state.
     ///
     /// This handles the common post-execution logic for all proposal types.
@@ -290,7 +277,7 @@ impl MultisigClient {
             self.account = Some(multisig_account);
 
             // Register the updated account on the new PSM server
-            self.push_account().await.map_err(|e| {
+            self.register_on_psm().await.map_err(|e| {
                 MultisigError::PsmServer(format!(
                     "transaction executed successfully but failed to register on new PSM: {}",
                     e

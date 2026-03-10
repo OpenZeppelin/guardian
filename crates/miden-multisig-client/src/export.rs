@@ -7,17 +7,17 @@
 
 use std::collections::HashSet;
 
+use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::Word;
 use private_state_manager_shared::FromJson;
 use private_state_manager_shared::hex::FromHex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::ensure_hex_prefix;
-use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus};
+use crate::proposal::{Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus};
 use crate::utils::hex_body_eq;
 
 /// Current export format version.
@@ -257,6 +257,14 @@ impl ExportedProposal {
             transaction_type,
             status,
             tx_summary,
+            signatures: self
+                .signatures
+                .iter()
+                .map(|signature| ProposalSignatureEntry {
+                    signer_commitment: signature.signer_commitment.clone(),
+                    signature_hex: signature.signature.clone(),
+                })
+                .collect(),
             metadata,
         })
     }
@@ -368,8 +376,8 @@ mod tests {
     use miden_protocol::{Felt, Word, ZERO};
     use private_state_manager_shared::ToJson;
 
-    use crate::proposal::TransactionType;
     use super::*;
+    use crate::proposal::TransactionType;
 
     #[test]
     fn test_exported_signature_serialization() {

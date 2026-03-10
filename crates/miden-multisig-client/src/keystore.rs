@@ -58,8 +58,8 @@ pub fn word_from_hex(hex_str: &str) -> Result<Word, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
     use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
     use private_state_manager_shared::hex::FromHex;
     use private_state_manager_shared::hex::IntoHex;
 

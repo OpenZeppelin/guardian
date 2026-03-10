@@ -50,36 +50,24 @@ impl MultisigClient {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The proposal is not found in the parsed proposals list
+    /// - The proposal is not found in PSM
     /// - The raw delta cannot be found in PSM response
     /// - The delta has no pending status with signature data
     async fn export_proposal_to_exported(&mut self, proposal_id: &str) -> Result<ExportedProposal> {
         let account = self.require_account()?.clone();
         let account_id = account.id();
-
-        // Get the proposal
-        let proposals = self.list_proposals().await?;
-        let proposal = proposals
-            .iter()
-            .find(|p| p.id == proposal_id)
-            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
-
-        // Get raw delta to extract signatures
         let mut psm_client = self.create_authenticated_psm_client().await?;
-        let proposals_response = psm_client
-            .get_delta_proposals(&account_id)
+        let response = psm_client
+            .get_delta_proposal(&account_id, proposal_id)
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
-
-        // Find the raw proposal - fail if not found
-        let raw_proposal =
-            Self::find_raw_proposal_by_id(&proposals_response.proposals, &proposal.id)?
-                .ok_or_else(|| {
-                    MultisigError::ProposalNotFound(format!(
-                        "raw delta not found for proposal {} ({})",
-                        proposal_id, proposal.id
-                    ))
-                })?;
+            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposal: {}", e)))?;
+        let raw_proposal = response
+            .proposal
+            .as_ref()
+            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        Self::ensure_proposal_account_id(&raw_proposal.account_id, &account_id)?;
+        let proposal = crate::proposal::Proposal::from(raw_proposal)?;
+        self.verify_proposal_summary_binding(&proposal).await?;
 
         // Extract signatures - fail if status structure is missing
         let status = raw_proposal.status.as_ref().ok_or_else(|| {

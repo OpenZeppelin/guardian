@@ -170,7 +170,8 @@ impl ProposalBuilder {
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
-            );
+            )
+            .with_required_signatures(required_signatures);
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
@@ -271,7 +272,8 @@ impl ProposalBuilder {
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
-            );
+            )
+            .with_required_signatures(required_signatures);
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
@@ -357,7 +359,8 @@ impl ProposalBuilder {
                 faucet_id.to_string(),
                 amount,
                 word_to_hex(&salt),
-            );
+            )
+            .with_required_signatures(required_signatures);
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
@@ -435,7 +438,8 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(signer, tx_commitment)
-            .with_note_consumption_metadata(&note_ids_hex, word_to_hex(&salt));
+            .with_note_consumption_metadata(&note_ids_hex, word_to_hex(&salt))
+            .with_required_signatures(required_signatures);
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;
@@ -510,7 +514,8 @@ impl ProposalBuilder {
                 word_to_hex(&new_psm_pubkey),
                 new_psm_endpoint.clone(),
                 word_to_hex(&salt),
-            );
+            )
+            .with_required_signatures(required_signatures);
 
         // Push proposal to PSM
         let nonce = account.nonce() + 1;

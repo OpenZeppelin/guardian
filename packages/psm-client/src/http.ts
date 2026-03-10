@@ -95,6 +95,16 @@ export class PsmHttpClient {
     return data.proposals.map(fromServerDeltaObject);
   }
 
+  async getDeltaProposal(accountId: string, commitment: string): Promise<DeltaObject> {
+    const requestQuery = { account_id: accountId, commitment };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/delta/proposal/single?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery);
+    const data = (await response.json()) as ServerDeltaObject;
+    return fromServerDeltaObject(data);
+  }
+
   async pushDeltaProposal(request: DeltaProposalRequest): Promise<DeltaProposalResponse> {
     const serverRequest = toServerDeltaProposalRequest(request);
     const response = await this.fetchAuthenticated('/delta/proposal', {

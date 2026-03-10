@@ -5,8 +5,8 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::hex::IntoHex;
 use private_state_manager_shared::ToJson;
+use private_state_manager_shared::hex::IntoHex;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -55,8 +55,7 @@ impl MultisigClient {
                 new_endpoint,
                 new_commitment,
             } => {
-                verify_endpoint_commitment(new_endpoint, *new_commitment)
-                    .await?;
+                verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
                 (new_endpoint.clone(), *new_commitment)
             }
             _ => {

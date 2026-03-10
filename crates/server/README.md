@@ -216,7 +216,8 @@ ServerBuilder::new()
 - **GET** `/delta/since?account_id=<id>&nonce=<n>` - Retrieve the delta since a given nonce
 - **POST** `/delta/proposal` - Create a delta proposal for multi-party signing
 - **POST** `/delta/proposal/sign` - Add a signature to an existing delta proposal
-- **GET** `/delta/proposals?account_id=<id>` - List pending delta proposals for an account
+- **GET** `/delta/proposal?account_id=<id>` - List pending delta proposals for an account
+- **GET** `/delta/proposal/single?account_id=<id>&commitment=<c>` - Retrieve a pending proposal by commitment
 
 #### gRPC API (Port 50051)
 
@@ -230,6 +231,7 @@ All methods are available through the `state_manager.StateManager` service:
 - `PushDeltaProposal(PushDeltaProposalRequest) -> PushDeltaProposalResponse`
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`
+- `GetDeltaProposal(GetDeltaProposalRequest) -> GetDeltaProposalResponse`
 
 See `proto/state_manager.proto` for the complete protocol buffer definitions.
 

@@ -28,6 +28,9 @@ service StateManager {
   // Get all delta proposals
   rpc GetDeltaProposals(GetDeltaProposalsRequest) returns (GetDeltaProposalsResponse);
 
+  // Get a specific delta proposal by commitment
+  rpc GetDeltaProposal(GetDeltaProposalRequest) returns (GetDeltaProposalResponse);
+
   // Sign a delta proposal
   rpc SignDeltaProposal(SignDeltaProposalRequest) returns (SignDeltaProposalResponse);
 }
@@ -190,6 +193,18 @@ message GetDeltaProposalsResponse {
   bool success = 1;
   string message = 2;
   repeated DeltaObject proposals = 3;
+}
+
+// Get a specific delta proposal request
+message GetDeltaProposalRequest {
+  string account_id = 1;
+  string commitment = 2;
+}
+
+message GetDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  DeltaObject proposal = 3;
 }
 
 // Sign delta proposal request
