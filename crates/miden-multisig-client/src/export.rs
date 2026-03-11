@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
+use crate::procedures::ProcedureName;
 use crate::proposal::{
     Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, TransactionType,
 };
@@ -78,6 +79,9 @@ pub struct ExportedMetadata {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_endpoint: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_procedure: Option<String>,
 }
 
 impl ExportedProposal {
@@ -93,6 +97,7 @@ impl ExportedProposal {
             note_ids_hex: self.metadata.note_ids_hex.clone(),
             new_psm_pubkey_hex: self.metadata.new_psm_pubkey_hex.clone(),
             new_psm_endpoint: self.metadata.new_psm_endpoint.clone(),
+            target_procedure: self.metadata.target_procedure.clone(),
             required_signatures: Some(self.signatures_required),
             signers: self
                 .signatures
@@ -180,6 +185,7 @@ impl ExportedProposal {
             TransactionType::AddCosigner { .. } => "AddCosigner",
             TransactionType::RemoveCosigner { .. } => "RemoveCosigner",
             TransactionType::SwitchPsm { .. } => "SwitchPsm",
+            TransactionType::UpdateProcedureThreshold { .. } => "UpdateProcedureThreshold",
             TransactionType::UpdateSigners { .. } => "UpdateSigners",
         };
 
@@ -204,6 +210,7 @@ impl ExportedProposal {
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
             new_psm_pubkey_hex: proposal.metadata.new_psm_pubkey_hex.clone(),
             new_psm_endpoint: proposal.metadata.new_psm_endpoint.clone(),
+            target_procedure: proposal.metadata.target_procedure.clone(),
         };
 
         Self {
@@ -333,6 +340,23 @@ impl ExportedProposal {
                 Ok(TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
+                })
+            }
+            "UpdateProcedureThreshold" => {
+                let procedure_name = metadata
+                    .target_procedure
+                    .as_ref()
+                    .ok_or_else(|| MultisigError::MissingConfig("target_procedure".to_string()))?;
+                let procedure: ProcedureName = procedure_name
+                    .parse()
+                    .map_err(MultisigError::InvalidConfig)?;
+                let new_threshold = metadata
+                    .new_threshold
+                    .ok_or_else(|| MultisigError::MissingConfig("new_threshold".to_string()))?
+                    as u32;
+                Ok(TransactionType::UpdateProcedureThreshold {
+                    procedure,
+                    new_threshold,
                 })
             }
             "UpdateSigners" => {
@@ -476,6 +500,7 @@ mod tests {
             note_ids_hex: vec![],
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
+            target_procedure: None,
         };
 
         let json = serde_json::to_string(&meta).expect("should serialize");
@@ -945,6 +970,41 @@ mod tests {
                 .to_string()
                 .contains("invalid field element")
         );
+    }
+
+    #[test]
+    fn test_parse_transaction_type_update_procedure_threshold() {
+        let metadata = ProposalMetadata {
+            new_threshold: Some(1),
+            target_procedure: Some("send_asset".to_string()),
+            ..Default::default()
+        };
+
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: "0xabc".to_string(),
+            nonce: 1,
+            transaction_type: "UpdateProcedureThreshold".to_string(),
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                new_threshold: metadata.new_threshold,
+                target_procedure: metadata.target_procedure.clone(),
+                ..Default::default()
+            },
+        };
+
+        let result = proposal.parse_transaction_type(&metadata);
+        assert!(result.is_ok());
+        assert!(matches!(
+            result.unwrap(),
+            TransactionType::UpdateProcedureThreshold {
+                procedure: crate::ProcedureName::SendAsset,
+                new_threshold: 1
+            }
+        ));
     }
 
     #[test]

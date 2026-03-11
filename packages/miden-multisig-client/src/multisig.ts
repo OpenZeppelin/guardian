@@ -33,6 +33,7 @@ import {
 import {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
+  buildUpdateProcedureThresholdTransactionRequest,
   buildUpdatePsmTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
@@ -167,6 +168,8 @@ export class Multisig {
       case 'remove_signer':
       case 'change_threshold':
         return 'update_signers';
+      case 'update_procedure_threshold':
+        return 'update_procedure_threshold';
       case 'switch_psm':
         return 'update_psm';
       default:
@@ -577,6 +580,53 @@ export class Multisig {
     return this.createProposal(proposalNonce, summaryBase64, metadata);
   }
 
+  async createUpdateProcedureThresholdProposal(
+    targetProcedure: ProcedureName,
+    targetThreshold: number,
+    nonce?: number,
+  ): Promise<Proposal> {
+    if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
+      throw new Error(
+        `Invalid threshold ${targetThreshold}. Must be between 0 and ${this.signerCommitments.length}`
+      );
+    }
+
+    const currentOverride = this.procedureThresholds.get(targetProcedure);
+    if (targetThreshold === 0 && currentOverride === undefined) {
+      throw new Error(`Procedure ${targetProcedure} does not have an override to clear`);
+    }
+
+    if (currentOverride !== undefined && currentOverride === targetThreshold) {
+      throw new Error(
+        `Procedure ${targetProcedure} already has threshold override ${targetThreshold}`
+      );
+    }
+
+    const { request, salt } = await buildUpdateProcedureThresholdTransactionRequest(
+      this.webClient,
+      targetProcedure,
+      targetThreshold,
+    );
+
+    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const proposalNonce = nonce ?? Date.now();
+    const action = targetThreshold === 0
+      ? `Clear threshold override for ${targetProcedure}`
+      : `Set ${targetProcedure} threshold override to ${targetThreshold}`;
+
+    const metadata: ProposalMetadata = {
+      proposalType: 'update_procedure_threshold',
+      targetProcedure,
+      targetThreshold,
+      saltHex: salt.toHex(),
+      requiredSignatures: this.getEffectiveThreshold('update_procedure_threshold'),
+      description: action,
+    };
+
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
   /**
    * Create a "switch PSM" proposal to change the PSM provider.
    * 
@@ -923,6 +973,16 @@ export class Multisig {
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
+          { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
+        );
+        finalRequest = request;
+        break;
+      }
+      case 'update_procedure_threshold': {
+        const { request } = await buildUpdateProcedureThresholdTransactionRequest(
+          this.webClient,
+          metadata.targetProcedure,
+          metadata.targetThreshold,
           { salt: Word.fromHex(normalizeHexWord(saltHex)), signatureAdviceMap: adviceMap },
         );
         finalRequest = request;

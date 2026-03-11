@@ -10,6 +10,7 @@ use miden_protocol::account::auth::Signature;
 use miden_protocol::{Felt, Hasher, Word};
 
 use crate::error::{MultisigError, Result};
+use crate::procedures::ProcedureName;
 
 /// Builds the multisig configuration advice map entry.
 ///
@@ -31,6 +32,28 @@ pub fn build_multisig_config_advice(
     for commitment in signer_commitments.iter().rev() {
         payload.extend_from_slice(commitment.as_elements());
     }
+
+    let digest = Hasher::hash_elements(&payload);
+    let config_hash: Word = digest;
+    (config_hash, payload)
+}
+
+/// Builds the procedure-threshold advice map entry.
+///
+/// Returns (config_hash, config_values) tuple.
+pub fn build_procedure_threshold_advice(
+    procedure: ProcedureName,
+    threshold: u32,
+) -> (Word, Vec<Felt>) {
+    let procedure_root = procedure.root();
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(procedure_root.as_elements());
+    payload.extend_from_slice(&[
+        Felt::new(threshold as u64),
+        Felt::new(0),
+        Felt::new(0),
+        Felt::new(0),
+    ]);
 
     let digest = Hasher::hash_elements(&payload);
     let config_hash: Word = digest;
@@ -77,6 +100,40 @@ pub fn build_update_signers_script() -> Result<TransactionScript> {
     Ok(tx_script)
 }
 
+/// Builds the update_procedure_threshold transaction script.
+pub fn build_update_procedure_threshold_script(
+    procedure: ProcedureName,
+    threshold: u32,
+) -> Result<TransactionScript> {
+    let multisig_library = get_multisig_library().map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to get multisig library: {}", e))
+    })?;
+
+    let procedure_root = procedure.root();
+    let tx_script_code = format!(
+        r#"
+        use oz_multisig::multisig
+        begin
+            push.{procedure_root}
+            push.{threshold}
+            call.multisig::update_procedure_threshold
+            dropw
+            drop
+        end
+    "#
+    );
+
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(multisig_library)
+        .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
+        .compile_tx_script(tx_script_code)
+        .map_err(|e| {
+            MultisigError::TransactionExecution(format!("failed to compile script: {}", e))
+        })?;
+
+    Ok(tx_script)
+}
+
 /// Builds an update_signers transaction request.
 ///
 /// Returns (TransactionRequest, config_hash) tuple.
@@ -96,6 +153,30 @@ where
         .custom_script(script)
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
+        .extend_advice_map(extra_advice)
+        .auth_arg(salt)
+        .build()?;
+
+    Ok((request, config_hash))
+}
+
+/// Builds an update_procedure_threshold transaction request.
+///
+/// Returns (TransactionRequest, config_hash) tuple.
+pub fn build_update_procedure_threshold_transaction_request<I>(
+    procedure: ProcedureName,
+    threshold: u32,
+    salt: Word,
+    extra_advice: I,
+) -> Result<(TransactionRequest, Word)>
+where
+    I: IntoIterator<Item = (Word, Vec<Felt>)>,
+{
+    let (config_hash, _) = build_procedure_threshold_advice(procedure, threshold);
+    let script = build_update_procedure_threshold_script(procedure, threshold)?;
+
+    let request = TransactionRequestBuilder::new()
+        .custom_script(script)
         .extend_advice_map(extra_advice)
         .auth_arg(salt)
         .build()?;
@@ -126,5 +207,20 @@ mod tests {
         let expected: Word = Hasher::hash_elements(&elements);
 
         assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn procedure_threshold_advice_contains_root_and_threshold_word() {
+        let (config_hash, payload) = build_procedure_threshold_advice(ProcedureName::SendAsset, 3);
+
+        assert_eq!(payload.len(), 8);
+        assert_eq!(&payload[..4], ProcedureName::SendAsset.root().as_elements());
+        assert_eq!(payload[4], Felt::new(3));
+        assert_eq!(payload[5], Felt::new(0));
+        assert_eq!(payload[6], Felt::new(0));
+        assert_eq!(payload[7], Felt::new(0));
+
+        let expected_hash: Word = Hasher::hash_elements(&payload);
+        assert_eq!(config_hash, expected_hash);
     }
 }

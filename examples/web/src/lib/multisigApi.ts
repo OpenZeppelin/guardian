@@ -239,6 +239,23 @@ export async function createChangeThresholdProposal(
   return { proposal, proposals };
 }
 
+export async function createUpdateProcedureThresholdProposal(
+  multisig: Multisig,
+  procedure: ProcedureName,
+  threshold: number,
+): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
+  const proposal = await multisig.createUpdateProcedureThresholdProposal(
+    procedure,
+    threshold,
+    proposalNonce(multisig),
+  );
+  const proposals = await syncVisibleProposals(multisig);
+  if (!proposals.find((p) => p.id === proposal.id)) {
+    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
+  }
+  return { proposal, proposals };
+}
+
 /**
  * Create a "consume notes" proposal.
  */

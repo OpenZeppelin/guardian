@@ -43,6 +43,7 @@ export type ProposalType =
   | 'add_signer'
   | 'remove_signer'
   | 'change_threshold'
+  | 'update_procedure_threshold'
   | 'switch_psm'
   | 'consume_notes'
   | 'p2id'
@@ -54,6 +55,7 @@ export interface ProposalMetadata {
   targetThreshold?: number;
   requiredSignatures?: number;
   signerCommitments?: string[];
+  targetProcedure?: string;
   salt?: string;
   description?: string;
   newPsmPubkey?: string;

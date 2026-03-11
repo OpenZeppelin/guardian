@@ -2,7 +2,9 @@
 
 use miden_client::Serializable;
 use miden_protocol::Word;
-use miden_protocol::account::{Account, AccountId, StorageSlotName};
+use miden_protocol::account::{
+    Account, AccountId, AccountStorage, StorageMap, StorageSlot, StorageSlotName,
+};
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
@@ -137,6 +139,9 @@ impl MultisigAccount {
             TransactionType::AddCosigner { .. }
             | TransactionType::RemoveCosigner { .. }
             | TransactionType::UpdateSigners { .. } => ProcedureName::UpdateSigners,
+            TransactionType::UpdateProcedureThreshold { .. } => {
+                ProcedureName::UpdateProcedureThreshold
+            }
             TransactionType::SwitchPsm { .. } => ProcedureName::UpdatePsm,
         };
 
@@ -201,6 +206,43 @@ impl MultisigAccount {
             .ok_or_else(|| {
                 MultisigError::AccountStorage("PSM public key slot not found".to_string())
             })
+    }
+
+    pub fn with_procedure_threshold(
+        &self,
+        procedure: ProcedureName,
+        threshold: u32,
+    ) -> Result<Self> {
+        let mut overrides = self.procedure_threshold_overrides()?;
+        overrides.retain(|(current, _)| *current != procedure);
+        if threshold > 0 {
+            overrides.push((procedure, threshold));
+        }
+
+        let slot_name = StorageSlotName::new(OZ_MULTISIG_PROCEDURE_THRESHOLDS).map_err(|e| {
+            MultisigError::AccountStorage(format!("invalid procedure threshold slot name: {}", e))
+        })?;
+        let entries = overrides
+            .into_iter()
+            .map(|(procedure, threshold)| (procedure.root(), Word::from([threshold, 0, 0, 0])));
+        let map = StorageMap::with_entries(entries).map_err(|e| {
+            MultisigError::AccountStorage(format!("failed to build procedure threshold map: {}", e))
+        })?;
+        let slot = StorageSlot::with_map(slot_name, map);
+
+        let (id, vault, storage, code, nonce, seed) = self.account.clone().into_parts();
+        let storage_slots = storage
+            .into_slots()
+            .into_iter()
+            .filter(|current| current.name().as_str() != OZ_MULTISIG_PROCEDURE_THRESHOLDS)
+            .chain([slot])
+            .collect();
+        let storage = AccountStorage::new(storage_slots).map_err(|e| {
+            MultisigError::AccountStorage(format!("failed to rebuild account storage: {}", e))
+        })?;
+        let account = Account::new_unchecked(id, vault, storage, code, nonce, seed);
+
+        Ok(Self::new(account))
     }
 }
 
@@ -350,5 +392,37 @@ mod tests {
         let account = build_account_with_signer_slots(Vec::new());
 
         assert!(account.cosigner_commitments().is_empty());
+    }
+
+    #[test]
+    fn with_procedure_threshold_updates_existing_override() {
+        let account = build_test_account();
+
+        let updated = account
+            .with_procedure_threshold(ProcedureName::SendAsset, 2)
+            .expect("threshold updated");
+
+        assert_eq!(
+            updated
+                .procedure_threshold(ProcedureName::SendAsset)
+                .expect("threshold lookup"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn with_procedure_threshold_clears_override_when_zero() {
+        let account = build_test_account();
+
+        let updated = account
+            .with_procedure_threshold(ProcedureName::SendAsset, 0)
+            .expect("threshold cleared");
+
+        assert_eq!(
+            updated
+                .procedure_threshold(ProcedureName::SendAsset)
+                .expect("threshold lookup"),
+            None
+        );
     }
 }

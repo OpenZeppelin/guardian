@@ -55,6 +55,12 @@ const ERR_MALFORMED_MULTISIG_CONFIG="number of approvers must be equal to or gre
 
 const ERR_ZERO_IN_MULTISIG_CONFIG="number of approvers or threshold must not be zero"
 
+const ERR_PROC_THRESHOLD_NOT_U32="procedure threshold must be a u32 value"
+
+const ERR_NUM_APPROVERS_OR_PROC_THRESHOLD_NOT_U32="number of approvers and procedure threshold must be u32"
+
+const ERR_PROC_THRESHOLD_EXCEEDS_NUM_APPROVERS="procedure threshold exceeds number of approvers"
+
 # MULTISIG PROCEDURES
 # =================================================================================================
 
@@ -136,6 +142,85 @@ proc cleanup_pubkey_mapping(init_num_of_approvers: u32, new_num_of_approvers: u3
     # => []
 end
 
+proc get_threshold_and_num_approvers
+    push.THRESHOLD_CONFIG_SLOT[0..2]
+    exec.active_account::get_initial_item
+    # => [0, 0, num_approvers, threshold]
+
+    drop drop
+    # => [num_approvers, threshold]
+
+    swap
+    # => [threshold, num_approvers]
+end
+
+proc assert_proc_thresholds_lte_num_approvers(num_approvers: u32)
+    exec.active_account::get_num_procedures
+    # => [num_procedures, num_approvers]
+
+    dup neq.0
+    # => [should_continue, num_procedures, num_approvers]
+    while.true
+        sub.1 dup
+        # => [proc_index, proc_index, num_approvers]
+
+        exec.active_account::get_procedure_root
+        # => [PROC_ROOT, proc_index, num_approvers]
+
+        push.PROC_THRESHOLD_ROOTS_SLOT[0..2]
+        # => [proc_roots_slot_prefix, proc_roots_slot_suffix, PROC_ROOT, proc_index, num_approvers]
+
+        exec.active_account::get_initial_map_item
+        # => [[0, 0, 0, proc_threshold], proc_index, num_approvers]
+
+        drop drop drop
+        # => [proc_threshold, proc_index, num_approvers]
+
+        dup.2
+        # => [num_approvers, proc_threshold, proc_index, num_approvers]
+
+        u32assert2.err=ERR_PROC_THRESHOLD_NOT_U32
+        u32gt assertz.err=ERR_PROC_THRESHOLD_EXCEEDS_NUM_APPROVERS
+        # => [proc_index, num_approvers]
+
+        dup neq.0
+        # => [should_continue, proc_index, num_approvers]
+    end
+
+    drop drop
+    # => []
+end
+
+# Internal storage helper used by the public `update_procedure_threshold`
+# entrypoint after it receives direct stack arguments.
+proc set_procedure_threshold(proc_threshold: u32, proc_root: BeWord)
+    exec.get_threshold_and_num_approvers
+    # => [threshold, num_approvers, proc_threshold, PROC_ROOT]
+
+    drop
+    # => [num_approvers, proc_threshold, PROC_ROOT]
+
+    dup.1 swap
+    # => [num_approvers, proc_threshold, proc_threshold, PROC_ROOT]
+
+    u32assert2.err=ERR_NUM_APPROVERS_OR_PROC_THRESHOLD_NOT_U32
+    u32gt assertz.err=ERR_PROC_THRESHOLD_EXCEEDS_NUM_APPROVERS
+    # => [proc_threshold, PROC_ROOT]
+
+    push.0.0.0
+    swapw
+    # => [PROC_ROOT, PROC_THRESHOLD_WORD]
+
+    push.PROC_THRESHOLD_ROOTS_SLOT[0..2]
+    # => [proc_roots_slot_prefix, proc_roots_slot_suffix, PROC_ROOT, PROC_THRESHOLD_WORD]
+
+    exec.native_account::set_map_item
+    # => [OLD_VALUE]
+
+    dropw
+    # => []
+end
+
 #! Update threshold config and add / remove approvers
 #!
 #! Inputs:
@@ -180,6 +265,12 @@ pub proc update_signers_and_threshold(multisig_config_hash: BeWord)
     # make sure that threshold or num_approvers are not zero
     eq.0 assertz.err=ERR_ZERO_IN_MULTISIG_CONFIG
     eq.0 assertz.err=ERR_ZERO_IN_MULTISIG_CONFIG
+    # => [MULTISIG_CONFIG, pad(12)]
+
+    loc_load.0
+    # => [num_approvers, MULTISIG_CONFIG, pad(12)]
+
+    exec.assert_proc_thresholds_lte_num_approvers
     # => [MULTISIG_CONFIG, pad(12)]
 
     push.THRESHOLD_CONFIG_SLOT[0..2]
@@ -234,6 +325,17 @@ pub proc update_signers_and_threshold(multisig_config_hash: BeWord)
 
     exec.cleanup_pubkey_mapping
     # => [pad(12)]
+end
+
+#! Update or clear the threshold override for a specific procedure.
+#!
+#! Inputs:
+#!   Operand stack: [proc_threshold, PROC_ROOT]
+#! Outputs:
+#!   Operand stack: []
+#! Invocation: call
+pub proc update_procedure_threshold(proc_threshold: u32, proc_root: BeWord)
+    exec.set_procedure_threshold
 end
 
 # Computes the effective transaction threshold based on called procedures and per-procedure

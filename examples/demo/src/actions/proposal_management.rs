@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use miden_multisig_client::{
-    ensure_hex_prefix, word_from_hex, Asset, ExportedProposal, NoteId, TransactionType,
+    ensure_hex_prefix, word_from_hex, Asset, ExportedProposal, NoteId, ProcedureName,
+    TransactionType,
 };
 use miden_protocol::account::AccountId;
 use rustyline::DefaultEditor;
@@ -110,6 +111,7 @@ async fn action_create_proposal(
     println!("    [3] Transfer assets (P2ID)");
     println!("    [4] Consume notes");
     println!("    [5] Switch PSM provider");
+    println!("    [6] Update procedure threshold override");
     println!("    [b] Back");
     println!();
 
@@ -121,6 +123,7 @@ async fn action_create_proposal(
         "3" => prompt_p2id(state, editor)?,
         "4" => prompt_consume_notes(state, editor).await?,
         "5" => prompt_switch_psm(state, editor)?,
+        "6" => prompt_update_procedure_threshold(state, editor)?,
         "b" | "B" => return Ok(()),
         _ => return Err("Invalid choice".to_string()),
     };
@@ -1036,6 +1039,59 @@ fn prompt_switch_psm(
     }
 
     Ok(TransactionType::switch_psm(new_endpoint, new_commitment))
+}
+
+fn prompt_update_procedure_threshold(
+    state: &SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<TransactionType, String> {
+    let client = state.get_client()?;
+    let account = client
+        .account()
+        .ok_or_else(|| "No account loaded".to_string())?;
+    let num_signers = account.cosigner_commitments().len() as u32;
+
+    println!("\nAvailable procedures:");
+    for (idx, procedure) in ProcedureName::all().iter().enumerate() {
+        let current = account
+            .procedure_threshold(*procedure)
+            .map_err(|e| format!("Failed to read procedure threshold: {}", e))?;
+        match current {
+            Some(threshold) => println!("  [{}] {} (current override: {})", idx + 1, procedure, threshold),
+            None => println!("  [{}] {} (current override: none)", idx + 1, procedure),
+        }
+    }
+
+    let choice = prompt_input(editor, "\nSelect procedure: ")?;
+    let idx: usize = choice.trim().parse().map_err(|_| "Invalid selection".to_string())?;
+    if idx == 0 || idx > ProcedureName::all().len() {
+        return Err("Invalid selection".to_string());
+    }
+
+    let procedure = ProcedureName::all()[idx - 1];
+    let threshold_input = prompt_input(
+        editor,
+        &format!(
+            "  New threshold override for {} (0 clears, max {}): ",
+            procedure, num_signers
+        ),
+    )?;
+    let new_threshold: u32 = threshold_input
+        .trim()
+        .parse()
+        .map_err(|_| "Invalid threshold".to_string())?;
+
+    if new_threshold > num_signers {
+        return Err(format!(
+            "Threshold override {} exceeds number of signers {}",
+            new_threshold, num_signers
+        ));
+    }
+
+    Ok(TransactionType::update_procedure_threshold(
+        procedure,
+        new_threshold,
+    ))
 }
 
 /// Print details of an exported proposal.

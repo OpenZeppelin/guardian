@@ -61,6 +61,11 @@ vi.mock('./transaction.js', () => ({
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
     configHash: { toHex: () => '0x' + 'e'.repeat(64) },
   }),
+  buildUpdateProcedureThresholdTransactionRequest: vi.fn().mockResolvedValue({
+    request: {},
+    salt: { toHex: () => '0x' + 'd'.repeat(64) },
+    configHash: { toHex: () => '0x' + 'e'.repeat(64) },
+  }),
   buildUpdatePsmTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
@@ -1118,6 +1123,66 @@ describe('Multisig', () => {
       await expect(
         multisig.createSwitchPsmProposal('http://new-psm.com', '0x' + '1'.repeat(64))
       ).rejects.toThrow('Refusing to use PSM endpoint');
+    });
+  });
+
+  describe('createUpdateProcedureThresholdProposal', () => {
+    it('should create procedure-threshold update proposals', async () => {
+      const { buildUpdateProcedureThresholdTransactionRequest, executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'update_procedure_threshold',
+            target_threshold: 1,
+            target_procedure: 'send_asset',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, 1);
+
+      expect(buildUpdateProcedureThresholdTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        'send_asset',
+        1,
+      );
+      expect(proposal.metadata.proposalType).toBe('update_procedure_threshold');
+      if (proposal.metadata.proposalType === 'update_procedure_threshold') {
+        expect(proposal.metadata.targetProcedure).toBe('send_asset');
+        expect(proposal.metadata.targetThreshold).toBe(1);
+      }
     });
   });
 

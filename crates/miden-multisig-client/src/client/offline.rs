@@ -49,6 +49,8 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
         let current_threshold = account.threshold()?;
+        let signatures_required =
+            account.effective_threshold_for_transaction(&transaction_type)? as usize;
 
         // Generate salt for replay protection
         let salt = crate::transaction::generate_salt();
@@ -72,6 +74,27 @@ impl MultisigClient {
                     salt_hex: Some(salt_hex.clone()),
                     new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(new_commitment)),
                     new_psm_endpoint: Some(new_endpoint.clone()),
+                    ..Default::default()
+                };
+
+                (tx_request, metadata)
+            }
+            TransactionType::UpdateProcedureThreshold {
+                procedure,
+                new_threshold,
+            } => {
+                let (tx_request, _) =
+                    crate::transaction::build_update_procedure_threshold_transaction_request(
+                        *procedure,
+                        *new_threshold,
+                        salt,
+                        std::iter::empty(),
+                    )?;
+
+                let metadata = ExportedMetadata {
+                    salt_hex: Some(salt_hex.clone()),
+                    new_threshold: Some(*new_threshold as u64),
+                    target_procedure: Some(procedure.to_string()),
                     ..Default::default()
                 };
 
@@ -240,6 +263,7 @@ impl MultisigClient {
             TransactionType::AddCosigner { .. } => "AddCosigner",
             TransactionType::RemoveCosigner { .. } => "RemoveCosigner",
             TransactionType::SwitchPsm { .. } => "SwitchPsm",
+            TransactionType::UpdateProcedureThreshold { .. } => "UpdateProcedureThreshold",
             TransactionType::UpdateSigners { .. } => "UpdateSigners",
         };
 
@@ -255,7 +279,7 @@ impl MultisigClient {
                 signer_commitment: self.signer.commitment_hex(),
                 signature: signature_hex,
             }],
-            signatures_required: current_threshold as usize,
+            signatures_required,
             metadata,
         };
 

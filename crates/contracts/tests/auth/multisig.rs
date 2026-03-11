@@ -9,6 +9,7 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDAT
 use miden_protocol::transaction::OutputNote;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::create_p2id_note;
 use miden_testing::utils::create_spawn_note;
@@ -21,6 +22,7 @@ use rand_chacha::ChaCha20Rng;
 // Storage slot names for multisig account storage
 const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
 const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
+const PROC_THRESHOLD_ROOTS_SLOT: &str = "openzeppelin::multisig::procedure_thresholds";
 const PSM_PUBLIC_KEY_SLOT: &str = "openzeppelin::psm::public_key";
 
 // ================================================================================================
@@ -137,6 +139,31 @@ fn create_multisig_account_with_psm(
         .with_psm_enabled(psm_enabled);
 
     MultisigPsmBuilder::new(config).build_existing()
+}
+
+fn build_update_procedure_threshold_script(
+    procedure_root: Word,
+    threshold: u32,
+)
+-> anyhow::Result<miden_protocol::transaction::TransactionScript> {
+    let multisig_library = get_multisig_library()?;
+    let tx_script_code = format!(
+        r#"
+    use oz_multisig::multisig
+    begin
+        push.{procedure_root}
+        push.{threshold}
+        call.multisig::update_procedure_threshold
+        dropw
+        drop
+    end
+    "#
+    );
+
+    CodeBuilder::new()
+        .with_dynamically_linked_library(&multisig_library)?
+        .compile_tx_script(tx_script_code)
+        .map_err(Into::into)
 }
 
 // ================================================================================================
@@ -768,6 +795,136 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
         tx_context_execute_new.account_delta().nonce_delta(),
         Felt::new(1)
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multisig_update_procedure_threshold_replaces_existing_override() -> anyhow::Result<()>
+{
+    let (_secret_keys, public_keys, authenticators, _, psm_public_key, psm_authenticator) =
+        setup_keys_and_authenticators_with_psm(2, 1)?;
+
+    let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
+    let send_asset_root = BasicWallet::move_asset_to_note_digest();
+    let config = MultisigPsmConfig::new(1, signer_commitments, psm_public_key.to_commitment())
+        .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
+    let multisig_account = MultisigPsmBuilder::new(config).build_existing()?;
+
+    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
+    let salt = Word::from([Felt::new(5); 4]);
+    let tx_script = build_update_procedure_threshold_script(send_asset_root, 1)?;
+
+    let tx_context_init = mock_chain
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .tx_script(tx_script.clone())
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+    let signer_sig = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let psm_sig = psm_authenticator
+        .get_signature(psm_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    let executed_tx = mock_chain
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .tx_script(tx_script)
+        .add_signature(public_keys[0].clone().into(), msg, signer_sig)
+        .add_signature(psm_public_key.clone().into(), msg, psm_sig)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await?;
+
+    let mut updated_account = multisig_account.clone();
+    updated_account.apply_delta(executed_tx.account_delta())?;
+
+    let proc_thresholds_name = StorageSlotName::new(PROC_THRESHOLD_ROOTS_SLOT).unwrap();
+    let stored_threshold = updated_account
+        .storage()
+        .get_map_item(&proc_thresholds_name, send_asset_root)
+        .unwrap();
+
+    assert_eq!(stored_threshold[0], Felt::new(1));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override()
+-> anyhow::Result<()> {
+    let (_secret_keys, public_keys, _, _, psm_public_key, _) =
+        setup_keys_and_authenticators_with_psm(2, 1)?;
+
+    let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
+    let send_asset_root = BasicWallet::move_asset_to_note_digest();
+    let config = MultisigPsmConfig::new(1, signer_commitments, psm_public_key.to_commitment())
+        .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
+    let multisig_account = MultisigPsmBuilder::new(config).build_existing()?;
+
+    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
+    let salt = Word::from([Felt::new(6); 4]);
+
+    let new_threshold = 1u64;
+    let new_num_approvers = 1u64;
+    let mut config_and_pubkeys = vec![
+        Felt::new(new_threshold),
+        Felt::new(new_num_approvers),
+        Felt::new(0),
+        Felt::new(0),
+    ];
+    config_and_pubkeys.extend_from_slice(public_keys[0].to_commitment().as_elements());
+
+    let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys);
+    let mut advice_map = AdviceMap::default();
+    advice_map.insert(multisig_config_hash, config_and_pubkeys);
+    let advice_inputs =
+        AdviceInputs::default().with_map(advice_map.into_iter().map(|(k, v)| (k, v.to_vec())));
+
+    let multisig_library = get_multisig_library()?;
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&multisig_library)?
+        .compile_tx_script(
+            r#"
+    use oz_multisig::multisig
+    begin
+        call.multisig::update_signers_and_threshold
+    end
+    "#,
+        )?;
+
+    let result = mock_chain
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .tx_script(tx_script)
+        .tx_script_args(multisig_config_hash)
+        .extend_advice_inputs(advice_inputs)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await;
+
+    match result {
+        Err(TransactionExecutorError::TransactionProgramExecutionFailed(err)) => {
+            let err_str = format!("{err:?}");
+            assert!(
+                err_str.contains("procedure threshold exceeds number of approvers"),
+                "expected signer update to reject unreachable override, got: {err_str}"
+            );
+        }
+        Ok(_) => {
+            panic!("expected signer update to fail when an override exceeds the new signer count")
+        }
+        Err(err) => panic!("unexpected error type: {err:?}"),
+    }
 
     Ok(())
 }

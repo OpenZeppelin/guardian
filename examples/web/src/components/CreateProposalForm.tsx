@@ -11,19 +11,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { ConsumableNote, VaultBalance } from '@openzeppelin/miden-multisig-client';
+import type { ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
+import { USER_PROCEDURES } from '@/lib/procedures';
 
-type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'consume_notes' | 'p2id' | 'switch_psm';
+type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'update_procedure_threshold' | 'consume_notes' | 'p2id' | 'switch_psm';
 
 interface CreateProposalFormProps {
   currentThreshold: number;
   signerCommitments: string[];
+  procedureThresholds?: Map<ProcedureName, number>;
   creatingProposal: boolean;
   consumableNotes: ConsumableNote[];
   vaultBalances: VaultBalance[];
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
+  onCreateUpdateProcedureThreshold: (procedure: ProcedureName, threshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
   onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
@@ -32,12 +35,14 @@ interface CreateProposalFormProps {
 export function CreateProposalForm({
   currentThreshold,
   signerCommitments,
+  procedureThresholds,
   creatingProposal,
   consumableNotes,
   vaultBalances,
   onCreateAddSigner,
   onCreateRemoveSigner,
   onCreateChangeThreshold,
+  onCreateUpdateProcedureThreshold,
   onCreateConsumeNotes,
   onCreateP2id,
   onCreateSwitchPsm,
@@ -54,6 +59,10 @@ export function CreateProposalForm({
 
   // Change threshold state
   const [newThreshold, setNewThreshold] = useState(currentThreshold);
+
+  // Procedure-threshold override state
+  const [targetProcedure, setTargetProcedure] = useState<ProcedureName>('send_asset');
+  const [procedureThreshold, setProcedureThreshold] = useState('');
 
   // Consume notes state
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([]);
@@ -137,6 +146,12 @@ export function CreateProposalForm({
           onCreateChangeThreshold(newThreshold);
         }
         break;
+      case 'update_procedure_threshold':
+        if (targetProcedure && procedureThreshold !== '') {
+          onCreateUpdateProcedureThreshold(targetProcedure, Number(procedureThreshold));
+          setProcedureThreshold('');
+        }
+        break;
       case 'consume_notes':
         if (selectedNoteIds.length > 0) {
           onCreateConsumeNotes(selectedNoteIds);
@@ -173,6 +188,14 @@ export function CreateProposalForm({
         return signerToRemove.length > 0 && signerCommitments.length > 1;
       case 'change_threshold':
         return newThreshold !== currentThreshold && newThreshold >= 1 && newThreshold <= signerCommitments.length;
+      case 'update_procedure_threshold': {
+        if (!targetProcedure || procedureThreshold === '') {
+          return false;
+        }
+
+        const threshold = Number(procedureThreshold);
+        return Number.isInteger(threshold) && threshold >= 0 && threshold <= signerCommitments.length;
+      }
       case 'consume_notes':
         return selectedNoteIds.length > 0;
       case 'p2id': {
@@ -198,6 +221,8 @@ export function CreateProposalForm({
         return 'Create a proposal to remove an existing signer from the multisig.';
       case 'change_threshold':
         return 'Create a proposal to change the required signature threshold.';
+      case 'update_procedure_threshold':
+        return 'Create a proposal to set or clear a per-procedure threshold override.';
       case 'consume_notes':
         return 'Create a proposal to consume notes sent to the multisig account.';
       case 'p2id':
@@ -241,6 +266,7 @@ export function CreateProposalForm({
               <SelectItem value="add_signer">Add Signer</SelectItem>
               <SelectItem value="remove_signer">Remove Signer</SelectItem>
               <SelectItem value="change_threshold">Change Threshold</SelectItem>
+              <SelectItem value="update_procedure_threshold">Update Procedure Threshold</SelectItem>
               <SelectItem value="consume_notes">Consume Notes</SelectItem>
               <SelectItem value="p2id">Send Payment</SelectItem>
               <SelectItem value="switch_psm">Switch PSM</SelectItem>
@@ -352,6 +378,47 @@ export function CreateProposalForm({
                 Change from {currentThreshold}-of-{signerCommitments.length} to {newThreshold}-of-{signerCommitments.length}
               </p>
             )}
+          </div>
+        )}
+
+        {proposalType === 'update_procedure_threshold' && (
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label>Target Procedure</Label>
+              <Select
+                value={targetProcedure}
+                onValueChange={(value: ProcedureName) => setTargetProcedure(value)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {USER_PROCEDURES.map((procedure) => (
+                    <SelectItem key={procedure.name} value={procedure.name}>
+                      {procedure.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Override Threshold</Label>
+              <Input
+                type="number"
+                min={0}
+                max={signerCommitments.length}
+                value={procedureThreshold}
+                onChange={(e) => setProcedureThreshold(e.target.value)}
+                placeholder="0 clears the override"
+              />
+              <p className="text-xs text-muted-foreground">
+                Current override: {procedureThresholds?.get(targetProcedure) ?? 'none'}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Use 0 to clear the override. Non-zero values must be between 1 and {signerCommitments.length}.
+              </p>
+            </div>
           </div>
         )}
 

@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::payload::ProposalPayload;
+use crate::procedures::ProcedureName;
 
 /// Status of a proposal in the signing workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,10 @@ pub enum TransactionType {
         new_endpoint: String,
         new_commitment: Word,
     },
+    UpdateProcedureThreshold {
+        procedure: ProcedureName,
+        new_threshold: u32,
+    },
     UpdateSigners {
         new_threshold: u32,
         signer_commitments: Vec<Word>,
@@ -95,6 +100,14 @@ impl TransactionType {
         }
     }
 
+    /// Creates an UpdateProcedureThreshold transaction.
+    pub fn update_procedure_threshold(procedure: ProcedureName, new_threshold: u32) -> Self {
+        Self::UpdateProcedureThreshold {
+            procedure,
+            new_threshold,
+        }
+    }
+
     /// Creates an UpdateSigners transaction.
     pub fn update_signers(new_threshold: u32, signer_commitments: Vec<Word>) -> Self {
         Self::UpdateSigners {
@@ -120,6 +133,7 @@ pub struct ProposalMetadata {
 
     pub new_psm_pubkey_hex: Option<String>,
     pub new_psm_endpoint: Option<String>,
+    pub target_procedure: Option<String>,
 
     pub required_signatures: Option<usize>,
     pub signers: Vec<String>,
@@ -227,6 +241,27 @@ impl ProposalMetadata {
                 Ok(TransactionType::SwitchPsm {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
+                })
+            }
+            "update_procedure_threshold" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "update_procedure_threshold proposal requires metadata.target_threshold"
+                            .to_string(),
+                    )
+                })?;
+                let procedure_name = self.target_procedure.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "update_procedure_threshold proposal requires metadata.target_procedure"
+                            .to_string(),
+                    )
+                })?;
+                let procedure = procedure_name
+                    .parse()
+                    .map_err(MultisigError::InvalidConfig)?;
+                Ok(TransactionType::UpdateProcedureThreshold {
+                    procedure,
+                    new_threshold: threshold as u32,
                 })
             }
             "add_signer" => {
@@ -361,6 +396,7 @@ impl Proposal {
 
         let new_psm_pubkey_hex = metadata_payload.new_psm_pubkey;
         let new_psm_endpoint = metadata_payload.new_psm_endpoint;
+        let target_procedure = metadata_payload.target_procedure;
 
         let mut metadata = ProposalMetadata {
             tx_summary_json: Some(payload.tx_summary.clone()),
@@ -373,6 +409,7 @@ impl Proposal {
             note_ids_hex: note_ids_hex.clone(),
             new_psm_pubkey_hex: new_psm_pubkey_hex.clone(),
             new_psm_endpoint: new_psm_endpoint.clone(),
+            target_procedure: target_procedure.clone(),
             required_signatures: Some(required_signatures),
             signers: Vec::new(),
         };

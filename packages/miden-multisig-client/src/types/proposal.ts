@@ -1,4 +1,5 @@
 import type { ProposalType as PsmProposalType } from '@openzeppelin/psm-client';
+import type { ProcedureName } from '../procedures.js';
 export type ProposalType = Exclude<PsmProposalType, 'custom'>;
 
 export type ProposalStatus = 'pending' | 'ready' | 'finalized';
@@ -30,6 +31,12 @@ export interface SwitchPsmProposalMetadata extends BaseProposalMetadata {
   targetSignerCommitments?: string[];
 }
 
+export interface UpdateProcedureThresholdProposalMetadata extends BaseProposalMetadata {
+  proposalType: 'update_procedure_threshold';
+  targetProcedure: ProcedureName;
+  targetThreshold: number;
+}
+
 export interface ConsumeNotesProposalMetadata extends BaseProposalMetadata {
   proposalType: 'consume_notes';
   noteIds: string[];
@@ -49,6 +56,7 @@ export interface UnknownProposalMetadata extends BaseProposalMetadata {
 export type ProposalMetadata =
   | UpdateSignersProposalMetadata
   | SwitchPsmProposalMetadata
+  | UpdateProcedureThresholdProposalMetadata
   | ConsumeNotesProposalMetadata
   | P2IdProposalMetadata
   | UnknownProposalMetadata;

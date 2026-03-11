@@ -29,6 +29,8 @@ function getProposalTypeLabel(type?: ProposalType): string {
       return 'Remove Signer';
     case 'change_threshold':
       return 'Change Threshold';
+    case 'update_procedure_threshold':
+      return 'Update Procedure Threshold';
     case 'switch_psm':
       return 'Switch PSM';
     case 'consume_notes':
@@ -47,6 +49,8 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
     case 'remove_signer':
       return 'destructive';
     case 'change_threshold':
+      return 'secondary';
+    case 'update_procedure_threshold':
       return 'secondary';
     case 'switch_psm':
       return 'secondary';

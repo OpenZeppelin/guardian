@@ -31,6 +31,7 @@ interface MultisigDashboardProps {
   onCreateAddSigner: (commitment: string, increaseThreshold: boolean) => void;
   onCreateRemoveSigner: (signerToRemove: string, newThreshold?: number) => void;
   onCreateChangeThreshold: (newThreshold: number) => void;
+  onCreateUpdateProcedureThreshold: (procedure: ProcedureName, threshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
   onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
@@ -64,6 +65,7 @@ export function MultisigDashboard({
   onCreateAddSigner,
   onCreateRemoveSigner,
   onCreateChangeThreshold,
+  onCreateUpdateProcedureThreshold,
   onCreateConsumeNotes,
   onCreateP2id,
   onCreateSwitchPsm,
@@ -194,12 +196,14 @@ export function MultisigDashboard({
       <CreateProposalForm
         currentThreshold={multisig.threshold}
         signerCommitments={multisig.signerCommitments}
+        procedureThresholds={procedureThresholds}
         creatingProposal={creatingProposal}
         consumableNotes={consumableNotes}
         vaultBalances={vaultBalances}
         onCreateAddSigner={onCreateAddSigner}
         onCreateRemoveSigner={onCreateRemoveSigner}
         onCreateChangeThreshold={onCreateChangeThreshold}
+        onCreateUpdateProcedureThreshold={onCreateUpdateProcedureThreshold}
         onCreateConsumeNotes={onCreateConsumeNotes}
         onCreateP2id={onCreateP2id}
         onCreateSwitchPsm={onCreateSwitchPsm}

@@ -68,7 +68,8 @@ export interface CreateAccountResult {
 export type TransactionType =
   | { type: 'p2id'; recipient: string; faucetId: string; amount: bigint }
   | { type: 'consumeNotes'; noteIds: string[] }
-  | { type: 'updateSigners'; newThreshold: number; newSignerCommitments: string[] };
+  | { type: 'updateSigners'; newThreshold: number; newSignerCommitments: string[] }
+  | { type: 'updateProcedureThreshold'; procedure: ProcedureName; threshold: number };
 
 export interface NoteAsset {
   faucetId: string;

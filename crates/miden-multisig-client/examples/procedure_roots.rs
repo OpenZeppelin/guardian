@@ -6,102 +6,141 @@
 //! Run with:
 //! ```sh
 //! cargo run --example procedure_roots
+//! cargo run --example procedure_roots -- --json
 //! ```
+
+use std::env;
 
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::wallets::BasicWallet;
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+struct ProcedureRootRecord {
+    name: &'static str,
+    component: &'static str,
+    index: usize,
+    rust_hex: String,
+    typescript_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProcedureRootOutput {
+    component_order: [&'static str; 3],
+    procedure_roots: Vec<ProcedureRootRecord>,
+}
+
+fn word_to_rust_hex(word: &Word) -> String {
+    word.iter()
+        .rev()
+        .map(|felt| format!("{:016x}", felt.as_int()))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn word_to_typescript_hex(word: &Word) -> String {
+    let bytes: Vec<u8> = word
+        .iter()
+        .flat_map(|felt| felt.as_int().to_le_bytes())
+        .collect();
+    hex::encode(bytes)
+}
+
+fn procedure_name_and_component(
+    idx: usize,
+    root_word: Word,
+    receive_asset: Word,
+    send_asset: Word,
+) -> (&'static str, &'static str) {
+    if root_word == receive_asset {
+        ("receive_asset", "BasicWallet")
+    } else if root_word == send_asset {
+        ("send_asset", "BasicWallet")
+    } else {
+        match idx {
+            0 => ("update_signers", "Multisig"),
+            1 => ("update_procedure_threshold", "Multisig"),
+            2 => ("auth_tx", "Multisig"),
+            3 => ("update_psm", "PSM"),
+            4 => ("verify_psm", "PSM"),
+            _ => ("unknown", "unknown"),
+        }
+    }
+}
+
+fn mock_commitment(seed: u64) -> Word {
+    Word::from([
+        Felt::new(seed),
+        Felt::new(seed + 1),
+        Felt::new(seed + 2),
+        Felt::new(seed + 3),
+    ])
+}
 
 fn main() {
-    // Helper to format Word as hex (big-endian)
-    fn word_to_hex(word: &Word) -> String {
-        word.iter()
-            .rev()
-            .map(|felt| format!("{:016x}", felt.as_int()))
-            .collect::<Vec<_>>()
-            .join("")
-    }
-
-    // Create a mock commitment for testing
-    fn mock_commitment(seed: u64) -> Word {
-        Word::from([
-            Felt::new(seed),
-            Felt::new(seed + 1),
-            Felt::new(seed + 2),
-            Felt::new(seed + 3),
-        ])
-    }
-
-    println!("\n=== PROCEDURE ROOTS ===\n");
-
-    // BasicWallet procedure roots (compile-time constants from miden_standards)
     let receive_asset = BasicWallet::receive_asset_digest();
     let send_asset = BasicWallet::move_asset_to_note_digest();
 
-    println!("BasicWallet procedures (from miden_standards):");
-    println!("  receive_asset: 0x{}", word_to_hex(&receive_asset));
-    println!("  send_asset:    0x{}", word_to_hex(&send_asset));
-
-    // Build a test account to extract component procedure roots
     let config = MultisigPsmConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
-
     let account = MultisigPsmBuilder::new(config)
         .with_seed([42u8; 32])
         .build()
         .expect("Failed to build account");
 
-    // Get all procedures from account code
+    let procedure_roots: Vec<ProcedureRootRecord> = account
+        .code()
+        .procedures()
+        .iter()
+        .enumerate()
+        .map(|(idx, procedure)| {
+            let root_word: Word = *procedure.mast_root();
+            let (name, component) =
+                procedure_name_and_component(idx, root_word, receive_asset, send_asset);
+
+            ProcedureRootRecord {
+                name,
+                component,
+                index: idx,
+                rust_hex: format!("0x{}", word_to_rust_hex(&root_word)),
+                typescript_hex: format!("0x{}", word_to_typescript_hex(&root_word)),
+            }
+        })
+        .collect();
+
+    if env::args().any(|arg| arg == "--json") {
+        let output = ProcedureRootOutput {
+            component_order: ["Multisig (auth)", "PSM", "BasicWallet"],
+            procedure_roots,
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).expect("procedure root json serialization")
+        );
+        return;
+    }
+
+    println!("\n=== PROCEDURE ROOTS ===\n");
+    println!("BasicWallet procedures (from miden_standards):");
+    println!("  receive_asset: {}", procedure_roots[6].rust_hex);
+    println!("  send_asset:    {}", procedure_roots[5].rust_hex);
+
     println!("\nAll account procedures (ordered by component):");
     println!("  Component order: Multisig (auth) -> PSM -> BasicWallet\n");
 
-    let code = account.code();
-    for (idx, procedure) in code.procedures().iter().enumerate() {
-        let root = procedure.mast_root();
-        let root_word: Word = *root;
-
-        // Match against known BasicWallet roots to identify them
-        let name = if root_word == receive_asset {
-            "receive_asset (BasicWallet)"
-        } else if root_word == send_asset {
-            "send_asset (BasicWallet)"
-        } else {
-            match idx {
-                0 => "update_signers (Multisig)",
-                1 => "auth_tx (Multisig)",
-                2 => "update_psm (PSM)",
-                3 => "verify_psm (PSM)",
-                _ => "unknown",
-            }
-        };
-
-        println!("  [{}] 0x{}", idx, word_to_hex(&root_word));
-        println!("      -> {}", name);
+    for procedure in &procedure_roots {
+        println!("  [{}] {}", procedure.index, procedure.rust_hex);
+        println!("      -> {} ({})", procedure.name, procedure.component);
     }
 
-    println!("\n=== TYPESCRIPT/RUST CONSTANTS ===\n");
-    println!("// Copy these to procedures.ts / procedures.rs if roots change:");
-    println!();
+    println!("\n=== RUST CONSTANTS (procedures.rs) ===\n");
+    for procedure in &procedure_roots {
+        println!("  {}: '{}',", procedure.name, procedure.rust_hex);
+    }
 
-    for (idx, procedure) in code.procedures().iter().enumerate() {
-        let root = procedure.mast_root();
-        let root_word: Word = *root;
-        let hex = word_to_hex(&root_word);
-
-        let name = if root_word == receive_asset {
-            "receive_asset"
-        } else if root_word == send_asset {
-            "send_asset"
-        } else {
-            match idx {
-                0 => "update_signers",
-                1 => "auth_tx",
-                2 => "update_psm",
-                3 => "verify_psm",
-                _ => "unknown",
-            }
-        };
-
-        println!("  {}: '0x{}',", name, hex);
+    println!("\n=== TYPESCRIPT CONSTANTS (procedures.ts) ===\n");
+    for procedure in &procedure_roots {
+        println!("  {}: '{}',", procedure.name, procedure.typescript_hex);
     }
 
     println!("\n=== END ===\n");
