@@ -88,8 +88,9 @@ describe('conversion', () => {
 
     it('converts ProposalMetadata with all fields', () => {
       const server: ServerProposalMetadata = {
-        proposal_type: 'add_signer',
+        proposal_type: 'update_procedure_threshold',
         target_threshold: 2,
+        target_procedure: 'send_asset',
         signer_commitments: ['0x1', '0x2'],
         salt: '0xsalt',
         description: 'test',
@@ -104,8 +105,9 @@ describe('conversion', () => {
       const result = fromServerProposalMetadata(server);
 
       expect(result).toEqual({
-        proposalType: 'add_signer',
+        proposalType: 'update_procedure_threshold',
         targetThreshold: 2,
+        targetProcedure: 'send_asset',
         signerCommitments: ['0x1', '0x2'],
         salt: '0xsalt',
         description: 'test',
@@ -256,8 +258,9 @@ describe('conversion', () => {
 
     it('converts ProposalMetadata', () => {
       const meta: ProposalMetadata = {
-        proposalType: 'add_signer',
+        proposalType: 'update_procedure_threshold',
         targetThreshold: 2,
+        targetProcedure: 'receive_asset',
         signerCommitments: ['0x1', '0x2'],
         salt: '0xsalt',
         description: 'test',
@@ -266,8 +269,9 @@ describe('conversion', () => {
       const result = toServerProposalMetadata(meta);
 
       expect(result).toEqual({
-        proposal_type: 'add_signer',
+        proposal_type: 'update_procedure_threshold',
         target_threshold: 2,
+        target_procedure: 'receive_asset',
         signer_commitments: ['0x1', '0x2'],
         salt: '0xsalt',
         description: 'test',

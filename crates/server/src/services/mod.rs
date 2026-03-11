@@ -134,6 +134,7 @@ const VALID_PROPOSAL_TYPES: &[&str] = &[
     "add_signer",
     "remove_signer",
     "change_threshold",
+    "update_procedure_threshold",
     "switch_psm",
     "consume_notes",
     "p2id",
@@ -236,6 +237,46 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
     }
 
     Ok(Value::Object(obj))
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::normalize_payload;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn normalize_payload_accepts_update_procedure_threshold_metadata() {
+        let payload = json!({
+            "tx_summary": { "data": "dGVzdA==" },
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "update_procedure_threshold",
+                "target_threshold": 1,
+                "target_procedure": "send_asset",
+                "required_signatures": "2",
+                "description": "set override"
+            }
+        });
+
+        let normalized = normalize_payload(payload).expect("payload should normalize");
+        let metadata = normalized
+            .get("metadata")
+            .and_then(Value::as_object)
+            .expect("metadata should be an object");
+
+        assert_eq!(
+            metadata.get("proposal_type").and_then(Value::as_str),
+            Some("update_procedure_threshold")
+        );
+        assert_eq!(
+            metadata.get("target_procedure").and_then(Value::as_str),
+            Some("send_asset")
+        );
+        assert_eq!(
+            metadata.get("required_signatures").and_then(Value::as_u64),
+            Some(2)
+        );
+    }
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]

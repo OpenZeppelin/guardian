@@ -121,6 +121,20 @@ pub async fn build_final_transaction_request(
                 signature_advice,
             )
         }
+        TransactionType::UpdateProcedureThreshold {
+            procedure,
+            new_threshold,
+        } => {
+            let (tx_request, _) =
+                crate::transaction::build_update_procedure_threshold_transaction_request(
+                    *procedure,
+                    *new_threshold,
+                    salt,
+                    signature_advice,
+                )?;
+
+            Ok(tx_request)
+        }
         TransactionType::AddCosigner { .. }
         | TransactionType::RemoveCosigner { .. }
         | TransactionType::UpdateSigners { .. } => {

@@ -47,7 +47,8 @@ impl MultisigClient {
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
-        let current_threshold = account.threshold()?;
+        let signatures_required =
+            account.effective_threshold_for_transaction(&transaction_type)? as usize;
 
         let salt = crate::transaction::generate_salt();
         let (new_endpoint, new_commitment) = match &transaction_type {
@@ -71,6 +72,7 @@ impl MultisigClient {
             std::iter::empty(),
         )?;
         let metadata = ExportedMetadata {
+            proposal_type: "switch_psm".to_string(),
             salt_hex: Some(crate::transaction::word_to_hex(&salt)),
             new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
             new_psm_endpoint: Some(new_endpoint),
@@ -104,7 +106,7 @@ impl MultisigClient {
                 signer_commitment: self.signer.commitment_hex(),
                 signature: signature_hex,
             }],
-            signatures_required: current_threshold as usize,
+            signatures_required,
             metadata,
         };
 

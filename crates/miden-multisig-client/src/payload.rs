@@ -6,6 +6,7 @@ use private_state_manager_shared::{DeltaSignature, ProposalSignature, ToJson};
 use serde::{Deserialize, Serialize};
 
 use crate::keystore::Signer;
+use crate::procedures::ProcedureName;
 
 /// Metadata for multisig transaction proposals.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -44,6 +45,9 @@ pub struct ProposalMetadataPayload {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_endpoint: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_procedure: Option<String>,
 }
 
 /// Complete payload for a multisig transaction proposal.
@@ -169,6 +173,23 @@ impl ProposalPayload {
             proposal_type: "switch_psm".to_string(),
             new_psm_pubkey: Some(new_psm_pubkey),
             new_psm_endpoint: Some(new_psm_endpoint),
+            salt: Some(salt),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Sets the metadata for procedure-threshold override updates.
+    pub fn with_procedure_threshold_metadata(
+        mut self,
+        procedure: ProcedureName,
+        new_threshold: u64,
+        salt: String,
+    ) -> Self {
+        self.metadata = Some(ProposalMetadataPayload {
+            proposal_type: "update_procedure_threshold".to_string(),
+            target_threshold: Some(new_threshold),
+            target_procedure: Some(procedure.to_string()),
             salt: Some(salt),
             ..Default::default()
         });

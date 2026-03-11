@@ -1,5 +1,6 @@
 import type { ProposalMetadata as PsmProposalMetadata } from '@openzeppelin/psm-client';
 import type { ProposalMetadata } from '../types.js';
+import { isProcedureName } from '../procedures.js';
 
 export class ProposalMetadataCodec {
   static toPsm(metadata: ProposalMetadata): PsmProposalMetadata {
@@ -30,6 +31,12 @@ export class ProposalMetadataCodec {
           signerCommitments: metadata.targetSignerCommitments,
           newPsmPubkey: metadata.newPsmPubkey,
           newPsmEndpoint: metadata.newPsmEndpoint,
+        };
+      case 'update_procedure_threshold':
+        return {
+          ...base,
+          targetThreshold: metadata.targetThreshold,
+          targetProcedure: metadata.targetProcedure,
         };
       case 'add_signer':
       case 'remove_signer':
@@ -88,6 +95,19 @@ export class ProposalMetadataCodec {
           targetThreshold: psm.targetThreshold,
           targetSignerCommitments: psm.signerCommitments,
         };
+      case 'update_procedure_threshold':
+        if (psm.targetThreshold === undefined || !psm.targetProcedure) {
+          throw new Error('update_procedure_threshold proposal is missing required metadata fields');
+        }
+        if (!isProcedureName(psm.targetProcedure)) {
+          throw new Error(`unknown target procedure: ${psm.targetProcedure}`);
+        }
+        return {
+          ...base,
+          proposalType: 'update_procedure_threshold',
+          targetProcedure: psm.targetProcedure,
+          targetThreshold: psm.targetThreshold,
+        };
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold':
@@ -121,6 +141,11 @@ export class ProposalMetadataCodec {
       case 'switch_psm':
         if (!metadata.newPsmPubkey || !metadata.newPsmEndpoint) {
           throw new Error('switch_psm proposal metadata is incomplete');
+        }
+        return metadata;
+      case 'update_procedure_threshold':
+        if (!metadata.targetProcedure || metadata.targetThreshold === undefined) {
+          throw new Error('update_procedure_threshold proposal metadata is incomplete');
         }
         return metadata;
       case 'consume_notes':

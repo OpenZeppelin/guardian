@@ -51,6 +51,7 @@ export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from
 export {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
+  buildUpdateProcedureThresholdTransactionRequest,
   buildUpdatePsmTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,

@@ -7,6 +7,7 @@ import {
   type AccountState,
   type DetectedMultisigConfig,
   type Proposal,
+  type ProcedureName,
 } from '@openzeppelin/miden-multisig-client';
 import { PsmHttpError } from '@openzeppelin/psm-client';
 
@@ -36,6 +37,7 @@ import {
   createAddSignerProposal,
   createRemoveSignerProposal,
   createChangeThresholdProposal,
+  createUpdateProcedureThresholdProposal,
   createConsumeNotesProposal,
   createP2idProposal,
   createSwitchPsmProposal,
@@ -425,6 +427,37 @@ export default function App() {
     }
   };
 
+  const handleCreateUpdateProcedureThresholdProposal = async (
+    procedure: ProcedureName,
+    threshold: number,
+  ) => {
+    if (!multisig) return;
+
+    setCreatingProposal(true);
+    setError(null);
+    setPendingCandidateWarning(null);
+    try {
+      const { proposals } = await createUpdateProcedureThresholdProposal(
+        multisig,
+        procedure,
+        threshold,
+      );
+      setProposals(proposals);
+      toast.success('Procedure threshold proposal created');
+    } catch (err) {
+      if (isPendingCandidateError(err)) {
+        setPendingCandidateWarning(
+          'A previous transaction is still being processed on-chain. ' +
+          'Please wait for it to be confirmed before creating new proposals.'
+        );
+      } else {
+        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
+    } finally {
+      setCreatingProposal(false);
+    }
+  };
+
   // Create consume notes proposal
   const handleCreateConsumeNotesProposal = async (noteIds: string[]) => {
     if (!multisig) return;
@@ -649,6 +682,7 @@ export default function App() {
             onCreateAddSigner={handleCreateAddSignerProposal}
             onCreateRemoveSigner={handleCreateRemoveSignerProposal}
             onCreateChangeThreshold={handleCreateChangeThresholdProposal}
+            onCreateUpdateProcedureThreshold={handleCreateUpdateProcedureThresholdProposal}
             onCreateConsumeNotes={handleCreateConsumeNotesProposal}
             onCreateP2id={handleCreateP2idProposal}
             onCreateSwitchPsm={handleCreateSwitchPsmProposal}

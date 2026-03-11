@@ -79,6 +79,9 @@ pub struct ExportedMetadata {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_psm_endpoint: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_procedure: Option<String>,
 }
 
 impl ExportedProposal {
@@ -95,6 +98,7 @@ impl ExportedProposal {
             note_ids_hex: self.metadata.note_ids_hex.clone(),
             new_psm_pubkey_hex: self.metadata.new_psm_pubkey_hex.clone(),
             new_psm_endpoint: self.metadata.new_psm_endpoint.clone(),
+            target_procedure: self.metadata.target_procedure.clone(),
             required_signatures: Some(self.signatures_required),
             signers: self
                 .signatures
@@ -207,6 +211,7 @@ impl ExportedProposal {
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
             new_psm_pubkey_hex: proposal.metadata.new_psm_pubkey_hex.clone(),
             new_psm_endpoint: proposal.metadata.new_psm_endpoint.clone(),
+            target_procedure: proposal.metadata.target_procedure.clone(),
         };
 
         Ok(Self {
@@ -396,6 +401,7 @@ mod tests {
             note_ids_hex: vec![],
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
+            target_procedure: None,
         };
 
         let json = serde_json::to_string(&meta).expect("should serialize");
@@ -863,5 +869,34 @@ mod tests {
                 .to_string()
                 .contains("cannot export signer update proposal without metadata.proposal_type")
         );
+    }
+
+    #[test]
+    fn to_proposal_uses_metadata_proposal_type_for_update_procedure_threshold() {
+        let proposal = ExportedProposal {
+            version: EXPORT_VERSION,
+            account_id: valid_account_id(),
+            id: valid_proposal_id(),
+            nonce: 1,
+            tx_summary: create_test_tx_summary().to_json(),
+            signatures: vec![],
+            signatures_required: 2,
+            metadata: ExportedMetadata {
+                proposal_type: "update_procedure_threshold".to_string(),
+                new_threshold: Some(1),
+                target_procedure: Some("send_asset".to_string()),
+                ..Default::default()
+            },
+        };
+
+        let parsed = proposal.to_proposal().expect("proposal should parse");
+
+        assert!(matches!(
+            parsed.transaction_type,
+            TransactionType::UpdateProcedureThreshold {
+                procedure: crate::ProcedureName::SendAsset,
+                new_threshold: 1
+            }
+        ));
     }
 }

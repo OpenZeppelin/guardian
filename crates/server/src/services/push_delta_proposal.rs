@@ -654,7 +654,7 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex],
+            vec![test_commitment_hex.clone()],
         ))));
 
         let mut pending = Vec::new();
@@ -674,7 +674,12 @@ mod tests {
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex.clone()]
+            }
         });
 
         let params = PushDeltaProposalParams {
@@ -709,7 +714,7 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex],
+            vec![test_commitment_hex.clone()],
         ))));
 
         let mut pending = Vec::new();
@@ -730,7 +735,12 @@ mod tests {
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": []
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [test_commitment_hex.clone()]
+            }
         });
 
         let params = PushDeltaProposalParams {

@@ -1,33 +1,22 @@
 /**
- * known procedure roots for multisig accounts.
- *
- * IMPORTANT: These values are extracted from the TypeScript SDK's compiled MASM output,
- * NOT from the Rust crate. The SDK may compile MASM differently, resulting in different
- * procedure roots. Use the debug output from builder.ts to update these values.
- */
-
-/**
  * Static mapping of procedure names to their deterministic roots.
  *
- * Component ordering: Multisig (auth) -> PSM -> BasicWallet
+ * These values use the Miden SDK `Word.toHex()` / `Word.fromHex()` encoding, which is the
+ * representation used by the TypeScript client when writing and reading storage map keys.
+ *
+ * Source of truth:
+ * `cargo run --quiet --example procedure_roots -p miden-multisig-client -- --json`
+ *
+ * Note: the Rust example also prints `rust_hex` values for `procedures.rs`. Those are a different
+ * human-readable encoding and should not be copied into this table.
  */
 export const PROCEDURE_ROOTS = {
-  // Multisig component procedures
-  /** Update signer list and threshold configuration */
-  update_signers: '0x53d0ad381a193de0cf6af3730141e498274103dfc3b8c8e7367bd49d4a66c72b',
-  /** Authenticate transaction with multisig (Falcon512) */
-  auth_tx: '0x474c613b38001cc36d68557e9d881495d6a461a9027033445c7672c586509026',
-
-  // PSM component procedures
-  /** Update PSM public key */
-  update_psm: '0xb103236807e5bf09c27efc2c5287ca8b03ab9efc1d852b62ebd31f5f1927ec26',
-  /** Verify PSM signature */
-  verify_psm: '0x30727fc23c6105a678fea8b4c1920f35fa85c03f16a0cf98372c8f56701f8a87',
-
-  // BasicWallet procedures
-  /** Send assets from account (move_asset_to_note) */
+  update_signers: '0x29d26091f4e8a13727e7937a62ad412a392e984eaa1fcce93439a95ab5e003ee',
+  update_procedure_threshold: '0xcda1f9120a3ab2948d5cdc6b4b2982571c04e3f6af787a6d6b2f88eeedd872d7',
+  auth_tx: '0x611abcd570631ad98842cb6f0ef891fe8f9ee508b3245c55a5531d5a8f7fdca9',
+  update_psm: '0x35498ce6e3bc24ae0e0094dc54a09b8b2bbcbc28607f86ba25684cd4a2d8f55b',
+  verify_psm: '0x2f1b90e9d89f1a541dd8621444edba9d3e0a66ef54147ebf59bf964969b9dfd1',
   send_asset: '0x0e406b067ed2bcd7de745ca6517f519fd1a9be245f913347ac673ca1db30c1d6',
-  /** Receive assets into account */
   receive_asset: '0x6f4bdbdc4b13d7ed933d590d88ac9dfb98020c9e917697845b5e169395b76a01',
 } as const;
 
@@ -40,12 +29,12 @@ export type ProcedureName = keyof typeof PROCEDURE_ROOTS;
  * Get the procedure root for a given procedure name.
  *
  * @param name - The procedure name
- * @returns The procedure root as a hex string
+ * @returns The procedure root as a hex string in SDK `Word.toHex()` format
  *
  * @example
  * ```typescript
- * const root = getProcedureRoot('receive_asset');
- * // '0x6f4bdbdc4b13d7ed933d590d88ac9dfb98020c9e917697845b5e169395b76a01'
+ * const root = getProcedureRoot('send_asset');
+ * // '0x0e406b067ed2bcd7de745ca6517f519fd1a9be245f913347ac673ca1db30c1d6'
  * ```
  */
 export function getProcedureRoot(name: ProcedureName): string {

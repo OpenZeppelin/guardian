@@ -19,8 +19,8 @@ use crate::utils::hex_body_eq;
 
 use super::{
     build_consume_notes_transaction_request, build_p2id_transaction_request,
-    build_update_psm_transaction_request, build_update_signers_transaction_request,
-    execute_for_summary, generate_salt, word_to_hex,
+    build_update_procedure_threshold_transaction_request, build_update_psm_transaction_request,
+    build_update_signers_transaction_request, execute_for_summary, generate_salt, word_to_hex,
 };
 
 /// Builder for creating multisig transaction proposals.
@@ -101,6 +101,20 @@ impl ProposalBuilder {
                 )
                 .await
             }
+            TransactionType::UpdateProcedureThreshold {
+                procedure,
+                new_threshold,
+            } => {
+                self.build_update_procedure_threshold(
+                    miden_client,
+                    psm_client,
+                    account,
+                    procedure,
+                    new_threshold,
+                    signer,
+                )
+                .await
+            }
             TransactionType::UpdateSigners { .. } => Err(MultisigError::InvalidConfig(
                 "Use AddCosigner or RemoveCosigner for signer updates".to_string(),
             )),
@@ -171,6 +185,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
+            target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![signer.commitment_hex()],
         };
@@ -272,6 +287,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
+            target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![signer.commitment_hex()],
         };
@@ -357,6 +373,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
+            target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![signer.commitment_hex()],
         };
@@ -440,6 +457,7 @@ impl ProposalBuilder {
             note_ids_hex: note_ids_hex.clone(),
             new_psm_pubkey_hex: None,
             new_psm_endpoint: None,
+            target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![signer.commitment_hex()],
         };
@@ -511,6 +529,7 @@ impl ProposalBuilder {
             note_ids_hex: Vec::new(),
             new_psm_pubkey_hex: Some(word_to_hex(&new_psm_pubkey)),
             new_psm_endpoint: Some(new_psm_endpoint.clone()),
+            target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![signer.commitment_hex()],
         };
@@ -539,6 +558,72 @@ impl ProposalBuilder {
             TransactionType::SwitchPsm {
                 new_endpoint: new_psm_endpoint,
                 new_commitment: new_psm_pubkey,
+            },
+            metadata,
+        );
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+
+        Ok(proposal)
+    }
+
+    async fn build_update_procedure_threshold(
+        &self,
+        miden_client: &mut Client<()>,
+        psm_client: &mut PsmClient,
+        account: &MultisigAccount,
+        procedure: ProcedureName,
+        new_threshold: u32,
+        signer: &dyn Signer,
+    ) -> Result<Proposal> {
+        let account_id = account.id();
+        let required_signatures = account
+            .effective_threshold_for_procedure(ProcedureName::UpdateProcedureThreshold)?
+            as usize;
+
+        let salt = generate_salt();
+        let (tx_request, _) = build_update_procedure_threshold_transaction_request(
+            procedure,
+            new_threshold,
+            salt,
+            std::iter::empty(),
+        )?;
+        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_commitment = tx_summary.to_commitment();
+
+        let metadata = ProposalMetadata {
+            tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
+            new_threshold: Some(new_threshold as u64),
+            signer_commitments_hex: Vec::new(),
+            salt_hex: Some(word_to_hex(&salt)),
+            recipient_hex: None,
+            faucet_id_hex: None,
+            amount: None,
+            note_ids_hex: Vec::new(),
+            new_psm_pubkey_hex: None,
+            new_psm_endpoint: None,
+            target_procedure: Some(procedure.to_string()),
+            required_signatures: Some(required_signatures),
+            signers: vec![signer.commitment_hex()],
+        };
+
+        let payload = ProposalPayload::new(&tx_summary)
+            .with_signature(signer, tx_commitment)
+            .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
+            .with_required_signatures(required_signatures);
+
+        let nonce = account.nonce() + 1;
+        let response = psm_client
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
+            .await
+            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+
+        let proposal = Proposal::new(
+            tx_summary,
+            nonce,
+            TransactionType::UpdateProcedureThreshold {
+                procedure,
+                new_threshold,
             },
             metadata,
         );
