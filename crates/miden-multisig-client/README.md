@@ -107,7 +107,7 @@ let tx = TransactionType::switch_psm("https://psm.example.com", new_psm_commitme
 let mut exported = client.create_proposal_offline(tx).await?;
 
 // Cosigner signs locally
-client.sign_imported_proposal(&mut exported)?;
+client.sign_imported_proposal(&mut exported).await?;
 std::fs::write("proposal_signed.json", exported.to_json()?)?;
 
 // Once enough signatures are collected offline:
@@ -141,4 +141,3 @@ let spendable = client.list_consumable_notes_filtered(filter).await?;
  Run the Terminal UI demo in [`examples/demo`](../../examples/demo/), which exercises the same APIs for account management, note listing, proposal signing, and offline export/import.
 
 Contributions and bug reports are welcome!
-

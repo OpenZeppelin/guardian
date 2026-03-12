@@ -560,9 +560,10 @@ async fn action_import_and_work(
 
     print_waiting("Importing proposal");
 
-    let client = state.get_client()?;
+    let client = state.get_client_mut()?;
     let proposal = client
         .import_proposal(Path::new(&path))
+        .await
         .map_err(|e| format!("Failed to import: {}", e))?;
 
     print_success("Proposal imported successfully!");
@@ -618,9 +619,10 @@ async fn sign_imported_proposal(
 
     print_waiting("Signing proposal");
 
-    let client = state.get_client()?;
+    let client = state.get_client_mut()?;
     client
         .sign_imported_proposal(&mut proposal)
+        .await
         .map_err(|e| format!("Failed to sign: {}", e))?;
 
     print_success("Proposal signed!");

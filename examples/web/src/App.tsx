@@ -534,11 +534,11 @@ export default function App() {
   };
 
   // Sign proposal offline and copy to clipboard
-  const handleSignProposalOffline = (proposalId: string) => {
+  const handleSignProposalOffline = async (proposalId: string) => {
     if (!multisig) return;
 
     try {
-      const { json, proposals } = signProposalOffline(multisig, proposalId);
+      const { json, proposals } = await signProposalOffline(multisig, proposalId);
       navigator.clipboard.writeText(json);
       setProposals(proposals);
       toast.success('Signed! Updated proposal JSON copied to clipboard');
@@ -553,11 +553,11 @@ export default function App() {
     setImportDialogOpen(true);
   };
 
-  const handleImportProposalSubmit = () => {
+  const handleImportProposalSubmit = async () => {
     if (!multisig || !importJson.trim()) return;
 
     try {
-      const { proposal, proposals } = importProposal(multisig, importJson.trim());
+      const { proposal, proposals } = await importProposal(multisig, importJson.trim());
       setProposals(proposals);
       setImportDialogOpen(false);
       setImportJson('');

@@ -6,8 +6,7 @@
 use std::collections::HashSet;
 
 use miden_protocol::asset::FungibleAsset;
-use miden_protocol::transaction::TransactionSummary;
-use private_state_manager_shared::{FromJson, ToJson};
+use private_state_manager_shared::ToJson;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -266,14 +265,16 @@ impl MultisigClient {
     /// # Example
     ///
     /// ```ignore
-    /// let mut proposal = client.import_proposal("/tmp/proposal.json")?;
-    /// client.sign_imported_proposal(&mut proposal)?;
+    /// let mut proposal = client.import_proposal("/tmp/proposal.json").await?;
+    /// client.sign_imported_proposal(&mut proposal).await?;
     /// let json = proposal.to_json()?;
     /// std::fs::write("/tmp/proposal_signed.json", json)?;
     /// ```
-    pub fn sign_imported_proposal(&self, proposal: &mut ExportedProposal) -> Result<()> {
+    pub async fn sign_imported_proposal(&mut self, proposal: &mut ExportedProposal) -> Result<()> {
+        let bound_proposal = proposal.to_proposal()?;
+        self.verify_proposal_summary_binding(&bound_proposal)
+            .await?;
         let account = self.require_account()?;
-        proposal.validate_id_matches_summary()?;
 
         // Check if user is a cosigner
         let user_commitment = self.key_manager.commitment();
@@ -290,13 +291,8 @@ impl MultisigClient {
             return Err(MultisigError::AlreadySigned);
         }
 
-        // Parse the transaction summary to get the commitment
-        let tx_summary = TransactionSummary::from_json(&proposal.tx_summary).map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
-        })?;
-
         // Sign the transaction summary commitment
-        let tx_commitment = tx_summary.to_commitment();
+        let tx_commitment = bound_proposal.tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
         // Add signature to proposal
@@ -319,14 +315,12 @@ impl MultisigClient {
     /// # Example
     ///
     /// ```ignore
-    /// let proposal = client.import_proposal("/tmp/proposal_final.json")?;
+    /// let proposal = client.import_proposal("/tmp/proposal_final.json").await?;
     /// client.execute_imported_proposal(&proposal).await?;
     /// ```
     pub async fn execute_imported_proposal(&mut self, exported: &ExportedProposal) -> Result<()> {
         // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
-        exported.validate_id_matches_summary()?;
-
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
@@ -341,9 +335,7 @@ impl MultisigClient {
         // Parse the proposal
         let proposal = exported.to_proposal()?;
         self.verify_proposal_summary_binding(&proposal).await?;
-        let tx_summary = TransactionSummary::from_json(&exported.tx_summary).map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
-        })?;
+        let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();
 
         // Convert exported signatures to SignatureInput format

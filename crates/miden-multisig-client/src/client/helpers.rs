@@ -1,11 +1,15 @@
 //! Internal helper functions for PSM client interactions.
 
 use miden_client::account::Account;
+use miden_client::transaction::{TransactionRequest, TransactionSummary};
+use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
-use private_state_manager_client::{Auth, FalconRpoSigner, PsmClient};
+use miden_protocol::utils::serde::Serializable;
+use private_state_manager_client::{Auth, DeltaObject, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::hex::FromHex;
+use private_state_manager_shared::{FromJson, ToJson};
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
@@ -49,17 +53,13 @@ impl MultisigClient {
         &mut self,
         account: &MultisigAccount,
         nonce: u64,
-        tx_summary: &miden_client::transaction::TransactionSummary,
-        tx_summary_commitment: miden_protocol::Word,
+        tx_summary: &TransactionSummary,
+        tx_summary_commitment: Word,
     ) -> Result<crate::execution::SignatureAdvice> {
-        use private_state_manager_shared::ToJson;
-
         let account_id = account.id();
         let prev_commitment = format!(
             "0x{}",
-            hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
-                &account.commitment(),
-            ))
+            hex::encode(Serializable::to_bytes(&account.commitment()))
         );
 
         // Push delta to PSM to get acknowledgment signature
@@ -144,13 +144,40 @@ impl MultisigClient {
         Ok(())
     }
 
+    pub(crate) fn proposal_id_from_delta_payload(delta_payload: &str) -> Result<String> {
+        let payload_json: serde_json::Value = serde_json::from_str(delta_payload).map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to parse proposal delta payload: {}", e))
+        })?;
+        let tx_summary_json = payload_json.get("tx_summary").ok_or_else(|| {
+            MultisigError::InvalidConfig("missing tx_summary in delta payload".to_string())
+        })?;
+        let tx_summary = TransactionSummary::from_json(tx_summary_json).map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
+        })?;
+        Ok(word_to_hex(&tx_summary.to_commitment()))
+    }
+
+    pub(crate) fn find_raw_proposal_by_id<'a>(
+        proposals: &'a [DeltaObject],
+        proposal_id: &str,
+    ) -> Result<Option<&'a DeltaObject>> {
+        for proposal in proposals {
+            let candidate_id = Self::proposal_id_from_delta_payload(&proposal.delta_payload)?;
+            if candidate_id.eq_ignore_ascii_case(proposal_id) {
+                return Ok(Some(proposal));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Finalizes a transaction by executing it on-chain and updating local state.
     ///
     /// This handles the common post-execution logic for all proposal types.
     pub(crate) async fn finalize_transaction(
         &mut self,
         account_id: AccountId,
-        tx_request: miden_client::transaction::TransactionRequest,
+        tx_request: TransactionRequest,
         transaction_type: &TransactionType,
     ) -> Result<()> {
         // Capture the new PSM endpoint if this is a SwitchPsm transaction
@@ -253,5 +280,61 @@ impl MultisigClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::account::AccountId;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, FieldElement, Word};
+    use private_state_manager_shared::FromJson;
+    use private_state_manager_shared::ToJson;
+
+    use super::MultisigClient;
+
+    fn tx_summary_json() -> serde_json::Value {
+        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .unwrap();
+        TransactionSummary::new(
+            delta,
+            InputNotes::new(Vec::new()).unwrap(),
+            OutputNotes::new(Vec::new()).unwrap(),
+            Word::default(),
+        )
+        .to_json()
+    }
+
+    #[test]
+    fn proposal_id_from_delta_payload_returns_tx_summary_commitment() {
+        let tx_summary = TransactionSummary::from_json(&tx_summary_json()).unwrap();
+        let expected_id = crate::transaction::word_to_hex(&tx_summary.to_commitment());
+        let delta_payload = serde_json::json!({
+            "tx_summary": tx_summary_json(),
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": []
+            }
+        })
+        .to_string();
+
+        let proposal_id = MultisigClient::proposal_id_from_delta_payload(&delta_payload).unwrap();
+
+        assert_eq!(proposal_id, expected_id);
+    }
+
+    #[test]
+    fn proposal_id_from_delta_payload_rejects_missing_tx_summary() {
+        let result = MultisigClient::proposal_id_from_delta_payload("{\"metadata\":{}}");
+
+        assert!(result.is_err());
     }
 }

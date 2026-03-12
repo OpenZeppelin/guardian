@@ -35,15 +35,14 @@ impl MultisigClient {
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
 
-        // Parse all proposals, propagating any parse errors rather than silently dropping them.
-        // This ensures malformed PSM payloads are surfaced for debugging.
-        let proposals: Result<Vec<Proposal>> = response
-            .proposals
-            .iter()
-            .map(|delta| Proposal::from(delta, current_threshold, &current_signers))
-            .collect();
+        let mut proposals = Vec::with_capacity(response.proposals.len());
+        for delta in &response.proposals {
+            let proposal = Proposal::from(delta, current_threshold, &current_signers)?;
+            self.verify_proposal_summary_binding(&proposal).await?;
+            proposals.push(proposal);
+        }
 
-        proposals
+        Ok(proposals)
     }
 
     /// Signs a proposal with the user's key.
@@ -62,8 +61,6 @@ impl MultisigClient {
             .iter()
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
-
-        self.verify_proposal_summary_binding(proposal).await?;
 
         // Check if already signed
         if proposal.has_signed(&self.key_manager.commitment_hex()) {
@@ -127,8 +124,6 @@ impl MultisigClient {
             .find(|p| p.id == proposal_id)
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
-        self.verify_proposal_summary_binding(&proposal).await?;
-
         // Verify proposal is ready (has enough signatures)
         if !proposal.status.is_ready() {
             let (collected, required) = proposal.signature_counts();
@@ -139,11 +134,9 @@ impl MultisigClient {
         }
 
         // Find the raw delta object to get signatures
-        let raw_proposal = proposals_response
-            .proposals
-            .iter()
-            .find(|p| p.nonce == proposal.nonce)
-            .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
+        let raw_proposal =
+            Self::find_raw_proposal_by_id(&proposals_response.proposals, &proposal.id)?
+                .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
