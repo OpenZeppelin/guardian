@@ -5,6 +5,9 @@ aws_region = "us-east-1"
 # After pushing to ECR, set this to the full image URI
 server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest"
 
+# Optional: Miden network for the deployed PSM server
+# server_network_type = "MidenTestnet"
+
 # Optional: VPC and subnet configuration
 # If not specified, uses the default VPC and all its subnets
 # vpc_id     = "vpc-xxxxxxxx"

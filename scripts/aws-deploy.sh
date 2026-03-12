@@ -22,6 +22,7 @@ set -e
 #   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
 #   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
+#   PSM_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   IMPORT_EXISTING       - Import existing AWS resources (true/false)
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
@@ -33,6 +34,7 @@ ROUTE53_ZONE_ID="${ROUTE53_ZONE_ID-}"
 CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
 CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
+PSM_NETWORK_TYPE="${PSM_NETWORK_TYPE:-MidenTestnet}"
 IMPORT_EXISTING="${IMPORT_EXISTING:-false}"
 
 RED='\033[0;31m'
@@ -87,6 +89,7 @@ cmd_import_existing_resources() {
   export TF_VAR_domain_name="$domain_name"
   export TF_VAR_subdomain="$subdomain"
   export TF_VAR_route53_zone_id="$route53_zone_id"
+  export TF_VAR_server_network_type="$PSM_NETWORK_TYPE"
   export TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"
   export TF_VAR_cloudflare_proxied="$CLOUDFLARE_PROXIED"
   export TF_VAR_acm_certificate_arn="$ACM_CERTIFICATE_ARN"
@@ -300,6 +303,7 @@ cmd_deploy() {
   local tf_vars=()
   tf_vars+=("-var" "aws_region=${AWS_REGION}")
   tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
+  tf_vars+=("-var" "server_network_type=${PSM_NETWORK_TYPE}")
   if [ -n "$DOMAIN_NAME" ]; then
     tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
     tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
@@ -412,6 +416,7 @@ cmd_cleanup() {
   local tf_vars=()
   tf_vars+=("-var" "aws_region=${AWS_REGION}")
   tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
+  tf_vars+=("-var" "server_network_type=${PSM_NETWORK_TYPE}")
   if [ -n "$DOMAIN_NAME" ]; then
     tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
     tf_vars+=("-var" "subdomain=${SUBDOMAIN}")

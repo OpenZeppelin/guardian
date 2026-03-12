@@ -29,6 +29,9 @@ export AWS_PROFILE=<your-profile>
 # Load environment variables
 set -a && source .env && set +a
 
+# Optional: pin the server to a specific Miden network
+export PSM_NETWORK_TYPE=MidenTestnet
+
 # Verify AWS credentials
 aws sts get-caller-identity
 
@@ -61,6 +64,9 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:late
 # postgres_db       = "psm"
 # postgres_user     = "psm"
 # postgres_password = "psm_dev_password"
+
+# Optional: Miden network for the server runtime
+# server_network_type = "MidenTestnet"
 
 # Optional: Route 53 hosted zone ID for openzeppelin.com
 # route53_zone_id = "Z1234567890ABC"

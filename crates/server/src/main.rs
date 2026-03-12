@@ -31,9 +31,11 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let network_type = NetworkType::from_env_or("PSM_NETWORK_TYPE", NetworkType::MidenTestnet);
+
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
-        .network(NetworkType::MidenDevnet)
+        .network(network_type)
         .with_canonicalization(Some(CanonicalizationConfig::new(10, 24)))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

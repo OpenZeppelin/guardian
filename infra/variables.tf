@@ -9,6 +9,12 @@ variable "server_image_uri" {
   type        = string
 }
 
+variable "server_network_type" {
+  description = "Miden network for the PSM server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
+  type        = string
+  default     = "MidenTestnet"
+}
+
 variable "vpc_id" {
   description = "VPC ID. If not specified, uses the default VPC"
   type        = string
