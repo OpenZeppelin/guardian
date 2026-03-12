@@ -35,7 +35,7 @@ locals {
   database_url = "postgres://${var.postgres_user}:${var.postgres_password}@${local.postgres_dns}:5432/${var.postgres_db}"
 
   # Custom domain configuration
-  domain_enabled    = var.domain_name != ""
-  service_fqdn      = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)
+  domain_enabled      = var.domain_name != ""
+  service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)
   acm_certificate_arn = local.domain_enabled ? var.acm_certificate_arn : ""
 }

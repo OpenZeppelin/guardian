@@ -41,15 +41,3 @@ CREATE TABLE delta_proposals (
 
 CREATE INDEX idx_proposals_account_id ON delta_proposals(account_id);
 CREATE INDEX idx_proposals_account_commitment ON delta_proposals(account_id, commitment);
-
--- Account metadata table
-CREATE TABLE account_metadata (
-    account_id VARCHAR(64) PRIMARY KEY,
-    auth JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    has_pending_candidate BOOLEAN NOT NULL DEFAULT FALSE,
-    last_auth_timestamp BIGINT
-);
-
-CREATE INDEX idx_metadata_pending ON account_metadata(has_pending_candidate) WHERE has_pending_candidate = TRUE;
