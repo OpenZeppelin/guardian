@@ -22,6 +22,16 @@ import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
 
+export function deriveP2idSerialNumber(salt: Word): Word {
+  return Rpo256.hashElements(new FeltArray([
+    ...salt.toFelts(),
+    new Felt(0n),
+    new Felt(0n),
+    new Felt(0n),
+    new Felt(0n),
+  ]));
+}
+
 function buildP2idNote(
   sender: AccountId,
   recipient: AccountId,
@@ -30,10 +40,7 @@ function buildP2idNote(
   saltHex: string,
 ): Note {
   const salt = WordType.fromHex(normalizeHexWord(saltHex));
-  const serialNum = Rpo256.hashElements(new FeltArray([
-    ...salt.toFelts(),
-    new Felt(0n),
-  ]));
+  const serialNum = deriveP2idSerialNumber(salt);
 
   const noteScript = NoteScript.p2id();
   const noteInputs = new NoteInputs(new FeltArray([
@@ -97,4 +104,3 @@ export function buildP2idTransactionRequest(
     salt: authSaltForReturn,
   };
 }
-
