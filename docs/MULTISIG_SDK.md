@@ -785,8 +785,9 @@ console.log('Notes consumed, funds now in vault');
   "account_id": "0x7925bdcc9c4df01068e79d4c94beeb",
   "id": "0xabcd1234...",
   "nonce": 5,
-  "transaction_type": "P2ID",
-  "tx_summary": { "...base64 encoded..." },
+  "tx_summary": {
+    "...": "transaction summary JSON"
+  },
   "signatures": [
     {
       "signer_commitment": "0x1234...",
@@ -795,9 +796,10 @@ console.log('Notes consumed, funds now in vault');
   ],
   "signatures_required": 2,
   "metadata": {
-    "recipient_id": "0x...",
-    "faucet_id": "0x...",
-    "amount": "1000"
+    "proposal_type": "add_signer",
+    "salt_hex": "0x...",
+    "new_threshold": 2,
+    "signer_commitments_hex": ["0x...", "0x..."]
   }
 }
 ```

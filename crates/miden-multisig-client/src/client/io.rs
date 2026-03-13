@@ -113,7 +113,7 @@ impl MultisigClient {
         }
 
         let exported =
-            ExportedProposal::from_proposal(proposal, account_id).with_signatures(signatures);
+            ExportedProposal::from_proposal(&proposal, account_id)?.with_signatures(signatures);
 
         Ok(exported)
     }

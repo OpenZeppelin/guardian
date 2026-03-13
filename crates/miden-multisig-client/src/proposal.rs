@@ -99,12 +99,24 @@ impl TransactionType {
             signer_commitments,
         }
     }
+
+    pub(crate) fn proposal_type(&self) -> Option<&'static str> {
+        match self {
+            Self::P2ID { .. } => Some("p2id"),
+            Self::ConsumeNotes { .. } => Some("consume_notes"),
+            Self::AddCosigner { .. } => Some("add_signer"),
+            Self::RemoveCosigner { .. } => Some("remove_signer"),
+            Self::SwitchPsm { .. } => Some("switch_psm"),
+            Self::UpdateSigners { .. } => None,
+        }
+    }
 }
 
 /// Metadata needed to reconstruct and finalize a proposal.
 #[derive(Debug, Clone, Default)]
 pub struct ProposalMetadata {
     pub tx_summary_json: Option<Value>,
+    pub proposal_type: Option<String>,
     pub new_threshold: Option<u64>,
     pub signer_commitments_hex: Vec<String>,
     pub salt_hex: Option<String>,
@@ -145,6 +157,125 @@ impl ProposalMetadata {
             .iter()
             .map(|hex| Ok(NoteId::from_raw(hex_to_word(hex)?)))
             .collect()
+    }
+
+    pub(crate) fn to_transaction_type(&self, proposal_type: &str) -> Result<TransactionType> {
+        if proposal_type.is_empty() {
+            return Err(MultisigError::InvalidConfig(
+                "proposal metadata.proposal_type is required".to_string(),
+            ));
+        }
+
+        match proposal_type {
+            "consume_notes" => {
+                if self.note_ids_hex.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "consume_notes proposal requires metadata.note_ids".to_string(),
+                    ));
+                }
+                Ok(TransactionType::ConsumeNotes {
+                    note_ids: self.note_ids()?,
+                })
+            }
+            "p2id" => {
+                let recipient_str = self.recipient_hex.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "p2id proposal requires metadata.recipient_id".to_string(),
+                    )
+                })?;
+                let faucet_str = self.faucet_id_hex.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "p2id proposal requires metadata.faucet_id".to_string(),
+                    )
+                })?;
+                let parsed_amount = self.amount.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "p2id proposal requires metadata.amount".to_string(),
+                    )
+                })?;
+                let recipient = AccountId::from_hex(recipient_str).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid recipient: {}", e))
+                })?;
+                let faucet_id = AccountId::from_hex(faucet_str).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e))
+                })?;
+                Ok(TransactionType::P2ID {
+                    recipient,
+                    faucet_id,
+                    amount: parsed_amount,
+                })
+            }
+            "switch_psm" => {
+                let pubkey_hex = self.new_psm_pubkey_hex.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "switch_psm proposal requires metadata.new_psm_pubkey".to_string(),
+                    )
+                })?;
+                let endpoint = self.new_psm_endpoint.as_ref().ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "switch_psm proposal requires metadata.new_psm_endpoint".to_string(),
+                    )
+                })?;
+                let new_commitment = hex_to_word(pubkey_hex)?;
+                Ok(TransactionType::SwitchPsm {
+                    new_endpoint: endpoint.clone(),
+                    new_commitment,
+                })
+            }
+            "add_signer" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "add_signer proposal requires metadata.target_threshold".to_string(),
+                    )
+                })?;
+                let proposed_signers = self.signer_commitments()?;
+                if proposed_signers.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "add_signer proposal requires metadata.signer_commitments".to_string(),
+                    ));
+                }
+                Ok(TransactionType::UpdateSigners {
+                    new_threshold: threshold as u32,
+                    signer_commitments: proposed_signers,
+                })
+            }
+            "remove_signer" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "remove_signer proposal requires metadata.target_threshold".to_string(),
+                    )
+                })?;
+                let proposed_signers = self.signer_commitments()?;
+                if proposed_signers.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "remove_signer proposal requires metadata.signer_commitments".to_string(),
+                    ));
+                }
+                Ok(TransactionType::UpdateSigners {
+                    new_threshold: threshold as u32,
+                    signer_commitments: proposed_signers,
+                })
+            }
+            "change_threshold" => {
+                let threshold = self.new_threshold.ok_or_else(|| {
+                    MultisigError::InvalidConfig(
+                        "change_threshold proposal requires metadata.target_threshold".to_string(),
+                    )
+                })?;
+                let proposed_signers = self.signer_commitments()?;
+                if proposed_signers.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "change_threshold proposal requires metadata.signer_commitments"
+                            .to_string(),
+                    ));
+                }
+                Ok(TransactionType::UpdateSigners {
+                    new_threshold: threshold as u32,
+                    signer_commitments: proposed_signers,
+                })
+            }
+            other => Err(MultisigError::UnknownTransactionType(other.to_string())),
+        }
     }
 }
 
@@ -237,8 +368,14 @@ impl Proposal {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let proposal_type = metadata_obj
+            .and_then(|m| m.get("proposal_type"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let mut metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary_json.clone()),
+            proposal_type: proposal_type.clone(),
             new_threshold,
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex,
@@ -252,41 +389,48 @@ impl Proposal {
             collected_signatures: None,
         };
 
-        let transaction_type = if !parsed_note_ids.is_empty() {
-            TransactionType::ConsumeNotes {
-                note_ids: parsed_note_ids,
-            }
-        } else if let (Some(recipient_str), Some(faucet_str), Some(amt)) =
-            (&recipient_hex, &faucet_id_hex, amount)
-        {
-            let recipient = AccountId::from_hex(recipient_str)
-                .map_err(|e| MultisigError::InvalidConfig(format!("invalid recipient: {}", e)))?;
-            let faucet_id = AccountId::from_hex(faucet_str)
-                .map_err(|e| MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e)))?;
-            TransactionType::P2ID {
-                recipient,
-                faucet_id,
-                amount: amt,
-            }
-        } else if let (Some(pubkey_hex), Some(endpoint)) = (&new_psm_pubkey_hex, &new_psm_endpoint)
-        {
-            let new_commitment = hex_to_word(pubkey_hex)?;
-            TransactionType::SwitchPsm {
-                new_endpoint: endpoint.clone(),
-                new_commitment,
-            }
-        } else if let Some(threshold) = new_threshold {
-            let proposed_signers = metadata.signer_commitments()?;
-            determine_transaction_type(
-                threshold as u32,
-                current_threshold,
-                current_signers,
-                &proposed_signers,
-            )
+        let transaction_type = if let Some(proposal_type) = metadata.proposal_type.as_deref() {
+            metadata.to_transaction_type(proposal_type)?
         } else {
-            return Err(MultisigError::UnknownTransactionType(
-                "could not determine transaction type from proposal metadata".to_string(),
-            ));
+            if !parsed_note_ids.is_empty() {
+                TransactionType::ConsumeNotes {
+                    note_ids: parsed_note_ids,
+                }
+            } else if let (Some(recipient_str), Some(faucet_str), Some(amt)) =
+                (&recipient_hex, &faucet_id_hex, amount)
+            {
+                let recipient = AccountId::from_hex(recipient_str).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid recipient: {}", e))
+                })?;
+                let faucet_id = AccountId::from_hex(faucet_str).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("invalid faucet_id: {}", e))
+                })?;
+                TransactionType::P2ID {
+                    recipient,
+                    faucet_id,
+                    amount: amt,
+                }
+            } else if let (Some(pubkey_hex), Some(endpoint)) =
+                (&new_psm_pubkey_hex, &new_psm_endpoint)
+            {
+                let new_commitment = hex_to_word(pubkey_hex)?;
+                TransactionType::SwitchPsm {
+                    new_endpoint: endpoint.clone(),
+                    new_commitment,
+                }
+            } else if let Some(threshold) = new_threshold {
+                let proposed_signers = metadata.signer_commitments()?;
+                determine_transaction_type(
+                    threshold as u32,
+                    current_threshold,
+                    current_signers,
+                    &proposed_signers,
+                )
+            } else {
+                return Err(MultisigError::UnknownTransactionType(
+                    "could not determine transaction type from proposal metadata".to_string(),
+                ));
+            }
         };
 
         let (signatures_collected, signers) = count_signatures_from_delta(delta);
@@ -331,6 +475,9 @@ impl Proposal {
             .required_signatures
             .get_or_insert(signatures_required);
         metadata.collected_signatures.get_or_insert(0);
+        if metadata.proposal_type.is_none() {
+            metadata.proposal_type = transaction_type.proposal_type().map(str::to_string);
+        }
 
         Self {
             id,
