@@ -174,6 +174,7 @@ impl ProposalBuilder {
 
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex: Some(word_to_hex(&salt)),
@@ -275,6 +276,7 @@ impl ProposalBuilder {
 
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex: Some(word_to_hex(&salt)),
@@ -360,6 +362,7 @@ impl ProposalBuilder {
         // Build proposal metadata
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
             new_threshold: None,
             signer_commitments_hex: Vec::new(),
             salt_hex: Some(word_to_hex(&salt)),
@@ -443,6 +446,7 @@ impl ProposalBuilder {
 
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
             new_threshold: None,
             signer_commitments_hex: Vec::new(),
             salt_hex: Some(word_to_hex(&salt)),
@@ -514,6 +518,7 @@ impl ProposalBuilder {
         // Build proposal metadata
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
             new_threshold: None,
             signer_commitments_hex: Vec::new(),
             salt_hex: Some(word_to_hex(&salt)),
@@ -586,6 +591,7 @@ impl ProposalBuilder {
 
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: None,
             new_threshold: Some(new_threshold as u64),
             signer_commitments_hex: Vec::new(),
             salt_hex: Some(word_to_hex(&salt)),

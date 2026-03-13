@@ -115,12 +115,25 @@ impl TransactionType {
             signer_commitments,
         }
     }
+
+    pub(crate) fn proposal_type(&self) -> Option<&'static str> {
+        match self {
+            Self::P2ID { .. } => Some("p2id"),
+            Self::ConsumeNotes { .. } => Some("consume_notes"),
+            Self::AddCosigner { .. } => Some("add_signer"),
+            Self::RemoveCosigner { .. } => Some("remove_signer"),
+            Self::SwitchPsm { .. } => Some("switch_psm"),
+            Self::UpdateProcedureThreshold { .. } => Some("update_procedure_threshold"),
+            Self::UpdateSigners { .. } => None,
+        }
+    }
 }
 
 /// Metadata needed to reconstruct and finalize a proposal.
 #[derive(Debug, Clone, Default)]
 pub struct ProposalMetadata {
     pub tx_summary_json: Option<Value>,
+    pub proposal_type: Option<String>,
     pub new_threshold: Option<u64>,
     pub signer_commitments_hex: Vec<String>,
     pub salt_hex: Option<String>,
@@ -179,7 +192,7 @@ impl ProposalMetadata {
             .collect()
     }
 
-    fn to_transaction_type(&self, proposal_type: &str) -> Result<TransactionType> {
+    pub(crate) fn to_transaction_type(&self, proposal_type: &str) -> Result<TransactionType> {
         if proposal_type.is_empty() {
             return Err(MultisigError::InvalidConfig(
                 "proposal metadata.proposal_type is required".to_string(),
@@ -400,6 +413,7 @@ impl Proposal {
 
         let mut metadata = ProposalMetadata {
             tx_summary_json: Some(payload.tx_summary.clone()),
+            proposal_type: Some(proposal_type.clone()),
             new_threshold,
             signer_commitments_hex: signer_commitments_hex.clone(),
             salt_hex,
@@ -471,6 +485,9 @@ impl Proposal {
         metadata
             .required_signatures
             .get_or_insert(signatures_required);
+        if metadata.proposal_type.is_none() {
+            metadata.proposal_type = transaction_type.proposal_type().map(str::to_string);
+        }
 
         let mut proposal = Self {
             id,

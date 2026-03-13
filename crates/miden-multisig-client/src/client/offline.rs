@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use miden_protocol::Word;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::transaction::TransactionSummary;
 use private_state_manager_shared::hex::IntoHex;
@@ -55,7 +56,6 @@ impl MultisigClient {
         // Generate salt for replay protection
         let salt = crate::transaction::generate_salt();
         let salt_hex = crate::transaction::word_to_hex(&salt);
-
         // Build transaction request based on type
         let (tx_request, metadata) = match &transaction_type {
             TransactionType::SwitchPsm {
@@ -71,6 +71,7 @@ impl MultisigClient {
                 )?;
 
                 let metadata = ExportedMetadata {
+                    proposal_type: "switch_psm".to_string(),
                     salt_hex: Some(salt_hex.clone()),
                     new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(new_commitment)),
                     new_psm_endpoint: Some(new_endpoint.clone()),
@@ -92,6 +93,7 @@ impl MultisigClient {
                     )?;
 
                 let metadata = ExportedMetadata {
+                    proposal_type: "update_procedure_threshold".to_string(),
                     salt_hex: Some(salt_hex.clone()),
                     new_threshold: Some(*new_threshold as u64),
                     target_procedure: Some(procedure.to_string()),
@@ -118,6 +120,7 @@ impl MultisigClient {
                 )?;
 
                 let metadata = ExportedMetadata {
+                    proposal_type: "p2id".to_string(),
                     salt_hex: Some(salt_hex.clone()),
                     recipient_hex: Some(recipient.to_string()),
                     faucet_id_hex: Some(faucet_id.to_string()),
@@ -138,6 +141,7 @@ impl MultisigClient {
 
                 let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
                 let metadata = ExportedMetadata {
+                    proposal_type: "consume_notes".to_string(),
                     salt_hex: Some(salt_hex.clone()),
                     note_ids_hex,
                     ..Default::default()
@@ -163,6 +167,7 @@ impl MultisigClient {
                     .collect();
 
                 let metadata = ExportedMetadata {
+                    proposal_type: "add_signer".to_string(),
                     salt_hex: Some(salt_hex.clone()),
                     new_threshold: Some(new_threshold),
                     signer_commitments_hex,
@@ -201,6 +206,7 @@ impl MultisigClient {
                     .collect();
 
                 let metadata = ExportedMetadata {
+                    proposal_type: "remove_signer".to_string(),
                     salt_hex: Some(salt_hex.clone()),
                     new_threshold: Some(new_threshold),
                     signer_commitments_hex,
@@ -213,6 +219,12 @@ impl MultisigClient {
                 new_threshold,
                 signer_commitments,
             } => {
+                let proposal_type = Self::exported_update_signers_proposal_type(
+                    &account.cosigner_commitments(),
+                    current_threshold,
+                    *new_threshold,
+                    signer_commitments,
+                )?;
                 let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
                     *new_threshold as u64,
                     signer_commitments,
@@ -226,6 +238,7 @@ impl MultisigClient {
                     .collect();
 
                 let metadata = ExportedMetadata {
+                    proposal_type,
                     salt_hex: Some(salt_hex.clone()),
                     new_threshold: Some(*new_threshold as u64),
                     signer_commitments_hex,
@@ -256,24 +269,12 @@ impl MultisigClient {
             )
         );
 
-        // Determine transaction type string
-        let tx_type_str = match &transaction_type {
-            TransactionType::P2ID { .. } => "P2ID",
-            TransactionType::ConsumeNotes { .. } => "ConsumeNotes",
-            TransactionType::AddCosigner { .. } => "AddCosigner",
-            TransactionType::RemoveCosigner { .. } => "RemoveCosigner",
-            TransactionType::SwitchPsm { .. } => "SwitchPsm",
-            TransactionType::UpdateProcedureThreshold { .. } => "UpdateProcedureThreshold",
-            TransactionType::UpdateSigners { .. } => "UpdateSigners",
-        };
-
         // Create exported proposal with our signature
         let exported = ExportedProposal {
             version: EXPORT_VERSION,
             account_id: account_id.to_string(),
             id,
             nonce: account.nonce() + 1,
-            transaction_type: tx_type_str.to_string(),
             tx_summary: tx_summary.to_json(),
             signatures: vec![ExportedSignature {
                 signer_commitment: self.signer.commitment_hex(),
@@ -284,6 +285,50 @@ impl MultisigClient {
         };
 
         Ok(exported)
+    }
+
+    fn exported_update_signers_proposal_type(
+        current_signers: &[Word],
+        current_threshold: u32,
+        new_threshold: u32,
+        new_signers: &[Word],
+    ) -> Result<String> {
+        if new_signers == current_signers {
+            return Ok("change_threshold".to_string());
+        }
+
+        if new_threshold == current_threshold
+            && new_signers.len() == current_signers.len() + 1
+            && new_signers.starts_with(current_signers)
+        {
+            return Ok("add_signer".to_string());
+        }
+
+        let expected_threshold =
+            std::cmp::min(current_threshold as usize, new_signers.len()) as u32;
+        if new_threshold == expected_threshold
+            && current_signers.len() == new_signers.len() + 1
+            && Self::is_signer_removal(current_signers, new_signers)
+        {
+            return Ok("remove_signer".to_string());
+        }
+
+        Err(MultisigError::InvalidConfig(
+            "offline export only supports signer updates that map to add_signer, remove_signer, or change_threshold"
+                .to_string(),
+        ))
+    }
+
+    fn is_signer_removal(current_signers: &[Word], new_signers: &[Word]) -> bool {
+        let mut next_new_signer = 0;
+
+        for signer in current_signers {
+            if next_new_signer < new_signers.len() && *signer == new_signers[next_new_signer] {
+                next_new_signer += 1;
+            }
+        }
+
+        next_new_signer == new_signers.len()
     }
 
     /// Signs an imported proposal locally (without PSM).
