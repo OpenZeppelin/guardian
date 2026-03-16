@@ -44,6 +44,7 @@ See the [Server README](crates/server/README.md) for detailed API documentation 
 - `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
 - `PSM_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
 - `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
+- `PSM_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
 
 ### Running
 

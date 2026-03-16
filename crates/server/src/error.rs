@@ -18,6 +18,9 @@ pub enum PsmError {
     InvalidDelta(String),
     ConflictPendingDelta,
     ConflictPendingProposal,
+    PendingProposalsLimit {
+        limit: usize,
+    },
     CommitmentMismatch {
         expected: String,
         actual: String,
@@ -67,6 +70,7 @@ impl PsmError {
             PsmError::AccountAlreadyExists(_) => StatusCode::CONFLICT,
             PsmError::ConflictPendingDelta => StatusCode::CONFLICT,
             PsmError::ConflictPendingProposal => StatusCode::CONFLICT,
+            PsmError::PendingProposalsLimit { .. } => StatusCode::CONFLICT,
             PsmError::ProposalAlreadySigned { .. } => StatusCode::CONFLICT,
             PsmError::AuthenticationFailed(_) => StatusCode::UNAUTHORIZED,
             PsmError::AuthorizationFailed(_) => StatusCode::FORBIDDEN,
@@ -93,6 +97,7 @@ impl PsmError {
             PsmError::AccountAlreadyExists(_) => tonic::Code::AlreadyExists,
             PsmError::ConflictPendingDelta => tonic::Code::FailedPrecondition,
             PsmError::ConflictPendingProposal => tonic::Code::FailedPrecondition,
+            PsmError::PendingProposalsLimit { .. } => tonic::Code::FailedPrecondition,
             PsmError::ProposalAlreadySigned { .. } => tonic::Code::AlreadyExists,
             PsmError::AuthenticationFailed(_) => tonic::Code::Unauthenticated,
             PsmError::AuthorizationFailed(_) => tonic::Code::PermissionDenied,
@@ -134,6 +139,10 @@ impl fmt::Display for PsmError {
             PsmError::ConflictPendingProposal => {
                 write!(f, "Cannot push new delta: there are pending proposals")
             }
+            PsmError::PendingProposalsLimit { limit } => write!(
+                f,
+                "Cannot push new delta proposal: maximum pending proposal limit ({limit}) reached for this account"
+            ),
             PsmError::CommitmentMismatch { expected, actual } => {
                 write!(f, "Commitment mismatch: expected {expected}, got {actual}")
             }
