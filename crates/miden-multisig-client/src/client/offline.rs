@@ -5,8 +5,6 @@
 
 use std::collections::HashSet;
 
-use miden_protocol::Word;
-use miden_protocol::asset::FungibleAsset;
 use private_state_manager_shared::ToJson;
 
 use super::MultisigClient;
@@ -18,9 +16,11 @@ use crate::proposal::TransactionType;
 impl MultisigClient {
     /// Creates a proposal offline without pushing to PSM.
     ///
-    /// Use this when PSM is unavailable or you want to share proposals via
-    /// side channels. The proposal is returned as an `ExportedProposal` that
-    /// can be serialized to JSON and shared with cosigners.
+    /// Only `SwitchPsm` transactions can be executed fully offline because
+    /// all other transaction types require a PSM acknowledgment signature.
+    ///
+    /// This returns an `ExportedProposal` that can be serialized to JSON and
+    /// shared with cosigners.
     ///
     /// The proposer's signature is automatically included in the exported proposal.
     ///
@@ -41,195 +41,44 @@ impl MultisigClient {
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<ExportedProposal> {
-        // Sync with the network before executing transaction
-        self.sync().await?;
+        self.sync_network_only().await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
         let current_threshold = account.threshold()?;
 
-        // Generate salt for replay protection
         let salt = crate::transaction::generate_salt();
-        let salt_hex = crate::transaction::word_to_hex(&salt);
-        // Build transaction request based on type
-        let (tx_request, metadata) = match &transaction_type {
+        let (new_endpoint, new_commitment) = match &transaction_type {
             TransactionType::SwitchPsm {
                 new_endpoint,
                 new_commitment,
-            } => {
-                let tx_request = crate::transaction::build_update_psm_transaction_request(
-                    *new_commitment,
-                    salt,
-                    std::iter::empty(),
-                )?;
-
-                let metadata = ExportedMetadata {
-                    proposal_type: "switch_psm".to_string(),
-                    salt_hex: Some(salt_hex.clone()),
-                    new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(new_commitment)),
-                    new_psm_endpoint: Some(new_endpoint.clone()),
-                    ..Default::default()
-                };
-
-                (tx_request, metadata)
-            }
-            TransactionType::P2ID {
-                recipient,
-                faucet_id,
-                amount,
-            } => {
-                let asset = FungibleAsset::new(*faucet_id, *amount).map_err(|e| {
-                    MultisigError::InvalidConfig(format!("failed to create asset: {}", e))
-                })?;
-
-                let tx_request = crate::transaction::build_p2id_transaction_request(
-                    account.id(),
-                    *recipient,
-                    vec![asset.into()],
-                    salt,
-                    std::iter::empty(),
-                )?;
-
-                let metadata = ExportedMetadata {
-                    proposal_type: "p2id".to_string(),
-                    salt_hex: Some(salt_hex.clone()),
-                    recipient_hex: Some(recipient.to_string()),
-                    faucet_id_hex: Some(faucet_id.to_string()),
-                    amount: Some(*amount),
-                    ..Default::default()
-                };
-
-                (tx_request, metadata)
-            }
-            TransactionType::ConsumeNotes { note_ids } => {
-                let tx_request = crate::transaction::build_consume_notes_transaction_request(
-                    &self.miden_client,
-                    note_ids.clone(),
-                    salt,
-                    std::iter::empty(),
-                )
-                .await?;
-
-                let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
-                let metadata = ExportedMetadata {
-                    proposal_type: "consume_notes".to_string(),
-                    salt_hex: Some(salt_hex.clone()),
-                    note_ids_hex,
-                    ..Default::default()
-                };
-
-                (tx_request, metadata)
-            }
-            TransactionType::AddCosigner { new_commitment } => {
-                let mut current_signers = account.cosigner_commitments();
-                current_signers.push(*new_commitment);
-                let new_threshold = current_threshold as u64;
-
-                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
-                    new_threshold,
-                    &current_signers,
-                    salt,
-                    std::iter::empty(),
-                )?;
-
-                let signer_commitments_hex: Vec<String> = current_signers
-                    .iter()
-                    .map(crate::transaction::word_to_hex)
-                    .collect();
-
-                let metadata = ExportedMetadata {
-                    proposal_type: "add_signer".to_string(),
-                    salt_hex: Some(salt_hex.clone()),
-                    new_threshold: Some(new_threshold),
-                    signer_commitments_hex,
-                    ..Default::default()
-                };
-
-                (tx_request, metadata)
-            }
-            TransactionType::RemoveCosigner { commitment } => {
-                let current_signers = account.cosigner_commitments();
-                let new_signers: Vec<_> = current_signers
-                    .iter()
-                    .filter(|&c| c != commitment)
-                    .copied()
-                    .collect();
-
-                if new_signers.len() == current_signers.len() {
-                    return Err(MultisigError::InvalidConfig(
-                        "commitment to remove not found in signers".to_string(),
-                    ));
-                }
-
-                let new_threshold =
-                    std::cmp::min(current_threshold as u64, new_signers.len() as u64);
-
-                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
-                    new_threshold,
-                    &new_signers,
-                    salt,
-                    std::iter::empty(),
-                )?;
-
-                let signer_commitments_hex: Vec<String> = new_signers
-                    .iter()
-                    .map(crate::transaction::word_to_hex)
-                    .collect();
-
-                let metadata = ExportedMetadata {
-                    proposal_type: "remove_signer".to_string(),
-                    salt_hex: Some(salt_hex.clone()),
-                    new_threshold: Some(new_threshold),
-                    signer_commitments_hex,
-                    ..Default::default()
-                };
-
-                (tx_request, metadata)
-            }
-            TransactionType::UpdateSigners {
-                new_threshold,
-                signer_commitments,
-            } => {
-                let proposal_type = Self::exported_update_signers_proposal_type(
-                    &account.cosigner_commitments(),
-                    current_threshold,
-                    *new_threshold,
-                    signer_commitments,
-                )?;
-                let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
-                    *new_threshold as u64,
-                    signer_commitments,
-                    salt,
-                    std::iter::empty(),
-                )?;
-
-                let signer_commitments_hex: Vec<String> = signer_commitments
-                    .iter()
-                    .map(crate::transaction::word_to_hex)
-                    .collect();
-
-                let metadata = ExportedMetadata {
-                    proposal_type,
-                    salt_hex: Some(salt_hex.clone()),
-                    new_threshold: Some(*new_threshold as u64),
-                    signer_commitments_hex,
-                    ..Default::default()
-                };
-
-                (tx_request, metadata)
+            } => (new_endpoint.clone(), *new_commitment),
+            _ => {
+                return Err(MultisigError::OfflineUnsupportedTransaction(
+                    transaction_type.type_name().to_string(),
+                ));
             }
         };
 
-        // Execute to get the TransactionSummary
+        let tx_request = crate::transaction::build_update_psm_transaction_request(
+            new_commitment,
+            salt,
+            std::iter::empty(),
+        )?;
+        let metadata = ExportedMetadata {
+            salt_hex: Some(crate::transaction::word_to_hex(&salt)),
+            new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
+            new_psm_endpoint: Some(new_endpoint),
+            ..Default::default()
+        };
+
         let tx_summary =
             crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
                 .await?;
 
-        // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
-        // Build the proposal ID from commitment
         let id = format!(
             "0x{}",
             hex::encode(
@@ -240,7 +89,6 @@ impl MultisigClient {
             )
         );
 
-        // Create exported proposal with our signature
         let exported = ExportedProposal {
             version: EXPORT_VERSION,
             account_id: account_id.to_string(),
@@ -258,54 +106,12 @@ impl MultisigClient {
         Ok(exported)
     }
 
-    fn exported_update_signers_proposal_type(
-        current_signers: &[Word],
-        current_threshold: u32,
-        new_threshold: u32,
-        new_signers: &[Word],
-    ) -> Result<String> {
-        if new_signers == current_signers {
-            return Ok("change_threshold".to_string());
-        }
-
-        if new_threshold == current_threshold
-            && new_signers.len() == current_signers.len() + 1
-            && new_signers.starts_with(current_signers)
-        {
-            return Ok("add_signer".to_string());
-        }
-
-        let expected_threshold =
-            std::cmp::min(current_threshold as usize, new_signers.len()) as u32;
-        if new_threshold == expected_threshold
-            && current_signers.len() == new_signers.len() + 1
-            && Self::is_signer_removal(current_signers, new_signers)
-        {
-            return Ok("remove_signer".to_string());
-        }
-
-        Err(MultisigError::InvalidConfig(
-            "offline export only supports signer updates that map to add_signer, remove_signer, or change_threshold"
-                .to_string(),
-        ))
-    }
-
-    fn is_signer_removal(current_signers: &[Word], new_signers: &[Word]) -> bool {
-        let mut next_new_signer = 0;
-
-        for signer in current_signers {
-            if next_new_signer < new_signers.len() && *signer == new_signers[next_new_signer] {
-                next_new_signer += 1;
-            }
-        }
-
-        next_new_signer == new_signers.len()
-    }
-
     /// Signs an imported proposal locally (without PSM).
     ///
     /// The signature is added directly to the proposal. After signing,
     /// export the proposal again to share with other cosigners.
+    ///
+    /// Only `SwitchPsm` proposals are supported in this mode.
     ///
     /// # Example
     ///
@@ -317,6 +123,11 @@ impl MultisigClient {
     /// ```
     pub async fn sign_imported_proposal(&mut self, proposal: &mut ExportedProposal) -> Result<()> {
         let bound_proposal = proposal.to_proposal()?;
+        if !bound_proposal.transaction_type.supports_offline_execution() {
+            return Err(MultisigError::OfflineUnsupportedTransaction(
+                bound_proposal.transaction_type.type_name().to_string(),
+            ));
+        }
         self.verify_proposal_summary_binding(&bound_proposal)
             .await?;
         let account = self.require_account()?;
@@ -335,7 +146,6 @@ impl MultisigClient {
         }) {
             return Err(MultisigError::AlreadySigned);
         }
-
         // Sign the transaction summary commitment
         let tx_commitment = bound_proposal.tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_hex(tx_commitment);
@@ -351,11 +161,10 @@ impl MultisigClient {
 
     /// Executes an imported proposal (with all signatures already collected).
     ///
-    /// This builds and submits the transaction directly to the Miden network,
-    /// bypassing PSM entirely. Use this for fully offline workflows.
+    /// This builds and submits the transaction directly to the Miden network
+    /// without contacting PSM.
     ///
-    /// **Note:** This does NOT update PSM. The proposal will remain on PSM
-    /// until it expires or is explicitly deleted.
+    /// Only `SwitchPsm` transactions are supported in this mode.
     ///
     /// # Example
     ///
@@ -364,8 +173,7 @@ impl MultisigClient {
     /// client.execute_imported_proposal(&proposal).await?;
     /// ```
     pub async fn execute_imported_proposal(&mut self, exported: &ExportedProposal) -> Result<()> {
-        // Sync with the network before executing to ensure we have latest state
-        self.sync().await?;
+        self.sync_network_only().await?;
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
@@ -379,6 +187,11 @@ impl MultisigClient {
 
         // Parse the proposal
         let proposal = exported.to_proposal()?;
+        if !proposal.transaction_type.supports_offline_execution() {
+            return Err(MultisigError::OfflineUnsupportedTransaction(
+                proposal.transaction_type.type_name().to_string(),
+            ));
+        }
         self.verify_proposal_summary_binding(&proposal).await?;
         let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();
@@ -396,41 +209,14 @@ impl MultisigClient {
         // Build signature advice from cosigner signatures
         let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
-        let mut signature_advice = collect_signature_advice(
+        let signature_advice = collect_signature_advice(
             signature_inputs,
             &required_commitments,
             tx_summary_commitment,
         )?;
 
-        // SwitchPsm does NOT require PSM signature
-        let is_switch_psm = matches!(
-            &proposal.transaction_type,
-            TransactionType::SwitchPsm { .. }
-        );
-
-        if !is_switch_psm {
-            // Get PSM ack signature and add to advice
-            let psm_advice = self
-                .get_psm_ack_signature(&account, proposal.nonce, &tx_summary, tx_summary_commitment)
-                .await?;
-            signature_advice.push(psm_advice);
-        }
-
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
-
-        // For signer-update transactions, we must propagate parse errors for signer commitments
-        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
-        let signer_commitments = if matches!(
-            &proposal.transaction_type,
-            TransactionType::AddCosigner { .. }
-                | TransactionType::RemoveCosigner { .. }
-                | TransactionType::UpdateSigners { .. }
-        ) {
-            Some(proposal.metadata.signer_commitments()?)
-        } else {
-            proposal.metadata.signer_commitments().ok()
-        };
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
@@ -438,8 +224,8 @@ impl MultisigClient {
             account.inner(),
             salt,
             signature_advice,
-            proposal.metadata.new_threshold,
-            signer_commitments.as_deref(),
+            None,
+            None,
         )
         .await?;
 

@@ -88,6 +88,10 @@ pub enum MultisigError {
     /// Invalid filter configuration.
     #[error("invalid filter: {0}")]
     InvalidFilter(String),
+
+    /// Transaction type is not supported in offline mode without PSM.
+    #[error("offline mode only supports SwitchPsm transactions, got: {0}")]
+    OfflineUnsupportedTransaction(String),
 }
 
 impl From<private_state_manager_client::ClientError> for MultisigError {

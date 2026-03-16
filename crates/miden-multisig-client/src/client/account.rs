@@ -177,33 +177,39 @@ impl MultisigClient {
     }
 
     /// Syncs state with the Miden network.
-    ///
-    /// This follows the same approach as the web client's syncState():
-    /// 1. Sync with Miden network first to ensure we have latest block headers
-    /// 2. Fetch state from PSM
-    /// 3. Compare PSM commitment with local commitment
-    /// 4. If they differ, overwrite local with PSM state
-    /// 5. If account was updated from PSM, sync with network again
     pub async fn sync(&mut self) -> Result<()> {
-        // First, sync with Miden network to get latest block headers.
-        // This is critical - without block headers, transaction execution will fail.
+        self.sync_network_state().await?;
+
+        let account_updated = self.sync_from_psm_internal().await?;
+
+        if account_updated {
+            self.sync_network_state().await?;
+        }
+
+        self.refresh_cached_account_from_store().await
+    }
+
+    /// Syncs only with the Miden network and refreshes local cached account state.
+    pub(crate) async fn sync_network_only(&mut self) -> Result<()> {
+        self.sync_network_state().await?;
+        self.refresh_cached_account_from_store().await
+    }
+
+    /// Syncs account state from PSM into the local miden-client store.
+    pub async fn sync_from_psm(&mut self) -> Result<()> {
+        self.sync_from_psm_internal().await?;
+        Ok(())
+    }
+
+    async fn sync_network_state(&mut self) -> Result<()> {
         self.miden_client
             .sync_state()
             .await
             .map_err(|e| MultisigError::MidenClient(format!("failed to sync state: {:#?}", e)))?;
+        Ok(())
+    }
 
-        // Then sync state from PSM (like web client's syncState)
-        let account_updated = self.sync_from_psm_internal().await?;
-
-        // If PSM updated our account, sync with network again to ensure
-        // block headers are consistent with the new account state.
-        if account_updated {
-            self.miden_client.sync_state().await.map_err(|e| {
-                MultisigError::MidenClient(format!("failed to sync after PSM update: {:#?}", e))
-            })?;
-        }
-
-        // Refresh cached account (commitment/nonce/etc.) from the miden-client store
+    async fn refresh_cached_account_from_store(&mut self) -> Result<()> {
         if let Some(current) = self.account.take() {
             let account_id = current.id();
             let account_record = self
@@ -219,24 +225,9 @@ impl MultisigClient {
             let account: Account = account_record.try_into().map_err(|e| {
                 MultisigError::MidenClient(format!("account record is not full: {}", e))
             })?;
-            let refreshed = MultisigAccount::new(account, &self.psm_endpoint);
-            self.account = Some(refreshed);
+            self.account = Some(MultisigAccount::new(account, &self.psm_endpoint));
         }
 
-        Ok(())
-    }
-
-    /// Syncs account state from PSM into the local miden-client store.
-    ///
-    /// This mirrors the web client's syncState() approach:
-    /// - Fetches full state from PSM
-    /// - Compares PSM commitment with local commitment
-    /// - If they differ and PSM has newer state, overwrites local with PSM state
-    /// - If local is newer (e.g., after execution before PSM canonicalizes), keeps local
-    ///
-    /// This is simpler and more robust than applying incremental deltas.
-    pub async fn sync_from_psm(&mut self) -> Result<()> {
-        self.sync_from_psm_internal().await?;
         Ok(())
     }
 

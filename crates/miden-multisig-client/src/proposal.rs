@@ -110,6 +110,28 @@ impl TransactionType {
             Self::UpdateSigners { .. } => None,
         }
     }
+
+    /// Returns a stable transaction type name for diagnostics and flow checks.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::P2ID { .. } => "P2ID",
+            Self::ConsumeNotes { .. } => "ConsumeNotes",
+            Self::AddCosigner { .. } => "AddCosigner",
+            Self::RemoveCosigner { .. } => "RemoveCosigner",
+            Self::SwitchPsm { .. } => "SwitchPsm",
+            Self::UpdateSigners { .. } => "UpdateSigners",
+        }
+    }
+
+    /// Returns true when execution can proceed without a PSM acknowledgment.
+    pub fn supports_offline_execution(&self) -> bool {
+        matches!(self, Self::SwitchPsm { .. })
+    }
+
+    /// Returns true when execution requires a PSM acknowledgment signature.
+    pub fn requires_psm_ack(&self) -> bool {
+        !self.supports_offline_execution()
+    }
 }
 
 /// Metadata needed to reconstruct and finalize a proposal.
@@ -776,6 +798,28 @@ mod tests {
                 new_threshold: threshold,
                 signer_commitments: signers
             }
+        );
+    }
+
+    #[test]
+    fn test_transaction_type_requires_psm_ack() {
+        let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let faucet_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594171").unwrap();
+
+        assert!(TransactionType::transfer(recipient, faucet_id, 1).requires_psm_ack());
+        assert!(
+            !TransactionType::switch_psm("http://new-psm.example.com", Word::default())
+                .requires_psm_ack()
+        );
+    }
+
+    #[test]
+    fn test_transaction_type_supports_offline_execution() {
+        let note_id = NoteId::from_raw(Word::default());
+        assert!(!TransactionType::consume_notes(vec![note_id]).supports_offline_execution());
+        assert!(
+            TransactionType::switch_psm("http://new-psm.example.com", Word::default())
+                .supports_offline_execution()
         );
     }
 
