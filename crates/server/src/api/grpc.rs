@@ -714,7 +714,8 @@ mod tests {
         let dummy_sig = format!("0x{}", "a".repeat(666));
         let request = state_manager::SignDeltaProposalRequest {
             account_id,
-            commitment: "nonexistent_proposal".to_string(),
+            commitment: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
             signature: Some(state_manager::ProposalSignature {
                 scheme: "falcon".to_string(),
                 signature: dummy_sig,

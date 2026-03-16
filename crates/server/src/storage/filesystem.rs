@@ -1,6 +1,7 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
+use crate::utils::normalize_commitment_hex;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -70,13 +71,27 @@ impl FilesystemService {
     }
 
     /// Get the path for a delta proposal file
-    fn get_delta_proposal_path(&self, account_id: &str, commitment: &str) -> PathBuf {
-        // Remove 0x prefix if present
-        let clean_commitment = commitment.strip_prefix("0x").unwrap_or(commitment);
-        self.app_path
-            .join(account_id)
-            .join("proposals")
-            .join(format!("{clean_commitment}.json"))
+    fn get_delta_proposal_path(
+        &self,
+        account_id: &str,
+        commitment: &str,
+    ) -> Result<PathBuf, String> {
+        let normalized_commitment =
+            normalize_commitment_hex(commitment).map_err(|e| e.to_string())?;
+        let clean_commitment = normalized_commitment
+            .strip_prefix("0x")
+            .unwrap_or(&normalized_commitment);
+        let proposals_dir = self.app_path.join(account_id).join("proposals");
+        let path = proposals_dir.join(format!("{clean_commitment}.json"));
+
+        if path.parent() != Some(proposals_dir.as_path()) {
+            return Err(
+                "Invalid commitment: resolved proposal path escapes proposals directory"
+                    .to_string(),
+            );
+        }
+
+        Ok(path)
     }
 
     async fn list_delta_filenames(&self, account_id: &str) -> Result<Vec<String>, String> {
@@ -256,7 +271,7 @@ impl StorageBackend for FilesystemService {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        let path = self.get_delta_proposal_path(&proposal.account_id, commitment);
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
 
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
@@ -287,7 +302,7 @@ impl StorageBackend for FilesystemService {
         account_id: &str,
         commitment: &str,
     ) -> Result<DeltaObject, String> {
-        let path = self.get_delta_proposal_path(account_id, commitment);
+        let path = self.get_delta_proposal_path(account_id, commitment)?;
 
         let json = fs::read_to_string(&path)
             .await
@@ -353,7 +368,7 @@ impl StorageBackend for FilesystemService {
         account_id: &str,
         commitment: &str,
     ) -> Result<(), String> {
-        let path = self.get_delta_proposal_path(account_id, commitment);
+        let path = self.get_delta_proposal_path(account_id, commitment)?;
 
         // Check if the file exists
         if !path.exists() {
@@ -592,7 +607,7 @@ mod tests {
         let account_id = "0x7bfb0f38b0fafa103f86a805594170";
 
         // Submit multiple proposals
-        let commitments = ["0xaaa", "0xbbb", "0xccc"];
+        let commitments = ["0xaaaa", "0xbbbb", "0xcccc"];
         for (i, commitment) in commitments.iter().enumerate() {
             let proposal = create_test_delta(account_id, (i + 1) as u64);
             storage
@@ -694,7 +709,7 @@ mod tests {
             .expect("Failed to create storage");
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170";
-        let commitment = "0xnonexistent";
+        let commitment = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         // Delete nonexistent proposal should succeed (no-op)
         let result = storage.delete_delta_proposal(account_id, commitment).await;
@@ -734,6 +749,24 @@ mod tests {
         assert!(result2.is_ok(), "Pull without prefix should work");
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_proposal_commitment_rejects_path_traversal() {
+        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let result = storage
+            .pull_delta_proposal(account_id, "../../other_account/proposals/abc")
+            .await;
+
+        assert!(result.is_err(), "Traversal commitment should be rejected");
+        assert!(result.unwrap_err().contains("Invalid commitment"));
+
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

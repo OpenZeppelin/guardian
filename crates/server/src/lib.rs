@@ -19,6 +19,7 @@ pub mod network;
 pub mod services;
 pub mod state_object;
 pub mod storage;
+mod utils;
 
 #[cfg(test)]
 pub mod testing;

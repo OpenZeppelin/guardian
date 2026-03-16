@@ -245,7 +245,7 @@ async fn test_sign_delta_proposal_not_found() {
     let dummy_sig = format!("0x{}", "a".repeat(666));
     let sign_body = json!({
         "account_id": account_id_hex,
-        "commitment": "nonexistent_proposal",
+        "commitment": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "signature": {
             "scheme": "falcon",
             "signature": dummy_sig
