@@ -118,7 +118,11 @@ export class Multisig {
     }
 
     const endpointClient = new PsmHttpClient(endpoint);
-    const endpointCommitment = normalizeHexWord(await endpointClient.getPubkey());
+    const fetchedPubkey = await endpointClient.getPubkey() as string | { pubkey?: string };
+    const endpointPubkey = typeof fetchedPubkey === 'string'
+      ? fetchedPubkey
+      : fetchedPubkey.pubkey ?? '';
+    const endpointCommitment = normalizeHexWord(endpointPubkey);
     const normalizedExpected = normalizeHexWord(expectedCommitment);
 
     if (endpointCommitment !== normalizedExpected) {
@@ -860,6 +864,9 @@ export class Multisig {
     if (!metadata) {
       throw new Error('Proposal missing metadata');
     }
+    if (metadata.proposalType === 'switch_psm') {
+      await this.verifyPsmEndpointCommitment(metadata.newPsmEndpoint, metadata.newPsmPubkey);
+    }
     const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
     const finalRequest = await this.buildTransactionRequestFromMetadata(
       metadata,
@@ -1157,7 +1164,6 @@ export class Multisig {
         return request;
       }
       case 'switch_psm': {
-        await this.verifyPsmEndpointCommitment(metadata.newPsmEndpoint, metadata.newPsmPubkey);
         const { request } = await buildUpdatePsmTransactionRequest(
           this.webClient,
           metadata.newPsmPubkey,

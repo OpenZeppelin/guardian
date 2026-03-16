@@ -13,7 +13,6 @@ use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
 use crate::payload::ProposalPayload;
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
-use crate::utils::hex_body_eq;
 use crate::psm_endpoint::verify_endpoint_commitment;
 use crate::utils::hex_body_eq;
 

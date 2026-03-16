@@ -10,7 +10,6 @@ use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::utils::serde::Serializable;
 use private_state_manager_client::{Auth, DeltaObject, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::hex::FromHex;
-use private_state_manager_shared::{FromJson, ToJson};
 use crate::psm_endpoint::verify_endpoint_commitment;
 use private_state_manager_shared::{FromJson, ToJson};
 
