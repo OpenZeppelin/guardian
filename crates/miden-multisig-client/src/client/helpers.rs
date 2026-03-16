@@ -10,8 +10,10 @@ use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::utils::serde::Serializable;
 use private_state_manager_client::{Auth, EcdsaSigner, FalconRpoSigner, PsmClient};
-use private_state_manager_shared::hex::FromHex;
+#[cfg(test)]
+use private_state_manager_shared::FromJson;
 use private_state_manager_shared::ToJson;
+use private_state_manager_shared::hex::FromHex;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;

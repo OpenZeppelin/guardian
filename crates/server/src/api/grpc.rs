@@ -5,8 +5,8 @@ use crate::services::{
     PushDeltaParams,
 };
 use crate::state::AppState;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use private_state_manager_shared::SignatureScheme;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code

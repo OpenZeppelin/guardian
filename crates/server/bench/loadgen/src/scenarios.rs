@@ -48,7 +48,7 @@ pub struct UserContext {
 }
 
 pub enum LoadClient {
-    Grpc(PsmClient),
+    Grpc(Box<PsmClient>),
     Http(HttpClient),
 }
 
@@ -382,7 +382,7 @@ async fn build_client(config: &RunConfig, auth: Auth) -> Result<(LoadClient, Opt
                 .await
                 .with_context(|| format!("failed to connect to {}", config.psm_endpoint))?
                 .with_auth(auth);
-            Ok((LoadClient::Grpc(client), None))
+            Ok((LoadClient::Grpc(Box::new(client)), None))
         }
         Transport::Http => Ok((
             LoadClient::Http(HttpClient {
@@ -604,7 +604,7 @@ async fn run_read_operation(
     op_index: usize,
     account_count: usize,
 ) -> Result<()> {
-    let account_id = user.accounts[op_index % account_count].account_id.clone();
+    let account_id = user.accounts[op_index % account_count].account_id;
     user.read_state(&account_id).await
 }
 
@@ -637,7 +637,7 @@ async fn run_push_state_operation(
         let nonce = account.next_nonce;
         let payload = create_delta_payload(&account.account_id, nonce)?;
         (
-            account.account_id.clone(),
+            account.account_id,
             nonce,
             account.commitment.clone(),
             payload,
@@ -670,7 +670,7 @@ async fn run_canonicalization_operation(
         let nonce = account.next_nonce;
         let payload = create_delta_payload(&account.account_id, nonce)?;
         (
-            account.account_id.clone(),
+            account.account_id,
             nonce,
             account.commitment.clone(),
             payload,

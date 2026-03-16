@@ -113,6 +113,10 @@ pub fn collect_signature_advice(
 }
 
 /// Builds the final transaction request based on transaction type.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "execution needs transaction metadata and signature scheme to stay explicit"
+)]
 pub async fn build_final_transaction_request(
     client: &Client<()>,
     transaction_type: &TransactionType,

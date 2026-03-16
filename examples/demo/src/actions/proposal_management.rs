@@ -800,11 +800,7 @@ fn prompt_remove_cosigner(
 
     println!("\nCurrent cosigners:");
     for (i, commitment) in account.cosigner_commitments_hex().iter().enumerate() {
-        println!(
-            "  [{}] {}",
-            i + 1,
-            shorten_hex(commitment)
-        );
+        println!("  [{}] {}", i + 1, shorten_hex(commitment));
     }
 
     let idx_str = prompt_input(editor, "\nSelect cosigner to remove: ")?;

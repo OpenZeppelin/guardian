@@ -140,15 +140,19 @@ mod fixtures {
         let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT).expect("invalid slot name");
 
         let mut storage_delta_1 = AccountStorageDelta::default();
-        storage_delta_1.set_map_item(
-            signer_pubkeys_name.clone(),
-            MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO]),
-            commitment_4,
-        );
-        storage_delta_1.set_item(
-            threshold_config_name.clone(),
-            MidenWord::from([Felt::new(threshold), Felt::new(4), ZERO, ZERO]),
-        );
+        storage_delta_1
+            .set_map_item(
+                signer_pubkeys_name.clone(),
+                MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO]),
+                commitment_4,
+            )
+            .expect("Failed to set signer pubkey in delta 1");
+        storage_delta_1
+            .set_item(
+                threshold_config_name.clone(),
+                MidenWord::from([Felt::new(threshold), Felt::new(4), ZERO, ZERO]),
+            )
+            .expect("Failed to set threshold config in delta 1");
 
         let delta_1 = AccountDelta::new(
             account_id,
@@ -224,15 +228,19 @@ mod fixtures {
         println!("  New signer: {}", commitment_5_hex);
 
         let mut storage_delta_2 = AccountStorageDelta::default();
-        storage_delta_2.set_map_item(
-            signer_pubkeys_name.clone(),
-            MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO]),
-            commitment_5,
-        );
-        storage_delta_2.set_item(
-            threshold_config_name.clone(),
-            MidenWord::from([Felt::new(threshold), Felt::new(5), ZERO, ZERO]),
-        );
+        storage_delta_2
+            .set_map_item(
+                signer_pubkeys_name.clone(),
+                MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO]),
+                commitment_5,
+            )
+            .expect("Failed to set signer pubkey in delta 2");
+        storage_delta_2
+            .set_item(
+                threshold_config_name.clone(),
+                MidenWord::from([Felt::new(threshold), Felt::new(5), ZERO, ZERO]),
+            )
+            .expect("Failed to set threshold config in delta 2");
 
         let delta_2 = AccountDelta::new(
             account_id,
@@ -300,10 +308,12 @@ mod fixtures {
         println!("\n🔄 Delta 3: Increase threshold to 3");
 
         let mut storage_delta_3 = AccountStorageDelta::default();
-        storage_delta_3.set_item(
-            threshold_config_name.clone(),
-            MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]),
-        );
+        storage_delta_3
+            .set_item(
+                threshold_config_name.clone(),
+                MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]),
+            )
+            .expect("Failed to set threshold config in delta 3");
 
         let delta_3 = AccountDelta::new(
             account_id,
