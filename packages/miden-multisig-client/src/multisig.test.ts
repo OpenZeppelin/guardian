@@ -1269,11 +1269,6 @@ describe('Multisig', () => {
         description: '',
       });
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockDelta,
-      });
-
       const signedDelta = {
         ...mockDelta,
         status: {
@@ -1375,19 +1370,29 @@ describe('Multisig', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          account_id: '0x' + 'f'.repeat(30),
-          nonce: 1,
-          prev_commitment: '0x' + 'b'.repeat(64),
-          delta_payload: {
-            tx_summary: { data: 'AQID' },
-            signatures: [],
-          },
-          status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposer_id: '0x' + 'c'.repeat(64),
-            cosigner_sigs: [],
-          },
+          proposals: [
+            {
+              account_id: '0x' + 'f'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  description: '',
+                  target_threshold: 1,
+                  signer_commitments: [mockSigner.commitment],
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
         }),
       });
 
