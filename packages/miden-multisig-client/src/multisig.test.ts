@@ -1465,7 +1465,7 @@ describe('Multisig', () => {
   });
 
   describe('importProposal', () => {
-    it('should reject imported signatures with non-32-byte signer IDs', () => {
+    it('should reject imported signatures with non-32-byte signer IDs', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1485,9 +1485,14 @@ describe('Multisig', () => {
             signatureHex: '0x' + 'b'.repeat(128),
           },
         ],
+        metadata: {
+          proposalType: 'add_signer',
+          targetThreshold: 1,
+          signerCommitments: ['0x' + 'a'.repeat(64)],
+        },
       };
 
-      expect(() => multisig.importProposal(JSON.stringify(exported))).toThrow(
+      await expect(multisig.importProposal(JSON.stringify(exported))).rejects.toThrow(
         'expected signerId as 32-byte hex',
       );
     });
