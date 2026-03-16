@@ -136,6 +136,14 @@ impl NetworkClient for IntegrationMockNetworkClient {
         Ok(())
     }
 
+    fn validate_psm_commitment(
+        &self,
+        _state_json: &serde_json::Value,
+        _expected_psm_commitment: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,

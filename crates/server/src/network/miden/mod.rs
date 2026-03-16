@@ -1,7 +1,7 @@
 pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
-use crate::network::miden::account_inspector::MidenAccountInspector;
+use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_PSM_PUBLIC_KEY};
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_protocol::Word;
@@ -370,6 +370,27 @@ impl NetworkClient for MidenNetworkClient {
         }
     }
 
+    fn validate_psm_commitment(
+        &self,
+        state_json: &serde_json::Value,
+        expected_psm_commitment: &str,
+    ) -> Result<(), String> {
+        let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
+
+        let actual_psm_commitment = inspector
+            .extract_psm_public_key()
+            .ok_or_else(|| format!("Missing required slot '{OZ_PSM_PUBLIC_KEY}'"))?;
+
+        if actual_psm_commitment == expected_psm_commitment {
+            Ok(())
+        } else {
+            Err(format!(
+                "Slot '{OZ_PSM_PUBLIC_KEY}' mismatch: expected {expected_psm_commitment}, got {actual_psm_commitment}"
+            ))
+        }
+    }
+
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
@@ -443,6 +464,55 @@ mod tests {
             result
                 .unwrap_err()
                 .contains("Invalid Miden account ID format")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_psm_commitment_success() {
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::from_network(network)
+            .await
+            .expect("Failed to create client");
+
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+
+        let account =
+            Account::from_json(&account_json).expect("Failed to deserialize fixture account");
+        let inspector = MidenAccountInspector::new(&account);
+        let expected_psm_commitment = inspector
+            .extract_psm_public_key()
+            .expect("Fixture must contain OpenZeppelin PSM public key slot");
+
+        let result = client.validate_psm_commitment(&account_json, &expected_psm_commitment);
+        assert!(result.is_ok(), "Expected matching PSM commitment to pass");
+    }
+
+    #[tokio::test]
+    async fn test_validate_psm_commitment_mismatch() {
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::from_network(network)
+            .await
+            .expect("Failed to create client");
+
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+
+        let result = client.validate_psm_commitment(
+            &account_json,
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        );
+        assert!(
+            result.is_err(),
+            "Expected mismatched PSM commitment to fail"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("openzeppelin::psm::public_key"),
+            "Error should mention required OpenZeppelin slot name"
         );
     }
 

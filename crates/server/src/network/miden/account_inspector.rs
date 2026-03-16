@@ -6,6 +6,7 @@ use miden_protocol::utils::Serializable;
 const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
 const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
 const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
+pub const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
 
 // Alternative slot names for miden-standards auth components
 const STD_THRESHOLD_CONFIG: &str =
@@ -150,6 +151,20 @@ impl<'a> MidenAccountInspector<'a> {
         let psm_on = Word::from([1u32, 0, 0, 0]);
         selector_value == psm_on
     }
+
+    /// Extract PSM public key commitment from the OpenZeppelin PSM public key map.
+    /// Requires the exact slot name `openzeppelin::psm::public_key`.
+    pub fn extract_psm_public_key(&self) -> Option<String> {
+        let slot_name = self.find_map_slot_name(&[OZ_PSM_PUBLIC_KEY])?;
+        let key_zero = Word::from([0u32, 0, 0, 0]);
+        let value = self.get_map_item_by_name(&slot_name, key_zero)?;
+
+        if value == Word::default() {
+            return None;
+        }
+
+        Some(format!("0x{}", hex::encode(value.to_bytes())))
+    }
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -227,6 +242,49 @@ mod tests {
         assert!(
             inspector.has_psm_auth(),
             "Fixture account should have PSM auth enabled (auth_tx_falcon512_rpo_multisig procedure)"
+        );
+    }
+
+    #[test]
+    fn test_extract_psm_public_key() {
+        let fixture_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse fixture");
+
+        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
+        let inspector = MidenAccountInspector::new(&account);
+
+        let psm_pubkey = inspector.extract_psm_public_key();
+        assert!(
+            psm_pubkey.is_some(),
+            "Expected PSM public key from openzeppelin::psm::public_key slot"
+        );
+        assert!(
+            psm_pubkey.unwrap().starts_with("0x"),
+            "PSM public key should be hex format"
+        );
+    }
+
+    #[test]
+    fn test_extract_psm_public_key_empty_value() {
+        let fixture_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse fixture");
+
+        let mut account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
+        let slot_name =
+            StorageSlotName::new(OZ_PSM_PUBLIC_KEY).expect("Failed to parse PSM public key slot");
+        let key_zero = Word::from([0u32, 0, 0, 0]);
+
+        account
+            .storage_mut()
+            .set_map_item(&slot_name, key_zero, Word::default())
+            .expect("Failed to overwrite PSM public key value");
+
+        let inspector = MidenAccountInspector::new(&account);
+        assert!(
+            inspector.extract_psm_public_key().is_none(),
+            "Expected None for empty/default PSM public key value"
         );
     }
 }
