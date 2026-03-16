@@ -1046,11 +1046,16 @@ fn prompt_switch_psm(
 /// Print details of an exported proposal.
 fn print_proposal_details(proposal: &ExportedProposal) {
     let (collected, required) = proposal.signature_counts();
+    let proposal_type = if proposal.metadata.proposal_type.is_empty() {
+        "<unknown>"
+    } else {
+        proposal.metadata.proposal_type.as_str()
+    };
 
     println!("\nProposal Details:");
     println!("  ID:           {}", shorten_hex(&proposal.id));
     println!("  Account:      {}", shorten_hex(&proposal.account_id));
-    println!("  Type:         {}", proposal.transaction_type);
+    println!("  Type:         {}", proposal_type);
     println!("  Nonce:        {}", proposal.nonce);
     println!("  Signatures:   {}/{}", collected, required);
 

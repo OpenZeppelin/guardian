@@ -58,7 +58,7 @@ impl MultisigClient {
     /// Returns an error if any proposal from PSM cannot be parsed. This ensures
     /// malformed PSM payloads are surfaced rather than silently dropped.
     pub async fn list_proposals(&mut self) -> Result<Vec<Proposal>> {
-        let account = self.require_account()?;
+        let account = self.require_account()?.clone();
         let account_id = account.id();
 
         let mut psm_client = self.create_authenticated_psm_client().await?;
@@ -75,7 +75,7 @@ impl MultisigClient {
         for delta in &response.proposals {
             let mut proposal = Proposal::from(delta, current_threshold, &current_signers)?;
             self.verify_proposal_summary_binding(&proposal).await?;
-            Self::apply_effective_threshold(account, &mut proposal)?;
+            Self::apply_effective_threshold(&account, &mut proposal)?;
             proposals.push(proposal);
         }
 
