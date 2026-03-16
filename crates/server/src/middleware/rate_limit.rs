@@ -12,10 +12,10 @@ use axum::{
 };
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     future::Future,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{Arc, RwLock},
     task::{Context, Poll},
@@ -27,6 +27,8 @@ use tower::{Layer, Service};
 const DEFAULT_BURST_PER_SEC: u32 = 10;
 /// Default sustained limit: requests per minute
 const DEFAULT_PER_MIN: u32 = 60;
+/// Environment variable for trusted reverse proxies
+const ENV_TRUSTED_PROXY_IPS: &str = "PSM_TRUSTED_PROXY_IPS";
 /// Cleanup interval for stale entries
 const CLEANUP_INTERVAL_SECS: u64 = 60;
 
@@ -37,6 +39,8 @@ pub struct RateLimitConfig {
     pub burst_per_sec: u32,
     /// Maximum requests per minute (sustained)
     pub per_min: u32,
+    /// Trusted reverse proxy source IPs allowed to provide forwarding headers
+    pub trusted_proxy_ips: HashSet<IpAddr>,
 }
 
 impl RateLimitConfig {
@@ -52,9 +56,13 @@ impl RateLimitConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_PER_MIN);
 
+        let trusted_proxy_ips =
+            parse_trusted_proxy_ips(env::var(ENV_TRUSTED_PROXY_IPS).unwrap_or_default().as_str());
+
         Self {
             burst_per_sec,
             per_min,
+            trusted_proxy_ips,
         }
     }
 
@@ -63,6 +71,7 @@ impl RateLimitConfig {
         Self {
             burst_per_sec,
             per_min,
+            trusted_proxy_ips: HashSet::new(),
         }
     }
 }
@@ -72,8 +81,18 @@ impl Default for RateLimitConfig {
         Self {
             burst_per_sec: DEFAULT_BURST_PER_SEC,
             per_min: DEFAULT_PER_MIN,
+            trusted_proxy_ips: HashSet::new(),
         }
     }
+}
+
+fn parse_trusted_proxy_ips(value: &str) -> HashSet<IpAddr> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| entry.parse::<IpAddr>().ok())
+        .collect()
 }
 
 /// Tracks request counts for a single key
@@ -234,6 +253,7 @@ impl RateLimitLayer {
         tracing::info!(
             burst_per_sec = config.burst_per_sec,
             per_min = config.per_min,
+            trusted_proxy_count = config.trusted_proxy_ips.len(),
             "Rate limiter initialized"
         );
         Self {
@@ -283,7 +303,7 @@ where
 
         Box::pin(async move {
             // Extract client IP
-            let client_ip = extract_client_ip(&req);
+            let client_ip = extract_client_ip(&req, &store.config.trusted_proxy_ips);
 
             // Extract optional account/signer for enhanced keying
             let enhanced_key = extract_enhanced_key(&req);
@@ -354,30 +374,41 @@ where
     }
 }
 
-/// Extract client IP from request, preferring forwarded headers.
-fn extract_client_ip<B>(req: &Request<B>) -> String {
-    // Prefer X-Forwarded-For (set by trusted load balancer).
-    if let Some(forwarded) = req.headers().get("x-forwarded-for")
-        && let Ok(value) = forwarded.to_str()
-        && let Some(first_ip) = value.split(',').next()
-    {
-        return first_ip.trim().to_string();
-    }
-
-    // Try X-Real-IP header (common with reverse proxies).
-    if let Some(real_ip) = req.headers().get("x-real-ip")
-        && let Ok(value) = real_ip.to_str()
-    {
-        return value.to_string();
-    }
-
-    // Fall back to connection info.
+/// Extract client IP from request, trusting forwarded headers only for trusted proxies.
+fn extract_client_ip<B>(req: &Request<B>, trusted_proxy_ips: &HashSet<IpAddr>) -> String {
     if let Some(connect_info) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        return connect_info.0.ip().to_string();
+        let peer_ip = connect_info.0.ip();
+
+        if trusted_proxy_ips.contains(&peer_ip) {
+            if let Some(ip) = extract_forwarded_for_ip(req) {
+                return ip;
+            }
+
+            if let Some(ip) = extract_real_ip(req) {
+                return ip;
+            }
+        }
+
+        return peer_ip.to_string();
     }
 
-    // Ultimate fallback
     "unknown".to_string()
+}
+
+fn extract_forwarded_for_ip<B>(req: &Request<B>) -> Option<String> {
+    let forwarded = req.headers().get("x-forwarded-for")?;
+    let value = forwarded.to_str().ok()?;
+
+    value
+        .split(',')
+        .map(str::trim)
+        .find_map(|entry| entry.parse::<IpAddr>().ok().map(|ip| ip.to_string()))
+}
+
+fn extract_real_ip<B>(req: &Request<B>) -> Option<String> {
+    let real_ip = req.headers().get("x-real-ip")?;
+    let value = real_ip.to_str().ok()?;
+    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
 }
 
 /// Extract account_id or signer pubkey for enhanced rate limit keying
@@ -411,12 +442,28 @@ fn extract_enhanced_key<B>(req: &Request<B>) -> Option<String> {
 mod tests {
     use super::*;
     use axum::http::header::HeaderValue;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn trusted_proxy_ips(entries: &[&str]) -> HashSet<IpAddr> {
+        entries
+            .iter()
+            .map(|entry| entry.parse::<IpAddr>().expect("valid IP"))
+            .collect()
+    }
+
+    fn request_with_peer_ip(peer_ip: IpAddr) -> Request<Body> {
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(peer_ip, 12345)));
+        req
+    }
 
     #[test]
     fn test_rate_limit_config_default() {
         let config = RateLimitConfig::default();
         assert_eq!(config.burst_per_sec, DEFAULT_BURST_PER_SEC);
         assert_eq!(config.per_min, DEFAULT_PER_MIN);
+        assert!(config.trusted_proxy_ips.is_empty());
     }
 
     #[test]
@@ -424,6 +471,7 @@ mod tests {
         let config = RateLimitConfig::new(5, 30);
         assert_eq!(config.burst_per_sec, 5);
         assert_eq!(config.per_min, 30);
+        assert!(config.trusted_proxy_ips.is_empty());
     }
 
     #[test]
@@ -433,11 +481,39 @@ mod tests {
         unsafe {
             env::remove_var("PSM_RATE_BURST_PER_SEC");
             env::remove_var("PSM_RATE_PER_MIN");
+            env::remove_var(ENV_TRUSTED_PROXY_IPS);
         }
 
         let config = RateLimitConfig::from_env();
         assert_eq!(config.burst_per_sec, DEFAULT_BURST_PER_SEC);
         assert_eq!(config.per_min, DEFAULT_PER_MIN);
+        assert!(config.trusted_proxy_ips.is_empty());
+    }
+
+    #[test]
+    fn test_rate_limit_config_from_env_trusted_proxies() {
+        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        unsafe {
+            env::set_var(ENV_TRUSTED_PROXY_IPS, "10.0.0.1, invalid, 2001:db8::1");
+        }
+
+        let config = RateLimitConfig::from_env();
+        assert!(
+            config
+                .trusted_proxy_ips
+                .contains(&"10.0.0.1".parse::<IpAddr>().unwrap())
+        );
+        assert!(
+            config
+                .trusted_proxy_ips
+                .contains(&"2001:db8::1".parse::<IpAddr>().unwrap())
+        );
+        assert_eq!(config.trusted_proxy_ips.len(), 2);
+
+        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        unsafe {
+            env::remove_var(ENV_TRUSTED_PROXY_IPS);
+        }
     }
 
     #[test]
@@ -586,6 +662,7 @@ mod tests {
         unsafe {
             env::remove_var("PSM_RATE_BURST_PER_SEC");
             env::remove_var("PSM_RATE_PER_MIN");
+            env::remove_var(ENV_TRUSTED_PROXY_IPS);
         }
 
         let layer = RateLimitLayer::from_env();
@@ -593,19 +670,21 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_client_ip_from_x_forwarded_for() {
-        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+    fn test_extract_client_ip_from_x_forwarded_for_trusted_proxy() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
 
         req.headers_mut()
             .insert("x-forwarded-for", HeaderValue::from_static("192.168.1.100"));
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, "192.168.1.100");
     }
 
     #[test]
-    fn test_extract_client_ip_from_x_forwarded_for_multiple() {
-        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+    fn test_extract_client_ip_from_x_forwarded_for_multiple_trusted_proxy() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
 
         // Multiple IPs - should take the first (original client)
         req.headers_mut().insert(
@@ -613,37 +692,40 @@ mod tests {
             HeaderValue::from_static("10.0.0.1, 192.168.1.1, 172.16.0.1"),
         );
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, "10.0.0.1");
     }
 
     #[test]
-    fn test_extract_client_ip_from_x_forwarded_for_with_spaces() {
-        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+    fn test_extract_client_ip_from_x_forwarded_for_with_spaces_trusted_proxy() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
 
         req.headers_mut().insert(
             "x-forwarded-for",
             HeaderValue::from_static("  203.0.113.50  , 70.41.3.18"),
         );
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, "203.0.113.50");
     }
 
     #[test]
-    fn test_extract_client_ip_from_x_real_ip() {
-        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+    fn test_extract_client_ip_from_x_real_ip_trusted_proxy() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
 
         req.headers_mut()
             .insert("x-real-ip", HeaderValue::from_static("10.20.30.40"));
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, "10.20.30.40");
     }
 
     #[test]
-    fn test_extract_client_ip_x_forwarded_for_takes_precedence() {
-        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+    fn test_extract_client_ip_x_forwarded_for_takes_precedence_for_trusted_proxy() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
 
         // Both headers present - X-Forwarded-For should take precedence
         req.headers_mut()
@@ -651,7 +733,7 @@ mod tests {
         req.headers_mut()
             .insert("x-real-ip", HeaderValue::from_static("2.2.2.2"));
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, "1.1.1.1");
     }
 
@@ -659,20 +741,44 @@ mod tests {
     fn test_extract_client_ip_fallback_to_unknown() {
         let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        // No headers, no connection info
-        let ip = extract_client_ip(&req);
+        // No headers, no connection info, no trust basis
+        let ip = extract_client_ip(&req, &HashSet::new());
         assert_eq!(ip, "unknown");
     }
 
     #[test]
-    fn test_extract_client_ip_ipv6() {
-        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+    fn test_extract_client_ip_ipv6_from_trusted_proxy_header() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
 
         req.headers_mut()
             .insert("x-forwarded-for", HeaderValue::from_static("2001:db8::1"));
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, "2001:db8::1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_ignores_spoofed_headers_from_untrusted_peer() {
+        let mut req = request_with_peer_ip(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)));
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
+
+        req.headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("192.168.1.100"));
+        req.headers_mut()
+            .insert("x-real-ip", HeaderValue::from_static("10.20.30.40"));
+
+        let ip = extract_client_ip(&req, &trusted);
+        assert_eq!(ip, "203.0.113.10");
+    }
+
+    #[test]
+    fn test_extract_client_ip_uses_peer_ip_when_trusted_proxy_has_no_headers() {
+        let req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+        let trusted = trusted_proxy_ips(&["10.10.10.10"]);
+
+        let ip = extract_client_ip(&req, &trusted);
+        assert_eq!(ip, "10.10.10.10");
     }
 
     #[test]

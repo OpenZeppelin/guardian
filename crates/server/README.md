@@ -27,6 +27,7 @@ let builder = ServerBuilder::new()
 
 - `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
 - `PSM_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
+- `PSM_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
 
 #### Request Size Limits
 
@@ -142,7 +143,33 @@ The HTTP API includes built-in rate limiting to protect against abuse. Rate limi
 - **IP-based limits**: All requests are tracked by client IP address
 - **Enhanced keying**: When `x-pubkey` header or `account_id` query parameter is present, limits are applied per IP+account/signer combination
 - **Two windows**: Burst (per second) and sustained (per minute) limits are enforced independently
-- **Proxy support**: Respects `X-Forwarded-For` and `X-Real-IP` headers for proxied requests
+- **Proxy support**: `X-Forwarded-For` and `X-Real-IP` are trusted only when the direct peer IP is listed in `PSM_TRUSTED_PROXY_IPS`, otherwise socket peer IP is used
+
+#### Proxy Trust Setup
+
+Use this rule of thumb:
+
+1. **PSM directly exposed to clients (no reverse proxy in front):**
+   - Leave `PSM_TRUSTED_PROXY_IPS` empty.
+   - PSM will ignore `X-Forwarded-For`/`X-Real-IP`.
+   - Rate limiting is enforced using the direct socket peer IP.
+
+2. **PSM behind a reverse proxy/load balancer/CDN:**
+   - Set `PSM_TRUSTED_PROXY_IPS` to the proxy IPs that connect directly to PSM.
+   - PSM will trust forwarded headers only from those IPs.
+   - Also restrict network access so only those proxy IPs can reach PSM.
+
+Examples:
+
+```bash
+# Direct deployment (safe default)
+PSM_TRUSTED_PROXY_IPS=
+
+# Behind trusted proxies
+PSM_TRUSTED_PROXY_IPS=10.0.1.10,10.0.1.11,127.0.0.1,::1
+```
+
+If PSM is behind a proxy but `PSM_TRUSTED_PROXY_IPS` is not configured, PSM will rate-limit by the proxy IP (clients may share the same limit bucket).
 
 #### Response When Limited
 
@@ -170,7 +197,7 @@ ServerBuilder::new()
     .with_body_limit(BodyLimitConfig::new(5 * 1024 * 1024))  // 5 MB
     // ...
 
-// Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN, PSM_MAX_REQUEST_BYTES)
+// Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN, PSM_TRUSTED_PROXY_IPS, PSM_MAX_REQUEST_BYTES)
 ServerBuilder::new()
     .with_rate_limit(RateLimitConfig::from_env())
     .with_body_limit(BodyLimitConfig::from_env())
