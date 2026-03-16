@@ -156,6 +156,17 @@ console.log('TX Summary:', exported.txSummaryBase64);
 console.log('Commitment to sign:', exported.commitment);
 ```
 
+### Import and Sign a Proposal Offline
+
+Imported proposals are now validated against their transaction summary before they are cached or
+signed:
+
+```typescript
+const imported = await multisig.importProposal(jsonFromCosigner);
+const signedJson = await multisig.signProposalOffline(imported.id);
+console.log(signedJson);
+```
+
 ## Transaction Utilities
 
 The package also exports utility functions for building transactions:

@@ -50,6 +50,7 @@ mod payload;
 mod procedures;
 mod proposal;
 mod transaction;
+mod utils;
 
 // Main client
 pub use builder::MultisigClientBuilder;

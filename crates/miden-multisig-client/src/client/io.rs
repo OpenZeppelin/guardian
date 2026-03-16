@@ -72,16 +72,14 @@ impl MultisigClient {
             .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
 
         // Find the raw proposal - fail if not found
-        let raw_proposal = proposals_response
-            .proposals
-            .iter()
-            .find(|p| p.nonce == proposal.nonce)
-            .ok_or_else(|| {
-                MultisigError::ProposalNotFound(format!(
-                    "raw delta not found for proposal {} (nonce {})",
-                    proposal_id, proposal.nonce
-                ))
-            })?;
+        let raw_proposal =
+            Self::find_raw_proposal_by_id(&proposals_response.proposals, &proposal.id)?
+                .ok_or_else(|| {
+                    MultisigError::ProposalNotFound(format!(
+                        "raw delta not found for proposal {} ({})",
+                        proposal_id, proposal.id
+                    ))
+                })?;
 
         // Extract signatures - fail if status structure is missing
         let status = raw_proposal.status.as_ref().ok_or_else(|| {
@@ -126,13 +124,13 @@ impl MultisigClient {
     /// # Example
     ///
     /// ```ignore
-    /// let proposal = client.import_proposal("/tmp/proposal.json")?;
+    /// let proposal = client.import_proposal("/tmp/proposal.json").await?;
     /// println!("Imported proposal: {}", proposal.id);
     /// ```
-    pub fn import_proposal(&self, path: &std::path::Path) -> Result<ExportedProposal> {
+    pub async fn import_proposal(&mut self, path: &std::path::Path) -> Result<ExportedProposal> {
         let json = std::fs::read_to_string(path)
             .map_err(|e| MultisigError::InvalidConfig(format!("failed to read file: {}", e)))?;
-        self.import_proposal_from_string(&json)
+        self.import_proposal_from_string(&json).await
     }
 
     /// Imports a proposal from a JSON string.
@@ -140,9 +138,9 @@ impl MultisigClient {
     /// # Example
     ///
     /// ```ignore
-    /// let proposal = client.import_proposal_from_string(&json)?;
+    /// let proposal = client.import_proposal_from_string(&json).await?;
     /// ```
-    pub fn import_proposal_from_string(&self, json: &str) -> Result<ExportedProposal> {
+    pub async fn import_proposal_from_string(&mut self, json: &str) -> Result<ExportedProposal> {
         let exported = ExportedProposal::from_json(json)?;
 
         // Validate account ID matches if we have an account loaded
@@ -155,6 +153,9 @@ impl MultisigClient {
                 )));
             }
         }
+
+        let proposal = exported.to_proposal()?;
+        self.verify_proposal_summary_binding(&proposal).await?;
 
         Ok(exported)
     }

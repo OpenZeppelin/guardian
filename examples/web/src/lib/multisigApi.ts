@@ -244,11 +244,11 @@ export function exportProposalToJson(
 /**
  * Sign a proposal offline and return the signed JSON.
  */
-export function signProposalOffline(
+export async function signProposalOffline(
   multisig: Multisig,
   proposalId: string,
-): { json: string; proposals: Proposal[] } {
-  const json = multisig.signProposalOffline(proposalId);
+): Promise<{ json: string; proposals: Proposal[] }> {
+  const json = await multisig.signProposalOffline(proposalId);
   const proposals = multisig.listProposals();
   return { json, proposals };
 }
@@ -256,11 +256,11 @@ export function signProposalOffline(
 /**
  * Import a proposal from JSON.
  */
-export function importProposal(
+export async function importProposal(
   multisig: Multisig,
   json: string,
-): { proposal: Proposal; proposals: Proposal[] } {
-  const proposal = multisig.importProposal(json);
+): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
+  const proposal = await multisig.importProposal(json);
   const proposals = multisig.listProposals();
   return { proposal, proposals };
 }

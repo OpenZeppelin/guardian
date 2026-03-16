@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{MultisigError, Result};
 use crate::keystore::ensure_hex_prefix;
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus};
+use crate::utils::hex_body_eq;
 
 /// Current export format version.
 pub const EXPORT_VERSION: u32 = 1;
@@ -158,7 +159,7 @@ impl ExportedProposal {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
         let expected_id = Self::expected_id(&tx_summary);
-        if !self.id.eq_ignore_ascii_case(&expected_id) {
+        if !hex_body_eq(&self.id, &expected_id) {
             return Err(MultisigError::InvalidConfig(format!(
                 "proposal id {} does not match tx_summary commitment {}",
                 self.id, expected_id
@@ -232,6 +233,7 @@ impl ExportedProposal {
         let tx_summary = TransactionSummary::from_json(&self.tx_summary).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse tx_summary: {}", e))
         })?;
+        validate_proposal_id_matches_summary(&self.id, &tx_summary)?;
 
         let _account_id = AccountId::from_hex(&self.account_id)
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid account_id: {}", e)))?;
@@ -264,6 +266,7 @@ impl ExportedProposal {
             metadata,
         })
     }
+
     /// Returns the number of signatures collected.
     pub fn signatures_collected(&self) -> usize {
         self.signatures.len()
@@ -311,7 +314,6 @@ impl ExportedProposal {
         RpoFalconSignature::from_hex(&signature_hex)
             .map_err(|e| MultisigError::Signature(format!("invalid exported signature: {}", e)))?;
 
-        // Check if already signed
         if self.signatures.iter().any(|s| {
             s.signer_commitment
                 .eq_ignore_ascii_case(&signature.signer_commitment)
@@ -349,6 +351,17 @@ impl ExportedProposal {
 
         Ok(exported)
     }
+}
+
+fn validate_proposal_id_matches_summary(id: &str, tx_summary: &TransactionSummary) -> Result<()> {
+    let expected_id = ExportedProposal::expected_id(tx_summary);
+    if !hex_body_eq(id, &expected_id) {
+        return Err(MultisigError::InvalidConfig(format!(
+            "proposal id {} does not match tx_summary commitment {}",
+            id, expected_id
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

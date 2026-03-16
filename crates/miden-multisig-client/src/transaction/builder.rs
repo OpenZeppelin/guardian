@@ -13,6 +13,7 @@ use crate::error::{MultisigError, Result};
 use crate::keystore::KeyManager;
 use crate::payload::ProposalPayload;
 use crate::proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
+use crate::utils::hex_body_eq;
 
 use super::{
     build_consume_notes_transaction_request, build_p2id_transaction_request,
@@ -185,10 +186,11 @@ impl ProposalBuilder {
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+        let proposal_id = validate_server_commitment(&response.commitment, &tx_commitment)?;
 
         // Build the Proposal
         let proposal = Proposal {
-            id: response.commitment,
+            id: proposal_id,
             nonce,
             transaction_type: TransactionType::AddCosigner { new_commitment },
             status: ProposalStatus::Pending {
@@ -288,10 +290,11 @@ impl ProposalBuilder {
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+        let proposal_id = validate_server_commitment(&response.commitment, &tx_commitment)?;
 
         // Build the Proposal
         let proposal = Proposal {
-            id: response.commitment,
+            id: proposal_id,
             nonce,
             transaction_type: TransactionType::RemoveCosigner {
                 commitment: commitment_to_remove,
@@ -379,10 +382,11 @@ impl ProposalBuilder {
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+        let proposal_id = validate_server_commitment(&response.commitment, &tx_commitment)?;
 
         // Build the Proposal
         let proposal = Proposal {
-            id: response.commitment,
+            id: proposal_id,
             nonce,
             transaction_type: TransactionType::P2ID {
                 recipient,
@@ -460,10 +464,11 @@ impl ProposalBuilder {
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+        let proposal_id = validate_server_commitment(&response.commitment, &tx_commitment)?;
 
         // Build the Proposal
         let proposal = Proposal {
-            id: response.commitment,
+            id: proposal_id,
             nonce,
             transaction_type: TransactionType::ConsumeNotes { note_ids },
             status: ProposalStatus::Pending {
@@ -536,10 +541,11 @@ impl ProposalBuilder {
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+        let proposal_id = validate_server_commitment(&response.commitment, &tx_commitment)?;
 
         // Build the Proposal
         let proposal = Proposal {
-            id: response.commitment,
+            id: proposal_id,
             nonce,
             transaction_type: TransactionType::SwitchPsm {
                 new_endpoint: new_psm_endpoint,
@@ -556,4 +562,16 @@ impl ProposalBuilder {
 
         Ok(proposal)
     }
+}
+
+fn validate_server_commitment(server_commitment: &str, tx_commitment: &Word) -> Result<String> {
+    let expected_commitment = word_to_hex(tx_commitment);
+    if !hex_body_eq(server_commitment, &expected_commitment) {
+        return Err(MultisigError::PsmServer(format!(
+            "PSM returned commitment {} but expected {} from tx_summary",
+            server_commitment, expected_commitment
+        )));
+    }
+
+    Ok(expected_commitment)
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
+import { executeForSummary } from './transaction.js';
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => ({
@@ -90,6 +91,12 @@ describe('Multisig', () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
+    vi.mocked(executeForSummary).mockResolvedValue({
+      toCommitment: () => ({
+        toHex: () => '0x' + 'c'.repeat(64),
+      }),
+      serialize: () => new Uint8Array([1, 2, 3]),
+    } as any);
 
     psm = new PsmHttpClient('http://localhost:3000');
 
@@ -394,6 +401,55 @@ describe('Multisig', () => {
 
       expect(proposals[0].status.type).toBe('ready');
     });
+
+    it('should reject proposals whose metadata does not match tx_summary', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  target_threshold: 1,
+                  signer_commitments: ['0x' + 'a'.repeat(64)],
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'f'.repeat(64),
+        }),
+      } as any);
+
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        'Invalid proposal: metadata does not match tx_summary'
+      );
+    });
   });
 
   describe('listProposals', () => {
@@ -424,7 +480,51 @@ describe('Multisig', () => {
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+
+      expect(proposal.nonce).toBe(1);
+      expect(proposal.id).toBe('0x' + 'c'.repeat(64));
+    });
+
+    it('should reject mismatched server commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
           signatures: [],
         },
         status: {
@@ -443,15 +543,63 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createProposal(1, 'AQID', {
-        proposalType: 'add_signer',
-        targetThreshold: 1,
-        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
-        description: '',
+      await expect(
+        multisig.createProposal(1, 'AQID', {
+          proposalType: 'add_signer',
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          description: '',
+        })
+      ).rejects.toThrow('Invalid proposal response: commitment does not match tx_summary');
+    });
+
+    it('should reject a response whose tx_summary does not match the provided metadata', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
       });
 
-      expect(proposal.nonce).toBe(1);
-      expect(proposal.id).toBe('0x' + 'd'.repeat(64));
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'f'.repeat(64),
+        }),
+      } as any);
+
+      await expect(
+        multisig.createProposal(1, 'AQID', {
+          proposalType: 'add_signer',
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          description: '',
+        })
+      ).rejects.toThrow('Invalid proposal: metadata does not match tx_summary');
     });
   });
 
@@ -471,7 +619,7 @@ describe('Multisig', () => {
         nonce: 1,
         prev_commitment: '0x' + 'b'.repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: 'AQID' },
           signatures: [],
         },
         status: {
@@ -486,7 +634,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -528,11 +676,143 @@ describe('Multisig', () => {
         json: async () => signedDelta,
       });
 
-      const proposalId = '0x' + 'd'.repeat(64);
+      const proposalId = '0x' + 'c'.repeat(64);
       const signedProposal = await multisig.signProposal(proposalId);
 
       expect(mockSigner.signCommitment).toHaveBeenCalledWith(proposalId);
       expect(signedProposal.signatures.length).toBe(1);
+    });
+
+    it('should reject signing when metadata does not match tx_summary', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'f'.repeat(64),
+        }),
+      } as any);
+
+      await expect(multisig.signProposal('0x' + 'c'.repeat(64))).rejects.toThrow(
+        'Invalid proposal: metadata does not match tx_summary'
+      );
+    });
+  });
+
+  describe('importProposal', () => {
+    it('should reject imported proposals whose metadata does not match tx_summary', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'f'.repeat(64),
+        }),
+      } as any);
+
+      await expect(
+        multisig.importProposal(
+          JSON.stringify({
+            accountId: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            commitment: '0x' + 'c'.repeat(64),
+            txSummaryBase64: 'AQID',
+            signatures: [],
+            metadata: {
+              proposalType: 'add_signer',
+              targetThreshold: 1,
+              targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+              description: '',
+            },
+          })
+        )
+      ).rejects.toThrow('Invalid proposal: metadata does not match tx_summary');
+    });
+  });
+
+  describe('signProposalOffline', () => {
+    it('should reject signing imported proposals whose metadata does not match tx_summary', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      const proposal = await multisig.importProposal(
+        JSON.stringify({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          commitment: '0x' + 'c'.repeat(64),
+          txSummaryBase64: 'AQID',
+          signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        })
+      );
+
+      proposal.metadata = {
+        proposalType: 'add_signer',
+        targetThreshold: 2,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      };
+
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'f'.repeat(64),
+        }),
+      } as any);
+
+      await expect(multisig.signProposalOffline(proposal.id)).rejects.toThrow(
+        'Invalid proposal: metadata does not match tx_summary'
+      );
     });
   });
 
@@ -773,7 +1053,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -882,7 +1162,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -930,7 +1210,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -980,7 +1260,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
