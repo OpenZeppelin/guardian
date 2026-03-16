@@ -17,7 +17,6 @@ use private_state_manager_client::{
 use super::{MultisigClient, StateVerificationResult};
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
-use crate::keystore::word_from_hex;
 use crate::procedures::ProcedureThreshold;
 use crate::transaction::word_to_hex;
 

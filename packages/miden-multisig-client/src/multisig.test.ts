@@ -1118,6 +1118,9 @@ describe('Multisig', () => {
     it('should include the faucet asset in the proposal description', async () => {
       const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
         serialize: () => new Uint8Array([1, 2, 3]),
       } as any);
 
@@ -1156,7 +1159,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           delta: mockDelta,
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
