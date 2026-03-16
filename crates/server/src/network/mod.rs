@@ -89,6 +89,13 @@ impl NetworkType {
         Self::from_name(&value).unwrap_or(Self::MidenDevnet)
     }
 
+    pub fn from_env_or(var_name: &str, default: Self) -> Self {
+        match std::env::var(var_name) {
+            Ok(value) => Self::from_name(&value).unwrap_or(default),
+            Err(_) => default,
+        }
+    }
+
     pub fn from_name(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "midenlocal" | "local" => Some(Self::MidenLocal),
@@ -120,5 +127,42 @@ impl std::fmt::Display for NetworkType {
             NetworkType::MidenDevnet => write!(f, "MidenDevnet"),
             NetworkType::MidenLocal => write!(f, "MidenLocal"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NetworkType;
+
+    #[test]
+    fn from_env_or_returns_default_when_var_missing() {
+        let var_name = "PSM_NETWORK_TYPE_TEST_MISSING";
+        unsafe { std::env::remove_var(var_name) };
+
+        let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
+
+        assert_eq!(network, NetworkType::MidenTestnet);
+    }
+
+    #[test]
+    fn from_env_or_returns_parsed_value_when_var_present() {
+        let var_name = "PSM_NETWORK_TYPE_TEST_PRESENT";
+        unsafe { std::env::set_var(var_name, "devnet") };
+
+        let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
+
+        assert_eq!(network, NetworkType::MidenDevnet);
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn from_env_or_falls_back_to_default_when_value_invalid() {
+        let var_name = "PSM_NETWORK_TYPE_TEST_INVALID";
+        unsafe { std::env::set_var(var_name, "not-a-network") };
+
+        let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
+
+        assert_eq!(network, NetworkType::MidenTestnet);
+        unsafe { std::env::remove_var(var_name) };
     }
 }

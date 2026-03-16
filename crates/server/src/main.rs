@@ -23,16 +23,19 @@ async fn main() {
         .await
         .expect("Failed to initialize storage backends");
 
-    let ack = AckRegistry::new(keystore_path).expect("Failed to initialize signer registry");
+    // Initialize acknowledger registry (supports both Falcon and ECDSA)
+    let ack = AckRegistry::new(keystore_path).expect("Failed to initialize ack registry");
 
     let cors_layer = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let network_type = NetworkType::from_env_or("PSM_NETWORK_TYPE", NetworkType::MidenTestnet);
+
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
-        .network(NetworkType::MidenTestnet)
+        .network(network_type)
         .with_canonicalization(Some(CanonicalizationConfig::new(10, 24)))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

@@ -63,6 +63,10 @@ resource "aws_ecs_task_definition" "server" {
         {
           name  = "DATABASE_URL"
           value = local.database_url
+        },
+        {
+          name  = "PSM_NETWORK_TYPE"
+          value = var.server_network_type
         }
       ]
 
@@ -130,12 +134,12 @@ resource "aws_ecs_task_definition" "postgres" {
 
 # Server ECS service
 resource "aws_ecs_service" "server" {
-  name             = var.server_service_name
-  cluster          = aws_ecs_cluster.main.id
-  task_definition  = aws_ecs_task_definition.server.arn
-  desired_count    = 1
-  launch_type      = "FARGATE"
-  platform_version = "LATEST"
+  name                   = var.server_service_name
+  cluster                = aws_ecs_cluster.main.id
+  task_definition        = aws_ecs_task_definition.server.arn
+  desired_count          = 1
+  launch_type            = "FARGATE"
+  platform_version       = "LATEST"
   enable_execute_command = true
 
   health_check_grace_period_seconds = 30
@@ -160,12 +164,12 @@ resource "aws_ecs_service" "server" {
 
 # Postgres ECS service
 resource "aws_ecs_service" "postgres" {
-  name             = var.postgres_service_name
-  cluster          = aws_ecs_cluster.main.id
-  task_definition  = aws_ecs_task_definition.postgres.arn
-  desired_count    = 1
-  launch_type      = "FARGATE"
-  platform_version = "LATEST"
+  name                   = var.postgres_service_name
+  cluster                = aws_ecs_cluster.main.id
+  task_definition        = aws_ecs_task_definition.postgres.arn
+  desired_count          = 1
+  launch_type            = "FARGATE"
+  platform_version       = "LATEST"
   enable_execute_command = true
 
   network_configuration {
