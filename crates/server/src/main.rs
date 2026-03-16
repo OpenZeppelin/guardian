@@ -1,6 +1,6 @@
 pub use private_state_manager_shared::{FromJson, ToJson};
 
-use server::ack::{Acknowledger, MidenFalconRpoSigner};
+use server::ack::AckRegistry;
 use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
 use server::canonicalization::CanonicalizationConfig;
 use server::logging::LoggingConfig;
@@ -23,9 +23,7 @@ async fn main() {
         .await
         .expect("Failed to initialize storage backends");
 
-    // Initialize acknowledger
-    let signer = MidenFalconRpoSigner::new(keystore_path).expect("Failed to initialize signer");
-    let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
+    let ack = AckRegistry::new(keystore_path).expect("Failed to initialize signer registry");
 
     let cors_layer = CorsLayer::new()
         .allow_origin(Any)

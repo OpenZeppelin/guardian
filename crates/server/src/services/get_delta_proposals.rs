@@ -101,7 +101,9 @@ mod tests {
                 "tx_summary": delta_fixture["delta_payload"].clone(),
                 "signatures": []
             }),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Pending {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 proposer_id,
@@ -123,7 +125,9 @@ mod tests {
                 "tx_summary": delta_fixture["delta_payload"].clone(),
                 "signatures": []
             }),
-            ack_sig: Some("0xabc".to_string()),
+            ack_sig: "0xabc".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Canonical {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
             },

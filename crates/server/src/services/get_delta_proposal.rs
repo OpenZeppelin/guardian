@@ -104,7 +104,9 @@ mod tests {
                 "signatures": [],
                 "metadata": { "proposal_type": "change_threshold", "target_threshold": 2, "signer_commitments": [] }
             }),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Pending {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 proposer_id: commitment.to_string(),

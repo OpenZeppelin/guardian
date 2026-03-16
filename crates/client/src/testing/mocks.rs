@@ -103,7 +103,12 @@ impl StateManager for MockStateManagerService {
             .take()
             .unwrap_or_else(|| Ok("mock_pubkey".to_string()));
 
-        response.map(|pubkey| Response::new(crate::proto::GetPubkeyResponse { pubkey }))
+        response.map(|pubkey| {
+            Response::new(crate::proto::GetPubkeyResponse {
+                pubkey,
+                raw_pubkey: None,
+            })
+        })
     }
 
     async fn configure(
@@ -120,6 +125,7 @@ impl StateManager for MockStateManagerService {
                     success: true,
                     message: String::new(),
                     ack_pubkey: "mock_ack_pubkey".to_string(),
+                    ack_commitment: String::new(),
                 })
             });
 
@@ -322,6 +328,8 @@ pub fn create_mock_delta() -> ProtoDeltaObject {
         canonical_at: None,
         discarded_at: None,
         status: None,
+        ack_pubkey: None,
+        ack_scheme: None,
     }
 }
 

@@ -6,6 +6,7 @@ use crate::services::{
 };
 use crate::state::AppState;
 use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+use private_state_manager_shared::SignatureScheme;
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code
@@ -65,11 +66,13 @@ impl StateManager for StateManagerService {
                 success: true,
                 message: format!("Account '{}' configured successfully", response.account_id),
                 ack_pubkey: response.ack_pubkey,
+                ack_commitment: response.ack_commitment,
             })),
             Err(e) => Ok(Response::new(ConfigureResponse {
                 success: false,
                 message: e.to_string(),
                 ack_pubkey: String::new(),
+                ack_commitment: String::new(),
             })),
         }
     }
@@ -96,7 +99,9 @@ impl StateManager for StateManagerService {
             prev_commitment: req.prev_commitment,
             new_commitment: None,
             delta_payload,
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: Default::default(),
         };
 
@@ -111,7 +116,7 @@ impl StateManager for StateManagerService {
                 success: true,
                 message: "Delta pushed successfully".to_string(),
                 delta: Some(delta_to_proto(&response.delta)),
-                ack_sig: response.delta.ack_sig,
+                ack_sig: Some(response.delta.ack_sig),
             })),
             Err(e) => Ok(Response::new(PushDeltaResponse {
                 success: false,
@@ -222,10 +227,23 @@ impl StateManager for StateManagerService {
 
     async fn get_pubkey(
         &self,
-        _request: Request<GetPubkeyRequest>,
+        request: Request<GetPubkeyRequest>,
     ) -> Result<Response<GetPubkeyResponse>, Status> {
-        let pubkey = self.app_state.ack.commitment();
-        Ok(Response::new(GetPubkeyResponse { pubkey }))
+        let req = request.into_inner();
+        let scheme = match req.scheme.as_deref() {
+            Some(s) if s.eq_ignore_ascii_case("ecdsa") => SignatureScheme::Ecdsa,
+            _ => SignatureScheme::Falcon,
+        };
+        let commitment = self.app_state.ack.commitment(&scheme);
+        let raw_pubkey = if matches!(scheme, SignatureScheme::Ecdsa) {
+            Some(self.app_state.ack.pubkey(&scheme))
+        } else {
+            None
+        };
+        Ok(Response::new(GetPubkeyResponse {
+            pubkey: commitment,
+            raw_pubkey,
+        }))
     }
 
     async fn push_delta_proposal(
@@ -427,11 +445,13 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone().unwrap_or_default(),
         delta_payload: delta.delta_payload.to_string(),
-        ack_sig: delta.ack_sig.clone().unwrap_or_default(),
+        ack_sig: delta.ack_sig.clone(),
         candidate_at: candidate_at.unwrap_or_default(),
         canonical_at,
         discarded_at,
         status: proto_status,
+        ack_pubkey: Some(delta.ack_pubkey.clone()),
+        ack_scheme: Some(delta.ack_scheme.clone()),
     }
 }
 
@@ -442,6 +462,7 @@ fn state_to_proto(state: &crate::state_object::StateObject) -> state_manager::Ac
         commitment: state.commitment.clone(),
         created_at: state.created_at.clone(),
         updated_at: state.updated_at.clone(),
+        auth_scheme: Some(state.auth_scheme.clone()),
     }
 }
 
@@ -450,6 +471,15 @@ fn proposal_signature_to_proto(signature: &ProposalSignature) -> state_manager::
         ProposalSignature::Falcon { signature } => state_manager::ProposalSignature {
             scheme: "falcon".to_string(),
             signature: signature.clone(),
+            public_key: None,
+        },
+        ProposalSignature::Ecdsa {
+            signature,
+            public_key,
+        } => state_manager::ProposalSignature {
+            scheme: "ecdsa".to_string(),
+            signature: signature.clone(),
+            public_key: public_key.clone(),
         },
     }
 }
@@ -461,6 +491,10 @@ fn proto_signature_to_internal(
     match signature.scheme.as_str() {
         "falcon" => Ok(ProposalSignature::Falcon {
             signature: signature.signature,
+        }),
+        "ecdsa" => Ok(ProposalSignature::Ecdsa {
+            signature: signature.signature,
+            public_key: signature.public_key,
         }),
         other => Err(Status::invalid_argument(format!(
             "Unknown signature scheme: {other}"
@@ -528,6 +562,7 @@ mod tests {
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 
@@ -560,7 +595,7 @@ mod tests {
         let (state, _storage, _network, _metadata) = create_test_state();
         let service = create_service(state);
 
-        let request = Request::new(state_manager::GetPubkeyRequest {});
+        let request = Request::new(state_manager::GetPubkeyRequest { scheme: None });
         let response = service.get_pubkey(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -727,7 +762,9 @@ mod tests {
                 .to_string(),
             new_commitment: None,
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::pending(
                 "2024-11-14T12:00:00Z".to_string(),
                 signer.pubkey_hex.clone(),
@@ -810,7 +847,9 @@ mod tests {
                 .to_string(),
             new_commitment: None,
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::pending(
                 "2024-11-14T12:00:00Z".to_string(),
                 signer.pubkey_hex.clone(),
@@ -920,6 +959,7 @@ mod tests {
             signature: Some(state_manager::ProposalSignature {
                 scheme: "falcon".to_string(),
                 signature: dummy_sig,
+                public_key: None,
             }),
         };
 

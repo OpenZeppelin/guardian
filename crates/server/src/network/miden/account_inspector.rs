@@ -48,6 +48,11 @@ impl<'a> MidenAccountInspector<'a> {
         self.extract_map_pubkeys(OZ_MULTISIG_SIGNER_PUBKEYS)
     }
 
+    /// Extract public keys from slot 1 of the multisig signer map.
+    pub fn extract_slot_1_pubkeys(&self) -> Vec<String> {
+        self.extract_pubkeys()
+    }
+
     fn extract_map_pubkeys(&self, slot_name: &str) -> Vec<String> {
         let mut pubkeys = Vec::new();
 

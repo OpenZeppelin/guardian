@@ -457,6 +457,7 @@ impl Proposal {
         for signature in &payload.signatures {
             let signature_hex = match &signature.signature {
                 ProposalSignature::Falcon { signature } => signature.clone(),
+                ProposalSignature::Ecdsa { signature, .. } => signature.clone(),
             };
 
             let entry = ProposalSignatureEntry {

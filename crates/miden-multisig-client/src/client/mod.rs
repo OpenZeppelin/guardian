@@ -15,7 +15,9 @@ mod helpers;
 mod io;
 mod notes;
 mod offline;
+mod proposal;
 mod proposals;
+mod state_codec;
 
 use std::path::PathBuf;
 
@@ -31,7 +33,6 @@ use crate::keystore::Signer;
 use crate::proposal::Proposal;
 use std::sync::Arc;
 
-// Re-export public types from submodules
 pub use notes::{ConsumableNote, NoteFilter};
 
 /// Result of a proposal creation attempt.
@@ -69,7 +70,7 @@ pub struct StateVerificationResult {
 /// use miden_multisig_client::MultisigClient;
 /// use miden_client::rpc::Endpoint;
 ///
-/// // Create a client
+///
 /// let mut client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
 ///     .psm_endpoint("http://localhost:50051")
@@ -78,7 +79,7 @@ pub struct StateVerificationResult {
 ///     .build()
 ///     .await?;
 ///
-/// // Create a multisig account
+///
 /// let account = client.create_account(2, vec![signer1, signer2]).await?;
 /// ```
 pub struct MultisigClient {

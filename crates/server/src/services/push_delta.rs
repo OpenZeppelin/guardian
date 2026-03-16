@@ -1,3 +1,5 @@
+use private_state_manager_shared::SignatureScheme;
+
 use crate::delta_object::DeltaObject;
 use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
@@ -79,7 +81,14 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
 
     let mut result_delta = params.delta.clone();
     result_delta.new_commitment = Some(new_commitment.clone());
-    result_delta = state.ack.ack_delta(result_delta)?;
+    let scheme = resolved.metadata.auth.scheme();
+    result_delta = state.ack.ack_delta(result_delta, &scheme)?;
+    result_delta.ack_pubkey = state.ack.pubkey(&scheme);
+    result_delta.ack_scheme = match scheme {
+        SignatureScheme::Falcon => "falcon",
+        SignatureScheme::Ecdsa => "ecdsa",
+    }
+    .to_string();
 
     let now = state.clock.now_rfc3339();
     let commit_strategy = DeltaCommitStrategy::from_app_state(state);

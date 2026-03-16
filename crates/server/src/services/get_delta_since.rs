@@ -71,6 +71,8 @@ pub async fn get_delta_since(
         new_commitment: last_delta.new_commitment.clone(),
         delta_payload: merged_payload,
         ack_sig: last_delta.ack_sig.clone(),
+        ack_pubkey: last_delta.ack_pubkey.clone(),
+        ack_scheme: last_delta.ack_scheme.clone(),
         status: last_delta.status.clone(),
     };
 

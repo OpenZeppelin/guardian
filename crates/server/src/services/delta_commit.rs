@@ -74,6 +74,7 @@ impl DeltaCommitStrategy {
                     state_json: new_state_json,
                     created_at: ctx.current_state.created_at.clone(),
                     updated_at: ctx.now.clone(),
+                    auth_scheme: String::new(),
                 };
 
                 ctx.resolved
@@ -160,7 +161,9 @@ mod tests {
             prev_commitment: "prev_commitment".to_string(),
             new_commitment: Some("new_commitment".to_string()),
             delta_payload: serde_json::json!({"test": "payload"}),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::default(),
         }
     }
@@ -172,6 +175,7 @@ mod tests {
             state_json: serde_json::json!({"state": "data"}),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::ack::Acknowledger;
+use crate::ack::AckRegistry;
 use crate::builder::clock::Clock;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::metadata::MetadataStore;
@@ -12,7 +12,7 @@ pub struct AppState {
     pub storage: Arc<dyn StorageBackend>,
     pub metadata: Arc<dyn MetadataStore>,
     pub network_client: Arc<Mutex<dyn NetworkClient>>,
-    pub ack: Acknowledger,
+    pub ack: AckRegistry,
     pub canonicalization: Option<CanonicalizationConfig>,
     pub clock: Arc<dyn Clock>,
 }

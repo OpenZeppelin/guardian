@@ -172,6 +172,7 @@ impl NetworkClient for MockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _credential: &Credentials,
+        _auth: &Auth,
     ) -> StdResult<(), String> {
         self.validate_credential_responses
             .lock()
@@ -195,6 +196,7 @@ impl NetworkClient for MockNetworkClient {
     async fn should_update_auth(
         &mut self,
         _state_json: &serde_json::Value,
+        _current_auth: &Auth,
     ) -> StdResult<Option<Auth>, String> {
         self.should_update_auth_responses
             .lock()

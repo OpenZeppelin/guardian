@@ -80,9 +80,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     print_waiting("Initializing MultisigClient with new keypair");
 
     let mut state = SessionState::new()?;
-    state
-        .initialize_client(miden_endpoint, &psm_endpoint)
-        .await?;
+    state.initialize_client(miden_endpoint, &psm_endpoint).await?;
 
     let commitment_hex = state.user_commitment_hex()?;
 

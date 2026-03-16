@@ -89,12 +89,13 @@ impl MultisigClient {
 
         // Get PSM server's public key commitment
         let mut psm_client = self.create_psm_client().await?;
-        let psm_pubkey_hex = psm_client
-            .get_pubkey()
+        let (psm_commitment_hex, _raw_pubkey) = psm_client
+            .get_pubkey(None)
             .await
             .map_err(|e| MultisigError::PsmServer(format!("failed to get PSM pubkey: {}", e)))?;
 
-        let psm_commitment = word_from_hex(&psm_pubkey_hex).map_err(MultisigError::HexDecode)?;
+        let psm_commitment =
+            word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
 
         // Convert procedure thresholds to (Word, u32) pairs
         let overrides: Vec<(Word, u32)> = proc_threshold_overrides

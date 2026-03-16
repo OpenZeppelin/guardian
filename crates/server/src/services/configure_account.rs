@@ -16,6 +16,7 @@ pub struct ConfigureAccountParams {
 pub struct ConfigureAccountResult {
     pub account_id: String,
     pub ack_pubkey: String,
+    pub ack_commitment: String,
 }
 
 /// Configure a new account
@@ -37,18 +38,15 @@ pub async fn configure_account(
         );
         PsmError::StorageError(format!("Failed to check existing account: {e}"))
     })?;
-
-    if existing.is_some() {
-        return Err(PsmError::AccountAlreadyExists(params.account_id.clone()));
-    }
+    let scheme = params.auth.scheme();
 
     let commitment = {
         let client = state.network_client.lock().await;
-        let expected_psm_commitment = state.ack.commitment();
+        let expected_psm_commitment = state.ack.commitment(&scheme);
 
         // Validates that the credential is valid for the account state.
         client
-            .validate_credential(&params.initial_state, &params.credential)
+            .validate_credential(&params.initial_state, &params.credential, &params.auth)
             .map_err(|e| {
                 tracing::error!(
                     account_id = %params.account_id,
@@ -90,12 +88,17 @@ pub async fn configure_account(
     };
 
     let now = state.clock.now_rfc3339();
+    let created_at = existing
+        .as_ref()
+        .map(|m| m.created_at.clone())
+        .unwrap_or_else(|| now.clone());
     let account_state = StateObject {
         account_id: params.account_id.clone(),
         state_json: params.initial_state,
         commitment,
-        created_at: now.clone(),
-        updated_at: now,
+        created_at: created_at.clone(),
+        updated_at: now.clone(),
+        auth_scheme: scheme.to_string(),
     };
 
     state
@@ -111,14 +114,17 @@ pub async fn configure_account(
             PsmError::StorageError(format!("Failed to submit initial state: {e}"))
         })?;
 
-    // Create and store metadata
+    // Create and store metadata (preserving created_at and replay protection on reconfigure)
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
-        created_at: account_state.created_at.clone(),
-        updated_at: account_state.updated_at.clone(),
-        has_pending_candidate: false,
-        last_auth_timestamp: None,
+        created_at,
+        updated_at: now,
+        has_pending_candidate: existing
+            .as_ref()
+            .map(|m| m.has_pending_candidate)
+            .unwrap_or(false),
+        last_auth_timestamp: existing.and_then(|m| m.last_auth_timestamp),
     };
 
     state.metadata.set(metadata_entry).await.map_err(|e| {
@@ -132,14 +138,15 @@ pub async fn configure_account(
 
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
-        ack_pubkey: state.ack.pubkey(),
+        ack_pubkey: state.ack.pubkey(&scheme),
+        ack_commitment: state.ack.commitment(&scheme),
     })
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
-    use crate::ack::{Acknowledger, MidenFalconRpoSigner};
+    use crate::ack::AckRegistry;
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
@@ -154,9 +161,9 @@ mod tests {
 
         let keystore_dir =
             std::env::temp_dir().join(format!("test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
 
-        let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
-        let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
+        let ack = AckRegistry::new(keystore_dir).expect("Failed to create ack registry");
 
         AppState {
             storage,
@@ -217,7 +224,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_configure_account_already_exists() {
+    async fn test_configure_account_already_exists_reconfigures() {
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
@@ -232,14 +239,23 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
+            last_auth_timestamp: Some(1000),
         };
 
-        let network_client = MockNetworkClient::new();
-        let storage_backend = MockStorageBackend::new();
-        let metadata_store = MockMetadataStore::new().with_get(Ok(Some(existing_metadata)));
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x5678".to_string()));
+
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()));
 
         let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
 
         let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
@@ -248,17 +264,15 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment_hex],
             },
-            initial_state: serde_json::json!({"balance": 100}),
+            initial_state,
             credential,
         };
 
         let result = configure_account(&state, params).await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            PsmError::AccountAlreadyExists(_) => {}
-            e => panic!("Expected AccountAlreadyExists error, got: {:?}", e),
-        }
+        assert!(result.is_ok(), "Reconfiguration should succeed");
+        let result = result.unwrap();
+        assert_eq!(result.account_id, account_id_hex);
     }
 
     #[tokio::test]

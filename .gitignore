@@ -5,7 +5,12 @@ miden-client.toml
 templates/
 .env
 
+.agents/
+.cursor/
 .claude/
 CLAUDE.md
 
 .vscode/
+
+crates/server/bench/results/*
+!crates/server/bench/results/.gitkeep

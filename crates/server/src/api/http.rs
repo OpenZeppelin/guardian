@@ -8,7 +8,7 @@ use crate::services::{
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use axum::{Json, extract::Query, extract::State, http::StatusCode};
-use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::{ProposalSignature, SignatureScheme};
 use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,7 @@ pub struct ConfigureResponse {
     pub success: bool,
     pub message: String,
     pub ack_pubkey: Option<String>,
+    pub ack_commitment: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -95,6 +96,7 @@ pub async fn configure(
                     success: false,
                     message: e,
                     ack_pubkey: None,
+                    ack_commitment: None,
                 }),
             );
         }
@@ -110,6 +112,7 @@ pub async fn configure(
                 success: true,
                 message: format!("Account '{}' configured successfully", response.account_id),
                 ack_pubkey: Some(response.ack_pubkey),
+                ack_commitment: Some(response.ack_commitment),
             }),
         ),
         Err(e) => (
@@ -118,6 +121,7 @@ pub async fn configure(
                 success: false,
                 message: e.to_string(),
                 ack_pubkey: None,
+                ack_commitment: None,
             }),
         ),
     }
@@ -280,7 +284,9 @@ pub async fn get_state(
 
 #[derive(Serialize)]
 pub struct PubkeyResponse {
-    pub pubkey: String,
+    pub commitment: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -294,9 +300,26 @@ pub struct DeltaProposalResponse {
     pub commitment: String,
 }
 
-pub async fn get_pubkey(State(state): State<AppState>) -> (StatusCode, Json<PubkeyResponse>) {
-    let pubkey = state.ack.commitment();
-    (StatusCode::OK, Json(PubkeyResponse { pubkey }))
+#[derive(Deserialize, Serialize)]
+pub struct PubkeyQuery {
+    pub scheme: Option<String>,
+}
+
+pub async fn get_pubkey(
+    State(state): State<AppState>,
+    Query(query): Query<PubkeyQuery>,
+) -> (StatusCode, Json<PubkeyResponse>) {
+    let scheme = match query.scheme.as_deref() {
+        Some(s) if s.eq_ignore_ascii_case("ecdsa") => SignatureScheme::Ecdsa,
+        _ => SignatureScheme::Falcon,
+    };
+    let commitment = state.ack.commitment(&scheme);
+    let pubkey = if matches!(scheme, SignatureScheme::Ecdsa) {
+        Some(state.ack.pubkey(&scheme))
+    } else {
+        None
+    };
+    (StatusCode::OK, Json(PubkeyResponse { commitment, pubkey }))
 }
 
 pub async fn push_delta_proposal(
@@ -517,6 +540,7 @@ mod tests {
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 
@@ -532,7 +556,9 @@ mod tests {
                 "0x8fa68eabc9817e17900a7f1f705c1ecdeef6ab64c15ca1b66447272fb8fa49b2".to_string(),
             ),
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::canonical("2024-11-14T12:00:00Z".to_string()),
         }
     }
@@ -549,11 +575,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_pubkey_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
-        let (status, Json(response)) = get_pubkey(State(state)).await;
+        let (status, Json(response)) =
+            get_pubkey(State(state), Query(PubkeyQuery { scheme: None })).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert!(!response.pubkey.is_empty());
-        assert!(response.pubkey.starts_with("0x"));
+        assert!(!response.commitment.is_empty());
+        assert!(response.commitment.starts_with("0x"));
     }
 
     #[tokio::test]
@@ -690,7 +717,9 @@ mod tests {
                 .to_string(),
             new_commitment: None,
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::pending(
                 "2024-11-14T12:00:00Z".to_string(),
                 signer.pubkey_hex.clone(),
@@ -759,7 +788,9 @@ mod tests {
                 .to_string(),
             new_commitment: None,
             delta_payload: delta_fixture["delta_payload"].clone(),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::pending(
                 "2024-11-14T12:00:00Z".to_string(),
                 signer.pubkey_hex.clone(),

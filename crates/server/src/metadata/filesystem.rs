@@ -3,9 +3,13 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem-based metadata store
 /// Stores all account metadata in a single JSON file with in-memory cache
@@ -54,7 +58,17 @@ impl FilesystemMetadataStore {
             .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
 
         // Atomic write using temp file
-        let temp_path = self.file_path.with_extension("tmp");
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = self.file_path.with_extension(format!(
+            "tmp.{}.{}.{}",
+            std::process::id(),
+            nanos,
+            counter
+        ));
         let mut file = fs::File::create(&temp_path)
             .await
             .map_err(|e| format!("Failed to create temp file: {e}"))?;

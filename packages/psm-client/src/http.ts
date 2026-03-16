@@ -5,8 +5,10 @@ import type {
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
+  PubkeyResponse,
   PushDeltaResponse,
   SignProposalRequest,
+  SignatureScheme,
   Signer,
   StateObject,
 } from './types.js';
@@ -50,6 +52,7 @@ export class PsmHttpError extends Error {
 export class PsmHttpClient {
   private signer: Signer | null = null;
   private readonly baseUrl: string;
+  private lastTimestamp = 0;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -59,10 +62,14 @@ export class PsmHttpClient {
     this.signer = signer;
   }
 
-  async getPubkey(): Promise<string> {
-    const response = await this.fetch('/pubkey', { method: 'GET' });
+  async getPubkey(scheme?: SignatureScheme): Promise<PubkeyResponse> {
+    const query = scheme ? `?scheme=${scheme}` : '';
+    const response = await this.fetch(`/pubkey${query}`, { method: 'GET' });
     const data = (await response.json()) as ServerPubkeyResponse;
-    return data.pubkey;
+    return {
+      commitment: data.commitment,
+      pubkey: data.pubkey,
+    };
   }
 
   async configure(request: ConfigureRequest): Promise<ConfigureResponse> {
@@ -140,6 +147,8 @@ export class PsmHttpClient {
       nonce: server.nonce,
       newCommitment: server.new_commitment,
       ackSig: server.ack_sig,
+      ackPubkey: server.ack_pubkey,
+      ackScheme: server.ack_scheme,
     };
   }
 
@@ -199,17 +208,23 @@ export class PsmHttpClient {
     path: string,
     init: RequestInit,
     accountId: string,
-    requestPayload: unknown
+    requestPayload: unknown,
+    retries = 2
   ): Promise<Response> {
     if (!this.signer) {
       throw new Error('No signer configured. Call setSigner() first.');
     }
 
-    const timestamp = Date.now();
+    const now = Date.now();
+    const timestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
+    this.lastTimestamp = timestamp;
     const authPayload = RequestAuthPayload.fromRequest(requestPayload);
-    const signature = this.signer.signRequest(accountId, timestamp, authPayload);
+    const signature = this.signer.signRequest
+      ? await this.signer.signRequest(accountId, timestamp, authPayload)
+      : await this.signer.signAccountIdWithTimestamp(accountId, timestamp);
 
-      return this.fetch(path, {
+    try {
+      return await this.fetch(path, {
         ...init,
         headers: {
           ...init.headers,
@@ -218,5 +233,12 @@ export class PsmHttpClient {
           'x-timestamp': timestamp.toString(),
         },
       });
+    } catch (err) {
+      if (retries > 0 && err instanceof PsmHttpError && err.body.includes('Replay attack')) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);
+      }
+      throw err;
+    }
   }
 }

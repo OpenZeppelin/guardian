@@ -158,7 +158,9 @@ pub async fn push_delta_proposal(
         prev_commitment: current_state.commitment.clone(),
         new_commitment: None,
         delta_payload,
-        ack_sig: None,
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
         status: DeltaStatus::Pending {
             timestamp,
             proposer_id,
@@ -250,6 +252,7 @@ mod tests {
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: String::new(),
         }
     }
 
@@ -266,7 +269,9 @@ mod tests {
                 "tx_summary": delta_fixture["delta_payload"].clone(),
                 "signatures": []
             }),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Pending {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 proposer_id: "0xproposer".to_string(),
@@ -415,6 +420,9 @@ mod tests {
                 assert_eq!(cosigner_sigs[0].signer_id, cosigner_commitment);
                 match &cosigner_sigs[0].signature {
                     ProposalSignature::Falcon { signature } => {
+                        assert_eq!(*signature, dummy_sig);
+                    }
+                    ProposalSignature::Ecdsa { signature, .. } => {
                         assert_eq!(*signature, dummy_sig);
                     }
                 }
@@ -602,7 +610,9 @@ mod tests {
             prev_commitment: test_commitment.to_string(),
             new_commitment: Some("0xnewcommitment".to_string()),
             delta_payload: serde_json::json!({}),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Candidate {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 retry_count: 0,

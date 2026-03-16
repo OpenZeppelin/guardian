@@ -7,13 +7,17 @@ use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::utils::Deserializable;
 use miden_protocol::{Felt, Word};
+use private_state_manager_shared::SignatureScheme;
 use private_state_manager_shared::hex::FromHex;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
+use crate::transaction::build_ecdsa_signature_advice_entry;
 
 /// Signature advice entry: (key, prepared_signature_values)
 pub type SignatureAdvice = (Word, Vec<Felt>);
@@ -24,6 +28,10 @@ pub struct SignatureInput {
     pub signer_commitment: String,
     /// Hex-encoded signature (with or without 0x prefix).
     pub signature_hex: String,
+    /// Signature scheme (falcon or ecdsa).
+    pub scheme: SignatureScheme,
+    /// Hex-encoded public key (required for ECDSA signatures).
+    pub public_key_hex: Option<String>,
 }
 
 /// Collects and validates cosigner signatures into advice entries.
@@ -60,18 +68,45 @@ pub fn collect_signature_advice(
             continue;
         }
 
-        let sig_hex = ensure_hex_prefix(&sig_input.signature_hex);
-        let rpo_sig = RpoFalconSignature::from_hex(&sig_hex)
-            .map_err(|e| MultisigError::Signature(format!("invalid signature: {}", e)))?;
-
         let commitment =
             word_from_hex(&sig_input.signer_commitment).map_err(MultisigError::HexDecode)?;
 
-        advice.push(crate::transaction::build_signature_advice_entry(
-            commitment,
-            tx_summary_commitment,
-            &AccountSignature::from(rpo_sig),
-        ));
+        let sig_hex = ensure_hex_prefix(&sig_input.signature_hex);
+        match sig_input.scheme {
+            SignatureScheme::Falcon => {
+                let rpo_sig = RpoFalconSignature::from_hex(&sig_hex).map_err(|e| {
+                    MultisigError::Signature(format!("invalid Falcon signature: {}", e))
+                })?;
+                advice.push(crate::transaction::build_signature_advice_entry(
+                    commitment,
+                    tx_summary_commitment,
+                    &AccountSignature::from(rpo_sig),
+                    None,
+                ));
+            }
+            SignatureScheme::Ecdsa => {
+                let sig_bytes = hex::decode(sig_hex.trim_start_matches("0x")).map_err(|e| {
+                    MultisigError::Signature(format!("invalid ECDSA signature hex: {}", e))
+                })?;
+                let ecdsa_sig = EcdsaSignature::read_from_bytes(&sig_bytes).map_err(|e| {
+                    MultisigError::Signature(format!(
+                        "failed to deserialize ECDSA signature: {}",
+                        e
+                    ))
+                })?;
+                let public_key_hex = sig_input.public_key_hex.as_ref().ok_or_else(|| {
+                    MultisigError::Signature(
+                        "ECDSA signature requires public key for advice preparation".to_string(),
+                    )
+                })?;
+                advice.push(build_ecdsa_signature_advice_entry(
+                    commitment,
+                    tx_summary_commitment,
+                    &AccountSignature::EcdsaK256Keccak(ecdsa_sig),
+                    public_key_hex,
+                )?);
+            }
+        }
     }
 
     Ok(advice)
@@ -173,6 +208,8 @@ mod tests {
         let signatures = vec![SignatureInput {
             signer_commitment: "0xunknown".to_string(),
             signature_hex: "0x1234".to_string(),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         }];
 
         // Unknown signer should be filtered out
@@ -191,10 +228,14 @@ mod tests {
             SignatureInput {
                 signer_commitment: "0xABC".to_string(), // uppercase
                 signature_hex: "0x1234".to_string(),
+                scheme: SignatureScheme::Falcon,
+                public_key_hex: None,
             },
             SignatureInput {
                 signer_commitment: "0xabc".to_string(), // lowercase duplicate
                 signature_hex: "0x5678".to_string(),
+                scheme: SignatureScheme::Falcon,
+                public_key_hex: None,
             },
         ];
 
@@ -221,6 +262,8 @@ mod tests {
         let signatures = vec![SignatureInput {
             signer_commitment: commitment_hex,
             signature_hex,
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         }];
 
         let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");

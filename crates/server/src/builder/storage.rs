@@ -1,7 +1,16 @@
-use crate::metadata::MetadataStore;
-use crate::storage::StorageBackend;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use crate::metadata::MetadataStore;
+#[cfg(not(feature = "postgres"))]
+use crate::metadata::filesystem::FilesystemMetadataStore;
+#[cfg(feature = "postgres")]
+use crate::metadata::postgres::PostgresMetadataStore;
+use crate::storage::StorageBackend;
+#[cfg(not(feature = "postgres"))]
+use crate::storage::filesystem::FilesystemService;
+#[cfg(feature = "postgres")]
+use crate::storage::postgres::{self, PostgresService};
 
 /// Builder for creating the storage backend and metadata store.
 #[derive(Default)]
@@ -54,10 +63,9 @@ impl StorageMetadataBuilder {
                 .filter(|url| !url.is_empty())
                 .ok_or_else(|| "DATABASE_URL environment variable is required".to_string())?;
 
-            crate::storage::postgres::run_migrations(&database_url).await?;
-            let storage = crate::storage::postgres::PostgresService::new(&database_url).await?;
-            let metadata =
-                crate::metadata::postgres::PostgresMetadataStore::new(&database_url).await?;
+            postgres::run_migrations(&database_url).await?;
+            let storage = PostgresService::new(&database_url).await?;
+            let metadata = PostgresMetadataStore::new(&database_url).await?;
 
             Ok((Arc::new(storage), Arc::new(metadata)))
         }
@@ -71,9 +79,8 @@ impl StorageMetadataBuilder {
                 .metadata_path
                 .ok_or_else(|| "PSM_METADATA_PATH is required".to_string())?;
 
-            let storage = crate::storage::filesystem::FilesystemService::new(storage_path).await?;
-            let metadata =
-                crate::metadata::filesystem::FilesystemMetadataStore::new(metadata_path).await?;
+            let storage = FilesystemService::new(storage_path).await?;
+            let metadata = FilesystemMetadataStore::new(metadata_path).await?;
 
             Ok((Arc::new(storage), Arc::new(metadata)))
         }

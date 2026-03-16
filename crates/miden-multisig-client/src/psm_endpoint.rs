@@ -16,7 +16,7 @@ pub(crate) async fn verify_endpoint_commitment(
         ))
     })?;
 
-    let endpoint_commitment_hex = client.get_pubkey().await.map_err(|e| {
+    let (endpoint_commitment_hex, _raw_pubkey) = client.get_pubkey(None).await.map_err(|e| {
         MultisigError::PsmServer(format!(
             "failed to get pubkey from PSM endpoint {}: {}",
             endpoint, e

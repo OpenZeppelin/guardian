@@ -37,5 +37,5 @@ locals {
   # Custom domain configuration
   domain_enabled    = var.domain_name != ""
   service_fqdn      = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)
-  acm_certificate_arn = local.domain_enabled ? aws_acm_certificate_validation.main[0].certificate_arn : ""
+  acm_certificate_arn = local.domain_enabled ? var.acm_certificate_arn : ""
 }

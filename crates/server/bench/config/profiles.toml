@@ -1,0 +1,17 @@
+[small]
+users = 8
+accounts = 32
+signers_per_account = 2
+ops_per_user = 128
+
+[medium]
+users = 32
+accounts = 512
+signers_per_account = 5
+ops_per_user = 256
+
+[large]
+users = 128
+accounts = 4096
+signers_per_account = 10
+ops_per_user = 512

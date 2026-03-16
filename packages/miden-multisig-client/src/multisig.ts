@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { PsmHttpClient, type DeltaObject, type FalconSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/psm-client';
+import { PsmHttpClient, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/psm-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -47,6 +47,7 @@ import {
   signatureHexToBytes,
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
+import { buildPsmSignatureFromSigner } from './multisig/signing.js';
 import { AccountInspector } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
@@ -816,12 +817,10 @@ export class Multisig {
     const proposal = existingProposal;
 
     const commitmentToSign = await this.verifyProposalMetadataBinding(proposal);
-    const signatureHex = this.signer.signCommitment(commitmentToSign);
-
-    const signature: FalconSignature = {
-      scheme: 'falcon',
-      signature: signatureHex,
-    };
+    const signature: ProposalSignature = await buildPsmSignatureFromSigner(
+      this.signer,
+      commitmentToSign,
+    );
 
     const signedDelta = await this.psm.signDeltaProposal({
       accountId: this._accountId,
@@ -1118,14 +1117,14 @@ export class Multisig {
     const commitmentToSign = await this.verifyProposalMetadataBinding(proposal);
 
     // Sign the commitment
-    const signatureHex = this.signer.signCommitment(commitmentToSign);
+    const signature = await buildPsmSignatureFromSigner(this.signer, commitmentToSign);
 
     // Add signature to local proposal
     const signatures = [
       ...existingSignatures.entries(),
       {
         signerId: signerCommitment,
-        signature: { scheme: 'falcon' as const, signature: signatureHex },
+        signature,
         timestamp: new Date().toISOString(),
       },
     ];

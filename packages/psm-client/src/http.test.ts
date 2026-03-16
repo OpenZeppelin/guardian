@@ -10,6 +10,8 @@ vi.stubGlobal('fetch', mockFetch);
 const mockSigner: Signer = {
   commitment: '0x' + '1'.repeat(64),
   publicKey: '0x' + '2'.repeat(64),
+  scheme: 'falcon',
+  signAccountIdWithTimestamp: vi.fn().mockResolvedValue('0x' + 'a'.repeat(128)),
   signRequest: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
   signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
 };
@@ -38,12 +40,12 @@ describe('PsmHttpClient', () => {
       const expectedPubkey = '0x' + 'abc123'.repeat(10);
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ pubkey: expectedPubkey }),
+        json: async () => ({ commitment: expectedPubkey }),
       });
 
       const pubkey = await client.getPubkey();
 
-      expect(pubkey).toBe(expectedPubkey);
+      expect(pubkey).toEqual({ commitment: expectedPubkey, pubkey: undefined });
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/pubkey',
         expect.objectContaining({

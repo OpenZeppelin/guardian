@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ack::{Acknowledger, MidenFalconRpoSigner};
+use crate::ack::AckRegistry;
 use crate::api::grpc::StateManagerService;
 use crate::metadata::auth::Auth;
 use crate::metadata::filesystem::FilesystemMetadataStore;
@@ -133,6 +133,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _credential: &crate::metadata::auth::Credentials,
+        _auth: &crate::metadata::auth::Auth,
     ) -> Result<(), String> {
         // For integration tests, skip actual validation since test keys won't match account fixture
         Ok(())
@@ -149,8 +150,11 @@ impl NetworkClient for IntegrationMockNetworkClient {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
+        current_auth: &Auth,
     ) -> Result<Option<Auth>, String> {
-        self.miden_client.should_update_auth(state_json).await
+        self.miden_client
+            .should_update_auth(state_json, current_auth)
+            .await
     }
 }
 
@@ -176,8 +180,7 @@ pub async fn create_test_app_state() -> AppState {
     let storage_backend: Arc<dyn StorageBackend> = Arc::new(storage);
 
     let mock_client = MockNetworkClient::new();
-    let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
-    let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
+    let ack = AckRegistry::new(keystore_dir).expect("Failed to create signer registry");
 
     AppState {
         storage: storage_backend,
@@ -480,8 +483,7 @@ pub fn create_test_app_state_with_mocks(
 
     let storage_backend: Arc<dyn StorageBackend> = storage;
 
-    let signer = MidenFalconRpoSigner::new(keystore_dir).expect("Failed to create signer");
-    let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
+    let ack = AckRegistry::new(keystore_dir).expect("Failed to create signer registry");
 
     AppState {
         storage: storage_backend,

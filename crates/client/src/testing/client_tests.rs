@@ -29,10 +29,10 @@ async fn test_get_pubkey_success() {
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = PsmClient::connect(endpoint).await.unwrap();
 
-    let result = client.get_pubkey().await;
+    let result = client.get_pubkey(None).await;
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "test_pubkey_123");
+    assert_eq!(result.unwrap().0, "test_pubkey_123");
 }
 
 #[tokio::test]
@@ -43,7 +43,7 @@ async fn test_get_pubkey_error() {
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = PsmClient::connect(endpoint).await.unwrap();
 
-    let result = client.get_pubkey().await;
+    let result = client.get_pubkey(None).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -58,6 +58,7 @@ async fn test_configure_success() {
         success: true,
         message: "Account configured".to_string(),
         ack_pubkey: "test_pubkey_123".to_string(),
+        ack_commitment: String::new(),
     }));
 
     let endpoint = start_mock_server(service).await.unwrap();
@@ -92,6 +93,7 @@ async fn test_configure_server_error() {
         success: false,
         message: "Account already exists".to_string(),
         ack_pubkey: String::new(),
+        ack_commitment: String::new(),
     }));
 
     let endpoint = start_mock_server(service).await.unwrap();

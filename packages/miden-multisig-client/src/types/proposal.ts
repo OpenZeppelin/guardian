@@ -1,14 +1,26 @@
-import type { ProposalType as PsmProposalType } from '@openzeppelin/psm-client';
+import type {
+  ProposalSignature,
+  ProposalType as PsmProposalType,
+  SignatureScheme,
+} from '@openzeppelin/psm-client';
 import type { ProcedureName } from '../procedures.js';
+
 export type ProposalType = Exclude<PsmProposalType, 'custom'>;
 
 export type ProposalStatus = 'pending' | 'ready' | 'finalized';
 
+export type TransactionProposalStatus =
+  | { type: 'pending'; signaturesCollected: number; signaturesRequired: number; signers: string[] }
+  | { type: 'ready' }
+  | { type: 'finalized' };
+
 export interface ProposalSignatureEntry {
   signerId: string;
-  signature: { scheme: 'falcon'; signature: string };
+  signature: ProposalSignature;
   timestamp: string;
 }
+
+export type TransactionProposalSignature = ProposalSignatureEntry;
 
 interface BaseProposalMetadata {
   proposalType: ProposalType;
@@ -71,6 +83,17 @@ export interface Proposal {
   metadata: ProposalMetadata;
 }
 
+export interface TransactionProposal {
+  id: string;
+  commitment: string;
+  accountId: string;
+  nonce: number;
+  status: TransactionProposalStatus;
+  txSummary: string;
+  signatures: TransactionProposalSignature[];
+  metadata: ProposalMetadata;
+}
+
 export interface ExportedProposal {
   accountId: string;
   nonce: number;
@@ -82,4 +105,13 @@ export interface ExportedProposal {
     timestamp?: string;
   }>;
   metadata: ProposalMetadata;
+}
+
+export type ExportedTransactionProposal = ExportedProposal;
+
+export interface SignTransactionProposalParams {
+  commitment: string;
+  signature: string;
+  publicKey?: string;
+  scheme?: SignatureScheme;
 }

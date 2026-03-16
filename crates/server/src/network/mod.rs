@@ -57,6 +57,7 @@ pub trait NetworkClient: Send + Sync {
         &self,
         state_json: &serde_json::Value,
         credential: &Credentials,
+        auth: &Auth,
     ) -> Result<(), String>;
 
     /// Validate that account storage is bound to this server's PSM public key commitment.
@@ -70,6 +71,7 @@ pub trait NetworkClient: Send + Sync {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
+        current_auth: &Auth,
     ) -> Result<Option<Auth>, String>;
 }
 
@@ -82,6 +84,20 @@ pub enum NetworkType {
 }
 
 impl NetworkType {
+    pub fn from_env(var_name: &str) -> Self {
+        let value = std::env::var(var_name).unwrap_or_else(|_| "MidenDevnet".to_string());
+        Self::from_name(&value).unwrap_or(Self::MidenDevnet)
+    }
+
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "midenlocal" | "local" => Some(Self::MidenLocal),
+            "midentestnet" | "testnet" => Some(Self::MidenTestnet),
+            "midendevnet" | "devnet" => Some(Self::MidenDevnet),
+            _ => None,
+        }
+    }
+
     pub fn rpc_endpoint(&self) -> &str {
         match self {
             NetworkType::MidenTestnet => "https://rpc.testnet.miden.io",

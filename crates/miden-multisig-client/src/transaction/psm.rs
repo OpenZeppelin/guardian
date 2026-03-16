@@ -16,11 +16,6 @@ pub fn build_update_psm_script() -> Result<TransactionScript> {
         MultisigError::TransactionExecution(format!("failed to get PSM library: {}", e))
     })?;
 
-    // The script:
-    // 1. Takes the script_arg (key) on the operand stack
-    // 2. Uses adv.push_mapval to push the corresponding value from the advice map to the advice stack
-    // 3. Clears the operand stack
-    // 4. Calls update_psm_public_key which uses adv_loadw to read the new key from the advice stack
     let tx_script_code = r#"
         use oz_psm::psm
         begin

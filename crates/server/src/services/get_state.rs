@@ -24,11 +24,13 @@ pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetSt
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
 
-    let account_state = resolved
+    let mut account_state = resolved
         .storage
         .pull_state(&params.account_id)
         .await
         .map_err(|_e| PsmError::StateNotFound(params.account_id.clone()))?;
+
+    account_state.auth_scheme = resolved.metadata.auth.scheme().to_string();
 
     Ok(GetStateResult {
         state: account_state,

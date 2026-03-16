@@ -154,6 +154,21 @@ pub fn build_multisig_component(slots: Vec<StorageSlot>) -> Result<AccountCompon
     Ok(component)
 }
 
+/// Build AccountComponent from masm/auth/multisig_ecdsa.masm.
+pub fn build_multisig_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    let asm = build_assembler()?;
+
+    let path = auth_dir().join("multisig_ecdsa.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
+
+    Ok(component)
+}
+
 /// Build AccountComponent from masm/auth/psm.masm.
 /// This component provides PSM (Private State Manager) signature verification.
 ///
@@ -164,6 +179,21 @@ pub fn build_psm_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> 
     let asm = build_assembler()?;
 
     let path = auth_dir().join("psm.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    let library = compile_to_library(&code, &asm)?;
+    let component = AccountComponent::new(library, slots)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?
+        .with_supports_all_types();
+
+    Ok(component)
+}
+
+/// Build AccountComponent from masm/auth/psm_ecdsa.masm.
+pub fn build_psm_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    let asm = build_assembler()?;
+
+    let path = auth_dir().join("psm_ecdsa.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
     let library = compile_to_library(&code, &asm)?;
@@ -232,6 +262,30 @@ pub fn get_multisig_library() -> Result<Library> {
     let library = asm
         .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig library: {e}"))?;
+
+    Ok(library)
+}
+
+/// Builds an ECDSA multisig library for use in transaction scripts.
+/// The procedures are accessible via `use oz_multisig::multisig` and `call.multisig::procedure_name` syntax.
+pub fn get_multisig_ecdsa_library() -> Result<Library> {
+    let path = auth_dir().join("multisig_ecdsa.masm");
+    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+
+    let asm = build_assembler()?;
+
+    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(ModuleKind::Library)
+        .parse_str(
+            LibraryPath::new("oz_multisig::multisig"),
+            code,
+            source_manager,
+        )
+        .map_err(|e| anyhow!("failed to parse multisig ecdsa module: {e}"))?;
+
+    let library = asm
+        .assemble_library([module])
+        .map_err(|e| anyhow!("failed to assemble multisig ecdsa library: {e}"))?;
 
     Ok(library)
 }

@@ -226,7 +226,9 @@ mod tests {
                 "tx_summary": delta_fixture["delta_payload"].clone(),
                 "signatures": []
             }),
-            ack_sig: None,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
             status: DeltaStatus::Pending {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 proposer_id,
@@ -285,6 +287,9 @@ mod tests {
                 assert_eq!(cosigner_sigs[0].signer_id, signer_commitment);
                 match &cosigner_sigs[0].signature {
                     ProposalSignature::Falcon { signature } => {
+                        assert_eq!(*signature, dummy_sig);
+                    }
+                    ProposalSignature::Ecdsa { signature, .. } => {
                         assert_eq!(*signature, dummy_sig);
                     }
                 }

@@ -6,10 +6,8 @@ use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId, StorageSlotName};
-use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::transaction::{InputNote, InputNotes, OutputNote, OutputNotes};
-use miden_protocol::utils::{Deserializable, Serializable};
 use miden_rpc_client::MidenRpcClient;
 use private_state_manager_shared::{FromJson, ToJson};
 
@@ -326,6 +324,7 @@ impl NetworkClient for MidenNetworkClient {
         &self,
         state_json: &serde_json::Value,
         credential: &Credentials,
+        auth: &Auth,
     ) -> Result<(), String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
@@ -336,25 +335,7 @@ impl NetworkClient for MidenNetworkClient {
                 "Invalid credential type".to_string()
             })?;
 
-        let pubkey_bytes = hex::decode(&credential_pubkey_hex[2..]).map_err(|e| {
-            tracing::error!(
-                pubkey = %credential_pubkey_hex,
-                error = %e,
-                "Failed to decode credential pubkey"
-            );
-            format!("Failed to decode credential pubkey: {e}")
-        })?;
-        let pubkey = PublicKey::read_from_bytes(&pubkey_bytes).map_err(|e| {
-            tracing::error!(
-                error = %e,
-                "Failed to deserialize credential pubkey"
-            );
-            format!("Failed to deserialize credential pubkey: {e}")
-        })?;
-
-        // Compute the commitment to match against storage
-        let commitment = pubkey.to_commitment();
-        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let commitment_hex = auth.compute_signer_commitment(credential_pubkey_hex)?;
 
         if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
@@ -394,18 +375,17 @@ impl NetworkClient for MidenNetworkClient {
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
+        current_auth: &Auth,
     ) -> Result<Option<Auth>, String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let commitments = inspector.extract_pubkeys();
+        let commitments = inspector.extract_slot_1_pubkeys();
 
         if commitments.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Auth::MidenFalconRpo {
-                cosigner_commitments: commitments,
-            }))
+            Ok(Some(current_auth.with_updated_commitments(commitments)))
         }
     }
 }

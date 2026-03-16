@@ -31,6 +31,11 @@ See the [Specification](spec/index.md) for an overview of the system design. It 
 
 See the [Server README](crates/server/README.md) for detailed API documentation and usage examples.
 
+### Benchmarking
+
+Server benchmark harness is in [crates/server/bench](crates/server/bench/README.md).
+For env-driven benchmark network/canonicalization settings, apply the runtime code switch documented there.
+
 ### Configuration
 
 #### Environment Variables

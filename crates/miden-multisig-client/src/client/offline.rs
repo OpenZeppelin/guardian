@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::ToJson;
+use private_state_manager_shared::{SignatureScheme, ToJson};
 use private_state_manager_shared::hex::IntoHex;
 
 use super::MultisigClient;
@@ -215,6 +215,8 @@ impl MultisigClient {
             .map(|sig| SignatureInput {
                 signer_commitment: sig.signer_commitment.clone(),
                 signature_hex: sig.signature.clone(),
+                scheme: SignatureScheme::Falcon,
+                public_key_hex: None,
             })
             .collect();
 

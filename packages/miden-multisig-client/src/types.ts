@@ -1,9 +1,16 @@
 import type { Account } from '@miden-sdk/miden-sdk';
+import type { SignatureScheme } from '@openzeppelin/psm-client';
 import type { ProcedureName } from './procedures.js';
+import type { AccountState } from './multisig.js';
+import type { DetectedMultisigConfig } from './inspector.js';
+import type { TransactionProposal } from './types/proposal.js';
 
 export type {
   Signer,
   FalconSignature,
+  EcdsaSignature,
+  ProposalSignature,
+  SignatureScheme,
   CosignerSignature,
   AuthConfig,
   DeltaStatus,
@@ -20,12 +27,29 @@ export type {
 
 export type {
   ExportedProposal,
+  ExportedTransactionProposal,
   Proposal,
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalStatus,
   ProposalType,
+  SignTransactionProposalParams,
+  TransactionProposal,
+  TransactionProposalSignature,
+  TransactionProposalStatus,
 } from './types/proposal.js';
+
+export interface SyncResult {
+  proposals: TransactionProposal[];
+  state: AccountState;
+  notes: ConsumableNote[];
+  config: DetectedMultisigConfig;
+}
+
+export interface TransactionProposalResult {
+  proposal: TransactionProposal;
+  proposals: TransactionProposal[];
+}
 
 export interface MultisigAccountState {
   id: string;
@@ -55,9 +79,11 @@ export interface MultisigConfig {
   threshold: number;
   signerCommitments: string[];
   psmCommitment: string;
+  psmPublicKey?: string;
   psmEnabled?: boolean;
   storageMode?: 'private' | 'public';
   procedureThresholds?: ProcedureThreshold[];
+  signatureScheme?: SignatureScheme;
 }
 
 export interface CreateAccountResult {

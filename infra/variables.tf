@@ -52,10 +52,35 @@ variable "subdomain" {
   default     = "psm"
 }
 
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN for the service domain (e.g., psm-stg.openzeppelin.com)"
+  type        = string
+  default     = ""
+}
+
 variable "route53_zone_id" {
   description = "Existing Route 53 hosted zone ID for the domain"
   type        = string
   default     = ""
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token used to manage DNS"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone ID for the domain"
+  type        = string
+  default     = ""
+}
+
+variable "cloudflare_proxied" {
+  description = "Whether Cloudflare should proxy the DNS record"
+  type        = bool
+  default     = true
 }
 
 variable "alb_ingress_cidrs" {

@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::ProposalSignature;
+use private_state_manager_shared::{ProposalSignature, SignatureScheme};
 use private_state_manager_shared::hex::IntoHex;
 
 use super::{MultisigClient, ProposalResult};
@@ -140,6 +140,8 @@ impl MultisigClient {
             .map(|signature| SignatureInput {
                 signer_commitment: signature.signer_commitment,
                 signature_hex: signature.signature_hex,
+                scheme: SignatureScheme::Falcon,
+                public_key_hex: None,
             })
             .collect();
 
@@ -352,6 +354,8 @@ mod tests {
             delta_payload: serde_json::to_string(&payload).expect("payload serialization"),
             new_commitment: new_commitment.to_string(),
             ack_sig: String::new(),
+            ack_pubkey: None,
+            ack_scheme: None,
             candidate_at: String::new(),
             canonical_at: None,
             discarded_at: None,

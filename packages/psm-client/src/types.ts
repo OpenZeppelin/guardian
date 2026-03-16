@@ -1,18 +1,16 @@
-
 import type { RequestAuthPayload } from './auth-request.js';
 
 export interface Signer {
   readonly commitment: string;
   readonly publicKey: string;
-  /**
-   * Signs an authenticated request.
-   * @param accountId - The account ID to sign
-   * @param timestamp - Unix timestamp in milliseconds (use Date.now())
-   * @param requestPayload - Canonicalized request payload wrapper
-   * @returns Hex-encoded signature
-   */
-  signRequest(accountId: string, timestamp: number, requestPayload: RequestAuthPayload): string;
-  signCommitment(commitmentHex: string): string;
+  readonly scheme: SignatureScheme;
+  signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> | string;
+  signRequest?(
+    accountId: string,
+    timestamp: number,
+    requestPayload: RequestAuthPayload
+  ): Promise<string> | string;
+  signCommitment(commitmentHex: string): Promise<string> | string;
 }
 
 export interface FalconSignature {
@@ -20,16 +18,31 @@ export interface FalconSignature {
   signature: string;
 }
 
-export interface AuthConfig {
-  MidenFalconRpo: {
-    cosigner_commitments: string[];
-  };
+export interface EcdsaSignature {
+  scheme: 'ecdsa';
+  signature: string;
+  publicKey?: string;
 }
 
+export type ProposalSignature = FalconSignature | EcdsaSignature;
+
+export type SignatureScheme = 'falcon' | 'ecdsa';
+
+export type AuthConfig =
+  | {
+      MidenFalconRpo: {
+        cosigner_commitments: string[];
+      };
+    }
+  | {
+      MidenEcdsa: {
+        cosigner_commitments: string[];
+      };
+    };
 
 export interface CosignerSignature {
   signerId: string;
-  signature: FalconSignature;
+  signature: ProposalSignature;
   timestamp: string;
 }
 
@@ -73,10 +86,12 @@ export interface DeltaObject {
   newCommitment?: string;
   deltaPayload: {
     txSummary: { data: string };
-    signatures: Array<{ signerId: string; signature: FalconSignature }>;
+    signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
   };
   ackSig?: string;
+  ackPubkey?: string;
+  ackScheme?: string;
   status: DeltaStatus;
 }
 
@@ -96,6 +111,7 @@ export interface StateObject {
   stateJson: { data: string };
   createdAt: string;
   updatedAt: string;
+  authScheme?: string;
 }
 
 export interface ConfigureRequest {
@@ -108,10 +124,12 @@ export interface ConfigureResponse {
   success: boolean;
   message: string;
   ackPubkey?: string;
+  ackCommitment?: string;
 }
 
 export interface PubkeyResponse {
-  pubkey: string;
+  commitment: string;
+  pubkey?: string;
 }
 
 export interface DeltaProposalRequest {
@@ -119,7 +137,7 @@ export interface DeltaProposalRequest {
   nonce: number;
   deltaPayload: {
     txSummary: { data: string };
-    signatures: Array<{ signerId: string; signature: FalconSignature }>;
+    signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
   };
 }
@@ -136,7 +154,7 @@ export interface ProposalsResponse {
 export interface SignProposalRequest {
   accountId: string;
   commitment: string;
-  signature: FalconSignature;
+  signature: ProposalSignature;
 }
 
 export interface PushDeltaResponse {
@@ -144,4 +162,6 @@ export interface PushDeltaResponse {
   nonce: number;
   newCommitment?: string;
   ackSig?: string;
+  ackPubkey?: string;
+  ackScheme?: string;
 }

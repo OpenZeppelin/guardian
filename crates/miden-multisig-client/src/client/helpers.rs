@@ -131,7 +131,7 @@ impl MultisigClient {
         })?;
 
         // Get PSM's pubkey commitment
-        let psm_commitment_hex = psm_client.get_pubkey().await.map_err(|e| {
+        let (psm_commitment_hex, _raw_pubkey) = psm_client.get_pubkey(None).await.map_err(|e| {
             MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
         })?;
 
@@ -156,6 +156,7 @@ impl MultisigClient {
             psm_commitment,
             tx_summary_commitment,
             &AccountSignature::from(ack_signature),
+            None,
         ))
     }
 

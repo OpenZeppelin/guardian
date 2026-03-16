@@ -8,4 +8,6 @@ pub struct StateObject {
     pub commitment: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub auth_scheme: String,
 }

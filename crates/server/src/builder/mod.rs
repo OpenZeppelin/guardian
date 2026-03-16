@@ -13,7 +13,7 @@ pub mod logging;
 pub mod state;
 pub mod storage;
 
-use crate::ack::Acknowledger;
+use crate::ack::AckRegistry;
 use crate::builder::handle::ServerHandle;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::clock::SystemClock;
@@ -23,6 +23,7 @@ use crate::middleware::{BodyLimitConfig, RateLimitConfig};
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
+use private_state_manager_shared::SignatureScheme;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -31,7 +32,7 @@ pub struct ServerBuilder {
     network_type: Option<NetworkType>,
     storage: Option<Arc<dyn StorageBackend>>,
     metadata: Option<Arc<dyn MetadataStore>>,
-    ack: Option<Acknowledger>,
+    ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
     logging_config: Option<LoggingConfig>,
     cors_layer: Option<tower_http::cors::CorsLayer>,
@@ -129,27 +130,26 @@ impl ServerBuilder {
         self
     }
 
-    /// Configure the acknowledger for server operations
+    /// Configure the ack registry for server operations
     ///
-    /// The acknowledger handles acknowledgement of server operations (signatures, timestamps, etc.).
+    /// The ack registry holds both Falcon and ECDSA signers. The correct signer
+    /// is selected per-account based on the account's auth scheme.
     ///
     /// # Example
     /// ```no_run
     /// use server::builder::ServerBuilder;
-    /// use server::ack::Acknowledger;
+    /// use server::ack::AckRegistry;
     /// use std::path::PathBuf;
-    /// use server::ack::MidenFalconRpoSigner;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let signer = MidenFalconRpoSigner::new(PathBuf::from("/var/psm/keystore"))?;
-    /// # let ack = Acknowledger::FilesystemMidenFalconRpo(signer);
+    /// # let ack = AckRegistry::new(PathBuf::from("/var/psm/keystore"))?;
     ///
     /// # let builder = ServerBuilder::new()
     /// #     .ack(ack);
     /// # Ok(())
     /// # }
     /// ```
-    pub fn ack(mut self, ack: Acknowledger) -> Self {
+    pub fn ack(mut self, ack: AckRegistry) -> Self {
         self.ack = Some(ack);
         self
     }
@@ -376,15 +376,16 @@ impl ServerBuilder {
             .metadata
             .ok_or("Metadata store not set. Use .metadata(...)")?;
 
-        let ack = self.ack.ok_or("Acknowledger not set. Use .ack(...)")?;
+        let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
 
         let network_client = MidenNetworkClient::from_network(network_type)
             .await
             .map_err(|e| format!("Failed to create network client: {e}"))?;
 
         tracing::info!(
-            server_commitment = %ack.commitment(),
-            "Server acknowledgement key initialized"
+            falcon_commitment = %ack.commitment(&SignatureScheme::Falcon),
+            ecdsa_commitment = %ack.commitment(&SignatureScheme::Ecdsa),
+            "Server acknowledgement keys initialized"
         );
 
         let app_state = AppState {

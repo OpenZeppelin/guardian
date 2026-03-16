@@ -285,6 +285,7 @@ async fn test_grpc_sign_delta_proposal_not_found() {
         signature: Some(ProposalSignature {
             scheme: "falcon".to_string(),
             signature: dummy_sig,
+            public_key: None,
         }),
     };
 
@@ -371,7 +372,7 @@ async fn test_grpc_get_pubkey() {
     let state = create_test_app_state().await;
     let service = create_grpc_service(state);
 
-    let get_pubkey_req = crate::api::grpc::state_manager::GetPubkeyRequest {};
+    let get_pubkey_req = crate::api::grpc::state_manager::GetPubkeyRequest { scheme: None };
 
     let request = Request::new(get_pubkey_req);
     let response = service.get_pubkey(request).await;

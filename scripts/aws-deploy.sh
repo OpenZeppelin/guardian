@@ -14,14 +14,26 @@ set -e
 #   --skip-build - Skip Docker build and push (use existing image)
 #
 # Optional environment variables:
-#   AWS_REGION       - AWS region (default: us-east-1)
+#   AWS_REGION            - AWS region (default: us-east-1)
+#   DOMAIN_NAME           - Root domain (default: openzeppelin.com)
+#   SUBDOMAIN             - Subdomain (default: psm)
+#   ROUTE53_ZONE_ID       - Route 53 hosted zone ID (optional)
+#   CLOUDFLARE_ZONE_ID    - Cloudflare zone ID (optional)
+#   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
+#   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
+#   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
+#   IMPORT_EXISTING       - Import existing AWS resources (true/false)
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
 ECR_REPO_NAME="psm-server"
-DOMAIN_NAME="openzeppelin.com"
-SUBDOMAIN="psm"
-ROUTE53_ZONE_ID=""
+DOMAIN_NAME="${DOMAIN_NAME-openzeppelin.com}"
+SUBDOMAIN="${SUBDOMAIN-psm}"
+ROUTE53_ZONE_ID="${ROUTE53_ZONE_ID-}"
+CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
+CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
+ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
+IMPORT_EXISTING="${IMPORT_EXISTING:-false}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -34,26 +46,6 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 get_aws_account_id() {
   aws sts get-caller-identity --query Account --output text
-}
-
-resolve_route53_zone() {
-  if [ -z "$DOMAIN_NAME" ] || [ -n "$ROUTE53_ZONE_ID" ]; then
-    return 0
-  fi
-
-  local hosted_zone_id
-  hosted_zone_id=$(aws route53 list-hosted-zones-by-name \
-    --dns-name "${DOMAIN_NAME}." \
-    --region "$AWS_REGION" \
-    --query "HostedZones[?Name=='${DOMAIN_NAME}.']|[0].Id" --output text 2>/dev/null || true)
-
-  if [ -n "$hosted_zone_id" ] && [ "$hosted_zone_id" != "None" ]; then
-    ROUTE53_ZONE_ID="${hosted_zone_id##*/}"
-    log_info "Using existing Route 53 hosted zone ${ROUTE53_ZONE_ID}"
-    return 0
-  fi
-  log_error "No Route 53 hosted zone found for ${DOMAIN_NAME}"
-  return 1
 }
 
 tf_state_has() {
@@ -95,6 +87,12 @@ cmd_import_existing_resources() {
   export TF_VAR_domain_name="$domain_name"
   export TF_VAR_subdomain="$subdomain"
   export TF_VAR_route53_zone_id="$route53_zone_id"
+  export TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"
+  export TF_VAR_cloudflare_proxied="$CLOUDFLARE_PROXIED"
+  export TF_VAR_acm_certificate_arn="$ACM_CERTIFICATE_ARN"
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    export TF_VAR_cloudflare_api_token="$CLOUDFLARE_API_TOKEN"
+  fi
 
   local failed=0
   local cluster_name="${TF_CLUSTER_NAME:-psm-cluster}"
@@ -269,8 +267,6 @@ cmd_build_and_push() {
 cmd_deploy() {
   log_info "Deploying PSM server with Terraform..."
 
-  resolve_route53_zone
-
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
   else
@@ -293,8 +289,12 @@ cmd_deploy() {
     terraform -chdir="$TF_DIR" init
   fi
 
-  cmd_import_existing_resources "$TF_DIR" "$IMAGE_URI" "$AWS_REGION" \
-    "$DOMAIN_NAME" "$SUBDOMAIN" "$ROUTE53_ZONE_ID"
+  if [ "$IMPORT_EXISTING" = true ]; then
+    cmd_import_existing_resources "$TF_DIR" "$IMAGE_URI" "$AWS_REGION" \
+      "$DOMAIN_NAME" "$SUBDOMAIN" "$ROUTE53_ZONE_ID"
+  else
+    log_info "Skipping resource imports (IMPORT_EXISTING=false)"
+  fi
 
   log_info "Applying Terraform..."
   local tf_vars=()
@@ -303,9 +303,17 @@ cmd_deploy() {
   if [ -n "$DOMAIN_NAME" ]; then
     tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
     tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
+    tf_vars+=("-var" "acm_certificate_arn=${ACM_CERTIFICATE_ARN}")
+    if [ -n "$CLOUDFLARE_ZONE_ID" ]; then
+      tf_vars+=("-var" "cloudflare_zone_id=${CLOUDFLARE_ZONE_ID}")
+      tf_vars+=("-var" "cloudflare_proxied=${CLOUDFLARE_PROXIED}")
+    fi
     if [ -n "$ROUTE53_ZONE_ID" ]; then
       tf_vars+=("-var" "route53_zone_id=${ROUTE53_ZONE_ID}")
     fi
+  fi
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    tf_vars+=("-var" "cloudflare_api_token=${CLOUDFLARE_API_TOKEN}")
   fi
 
   terraform -chdir="$TF_DIR" apply -auto-approve "${tf_vars[@]}"
@@ -384,8 +392,6 @@ cmd_cleanup() {
     exit 0
   fi
 
-  resolve_route53_zone
-
   local AWS_ACCOUNT_ID=$(get_aws_account_id)
   local IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest"
   local SCRIPT_DIR
@@ -409,9 +415,17 @@ cmd_cleanup() {
   if [ -n "$DOMAIN_NAME" ]; then
     tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
     tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
+    tf_vars+=("-var" "acm_certificate_arn=${ACM_CERTIFICATE_ARN}")
+    if [ -n "$CLOUDFLARE_ZONE_ID" ]; then
+      tf_vars+=("-var" "cloudflare_zone_id=${CLOUDFLARE_ZONE_ID}")
+      tf_vars+=("-var" "cloudflare_proxied=${CLOUDFLARE_PROXIED}")
+    fi
     if [ -n "$ROUTE53_ZONE_ID" ]; then
       tf_vars+=("-var" "route53_zone_id=${ROUTE53_ZONE_ID}")
     fi
+  fi
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    tf_vars+=("-var" "cloudflare_api_token=${CLOUDFLARE_API_TOKEN}")
   fi
 
   terraform -chdir="$TF_DIR" destroy -auto-approve "${tf_vars[@]}"
@@ -425,6 +439,27 @@ for arg in "$@"; do
   case "$arg" in
     --skip-build)
       SKIP_BUILD=true
+      ;;
+    --domain=*)
+      DOMAIN_NAME="${arg#*=}"
+      ;;
+    --subdomain=*)
+      SUBDOMAIN="${arg#*=}"
+      ;;
+    --route53-zone-id=*)
+      ROUTE53_ZONE_ID="${arg#*=}"
+      ;;
+    --cloudflare-zone-id=*)
+      CLOUDFLARE_ZONE_ID="${arg#*=}"
+      ;;
+    --cloudflare-proxied=*)
+      CLOUDFLARE_PROXIED="${arg#*=}"
+      ;;
+    --acm-certificate-arn=*)
+      ACM_CERTIFICATE_ARN="${arg#*=}"
+      ;;
+    --import-existing)
+      IMPORT_EXISTING=true
       ;;
     *)
       if [ -z "$COMMAND" ]; then
@@ -461,6 +496,13 @@ case "${COMMAND:-}" in
     echo ""
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
+    echo "  --domain=     Override root domain (default: openzeppelin.com)"
+    echo "  --subdomain=  Override subdomain (default: psm)"
+    echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"
+    echo "  --cloudflare-zone-id=  Cloudflare zone ID (optional)"
+    echo "  --cloudflare-proxied=  Cloudflare proxied setting (true/false)"
+    echo "  --acm-certificate-arn= ACM certificate ARN for HTTPS"
+    echo "  --import-existing Import existing AWS resources into state"
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
