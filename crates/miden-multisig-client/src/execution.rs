@@ -121,6 +121,7 @@ pub async fn build_final_transaction_request(
     signature_advice: Vec<SignatureAdvice>,
     metadata_threshold: Option<u64>,
     metadata_signer_commitments: Option<&[Word]>,
+    scheme: SignatureScheme,
 ) -> Result<TransactionRequest> {
     match transaction_type {
         TransactionType::P2ID {
@@ -166,6 +167,7 @@ pub async fn build_final_transaction_request(
                     *new_threshold,
                     salt,
                     signature_advice,
+                    scheme,
                 )?;
 
             Ok(tx_request)
@@ -185,6 +187,7 @@ pub async fn build_final_transaction_request(
                 signer_commitments,
                 salt,
                 signature_advice,
+                scheme,
             )?;
 
             Ok(tx_request)

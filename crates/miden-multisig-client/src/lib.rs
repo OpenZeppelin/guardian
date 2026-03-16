@@ -61,9 +61,13 @@ pub use account::MultisigAccount;
 
 // Key management and hex utilities
 pub use keystore::{
+    EcdsaPsmKeyStore,
     FalconKeyStore,
-    Signer,
+    KeyManager,
+    PsmKeyStore,
+    SchemeSecretKey,
     // Hex utilities
+    commitment_from_hex,
     ensure_hex_prefix,
     strip_hex_prefix,
     validate_commitment_hex,
@@ -86,5 +90,7 @@ pub use miden_client::rpc::Endpoint;
 pub use miden_protocol::Word;
 pub use miden_protocol::account::AccountId;
 pub use miden_protocol::asset::Asset;
+pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 pub use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 pub use miden_protocol::note::NoteId;
+pub use private_state_manager_shared::SignatureScheme;

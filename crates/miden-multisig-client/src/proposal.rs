@@ -3,14 +3,18 @@
 use std::collections::HashSet;
 
 use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
+};
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionSummary;
+use miden_protocol::utils::Deserializable;
 use miden_protocol::{Felt, Word};
 use private_state_manager_client::DeltaObject;
 use private_state_manager_shared::FromJson;
-use private_state_manager_shared::ProposalSignature;
 use private_state_manager_shared::hex::FromHex;
+use private_state_manager_shared::{ProposalSignature, SignatureScheme};
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
@@ -362,6 +366,8 @@ impl ProposalMetadata {
 pub struct ProposalSignatureEntry {
     pub signer_commitment: String,
     pub signature_hex: String,
+    pub scheme: SignatureScheme,
+    pub public_key_hex: Option<String>,
 }
 
 impl ProposalSignatureEntry {
@@ -369,8 +375,41 @@ impl ProposalSignatureEntry {
         word_from_hex(&self.signer_commitment).map_err(MultisigError::InvalidConfig)?;
 
         let signature_hex = ensure_hex_prefix(&self.signature_hex);
-        RpoFalconSignature::from_hex(&signature_hex)
-            .map_err(|e| MultisigError::Signature(format!("invalid proposal signature: {}", e)))?;
+        match self.scheme {
+            SignatureScheme::Falcon => {
+                RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
+                    MultisigError::Signature(format!("invalid proposal signature: {}", e))
+                })?;
+            }
+            SignatureScheme::Ecdsa => {
+                let signature_bytes =
+                    hex::decode(signature_hex.trim_start_matches("0x")).map_err(|e| {
+                        MultisigError::Signature(format!("invalid ECDSA signature hex: {}", e))
+                    })?;
+                EcdsaSignature::read_from_bytes(&signature_bytes).map_err(|e| {
+                    MultisigError::Signature(format!(
+                        "invalid ECDSA proposal signature bytes: {}",
+                        e
+                    ))
+                })?;
+
+                let public_key_hex = self.public_key_hex.as_ref().ok_or_else(|| {
+                    MultisigError::Signature(
+                        "ECDSA proposal signatures require a public key".to_string(),
+                    )
+                })?;
+                let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
+                    .map_err(|e| {
+                        MultisigError::Signature(format!("invalid ECDSA public key hex: {}", e))
+                    })?;
+                EcdsaPublicKey::read_from_bytes(&public_key_bytes).map_err(|e| {
+                    MultisigError::Signature(format!(
+                        "invalid ECDSA proposal public key bytes: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
 
         Ok(())
     }
@@ -455,14 +494,25 @@ impl Proposal {
         let mut seen_signers = HashSet::new();
         let mut signatures = Vec::with_capacity(payload.signatures.len());
         for signature in &payload.signatures {
-            let signature_hex = match &signature.signature {
-                ProposalSignature::Falcon { signature } => signature.clone(),
-                ProposalSignature::Ecdsa { signature, .. } => signature.clone(),
+            let (scheme, signature_hex, public_key_hex) = match &signature.signature {
+                ProposalSignature::Falcon { signature } => {
+                    (SignatureScheme::Falcon, signature.clone(), None)
+                }
+                ProposalSignature::Ecdsa {
+                    signature,
+                    public_key,
+                } => (
+                    SignatureScheme::Ecdsa,
+                    signature.clone(),
+                    public_key.clone(),
+                ),
             };
 
             let entry = ProposalSignatureEntry {
                 signer_commitment: signature.signer_id.clone(),
                 signature_hex,
+                scheme,
+                public_key_hex,
             };
             entry.validate()?;
 

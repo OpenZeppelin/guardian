@@ -7,7 +7,6 @@ mod config;
 mod signature;
 
 pub use config::{
-    build_update_procedure_threshold_transaction_request,
-    build_update_signers_transaction_request,
+    build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
 };
 pub use signature::{build_ecdsa_signature_advice_entry, build_signature_advice_entry};

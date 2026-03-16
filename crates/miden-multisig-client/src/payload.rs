@@ -1,11 +1,10 @@
 //! Payload types for multisig transaction proposals.
 
 use miden_protocol::transaction::TransactionSummary;
-use private_state_manager_shared::hex::IntoHex;
 use private_state_manager_shared::{DeltaSignature, ProposalSignature, ToJson};
 use serde::{Deserialize, Serialize};
 
-use crate::keystore::Signer;
+use crate::keystore::KeyManager;
 use crate::procedures::ProcedureName;
 
 /// Metadata for multisig transaction proposals.
@@ -70,13 +69,19 @@ impl ProposalPayload {
     }
 
     /// Adds the proposer's signature.
-    pub fn with_signature(mut self, signer: &dyn Signer, message: miden_protocol::Word) -> Self {
-        let signature_hex = signer.sign_word(message).into_hex();
+    pub fn with_signature(
+        mut self,
+        key_manager: &dyn KeyManager,
+        message: miden_protocol::Word,
+    ) -> Self {
+        let signature_hex = key_manager.sign_hex(message);
         self.signatures.push(DeltaSignature {
-            signer_id: signer.commitment_hex(),
-            signature: ProposalSignature::Falcon {
-                signature: signature_hex,
-            },
+            signer_id: key_manager.commitment_hex(),
+            signature: ProposalSignature::from_scheme(
+                key_manager.scheme(),
+                signature_hex,
+                key_manager.public_key_hex(),
+            ),
         });
         self
     }

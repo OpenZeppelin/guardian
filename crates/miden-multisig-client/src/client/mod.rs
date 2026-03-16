@@ -15,9 +15,7 @@ mod helpers;
 mod io;
 mod notes;
 mod offline;
-mod proposal;
 mod proposals;
-mod state_codec;
 
 use std::path::PathBuf;
 
@@ -29,9 +27,8 @@ use miden_protocol::account::AccountId;
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
 use crate::export::ExportedProposal;
-use crate::keystore::Signer;
+use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
-use std::sync::Arc;
 
 pub use notes::{ConsumableNote, NoteFilter};
 
@@ -84,7 +81,7 @@ pub struct StateVerificationResult {
 /// ```
 pub struct MultisigClient {
     pub(crate) miden_client: Client<()>,
-    pub(crate) signer: Arc<dyn Signer>,
+    pub(crate) key_manager: Box<dyn KeyManager>,
     /// Private State Manager server endpoint.
     pub(crate) psm_endpoint: String,
     /// The multisig account managed by this client.
@@ -104,14 +101,14 @@ impl MultisigClient {
     /// Creates a new MultisigClient (internal use, prefer builder).
     pub(crate) fn new(
         miden_client: Client<()>,
-        signer: Arc<dyn Signer>,
+        key_manager: Box<dyn KeyManager>,
         psm_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
     ) -> Self {
         Self {
             miden_client,
-            signer,
+            key_manager,
             psm_endpoint,
             account: None,
             account_dir,
@@ -141,11 +138,16 @@ impl MultisigClient {
 
     /// Returns the user's public key commitment as a Word.
     pub fn user_commitment(&self) -> Word {
-        self.signer.commitment()
+        self.key_manager.commitment()
     }
 
     /// Returns the user's public key commitment as a hex string.
     pub fn user_commitment_hex(&self) -> String {
-        self.signer.commitment_hex()
+        self.key_manager.commitment_hex()
+    }
+
+    /// Returns a reference to the key manager.
+    pub fn key_manager(&self) -> &dyn KeyManager {
+        self.key_manager.as_ref()
     }
 }

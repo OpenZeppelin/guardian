@@ -95,25 +95,6 @@ pub fn build_update_signers_transaction_request<I>(
     signer_commitments: &[Word],
     salt: Word,
     extra_advice: I,
-) -> Result<(TransactionRequest, Word)>
-where
-    I: IntoIterator<Item = (Word, Vec<Felt>)>,
-{
-    build_update_signers_transaction_request_for_scheme(
-        threshold,
-        signer_commitments,
-        salt,
-        extra_advice,
-        SignatureScheme::Falcon,
-    )
-}
-
-/// Builds an update_signers transaction request for a specific auth scheme.
-pub fn build_update_signers_transaction_request_for_scheme<I>(
-    threshold: u64,
-    signer_commitments: &[Word],
-    salt: Word,
-    extra_advice: I,
     scheme: SignatureScheme,
 ) -> Result<(TransactionRequest, Word)>
 where
@@ -137,8 +118,13 @@ where
 pub fn build_update_procedure_threshold_script(
     procedure: ProcedureName,
     threshold: u32,
+    scheme: SignatureScheme,
 ) -> Result<TransactionScript> {
-    let multisig_library = get_multisig_library().map_err(|e| {
+    let multisig_library = match scheme {
+        SignatureScheme::Falcon => get_multisig_library(),
+        SignatureScheme::Ecdsa => get_multisig_ecdsa_library(),
+    }
+    .map_err(|e| {
         MultisigError::TransactionExecution(format!("failed to get multisig library: {}", e))
     })?;
 
@@ -175,12 +161,13 @@ pub fn build_update_procedure_threshold_transaction_request<I>(
     threshold: u32,
     salt: Word,
     extra_advice: I,
+    scheme: SignatureScheme,
 ) -> Result<(TransactionRequest, Word)>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
     let (config_hash, _) = build_procedure_threshold_advice(procedure, threshold);
-    let script = build_update_procedure_threshold_script(procedure, threshold)?;
+    let script = build_update_procedure_threshold_script(procedure, threshold, scheme)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)

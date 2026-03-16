@@ -9,16 +9,16 @@ use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::utils::serde::Serializable;
-use private_state_manager_client::PsmClient;
+use private_state_manager_client::{Auth, EcdsaSigner, FalconRpoSigner, PsmClient};
 use private_state_manager_shared::hex::FromHex;
-use private_state_manager_shared::{FromJson, ToJson};
+use private_state_manager_shared::ToJson;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result};
 use crate::execution::build_final_transaction_request;
-use crate::keystore::word_from_hex;
+use crate::keystore::{SchemeSecretKey, word_from_hex};
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::word_to_hex;
 
@@ -33,7 +33,13 @@ impl MultisigClient {
     /// Creates an authenticated PSM client.
     pub(crate) async fn create_authenticated_psm_client(&self) -> Result<PsmClient> {
         let client = self.create_psm_client().await?;
-        Ok(client.with_signer(self.signer.clone()))
+        let auth = match self.key_manager.secret_key() {
+            SchemeSecretKey::Falcon(secret_key) => {
+                Auth::FalconRpoSigner(FalconRpoSigner::new(secret_key))
+            }
+            SchemeSecretKey::Ecdsa(secret_key) => Auth::EcdsaSigner(EcdsaSigner::new(secret_key)),
+        };
+        Ok(client.with_auth(auth))
     }
 
     pub(crate) async fn get_on_chain_account_commitment(
@@ -187,6 +193,7 @@ impl MultisigClient {
             Vec::new(),
             proposal.metadata.new_threshold,
             Some(signer_commitments.as_slice()),
+            self.key_manager.scheme(),
         )
         .await?;
 
@@ -207,6 +214,7 @@ impl MultisigClient {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn proposal_id_from_delta_payload(delta_payload: &str) -> Result<String> {
         let payload_json: serde_json::Value = serde_json::from_str(delta_payload).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to parse proposal delta payload: {}", e))

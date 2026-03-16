@@ -1,3 +1,4 @@
+use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
 use crate::keystore::Signer;
 use crate::proto::state_manager_client::StateManagerClient;
@@ -29,6 +30,7 @@ use tonic::transport::Channel;
 /// All methods that interact with account data require authentication via a configured signer.
 pub struct PsmClient {
     client: StateManagerClient<Channel>,
+    auth: Option<Auth>,
     signer: Option<Arc<dyn Signer>>,
 }
 
@@ -42,8 +44,15 @@ impl PsmClient {
         let client = StateManagerClient::connect(endpoint).await?;
         Ok(Self {
             client,
+            auth: None,
             signer: None,
         })
+    }
+
+    /// Configures scheme-aware authentication for authenticated PSM requests.
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = Some(auth);
+        self
     }
 
     /// Configures the signer used for authenticated PSM requests.
@@ -52,14 +61,20 @@ impl PsmClient {
         self
     }
 
-    /// Returns the hex-encoded public key of the configured signer, if any.
-    pub fn signer_pubkey_hex(&self) -> Result<String, ClientError> {
-        self.signer
+    /// Returns the hex-encoded public key of the configured auth or signer.
+    pub fn auth_pubkey_hex(&self) -> Result<String, ClientError> {
+        self.auth
             .as_ref()
-            .map(|signer| signer.public_key_hex())
+            .map(|auth| auth.public_key_hex())
+            .or_else(|| self.signer.as_ref().map(|signer| signer.public_key_hex()))
             .ok_or_else(|| {
                 ClientError::InvalidResponse("PSM client has no signer configured".to_string())
             })
+    }
+
+    /// Returns the hex-encoded public key of the configured signer, if any.
+    pub fn signer_pubkey_hex(&self) -> Result<String, ClientError> {
+        self.auth_pubkey_hex()
     }
 
     fn add_auth_metadata(
@@ -67,7 +82,27 @@ impl PsmClient {
         request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
     ) -> ClientResult<()> {
-        if let Some(signer) = &self.signer {
+        if let Some(auth) = &self.auth {
+            let pubkey_hex = auth.public_key_hex();
+            let timestamp = Utc::now().timestamp_millis();
+            let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
+            let signature_hex = auth.sign_request_message(account_id, timestamp, request_payload);
+
+            let pubkey_metadata = MetadataValue::try_from(&pubkey_hex)
+                .map_err(|e| ClientError::InvalidResponse(format!("Invalid pubkey: {e}")))?;
+            let signature_metadata = MetadataValue::try_from(&signature_hex)
+                .map_err(|e| ClientError::InvalidResponse(format!("Invalid signature: {e}")))?;
+            let timestamp_metadata = MetadataValue::try_from(timestamp.to_string())
+                .map_err(|e| ClientError::InvalidResponse(format!("Invalid timestamp: {e}")))?;
+
+            request.metadata_mut().insert("x-pubkey", pubkey_metadata);
+            request
+                .metadata_mut()
+                .insert("x-signature", signature_metadata);
+            request
+                .metadata_mut()
+                .insert("x-timestamp", timestamp_metadata);
+        } else if let Some(signer) = &self.signer {
             let pubkey_hex = signer.public_key_hex();
             let timestamp = Utc::now().timestamp_millis();
             let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());

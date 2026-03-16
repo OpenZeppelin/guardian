@@ -5,8 +5,7 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::{ProposalSignature, SignatureScheme};
-use private_state_manager_shared::hex::IntoHex;
+use private_state_manager_shared::ProposalSignature;
 
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
@@ -67,7 +66,7 @@ impl MultisigClient {
         let account = self.require_account()?;
 
         // Check if user is a cosigner
-        let user_commitment = self.signer.commitment();
+        let user_commitment = self.key_manager.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
@@ -76,18 +75,20 @@ impl MultisigClient {
         let proposal = self.get_proposal(&account_id, proposal_id).await?;
 
         // Check if already signed
-        if proposal.has_signed(&self.signer.commitment_hex()) {
+        if proposal.has_signed(&self.key_manager.commitment_hex()) {
             return Err(MultisigError::AlreadySigned);
         }
 
         // Sign the transaction summary commitment
         let tx_commitment = proposal.tx_summary.to_commitment();
-        let signature_hex = self.signer.sign_word(tx_commitment).into_hex();
+        let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
         // Build the ProposalSignature
-        let signature = ProposalSignature::Falcon {
-            signature: signature_hex,
-        };
+        let signature = ProposalSignature::from_scheme(
+            self.key_manager.scheme(),
+            signature_hex,
+            self.key_manager.public_key_hex(),
+        );
 
         // Push signature to PSM
         let mut psm_client = self.create_authenticated_psm_client().await?;
@@ -140,8 +141,8 @@ impl MultisigClient {
             .map(|signature| SignatureInput {
                 signer_commitment: signature.signer_commitment,
                 signature_hex: signature.signature_hex,
-                scheme: SignatureScheme::Falcon,
-                public_key_hex: None,
+                scheme: signature.scheme,
+                public_key_hex: signature.public_key_hex,
             })
             .collect();
 
@@ -197,6 +198,7 @@ impl MultisigClient {
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
+            self.key_manager.scheme(),
         )
         .await?;
 
@@ -240,7 +242,7 @@ impl MultisigClient {
                 &mut self.miden_client,
                 &mut psm_client,
                 &account,
-                self.signer.as_ref(),
+                self.key_manager.as_ref(),
             )
             .await
     }

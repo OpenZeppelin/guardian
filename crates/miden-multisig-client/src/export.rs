@@ -8,9 +8,14 @@
 use std::collections::HashSet;
 
 use miden_protocol::account::AccountId;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
+};
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::transaction::TransactionSummary;
+use miden_protocol::utils::Deserializable;
 use private_state_manager_shared::FromJson;
+use private_state_manager_shared::SignatureScheme;
 use private_state_manager_shared::hex::FromHex;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +26,10 @@ use crate::utils::hex_body_eq;
 
 /// Current export format version.
 pub const EXPORT_VERSION: u32 = 1;
+
+fn default_signature_scheme() -> SignatureScheme {
+    SignatureScheme::Falcon
+}
 
 /// Exported proposal for offline sharing.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,6 +54,10 @@ pub struct ExportedProposal {
 pub struct ExportedSignature {
     pub signer_commitment: String,
     pub signature: String,
+    #[serde(default = "default_signature_scheme")]
+    pub scheme: SignatureScheme,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key_hex: Option<String>,
 }
 
 /// Metadata needed for proposal reconstruction.
@@ -124,9 +137,46 @@ impl ExportedProposal {
             word_from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
 
             let signature_hex = ensure_hex_prefix(&signature.signature);
-            RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
-                MultisigError::Signature(format!("invalid exported signature: {}", e))
-            })?;
+            match signature.scheme {
+                SignatureScheme::Falcon => {
+                    RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
+                        MultisigError::Signature(format!("invalid exported signature: {}", e))
+                    })?;
+                }
+                SignatureScheme::Ecdsa => {
+                    let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
+                        .map_err(|e| {
+                            MultisigError::Signature(format!(
+                                "invalid ECDSA exported signature hex: {}",
+                                e
+                            ))
+                        })?;
+                    EcdsaSignature::read_from_bytes(&signature_bytes).map_err(|e| {
+                        MultisigError::Signature(format!(
+                            "invalid ECDSA exported signature bytes: {}",
+                            e
+                        ))
+                    })?;
+                    let public_key_hex = signature.public_key_hex.as_ref().ok_or_else(|| {
+                        MultisigError::Signature(
+                            "ECDSA exported signatures require a public key".to_string(),
+                        )
+                    })?;
+                    let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
+                        .map_err(|e| {
+                            MultisigError::Signature(format!(
+                                "invalid ECDSA exported public key hex: {}",
+                                e
+                            ))
+                        })?;
+                    EcdsaPublicKey::read_from_bytes(&public_key_bytes).map_err(|e| {
+                        MultisigError::Signature(format!(
+                            "invalid ECDSA exported public key bytes: {}",
+                            e
+                        ))
+                    })?;
+                }
+            }
 
             if !seen_signers.insert(signature.signer_commitment.to_lowercase()) {
                 return Err(MultisigError::InvalidConfig(format!(
@@ -268,6 +318,8 @@ impl ExportedProposal {
                 .map(|signature| ProposalSignatureEntry {
                     signer_commitment: signature.signer_commitment.clone(),
                     signature_hex: signature.signature.clone(),
+                    scheme: signature.scheme,
+                    public_key_hex: signature.public_key_hex.clone(),
                 })
                 .collect(),
             metadata,
@@ -317,9 +369,17 @@ impl ExportedProposal {
     pub fn add_signature(&mut self, signature: ExportedSignature) -> Result<()> {
         word_from_hex(&signature.signer_commitment).map_err(MultisigError::InvalidConfig)?;
 
-        let signature_hex = ensure_hex_prefix(&signature.signature);
-        RpoFalconSignature::from_hex(&signature_hex)
-            .map_err(|e| MultisigError::Signature(format!("invalid exported signature: {}", e)))?;
+        Self {
+            version: self.version,
+            account_id: self.account_id.clone(),
+            id: self.id.clone(),
+            nonce: self.nonce,
+            tx_summary: self.tx_summary.clone(),
+            signatures: vec![signature.clone()],
+            signatures_required: self.signatures_required,
+            metadata: self.metadata.clone(),
+        }
+        .validate_signatures()?;
 
         if self.signatures.iter().any(|s| {
             s.signer_commitment
@@ -379,6 +439,8 @@ mod tests {
         let sig = ExportedSignature {
             signer_commitment: "0xabc123".to_string(),
             signature: "0xdef456".to_string(),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         };
 
         let json = serde_json::to_string(&sig).expect("should serialize");
@@ -460,12 +522,16 @@ mod tests {
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         });
         assert!(!proposal.is_ready());
 
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner2".to_string(),
             signature: "0xsig2".to_string(),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         });
         assert!(proposal.is_ready());
     }
@@ -508,6 +574,8 @@ mod tests {
         proposal.signatures.push(ExportedSignature {
             signer_commitment: "0xsigner1".to_string(),
             signature: "0xsig1".to_string(),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         });
 
         assert_eq!(proposal.signature_counts(), (1, 3));
@@ -526,10 +594,14 @@ mod tests {
                 ExportedSignature {
                     signer_commitment: "0xSigner1".to_string(),
                     signature: "0xsig1".to_string(),
+                    scheme: SignatureScheme::Falcon,
+                    public_key_hex: None,
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
+                    scheme: SignatureScheme::Falcon,
+                    public_key_hex: None,
                 },
             ],
             signatures_required: 3,
@@ -555,10 +627,14 @@ mod tests {
                 ExportedSignature {
                     signer_commitment: "0xsigner1".to_string(),
                     signature: "0xsig1".to_string(),
+                    scheme: SignatureScheme::Falcon,
+                    public_key_hex: None,
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
+                    scheme: SignatureScheme::Falcon,
+                    public_key_hex: None,
                 },
             ],
             signatures_required: 3,
@@ -621,6 +697,8 @@ mod tests {
                 hex::encode(secret_key.public_key().to_commitment().to_bytes())
             ),
             signature: format!("0x{}", hex::encode(signature.to_bytes())),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
         }
     }
 

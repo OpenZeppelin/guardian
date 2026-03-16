@@ -10,7 +10,7 @@ use private_state_manager_shared::ToJson;
 
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
-use crate::keystore::{Signer, ensure_hex_prefix};
+use crate::keystore::{KeyManager, ensure_hex_prefix};
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{Proposal, ProposalMetadata, TransactionType};
@@ -31,7 +31,7 @@ use super::{
 /// use miden_multisig_client::TransactionType;
 ///
 /// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment })
-///     .build(&mut miden_client, &mut psm_client, &account, signer)
+///     .build(&mut miden_client, &mut psm_client, &account, key_manager)
 ///     .await?;
 /// ```
 pub struct ProposalBuilder {
@@ -50,16 +50,28 @@ impl ProposalBuilder {
         miden_client: &mut Client<()>,
         psm_client: &mut PsmClient,
         account: &MultisigAccount,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         match self.transaction_type {
             TransactionType::AddCosigner { new_commitment } => {
-                self.build_add_cosigner(miden_client, psm_client, account, new_commitment, signer)
-                    .await
+                self.build_add_cosigner(
+                    miden_client,
+                    psm_client,
+                    account,
+                    new_commitment,
+                    key_manager,
+                )
+                .await
             }
             TransactionType::RemoveCosigner { commitment } => {
-                self.build_remove_cosigner(miden_client, psm_client, account, commitment, signer)
-                    .await
+                self.build_remove_cosigner(
+                    miden_client,
+                    psm_client,
+                    account,
+                    commitment,
+                    key_manager,
+                )
+                .await
             }
             TransactionType::P2ID {
                 recipient,
@@ -73,7 +85,7 @@ impl ProposalBuilder {
                     recipient,
                     faucet_id,
                     amount,
-                    signer,
+                    key_manager,
                 )
                 .await
             }
@@ -83,7 +95,7 @@ impl ProposalBuilder {
                     psm_client,
                     account,
                     note_ids.clone(),
-                    signer,
+                    key_manager,
                 )
                 .await
             }
@@ -97,7 +109,7 @@ impl ProposalBuilder {
                     account,
                     new_commitment,
                     new_endpoint.clone(),
-                    signer,
+                    key_manager,
                 )
                 .await
             }
@@ -111,7 +123,7 @@ impl ProposalBuilder {
                     account,
                     procedure,
                     new_threshold,
-                    signer,
+                    key_manager,
                 )
                 .await
             }
@@ -139,7 +151,7 @@ impl ProposalBuilder {
         psm_client: &mut PsmClient,
         account: &MultisigAccount,
         new_commitment: Word,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
@@ -162,6 +174,7 @@ impl ProposalBuilder {
             &current_signers,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
 
         // Execute to get the TransactionSummary
@@ -187,12 +200,12 @@ impl ProposalBuilder {
             new_psm_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
-            signers: vec![signer.commitment_hex()],
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
-            .with_signature(signer, tx_commitment)
+            .with_signature(key_manager, tx_commitment)
             .with_add_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -225,7 +238,7 @@ impl ProposalBuilder {
         psm_client: &mut PsmClient,
         account: &MultisigAccount,
         commitment_to_remove: Word,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
@@ -264,6 +277,7 @@ impl ProposalBuilder {
             &new_signers,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
 
         // Execute to get the TransactionSummary
@@ -289,12 +303,12 @@ impl ProposalBuilder {
             new_psm_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
-            signers: vec![signer.commitment_hex()],
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
-            .with_signature(signer, tx_commitment)
+            .with_signature(key_manager, tx_commitment)
             .with_remove_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -332,7 +346,7 @@ impl ProposalBuilder {
         recipient: AccountId,
         faucet_id: AccountId,
         amount: u64,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
@@ -375,12 +389,12 @@ impl ProposalBuilder {
             new_psm_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
-            signers: vec![signer.commitment_hex()],
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
-            .with_signature(signer, tx_commitment)
+            .with_signature(key_manager, tx_commitment)
             .with_payment_metadata(
                 recipient.to_string(),
                 faucet_id.to_string(),
@@ -418,7 +432,7 @@ impl ProposalBuilder {
         psm_client: &mut PsmClient,
         account: &MultisigAccount,
         note_ids: Vec<NoteId>,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
@@ -459,12 +473,12 @@ impl ProposalBuilder {
             new_psm_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
-            signers: vec![signer.commitment_hex()],
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
-            .with_signature(signer, tx_commitment)
+            .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata(&note_ids_hex, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 
@@ -495,7 +509,7 @@ impl ProposalBuilder {
         account: &MultisigAccount,
         new_psm_pubkey: Word,
         new_psm_endpoint: String,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
@@ -531,12 +545,12 @@ impl ProposalBuilder {
             new_psm_endpoint: Some(new_psm_endpoint.clone()),
             target_procedure: None,
             required_signatures: Some(required_signatures),
-            signers: vec![signer.commitment_hex()],
+            signers: vec![key_manager.commitment_hex()],
         };
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
-            .with_signature(signer, tx_commitment)
+            .with_signature(key_manager, tx_commitment)
             .with_psm_update_metadata(
                 word_to_hex(&new_psm_pubkey),
                 new_psm_endpoint.clone(),
@@ -573,7 +587,7 @@ impl ProposalBuilder {
         account: &MultisigAccount,
         procedure: ProcedureName,
         new_threshold: u32,
-        signer: &dyn Signer,
+        key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures = account
@@ -586,6 +600,7 @@ impl ProposalBuilder {
             new_threshold,
             salt,
             std::iter::empty(),
+            key_manager.scheme(),
         )?;
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
@@ -604,11 +619,11 @@ impl ProposalBuilder {
             new_psm_endpoint: None,
             target_procedure: Some(procedure.to_string()),
             required_signatures: Some(required_signatures),
-            signers: vec![signer.commitment_hex()],
+            signers: vec![key_manager.commitment_hex()],
         };
 
         let payload = ProposalPayload::new(&tx_summary)
-            .with_signature(signer, tx_commitment)
+            .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 

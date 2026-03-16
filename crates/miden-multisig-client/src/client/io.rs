@@ -4,6 +4,7 @@
 //! importing them back for offline sharing workflows.
 
 use private_state_manager_client::delta_status::Status;
+use private_state_manager_shared::SignatureScheme;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -91,9 +92,16 @@ impl MultisigClient {
         let mut signatures = Vec::new();
         for cosigner_sig in pending.cosigner_sigs.iter() {
             if let Some(ref sig) = cosigner_sig.signature {
+                let scheme = if sig.scheme.eq_ignore_ascii_case("ecdsa") {
+                    SignatureScheme::Ecdsa
+                } else {
+                    SignatureScheme::Falcon
+                };
                 signatures.push(ExportedSignature {
                     signer_commitment: cosigner_sig.signer_id.clone(),
                     signature: sig.signature.clone(),
+                    scheme,
+                    public_key_hex: sig.public_key.clone(),
                 });
             }
         }

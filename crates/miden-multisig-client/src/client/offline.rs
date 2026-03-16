@@ -5,8 +5,7 @@
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::{SignatureScheme, ToJson};
-use private_state_manager_shared::hex::IntoHex;
+use private_state_manager_shared::ToJson;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -84,7 +83,7 @@ impl MultisigClient {
                 .await?;
 
         let tx_commitment = tx_summary.to_commitment();
-        let signature_hex = self.signer.sign_word(tx_commitment).into_hex();
+        let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
         let id = format!(
             "0x{}",
@@ -103,8 +102,10 @@ impl MultisigClient {
             nonce: account.nonce() + 1,
             tx_summary: tx_summary.to_json(),
             signatures: vec![ExportedSignature {
-                signer_commitment: self.signer.commitment_hex(),
+                signer_commitment: self.key_manager.commitment_hex(),
                 signature: signature_hex,
+                scheme: self.key_manager.scheme(),
+                public_key_hex: self.key_manager.public_key_hex(),
             }],
             signatures_required,
             metadata,
@@ -142,7 +143,7 @@ impl MultisigClient {
         proposal.validate(Some(account_id))?;
 
         // Check if user is a cosigner
-        let user_commitment = self.signer.commitment();
+        let user_commitment = self.key_manager.commitment();
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
@@ -150,7 +151,7 @@ impl MultisigClient {
         Self::ensure_proposal_account_id(&proposal.account_id, &account_id)?;
 
         // Check if already signed
-        let user_commitment_hex = self.signer.commitment_hex();
+        let user_commitment_hex = self.key_manager.commitment_hex();
         if proposal.signatures.iter().any(|s| {
             s.signer_commitment
                 .eq_ignore_ascii_case(&user_commitment_hex)
@@ -159,12 +160,14 @@ impl MultisigClient {
         }
         // Sign the transaction summary commitment
         let tx_commitment = bound_proposal.tx_summary.to_commitment();
-        let signature_hex = self.signer.sign_word(tx_commitment).into_hex();
+        let signature_hex = self.key_manager.sign_hex(tx_commitment);
 
         // Add signature to proposal
         proposal.add_signature(ExportedSignature {
             signer_commitment: user_commitment_hex,
             signature: signature_hex,
+            scheme: self.key_manager.scheme(),
+            public_key_hex: self.key_manager.public_key_hex(),
         })?;
 
         Ok(())
@@ -215,8 +218,8 @@ impl MultisigClient {
             .map(|sig| SignatureInput {
                 signer_commitment: sig.signer_commitment.clone(),
                 signature_hex: sig.signature.clone(),
-                scheme: SignatureScheme::Falcon,
-                public_key_hex: None,
+                scheme: sig.scheme,
+                public_key_hex: sig.public_key_hex.clone(),
             })
             .collect();
 
@@ -240,6 +243,7 @@ impl MultisigClient {
             signature_advice,
             None,
             None,
+            self.key_manager.scheme(),
         )
         .await?;
 

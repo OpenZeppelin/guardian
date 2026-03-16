@@ -7,12 +7,13 @@ use miden_client::crypto::RpoRandomCoin;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client::{Client, ExecutionOptions};
 use miden_client_sqlite_store::SqliteStore;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
-use crate::keystore::{FalconKeyStore, Signer};
+use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
 
 /// Builder for constructing MultisigClient instances.
 ///
@@ -34,7 +35,7 @@ pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
     psm_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
-    signer: Option<Arc<dyn Signer>>,
+    key_manager: Option<Box<dyn KeyManager>>,
 }
 
 impl Default for MultisigClientBuilder {
@@ -50,7 +51,7 @@ impl MultisigClientBuilder {
             miden_endpoint: None,
             psm_endpoint: None,
             account_dir: None,
-            signer: None,
+            key_manager: None,
         }
     }
 
@@ -74,21 +75,33 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Sets a custom signer for PSM authentication and proposal signing.
-    pub fn signer(mut self, signer: Arc<dyn Signer>) -> Self {
-        self.signer = Some(signer);
+    /// Sets a custom key manager for PSM authentication and proposal signing.
+    pub fn key_manager(mut self, key_manager: Box<dyn KeyManager>) -> Self {
+        self.key_manager = Some(key_manager);
         self
     }
 
     /// Uses a FalconKeyStore with the given secret key.
     pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
-        self.signer = Some(Arc::new(FalconKeyStore::new(secret_key)));
+        self.key_manager = Some(Box::new(PsmKeyStore::new(secret_key)));
+        self
+    }
+
+    /// Uses an ECDSA key store with the given secret key.
+    pub fn with_ecdsa_secret_key(mut self, secret_key: EcdsaSecretKey) -> Self {
+        self.key_manager = Some(Box::new(EcdsaPsmKeyStore::new(secret_key)));
         self
     }
 
     /// Generates a new random key for PSM authentication.
     pub fn generate_key(mut self) -> Self {
-        self.signer = Some(Arc::new(FalconKeyStore::generate()));
+        self.key_manager = Some(Box::new(PsmKeyStore::generate()));
+        self
+    }
+
+    /// Generates a new random ECDSA key for PSM authentication.
+    pub fn generate_ecdsa_key(mut self) -> Self {
+        self.key_manager = Some(Box::new(EcdsaPsmKeyStore::generate()));
         self
     }
 
@@ -106,7 +119,7 @@ impl MultisigClientBuilder {
             .account_dir
             .ok_or_else(|| MultisigError::MissingConfig("account_dir".to_string()))?;
 
-        let signer = self.signer.ok_or(MultisigError::NoSigner)?;
+        let key_manager = self.key_manager.ok_or(MultisigError::NoSigner)?;
 
         // Ensure account directory exists
         std::fs::create_dir_all(&account_dir).map_err(|e| {
@@ -117,7 +130,7 @@ impl MultisigClientBuilder {
 
         Ok(MultisigClient::new(
             miden_client,
-            signer,
+            key_manager,
             psm_endpoint,
             account_dir,
             miden_endpoint,

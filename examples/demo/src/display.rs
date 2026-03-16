@@ -10,6 +10,15 @@ pub fn shorten_hex(hex: &str) -> String {
     format!("{}...{}", prefix, suffix)
 }
 
+pub fn shorten_hex_32(hex: &str) -> String {
+    let stripped = hex
+        .strip_prefix("0x")
+        .or_else(|| hex.strip_prefix("0X"))
+        .unwrap_or(hex);
+    let truncated_len = stripped.len().min(32);
+    format!("0x{}", &stripped[..truncated_len])
+}
+
 pub fn print_banner() {
     println!("\n╔═══════════════════════════╗");
     println!("║      Multisig Demo        ║");
@@ -39,7 +48,7 @@ pub fn print_account_info(account: &MultisigAccount) {
     println!("  Nonce:          {}", account.nonce());
 }
 
-pub fn print_storage_overview(account: &MultisigAccount, psm_endpoint: &str) {
+pub fn print_storage_overview(account: &MultisigAccount, ecdsa_mode: bool, psm_endpoint: &str) {
     print_section("Storage Overview");
 
     match account.threshold() {
@@ -52,7 +61,12 @@ pub fn print_storage_overview(account: &MultisigAccount, psm_endpoint: &str) {
 
     println!("  Cosigner Commitments:");
     for (i, commitment) in account.cosigner_commitments_hex().iter().enumerate() {
-        println!("    [{}] {}", i, shorten_hex(commitment));
+        let display = if ecdsa_mode {
+            shorten_hex_32(commitment)
+        } else {
+            shorten_hex(commitment)
+        };
+        println!("    [{}] {}", i, display);
     }
 
     match account.procedure_threshold_overrides() {
