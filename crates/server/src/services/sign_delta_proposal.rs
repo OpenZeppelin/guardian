@@ -328,8 +328,12 @@ mod tests {
             },
         ))));
 
-        let pending_proposal =
-            create_pending_proposal(account_id.clone(), 1, proposer.commitment_hex.clone(), vec![]);
+        let pending_proposal = create_pending_proposal(
+            account_id.clone(),
+            1,
+            proposer.commitment_hex.clone(),
+            vec![],
+        );
 
         let storage = storage
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))

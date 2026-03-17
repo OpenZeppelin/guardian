@@ -480,11 +480,7 @@ impl TestEcdsaSigner {
         self.sign_request(account_id_hex, &request_payload)
     }
 
-    pub fn sign_with_timestamp(
-        &self,
-        account_id_hex: &str,
-        timestamp: i64,
-    ) -> (String, i64) {
+    pub fn sign_with_timestamp(&self, account_id_hex: &str, timestamp: i64) -> (String, i64) {
         self.sign_with_timestamp_and_request(
             account_id_hex,
             timestamp,
