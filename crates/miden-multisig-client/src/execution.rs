@@ -5,19 +5,13 @@ use std::collections::HashSet;
 use miden_client::Client;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
-use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::asset::FungibleAsset;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature as EcdsaSignature;
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
-use miden_protocol::utils::Deserializable;
 use miden_protocol::{Felt, Word};
 use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::hex::FromHex;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
-use crate::transaction::build_ecdsa_signature_advice_entry;
 
 /// Signature advice entry: (key, prepared_signature_values)
 pub type SignatureAdvice = (Word, Vec<Felt>);
@@ -71,42 +65,20 @@ pub fn collect_signature_advice(
         let commitment =
             word_from_hex(&sig_input.signer_commitment).map_err(MultisigError::HexDecode)?;
 
-        let sig_hex = ensure_hex_prefix(&sig_input.signature_hex);
-        match sig_input.scheme {
-            SignatureScheme::Falcon => {
-                let rpo_sig = RpoFalconSignature::from_hex(&sig_hex).map_err(|e| {
-                    MultisigError::Signature(format!("invalid Falcon signature: {}", e))
-                })?;
-                advice.push(crate::transaction::build_signature_advice_entry(
-                    commitment,
-                    tx_summary_commitment,
-                    &AccountSignature::from(rpo_sig),
-                    None,
-                ));
-            }
-            SignatureScheme::Ecdsa => {
-                let sig_bytes = hex::decode(sig_hex.trim_start_matches("0x")).map_err(|e| {
-                    MultisigError::Signature(format!("invalid ECDSA signature hex: {}", e))
-                })?;
-                let ecdsa_sig = EcdsaSignature::read_from_bytes(&sig_bytes).map_err(|e| {
-                    MultisigError::Signature(format!(
-                        "failed to deserialize ECDSA signature: {}",
-                        e
-                    ))
-                })?;
-                let public_key_hex = sig_input.public_key_hex.as_ref().ok_or_else(|| {
-                    MultisigError::Signature(
-                        "ECDSA signature requires public key for advice preparation".to_string(),
-                    )
-                })?;
-                advice.push(build_ecdsa_signature_advice_entry(
-                    commitment,
-                    tx_summary_commitment,
-                    &AccountSignature::EcdsaK256Keccak(ecdsa_sig),
-                    public_key_hex,
-                )?);
-            }
-        }
+        let signature = sig_input
+            .scheme
+            .parse_signature_hex(&ensure_hex_prefix(&sig_input.signature_hex))
+            .map_err(MultisigError::Signature)?;
+        let entry = sig_input
+            .scheme
+            .build_signature_advice_entry(
+                commitment,
+                tx_summary_commitment,
+                &signature,
+                sig_input.public_key_hex.as_deref(),
+            )
+            .map_err(MultisigError::Signature)?;
+        advice.push(entry);
     }
 
     Ok(advice)
@@ -138,7 +110,7 @@ pub async fn build_final_transaction_request(
             })?;
 
             crate::transaction::build_p2id_transaction_request(
-                account.id(),
+                account,
                 *recipient,
                 vec![asset.into()],
                 salt,

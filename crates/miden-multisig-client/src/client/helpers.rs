@@ -6,14 +6,12 @@ use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
 use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::account::auth::Signature as AccountSignature;
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
 use miden_protocol::utils::serde::Serializable;
 use private_state_manager_client::{Auth, EcdsaSigner, FalconRpoSigner, PsmClient};
 #[cfg(test)]
 use private_state_manager_shared::FromJson;
+use private_state_manager_shared::SignatureScheme;
 use private_state_manager_shared::ToJson;
-use private_state_manager_shared::hex::FromHex;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
@@ -137,17 +135,23 @@ impl MultisigClient {
         let ack_sig = push_response.ack_sig.ok_or_else(|| {
             MultisigError::PsmServer("PSM did not return acknowledgment signature".to_string())
         })?;
+        let ack_scheme = push_response
+            .delta
+            .as_ref()
+            .and_then(|delta| delta.ack_scheme.as_deref())
+            .ok_or_else(|| {
+                MultisigError::PsmServer("PSM did not return acknowledgment scheme".to_string())
+            })
+            .and_then(|ack_scheme| {
+                SignatureScheme::from(ack_scheme).map_err(MultisigError::PsmServer)
+            })?;
 
-        // Get PSM's pubkey commitment
-        let (psm_commitment_hex, _raw_pubkey) = psm_client.get_pubkey(None).await.map_err(|e| {
-            MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
-        })?;
-
-        // Parse and build advice entry
-        let ack_sig_with_prefix = crate::keystore::ensure_hex_prefix(&ack_sig);
-        let ack_signature = RpoFalconSignature::from_hex(&ack_sig_with_prefix).map_err(|e| {
-            MultisigError::Signature(format!("failed to parse PSM ack signature: {}", e))
-        })?;
+        let (psm_commitment_hex, raw_pubkey) = psm_client
+            .get_pubkey(Some(ack_scheme.as_str()))
+            .await
+            .map_err(|e| {
+                MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
+            })?;
 
         let psm_commitment =
             word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
@@ -160,12 +164,21 @@ impl MultisigClient {
             )));
         }
 
-        Ok(crate::transaction::build_signature_advice_entry(
-            psm_commitment,
-            tx_summary_commitment,
-            &AccountSignature::from(ack_signature),
-            None,
-        ))
+        let ack_signature = ack_scheme
+            .parse_signature_hex(&ack_sig)
+            .map_err(MultisigError::Signature)?;
+        ack_scheme
+            .build_signature_advice_entry(
+                psm_commitment,
+                tx_summary_commitment,
+                &ack_signature,
+                push_response
+                    .delta
+                    .as_ref()
+                    .and_then(|delta| delta.ack_pubkey.as_deref())
+                    .or(raw_pubkey.as_deref()),
+            )
+            .map_err(MultisigError::Signature)
     }
 
     /// Verifies that a proposals metadata reconstructs the same tx_summary commitment.
@@ -173,7 +186,6 @@ impl MultisigClient {
         &mut self,
         proposal: &Proposal,
     ) -> Result<()> {
-        let account = self.require_account()?.clone();
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         let proposal_id_commitment = word_to_hex(&tx_summary_commitment);
@@ -184,6 +196,7 @@ impl MultisigClient {
             )));
         }
 
+        let account = self.require_account()?.clone();
         let salt = proposal.metadata.salt()?;
         let signer_commitments = proposal.metadata.signer_commitments()?;
 
