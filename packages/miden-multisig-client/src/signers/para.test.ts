@@ -110,6 +110,36 @@ describe('ParaSigner', () => {
     });
   });
 
+  describe('signRequest', () => {
+    it('hashes the request-bound auth digest word bytes before signing', async () => {
+      const signer = new ParaSigner(mockPara, 'wallet-1', '0xcommitment', validCompressedKey);
+      await signer.signRequest(
+        '0x' + 'aa'.repeat(15),
+        1700000000,
+        { toBytes: () => new Uint8Array([1, 2, 3, 4]) } as never,
+      );
+
+      const expectedDigestBytes = keccak_256(
+        wordToBytes({
+          toFelts: () => [
+            { asInt: () => 10n },
+            { asInt: () => 20n },
+            { asInt: () => 30n },
+            { asInt: () => 40n },
+          ],
+        }),
+      );
+      const expectedBase64 = uint8ArrayToBase64(expectedDigestBytes);
+
+      expect(mockPara.signMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          walletId: 'wallet-1',
+          messageBase64: expectedBase64,
+        }),
+      );
+    });
+  });
+
   describe('signCommitment', () => {
     it('should call para signMessage', async () => {
       const signer = new ParaSigner(mockPara, 'wallet-1', '0xcommitment', validCompressedKey);

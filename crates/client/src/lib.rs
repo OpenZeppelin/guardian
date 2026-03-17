@@ -10,6 +10,7 @@
 //! - [`Auth`] - Scheme-aware authentication providers for request signing
 //! - [`keystore::Signer`] - The signing boundary for authenticated requests
 //! - [`FalconKeyStore`] - The default in-memory Falcon signer
+//! - [`EcdsaKeyStore`] - The default in-memory ECDSA signer
 //! - Error types for handling PSM-related failures
 //!
 //! # Quick Start
@@ -52,6 +53,6 @@ pub mod testing;
 pub use auth::{Auth, EcdsaSigner, FalconRpoSigner};
 pub use client::PsmClient;
 pub use error::{ClientError, ClientResult};
-pub use keystore::{FalconKeyStore, Signer, verify_commitment_signature};
+pub use keystore::{EcdsaKeyStore, FalconKeyStore, Signer, verify_commitment_signature};
 pub use proto::*;
 pub use transaction::{TryIntoTxSummary, tx_summary_commitment_hex};

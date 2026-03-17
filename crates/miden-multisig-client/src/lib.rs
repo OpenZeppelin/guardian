@@ -65,10 +65,10 @@ pub use keystore::{
     FalconKeyStore,
     KeyManager,
     PsmKeyStore,
-    SchemeSecretKey,
     // Hex utilities
     commitment_from_hex,
     ensure_hex_prefix,
+    proposal_public_key_hex,
     strip_hex_prefix,
     validate_commitment_hex,
     word_from_hex,

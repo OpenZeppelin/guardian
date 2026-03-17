@@ -10,6 +10,7 @@ use private_state_manager_shared::ProposalSignature;
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
+use crate::keystore::proposal_public_key_hex;
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::ProposalBuilder;
 
@@ -81,13 +82,13 @@ impl MultisigClient {
 
         // Sign the transaction summary commitment
         let tx_commitment = proposal.tx_summary.to_commitment();
-        let signature_hex = self.key_manager.sign_hex(tx_commitment);
+        let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
 
         // Build the ProposalSignature
         let signature = ProposalSignature::from_scheme(
             self.key_manager.scheme(),
             signature_hex,
-            self.key_manager.public_key_hex(),
+            proposal_public_key_hex(self.key_manager.as_ref()),
         );
 
         // Push signature to PSM

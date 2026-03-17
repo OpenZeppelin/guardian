@@ -1,3 +1,4 @@
+import type { RequestAuthPayload } from '@openzeppelin/psm-client';
 import { AuthSecretKey } from '@miden-sdk/miden-sdk';
 import type { Signer, SignatureScheme } from '../types.js';
 import { bytesToHex, normalizeHexWord } from '../utils/encoding.js';
@@ -19,14 +20,24 @@ export class EcdsaSigner implements Signer {
 
   async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
     const digest = AuthDigest.fromAccountIdWithTimestamp(accountId, timestamp);
-    const signature = this.secretKey.sign(digest);
-    const signatureBytes = signature.serialize();
-    const ecdsaSignature = signatureBytes.slice(1);
-    return bytesToHex(ecdsaSignature);
+    return this.signWord(digest);
+  }
+
+  async signRequest(
+    accountId: string,
+    timestamp: number,
+    requestPayload: RequestAuthPayload,
+  ): Promise<string> {
+    const digest = AuthDigest.fromRequest(accountId, timestamp, requestPayload);
+    return this.signWord(digest);
   }
 
   async signCommitment(commitmentHex: string): Promise<string> {
     const word = AuthDigest.fromCommitmentHex(commitmentHex);
+    return this.signWord(word);
+  }
+
+  private signWord(word: ReturnType<typeof AuthDigest.fromCommitmentHex>): string {
     const signature = this.secretKey.sign(word);
     const signatureBytes = signature.serialize();
     const ecdsaSignature = signatureBytes.slice(1);

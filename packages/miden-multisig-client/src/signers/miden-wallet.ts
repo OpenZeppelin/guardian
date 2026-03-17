@@ -49,8 +49,7 @@ export class MidenWalletSigner implements Signer {
     if (this.scheme === 'falcon') {
       return this.signWord(AuthDigest.fromRequest(accountId, timestamp, requestPayload));
     }
-
-    return this.signAccountIdWithTimestamp(accountId, timestamp);
+    return this.signWord(AuthDigest.fromRequest(accountId, timestamp, requestPayload));
   }
 
   async signCommitment(commitmentHex: string): Promise<string> {

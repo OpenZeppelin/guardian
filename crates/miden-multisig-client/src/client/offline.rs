@@ -11,6 +11,7 @@ use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
 use crate::export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
+use crate::keystore::proposal_public_key_hex;
 use crate::proposal::TransactionType;
 use crate::psm_endpoint::verify_endpoint_commitment;
 
@@ -83,7 +84,7 @@ impl MultisigClient {
                 .await?;
 
         let tx_commitment = tx_summary.to_commitment();
-        let signature_hex = self.key_manager.sign_hex(tx_commitment);
+        let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
 
         let id = format!(
             "0x{}",
@@ -105,7 +106,7 @@ impl MultisigClient {
                 signer_commitment: self.key_manager.commitment_hex(),
                 signature: signature_hex,
                 scheme: self.key_manager.scheme(),
-                public_key_hex: self.key_manager.public_key_hex(),
+                public_key_hex: proposal_public_key_hex(self.key_manager.as_ref()),
             }],
             signatures_required,
             metadata,
@@ -160,14 +161,14 @@ impl MultisigClient {
         }
         // Sign the transaction summary commitment
         let tx_commitment = bound_proposal.tx_summary.to_commitment();
-        let signature_hex = self.key_manager.sign_hex(tx_commitment);
+        let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
 
         // Add signature to proposal
         proposal.add_signature(ExportedSignature {
             signer_commitment: user_commitment_hex,
             signature: signature_hex,
             scheme: self.key_manager.scheme(),
-            public_key_hex: self.key_manager.public_key_hex(),
+            public_key_hex: proposal_public_key_hex(self.key_manager.as_ref()),
         })?;
 
         Ok(())

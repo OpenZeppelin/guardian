@@ -117,6 +117,42 @@ describe('MidenWalletSigner', () => {
     });
   });
 
+  describe('signRequest', () => {
+    it('delegates to localAuthSigner when present', async () => {
+      const localSigner: Signer = {
+        commitment: '0xlocal',
+        publicKey: '0xlocalpubkey',
+        scheme: 'ecdsa',
+        signAccountIdWithTimestamp: vi.fn(),
+        signRequest: vi.fn().mockResolvedValue('0xlocalsig'),
+        signCommitment: vi.fn(),
+      };
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa', localSigner);
+
+      const result = await signer.signRequest(
+        '0x' + 'aa'.repeat(15),
+        1700000000,
+        { toBytes: () => new Uint8Array([1, 2, 3, 4]) } as never,
+      );
+
+      expect(result).toBe('0xlocalsig');
+      expect(localSigner.signRequest).toHaveBeenCalled();
+      expect(mockWallet.signBytes).not.toHaveBeenCalled();
+    });
+
+    it('uses request-bound auth digest for wallet-backed ECDSA signing', async () => {
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa');
+
+      await signer.signRequest(
+        '0x' + 'aa'.repeat(15),
+        1700000000,
+        { toBytes: () => new Uint8Array([1, 2, 3, 4]) } as never,
+      );
+
+      expect(mockWallet.signBytes).toHaveBeenCalledWith(expect.any(Uint8Array), 'word');
+    });
+  });
+
   describe('signature byte stripping', () => {
     it('should strip the first byte from wallet signature response', async () => {
       (mockWallet.signBytes as ReturnType<typeof vi.fn>).mockResolvedValue(

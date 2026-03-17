@@ -7,7 +7,7 @@ use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::utils::serde::Serializable;
-use private_state_manager_client::{Auth, EcdsaSigner, FalconRpoSigner, PsmClient};
+use private_state_manager_client::PsmClient;
 #[cfg(test)]
 use private_state_manager_shared::FromJson;
 use private_state_manager_shared::SignatureScheme;
@@ -18,7 +18,7 @@ use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result};
 use crate::execution::build_final_transaction_request;
-use crate::keystore::{SchemeSecretKey, word_from_hex};
+use crate::keystore::word_from_hex;
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::word_to_hex;
 
@@ -33,13 +33,7 @@ impl MultisigClient {
     /// Creates an authenticated PSM client.
     pub(crate) async fn create_authenticated_psm_client(&self) -> Result<PsmClient> {
         let client = self.create_psm_client().await?;
-        let auth = match self.key_manager.secret_key() {
-            SchemeSecretKey::Falcon(secret_key) => {
-                Auth::FalconRpoSigner(FalconRpoSigner::new(secret_key))
-            }
-            SchemeSecretKey::Ecdsa(secret_key) => Auth::EcdsaSigner(EcdsaSigner::new(secret_key)),
-        };
-        Ok(client.with_auth(auth))
+        Ok(client.with_signer(self.key_manager.clone()))
     }
 
     pub(crate) async fn get_on_chain_account_commitment(

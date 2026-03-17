@@ -18,6 +18,7 @@ mod offline;
 mod proposals;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use miden_client::Client;
 use miden_client::rpc::Endpoint;
@@ -81,7 +82,7 @@ pub struct StateVerificationResult {
 /// ```
 pub struct MultisigClient {
     pub(crate) miden_client: Client<()>,
-    pub(crate) key_manager: Box<dyn KeyManager>,
+    pub(crate) key_manager: Arc<dyn KeyManager>,
     /// Private State Manager server endpoint.
     pub(crate) psm_endpoint: String,
     /// The multisig account managed by this client.
@@ -101,7 +102,7 @@ impl MultisigClient {
     /// Creates a new MultisigClient (internal use, prefer builder).
     pub(crate) fn new(
         miden_client: Client<()>,
-        key_manager: Box<dyn KeyManager>,
+        key_manager: Arc<dyn KeyManager>,
         psm_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,

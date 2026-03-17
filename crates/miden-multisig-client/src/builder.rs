@@ -35,7 +35,7 @@ pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
     psm_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
-    key_manager: Option<Box<dyn KeyManager>>,
+    key_manager: Option<Arc<dyn KeyManager>>,
 }
 
 impl Default for MultisigClientBuilder {
@@ -77,31 +77,31 @@ impl MultisigClientBuilder {
 
     /// Sets a custom key manager for PSM authentication and proposal signing.
     pub fn key_manager(mut self, key_manager: Box<dyn KeyManager>) -> Self {
-        self.key_manager = Some(key_manager);
+        self.key_manager = Some(key_manager.into());
         self
     }
 
     /// Uses a FalconKeyStore with the given secret key.
     pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
-        self.key_manager = Some(Box::new(PsmKeyStore::new(secret_key)));
+        self.key_manager = Some(Arc::new(PsmKeyStore::new(secret_key)));
         self
     }
 
     /// Uses an ECDSA key store with the given secret key.
     pub fn with_ecdsa_secret_key(mut self, secret_key: EcdsaSecretKey) -> Self {
-        self.key_manager = Some(Box::new(EcdsaPsmKeyStore::new(secret_key)));
+        self.key_manager = Some(Arc::new(EcdsaPsmKeyStore::new(secret_key)));
         self
     }
 
     /// Generates a new random key for PSM authentication.
     pub fn generate_key(mut self) -> Self {
-        self.key_manager = Some(Box::new(PsmKeyStore::generate()));
+        self.key_manager = Some(Arc::new(PsmKeyStore::generate()));
         self
     }
 
     /// Generates a new random ECDSA key for PSM authentication.
     pub fn generate_ecdsa_key(mut self) -> Self {
-        self.key_manager = Some(Box::new(EcdsaPsmKeyStore::generate()));
+        self.key_manager = Some(Arc::new(EcdsaPsmKeyStore::generate()));
         self
     }
 

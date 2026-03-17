@@ -121,6 +121,7 @@ impl Auth {
                     cosigner_commitments,
                     signature,
                     pubkey,
+                    credentials.request_payload(),
                 )
             }
         }

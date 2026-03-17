@@ -1,8 +1,8 @@
-use miden_protocol::account::AccountId;
+use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
-use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::utils::{Deserializable, Serializable};
-use miden_protocol::{Felt, FieldElement, Word};
+use private_state_manager_shared::auth_request_message::AuthRequestMessage;
+use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
 /// Verify an ECDSA secp256k1 signature for a request with timestamp.
 ///
@@ -16,8 +16,9 @@ pub fn verify_request_signature(
     authorized_commitments: &[String],
     signature: &str,
     pubkey_hex: &str,
+    request_payload: &AuthRequestPayload,
 ) -> Result<(), String> {
-    let message = account_id_timestamp_to_digest(account_id, timestamp)?;
+    let message = account_id_timestamp_to_digest(account_id, timestamp, request_payload)?;
     let sig = parse_signature(signature)?;
 
     let (public_key, commitment_hex) = resolve_authorized_public_key(
@@ -41,28 +42,21 @@ pub fn verify_request_signature(
 /// Convert an account ID and timestamp to a message digest (Word)
 ///
 /// Uses the same digest construction as Falcon to ensure consistency across schemes.
-fn account_id_timestamp_to_digest(account_id_hex: &str, timestamp: i64) -> Result<Word, String> {
-    let account_id = AccountId::from_hex(account_id_hex).map_err(|e| {
-        tracing::error!(
-            account_id = %account_id_hex,
-            error = %e,
-            "Invalid account ID hex in ECDSA account_id_timestamp_to_digest"
-        );
-        format!("Invalid account ID hex: {e}")
-    })?;
-
-    let account_id_felts: [Felt; 2] = account_id.into();
-    let timestamp_felt = Felt::new(timestamp as u64);
-
-    let message_elements = vec![
-        account_id_felts[0],
-        account_id_felts[1],
-        timestamp_felt,
-        Felt::ZERO,
-    ];
-
-    let digest = Rpo256::hash_elements(&message_elements);
-    Ok(digest)
+fn account_id_timestamp_to_digest(
+    account_id_hex: &str,
+    timestamp: i64,
+    request_payload: &AuthRequestPayload,
+) -> Result<Word, String> {
+    AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, request_payload.clone())
+        .map(|request| request.to_word())
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %account_id_hex,
+                error = %e,
+                "Invalid account ID hex in ECDSA account_id_timestamp_to_digest"
+            );
+            e
+        })
 }
 
 /// Parse a hex-encoded ECDSA signature
@@ -222,8 +216,9 @@ mod tests {
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
+        let request_payload = AuthRequestPayload::empty();
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp)
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &request_payload)
             .expect("Failed to create message digest");
 
         let signature = secret_key.sign(message);
@@ -241,6 +236,7 @@ mod tests {
             &[commitment_hex],
             &signature_hex,
             &pubkey_hex,
+            &request_payload,
         );
 
         assert!(
@@ -265,8 +261,9 @@ mod tests {
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
+        let request_payload = AuthRequestPayload::empty();
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp)
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &request_payload)
             .expect("Failed to create message digest");
 
         let signature = secret_key1.sign(message);
@@ -282,6 +279,7 @@ mod tests {
             &[commitment2_hex],
             &signature_hex,
             &pubkey_hex,
+            &request_payload,
         );
 
         assert!(
@@ -306,8 +304,9 @@ mod tests {
         let account_id_hex = account_id.to_hex();
         let timestamp1: i64 = 1700000000;
         let timestamp2: i64 = 1700000001;
+        let request_payload = AuthRequestPayload::empty();
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp1)
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp1, &request_payload)
             .expect("Failed to create message digest");
         let signature = secret_key.sign(message);
 
@@ -322,6 +321,7 @@ mod tests {
             &[commitment_hex],
             &signature_hex,
             &pubkey_hex,
+            &request_payload,
         );
 
         assert!(
@@ -345,8 +345,9 @@ mod tests {
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
+        let request_payload = AuthRequestPayload::empty();
 
-        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp)
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &request_payload)
             .expect("Failed to create message digest");
         let signature = secret_key.sign(message);
 
@@ -364,11 +365,53 @@ mod tests {
             &[commitment_hex],
             &signature_hex,
             &pubkey_hex,
+            &request_payload,
         );
 
         assert!(
             result.is_ok(),
             "ECDSA signature verification should fall back to provided pubkey: {result:?}"
         );
+    }
+
+    #[test]
+    fn test_ecdsa_verify_with_wrong_payload() {
+        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+
+        let secret_key = SecretKey::new();
+        let public_key = secret_key.public_key();
+
+        let account_id = AccountId::dummy(
+            [8u8; 15],
+            AccountIdVersion::Version0,
+            AccountType::RegularAccountImmutableCode,
+            AccountStorageMode::Private,
+        );
+        let account_id_hex = account_id.to_hex();
+        let timestamp: i64 = 1700000000;
+
+        let signed_payload = AuthRequestPayload::from_json_bytes(br#"{"op":"get_delta"}"#)
+            .expect("valid signed payload");
+        let wrong_payload = AuthRequestPayload::from_json_bytes(br#"{"op":"push_delta"}"#)
+            .expect("valid wrong payload");
+        let message = account_id_timestamp_to_digest(&account_id_hex, timestamp, &signed_payload)
+            .expect("Failed to create message digest");
+        let signature = secret_key.sign(message);
+
+        let commitment = public_key.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+        let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+
+        let result = verify_request_signature(
+            &account_id_hex,
+            timestamp,
+            &[commitment_hex],
+            &signature_hex,
+            &pubkey_hex,
+            &wrong_payload,
+        );
+
+        assert!(result.is_err());
     }
 }

@@ -1,3 +1,4 @@
+import type { RequestAuthPayload } from '@openzeppelin/psm-client';
 import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
@@ -41,6 +42,15 @@ export class ParaSigner implements Signer {
 
   async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
     const digest = AuthDigest.fromAccountIdWithTimestamp(accountId, timestamp);
+    return this.signWord(digest);
+  }
+
+  async signRequest(
+    accountId: string,
+    timestamp: number,
+    requestPayload: RequestAuthPayload,
+  ): Promise<string> {
+    const digest = AuthDigest.fromRequest(accountId, timestamp, requestPayload);
     return this.signWord(digest);
   }
 

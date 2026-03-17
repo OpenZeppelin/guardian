@@ -15,7 +15,6 @@ use miden_protocol::account::AccountId;
 use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
 use private_state_manager_shared::auth_request_message::AuthRequestMessage;
 use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
-use private_state_manager_shared::hex::IntoHex;
 use std::sync::Arc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
@@ -108,7 +107,7 @@ impl PsmClient {
             let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
             let auth_message =
                 AuthRequestMessage::new(*account_id, timestamp, request_payload).to_word();
-            let signature_hex = signer.sign_word(auth_message).into_hex();
+            let signature_hex = signer.sign_word_hex(auth_message);
 
             let pubkey_metadata = MetadataValue::try_from(&pubkey_hex)
                 .map_err(|e| ClientError::InvalidResponse(format!("Invalid pubkey: {e}")))?;

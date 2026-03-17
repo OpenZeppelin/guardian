@@ -55,8 +55,7 @@ impl Auth {
                 signer.sign_request_message(account_id, timestamp, payload)
             }
             Auth::EcdsaSigner(signer) => {
-                let _ = payload;
-                signer.sign_account_id_with_timestamp(account_id, timestamp)
+                signer.sign_request_message(account_id, timestamp, payload)
             }
         }
     }
@@ -69,6 +68,8 @@ mod tests {
     use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
     use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
     use miden_protocol::utils::Deserializable;
+    use private_state_manager_shared::auth_request_message::AuthRequestMessage;
+    use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
     #[test]
     fn test_auth_enum_falcon_signer_with_timestamp() {
@@ -85,6 +86,26 @@ mod tests {
         let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
         let signature = Signature::read_from_bytes(&sig_bytes).unwrap();
         let message = account_id_timestamp_to_word(account_id, timestamp);
+
+        assert!(public_key.verify(message, &signature));
+    }
+
+    #[test]
+    fn test_auth_enum_ecdsa_request_bound_signing() {
+        let secret_key = miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey::new();
+        let public_key = secret_key.public_key();
+        let auth = Auth::EcdsaSigner(EcdsaSigner::new(secret_key));
+
+        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let timestamp: i64 = 1700000000;
+        let payload = AuthRequestPayload::from_json_bytes(br#"{"op":"push_delta"}"#).unwrap();
+        let signature_hex = auth.sign_request_message(&account_id, timestamp, payload.clone());
+
+        let sig_bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap()).unwrap();
+        let signature =
+            miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature::read_from_bytes(&sig_bytes)
+                .unwrap();
+        let message = AuthRequestMessage::new(account_id, timestamp, payload).to_word();
 
         assert!(public_key.verify(message, &signature));
     }
