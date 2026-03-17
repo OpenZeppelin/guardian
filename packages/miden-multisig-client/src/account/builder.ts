@@ -13,7 +13,12 @@ import {
 } from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
 import { buildMultisigStorageSlots, buildPsmStorageSlots } from './storage.js';
-import { MULTISIG_MASM, PSM_MASM } from './masm.js';
+import {
+  MULTISIG_ECDSA_MASM,
+  MULTISIG_MASM,
+  PSM_ECDSA_MASM,
+  PSM_MASM,
+} from './masm.js';
 import { normalizeSignerCommitment } from '../utils/signature.js';
 
 /**
@@ -28,17 +33,22 @@ export async function createMultisigAccount(
   config: MultisigConfig
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
+  const signatureScheme = config.signatureScheme ?? 'falcon';
   const multisigSlots = buildMultisigStorageSlots(config);
   const psmSlots = buildPsmStorageSlots(config);
+  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
+  const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
+  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
+
   const psmBuilder = webClient.createCodeBuilder();
-  const psmCode = psmBuilder.compileAccountComponentCode(PSM_MASM);
+  const psmCode = psmBuilder.compileAccountComponentCode(psmMasm);
   const psmComponent = AccountComponent
     .compile(psmCode, psmSlots)
     .withSupportsAllTypes();
   const multisigBuilder = webClient.createCodeBuilder();
-  const psmLib = multisigBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
+  const psmLib = multisigBuilder.buildLibrary(psmLibraryPath, psmMasm);
   multisigBuilder.linkStaticLibrary(psmLib);
-  const multisigCode = multisigBuilder.compileAccountComponentCode(MULTISIG_MASM);
+  const multisigCode = multisigBuilder.compileAccountComponentCode(multisigMasm);
   const multisigComponent = AccountComponent
     .compile(multisigCode, multisigSlots)
     .withSupportsAllTypes();

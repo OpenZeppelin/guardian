@@ -1,7 +1,12 @@
-use miden_confidential_contracts::masm_builder::{get_multisig_library, get_psm_library};
+use miden_confidential_contracts::masm_builder::{
+    get_multisig_ecdsa_library, get_multisig_library, get_psm_library,
+};
 use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
 use miden_protocol::account::{Account, StorageSlotName, auth::AuthSecretKey};
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey as EcdsaPublicKey, SecretKey as EcdsaSecretKey,
+};
 use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey};
 use miden_protocol::crypto::rand::RpoRandomCoin;
 use miden_protocol::note::NoteType;
@@ -16,6 +21,7 @@ use miden_testing::utils::create_spawn_note;
 use miden_testing::{MockChainBuilder, TxContextInput};
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
+use private_state_manager_shared::SignatureScheme;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
@@ -41,6 +47,15 @@ type MultisigPlusPsmTestSetup = (
 type MultisigTestSetup = (Vec<SecretKey>, Vec<PublicKey>, Vec<BasicAuthenticator>);
 
 type PsmTestSetup = (SecretKey, PublicKey, BasicAuthenticator);
+
+type EcdsaMultisigPlusPsmTestSetup = (
+    Vec<EcdsaSecretKey>,
+    Vec<EcdsaPublicKey>,
+    Vec<BasicAuthenticator>,
+    EcdsaSecretKey,
+    EcdsaPublicKey,
+    BasicAuthenticator,
+);
 
 /// Sets up secret keys, public keys, and authenticators for multisig testing
 fn setup_keys_and_authenticators(
@@ -126,6 +141,59 @@ fn setup_keys_and_authenticator_for_psm() -> anyhow::Result<PsmTestSetup> {
     Ok((psm_sec_key, psm_pub_key, psm_authenticator))
 }
 
+fn setup_ecdsa_keys_and_authenticators_with_psm(
+    num_approvers: usize,
+    threshold: usize,
+) -> anyhow::Result<EcdsaMultisigPlusPsmTestSetup> {
+    let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+
+    let mut secret_keys = Vec::new();
+    let mut public_keys = Vec::new();
+    let mut authenticators = Vec::new();
+
+    for _ in 0..num_approvers {
+        let sec_key = EcdsaSecretKey::with_rng(&mut rng);
+        let pub_key = sec_key.public_key();
+
+        secret_keys.push(sec_key);
+        public_keys.push(pub_key);
+    }
+
+    for secret_key in secret_keys.iter().take(threshold) {
+        let authenticator =
+            BasicAuthenticator::new(&[AuthSecretKey::EcdsaK256Keccak(secret_key.clone())]);
+        authenticators.push(authenticator);
+    }
+
+    let psm_sec_key = EcdsaSecretKey::with_rng(&mut rng);
+    let psm_pub_key = psm_sec_key.public_key();
+    let psm_authenticator =
+        BasicAuthenticator::new(&[AuthSecretKey::EcdsaK256Keccak(psm_sec_key.clone())]);
+
+    Ok((
+        secret_keys,
+        public_keys,
+        authenticators,
+        psm_sec_key,
+        psm_pub_key,
+        psm_authenticator,
+    ))
+}
+
+fn create_multisig_account_with_psm_commitments(
+    threshold: u32,
+    signer_commitments: Vec<Word>,
+    psm_commitment: Word,
+    psm_enabled: bool,
+    signature_scheme: SignatureScheme,
+) -> anyhow::Result<Account> {
+    let config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment)
+        .with_psm_enabled(psm_enabled)
+        .with_signature_scheme(signature_scheme);
+
+    MultisigPsmBuilder::new(config).build_existing()
+}
+
 fn create_multisig_account_with_psm(
     threshold: u32,
     public_keys: &[PublicKey],
@@ -135,17 +203,24 @@ fn create_multisig_account_with_psm(
     let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
     let psm_commitment = psm_public_key.to_commitment();
 
-    let config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment)
-        .with_psm_enabled(psm_enabled);
-
-    MultisigPsmBuilder::new(config).build_existing()
+    create_multisig_account_with_psm_commitments(
+        threshold,
+        signer_commitments,
+        psm_commitment,
+        psm_enabled,
+        SignatureScheme::Falcon,
+    )
 }
 
-fn build_update_procedure_threshold_script(
+fn build_update_procedure_threshold_script_for_scheme(
     procedure_root: Word,
     threshold: u32,
+    signature_scheme: SignatureScheme,
 ) -> anyhow::Result<miden_protocol::transaction::TransactionScript> {
-    let multisig_library = get_multisig_library()?;
+    let multisig_library = match signature_scheme {
+        SignatureScheme::Falcon => get_multisig_library()?,
+        SignatureScheme::Ecdsa => get_multisig_ecdsa_library()?,
+    };
     let tx_script_code = format!(
         r#"
     use oz_multisig::multisig
@@ -163,6 +238,17 @@ fn build_update_procedure_threshold_script(
         .with_dynamically_linked_library(&multisig_library)?
         .compile_tx_script(tx_script_code)
         .map_err(Into::into)
+}
+
+fn build_update_procedure_threshold_script(
+    procedure_root: Word,
+    threshold: u32,
+) -> anyhow::Result<miden_protocol::transaction::TransactionScript> {
+    build_update_procedure_threshold_script_for_scheme(
+        procedure_root,
+        threshold,
+        SignatureScheme::Falcon,
+    )
 }
 
 // ================================================================================================
@@ -837,8 +923,73 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
     let executed_tx = mock_chain
         .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script)
-        .add_signature(public_keys[0].clone().into(), msg, signer_sig)
-        .add_signature(psm_public_key.clone().into(), msg, psm_sig)
+        .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
+        .add_signature(psm_public_key.to_commitment().into(), msg, psm_sig)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await?;
+
+    let mut updated_account = multisig_account.clone();
+    updated_account.apply_delta(executed_tx.account_delta())?;
+
+    let proc_thresholds_name = StorageSlotName::new(PROC_THRESHOLD_ROOTS_SLOT).unwrap();
+    let stored_threshold = updated_account
+        .storage()
+        .get_map_item(&proc_thresholds_name, send_asset_root)
+        .unwrap();
+
+    assert_eq!(stored_threshold[0], Felt::new(1));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_override()
+-> anyhow::Result<()> {
+    let (_secret_keys, public_keys, authenticators, _, psm_public_key, psm_authenticator) =
+        setup_ecdsa_keys_and_authenticators_with_psm(2, 1)?;
+
+    let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
+    let send_asset_root = BasicWallet::move_asset_to_note_digest();
+    let config = MultisigPsmConfig::new(1, signer_commitments, psm_public_key.to_commitment())
+        .with_signature_scheme(SignatureScheme::Ecdsa)
+        .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
+    let multisig_account = MultisigPsmBuilder::new(config).build_existing()?;
+
+    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
+    let salt = Word::from([Felt::new(7); 4]);
+    let tx_script = build_update_procedure_threshold_script_for_scheme(
+        send_asset_root,
+        1,
+        SignatureScheme::Ecdsa,
+    )?;
+
+    let tx_context_init = mock_chain
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .tx_script(tx_script.clone())
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+    let signer_sig = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let psm_sig = psm_authenticator
+        .get_signature(psm_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    let executed_tx = mock_chain
+        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .tx_script(tx_script)
+        .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
+        .add_signature(psm_public_key.to_commitment().into(), msg, psm_sig)
         .auth_args(salt)
         .build()?
         .execute()

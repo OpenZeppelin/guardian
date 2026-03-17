@@ -121,7 +121,16 @@ pub async fn push_delta_proposal(
 
     // Extract proposer ID from credentials
     let proposer_id = match &credentials {
-        Credentials::Signature { pubkey, .. } => pubkey.clone(),
+        Credentials::Signature { pubkey, .. } => resolved
+            .metadata
+            .auth
+            .compute_signer_commitment(pubkey)
+            .map_err(|e| {
+                PsmError::AuthenticationFailed(format!(
+                    "invalid proposer public key for {}: {}",
+                    account_id, e
+                ))
+            })?,
     };
 
     // Parse cosigner signatures from the payload and add timestamp
@@ -225,15 +234,10 @@ mod tests {
         (state, storage, network, metadata)
     }
 
-    fn create_account_metadata(
-        account_id: String,
-        cosigner_commitments: Vec<String>,
-    ) -> AccountMetadata {
+    fn create_account_metadata(account_id: String, auth: Auth) -> AccountMetadata {
         AccountMetadata {
             account_id,
-            auth: Auth::MidenFalconRpo {
-                cosigner_commitments,
-            },
+            auth,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
@@ -297,7 +301,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let storage = storage.with_pull_state(Ok(create_state_object(
@@ -344,7 +350,81 @@ mod tests {
                 cosigner_sigs,
                 ..
             } => {
-                assert_eq!(*proposer_id, test_pubkey);
+                assert_eq!(*proposer_id, test_commitment_hex);
+                assert_eq!(cosigner_sigs.len(), 0);
+            }
+            _ => panic!("Expected Pending status"),
+        }
+
+        let submit_calls = storage.get_submit_delta_proposal_calls();
+        assert_eq!(submit_calls.len(), 1);
+        assert_eq!(submit_calls[0].0, "mock_proposal_id");
+    }
+
+    #[tokio::test]
+    async fn test_push_delta_proposal_success_for_ecdsa() {
+        let (state, storage, network, metadata) = create_test_state();
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+
+        let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
+            crate::testing::helpers::generate_ecdsa_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenEcdsa {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
+        ))));
+
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            test_commitment.to_string(),
+            account_json.clone(),
+        )));
+
+        let network = network.with_verify_delta(Ok(()));
+        let _network = network.with_validate_credential(Ok(()));
+
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"].clone(),
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 2,
+                "required_signatures": 2,
+                "signer_commitments": [test_commitment_hex.clone()]
+            },
+            "signatures": []
+        });
+
+        let params = PushDeltaProposalParams {
+            account_id: account_id.clone(),
+            nonce: 1,
+            delta_payload,
+            credentials: Credentials::signature(
+                test_pubkey.clone(),
+                test_signature.clone(),
+                test_timestamp,
+            ),
+        };
+
+        let result = push_delta_proposal(&state, params).await;
+
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+        let result = result.unwrap();
+
+        match &result.delta.status {
+            DeltaStatus::Pending {
+                proposer_id,
+                cosigner_sigs,
+                ..
+            } => {
+                assert_eq!(*proposer_id, test_commitment_hex);
                 assert_eq!(cosigner_sigs.len(), 0);
             }
             _ => panic!("Expected Pending status"),
@@ -374,7 +454,12 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone(), cosigner_commitment.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![
+                    test_commitment_hex.clone(),
+                    cosigner_commitment.clone(),
+                ],
+            },
         ))));
 
         let _storage = storage.with_pull_state(Ok(create_state_object(
@@ -443,7 +528,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let _storage = storage.with_pull_state(Ok(create_state_object(
@@ -493,7 +580,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let _storage = storage.with_pull_state(Ok(create_state_object(
@@ -545,7 +634,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let _storage = storage.with_pull_state(Err("State not found".to_string()));
@@ -594,7 +685,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let storage = storage.with_pull_state(Ok(create_state_object(
@@ -664,7 +757,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let mut pending = Vec::new();
@@ -724,7 +819,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![test_commitment_hex.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
         ))));
 
         let mut pending = Vec::new();

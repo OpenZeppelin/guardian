@@ -221,6 +221,53 @@ mod tests {
             result.ack_pubkey.starts_with("0x"),
             "ack_pubkey should be hex format"
         );
+        assert!(
+            result.ack_commitment.starts_with("0x"),
+            "ack_commitment should be hex format"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_success_for_ecdsa() {
+        use crate::testing::helpers::generate_ecdsa_signature;
+
+        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_ecdsa_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x1234".to_string()));
+
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+
+        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenEcdsa {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            initial_state,
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert_eq!(result.account_id, account_id_hex);
+        assert!(result.ack_pubkey.starts_with("0x"));
+        assert!(result.ack_commitment.starts_with("0x"));
+        assert_eq!(result.ack_commitment.len(), 66);
+        assert!(result.ack_pubkey.len() > 66);
     }
 
     #[tokio::test]

@@ -59,7 +59,17 @@ export {
 
 export { PsmHttpClient, PsmHttpError } from '@openzeppelin/psm-client';
 
-export { FalconSigner } from './signer.js';
+export {
+  FalconSigner,
+  EcdsaSigner,
+  ParaSigner,
+  MidenWalletSigner,
+  type ParaSigningContext,
+  type WalletSigningContext,
+} from './signer.js';
+export { PublicKeyFormat } from './utils/key.js';
+export { EcdsaFormat } from './utils/ecdsa.js';
+export { tryComputeEcdsaCommitmentHex } from './utils/signature.js';
 
 export {
   createMultisigAccount,
@@ -92,6 +102,11 @@ export type {
   ProposalMetadata,
   ProposalType,
   ExportedProposal,
+  ExportedTransactionProposal,
+  SignTransactionProposalParams,
+  TransactionProposal,
+  TransactionProposalSignature,
+  TransactionProposalStatus,
 
   // Transaction types
   TransactionType,
@@ -103,6 +118,7 @@ export type {
   // Signature types
   FalconSignature,
   Signer,
+  SignatureScheme,
 
   // PSM API types
   AuthConfig,

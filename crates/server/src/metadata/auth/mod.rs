@@ -106,7 +106,7 @@ impl Auth {
             Auth::MidenEcdsa {
                 cosigner_commitments,
             } => {
-                let (_pubkey, signature, timestamp) =
+                let (pubkey, signature, timestamp) =
                     credentials.as_signature().ok_or_else(|| {
                         tracing::error!(
                             account_id = %account_id,
@@ -120,6 +120,7 @@ impl Auth {
                     timestamp,
                     cosigner_commitments,
                     signature,
+                    pubkey,
                 )
             }
         }

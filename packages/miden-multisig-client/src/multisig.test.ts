@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
 import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
-import { executeForSummary } from './transaction.js';
+import {
+  buildUpdateProcedureThresholdTransactionRequest,
+  buildUpdatePsmTransactionRequest,
+  buildUpdateSignersTransactionRequest,
+  executeForSummary,
+} from './transaction.js';
 
 const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
@@ -672,6 +677,42 @@ describe('Multisig', () => {
       await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
     });
 
+    it('should register ECDSA accounts with MidenEcdsa auth', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        publicKey: '0x' + '2'.repeat(66),
+        scheme: 'ecdsa',
+      };
+
+      psm.setSigner(ecdsaSigner);
+      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          success: true,
+          message: 'Account configured',
+          ack_pubkey: '0x' + 'd'.repeat(66),
+        }),
+      });
+
+      await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
+
+      const [, requestInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(String(requestInit.body));
+      expect(body.auth).toEqual({
+        MidenEcdsa: {
+          cosigner_commitments: config.signerCommitments,
+        },
+      });
+    });
+
     it('should accept explicit initial state base64', async () => {
       const config = {
         threshold: 1,
@@ -1178,9 +1219,71 @@ describe('Multisig', () => {
     });
   });
 
+  describe('createChangeThresholdProposal', () => {
+    it('passes the signer scheme to update-signers requests', async () => {
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        publicKey: '0x' + '2'.repeat(66),
+        scheme: 'ecdsa',
+      };
+      psm.setSigner(ecdsaSigner);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'change_threshold',
+            target_threshold: 2,
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      await multisig.createChangeThresholdProposal(2, 1);
+
+      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        2,
+        config.signerCommitments,
+        { signatureScheme: 'ecdsa' },
+      );
+    });
+  });
+
   describe('createSwitchPsmProposal', () => {
     it('should verify new endpoint commitment before creating proposal', async () => {
-      const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
         serialize: () => new Uint8Array([1, 2, 3]),
       } as any);
@@ -1196,7 +1299,7 @@ describe('Multisig', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ pubkey: newPsmPubkey }),
+        json: async () => ({ commitment: newPsmPubkey }),
       });
 
       const proposal = await multisig.createSwitchPsmProposal('http://new-psm.com', newPsmPubkey);
@@ -1206,13 +1309,12 @@ describe('Multisig', () => {
         expect(proposal.metadata.newPsmEndpoint).toBe('http://new-psm.com');
       }
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://new-psm.com/pubkey',
+        'http://new-psm.com/pubkey?scheme=falcon',
         expect.objectContaining({ method: 'GET' })
       );
     });
 
     it('should reject switch proposal when endpoint commitment does not match', async () => {
-      const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
         serialize: () => new Uint8Array([1, 2, 3]),
       } as any);
@@ -1227,18 +1329,56 @@ describe('Multisig', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ pubkey: '0x' + '2'.repeat(64) }),
+        json: async () => ({ commitment: '0x' + '2'.repeat(64) }),
       });
 
       await expect(
         multisig.createSwitchPsmProposal('http://new-psm.com', '0x' + '1'.repeat(64))
       ).rejects.toThrow('Refusing to use PSM endpoint');
     });
+
+    it('should use the signer scheme when resolving new PSM commitments', async () => {
+      vi.mocked(executeForSummary).mockResolvedValue({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        publicKey: '0x' + '2'.repeat(66),
+        scheme: 'ecdsa',
+      };
+      psm.setSigner(ecdsaSigner);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const newPsmCommitment = '0x' + '1'.repeat(64);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ commitment: newPsmCommitment }),
+      });
+
+      await multisig.createSwitchPsmProposal('http://new-psm.com', newPsmCommitment);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://new-psm.com/pubkey?scheme=ecdsa',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(buildUpdatePsmTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        newPsmCommitment,
+        { signatureScheme: 'ecdsa' },
+      );
+    });
   });
 
   describe('createUpdateProcedureThresholdProposal', () => {
     it('should create procedure-threshold update proposals', async () => {
-      const { buildUpdateProcedureThresholdTransactionRequest, executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
         toCommitment: () => ({
           toHex: () => '0x' + 'c'.repeat(64),
@@ -1290,12 +1430,76 @@ describe('Multisig', () => {
         mockWebClient,
         'send_asset',
         1,
+        { signatureScheme: 'falcon' },
       );
       expect(proposal.metadata.proposalType).toBe('update_procedure_threshold');
       if (proposal.metadata.proposalType === 'update_procedure_threshold') {
         expect(proposal.metadata.targetProcedure).toBe('send_asset');
         expect(proposal.metadata.targetThreshold).toBe(1);
       }
+    });
+
+    it('passes the signer scheme to ECDSA procedure-threshold updates', async () => {
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        publicKey: '0x' + '2'.repeat(66),
+        scheme: 'ecdsa',
+      };
+      psm.setSigner(ecdsaSigner);
+
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'update_procedure_threshold',
+            target_threshold: 1,
+            target_procedure: 'send_asset',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, 1);
+
+      expect(buildUpdateProcedureThresholdTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        'send_asset',
+        1,
+        { signatureScheme: 'ecdsa' },
+      );
     });
   });
 
@@ -1616,6 +1820,64 @@ describe('Multisig', () => {
       expect(exported.signatures.length).toBe(1);
     });
 
+    it('should preserve ECDSA signature metadata in exported proposals', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const publicKey = '0x' + 'd'.repeat(66);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              description: '',
+              target_threshold: 2,
+              signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                signature: {
+                  scheme: 'ecdsa',
+                  signature: '0x' + 'e'.repeat(130),
+                  public_key: publicKey,
+                },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+            ],
+          },
+        }),
+      });
+
+      const exported = await multisig.exportProposal('0x' + 'c'.repeat(64));
+
+      expect(exported.signatures).toEqual([
+        {
+          commitment: '0x' + 'a'.repeat(64),
+          signatureHex: '0x' + 'e'.repeat(130),
+          scheme: 'ecdsa',
+          publicKey,
+          timestamp: '2024-01-01T00:00:00Z',
+        },
+      ]);
+    });
+
     it('should throw if proposal not found', async () => {
       const config = {
         threshold: 1,
@@ -1670,6 +1932,87 @@ describe('Multisig', () => {
       await expect(multisig.importProposal(JSON.stringify(exported))).rejects.toThrow(
         'expected signerId as 32-byte hex',
       );
+    });
+
+    it('should preserve ECDSA imported signature metadata', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const publicKey = '0x' + 'd'.repeat(66);
+
+      const proposal = await multisig.importProposal(
+        JSON.stringify({
+          accountId: multisig.accountId,
+          nonce: 1,
+          commitment: '0x' + 'c'.repeat(64),
+          txSummaryBase64: 'AQID',
+          signatures: [
+            {
+              commitment: '0x' + 'a'.repeat(64),
+              signatureHex: '0x' + 'b'.repeat(130),
+              scheme: 'ecdsa',
+              publicKey,
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'change_threshold',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        })
+      );
+
+      expect(proposal.signatures).toEqual([
+        {
+          signerId: '0x' + 'a'.repeat(64),
+          signature: {
+            scheme: 'ecdsa',
+            signature: '0x' + 'b'.repeat(130),
+            publicKey,
+          },
+          timestamp: '2024-01-01T00:00:00Z',
+        },
+      ]);
+    });
+
+    it('should reject imported ECDSA signatures without a public key', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+
+      await expect(
+        multisig.importProposal(
+          JSON.stringify({
+            accountId: multisig.accountId,
+            nonce: 1,
+            commitment: '0x' + 'c'.repeat(64),
+            txSummaryBase64: 'AQID',
+            signatures: [
+              {
+                commitment: '0x' + 'a'.repeat(64),
+                signatureHex: '0x' + 'b'.repeat(130),
+                scheme: 'ecdsa',
+              },
+            ],
+            metadata: {
+              proposalType: 'change_threshold',
+              targetThreshold: 1,
+              targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+              description: '',
+            },
+          })
+        )
+      ).rejects.toThrow('ECDSA signature for 0x' + 'a'.repeat(64) + ' is missing publicKey');
     });
 
     it('should reject offline signing if an imported proposal account is changed', async () => {
@@ -1835,6 +2178,241 @@ describe('Multisig', () => {
       );
     });
 
+    it('should encode ECDSA proposal and ack signatures with scheme-aware advice', async () => {
+      const { buildSignatureAdviceEntry, signatureHexToBytes } = await import('./utils/signature.js');
+      vi.mocked(signatureHexToBytes).mockClear();
+      vi.mocked(buildSignatureAdviceEntry).mockClear();
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+        psmPublicKey: '0x' + '1'.repeat(66),
+      };
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        publicKey: '0x' + '2'.repeat(66),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const cosignerPubkey = '0x' + '3'.repeat(66);
+      const ackPubkey = '0x' + '4'.repeat(66);
+      const cosignerSignature = '0x' + '5'.repeat(130);
+      const ackSignature = '0x' + '6'.repeat(130);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: {
+              scheme: 'ecdsa',
+              signature: cosignerSignature,
+              publicKey: cosignerPubkey,
+            },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'change_threshold',
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          ack_sig: ackSignature,
+          ack_pubkey: ackPubkey,
+          ack_scheme: 'ecdsa',
+        }),
+      });
+      mockWebClient.executeTransaction.mockResolvedValueOnce({});
+      mockWebClient.proveTransaction.mockResolvedValueOnce({});
+      mockWebClient.submitProvenTransaction.mockResolvedValueOnce(1n);
+      mockWebClient.applyTransaction.mockResolvedValueOnce(undefined);
+
+      await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+
+      expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
+        1,
+        cosignerSignature,
+        'ecdsa',
+      );
+      expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
+        2,
+        ackSignature,
+        'ecdsa',
+      );
+      expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        cosignerPubkey,
+        cosignerSignature,
+      );
+      expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        ackPubkey,
+        ackSignature,
+      );
+    });
+
+    it('should execute imported ECDSA proposals with scheme-aware advice', async () => {
+      const { buildSignatureAdviceEntry, signatureHexToBytes } = await import('./utils/signature.js');
+      vi.mocked(signatureHexToBytes).mockClear();
+      vi.mocked(buildSignatureAdviceEntry).mockClear();
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        psmCommitment: '0x' + 'c'.repeat(64),
+        psmPublicKey: '0x' + '1'.repeat(66),
+      };
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        publicKey: '0x' + '2'.repeat(66),
+      };
+
+      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const cosignerPubkey = '0x' + '3'.repeat(66);
+      const ackPubkey = '0x' + '4'.repeat(66);
+      const cosignerSignature = '0x' + '5'.repeat(130);
+      const ackSignature = '0x' + '6'.repeat(130);
+
+      await multisig.importProposal(
+        JSON.stringify({
+          accountId: multisig.accountId,
+          nonce: 1,
+          commitment: proposalId,
+          txSummaryBase64: 'AQID',
+          signatures: [
+            {
+              commitment: '0x' + 'a'.repeat(64),
+              signatureHex: cosignerSignature,
+              scheme: 'ecdsa',
+              publicKey: cosignerPubkey,
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'change_threshold',
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        })
+      );
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          ack_sig: ackSignature,
+          ack_pubkey: ackPubkey,
+          ack_scheme: 'ecdsa',
+        }),
+      });
+      mockWebClient.executeTransaction.mockResolvedValueOnce({});
+      mockWebClient.proveTransaction.mockResolvedValueOnce({});
+      mockWebClient.submitProvenTransaction.mockResolvedValueOnce(1n);
+      mockWebClient.applyTransaction.mockResolvedValueOnce(undefined);
+
+      await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+
+      expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
+        1,
+        cosignerSignature,
+        'ecdsa',
+      );
+      expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
+        2,
+        ackSignature,
+        'ecdsa',
+      );
+      expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        cosignerPubkey,
+        cosignerSignature,
+      );
+      expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        ackPubkey,
+        ackSignature,
+      );
+    });
+
     it('should verify switch_psm endpoint commitment before execution', async () => {
       const config = {
         threshold: 1,
@@ -1869,7 +2447,7 @@ describe('Multisig', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ pubkey: newPsmPubkey }),
+        json: async () => ({ commitment: newPsmPubkey }),
       });
       mockWebClient.getAccount.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
@@ -1920,7 +2498,7 @@ describe('Multisig', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ pubkey: '0x' + '2'.repeat(64) }),
+        json: async () => ({ commitment: '0x' + '2'.repeat(64) }),
       });
 
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(

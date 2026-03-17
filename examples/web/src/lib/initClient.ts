@@ -1,4 +1,5 @@
 import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
+import { EcdsaSigner, FalconSigner } from '@openzeppelin/miden-multisig-client';
 import { MIDEN_DB_NAME, MIDEN_RPC_URL } from '@/config';
 import type { SignerInfo } from '@/types';
 
@@ -18,8 +19,21 @@ export async function createWebClient(rpcUrl = MIDEN_RPC_URL): Promise<WebClient
 }
 
 export async function initializeSigner(_webClient: WebClient): Promise<SignerInfo> {
-  const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
-  const publicKey = secretKey.publicKey();
-  const commitment = publicKey.toCommitment().toHex();
-  return { commitment, secretKey };
+  const falconSecretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
+  const ecdsaSecretKey = AuthSecretKey.ecdsaWithRNG(undefined);
+
+  const falconSigner = new FalconSigner(falconSecretKey);
+  const ecdsaSigner = new EcdsaSigner(ecdsaSecretKey);
+
+  return {
+    falcon: {
+      commitment: falconSigner.commitment,
+      secretKey: falconSecretKey,
+    },
+    ecdsa: {
+      commitment: ecdsaSigner.commitment,
+      secretKey: ecdsaSecretKey,
+    },
+    activeScheme: 'falcon',
+  };
 }

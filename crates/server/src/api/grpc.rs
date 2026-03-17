@@ -604,6 +604,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_grpc_get_pubkey_for_ecdsa() {
+        let (state, _storage, _network, _metadata) = create_test_state();
+        let service = create_service(state);
+
+        let request = Request::new(state_manager::GetPubkeyRequest {
+            scheme: Some("ecdsa".to_string()),
+        });
+        let response = service.get_pubkey(request).await.unwrap();
+        let inner = response.into_inner();
+
+        assert!(inner.pubkey.starts_with("0x"));
+        assert_eq!(inner.pubkey.len(), 66);
+        let raw_pubkey = inner
+            .raw_pubkey
+            .expect("ecdsa raw pubkey should be present");
+        assert!(!raw_pubkey.is_empty());
+        assert!(raw_pubkey.starts_with("0x"));
+    }
+
+    #[tokio::test]
     async fn test_grpc_configure_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
         let service = create_service(state);

@@ -1,3 +1,4 @@
+import type { RequestAuthPayload } from '@openzeppelin/psm-client';
 import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { bytesToHex } from '../utils/encoding.js';
@@ -19,12 +20,13 @@ export class MidenWalletSigner implements Signer {
     commitment: string,
     scheme: SignatureScheme,
     localAuthSigner?: Signer,
+    publicKey?: string,
   ) {
     this.wallet = wallet;
     this.commitment = commitment;
     this.scheme = scheme;
     this.localAuthSigner = localAuthSigner ?? null;
-    this.publicKey = localAuthSigner?.publicKey ?? commitment;
+    this.publicKey = publicKey ?? localAuthSigner?.publicKey ?? commitment;
   }
 
   async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
@@ -33,6 +35,22 @@ export class MidenWalletSigner implements Signer {
     }
     const word = AuthDigest.fromAccountIdWithTimestamp(accountId, timestamp);
     return this.signWord(word);
+  }
+
+  async signRequest(
+    accountId: string,
+    timestamp: number,
+    requestPayload: RequestAuthPayload,
+  ): Promise<string> {
+    if (this.localAuthSigner?.signRequest) {
+      return this.localAuthSigner.signRequest(accountId, timestamp, requestPayload);
+    }
+
+    if (this.scheme === 'falcon') {
+      return this.signWord(AuthDigest.fromRequest(accountId, timestamp, requestPayload));
+    }
+
+    return this.signAccountIdWithTimestamp(accountId, timestamp);
   }
 
   async signCommitment(commitmentHex: string): Promise<string> {

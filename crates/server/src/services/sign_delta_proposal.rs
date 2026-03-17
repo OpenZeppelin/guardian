@@ -4,10 +4,7 @@ use crate::error::{PsmError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
-use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
-use miden_protocol::utils::Serializable;
 use private_state_manager_shared::DeltaSignature;
-use private_state_manager_shared::hex::FromHex;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -77,16 +74,16 @@ pub async fn sign_delta_proposal(
 
     // Extract signer ID from credentials
     let signer_commitment_hex = match &credentials {
-        Credentials::Signature { pubkey, .. } => {
-            let public_key = PublicKey::from_hex(pubkey).map_err(|e| {
+        Credentials::Signature { pubkey, .. } => resolved
+            .metadata
+            .auth
+            .compute_signer_commitment(pubkey)
+            .map_err(|e| {
                 PsmError::AuthenticationFailed(format!(
                     "invalid signer public key for {}: {}",
                     account_id, e
                 ))
-            })?;
-            let commitment = public_key.to_commitment();
-            format!("0x{}", hex::encode(commitment.to_bytes()))
-        }
+            })?,
     };
 
     // Check if already signed by this signer
@@ -192,15 +189,10 @@ mod tests {
         (state, storage, network, metadata)
     }
 
-    fn create_account_metadata(
-        account_id: String,
-        cosigner_commitments: Vec<String>,
-    ) -> AccountMetadata {
+    fn create_account_metadata(account_id: String, auth: Auth) -> AccountMetadata {
         AccountMetadata {
             account_id,
-            auth: Auth::MidenFalconRpo {
-                cosigner_commitments,
-            },
+            auth,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
@@ -252,7 +244,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![proposer_commitment.clone(), signer_commitment.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment.clone()],
+            },
         ))));
 
         let pending_proposal =
@@ -311,6 +305,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sign_delta_proposal_success_for_ecdsa() {
+        let (state, storage, _network, metadata) = create_test_state();
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let commitment =
+            "0xabababababababababababababababababababababababababababababababab".to_string();
+
+        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
+            crate::testing::helpers::generate_ecdsa_signature(&account_id);
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_ecdsa_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenEcdsa {
+                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment.clone()],
+            },
+        ))));
+
+        let pending_proposal =
+            create_pending_proposal(account_id.clone(), 1, proposer_commitment.clone(), vec![]);
+
+        let storage = storage
+            .with_pull_delta_proposal(Ok(pending_proposal.clone()))
+            .with_update_delta_proposal(Ok(()));
+
+        let dummy_sig = format!("0x{}", "b".repeat(130));
+        let params = SignDeltaProposalParams {
+            account_id: account_id.clone(),
+            commitment: commitment.clone(),
+            signature: ProposalSignature::Ecdsa {
+                signature: dummy_sig.clone(),
+                public_key: Some(signer_pubkey.clone()),
+            },
+            credentials: Credentials::signature(
+                signer_pubkey.clone(),
+                signer_signature.clone(),
+                signer_timestamp,
+            ),
+        };
+
+        let result = sign_delta_proposal(&state, params).await;
+
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+        let result = result.unwrap();
+
+        match &result.delta.status {
+            DeltaStatus::Pending { cosigner_sigs, .. } => {
+                assert_eq!(cosigner_sigs.len(), 1);
+                assert_eq!(cosigner_sigs[0].signer_id, signer_commitment);
+                match &cosigner_sigs[0].signature {
+                    ProposalSignature::Ecdsa {
+                        signature,
+                        public_key,
+                    } => {
+                        assert_eq!(*signature, dummy_sig);
+                        assert_eq!(public_key.as_deref(), Some(signer_pubkey.as_str()));
+                    }
+                    ProposalSignature::Falcon { .. } => {
+                        panic!("expected ECDSA signature")
+                    }
+                }
+            }
+            _ => panic!("Expected Pending status"),
+        }
+
+        let update_calls = storage.get_update_delta_proposal_calls();
+        assert_eq!(update_calls.len(), 1);
+        assert_eq!(update_calls[0].0, commitment);
+    }
+
+    #[tokio::test]
     async fn test_sign_delta_proposal_second_signature() {
         let (state, storage, _network, metadata) = create_test_state();
 
@@ -331,11 +397,13 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![
-                proposer_commitment.clone(),
-                first_signer_commitment.clone(),
-                second_signer_commitment.clone(),
-            ],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![
+                    proposer_commitment.clone(),
+                    first_signer_commitment.clone(),
+                    second_signer_commitment.clone(),
+                ],
+            },
         ))));
 
         let first_sig = format!("0x{}", "a".repeat(666));
@@ -395,7 +463,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![signer_commitment.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer_commitment.clone()],
+            },
         ))));
 
         let _storage = storage.with_pull_delta_proposal(Err("Proposal not found".to_string()));
@@ -440,7 +510,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![proposer_commitment.clone(), signer_commitment.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment.clone()],
+            },
         ))));
 
         let existing_sig = format!("0x{}", "a".repeat(666));
@@ -497,7 +569,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![proposer_commitment.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![proposer_commitment.clone()],
+            },
         ))));
 
         let dummy_sig = format!("0x{}", "a".repeat(666));
@@ -538,7 +612,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![proposer_commitment.clone(), signer_commitment.clone()],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment.clone()],
+            },
         ))));
 
         let pending_proposal =
@@ -577,7 +653,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![signer_commitment],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer_commitment],
+            },
         ))));
 
         let params = SignDeltaProposalParams {
@@ -612,7 +690,9 @@ mod tests {
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
-            vec![proposer_commitment.clone(), signer_commitment],
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment],
+            },
         ))));
 
         let mut pending_proposal =

@@ -8,23 +8,30 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import { PSM_MASM } from '../account/masm.js';
+import { PSM_ECDSA_MASM, PSM_MASM } from '../account/masm.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
+import type { SignatureScheme } from '../types.js';
 
-function buildUpdatePsmScript(webClient: WebClient): TransactionScript {
+function buildUpdatePsmScript(
+  webClient: WebClient,
+  signatureScheme: SignatureScheme,
+): TransactionScript {
   const libBuilder = webClient.createCodeBuilder();
-  const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
+  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
+  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
+  const psmProcedure = signatureScheme === 'ecdsa' ? 'psm_ecdsa' : 'psm';
+  const psmLib = libBuilder.buildLibrary(psmLibraryPath, psmMasm);
   libBuilder.linkDynamicLibrary(psmLib);
 
   const scriptSource = `
-use openzeppelin::psm
+use openzeppelin::${psmProcedure}
 
 begin
     adv.push_mapval
     dropw
-    call.psm::update_psm_public_key
+    call.${psmProcedure}::update_psm_public_key
 end
   `;
 
@@ -36,7 +43,8 @@ export async function buildUpdatePsmTransactionRequest(
   newPsmPubkey: string,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word }> {
-  const script = buildUpdatePsmScript(webClient);
+  const signatureScheme = options.signatureScheme ?? 'falcon';
+  const script = buildUpdatePsmScript(webClient, signatureScheme);
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
@@ -66,4 +74,3 @@ export async function buildUpdatePsmTransactionRequest(
     salt: authSaltForReturn,
   };
 }
-

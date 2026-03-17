@@ -125,7 +125,7 @@ export function LoadMultisigDialog({
                     {detectedConfig.numSigners} multisig
                   </div>
                   <div>
-                    <strong>Scheme:</strong> {detectedConfig.signatureScheme}
+                    <strong>Signing as:</strong> {signatureScheme}
                   </div>
                   <div>
                     <strong>PSM:</strong> {detectedConfig.psmEnabled ? 'Enabled' : 'Disabled'}

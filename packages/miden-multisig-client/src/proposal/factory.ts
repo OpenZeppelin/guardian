@@ -110,11 +110,30 @@ export class ProposalFactory {
 
     const metadata = ProposalMetadataCodec.validate(exported.metadata);
     const signatures = new ProposalSignatures(
-      exported.signatures.map((signature) => ({
-        signerId: signature.commitment,
-        signature: { scheme: 'falcon' as const, signature: signature.signatureHex },
-        timestamp: signature.timestamp ?? new Date().toISOString(),
-      })),
+      exported.signatures.map((signature) => {
+        const scheme = signature.scheme ?? 'falcon';
+        if (scheme === 'ecdsa' && !signature.publicKey) {
+          throw new Error(
+            `Invalid imported proposal signatures: ECDSA signature for ${signature.commitment} is missing publicKey`,
+          );
+        }
+
+        return {
+          signerId: signature.commitment,
+          signature:
+            scheme === 'ecdsa'
+              ? {
+                  scheme,
+                  signature: signature.signatureHex,
+                  publicKey: signature.publicKey,
+                }
+              : {
+                  scheme,
+                  signature: signature.signatureHex,
+                },
+          timestamp: signature.timestamp ?? new Date().toISOString(),
+        };
+      }),
       this.options.signerCommitments,
       'Invalid imported proposal signatures',
     ).entries();

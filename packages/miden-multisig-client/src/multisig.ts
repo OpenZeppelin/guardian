@@ -45,6 +45,7 @@ import {
   buildSignatureAdviceEntry,
   normalizeSignerCommitment,
   signatureHexToBytes,
+  tryComputeEcdsaCommitmentHex,
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
 import { buildPsmSignatureFromSigner } from './multisig/signing.js';
@@ -82,6 +83,7 @@ export class Multisig {
   signerCommitments: string[];
   psmCommitment: string;
   procedureThresholds: Map<ProcedureName, number>;
+  psmPublicKey?: string;
 
   private psm: PsmHttpClient;
   private readonly signer: Signer;
@@ -103,6 +105,7 @@ export class Multisig {
     this.threshold = config.threshold;
     this.signerCommitments = config.signerCommitments;
     this.psmCommitment = config.psmCommitment;
+    this.psmPublicKey = config.psmPublicKey;
     this.procedureThresholds = new Map(
       (config.procedureThresholds ?? []).map((pt) => [pt.procedure, pt.threshold])
     );
@@ -134,11 +137,8 @@ export class Multisig {
     }
 
     const endpointClient = new PsmHttpClient(endpoint);
-    const fetchedPubkey = await endpointClient.getPubkey() as string | { pubkey?: string };
-    const endpointPubkey = typeof fetchedPubkey === 'string'
-      ? fetchedPubkey
-      : fetchedPubkey.pubkey ?? '';
-    const endpointCommitment = normalizeHexWord(endpointPubkey);
+    const fetchedPubkey = await endpointClient.getPubkey(this.signer.scheme);
+    const endpointCommitment = normalizeHexWord(fetchedPubkey.commitment);
     const normalizedExpected = normalizeHexWord(expectedCommitment);
 
     if (endpointCommitment !== normalizedExpected) {
@@ -376,11 +376,18 @@ export class Multisig {
     const stateData =
       initialStateBase64 ?? uint8ArrayToBase64(this.account.serialize());
 
-    const auth: AuthConfig = {
-      MidenFalconRpo: {
-        cosigner_commitments: this.signerCommitments,
-      },
-    };
+    const auth: AuthConfig =
+      this.signer.scheme === 'ecdsa'
+        ? {
+            MidenEcdsa: {
+              cosigner_commitments: this.signerCommitments,
+            },
+          }
+        : {
+            MidenFalconRpo: {
+              cosigner_commitments: this.signerCommitments,
+            },
+          };
 
     const response = await this.psm.configure({
       accountId: this._accountId,
@@ -472,6 +479,7 @@ export class Multisig {
       this.webClient,
       targetThreshold,
       targetSignerCommitments,
+      { signatureScheme: this.signer.scheme },
     );
 
     const summary = await executeForSummary(this.webClient, this._accountId, request);
@@ -526,6 +534,7 @@ export class Multisig {
       this.webClient,
       targetThreshold,
       targetSignerCommitments,
+      { signatureScheme: this.signer.scheme },
     );
 
     const summary = await executeForSummary(this.webClient, this._accountId, request);
@@ -568,6 +577,7 @@ export class Multisig {
       this.webClient,
       newThreshold,
       this.signerCommitments,
+      { signatureScheme: this.signer.scheme },
     );
 
     const summary = await executeForSummary(this.webClient, this._accountId, request);
@@ -612,6 +622,7 @@ export class Multisig {
       this.webClient,
       targetProcedure,
       targetThreshold,
+      { signatureScheme: this.signer.scheme },
     );
 
     const summary = await executeForSummary(this.webClient, this._accountId, request);
@@ -650,6 +661,7 @@ export class Multisig {
     const { request, salt } = await buildUpdatePsmTransactionRequest(
       this.webClient,
       newPsmPubkey,
+      { signatureScheme: this.signer.scheme },
     );
 
     const summary = await executeForSummary(this.webClient, this._accountId, request);
@@ -899,19 +911,53 @@ export class Multisig {
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
     const saltHex = txSummary.salt().toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
+    const normalizedSignerCommitments = new Set(
+      this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
+    );
 
     const adviceMap = new AdviceMap();
     const adviceMapKeys = new Set<string>();
 
     for (const cosignerSig of signaturesForExecution) {
-      const signerCommitment = Word.fromHex(cosignerSig.signerId);
-      const sigBytes = signatureHexToBytes(cosignerSig.signature.signature);
+      let signerCommitmentHex = normalizeHexWord(cosignerSig.signerId);
+      const ecdsaPublicKey =
+        cosignerSig.signature.scheme === 'ecdsa'
+          ? cosignerSig.signature.publicKey
+          : undefined;
+
+      if (cosignerSig.signature.scheme === 'ecdsa') {
+        if (!ecdsaPublicKey) {
+          throw new Error(
+            `ECDSA proposal signature for ${signerCommitmentHex} is missing publicKey`,
+          );
+        }
+
+        const derivedCommitment = tryComputeEcdsaCommitmentHex(ecdsaPublicKey);
+        if (derivedCommitment && derivedCommitment !== signerCommitmentHex) {
+          if (!normalizedSignerCommitments.has(derivedCommitment)) {
+            throw new Error(
+              `ECDSA public key commitment mismatch: derived commitment ${derivedCommitment} is not in signerCommitments.`,
+            );
+          }
+          signerCommitmentHex = derivedCommitment;
+        }
+      }
+
+      const signerCommitment = Word.fromHex(signerCommitmentHex);
+      const sigBytes = signatureHexToBytes(
+        cosignerSig.signature.signature,
+        cosignerSig.signature.scheme,
+      );
       const signature = Signature.deserialize(sigBytes);
       const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
         txCommitment,
-        signature
+        signature,
+        ecdsaPublicKey,
+        cosignerSig.signature.scheme === 'ecdsa'
+          ? cosignerSig.signature.signature
+          : undefined,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -934,13 +980,26 @@ export class Multisig {
       }
 
       const psmCommitment = Word.fromHex(normalizeHexWord(this.psmCommitment));
-      const ackSigBytes = signatureHexToBytes(ackSigHex);
+      const ackScheme = (pushResult.ackScheme as 'ecdsa' | 'falcon') || this.signer.scheme;
+      const ackPubkey = pushResult.ackPubkey || this.psmPublicKey;
+      if (ackScheme === 'ecdsa' && !ackPubkey) {
+        throw new Error('PSM acknowledgment is missing ECDSA public key');
+      }
+      if (ackScheme === 'ecdsa' && ackPubkey) {
+        const derivedCommitment = tryComputeEcdsaCommitmentHex(ackPubkey);
+        if (derivedCommitment && derivedCommitment !== normalizeHexWord(this.psmCommitment)) {
+          throw new Error('PSM public key commitment mismatch');
+        }
+      }
+      const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
       const ackSignature = Signature.deserialize(ackSigBytes);
       const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
       const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
         psmCommitment,
         txCommitmentForAck,
-        ackSignature
+        ackSignature,
+        ackScheme === 'ecdsa' ? ackPubkey : undefined,
+        ackScheme === 'ecdsa' ? ackSigHex : undefined,
       );
       const ackKeyHex = normalizeHexWord(ackKey.toHex());
       if (adviceMapKeys.has(ackKeyHex)) {
@@ -988,6 +1047,7 @@ export class Multisig {
         const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
         const nextPsm = new PsmHttpClient(metadata.newPsmEndpoint);
         this.setPsmClient(nextPsm);
+        this.psmPublicKey = metadata.newPsmPubkey;
 
         await this.registerOnPsm(updatedStateBase64);
       } catch (error) {
@@ -1019,6 +1079,9 @@ export class Multisig {
         ? delta.status.cosignerSigs.map((s) => ({
             commitment: s.signerId,
             signatureHex: s.signature.signature,
+            scheme: s.signature.scheme,
+            publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+            timestamp: s.timestamp,
           }))
         : [];
 
@@ -1052,6 +1115,8 @@ export class Multisig {
       signatures: proposal.signatures.map((s) => ({
         commitment: s.signerId,
         signatureHex: s.signature.signature,
+        scheme: s.signature.scheme,
+        publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
         timestamp: s.timestamp,
       })),
       metadata: proposal.metadata,
@@ -1194,7 +1259,7 @@ export class Multisig {
           this.webClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
-          { salt, signatureAdviceMap }
+          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
         );
         return request;
       }
@@ -1202,7 +1267,7 @@ export class Multisig {
         const { request } = await buildUpdatePsmTransactionRequest(
           this.webClient,
           metadata.newPsmPubkey,
-          { salt, signatureAdviceMap }
+          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
         );
         return request;
       }
@@ -1211,7 +1276,7 @@ export class Multisig {
           this.webClient,
           metadata.targetProcedure,
           metadata.targetThreshold,
-          { salt, signatureAdviceMap }
+          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
         );
         return request;
       }

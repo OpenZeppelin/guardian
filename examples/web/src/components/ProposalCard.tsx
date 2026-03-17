@@ -5,13 +5,12 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { copyToClipboard } from '@/lib/helpers';
 import { getEffectiveThreshold } from '@/lib/procedures';
-import type { TransactionProposal, ProposalType, ProcedureName } from '@openzeppelin/miden-multisig-client';
-import type { SignerInfo } from '@/types';
+import type { Proposal, ProposalType, ProcedureName } from '@openzeppelin/miden-multisig-client';
 import type { WalletSource } from '@/wallets/types';
 
 interface ProposalCardProps {
-  proposal: TransactionProposal;
-  signer: SignerInfo | null;
+  proposal: Proposal;
+  activeSignerCommitment: string | null;
   defaultThreshold: number;
   procedureThresholds?: Map<ProcedureName, number>;
   signingProposal: string | null;
@@ -67,7 +66,7 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
 
 export function ProposalCard({
   proposal,
-  signer,
+  activeSignerCommitment,
   defaultThreshold,
   procedureThresholds,
   signingProposal,
@@ -85,20 +84,16 @@ export function ProposalCard({
 
   const meta = proposal.metadata as { proposalType?: ProposalType; description?: string };
   const proposalType = meta.proposalType;
-  const activeCommitment = signer
-    ? signer.activeScheme === 'ecdsa'
-      ? signer.ecdsa.commitment
-      : signer.falcon.commitment
-    : null;
 
   // Calculate effective threshold for this proposal type
   const effectiveThreshold = proposalType
     ? getEffectiveThreshold(proposalType, defaultThreshold, procedureThresholds)
     : defaultThreshold;
 
-  const userSigned = activeCommitment
+  const userSigned = activeSignerCommitment
     ? proposal.signatures.some(
-        (sig) => sig.signerId.toLowerCase() === activeCommitment.toLowerCase()
+        (sig: Proposal['signatures'][number]) =>
+          sig.signerId.toLowerCase() === activeSignerCommitment.toLowerCase()
       )
     : false;
 
@@ -159,9 +154,10 @@ export function ProposalCard({
           <div className="text-sm">
             <span className="text-muted-foreground">Signers:</span>
             <div className="flex flex-wrap gap-1 mt-1">
-              {proposal.signatures.map((sig) => {
+              {proposal.signatures.map((sig: Proposal['signatures'][number]) => {
                 const isYou =
-                  activeCommitment && sig.signerId.toLowerCase() === activeCommitment.toLowerCase();
+                  activeSignerCommitment &&
+                  sig.signerId.toLowerCase() === activeSignerCommitment.toLowerCase();
                 return (
                   <Badge
                     key={sig.signerId}

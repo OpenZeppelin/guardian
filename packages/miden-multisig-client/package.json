@@ -27,7 +27,8 @@
     "test:watch": "npm run generate:masm && vitest"
   },
   "dependencies": {
-    "@miden-sdk/miden-sdk": "^0.13.0",
+    "@noble/curves": "^1.9.7",
+    "@miden-sdk/miden-sdk": "0.13.0",
     "@noble/hashes": "^2.0.1",
     "@openzeppelin/psm-client": "file:../psm-client"
   },

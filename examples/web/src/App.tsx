@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
+import { useModal } from '@getpara/react-sdk-lite';
+import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
 
 import {
   type Multisig,
@@ -8,6 +10,7 @@ import {
   type DetectedMultisigConfig,
   type Proposal,
   type ProcedureName,
+  type SignatureScheme,
 } from '@openzeppelin/miden-multisig-client';
 import { PsmHttpError } from '@openzeppelin/psm-client';
 
@@ -23,12 +26,15 @@ import {
 } from '@/components';
 
 import { normalizeCommitment } from '@/lib/helpers';
-import { formatError } from '@/lib/errors';
+import { classifyWalletError, formatError } from '@/lib/errors';
 import { clearMidenDatabase, createWebClient, initializeSigner as initSigner } from '@/lib/initClient';
 import {
   initMultisigClient,
   createMultisigAccount,
   loadMultisigAccount,
+  resolveLocalSigner,
+  resolveMidenWalletSigner,
+  resolveParaSigner,
   registerOnPsm,
   switchMultisigPsm,
   fetchAccountState,
@@ -48,7 +54,10 @@ import {
   importProposal,
 } from '@/lib/multisigApi';
 import { MIDEN_RPC_URL, PSM_ENDPOINT } from '@/config';
+import { useParaSession } from '@/hooks/useParaSession';
+import { useMidenWallet } from '@/hooks/useMidenWallet';
 import type { SignerInfo } from '@/types';
+import type { WalletSource } from '@/wallets/types';
 
 // Helper to check if an error is related to pending candidate delta
 function isPendingCandidateError(error: unknown): boolean {
@@ -57,6 +66,73 @@ function isPendingCandidateError(error: unknown): boolean {
     errorStr.includes('non-canonical delta pending') ||
     errorStr.includes('ConflictPendingDelta')
   );
+}
+
+const CREATE_PROPOSAL_PENDING_WARNING =
+  'A previous transaction is still being processed on-chain. Please wait for it to be confirmed before creating new proposals.';
+const EXECUTE_PROPOSAL_PENDING_WARNING =
+  'A previous transaction is still being processed on-chain. Please wait for it to be confirmed before executing proposals.';
+
+function preferredWalletSource(
+  paraConnected: boolean,
+  midenWalletConnected: boolean,
+): WalletSource {
+  if (midenWalletConnected) {
+    return 'miden-wallet';
+  }
+
+  if (paraConnected) {
+    return 'para';
+  }
+
+  return 'local';
+}
+
+function localCommitmentForScheme(
+  signer: SignerInfo | null,
+  signatureScheme: SignatureScheme | null,
+): string | null {
+  if (!signer) {
+    return null;
+  }
+
+  return signatureScheme === 'ecdsa'
+    ? signer.ecdsa.commitment
+    : signer.falcon.commitment;
+}
+
+function activeWalletSchemeForSource(
+  walletSource: WalletSource,
+  signer: SignerInfo | null,
+  paraScheme: SignatureScheme | null,
+  midenWalletScheme: SignatureScheme | null,
+): SignatureScheme | null {
+  if (walletSource === 'para') {
+    return paraScheme ?? 'ecdsa';
+  }
+
+  if (walletSource === 'miden-wallet') {
+    return midenWalletScheme;
+  }
+
+  return signer?.activeScheme ?? null;
+}
+
+function activeWalletCommitmentForSource(
+  walletSource: WalletSource,
+  signer: SignerInfo | null,
+  paraCommitment: string | null,
+  midenWalletCommitment: string | null,
+): string | null {
+  if (walletSource === 'para') {
+    return paraCommitment;
+  }
+
+  if (walletSource === 'miden-wallet') {
+    return midenWalletCommitment;
+  }
+
+  return localCommitmentForScheme(signer, signer?.activeScheme ?? null);
 }
 
 export default function App() {
@@ -68,6 +144,7 @@ export default function App() {
   const [multisig, setMultisig] = useState<Multisig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingCandidateWarning, setPendingCandidateWarning] = useState<string | null>(null);
+  const [walletSource, setWalletSource] = useState<WalletSource>('local');
 
   // PSM state
   const [psmUrl, setPsmUrl] = useState(PSM_ENDPOINT);
@@ -99,6 +176,142 @@ export default function App() {
   // Notes state
   const [consumableNotes, setConsumableNotes] = useState<Array<{ id: string; assets: Array<{ faucetId: string; amount: bigint }> }>>([]);
 
+  const falconCommitment = signer?.falcon.commitment ?? null;
+  const ecdsaCommitment = signer?.ecdsa.commitment ?? null;
+  const activeScheme = signer?.activeScheme ?? null;
+  const { session: paraSession, paraClient, walletId: paraWalletId } = useParaSession();
+  const [midenWalletAdapter] = useState(
+    () => new MidenWalletAdapter({ appName: 'Miden Multisig' }),
+  );
+  const {
+    session: midenWalletSession,
+    connect: connectMidenWallet,
+    disconnect: disconnectMidenWallet,
+    signBytes,
+    connectError: midenWalletConnectError,
+  } = useMidenWallet(midenWalletAdapter);
+  const { openModal } = useModal();
+  const preferredSource = preferredWalletSource(
+    paraSession.connected,
+    midenWalletSession.connected,
+  );
+
+  const activeWalletCommitment = activeWalletCommitmentForSource(
+    walletSource,
+    signer,
+    paraSession.commitment,
+    midenWalletSession.commitment,
+  );
+  const activeWalletScheme = activeWalletSchemeForSource(
+    walletSource,
+    signer,
+    paraSession.scheme,
+    midenWalletSession.scheme,
+  );
+
+  const resolveSignerContext = useCallback(
+    (
+      source: WalletSource,
+      signatureScheme: SignatureScheme = activeWalletSchemeForSource(
+        source,
+        signer,
+        paraSession.scheme,
+        midenWalletSession.scheme,
+      ) ?? 'falcon',
+    ) => {
+      if (source === 'para') {
+        if (!paraClient || !paraSession.commitment || !paraSession.publicKey) {
+          throw new Error('Para wallet is not connected');
+        }
+
+        if (!paraWalletId) {
+          throw new Error('Para wallet did not expose a wallet id');
+        }
+
+        return resolveParaSigner({
+          paraClient,
+          walletId: paraWalletId,
+          commitment: paraSession.commitment,
+          publicKey: paraSession.publicKey,
+        });
+      }
+
+      if (source === 'miden-wallet') {
+        if (!midenWalletSession.commitment || !midenWalletSession.publicKey || !midenWalletSession.scheme) {
+          throw new Error('Miden Wallet is not connected');
+        }
+
+        return resolveMidenWalletSigner({
+          wallet: { signBytes },
+          commitment: midenWalletSession.commitment,
+          publicKey: midenWalletSession.publicKey,
+          scheme: midenWalletSession.scheme,
+        });
+      }
+
+      if (!signer) {
+        throw new Error('Local signers are still initializing');
+      }
+
+      return resolveLocalSigner(signer, signatureScheme);
+    },
+    [
+      midenWalletSession.commitment,
+      midenWalletSession.publicKey,
+      midenWalletSession.scheme,
+      paraClient,
+      paraSession.commitment,
+      paraSession.publicKey,
+      paraSession.scheme,
+      paraWalletId,
+      signBytes,
+      signer,
+    ],
+  );
+
+  const handleWalletSourceChange = useCallback(
+    async (nextSource: WalletSource) => {
+      if (nextSource === walletSource) {
+        return;
+      }
+
+      if (!multisig || !multisigClient) {
+        setWalletSource(nextSource);
+        return;
+      }
+
+      setLoadingAccount(true);
+      setError(null);
+      try {
+        const signerContext = resolveSignerContext(nextSource);
+        const reloaded = await loadMultisigAccount(multisigClient, multisig.accountId, signerContext);
+        setMultisig(reloaded);
+
+        const { state, config } = await fetchAccountState(reloaded);
+        setDetectedConfig(config);
+        setPsmState(state);
+
+        const { proposals: synced, notes } = await syncAll(reloaded);
+        setProposals(synced);
+        setConsumableNotes(notes);
+        setWalletSource(nextSource);
+      } catch (err) {
+        setError(`Failed to switch wallet source: ${formatError(err)}`);
+      } finally {
+        setLoadingAccount(false);
+      }
+    },
+    [
+      fetchAccountState,
+      loadMultisigAccount,
+      multisig,
+      multisigClient,
+      resolveSignerContext,
+      syncAll,
+      walletSource,
+    ],
+  );
+
   // Connect to PSM server
   const connectToPsm = useCallback(
     async (url: string, client?: WebClient): Promise<void> => {
@@ -110,7 +323,7 @@ export default function App() {
           // Fallback when no WebClient - just fetch pubkey
           const response = await fetch(`${url}/pubkey`);
           const data = await response.json();
-          setPsmPubkey(data.pubkey || '');
+          setPsmPubkey(data.commitment || '');
           setPsmStatus('connected');
           return;
         }
@@ -125,11 +338,12 @@ export default function App() {
         setPsmStatus('connected');
 
         // If there's an active multisig, try to load or register on the new PSM
-        if (multisig && signer && psmState?.stateDataBase64) {
+        if (multisig && psmState?.stateDataBase64) {
           setRegisteringOnPsm(true);
           try {
+            const signerContext = resolveSignerContext(walletSource);
             // First, try to load from the new PSM
-            const reloadedMs = await loadMultisigAccount(msClient, multisig.accountId, signer);
+            const reloadedMs = await loadMultisigAccount(msClient, multisig.accountId, signerContext);
             setMultisig(reloadedMs);
 
             const { state, config } = await fetchAccountState(reloadedMs);
@@ -176,7 +390,7 @@ export default function App() {
         setError(`Failed to connect to PSM: ${msg}`);
       }
     },
-    [webClient, multisig, signer, psmState]
+    [webClient, multisig, psmState, resolveSignerContext, walletSource]
   );
 
   // Initialize on mount
@@ -204,18 +418,111 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (midenWalletConnectError) {
+      toast.error(classifyWalletError(midenWalletConnectError));
+    }
+  }, [midenWalletConnectError]);
+
+  useEffect(() => {
+    if (multisig) {
+      return;
+    }
+
+    if (walletSource === 'local') {
+      if (preferredSource !== 'local') {
+        setWalletSource(preferredSource);
+        return;
+      }
+    }
+
+    if (!midenWalletSession.connected && walletSource === 'miden-wallet') {
+      setWalletSource(preferredSource);
+      return;
+    }
+
+    if (!paraSession.connected && walletSource === 'para') {
+      setWalletSource(preferredSource);
+    }
+  }, [
+    midenWalletSession.connected,
+    multisig,
+    paraSession.connected,
+    preferredSource,
+    walletSource,
+  ]);
+
+  const handleConnectMidenWallet = useCallback(async () => {
+    try {
+      await connectMidenWallet();
+    } catch (err) {
+      setError(classifyWalletError(err));
+    }
+  }, [connectMidenWallet]);
+
+  const handleDisconnectMidenWallet = useCallback(async () => {
+    try {
+      await disconnectMidenWallet();
+      if (walletSource !== 'miden-wallet') {
+        return;
+      }
+
+      if (!multisig) {
+        setWalletSource(preferredSource);
+        return;
+      }
+
+      await handleWalletSourceChange(preferredSource);
+    } catch (err) {
+      setError(classifyWalletError(err));
+    }
+  }, [
+    disconnectMidenWallet,
+    handleWalletSourceChange,
+    multisig,
+    preferredSource,
+    walletSource,
+  ]);
+
   // Create multisig
   const handleCreate = async (
     otherSignerCommitments: string[],
     threshold: number,
     procedureThresholds?: import('@openzeppelin/miden-multisig-client').ProcedureThreshold[],
+    signatureScheme: SignatureScheme = activeWalletScheme ?? 'falcon',
   ) => {
-    if (!multisigClient || !signer || !psmPubkey) return;
+    if (!multisigClient) {
+      setError('Client not initialized. Try reconnecting to PSM.');
+      return;
+    }
+    if (!psmPubkey) {
+      setPsmStatus('error');
+      setError('Missing PSM commitment. Reconnect to the PSM endpoint and try again.');
+      return;
+    }
 
     setCreating(true);
     setError(null);
     try {
-      const ms = await createMultisigAccount(multisigClient, signer, otherSignerCommitments, threshold, psmPubkey, procedureThresholds);
+      const signerContext = resolveSignerContext(walletSource, signatureScheme);
+      const { commitment: schemePsmCommitment } = await multisigClient.psmClient.getPubkey(signatureScheme);
+      const ms = await createMultisigAccount(
+        multisigClient,
+        signerContext,
+        otherSignerCommitments,
+        threshold,
+        schemePsmCommitment,
+        procedureThresholds,
+        signatureScheme,
+      );
+      setSigner((current) =>
+        current
+          ? {
+              ...current,
+              activeScheme: signatureScheme,
+            }
+          : current,
+      );
       setMultisig(ms);
 
       // Auto-register on PSM
@@ -242,8 +549,11 @@ export default function App() {
   };
 
   // Load multisig from PSM
-  const handleLoad = async (accountId: string) => {
-    if (!multisigClient || !signer) {
+  const handleLoad = async (
+    accountId: string,
+    signatureScheme: SignatureScheme = activeWalletScheme ?? 'falcon',
+  ) => {
+    if (!multisigClient) {
       setError('Client not initialized. Try reconnecting to PSM.');
       return;
     }
@@ -262,7 +572,20 @@ export default function App() {
     setError(null);
     setDetectedConfig(null);
     try {
-      const ms = await loadMultisigAccount(multisigClient, normalizedId, signer);
+      const signerContext = resolveSignerContext(walletSource, signatureScheme);
+      const ms = await loadMultisigAccount(
+        multisigClient,
+        normalizedId,
+        signerContext,
+      );
+      setSigner((current) =>
+        current
+          ? {
+              ...current,
+              activeScheme: signatureScheme,
+            }
+          : current,
+      );
       setMultisig(ms);
 
       const { state, config } = await fetchAccountState(ms);
@@ -344,6 +667,36 @@ export default function App() {
     }
   };
 
+  const handleCreateProposalError = useCallback((err: unknown) => {
+    if (isPendingCandidateError(err)) {
+      setPendingCandidateWarning(CREATE_PROPOSAL_PENDING_WARNING);
+      return;
+    }
+
+    setError(`Failed to create proposal: ${formatError(err)}`);
+  }, []);
+
+  const runProposalCreation = useCallback(
+    async (
+      createProposal: () => Promise<{ proposals: Proposal[] }>,
+      successMessage: string,
+    ) => {
+      setCreatingProposal(true);
+      setError(null);
+      setPendingCandidateWarning(null);
+      try {
+        const { proposals: nextProposals } = await createProposal();
+        setProposals(nextProposals);
+        toast.success(successMessage);
+      } catch (err) {
+        handleCreateProposalError(err);
+      } finally {
+        setCreatingProposal(false);
+      }
+    },
+    [handleCreateProposalError],
+  );
+
   // Create add signer proposal
   const handleCreateAddSignerProposal = async (commitment: string, increaseThreshold: boolean) => {
     if (!multisig) return;
@@ -356,75 +709,30 @@ export default function App() {
       return;
     }
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createAddSignerProposal(multisig, normalizedCommitment, increaseThreshold);
-      setProposals(proposals);
-      toast.success('Add signer proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createAddSignerProposal(multisig, normalizedCommitment, increaseThreshold),
+      'Add signer proposal created',
+    );
   };
 
   // Create remove signer proposal
   const handleCreateRemoveSignerProposal = async (signerToRemove: string, newThreshold?: number) => {
     if (!multisig) return;
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createRemoveSignerProposal(multisig, signerToRemove, newThreshold);
-      setProposals(proposals);
-      toast.success('Remove signer proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createRemoveSignerProposal(multisig, signerToRemove, newThreshold),
+      'Remove signer proposal created',
+    );
   };
 
   // Create change threshold proposal
   const handleCreateChangeThresholdProposal = async (newThreshold: number) => {
     if (!multisig) return;
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createChangeThresholdProposal(multisig, newThreshold);
-      setProposals(proposals);
-      toast.success('Change threshold proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createChangeThresholdProposal(multisig, newThreshold),
+      'Change threshold proposal created',
+    );
   };
 
   const handleCreateUpdateProcedureThresholdProposal = async (
@@ -433,104 +741,40 @@ export default function App() {
   ) => {
     if (!multisig) return;
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createUpdateProcedureThresholdProposal(
-        multisig,
-        procedure,
-        threshold,
-      );
-      setProposals(proposals);
-      toast.success('Procedure threshold proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createUpdateProcedureThresholdProposal(multisig, procedure, threshold),
+      'Procedure threshold proposal created',
+    );
   };
 
   // Create consume notes proposal
   const handleCreateConsumeNotesProposal = async (noteIds: string[]) => {
     if (!multisig) return;
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createConsumeNotesProposal(multisig, noteIds);
-      setProposals(proposals);
-      toast.success('Consume notes proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createConsumeNotesProposal(multisig, noteIds),
+      'Consume notes proposal created',
+    );
   };
 
   // Create P2ID (send payment) proposal
   const handleCreateP2idProposal = async (recipientId: string, faucetId: string, amount: bigint) => {
     if (!multisig) return;
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createP2idProposal(multisig, recipientId, faucetId, amount);
-      setProposals(proposals);
-      toast.success('Send payment proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createP2idProposal(multisig, recipientId, faucetId, amount),
+      'Send payment proposal created',
+    );
   };
 
   // Create switch PSM proposal
   const handleCreateSwitchPsmProposal = async (newEndpoint: string, newPubkey: string) => {
     if (!multisig) return;
 
-    setCreatingProposal(true);
-    setError(null);
-    setPendingCandidateWarning(null);
-    try {
-      const { proposals } = await createSwitchPsmProposal(multisig, newEndpoint, newPubkey);
-      setProposals(proposals);
-      toast.success('Switch PSM proposal created');
-    } catch (err) {
-      if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before creating new proposals.'
-        );
-      } else {
-        setError(`Failed to create proposal: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    } finally {
-      setCreatingProposal(false);
-    }
+    await runProposalCreation(
+      () => createSwitchPsmProposal(multisig, newEndpoint, newPubkey),
+      'Switch PSM proposal created',
+    );
   };
 
   // Sign proposal
@@ -565,10 +809,7 @@ export default function App() {
     } catch (err) {
       console.error('[Execute] Execution failed:', err);
       if (isPendingCandidateError(err)) {
-        setPendingCandidateWarning(
-          'A previous transaction is still being processed on-chain. ' +
-          'Please wait for it to be confirmed before executing proposals.'
-        );
+        setPendingCandidateWarning(EXECUTE_PROPOSAL_PENDING_WARNING);
       } else {
         setError(`Failed to execute: ${err instanceof Error ? err.message : 'Unknown'}`);
       }
@@ -640,17 +881,32 @@ export default function App() {
     setTimeout(() => window.location.reload(), 500);
   };
 
-  const ready = !!webClient && !!signer && !!multisigClient && psmStatus === 'connected';
+  const ready = !!webClient && !!signer && !!multisigClient && !!psmPubkey && psmStatus === 'connected';
 
   return (
     <div className="min-h-screen flex flex-col">
       <Header
-        signerCommitment={signer?.commitment ?? null}
+        falconCommitment={falconCommitment}
+        ecdsaCommitment={ecdsaCommitment}
+        activeScheme={activeScheme}
         generatingSigner={generatingSigner}
         psmStatus={psmStatus}
         psmUrl={psmUrl}
         onPsmUrlChange={setPsmUrl}
         onReconnect={(url) => connectToPsm(url)}
+        walletSource={walletSource}
+        onWalletSourceChange={handleWalletSourceChange}
+        paraConnected={paraSession.connected}
+        paraCommitment={paraSession.commitment}
+        midenWalletConnected={midenWalletSession.connected}
+        midenWalletCommitment={midenWalletSession.commitment}
+        onConnectMidenWallet={() => {
+          void handleConnectMidenWallet();
+        }}
+        onDisconnectMidenWallet={() => {
+          void handleDisconnectMidenWallet();
+        }}
+        onOpenParaModal={() => openModal()}
       />
 
       <main className="flex-1">
@@ -664,12 +920,14 @@ export default function App() {
         ) : signer ? (
           <MultisigDashboard
             multisig={multisig}
-            signer={signer}
+            signatureScheme={activeWalletScheme ?? signer.activeScheme}
             psmState={psmState}
             proposals={proposals}
             consumableNotes={consumableNotes}
             vaultBalances={detectedConfig?.vaultBalances ?? []}
             procedureThresholds={detectedConfig?.procedureThresholds}
+            walletSource={walletSource}
+            activeSignerCommitment={multisig.signerCommitment}
             creatingProposal={creatingProposal}
             syncing={syncingState}
             verifying={verifyingState}
@@ -704,10 +962,14 @@ export default function App() {
           <CreateMultisigDialog
             open={createDialogOpen}
             onOpenChange={setCreateDialogOpen}
-            signerCommitment={signer.commitment}
+            falconCommitment={signer.falcon.commitment}
+            ecdsaCommitment={signer.ecdsa.commitment}
+            defaultScheme={activeWalletScheme ?? signer.activeScheme}
             creating={creating}
             registeringOnPsm={registeringOnPsm}
             onCreate={handleCreate}
+            walletSource={walletSource}
+            walletCommitment={activeWalletCommitment}
           />
           <LoadMultisigDialog
             open={loadDialogOpen}
@@ -715,7 +977,9 @@ export default function App() {
             loading={loadingAccount}
             detectedConfig={detectedConfig}
             error={error}
+            defaultScheme={activeWalletScheme ?? signer.activeScheme}
             onLoad={handleLoad}
+            walletSource={walletSource}
           />
           <ImportProposalDialog
             open={importDialogOpen}

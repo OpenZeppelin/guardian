@@ -102,6 +102,8 @@ export interface ExportedProposal {
   signatures: Array<{
     commitment: string;
     signatureHex: string;
+    scheme?: SignatureScheme;
+    publicKey?: string;
     timestamp?: string;
   }>;
   metadata: ProposalMetadata;

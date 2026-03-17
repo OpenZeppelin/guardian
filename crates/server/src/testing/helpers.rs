@@ -13,7 +13,9 @@ use crate::testing::mocks::MockNetworkClient;
 use async_trait::async_trait;
 use chrono::Utc;
 use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
 use miden_protocol::utils::Serializable;
 use miden_protocol::{Felt, FieldElement, Word, ZERO};
@@ -449,6 +451,37 @@ pub fn generate_falcon_signature_with_timestamp(
 pub fn generate_falcon_signature(account_id_hex: &str) -> (String, String, String, i64) {
     let timestamp = chrono::Utc::now().timestamp_millis();
     generate_falcon_signature_with_timestamp(account_id_hex, timestamp)
+}
+
+/// Generates an ECDSA signature for replay-resistant authentication.
+/// Returns (pubkey_hex, commitment_hex, signature_hex, timestamp)
+pub fn generate_ecdsa_signature_with_timestamp(
+    account_id_hex: &str,
+    timestamp: i64,
+) -> (String, String, String, i64) {
+    let secret_key = EcdsaSecretKey::new();
+    let public_key = secret_key.public_key();
+    let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+    let commitment_hex = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+
+    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
+    let account_id_felts: [Felt; 2] = account_id.into();
+    let timestamp_felt = Felt::new(timestamp as u64);
+    let message = Rpo256::hash_elements(&[
+        account_id_felts[0],
+        account_id_felts[1],
+        timestamp_felt,
+        Felt::ZERO,
+    ]);
+
+    let signature_hex = format!("0x{}", hex::encode(secret_key.sign(message).to_bytes()));
+    (pubkey_hex, commitment_hex, signature_hex, timestamp)
+}
+
+/// Convenience function that generates an ECDSA signature with current timestamp (milliseconds)
+pub fn generate_ecdsa_signature(account_id_hex: &str) -> (String, String, String, i64) {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    generate_ecdsa_signature_with_timestamp(account_id_hex, timestamp)
 }
 
 pub fn pubkey_hex_to_commitment_hex(pubkey_hex: &str) -> String {

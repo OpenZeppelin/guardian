@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParaMiden } from '@miden-sdk/use-miden-para-react';
 import { tryComputeEcdsaCommitmentHex, EcdsaFormat } from '@openzeppelin/miden-multisig-client';
 import { MIDEN_RPC_URL } from '@/config';
@@ -21,11 +21,11 @@ async function getUncompressedPublicKeyFromWallet(
       throw new Error('Got invalid jwt token');
     }
     const wallets: Array<{ id: string; publicKey: string }> = payload.data.connectedWallets;
-    const w = wallets.find((w) => w.id === wallet.id);
-    if (!w) {
+    const matchingWallet = wallets.find((entry) => entry.id === wallet.id);
+    if (!matchingWallet) {
       throw new Error('Wallet Not Found in jwt data');
     }
-    publicKey = w.publicKey;
+    publicKey = matchingWallet.publicKey;
   }
   return publicKey;
 }
@@ -43,6 +43,7 @@ export function useParaSession() {
   const derivingRef = useRef(false);
 
   const { para: paraClient, evmWallets } = paraMiden;
+  const walletId = evmWallets?.[0]?.id ?? null;
 
   useEffect(() => {
     if (!evmWallets?.length) {
@@ -56,18 +57,25 @@ export function useParaSession() {
     derivingRef.current = true;
     (async () => {
       try {
-        const uncompressedPk = await getUncompressedPublicKeyFromWallet(paraClient, evmWallet);
-        const compressedPk = EcdsaFormat.compressPublicKey(uncompressedPk);
-        const commitmentHex = tryComputeEcdsaCommitmentHex(compressedPk);
-        if (!commitmentHex) {
+        if (!walletId) {
+          throw new Error('Para wallet did not expose an id');
+        }
+
+        const uncompressedPublicKey = await getUncompressedPublicKeyFromWallet(
+          paraClient,
+          evmWallet,
+        );
+        const compressedPublicKey = EcdsaFormat.compressPublicKey(uncompressedPublicKey);
+        const commitment = tryComputeEcdsaCommitmentHex(compressedPublicKey);
+        if (!commitment) {
           throw new Error('Failed to derive ECDSA commitment from public key');
         }
 
         setSession({
           source: 'para',
           connected: true,
-          publicKey: uncompressedPk,
-          commitment: commitmentHex,
+          publicKey: uncompressedPublicKey,
+          commitment,
           scheme: 'ecdsa',
         });
       } catch {
@@ -76,16 +84,12 @@ export function useParaSession() {
         derivingRef.current = false;
       }
     })();
-  }, [evmWallets, paraClient]);
-
-  const getWalletId = useCallback((): string | null => {
-    return evmWallets?.[0]?.id ?? null;
-  }, [evmWallets]);
+  }, [evmWallets, paraClient, walletId]);
 
   return {
     session,
     paraClient,
     paraMiden,
-    getWalletId,
+    walletId,
   };
 }

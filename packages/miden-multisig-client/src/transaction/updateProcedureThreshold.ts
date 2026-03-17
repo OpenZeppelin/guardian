@@ -9,11 +9,17 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import { MULTISIG_MASM, PSM_MASM } from '../account/masm.js';
+import {
+  MULTISIG_ECDSA_MASM,
+  MULTISIG_MASM,
+  PSM_ECDSA_MASM,
+  PSM_MASM,
+} from '../account/masm.js';
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
+import type { SignatureScheme } from '../types.js';
 
 function buildProcedureThresholdAdvice(
   procedure: ProcedureName,
@@ -35,12 +41,16 @@ function buildUpdateProcedureThresholdScript(
   webClient: WebClient,
   procedure: ProcedureName,
   threshold: number,
+  signatureScheme: SignatureScheme,
 ): TransactionScript {
   const libBuilder = webClient.createCodeBuilder();
-  const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
+  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
+  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
+  const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
+  const psmLib = libBuilder.buildLibrary(psmLibraryPath, psmMasm);
   libBuilder.linkStaticLibrary(psmLib);
 
-  const multisigLib = libBuilder.buildLibrary('auth::multisig', MULTISIG_MASM);
+  const multisigLib = libBuilder.buildLibrary('auth::multisig', multisigMasm);
   libBuilder.linkDynamicLibrary(multisigLib);
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
 
@@ -65,9 +75,15 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
   threshold: number,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
+  const signatureScheme = options.signatureScheme ?? 'falcon';
   const { configHash } = buildProcedureThresholdAdvice(procedure, threshold);
 
-  const script = buildUpdateProcedureThresholdScript(webClient, procedure, threshold);
+  const script = buildUpdateProcedureThresholdScript(
+    webClient,
+    procedure,
+    threshold,
+    signatureScheme,
+  );
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
   const authSalt = WordType.fromHex(normalizeHexWord(authSaltHex));
 

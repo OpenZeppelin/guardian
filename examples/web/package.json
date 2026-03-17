@@ -16,7 +16,7 @@
     "@getpara/react-sdk-lite": "^2.2.0",
     "@getpara/solana-wallet-connectors": "^2.15.0",
     "@miden-sdk/miden-para": "^0.13.0",
-    "@miden-sdk/miden-sdk": "^0.13.0",
+    "@miden-sdk/miden-sdk": "0.13.0",
     "@miden-sdk/use-miden-para-react": "^0.13.0",
     "@openzeppelin/miden-multisig-client": "file:../../packages/miden-multisig-client",
     "@openzeppelin/psm-client": "file:../../packages/psm-client",

@@ -1,4 +1,5 @@
-import { AuthSecretKey } from '@miden-sdk/miden-sdk';
+import type { RequestAuthPayload } from '@openzeppelin/psm-client';
+import { AuthSecretKey, type Word } from '@miden-sdk/miden-sdk';
 import type { Signer, SignatureScheme } from '../types.js';
 import { bytesToHex } from '../utils/encoding.js';
 import { AuthDigest } from '../utils/digest.js';
@@ -20,14 +21,24 @@ export class FalconSigner implements Signer {
 
   async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
     const digest = AuthDigest.fromAccountIdWithTimestamp(accountId, timestamp);
-    const signature = this.secretKey.sign(digest);
-    const signatureBytes = signature.serialize();
-    const falconSignature = signatureBytes.slice(1);
-    return bytesToHex(falconSignature);
+    return this.signWord(digest);
+  }
+
+  async signRequest(
+    accountId: string,
+    timestamp: number,
+    requestPayload: RequestAuthPayload,
+  ): Promise<string> {
+    const digest = AuthDigest.fromRequest(accountId, timestamp, requestPayload);
+    return this.signWord(digest);
   }
 
   async signCommitment(commitmentHex: string): Promise<string> {
     const word = AuthDigest.fromCommitmentHex(commitmentHex);
+    return this.signWord(word);
+  }
+
+  private signWord(word: Word): string {
     const signature = this.secretKey.sign(word);
     const signatureBytes = signature.serialize();
     const falconSignature = signatureBytes.slice(1);

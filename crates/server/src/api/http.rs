@@ -584,6 +584,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_pubkey_success_for_ecdsa() {
+        let (state, _storage, _network, _metadata) = create_test_state();
+        let (status, Json(response)) = get_pubkey(
+            State(state),
+            Query(PubkeyQuery {
+                scheme: Some("ecdsa".to_string()),
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(response.commitment.starts_with("0x"));
+        assert_eq!(response.commitment.len(), 66);
+        assert!(response.pubkey.is_some());
+        assert!(response.pubkey.unwrap().starts_with("0x"));
+    }
+
+    #[tokio::test]
     async fn test_configure_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();

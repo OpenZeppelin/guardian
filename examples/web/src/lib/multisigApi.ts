@@ -6,13 +6,91 @@ import {
   type MultisigConfig,
   type ConsumableNote,
   type ProcedureThreshold,
+  type ProcedureName,
+  type SignatureScheme,
+  type Signer,
   MultisigClient as MultisigClientClass,
   FalconSigner,
+  EcdsaSigner,
+  ParaSigner,
+  MidenWalletSigner,
+  type WalletSigningContext,
   AccountInspector,
   type DetectedMultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
 import type { WebClient } from '@miden-sdk/miden-sdk';
 import type { SignerInfo } from '@/types';
+import type { WalletSource } from '@/wallets/types';
+
+type ResolvedSigner = {
+  commitment: string;
+  signatureScheme: SignatureScheme;
+  signerInstance: Signer;
+  walletSource: WalletSource;
+};
+
+interface ParaSignerOptions {
+  paraClient: { signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown> };
+  walletId: string;
+  commitment: string;
+  publicKey: string;
+}
+
+interface MidenWalletSignerOptions {
+  wallet: WalletSigningContext;
+  commitment: string;
+  publicKey: string;
+  scheme: SignatureScheme;
+}
+
+export function resolveLocalSigner(
+  signer: SignerInfo,
+  signatureScheme: SignatureScheme = signer.activeScheme,
+): ResolvedSigner {
+  if (signatureScheme === 'ecdsa') {
+    return {
+      commitment: signer.ecdsa.commitment,
+      signatureScheme,
+      signerInstance: new EcdsaSigner(signer.ecdsa.secretKey),
+      walletSource: 'local',
+    };
+  }
+
+  return {
+    commitment: signer.falcon.commitment,
+    signatureScheme,
+    signerInstance: new FalconSigner(signer.falcon.secretKey),
+    walletSource: 'local',
+  };
+}
+
+export function resolveParaSigner({
+  paraClient,
+  walletId,
+  commitment,
+  publicKey,
+}: ParaSignerOptions): ResolvedSigner {
+  return {
+    commitment,
+    signatureScheme: 'ecdsa',
+    signerInstance: new ParaSigner(paraClient, walletId, commitment, publicKey),
+    walletSource: 'para',
+  };
+}
+
+export function resolveMidenWalletSigner({
+  wallet,
+  commitment,
+  publicKey,
+  scheme,
+}: MidenWalletSignerOptions): ResolvedSigner {
+  return {
+    commitment,
+    signatureScheme: scheme,
+    signerInstance: new MidenWalletSigner(wallet, commitment, scheme, undefined, publicKey),
+    walletSource: 'miden-wallet',
+  };
+}
 
 function currentAccountNonce(multisig: Multisig): number | null {
   if (!multisig.account) {
@@ -74,6 +152,24 @@ function listVisibleProposals(multisig: Multisig): Proposal[] {
   return filterVisibleProposals(multisig, multisig.listProposals());
 }
 
+async function createProposalResult(
+  multisig: Multisig,
+  createProposal: () => Promise<Proposal>,
+  loadProposals: (multisig: Multisig) => Promise<Proposal[]> = syncVisibleProposals,
+): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
+  const proposal = await createProposal();
+  const proposals = await loadProposals(multisig);
+
+  if (proposals.some((candidate) => candidate.id === proposal.id)) {
+    return { proposal, proposals };
+  }
+
+  return {
+    proposal,
+    proposals: filterVisibleProposals(multisig, [...proposals, proposal]),
+  };
+}
+
 /**
  * Initialize MultisigClient and get PSM pubkey.
  */
@@ -83,7 +179,8 @@ export async function initMultisigClient(
   midenRpcEndpoint: string,
 ): Promise<{ client: MultisigClient; psmPubkey: string }> {
   const client = new MultisigClientClass(webClient, { psmEndpoint, midenRpcEndpoint });
-  const psmPubkey = await client.psmClient.getPubkey();
+  const response = await client.psmClient.getPubkey();
+  const psmPubkey = typeof response === 'string' ? response : response.commitment;
   return { client, psmPubkey };
 }
 
@@ -92,11 +189,12 @@ export async function initMultisigClient(
  */
 export async function createMultisigAccount(
   multisigClient: MultisigClient,
-  signer: SignerInfo,
+  signer: ResolvedSigner,
   otherCommitments: string[],
   threshold: number,
   psmCommitment: string,
   procedureThresholds?: ProcedureThreshold[],
+  signatureScheme: SignatureScheme = signer.signatureScheme,
 ): Promise<Multisig> {
   const signerCommitments = [signer.commitment, ...otherCommitments];
   const config: MultisigConfig = {
@@ -106,9 +204,9 @@ export async function createMultisigAccount(
     psmEnabled: true,
     procedureThresholds,
     storageMode: 'private',
+    signatureScheme,
   };
-  const falconSigner = new FalconSigner(signer.secretKey);
-  return multisigClient.create(config, falconSigner);
+  return multisigClient.create(config, signer.signerInstance);
 }
 
 /**
@@ -117,10 +215,9 @@ export async function createMultisigAccount(
 export async function loadMultisigAccount(
   multisigClient: MultisigClient,
   accountId: string,
-  signer: SignerInfo,
+  signer: ResolvedSigner,
 ): Promise<Multisig> {
-  const falconSigner = new FalconSigner(signer.secretKey);
-  return multisigClient.load(accountId, falconSigner);
+  return multisigClient.load(accountId, signer.signerInstance);
 }
 
 /**
@@ -194,14 +291,10 @@ export async function createAddSignerProposal(
   commitment: string,
   increaseThreshold: boolean,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-  const proposal = await multisig.createAddSignerProposal(commitment, proposalNonce(multisig), newThreshold);
-  const proposals = await syncVisibleProposals(multisig);
-  // Ensure the new proposal is included
-  if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
-  }
-  return { proposal, proposals };
+  return createProposalResult(multisig, () => {
+    const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
+    return multisig.createAddSignerProposal(commitment, proposalNonce(multisig), newThreshold);
+  });
 }
 
 /**
@@ -212,16 +305,12 @@ export async function createRemoveSignerProposal(
   signerToRemove: string,
   newThreshold?: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createRemoveSignerProposal(
-    signerToRemove,
-    proposalNonce(multisig),
-    newThreshold,
-  );
-  const proposals = await syncVisibleProposals(multisig);
-  if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
-  }
-  return { proposal, proposals };
+  return createProposalResult(multisig, () =>
+    multisig.createRemoveSignerProposal(
+      signerToRemove,
+      proposalNonce(multisig),
+      newThreshold,
+    ));
 }
 
 /**
@@ -231,12 +320,8 @@ export async function createChangeThresholdProposal(
   multisig: Multisig,
   newThreshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createChangeThresholdProposal(newThreshold, proposalNonce(multisig));
-  const proposals = await syncVisibleProposals(multisig);
-  if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
-  }
-  return { proposal, proposals };
+  return createProposalResult(multisig, () =>
+    multisig.createChangeThresholdProposal(newThreshold, proposalNonce(multisig)));
 }
 
 export async function createUpdateProcedureThresholdProposal(
@@ -244,16 +329,12 @@ export async function createUpdateProcedureThresholdProposal(
   procedure: ProcedureName,
   threshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createUpdateProcedureThresholdProposal(
-    procedure,
-    threshold,
-    proposalNonce(multisig),
-  );
-  const proposals = await syncVisibleProposals(multisig);
-  if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
-  }
-  return { proposal, proposals };
+  return createProposalResult(multisig, () =>
+    multisig.createUpdateProcedureThresholdProposal(
+      procedure,
+      threshold,
+      proposalNonce(multisig),
+    ));
 }
 
 /**
@@ -263,12 +344,8 @@ export async function createConsumeNotesProposal(
   multisig: Multisig,
   noteIds: string[],
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createConsumeNotesProposal(noteIds, proposalNonce(multisig));
-  const proposals = await syncVisibleProposals(multisig);
-  if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
-  }
-  return { proposal, proposals };
+  return createProposalResult(multisig, () =>
+    multisig.createConsumeNotesProposal(noteIds, proposalNonce(multisig)));
 }
 
 /**
@@ -280,17 +357,13 @@ export async function createP2idProposal(
   faucetId: string,
   amount: bigint,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createP2idProposal(
-    recipientId,
-    faucetId,
-    amount,
-    proposalNonce(multisig),
-  );
-  const proposals = await syncVisibleProposals(multisig);
-  if (!proposals.find((p) => p.id === proposal.id)) {
-    return { proposal, proposals: filterVisibleProposals(multisig, [...proposals, proposal]) };
-  }
-  return { proposal, proposals };
+  return createProposalResult(multisig, () =>
+    multisig.createP2idProposal(
+      recipientId,
+      faucetId,
+      amount,
+      proposalNonce(multisig),
+    ));
 }
 
 /**
@@ -302,13 +375,16 @@ export async function createSwitchPsmProposal(
   newPsmEndpoint: string,
   newPsmPubkey: string,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
-  const proposal = await multisig.createSwitchPsmProposal(
-    newPsmEndpoint,
-    newPsmPubkey,
-    proposalNonce(multisig),
+  return createProposalResult(
+    multisig,
+    () =>
+      multisig.createSwitchPsmProposal(
+        newPsmEndpoint,
+        newPsmPubkey,
+        proposalNonce(multisig),
+      ),
+    async (currentMultisig) => listVisibleProposals(currentMultisig),
   );
-  const proposals = listVisibleProposals(multisig);
-  return { proposal, proposals };
 }
 
 /**

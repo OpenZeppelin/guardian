@@ -5,7 +5,16 @@ import { hexToBytes, uint8ArrayToBase64 } from '../utils/encoding.js';
 import { wordToBytes } from '../utils/word.js';
 
 export interface ParaSigningContext {
-  signMessage(params: { walletId: string; messageBase64: string }): Promise<{ signature?: string }>;
+  signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown>;
+}
+
+function extractSignature(response: unknown): string | null {
+  if (!response || typeof response !== 'object') {
+    return null;
+  }
+
+  const signature = (response as { signature?: unknown }).signature;
+  return typeof signature === 'string' ? signature : null;
 }
 
 export class ParaSigner implements Signer {
@@ -41,20 +50,20 @@ export class ParaSigner implements Signer {
   }
 
   private async signWord(word: { toHex: () => string; toFelts: () => Array<{ asInt: () => bigint }> }): Promise<string> {
-    const wordBytes = wordToBytes(word);
-    const hashedHex = EcdsaFormat.keccakDigestHex(wordBytes);
-    const cleanHex = hashedHex.slice(2);
-    const messageBase64 = uint8ArrayToBase64(hexToBytes(cleanHex));
+    const messageBase64 = uint8ArrayToBase64(
+      hexToBytes(EcdsaFormat.keccakDigestHex(wordToBytes(word))),
+    );
 
     const res = await this.para.signMessage({
       walletId: this.walletId,
       messageBase64,
     });
 
-    if (!res.signature) {
+    const signature = extractSignature(res);
+    if (!signature) {
       throw new Error('Para signing was denied by user');
     }
 
-    return EcdsaFormat.normalizeRecoveryByte(res.signature);
+    return EcdsaFormat.normalizeRecoveryByte(signature);
   }
 }

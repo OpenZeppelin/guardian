@@ -31,7 +31,8 @@ export async function clearIndexedDB(): Promise<void> {
   await Promise.all(deletePromises);
 }
 
-export function truncateHex(hex: string, start = 16, end = 8): string {
+export function truncateHex(hex?: string, start = 16, end = 8): string {
+  if (!hex) return 'Unavailable';
   if (hex.length <= start + end) return hex;
   return `${hex.slice(0, start)}...${hex.slice(-end)}`;
 }

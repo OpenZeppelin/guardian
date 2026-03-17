@@ -11,7 +11,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
+import type {
+  ConsumableNote,
+  VaultBalance,
+  ProcedureName,
+  SignatureScheme,
+} from '@openzeppelin/miden-multisig-client';
 import { USER_PROCEDURES } from '@/lib/procedures';
 
 type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'update_procedure_threshold' | 'consume_notes' | 'p2id' | 'switch_psm';
@@ -19,6 +24,7 @@ type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'updat
 interface CreateProposalFormProps {
   currentThreshold: number;
   signerCommitments: string[];
+  signatureScheme: SignatureScheme;
   procedureThresholds?: Map<ProcedureName, number>;
   creatingProposal: boolean;
   consumableNotes: ConsumableNote[];
@@ -35,6 +41,7 @@ interface CreateProposalFormProps {
 export function CreateProposalForm({
   currentThreshold,
   signerCommitments,
+  signatureScheme,
   procedureThresholds,
   creatingProposal,
   consumableNotes,
@@ -99,15 +106,17 @@ export function CreateProposalForm({
       setNewPsmPubkey('');
 
       try {
-        const response = await fetch(`${newPsmEndpoint.trim()}/pubkey`);
+        const response = await fetch(
+          `${newPsmEndpoint.trim()}/pubkey?scheme=${signatureScheme}`,
+        );
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
-        if (data.pubkey) {
-          setNewPsmPubkey(data.pubkey);
+        if (data.commitment) {
+          setNewPsmPubkey(data.commitment);
         } else {
-          throw new Error('No pubkey in response');
+          throw new Error('No commitment in response');
         }
       } catch (err) {
         setPubkeyError(err instanceof Error ? err.message : 'Failed to fetch');
@@ -121,7 +130,7 @@ export function CreateProposalForm({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [newPsmEndpoint]);
+  }, [newPsmEndpoint, signatureScheme]);
 
   const handleCreate = () => {
     switch (proposalType) {
@@ -545,9 +554,9 @@ export function CreateProposalForm({
             </div>
 
             <div className="space-y-2">
-              <Label>PSM Public Key</Label>
+              <Label>PSM Commitment</Label>
               {fetchingPubkey ? (
-                <p className="text-sm text-muted-foreground">Fetching pubkey...</p>
+                <p className="text-sm text-muted-foreground">Fetching commitment...</p>
               ) : pubkeyError ? (
                 <p className="text-sm text-destructive">Failed to fetch: {pubkeyError}</p>
               ) : newPsmPubkey ? (
@@ -556,7 +565,7 @@ export function CreateProposalForm({
                 </code>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Enter an endpoint URL to auto-fetch the pubkey
+                  Enter an endpoint URL to auto-fetch the commitment
                 </p>
               )}
             </div>

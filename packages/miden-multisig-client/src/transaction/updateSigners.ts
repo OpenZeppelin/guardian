@@ -10,10 +10,16 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import { MULTISIG_MASM, PSM_MASM } from '../account/masm.js';
+import {
+  MULTISIG_ECDSA_MASM,
+  MULTISIG_MASM,
+  PSM_ECDSA_MASM,
+  PSM_MASM,
+} from '../account/masm.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
+import type { SignatureScheme } from '../types.js';
 
 function buildMultisigConfigAdvice(
   threshold: number,
@@ -35,12 +41,18 @@ function buildMultisigConfigAdvice(
   return { configHash, payload };
 }
 
-function buildUpdateSignersScript(webClient: WebClient): TransactionScript {
+function buildUpdateSignersScript(
+  webClient: WebClient,
+  signatureScheme: SignatureScheme,
+): TransactionScript {
   const libBuilder = webClient.createCodeBuilder();
-  const psmLib = libBuilder.buildLibrary('openzeppelin::psm', PSM_MASM);
+  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
+  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
+  const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
+  const psmLib = libBuilder.buildLibrary(psmLibraryPath, psmMasm);
   libBuilder.linkStaticLibrary(psmLib);
 
-  const multisigLib = libBuilder.buildLibrary('auth::multisig', MULTISIG_MASM);
+  const multisigLib = libBuilder.buildLibrary('auth::multisig', multisigMasm);
   libBuilder.linkDynamicLibrary(multisigLib);
 
   const scriptSource = `
@@ -60,6 +72,7 @@ export async function buildUpdateSignersTransactionRequest(
   signerCommitments: string[],
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
+  const signatureScheme = options.signatureScheme ?? 'falcon';
   const { configHash: configHashForAdvice, payload } = buildMultisigConfigAdvice(threshold, signerCommitments);
 
   const { configHash: configHashForScript } = buildMultisigConfigAdvice(threshold, signerCommitments);
@@ -69,7 +82,7 @@ export async function buildUpdateSignersTransactionRequest(
   const advice = new AdviceMap();
   advice.insert(configHashForAdvice, payload);
 
-  const script = buildUpdateSignersScript(webClient);
+  const script = buildUpdateSignersScript(webClient, signatureScheme);
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
@@ -93,4 +106,3 @@ export async function buildUpdateSignersTransactionRequest(
     configHash: configHashForReturn,
   };
 }
-

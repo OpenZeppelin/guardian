@@ -8,17 +8,27 @@ import { CreateProposalForm } from './CreateProposalForm';
 import { CandidateWarningBanner } from './CandidateWarningBanner';
 import { copyToClipboard } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
-import type { Multisig, Proposal, AccountState, ConsumableNote, VaultBalance, ProcedureName } from '@openzeppelin/miden-multisig-client';
-import type { SignerInfo } from '@/types';
+import type {
+  Multisig,
+  Proposal,
+  AccountState,
+  ConsumableNote,
+  VaultBalance,
+  ProcedureName,
+  SignatureScheme,
+} from '@openzeppelin/miden-multisig-client';
+import type { WalletSource } from '@/wallets/types';
 
 interface MultisigDashboardProps {
   multisig: Multisig;
-  signer: SignerInfo;
+  signatureScheme: SignatureScheme;
   psmState: AccountState | null;
   proposals: Proposal[];
   consumableNotes: ConsumableNote[];
   vaultBalances: VaultBalance[];
   procedureThresholds?: Map<ProcedureName, number>;
+  walletSource: WalletSource;
+  activeSignerCommitment: string | null;
   creatingProposal: boolean;
   syncing: boolean;
   verifying: boolean;
@@ -47,12 +57,14 @@ interface MultisigDashboardProps {
 
 export function MultisigDashboard({
   multisig,
-  signer,
+  signatureScheme,
   psmState,
   proposals,
   consumableNotes,
   vaultBalances,
   procedureThresholds,
+  walletSource,
+  activeSignerCommitment,
   creatingProposal,
   syncing,
   verifying,
@@ -196,6 +208,7 @@ export function MultisigDashboard({
       <CreateProposalForm
         currentThreshold={multisig.threshold}
         signerCommitments={multisig.signerCommitments}
+        signatureScheme={signatureScheme}
         procedureThresholds={procedureThresholds}
         creatingProposal={creatingProposal}
         consumableNotes={consumableNotes}
@@ -220,11 +233,12 @@ export function MultisigDashboard({
               <ProposalCard
                 key={proposal.id}
                 proposal={proposal}
-                signer={signer}
                 defaultThreshold={multisig.threshold}
                 procedureThresholds={procedureThresholds}
                 signingProposal={signingProposal}
                 executingProposal={executingProposal}
+                walletSource={walletSource}
+                activeSignerCommitment={activeSignerCommitment}
                 onSign={onSignProposal}
                 onExecute={onExecuteProposal}
                 onExport={onExportProposal}

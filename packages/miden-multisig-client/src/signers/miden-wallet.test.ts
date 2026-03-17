@@ -54,6 +54,17 @@ describe('MidenWalletSigner', () => {
       expect(signer.publicKey).toBe('0xcommitment');
     });
 
+    it('should use explicit publicKey when provided', () => {
+      const signer = new MidenWalletSigner(
+        mockWallet,
+        '0xcommitment',
+        'ecdsa',
+        undefined,
+        '0xwalletpubkey',
+      );
+      expect(signer.publicKey).toBe('0xwalletpubkey');
+    });
+
     it('should use localAuthSigner publicKey when provided', () => {
       const localSigner: Signer = {
         commitment: '0xlocal',

@@ -39,6 +39,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     Rpo256: {
       hashElements: vi.fn().mockReturnValue({
         toHex: () => '0x' + 'b'.repeat(64),
+        toFelts: () => [1, 2, 3, 4],
       }),
     },
   };
@@ -99,6 +100,24 @@ describe('FalconSigner', () => {
         expect.anything(),
         expect.anything(),
       ]));
+    });
+  });
+
+  describe('signRequest', () => {
+    it('signs account ID, timestamp, and request payload for Falcon auth', async () => {
+      const { Rpo256 } = await import('@miden-sdk/miden-sdk');
+
+      const signature = await signer.signRequest(
+        '0x' + 'a'.repeat(30),
+        1700000000,
+        {
+          toBytes: () => new Uint8Array([1, 2, 3, 4]),
+        } as any,
+      );
+
+      expect(signature).toBe('0x010203040506070809');
+      expect(mockSecretKey.sign).toHaveBeenCalled();
+      expect(Rpo256.hashElements).toHaveBeenCalledTimes(2);
     });
   });
 

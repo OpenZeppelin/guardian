@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ParaSigner } from './para.js';
 import type { ParaSigningContext } from './para.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { uint8ArrayToBase64 } from '../utils/encoding.js';
+import { wordToBytes } from '../utils/word.js';
 
 vi.mock('@miden-sdk/miden-sdk', () => ({
   Word: {
@@ -80,6 +83,30 @@ describe('ParaSigner', () => {
         }),
       );
       expect(result).toMatch(/^0x/);
+    });
+
+    it('hashes the auth digest word bytes before signing', async () => {
+      const signer = new ParaSigner(mockPara, 'wallet-1', '0xcommitment', validCompressedKey);
+      await signer.signAccountIdWithTimestamp('0x' + 'aa'.repeat(15), 1700000000);
+
+      const expectedDigestBytes = keccak_256(
+        wordToBytes({
+          toFelts: () => [
+            { asInt: () => 10n },
+            { asInt: () => 20n },
+            { asInt: () => 30n },
+            { asInt: () => 40n },
+          ],
+        }),
+      );
+      const expectedBase64 = uint8ArrayToBase64(expectedDigestBytes);
+
+      expect(mockPara.signMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          walletId: 'wallet-1',
+          messageBase64: expectedBase64,
+        }),
+      );
     });
   });
 
