@@ -63,7 +63,7 @@ impl Signer for FalconKeyStore {
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
+    use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, Signature};
     use private_state_manager_shared::hex::FromHex;
 
     use super::*;

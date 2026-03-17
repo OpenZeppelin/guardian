@@ -198,6 +198,7 @@ fn verify_with_public_key(
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use miden_protocol::account::AccountId;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
     use miden_protocol::utils::Serializable;
 
