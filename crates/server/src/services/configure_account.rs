@@ -229,11 +229,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_configure_account_success_for_ecdsa() {
-        use crate::testing::helpers::generate_ecdsa_signature;
+        use crate::testing::helpers::TestEcdsaSigner;
+        use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
-        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
-            generate_ecdsa_signature(account_id_hex);
+        let signer = TestEcdsaSigner::new();
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
@@ -247,14 +247,24 @@ mod tests {
 
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let auth = Auth::MidenEcdsa {
+            cosigner_commitments: vec![signer.commitment_hex.clone()],
+        };
+        let request_body = serde_json::json!({
+            "account_id": account_id_hex,
+            "auth": auth.clone(),
+            "initial_state": initial_state.clone(),
+        });
+        let request_payload = AuthRequestPayload::from_json_serializable(&request_body).unwrap();
+        let (signature_hex, timestamp) = signer.sign_request(account_id_hex, &request_payload);
 
-        let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
+        let credential =
+            Credentials::signature(signer.pubkey_hex.clone(), signature_hex, timestamp)
+                .with_request_payload(request_payload);
 
         let params = ConfigureAccountParams {
             account_id: account_id_hex.to_string(),
-            auth: Auth::MidenEcdsa {
-                cosigner_commitments: vec![commitment_hex],
-            },
+            auth,
             initial_state,
             credential,
         };

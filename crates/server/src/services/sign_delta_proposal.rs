@@ -306,44 +306,58 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_delta_proposal_success_for_ecdsa() {
+        use crate::testing::helpers::TestEcdsaSigner;
+        use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
         let commitment =
             "0xabababababababababababababababababababababababababababababababab".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
-            crate::testing::helpers::generate_ecdsa_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
-            crate::testing::helpers::generate_ecdsa_signature(&account_id);
+        let proposer = TestEcdsaSigner::new();
+        let signer = TestEcdsaSigner::new();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
             Auth::MidenEcdsa {
-                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment.clone()],
+                cosigner_commitments: vec![
+                    proposer.commitment_hex.clone(),
+                    signer.commitment_hex.clone(),
+                ],
             },
         ))));
 
         let pending_proposal =
-            create_pending_proposal(account_id.clone(), 1, proposer_commitment.clone(), vec![]);
+            create_pending_proposal(account_id.clone(), 1, proposer.commitment_hex.clone(), vec![]);
 
         let storage = storage
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))
             .with_update_delta_proposal(Ok(()));
 
         let dummy_sig = format!("0x{}", "b".repeat(130));
+        let proposal_signature = ProposalSignature::Ecdsa {
+            signature: dummy_sig.clone(),
+            public_key: Some(signer.pubkey_hex.clone()),
+        };
+        let request_body = serde_json::json!({
+            "account_id": account_id.clone(),
+            "commitment": commitment.clone(),
+            "signature": proposal_signature.clone(),
+        });
+        let request_payload = AuthRequestPayload::from_json_serializable(&request_body).unwrap();
+        let (signer_signature, signer_timestamp) =
+            signer.sign_request(&account_id, &request_payload);
         let params = SignDeltaProposalParams {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
-            signature: ProposalSignature::Ecdsa {
-                signature: dummy_sig.clone(),
-                public_key: Some(signer_pubkey.clone()),
-            },
+            signature: proposal_signature,
             credentials: Credentials::signature(
-                signer_pubkey.clone(),
-                signer_signature.clone(),
+                signer.pubkey_hex.clone(),
+                signer_signature,
                 signer_timestamp,
-            ),
+            )
+            .with_request_payload(request_payload),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -354,14 +368,14 @@ mod tests {
         match &result.delta.status {
             DeltaStatus::Pending { cosigner_sigs, .. } => {
                 assert_eq!(cosigner_sigs.len(), 1);
-                assert_eq!(cosigner_sigs[0].signer_id, signer_commitment);
+                assert_eq!(cosigner_sigs[0].signer_id, signer.commitment_hex);
                 match &cosigner_sigs[0].signature {
                     ProposalSignature::Ecdsa {
                         signature,
                         public_key,
                     } => {
                         assert_eq!(*signature, dummy_sig);
-                        assert_eq!(public_key.as_deref(), Some(signer_pubkey.as_str()));
+                        assert_eq!(public_key.as_deref(), Some(signer.pubkey_hex.as_str()));
                     }
                     ProposalSignature::Falcon { .. } => {
                         panic!("expected ECDSA signature")

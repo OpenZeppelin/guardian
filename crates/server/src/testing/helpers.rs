@@ -15,7 +15,6 @@ use chrono::Utc;
 use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
 use miden_protocol::utils::Serializable;
 use miden_protocol::{Felt, FieldElement, Word, ZERO};
@@ -431,6 +430,89 @@ impl TestSigner {
     }
 }
 
+pub struct TestEcdsaSigner {
+    secret_key: EcdsaSecretKey,
+    pub pubkey_hex: String,
+    pub commitment_hex: String,
+    last_timestamp: std::cell::Cell<i64>,
+}
+
+impl Default for TestEcdsaSigner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TestEcdsaSigner {
+    pub fn new() -> Self {
+        let secret_key = EcdsaSecretKey::new();
+        let public_key = secret_key.public_key();
+        let commitment = public_key.to_commitment();
+        let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
+        let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        Self {
+            secret_key,
+            pubkey_hex,
+            commitment_hex,
+            last_timestamp: std::cell::Cell::new(0),
+        }
+    }
+
+    pub fn sign_request(
+        &self,
+        account_id_hex: &str,
+        request_payload: &AuthRequestPayload,
+    ) -> (String, i64) {
+        let current = Utc::now().timestamp_millis();
+        let last = self.last_timestamp.get();
+        let timestamp = if current <= last { last + 1 } else { current };
+        self.last_timestamp.set(timestamp);
+        self.sign_with_timestamp_and_request(account_id_hex, timestamp, request_payload)
+    }
+
+    pub fn sign_json_payload<T: serde::Serialize>(
+        &self,
+        account_id_hex: &str,
+        request_payload: &T,
+    ) -> (String, i64) {
+        let request_payload = AuthRequestPayload::from_json_serializable(request_payload)
+            .expect("Valid JSON payload");
+        self.sign_request(account_id_hex, &request_payload)
+    }
+
+    pub fn sign_with_timestamp(
+        &self,
+        account_id_hex: &str,
+        timestamp: i64,
+    ) -> (String, i64) {
+        self.sign_with_timestamp_and_request(
+            account_id_hex,
+            timestamp,
+            &AuthRequestPayload::empty(),
+        )
+    }
+
+    pub fn sign_with_timestamp_and_request(
+        &self,
+        account_id_hex: &str,
+        timestamp: i64,
+        request_payload: &AuthRequestPayload,
+    ) -> (String, i64) {
+        let message = AuthRequestMessage::from_account_id_hex(
+            account_id_hex,
+            timestamp,
+            request_payload.clone(),
+        )
+        .expect("Valid account ID")
+        .to_word();
+
+        let signature = self.secret_key.sign(message);
+        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+
+        (signature_hex, timestamp)
+    }
+}
+
 /// Generates a Falcon signature for replay-resistant authentication.
 /// Returns (pubkey_hex, commitment_hex, signature_hex, timestamp)
 pub fn generate_falcon_signature_with_timestamp(
@@ -459,23 +541,14 @@ pub fn generate_ecdsa_signature_with_timestamp(
     account_id_hex: &str,
     timestamp: i64,
 ) -> (String, String, String, i64) {
-    let secret_key = EcdsaSecretKey::new();
-    let public_key = secret_key.public_key();
-    let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
-    let commitment_hex = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
-
-    let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
-    let account_id_felts: [Felt; 2] = account_id.into();
-    let timestamp_felt = Felt::new(timestamp as u64);
-    let message = Rpo256::hash_elements(&[
-        account_id_felts[0],
-        account_id_felts[1],
-        timestamp_felt,
-        Felt::ZERO,
-    ]);
-
-    let signature_hex = format!("0x{}", hex::encode(secret_key.sign(message).to_bytes()));
-    (pubkey_hex, commitment_hex, signature_hex, timestamp)
+    let signer = TestEcdsaSigner::new();
+    let (signature_hex, timestamp) = signer.sign_with_timestamp(account_id_hex, timestamp);
+    (
+        signer.pubkey_hex,
+        signer.commitment_hex,
+        signature_hex,
+        timestamp,
+    )
 }
 
 /// Convenience function that generates an ECDSA signature with current timestamp (milliseconds)

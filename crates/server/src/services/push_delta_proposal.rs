@@ -363,6 +363,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_push_delta_proposal_success_for_ecdsa() {
+        use crate::testing::helpers::TestEcdsaSigner;
+        use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+
         let (state, storage, network, metadata) = create_test_state();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
@@ -371,14 +374,12 @@ mod tests {
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
 
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
-
-        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
-            crate::testing::helpers::generate_ecdsa_signature(&account_id);
+        let signer = TestEcdsaSigner::new();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
             Auth::MidenEcdsa {
-                cosigner_commitments: vec![test_commitment_hex.clone()],
+                cosigner_commitments: vec![signer.commitment_hex.clone()],
             },
         ))));
 
@@ -397,20 +398,28 @@ mod tests {
                 "proposal_type": "change_threshold",
                 "target_threshold": 2,
                 "required_signatures": 2,
-                "signer_commitments": [test_commitment_hex.clone()]
+                "signer_commitments": [signer.commitment_hex.clone()]
             },
             "signatures": []
         });
+        let request_body = serde_json::json!({
+            "account_id": account_id.clone(),
+            "nonce": 1,
+            "delta_payload": delta_payload.clone(),
+        });
+        let request_payload = AuthRequestPayload::from_json_serializable(&request_body).unwrap();
+        let (test_signature, test_timestamp) = signer.sign_request(&account_id, &request_payload);
 
         let params = PushDeltaProposalParams {
             account_id: account_id.clone(),
             nonce: 1,
             delta_payload,
             credentials: Credentials::signature(
-                test_pubkey.clone(),
-                test_signature.clone(),
+                signer.pubkey_hex.clone(),
+                test_signature,
                 test_timestamp,
-            ),
+            )
+            .with_request_payload(request_payload),
         };
 
         let result = push_delta_proposal(&state, params).await;
@@ -424,7 +433,7 @@ mod tests {
                 cosigner_sigs,
                 ..
             } => {
-                assert_eq!(*proposer_id, test_commitment_hex);
+                assert_eq!(*proposer_id, signer.commitment_hex);
                 assert_eq!(cosigner_sigs.len(), 0);
             }
             _ => panic!("Expected Pending status"),
