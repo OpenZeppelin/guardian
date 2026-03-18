@@ -1,0 +1,442 @@
+openapi: 3.1.0
+info:
+  title: Private State Manager EVM Proposal Support Draft
+  version: 0.1.0-draft
+  description: >
+    Draft HTTP contract changes for account-level network configuration and EVM
+    proposal support. EVM executable payload details remain intentionally opaque
+    until the contract team finalizes the multisig contract shape.
+paths:
+  /configure:
+    post:
+      summary: Configure an account with per-account network settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigureRequest'
+      responses:
+        '200':
+          description: Account configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigureResponse'
+        '400':
+          description: Validation or authorization failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /delta/proposal:
+    post:
+      summary: Create a pending proposal for the configured account network
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeltaProposalRequest'
+      responses:
+        '200':
+          description: Proposal stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeltaProposalResponse'
+        '400':
+          description: Validation, authorization, or unsupported-operation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: List pending proposals for an account
+      parameters:
+        - in: query
+          name: account_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pending proposals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposalsResponse'
+        '400':
+          description: Authorization or unsupported-operation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Append a signer signature to a pending proposal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignProposalRequest'
+      responses:
+        '200':
+          description: Proposal updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeltaObject'
+        '400':
+          description: Authorization, duplicate-signature, or unsupported-operation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /delta/proposal/single:
+    get:
+      summary: Get a specific pending proposal
+      parameters:
+        - in: query
+          name: account_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: commitment
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Proposal found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeltaObject'
+        '404':
+          description: Proposal not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /delta:
+    post:
+      summary: Push a canonicalizing delta
+      description: Unsupported for EVM accounts in this feature.
+  /delta/since:
+    get:
+      summary: Get merged deltas since a nonce
+      description: Unsupported for EVM accounts in this feature.
+  /state:
+    get:
+      summary: Get current state
+      description: Unsupported for EVM accounts in this feature.
+components:
+  schemas:
+    ConfigureRequest:
+      type: object
+      required:
+        - account_id
+        - auth
+        - network_config
+        - initial_state
+      properties:
+        account_id:
+          type: string
+        auth:
+          $ref: '#/components/schemas/AuthConfig'
+        network_config:
+          $ref: '#/components/schemas/NetworkConfig'
+        initial_state:
+          description: >
+            Existing network-specific account initialization payload. Miden keeps
+            its current shape; EVM may use a minimal placeholder object in v1.
+          oneOf:
+            - type: object
+            - type: string
+    ConfigureResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        ack_pubkey:
+          type: string
+        ack_commitment:
+          type: string
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+    NetworkConfig:
+      oneOf:
+        - $ref: '#/components/schemas/MidenNetworkConfig'
+        - $ref: '#/components/schemas/EvmNetworkConfig'
+    MidenNetworkConfig:
+      type: object
+      required:
+        - kind
+        - network_type
+      properties:
+        kind:
+          type: string
+          enum: [miden]
+        network_type:
+          type: string
+          enum: [local, devnet, testnet]
+    EvmNetworkConfig:
+      type: object
+      required:
+        - kind
+        - chain_id
+        - contract_address
+        - rpc_endpoint
+      properties:
+        kind:
+          type: string
+          enum: [evm]
+        chain_id:
+          type: integer
+          minimum: 1
+        contract_address:
+          type: string
+        rpc_endpoint:
+          type: string
+          format: uri
+    AuthConfig:
+      oneOf:
+        - $ref: '#/components/schemas/MidenFalconRpoAuth'
+        - $ref: '#/components/schemas/MidenEcdsaAuth'
+        - $ref: '#/components/schemas/EvmEcdsaAuth'
+    MidenFalconRpoAuth:
+      type: object
+      required: [MidenFalconRpo]
+      properties:
+        MidenFalconRpo:
+          type: object
+          required: [cosigner_commitments]
+          properties:
+            cosigner_commitments:
+              type: array
+              items:
+                type: string
+    MidenEcdsaAuth:
+      type: object
+      required: [MidenEcdsa]
+      properties:
+        MidenEcdsa:
+          type: object
+          required: [cosigner_commitments]
+          properties:
+            cosigner_commitments:
+              type: array
+              items:
+                type: string
+    EvmEcdsaAuth:
+      type: object
+      required: [EvmEcdsa]
+      properties:
+        EvmEcdsa:
+          type: object
+          required: [cosigner_commitments]
+          properties:
+            cosigner_commitments:
+              type: array
+              items:
+                type: string
+              description: >
+                Persisted signer snapshot. RPC remains the source of truth for
+                authorization on each relevant action.
+    DeltaProposalRequest:
+      type: object
+      required:
+        - account_id
+        - nonce
+        - delta_payload
+      properties:
+        account_id:
+          type: string
+        nonce:
+          type: integer
+          minimum: 0
+        delta_payload:
+          oneOf:
+            - $ref: '#/components/schemas/MidenProposalPayload'
+            - $ref: '#/components/schemas/EvmProposalPayload'
+    MidenProposalPayload:
+      type: object
+      required:
+        - tx_summary
+        - signatures
+      properties:
+        tx_summary:
+          type: object
+          required: [data]
+          properties:
+            data:
+              type: string
+        signatures:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubmittedSignature'
+        metadata:
+          $ref: '#/components/schemas/ProposalMetadata'
+    EvmProposalPayload:
+      type: object
+      required:
+        - kind
+        - proposal
+        - signatures
+      properties:
+        kind:
+          type: string
+          enum: [evm]
+        proposal:
+          type: object
+          additionalProperties: true
+          description: >
+            Normalized executable EVM proposal payload. Exact fields remain TBD
+            pending the contract-team answer.
+        signatures:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubmittedSignature'
+        metadata:
+          $ref: '#/components/schemas/ProposalMetadata'
+    ProposalMetadata:
+      type: object
+      additionalProperties: true
+    SubmittedSignature:
+      type: object
+      required:
+        - signer_id
+        - signature
+      properties:
+        signer_id:
+          type: string
+        signature:
+          $ref: '#/components/schemas/ProposalSignature'
+    ProposalSignature:
+      oneOf:
+        - type: object
+          required: [scheme, signature]
+          properties:
+            scheme:
+              type: string
+              enum: [falcon]
+            signature:
+              type: string
+        - type: object
+          required: [scheme, signature]
+          properties:
+            scheme:
+              type: string
+              enum: [ecdsa]
+            signature:
+              type: string
+            public_key:
+              type: string
+    DeltaProposalResponse:
+      type: object
+      required:
+        - delta
+        - commitment
+      properties:
+        delta:
+          $ref: '#/components/schemas/DeltaObject'
+        commitment:
+          type: string
+          description: Deterministic hash-based proposal identifier
+    ProposalsResponse:
+      type: object
+      required: [proposals]
+      properties:
+        proposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeltaObject'
+    SignProposalRequest:
+      type: object
+      required:
+        - account_id
+        - commitment
+        - signature
+      properties:
+        account_id:
+          type: string
+        commitment:
+          type: string
+        signature:
+          $ref: '#/components/schemas/ProposalSignature'
+    DeltaObject:
+      type: object
+      required:
+        - account_id
+        - nonce
+        - prev_commitment
+        - delta_payload
+        - status
+      properties:
+        account_id:
+          type: string
+        nonce:
+          type: integer
+        prev_commitment:
+          type: string
+        new_commitment:
+          type: string
+        delta_payload:
+          type: object
+          additionalProperties: true
+        ack_sig:
+          type: string
+        ack_pubkey:
+          type: string
+        ack_scheme:
+          type: string
+        status:
+          $ref: '#/components/schemas/DeltaStatus'
+    DeltaStatus:
+      oneOf:
+        - type: object
+          required: [status, timestamp, proposer_id, cosigner_sigs]
+          properties:
+            status:
+              type: string
+              enum: [pending]
+            timestamp:
+              type: string
+            proposer_id:
+              type: string
+            cosigner_sigs:
+              type: array
+              items:
+                type: object
+                required: [signer_id, signature, timestamp]
+                properties:
+                  signer_id:
+                    type: string
+                  signature:
+                    $ref: '#/components/schemas/ProposalSignature'
+                  timestamp:
+                    type: string
+        - type: object
+          required: [status, timestamp]
+          properties:
+            status:
+              type: string
+              enum: [candidate, canonical, discarded]
+            timestamp:
+              type: string

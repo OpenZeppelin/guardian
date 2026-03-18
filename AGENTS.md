@@ -35,6 +35,7 @@ If a behavior changes in a lower layer, verify and propagate impact upward.
 3. Update tests in the layer where behavior changes, plus at least one upstream consumer.
 4. Prefer minimal, surgical edits over broad refactors.
 5. Do not introduce silent behavior drift between Rust and TypeScript clients.
+6. Do not add backward-compatibility layers, migrations, or fallback behavior unless the task explicitly requires them.
 
 ## 4) Contract-Change Workflow (Mandatory)
 
@@ -65,6 +66,7 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 - Maintain storage/metadata backend parity (filesystem/postgres where applicable).
 - Preserve canonicalization semantics (pending/candidate/canonical/discarded lifecycle).
 - Default local development/test backend is `filesystem` unless a task explicitly requires Postgres.
+- Keep shared server layers network-agnostic. Put Miden/EVM-specific logic in `src/network/*`, and dispatch from services/builders via account network config rather than embedding network-specific assumptions in shared modules.
 
 ### Rust PSM Client (`crates/client`)
 
@@ -214,6 +216,8 @@ Apply these rules especially to:
 
 - Keep public APIs explicit and stable unless change is intentional.
 - Prefer typed structures/enums over ad-hoc maps or stringly-typed branching.
+- Prefer mandatory fields in domain and request-facing types over optional ones.
+- If a transport layer forces optionality (for example protobuf message fields), validate at the boundary and convert immediately into required domain types.
 - Model proposal state transitions explicitly (pending/ready/finalized).
 - Ensure Rust and TypeScript behavior remain semantically equivalent for the same workflow.
 
@@ -230,6 +234,8 @@ Apply these rules especially to:
   - Apply the same principle with constructors/associated functions on domain types.
   - Prefer patterns like:
     - `SignatureInputs::from_json(delta_payload_json)` instead of `parse_unique_signature_inputs(...)`
+- When logic does not fit an existing domain type, introduce a focused service struct/enum in an appropriate module instead of scattering one-off free functions.
+- Prefer trait-based mocks at dependency boundaries over enum-level mock variants or test-only branches in shared runtime state.
 
 ### Immutability (TypeScript)
 
@@ -239,6 +245,7 @@ Apply these rules especially to:
 
 ### Additional Style Rules
 
+- Import local types/modules instead of repeating inline fully qualified paths when an alias or direct import makes ownership clear.
 - Hex/Bytes Boundary Rule:
   - Validate and normalize external commitments, pubkeys, signatures, and account IDs at boundaries before domain logic.
   - Enforce expected shape (`0x` prefix, canonical casing, expected length) at parse time.

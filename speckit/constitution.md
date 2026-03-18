@@ -1,26 +1,23 @@
 <!--
 Sync Impact Report
-Version change: none -> 1.0.0
-Modified principles: N/A (initial adoption)
+Version change: 1.0.0 -> 1.1.0
+Modified principles:
+- III. Append-Only Integrity and Explicit Lifecycles (expanded fallback rule)
 Added sections:
-- Purpose
-- Principles
-- System Invariants
-- Governance
+- None
 Removed sections:
 - None
 Templates requiring updates:
-- ✅ /Users/marcos/repos/private-state-manager/.specify/templates/spec-template.md
-- ✅ /Users/marcos/repos/private-state-manager/.specify/templates/plan-template.md
-- ✅ /Users/marcos/repos/private-state-manager/.specify/templates/tasks-template.md
-- ✅ /Users/marcos/repos/private-state-manager/.specify/templates/checklist-template.md
-- ✅ /Users/marcos/repos/private-state-manager/.specify/templates/agent-file-template.md
+- ✅ .specify/templates/plan-template.md
+- ✅ .specify/templates/spec-template.md
+- ✅ .specify/templates/tasks-template.md
+- ✅ .specify/templates/checklist-template.md
 Follow-up TODOs:
 - Revisit whether observability and offline import/export compatibility should become first-class principles.
 -->
 # Private State Manager Constitution
 
-**Version**: 1.0.0  
+**Version**: 1.1.0  
 **Ratified**: 2026-03-18  
 **Last Amended**: 2026-03-18
 
@@ -57,7 +54,9 @@ Rationale: parity is a core product property, not a cleanup task.
 State, delta, and proposal flows MUST preserve append-only records with explicit
 lifecycle transitions. Features MUST not introduce implicit fallback paths,
 silent state rewrites, or undocumented status changes across pending,
-candidate, canonical, discarded, or proposal states.
+candidate, canonical, discarded, or proposal states. Online and offline flows,
+including any fallback between them, MUST remain explicit in the API flow,
+return types, or user-visible control path.
 
 Rationale: append-only lineage and explicit state machines are the backbone of
 trust, replay safety, and debugging.
@@ -90,6 +89,9 @@ amendment changes them:
 - Delta lineage remains explicit through `prev_commitment` and nonce-based ordering rules.
 - HTTP and gRPC preserve the same core semantics, shapes, and error meanings.
 - Equivalent Rust and TypeScript workflows preserve the same observable behavior.
+- Storage backends such as filesystem and Postgres preserve the same externally
+  observable semantics unless a documented backend-specific limitation is
+  explicitly accepted.
 - Per-account authentication remains explicit and replay-protected.
 - Canonicalization lifecycle remains explicit: pending or candidate data may only
   move to canonical or discarded through documented transitions.
