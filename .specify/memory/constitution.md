@@ -1,0 +1,1 @@
+../../speckit/constitution.md
