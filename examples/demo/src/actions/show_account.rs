@@ -9,7 +9,7 @@ pub async fn action_show_account(state: &SessionState) -> Result<(), String> {
 
     print_account_info(account);
     print_vault(account);
-    print_storage_overview(account, state.is_ecdsa(), client.psm_endpoint());
+    print_storage_overview(account, state.is_ecdsa(), client.guardian_endpoint());
 
     Ok(())
 }

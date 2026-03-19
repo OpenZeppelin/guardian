@@ -52,10 +52,10 @@ prebuild_bench_binaries() {
   (
     cd "$repo_root"
     if [[ -n "$server_features" ]]; then
-      cargo build -p private-state-manager-server --release --bin server --features "$server_features"
+      cargo build -p guardian-server --release --bin server --features "$server_features"
     else
-      cargo build -p private-state-manager-server --release --bin server
+      cargo build -p guardian-server --release --bin server
     fi
-    cargo build -p psm-server-bench-loadgen --release
+    cargo build -p guardian-server-bench-loadgen --release
   )
 }

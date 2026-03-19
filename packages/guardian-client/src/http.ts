@@ -33,23 +33,23 @@ import {
 } from './conversion.js';
 
 /**
- * Error thrown by the PSM HTTP client.
+ * Error thrown by the GUARDIAN HTTP client.
  */
-export class PsmHttpError extends Error {
+export class GuardianHttpError extends Error {
   constructor(
     public readonly status: number,
     public readonly statusText: string,
     public readonly body: string
   ) {
-    super(`PSM HTTP error ${status}: ${statusText} - ${body}`);
-    this.name = 'PsmHttpError';
+    super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
+    this.name = 'GuardianHttpError';
   }
 }
 
 /**
- * Minimal HTTP client for PSM server.
+ * Minimal HTTP client for GUARDIAN server.
  */
-export class PsmHttpClient {
+export class GuardianHttpClient {
   private signer: Signer | null = null;
   private readonly baseUrl: string;
   private lastTimestamp = 0;
@@ -198,7 +198,7 @@ export class PsmHttpClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new PsmHttpError(response.status, response.statusText, body);
+      throw new GuardianHttpError(response.status, response.statusText, body);
     }
 
     return response;
@@ -234,7 +234,7 @@ export class PsmHttpClient {
         },
       });
     } catch (err) {
-      if (retries > 0 && err instanceof PsmHttpError && err.body.includes('Replay attack')) {
+      if (retries > 0 && err instanceof GuardianHttpError && err.body.includes('Replay attack')) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);
       }

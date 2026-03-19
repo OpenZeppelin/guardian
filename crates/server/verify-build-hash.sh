@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-# Verify reproducible build hash for PSM Server
+# Verify reproducible build hash for GUARDIAN Server
 # This script builds the server and displays the hash for cross-machine verification
 
 echo "================================================"
-echo "PSM Server - Reproducible Build Hash"
+echo "GUARDIAN Server - Reproducible Build Hash"
 echo "================================================"
 echo ""
 
@@ -54,15 +54,15 @@ fi
 # Build the Docker image
 echo "Building server in Docker..."
 echo ""
-docker build --platform "$PLATFORM" -t psm-server-verify . --no-cache --progress=plain 2>&1 | grep -v "jemalloc" | grep -v "MADV_DONTNEED" | grep -v "QEMU"
+docker build --platform "$PLATFORM" -t guardian-server-verify . --no-cache --progress=plain 2>&1 | grep -v "jemalloc" | grep -v "MADV_DONTNEED" | grep -v "QEMU"
 
 # Extract binary to temp location
 BUILD_DIR=$(mktemp -d)
-trap "rm -rf $BUILD_DIR; docker rmi psm-server-verify 2>/dev/null || true" EXIT
+trap "rm -rf $BUILD_DIR; docker rmi guardian-server-verify 2>/dev/null || true" EXIT
 
-docker create --name psm-verify-temp psm-server-verify > /dev/null
-docker cp psm-verify-temp:/app/server "$BUILD_DIR/server"
-docker rm psm-verify-temp > /dev/null
+docker create --name guardian-verify-temp guardian-server-verify > /dev/null
+docker cp guardian-verify-temp:/app/server "$BUILD_DIR/server"
+docker rm guardian-verify-temp > /dev/null
 
 # Calculate hash and size
 HASH=$(sha256sum "$BUILD_DIR/server" | awk '{print $1}')

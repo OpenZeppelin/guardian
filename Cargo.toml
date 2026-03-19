@@ -28,8 +28,8 @@ edition = "2024"
 rust-version = "1.90"
 authors = ["OpenZeppelin"]
 license = "AGPL-3.0"
-repository = "https://github.com/OpenZeppelin/private-state-manager"
-homepage = "https://github.com/OpenZeppelin/private-state-manager"
+repository = "https://github.com/OpenZeppelin/guardian"
+homepage = "https://github.com/OpenZeppelin/guardian"
 
 # Reproducible build configuration (workspace-wide)
 [profile.release]

@@ -28,7 +28,7 @@ const DEFAULT_BURST_PER_SEC: u32 = 10;
 /// Default sustained limit: requests per minute
 const DEFAULT_PER_MIN: u32 = 60;
 /// Environment variable for trusted reverse proxies
-const ENV_TRUSTED_PROXY_IPS: &str = "PSM_TRUSTED_PROXY_IPS";
+const ENV_TRUSTED_PROXY_IPS: &str = "GUARDIAN_TRUSTED_PROXY_IPS";
 /// Cleanup interval for stale entries
 const CLEANUP_INTERVAL_SECS: u64 = 60;
 
@@ -46,12 +46,12 @@ pub struct RateLimitConfig {
 impl RateLimitConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Self {
-        let burst_per_sec = env::var("PSM_RATE_BURST_PER_SEC")
+        let burst_per_sec = env::var("GUARDIAN_RATE_BURST_PER_SEC")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_BURST_PER_SEC);
 
-        let per_min = env::var("PSM_RATE_PER_MIN")
+        let per_min = env::var("GUARDIAN_RATE_PER_MIN")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_PER_MIN);
@@ -479,8 +479,8 @@ mod tests {
         // Clear any existing env vars
         // SAFETY: This test runs single-threaded and these env vars are test-specific
         unsafe {
-            env::remove_var("PSM_RATE_BURST_PER_SEC");
-            env::remove_var("PSM_RATE_PER_MIN");
+            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
+            env::remove_var("GUARDIAN_RATE_PER_MIN");
             env::remove_var(ENV_TRUSTED_PROXY_IPS);
         }
 
@@ -660,8 +660,8 @@ mod tests {
     fn test_rate_limit_layer_from_env() {
         // SAFETY: This test runs single-threaded and these env vars are test-specific
         unsafe {
-            env::remove_var("PSM_RATE_BURST_PER_SEC");
-            env::remove_var("PSM_RATE_PER_MIN");
+            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
+            env::remove_var("GUARDIAN_RATE_PER_MIN");
             env::remove_var(ENV_TRUSTED_PROXY_IPS);
         }
 

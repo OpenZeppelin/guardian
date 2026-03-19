@@ -1,4 +1,4 @@
-pub use private_state_manager_shared::ProposalSignature;
+pub use guardian_shared::ProposalSignature;
 use serde::{Deserialize, Serialize};
 
 /// Cosigner signature entry for delta proposals

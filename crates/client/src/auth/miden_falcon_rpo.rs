@@ -1,13 +1,13 @@
 //! Falcon signature-based authentication using request-bound payload hashing.
 
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature};
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::utils::{Deserializable, Serializable};
 use miden_protocol::{Felt, FieldElement, Word};
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
-use private_state_manager_shared::hex::{FromHex, IntoHex};
 
 /// A signer that uses Falcon signatures with RPO hashing.
 pub struct FalconRpoSigner {

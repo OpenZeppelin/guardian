@@ -1,5 +1,5 @@
+use guardian_client::GuardianClient;
 use miden_protocol::Word;
-use private_state_manager_client::PsmClient;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::word_from_hex;
@@ -9,16 +9,16 @@ pub(crate) async fn verify_endpoint_commitment(
     endpoint: &str,
     expected_commitment: Word,
 ) -> Result<()> {
-    let mut client = PsmClient::connect(endpoint).await.map_err(|e| {
-        MultisigError::PsmConnection(format!(
-            "failed to connect to PSM endpoint {}: {}",
+    let mut client = GuardianClient::connect(endpoint).await.map_err(|e| {
+        MultisigError::GuardianConnection(format!(
+            "failed to connect to GUARDIAN endpoint {}: {}",
             endpoint, e
         ))
     })?;
 
     let (endpoint_commitment_hex, _raw_pubkey) = client.get_pubkey(None).await.map_err(|e| {
-        MultisigError::PsmServer(format!(
-            "failed to get pubkey from PSM endpoint {}: {}",
+        MultisigError::GuardianServer(format!(
+            "failed to get pubkey from GUARDIAN endpoint {}: {}",
             endpoint, e
         ))
     })?;
@@ -39,7 +39,7 @@ pub(crate) fn ensure_commitment_match(
     }
 
     Err(MultisigError::InvalidConfig(format!(
-        "refusing to use PSM endpoint {}: endpoint pubkey commitment {} does not match expected {}",
+        "refusing to use GUARDIAN endpoint {}: endpoint pubkey commitment {} does not match expected {}",
         endpoint,
         word_to_hex(&endpoint_commitment),
         word_to_hex(&expected_commitment)
@@ -66,7 +66,7 @@ mod tests {
             .expect_err("expected mismatch error");
 
         let message = error.to_string();
-        assert!(message.contains("refusing to use PSM endpoint"));
+        assert!(message.contains("refusing to use GUARDIAN endpoint"));
         assert!(message.contains("does not match expected"));
     }
 }

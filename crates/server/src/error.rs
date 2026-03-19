@@ -4,9 +4,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use std::fmt;
 
-/// Primary error type for PSM operations
+/// Primary error type for GUARDIAN operations
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PsmError {
+pub enum GuardianError {
     AccountNotFound(String),
     AccountAlreadyExists(String),
     InvalidAccountId(String),
@@ -54,8 +54,8 @@ pub enum MidenFalconRpoError {
     DecodingError(String),
 }
 
-/// Result type alias for PSM operations
-pub type Result<T> = std::result::Result<T, PsmError>;
+/// Result type alias for GUARDIAN operations
+pub type Result<T> = std::result::Result<T, GuardianError>;
 
 /// Result type alias for Miden Falcon RPO signing operations
 pub type MidenFalconRpoResult<T> = std::result::Result<T, MidenFalconRpoError>;
@@ -70,101 +70,101 @@ pub enum MidenEcdsaError {
 /// Result type alias for Miden ECDSA signing operations
 pub type MidenEcdsaResult<T> = std::result::Result<T, MidenEcdsaError>;
 
-impl PsmError {
+impl GuardianError {
     pub fn http_status(&self) -> StatusCode {
         match self {
-            PsmError::AccountNotFound(_) => StatusCode::NOT_FOUND,
-            PsmError::DeltaNotFound { .. } => StatusCode::NOT_FOUND,
-            PsmError::StateNotFound(_) => StatusCode::NOT_FOUND,
-            PsmError::ProposalNotFound { .. } => StatusCode::NOT_FOUND,
-            PsmError::AccountAlreadyExists(_) => StatusCode::CONFLICT,
-            PsmError::ConflictPendingDelta => StatusCode::CONFLICT,
-            PsmError::ConflictPendingProposal => StatusCode::CONFLICT,
-            PsmError::PendingProposalsLimit { .. } => StatusCode::CONFLICT,
-            PsmError::ProposalAlreadySigned { .. } => StatusCode::CONFLICT,
-            PsmError::AuthenticationFailed(_) => StatusCode::UNAUTHORIZED,
-            PsmError::AuthorizationFailed(_) => StatusCode::FORBIDDEN,
-            PsmError::InvalidInput(_) => StatusCode::BAD_REQUEST,
-            PsmError::InvalidAccountId(_) => StatusCode::BAD_REQUEST,
-            PsmError::InvalidDelta(_) => StatusCode::BAD_REQUEST,
-            PsmError::InvalidCommitment(_) => StatusCode::BAD_REQUEST,
-            PsmError::CommitmentMismatch { .. } => StatusCode::BAD_REQUEST,
-            PsmError::InvalidProposalSignature(_) => StatusCode::BAD_REQUEST,
-            PsmError::InsufficientSignatures { .. } => StatusCode::BAD_REQUEST,
-            PsmError::NetworkError(_) => StatusCode::BAD_GATEWAY,
-            PsmError::SigningError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PsmError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PsmError::ConfigurationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            GuardianError::AccountNotFound(_) => StatusCode::NOT_FOUND,
+            GuardianError::DeltaNotFound { .. } => StatusCode::NOT_FOUND,
+            GuardianError::StateNotFound(_) => StatusCode::NOT_FOUND,
+            GuardianError::ProposalNotFound { .. } => StatusCode::NOT_FOUND,
+            GuardianError::AccountAlreadyExists(_) => StatusCode::CONFLICT,
+            GuardianError::ConflictPendingDelta => StatusCode::CONFLICT,
+            GuardianError::ConflictPendingProposal => StatusCode::CONFLICT,
+            GuardianError::PendingProposalsLimit { .. } => StatusCode::CONFLICT,
+            GuardianError::ProposalAlreadySigned { .. } => StatusCode::CONFLICT,
+            GuardianError::AuthenticationFailed(_) => StatusCode::UNAUTHORIZED,
+            GuardianError::AuthorizationFailed(_) => StatusCode::FORBIDDEN,
+            GuardianError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidAccountId(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidDelta(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidCommitment(_) => StatusCode::BAD_REQUEST,
+            GuardianError::CommitmentMismatch { .. } => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidProposalSignature(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InsufficientSignatures { .. } => StatusCode::BAD_REQUEST,
+            GuardianError::NetworkError(_) => StatusCode::BAD_GATEWAY,
+            GuardianError::SigningError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            GuardianError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            GuardianError::ConfigurationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     pub fn grpc_status(&self) -> tonic::Code {
         match self {
-            PsmError::AccountNotFound(_) => tonic::Code::NotFound,
-            PsmError::DeltaNotFound { .. } => tonic::Code::NotFound,
-            PsmError::StateNotFound(_) => tonic::Code::NotFound,
-            PsmError::ProposalNotFound { .. } => tonic::Code::NotFound,
-            PsmError::AccountAlreadyExists(_) => tonic::Code::AlreadyExists,
-            PsmError::ConflictPendingDelta => tonic::Code::FailedPrecondition,
-            PsmError::ConflictPendingProposal => tonic::Code::FailedPrecondition,
-            PsmError::PendingProposalsLimit { .. } => tonic::Code::FailedPrecondition,
-            PsmError::ProposalAlreadySigned { .. } => tonic::Code::AlreadyExists,
-            PsmError::AuthenticationFailed(_) => tonic::Code::Unauthenticated,
-            PsmError::AuthorizationFailed(_) => tonic::Code::PermissionDenied,
-            PsmError::InvalidInput(_) => tonic::Code::InvalidArgument,
-            PsmError::InvalidAccountId(_) => tonic::Code::InvalidArgument,
-            PsmError::InvalidDelta(_) => tonic::Code::InvalidArgument,
-            PsmError::InvalidCommitment(_) => tonic::Code::InvalidArgument,
-            PsmError::CommitmentMismatch { .. } => tonic::Code::InvalidArgument,
-            PsmError::InvalidProposalSignature(_) => tonic::Code::InvalidArgument,
-            PsmError::InsufficientSignatures { .. } => tonic::Code::FailedPrecondition,
-            PsmError::NetworkError(_) => tonic::Code::Unavailable,
-            PsmError::SigningError(_) => tonic::Code::Internal,
-            PsmError::StorageError(_) => tonic::Code::Internal,
-            PsmError::ConfigurationError(_) => tonic::Code::Internal,
+            GuardianError::AccountNotFound(_) => tonic::Code::NotFound,
+            GuardianError::DeltaNotFound { .. } => tonic::Code::NotFound,
+            GuardianError::StateNotFound(_) => tonic::Code::NotFound,
+            GuardianError::ProposalNotFound { .. } => tonic::Code::NotFound,
+            GuardianError::AccountAlreadyExists(_) => tonic::Code::AlreadyExists,
+            GuardianError::ConflictPendingDelta => tonic::Code::FailedPrecondition,
+            GuardianError::ConflictPendingProposal => tonic::Code::FailedPrecondition,
+            GuardianError::PendingProposalsLimit { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::ProposalAlreadySigned { .. } => tonic::Code::AlreadyExists,
+            GuardianError::AuthenticationFailed(_) => tonic::Code::Unauthenticated,
+            GuardianError::AuthorizationFailed(_) => tonic::Code::PermissionDenied,
+            GuardianError::InvalidInput(_) => tonic::Code::InvalidArgument,
+            GuardianError::InvalidAccountId(_) => tonic::Code::InvalidArgument,
+            GuardianError::InvalidDelta(_) => tonic::Code::InvalidArgument,
+            GuardianError::InvalidCommitment(_) => tonic::Code::InvalidArgument,
+            GuardianError::CommitmentMismatch { .. } => tonic::Code::InvalidArgument,
+            GuardianError::InvalidProposalSignature(_) => tonic::Code::InvalidArgument,
+            GuardianError::InsufficientSignatures { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::NetworkError(_) => tonic::Code::Unavailable,
+            GuardianError::SigningError(_) => tonic::Code::Internal,
+            GuardianError::StorageError(_) => tonic::Code::Internal,
+            GuardianError::ConfigurationError(_) => tonic::Code::Internal,
         }
     }
 }
 
-impl fmt::Display for PsmError {
+impl fmt::Display for GuardianError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PsmError::AccountNotFound(id) => write!(f, "Account '{id}' not found"),
-            PsmError::AccountAlreadyExists(id) => write!(f, "Account '{id}' already exists"),
-            PsmError::InvalidAccountId(msg) => write!(f, "Invalid account ID: {msg}"),
-            PsmError::StateNotFound(id) => write!(f, "State not found for account '{id}'"),
-            PsmError::DeltaNotFound { account_id, nonce } => {
+            GuardianError::AccountNotFound(id) => write!(f, "Account '{id}' not found"),
+            GuardianError::AccountAlreadyExists(id) => write!(f, "Account '{id}' already exists"),
+            GuardianError::InvalidAccountId(msg) => write!(f, "Invalid account ID: {msg}"),
+            GuardianError::StateNotFound(id) => write!(f, "State not found for account '{id}'"),
+            GuardianError::DeltaNotFound { account_id, nonce } => {
                 write!(
                     f,
                     "Delta not found for account '{account_id}' at nonce {nonce}"
                 )
             }
-            PsmError::InvalidDelta(msg) => write!(f, "Invalid delta: {msg}"),
-            PsmError::ConflictPendingDelta => {
+            GuardianError::InvalidDelta(msg) => write!(f, "Invalid delta: {msg}"),
+            GuardianError::ConflictPendingDelta => {
                 write!(
                     f,
                     "Cannot push new delta: there is already a non-canonical delta pending"
                 )
             }
-            PsmError::ConflictPendingProposal => {
+            GuardianError::ConflictPendingProposal => {
                 write!(f, "Cannot push new delta: there are pending proposals")
             }
-            PsmError::PendingProposalsLimit { limit } => write!(
+            GuardianError::PendingProposalsLimit { limit } => write!(
                 f,
                 "Cannot push new delta proposal: maximum pending proposal limit ({limit}) reached for this account"
             ),
-            PsmError::CommitmentMismatch { expected, actual } => {
+            GuardianError::CommitmentMismatch { expected, actual } => {
                 write!(f, "Commitment mismatch: expected {expected}, got {actual}")
             }
-            PsmError::InvalidCommitment(msg) => write!(f, "Invalid commitment: {msg}"),
-            PsmError::AuthenticationFailed(msg) => write!(f, "Authentication failed: {msg}"),
-            PsmError::AuthorizationFailed(msg) => write!(f, "Authorization failed: {msg}"),
-            PsmError::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
-            PsmError::StorageError(msg) => write!(f, "Storage error: {msg}"),
-            PsmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
-            PsmError::SigningError(msg) => write!(f, "Signing error: {msg}"),
-            PsmError::ConfigurationError(msg) => write!(f, "Configuration error: {msg}"),
-            PsmError::ProposalNotFound {
+            GuardianError::InvalidCommitment(msg) => write!(f, "Invalid commitment: {msg}"),
+            GuardianError::AuthenticationFailed(msg) => write!(f, "Authentication failed: {msg}"),
+            GuardianError::AuthorizationFailed(msg) => write!(f, "Authorization failed: {msg}"),
+            GuardianError::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
+            GuardianError::StorageError(msg) => write!(f, "Storage error: {msg}"),
+            GuardianError::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            GuardianError::SigningError(msg) => write!(f, "Signing error: {msg}"),
+            GuardianError::ConfigurationError(msg) => write!(f, "Configuration error: {msg}"),
+            GuardianError::ProposalNotFound {
                 account_id,
                 commitment,
             } => {
@@ -173,42 +173,42 @@ impl fmt::Display for PsmError {
                     "Proposal not found for account '{account_id}' with commitment '{commitment}'"
                 )
             }
-            PsmError::ProposalAlreadySigned { signer_id } => {
+            GuardianError::ProposalAlreadySigned { signer_id } => {
                 write!(f, "Proposal already signed by '{signer_id}'")
             }
-            PsmError::InvalidProposalSignature(msg) => {
+            GuardianError::InvalidProposalSignature(msg) => {
                 write!(f, "Invalid proposal signature: {msg}")
             }
-            PsmError::InsufficientSignatures { required, got } => {
+            GuardianError::InsufficientSignatures { required, got } => {
                 write!(f, "Insufficient signatures: required {required}, got {got}")
             }
         }
     }
 }
 
-impl std::error::Error for PsmError {}
+impl std::error::Error for GuardianError {}
 
-impl From<String> for PsmError {
+impl From<String> for GuardianError {
     fn from(s: String) -> Self {
-        PsmError::InvalidInput(s)
+        GuardianError::InvalidInput(s)
     }
 }
 
-impl From<&str> for PsmError {
+impl From<&str> for GuardianError {
     fn from(s: &str) -> Self {
-        PsmError::InvalidInput(s.to_string())
+        GuardianError::InvalidInput(s.to_string())
     }
 }
 
-impl From<MidenFalconRpoError> for PsmError {
+impl From<MidenFalconRpoError> for GuardianError {
     fn from(err: MidenFalconRpoError) -> Self {
-        PsmError::SigningError(err.to_string())
+        GuardianError::SigningError(err.to_string())
     }
 }
 
-impl From<miden_keystore::KeyStoreError> for PsmError {
+impl From<miden_keystore::KeyStoreError> for GuardianError {
     fn from(err: miden_keystore::KeyStoreError) -> Self {
-        PsmError::SigningError(err.to_string())
+        GuardianError::SigningError(err.to_string())
     }
 }
 
@@ -218,7 +218,7 @@ struct ErrorResponse {
     error: String,
 }
 
-impl IntoResponse for PsmError {
+impl IntoResponse for GuardianError {
     fn into_response(self) -> Response {
         let status = self.http_status();
         let body = Json(ErrorResponse {
@@ -229,8 +229,8 @@ impl IntoResponse for PsmError {
     }
 }
 
-impl From<PsmError> for tonic::Status {
-    fn from(err: PsmError) -> Self {
+impl From<GuardianError> for tonic::Status {
+    fn from(err: GuardianError) -> Self {
         tonic::Status::new(err.grpc_status(), err.to_string())
     }
 }
@@ -273,9 +273,9 @@ impl fmt::Display for MidenEcdsaError {
 
 impl std::error::Error for MidenEcdsaError {}
 
-impl From<MidenEcdsaError> for PsmError {
+impl From<MidenEcdsaError> for GuardianError {
     fn from(err: MidenEcdsaError) -> Self {
-        PsmError::SigningError(err.to_string())
+        GuardianError::SigningError(err.to_string())
     }
 }
 
@@ -295,16 +295,16 @@ impl From<miden_keystore::KeyStoreError> for MidenEcdsaError {
 mod tests {
     use super::*;
 
-    // --- PsmError::http_status ---
+    // --- GuardianError::http_status ---
 
     #[test]
     fn http_status_not_found_variants() {
         assert_eq!(
-            PsmError::AccountNotFound("x".into()).http_status(),
+            GuardianError::AccountNotFound("x".into()).http_status(),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            PsmError::DeltaNotFound {
+            GuardianError::DeltaNotFound {
                 account_id: "x".into(),
                 nonce: 1
             }
@@ -312,11 +312,11 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            PsmError::StateNotFound("x".into()).http_status(),
+            GuardianError::StateNotFound("x".into()).http_status(),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            PsmError::ProposalNotFound {
+            GuardianError::ProposalNotFound {
                 account_id: "x".into(),
                 commitment: "c".into()
             }
@@ -328,19 +328,19 @@ mod tests {
     #[test]
     fn http_status_conflict_variants() {
         assert_eq!(
-            PsmError::AccountAlreadyExists("x".into()).http_status(),
+            GuardianError::AccountAlreadyExists("x".into()).http_status(),
             StatusCode::CONFLICT
         );
         assert_eq!(
-            PsmError::ConflictPendingDelta.http_status(),
+            GuardianError::ConflictPendingDelta.http_status(),
             StatusCode::CONFLICT
         );
         assert_eq!(
-            PsmError::ConflictPendingProposal.http_status(),
+            GuardianError::ConflictPendingProposal.http_status(),
             StatusCode::CONFLICT
         );
         assert_eq!(
-            PsmError::ProposalAlreadySigned {
+            GuardianError::ProposalAlreadySigned {
                 signer_id: "s".into()
             }
             .http_status(),
@@ -351,11 +351,11 @@ mod tests {
     #[test]
     fn http_status_auth_variants() {
         assert_eq!(
-            PsmError::AuthenticationFailed("x".into()).http_status(),
+            GuardianError::AuthenticationFailed("x".into()).http_status(),
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
-            PsmError::AuthorizationFailed("x".into()).http_status(),
+            GuardianError::AuthorizationFailed("x".into()).http_status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -363,23 +363,23 @@ mod tests {
     #[test]
     fn http_status_bad_request_variants() {
         assert_eq!(
-            PsmError::InvalidInput("x".into()).http_status(),
+            GuardianError::InvalidInput("x".into()).http_status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            PsmError::InvalidAccountId("x".into()).http_status(),
+            GuardianError::InvalidAccountId("x".into()).http_status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            PsmError::InvalidDelta("x".into()).http_status(),
+            GuardianError::InvalidDelta("x".into()).http_status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            PsmError::InvalidCommitment("x".into()).http_status(),
+            GuardianError::InvalidCommitment("x".into()).http_status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            PsmError::CommitmentMismatch {
+            GuardianError::CommitmentMismatch {
                 expected: "a".into(),
                 actual: "b".into()
             }
@@ -387,11 +387,11 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            PsmError::InvalidProposalSignature("x".into()).http_status(),
+            GuardianError::InvalidProposalSignature("x".into()).http_status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            PsmError::InsufficientSignatures {
+            GuardianError::InsufficientSignatures {
                 required: 3,
                 got: 1
             }
@@ -403,33 +403,33 @@ mod tests {
     #[test]
     fn http_status_server_error_variants() {
         assert_eq!(
-            PsmError::NetworkError("x".into()).http_status(),
+            GuardianError::NetworkError("x".into()).http_status(),
             StatusCode::BAD_GATEWAY
         );
         assert_eq!(
-            PsmError::SigningError("x".into()).http_status(),
+            GuardianError::SigningError("x".into()).http_status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(
-            PsmError::StorageError("x".into()).http_status(),
+            GuardianError::StorageError("x".into()).http_status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(
-            PsmError::ConfigurationError("x".into()).http_status(),
+            GuardianError::ConfigurationError("x".into()).http_status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }
 
-    // --- PsmError::grpc_status ---
+    // --- GuardianError::grpc_status ---
 
     #[test]
     fn grpc_status_not_found() {
         assert_eq!(
-            PsmError::AccountNotFound("x".into()).grpc_status(),
+            GuardianError::AccountNotFound("x".into()).grpc_status(),
             tonic::Code::NotFound
         );
         assert_eq!(
-            PsmError::StateNotFound("x".into()).grpc_status(),
+            GuardianError::StateNotFound("x".into()).grpc_status(),
             tonic::Code::NotFound
         );
     }
@@ -437,11 +437,11 @@ mod tests {
     #[test]
     fn grpc_status_already_exists() {
         assert_eq!(
-            PsmError::AccountAlreadyExists("x".into()).grpc_status(),
+            GuardianError::AccountAlreadyExists("x".into()).grpc_status(),
             tonic::Code::AlreadyExists
         );
         assert_eq!(
-            PsmError::ProposalAlreadySigned {
+            GuardianError::ProposalAlreadySigned {
                 signer_id: "s".into()
             }
             .grpc_status(),
@@ -452,15 +452,15 @@ mod tests {
     #[test]
     fn grpc_status_failed_precondition() {
         assert_eq!(
-            PsmError::ConflictPendingDelta.grpc_status(),
+            GuardianError::ConflictPendingDelta.grpc_status(),
             tonic::Code::FailedPrecondition
         );
         assert_eq!(
-            PsmError::ConflictPendingProposal.grpc_status(),
+            GuardianError::ConflictPendingProposal.grpc_status(),
             tonic::Code::FailedPrecondition
         );
         assert_eq!(
-            PsmError::InsufficientSignatures {
+            GuardianError::InsufficientSignatures {
                 required: 2,
                 got: 1
             }
@@ -472,11 +472,11 @@ mod tests {
     #[test]
     fn grpc_status_auth() {
         assert_eq!(
-            PsmError::AuthenticationFailed("x".into()).grpc_status(),
+            GuardianError::AuthenticationFailed("x".into()).grpc_status(),
             tonic::Code::Unauthenticated
         );
         assert_eq!(
-            PsmError::AuthorizationFailed("x".into()).grpc_status(),
+            GuardianError::AuthorizationFailed("x".into()).grpc_status(),
             tonic::Code::PermissionDenied
         );
     }
@@ -484,23 +484,23 @@ mod tests {
     #[test]
     fn grpc_status_invalid_argument() {
         assert_eq!(
-            PsmError::InvalidInput("x".into()).grpc_status(),
+            GuardianError::InvalidInput("x".into()).grpc_status(),
             tonic::Code::InvalidArgument
         );
         assert_eq!(
-            PsmError::InvalidAccountId("x".into()).grpc_status(),
+            GuardianError::InvalidAccountId("x".into()).grpc_status(),
             tonic::Code::InvalidArgument
         );
         assert_eq!(
-            PsmError::InvalidDelta("x".into()).grpc_status(),
+            GuardianError::InvalidDelta("x".into()).grpc_status(),
             tonic::Code::InvalidArgument
         );
         assert_eq!(
-            PsmError::InvalidCommitment("x".into()).grpc_status(),
+            GuardianError::InvalidCommitment("x".into()).grpc_status(),
             tonic::Code::InvalidArgument
         );
         assert_eq!(
-            PsmError::CommitmentMismatch {
+            GuardianError::CommitmentMismatch {
                 expected: "a".into(),
                 actual: "b".into()
             }
@@ -508,7 +508,7 @@ mod tests {
             tonic::Code::InvalidArgument
         );
         assert_eq!(
-            PsmError::InvalidProposalSignature("x".into()).grpc_status(),
+            GuardianError::InvalidProposalSignature("x".into()).grpc_status(),
             tonic::Code::InvalidArgument
         );
     }
@@ -516,15 +516,15 @@ mod tests {
     #[test]
     fn grpc_status_internal() {
         assert_eq!(
-            PsmError::SigningError("x".into()).grpc_status(),
+            GuardianError::SigningError("x".into()).grpc_status(),
             tonic::Code::Internal
         );
         assert_eq!(
-            PsmError::StorageError("x".into()).grpc_status(),
+            GuardianError::StorageError("x".into()).grpc_status(),
             tonic::Code::Internal
         );
         assert_eq!(
-            PsmError::ConfigurationError("x".into()).grpc_status(),
+            GuardianError::ConfigurationError("x".into()).grpc_status(),
             tonic::Code::Internal
         );
     }
@@ -533,19 +533,19 @@ mod tests {
 
     #[test]
     fn display_account_not_found() {
-        let err = PsmError::AccountNotFound("abc".into());
+        let err = GuardianError::AccountNotFound("abc".into());
         assert_eq!(err.to_string(), "Account 'abc' not found");
     }
 
     #[test]
     fn display_account_already_exists() {
-        let err = PsmError::AccountAlreadyExists("abc".into());
+        let err = GuardianError::AccountAlreadyExists("abc".into());
         assert_eq!(err.to_string(), "Account 'abc' already exists");
     }
 
     #[test]
     fn display_delta_not_found() {
-        let err = PsmError::DeltaNotFound {
+        let err = GuardianError::DeltaNotFound {
             account_id: "acc".into(),
             nonce: 42,
         };
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn display_commitment_mismatch() {
-        let err = PsmError::CommitmentMismatch {
+        let err = GuardianError::CommitmentMismatch {
             expected: "0xaa".into(),
             actual: "0xbb".into(),
         };
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn display_conflict_pending_delta() {
         assert!(
-            PsmError::ConflictPendingDelta
+            GuardianError::ConflictPendingDelta
                 .to_string()
                 .contains("non-canonical delta pending")
         );
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn display_conflict_pending_proposal() {
         assert!(
-            PsmError::ConflictPendingProposal
+            GuardianError::ConflictPendingProposal
                 .to_string()
                 .contains("pending proposals")
         );
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn display_proposal_not_found() {
-        let err = PsmError::ProposalNotFound {
+        let err = GuardianError::ProposalNotFound {
             account_id: "acc".into(),
             commitment: "c".into(),
         };
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn display_proposal_already_signed() {
-        let err = PsmError::ProposalAlreadySigned {
+        let err = GuardianError::ProposalAlreadySigned {
             signer_id: "signer".into(),
         };
         assert!(err.to_string().contains("signer"));
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn display_insufficient_signatures() {
-        let err = PsmError::InsufficientSignatures {
+        let err = GuardianError::InsufficientSignatures {
             required: 3,
             got: 1,
         };
@@ -617,37 +617,37 @@ mod tests {
 
     #[test]
     fn from_string_creates_invalid_input() {
-        let err: PsmError = "some error".to_string().into();
-        assert_eq!(err, PsmError::InvalidInput("some error".into()));
+        let err: GuardianError = "some error".to_string().into();
+        assert_eq!(err, GuardianError::InvalidInput("some error".into()));
     }
 
     #[test]
     fn from_str_creates_invalid_input() {
-        let err: PsmError = "some error".into();
-        assert_eq!(err, PsmError::InvalidInput("some error".into()));
+        let err: GuardianError = "some error".into();
+        assert_eq!(err, GuardianError::InvalidInput("some error".into()));
     }
 
     #[test]
     fn from_miden_falcon_rpo_error() {
         let err = MidenFalconRpoError::StorageError("storage fail".into());
-        let psm: PsmError = err.into();
-        assert!(matches!(psm, PsmError::SigningError(_)));
-        assert!(psm.to_string().contains("storage fail"));
+        let guardian: GuardianError = err.into();
+        assert!(matches!(guardian, GuardianError::SigningError(_)));
+        assert!(guardian.to_string().contains("storage fail"));
     }
 
     #[test]
     fn from_miden_ecdsa_error() {
         let err = MidenEcdsaError::DecodingError("decode fail".into());
-        let psm: PsmError = err.into();
-        assert!(matches!(psm, PsmError::SigningError(_)));
-        assert!(psm.to_string().contains("decode fail"));
+        let guardian: GuardianError = err.into();
+        assert!(matches!(guardian, GuardianError::SigningError(_)));
+        assert!(guardian.to_string().contains("decode fail"));
     }
 
     #[test]
-    fn from_keystore_error_to_psm() {
+    fn from_keystore_error_to_guardian() {
         let err = miden_keystore::KeyStoreError::KeyNotFound("key123".into());
-        let psm: PsmError = err.into();
-        assert!(matches!(psm, PsmError::SigningError(_)));
+        let guardian: GuardianError = err.into();
+        assert!(matches!(guardian, GuardianError::SigningError(_)));
     }
 
     // --- MidenFalconRpoError Display ---
@@ -732,14 +732,14 @@ mod tests {
 
     #[test]
     fn into_response_returns_correct_status() {
-        let err = PsmError::AccountNotFound("x".into());
+        let err = GuardianError::AccountNotFound("x".into());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn into_tonic_status() {
-        let err = PsmError::AuthenticationFailed("bad creds".into());
+        let err = GuardianError::AuthenticationFailed("bad creds".into());
         let status: tonic::Status = err.into();
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
         assert!(status.message().contains("bad creds"));

@@ -25,14 +25,14 @@ pub enum Transport {
 }
 
 #[derive(Clone, Debug, Parser, Serialize)]
-#[command(name = "psm-server-bench-loadgen")]
-#[command(about = "Benchmark driver for PSM server")]
+#[command(name = "guardian-server-bench-loadgen")]
+#[command(about = "Benchmark driver for GUARDIAN server")]
 pub struct RunConfig {
     #[arg(long, default_value = "http://localhost:50051")]
-    pub psm_endpoint: String,
+    pub guardian_endpoint: String,
 
     #[arg(long, default_value = "http://localhost:3000")]
-    pub psm_http_endpoint: String,
+    pub guardian_http_endpoint: String,
 
     #[arg(long, value_enum, default_value_t = Transport::Grpc)]
     pub transport: Transport,
@@ -100,8 +100,8 @@ impl RunConfig {
         if self.canonicalization_timeout_secs == 0 {
             bail!("canonicalization-timeout-secs must be greater than 0");
         }
-        if self.psm_http_endpoint.trim().is_empty() {
-            bail!("psm-http-endpoint must not be empty");
+        if self.guardian_http_endpoint.trim().is_empty() {
+            bail!("guardian-http-endpoint must not be empty");
         }
         Ok(())
     }

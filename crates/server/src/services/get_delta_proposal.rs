@@ -1,6 +1,6 @@
 use crate::builder::state::AppState;
 use crate::delta_object::DeltaObject;
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 
@@ -32,13 +32,13 @@ pub async fn get_delta_proposal(
         .storage
         .pull_delta_proposal(&account_id, &commitment)
         .await
-        .map_err(|_| PsmError::ProposalNotFound {
+        .map_err(|_| GuardianError::ProposalNotFound {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
         })?;
 
     if !proposal.status.is_pending() {
-        return Err(PsmError::ProposalNotFound {
+        return Err(GuardianError::ProposalNotFound {
             account_id,
             commitment,
         });
@@ -171,7 +171,7 @@ mod tests {
         let error = get_delta_proposal(&state, params).await.unwrap_err();
         assert_eq!(
             error,
-            PsmError::ProposalNotFound {
+            GuardianError::ProposalNotFound {
                 account_id,
                 commitment
             }

@@ -57,7 +57,7 @@ export type ProposalType =
   | 'remove_signer'
   | 'change_threshold'
   | 'update_procedure_threshold'
-  | 'switch_psm'
+  | 'switch_guardian'
   | 'consume_notes'
   | 'p2id'
   | 'custom'
@@ -71,8 +71,8 @@ export interface ProposalMetadata {
   targetProcedure?: string;
   salt?: string;
   description?: string;
-  newPsmPubkey?: string;
-  newPsmEndpoint?: string;
+  newGuardianPubkey?: string;
+  newGuardianEndpoint?: string;
   noteIds?: string[];
   recipientId?: string;
   faucetId?: string;

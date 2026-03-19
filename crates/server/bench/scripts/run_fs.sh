@@ -17,15 +17,15 @@ RUN_ID=$(date +"%Y%m%d_%H%M%S")
 RUN_DIR="$BENCH_DIR/results/${RUN_ID}_fs"
 mkdir -p "$RUN_DIR"
 
-rm -rf "$PSM_STORAGE_PATH" "$PSM_METADATA_PATH" "$PSM_KEYSTORE_PATH"
-mkdir -p "$PSM_STORAGE_PATH" "$PSM_METADATA_PATH" "$PSM_KEYSTORE_PATH"
+rm -rf "$GUARDIAN_STORAGE_PATH" "$GUARDIAN_METADATA_PATH" "$GUARDIAN_KEYSTORE_PATH"
+mkdir -p "$GUARDIAN_STORAGE_PATH" "$GUARDIAN_METADATA_PATH" "$GUARDIAN_KEYSTORE_PATH"
 
 if [[ "${BENCH_SKIP_PREBUILD:-false}" != "true" ]]; then
   prebuild_bench_binaries "$REPO_ROOT"
 fi
 
 SERVER_BIN="$REPO_ROOT/target/release/server"
-LOADGEN_BIN="$REPO_ROOT/target/release/psm-server-bench-loadgen"
+LOADGEN_BIN="$REPO_ROOT/target/release/guardian-server-bench-loadgen"
 
 cleanup() {
   if [[ -n "${METRICS_PID:-}" ]] && kill -0 "$METRICS_PID" >/dev/null 2>&1; then
@@ -42,21 +42,21 @@ trap cleanup EXIT
   cd "$REPO_ROOT"
   exec env \
     RUST_LOG="$BENCH_SERVER_LOG_LEVEL" \
-    PSM_NETWORK_TYPE="$PSM_NETWORK_TYPE" \
-    PSM_RATE_BURST_PER_SEC="$PSM_RATE_BURST_PER_SEC" \
-    PSM_RATE_PER_MIN="$PSM_RATE_PER_MIN" \
-    PSM_MAX_REQUEST_BYTES="$PSM_MAX_REQUEST_BYTES" \
-    PSM_CANONICALIZATION_ENABLED="$PSM_CANONICALIZATION_ENABLED" \
-    PSM_CANONICALIZATION_CHECK_INTERVAL_SECS="$PSM_CANONICALIZATION_CHECK_INTERVAL_SECS" \
-    PSM_CANONICALIZATION_MAX_RETRIES="$PSM_CANONICALIZATION_MAX_RETRIES" \
-    PSM_STORAGE_PATH="$PSM_STORAGE_PATH" \
-    PSM_METADATA_PATH="$PSM_METADATA_PATH" \
-    PSM_KEYSTORE_PATH="$PSM_KEYSTORE_PATH" \
+    GUARDIAN_NETWORK_TYPE="$GUARDIAN_NETWORK_TYPE" \
+    GUARDIAN_RATE_BURST_PER_SEC="$GUARDIAN_RATE_BURST_PER_SEC" \
+    GUARDIAN_RATE_PER_MIN="$GUARDIAN_RATE_PER_MIN" \
+    GUARDIAN_MAX_REQUEST_BYTES="$GUARDIAN_MAX_REQUEST_BYTES" \
+    GUARDIAN_CANONICALIZATION_ENABLED="$GUARDIAN_CANONICALIZATION_ENABLED" \
+    GUARDIAN_CANONICALIZATION_CHECK_INTERVAL_SECS="$GUARDIAN_CANONICALIZATION_CHECK_INTERVAL_SECS" \
+    GUARDIAN_CANONICALIZATION_MAX_RETRIES="$GUARDIAN_CANONICALIZATION_MAX_RETRIES" \
+    GUARDIAN_STORAGE_PATH="$GUARDIAN_STORAGE_PATH" \
+    GUARDIAN_METADATA_PATH="$GUARDIAN_METADATA_PATH" \
+    GUARDIAN_KEYSTORE_PATH="$GUARDIAN_KEYSTORE_PATH" \
     "$SERVER_BIN" >"$RUN_DIR/server.log" 2>&1
 ) &
 SERVER_PID=$!
 
-if ! wait_for_server_ready "$SERVER_PID" localhost "$PSM_GRPC_PORT" "${PSM_SERVER_START_TIMEOUT_SECS:-600}" "$RUN_DIR/server.log"; then
+if ! wait_for_server_ready "$SERVER_PID" localhost "$GUARDIAN_GRPC_PORT" "${GUARDIAN_SERVER_START_TIMEOUT_SECS:-600}" "$RUN_DIR/server.log"; then
   exit 1
 fi
 
@@ -73,8 +73,8 @@ fi
 
 for scenario in "${SCENARIOS[@]}"; do
   LOADGEN_ARGS=(
-    --psm-endpoint "http://localhost:$PSM_GRPC_PORT"
-    --psm-http-endpoint "http://localhost:$PSM_HTTP_PORT"
+    --guardian-endpoint "http://localhost:$GUARDIAN_GRPC_PORT"
+    --guardian-http-endpoint "http://localhost:$GUARDIAN_HTTP_PORT"
     --transport "$BENCH_TRANSPORT"
     --users "$BENCH_USERS"
     --accounts "$BENCH_ACCOUNTS"
@@ -100,7 +100,7 @@ for scenario in "${SCENARIOS[@]}"; do
 done
 
 if command -v k6 >/dev/null 2>&1; then
-  K6_BASE=(k6 run --env PSM_HTTP_URL="http://localhost:$PSM_HTTP_PORT")
+  K6_BASE=(k6 run --env GUARDIAN_HTTP_URL="http://localhost:$GUARDIAN_HTTP_PORT")
   "${K6_BASE[@]}" "$BENCH_DIR/k6/body_limit.js" >"$RUN_DIR/k6_body_limit.log" 2>&1 || true
   "${K6_BASE[@]}" "$BENCH_DIR/k6/rate_limit.js" >"$RUN_DIR/k6_rate_limit.log" 2>&1 || true
 fi

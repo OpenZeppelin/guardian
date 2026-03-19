@@ -3,16 +3,16 @@
 mod builder;
 mod configuration;
 mod consume;
+mod guardian;
 mod payment;
-mod psm;
 
 pub use builder::ProposalBuilder;
 pub use configuration::{
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
 };
 pub use consume::build_consume_notes_transaction_request;
+pub use guardian::build_update_guardian_transaction_request;
 pub use payment::build_p2id_transaction_request;
-pub use psm::build_update_psm_transaction_request;
 
 use miden_client::transaction::{TransactionExecutorError, TransactionRequest, TransactionSummary};
 use miden_client::{Client, ClientError};

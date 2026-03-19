@@ -1,13 +1,13 @@
 use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::{normalize_payload, resolve_account};
-use private_state_manager_shared::DeltaSignature;
+use guardian_shared::DeltaSignature;
 use tracing::info;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
-const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "PSM_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
+const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
 
 fn max_pending_proposals_per_account() -> usize {
     std::env::var(MAX_PENDING_PROPOSALS_ENV_VAR)
@@ -50,7 +50,7 @@ pub async fn push_delta_proposal(
         .storage
         .pull_state(&account_id)
         .await
-        .map_err(|_| PsmError::StateNotFound(account_id.clone()))?;
+        .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
 
     // Check for pending candidates before accepting new proposal
     let has_pending = resolved
@@ -63,11 +63,11 @@ pub async fn push_delta_proposal(
                 error = %e,
                 "Failed to check pending candidate in push_delta_proposal"
             );
-            PsmError::StorageError(format!("Failed to check pending candidate: {e}"))
+            GuardianError::StorageError(format!("Failed to check pending candidate: {e}"))
         })?;
 
     if has_pending {
-        return Err(PsmError::ConflictPendingDelta);
+        return Err(GuardianError::ConflictPendingDelta);
     }
 
     let pending_proposals = resolved
@@ -80,12 +80,12 @@ pub async fn push_delta_proposal(
                 error = %e,
                 "Failed to load pending proposals in push_delta_proposal"
             );
-            PsmError::StorageError(format!("Failed to load pending proposals: {e}"))
+            GuardianError::StorageError(format!("Failed to load pending proposals: {e}"))
         })?;
 
     let max_pending_proposals = max_pending_proposals_per_account();
     if pending_proposals.len() >= max_pending_proposals {
-        return Err(PsmError::PendingProposalsLimit {
+        return Err(GuardianError::PendingProposalsLimit {
             limit: max_pending_proposals,
         });
     }
@@ -93,7 +93,7 @@ pub async fn push_delta_proposal(
     // Extract tx_summary and signatures from delta_payload
     let tx_summary = delta_payload
         .get("tx_summary")
-        .ok_or_else(|| PsmError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
+        .ok_or_else(|| GuardianError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
 
     let signatures = delta_payload
         .get("signatures")
@@ -111,12 +111,12 @@ pub async fn push_delta_proposal(
                 &current_state.state_json,
                 tx_summary,
             )
-            .map_err(PsmError::InvalidDelta)?;
+            .map_err(GuardianError::InvalidDelta)?;
 
         // Compute the delta proposal ID from the tx_summary
         client
             .delta_proposal_id(&account_id, nonce, tx_summary)
-            .map_err(PsmError::InvalidDelta)?
+            .map_err(GuardianError::InvalidDelta)?
     };
 
     // Extract proposer ID from credentials
@@ -126,7 +126,7 @@ pub async fn push_delta_proposal(
             .auth
             .compute_signer_commitment(pubkey)
             .map_err(|e| {
-                PsmError::AuthenticationFailed(format!(
+                GuardianError::AuthenticationFailed(format!(
                     "invalid proposer public key for {}: {}",
                     account_id, e
                 ))
@@ -138,7 +138,7 @@ pub async fn push_delta_proposal(
     let mut cosigner_sigs = Vec::new();
     for sig_value in signatures {
         let parsed: DeltaSignature = serde_json::from_value(sig_value).map_err(|e| {
-            PsmError::InvalidDelta(format!("Invalid signature entry in payload: {e}"))
+            GuardianError::InvalidDelta(format!("Invalid signature entry in payload: {e}"))
         })?;
 
         cosigner_sigs.push(CosignerSignature {
@@ -182,7 +182,7 @@ pub async fn push_delta_proposal(
         .storage
         .submit_delta_proposal(&commitment, &delta_proposal)
         .await
-        .map_err(PsmError::StorageError)?;
+        .map_err(GuardianError::StorageError)?;
     let stored_signer_count = match &delta_proposal.status {
         DeltaStatus::Pending { cosigner_sigs, .. } => cosigner_sigs.len(),
         _ => 0,
@@ -211,7 +211,7 @@ mod tests {
     use crate::testing::fixtures;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
-    use private_state_manager_shared::ProposalSignature;
+    use guardian_shared::ProposalSignature;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -364,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_delta_proposal_success_for_ecdsa() {
         use crate::testing::helpers::TestEcdsaSigner;
-        use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
 
         let (state, storage, network, metadata) = create_test_state();
 
@@ -568,7 +568,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::InvalidDelta(msg) => {
+            GuardianError::InvalidDelta(msg) => {
                 assert!(msg.contains("tx_summary"));
             }
             e => panic!("Expected InvalidDelta error, got: {:?}", e),
@@ -623,7 +623,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::InvalidDelta(msg) => {
+            GuardianError::InvalidDelta(msg) => {
                 assert_eq!(msg, "Invalid delta");
             }
             e => panic!("Expected InvalidDelta error, got: {:?}", e),
@@ -671,7 +671,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::StateNotFound(id) => {
+            GuardianError::StateNotFound(id) => {
                 assert_eq!(id, account_id);
             }
             e => panic!("Expected StateNotFound error, got: {:?}", e),
@@ -745,7 +745,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::ConflictPendingDelta => {
+            GuardianError::ConflictPendingDelta => {
                 // Expected - proposal creation blocked because there's a pending candidate
             }
             e => panic!("Expected ConflictPendingDelta error, got: {:?}", e),
@@ -807,7 +807,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::PendingProposalsLimit { limit } => {
+            GuardianError::PendingProposalsLimit { limit } => {
                 assert_eq!(limit, 20);
             }
             e => panic!("Expected PendingProposalsLimit error, got: {:?}", e),

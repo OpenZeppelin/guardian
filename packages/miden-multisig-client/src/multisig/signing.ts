@@ -1,7 +1,7 @@
-import type { ProposalSignature, Signer } from '@openzeppelin/psm-client';
+import type { ProposalSignature, Signer } from '@openzeppelin/guardian-client';
 import type { SignatureScheme } from '../types.js';
 
-export function toPsmSignature(
+export function toGuardianSignature(
   scheme: SignatureScheme,
   signatureHex: string,
   publicKey?: string,
@@ -15,10 +15,10 @@ export function toPsmSignature(
   return { scheme: 'falcon', signature: signatureHex };
 }
 
-export async function buildPsmSignatureFromSigner(
+export async function buildGuardianSignatureFromSigner(
   signer: Signer,
   commitment: string,
 ): Promise<ProposalSignature> {
   const signatureHex = await signer.signCommitment(commitment);
-  return toPsmSignature(signer.scheme, signatureHex, signer.publicKey);
+  return toGuardianSignature(signer.scheme, signatureHex, signer.publicKey);
 }

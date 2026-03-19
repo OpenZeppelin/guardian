@@ -1,4 +1,4 @@
-# Private State Manager Server
+# Guardian Server
 
 Server for managing private account states and deltas.
 
@@ -19,20 +19,20 @@ let builder = ServerBuilder::new()
 ### Environment Variables
 
 - `POSTGRES_PASSWORD` - PostgreSQL password (required for Postgres storage/metadata)
-- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata, e.g., `postgres://psm:${POSTGRES_PASSWORD}@localhost:5432/psm`)
-- `PSM_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/psm/keystore`)
+- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata, e.g., `postgres://guardian:${POSTGRES_PASSWORD}@localhost:5432/guardian`)
+- `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `RUST_LOG` - Logging level (default: `info`)
 
 #### Rate Limiting
 
-- `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
-- `PSM_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
-- `PSM_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
+- `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
+- `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
+- `GUARDIAN_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
 
 #### Request Size Limits
 
-- `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
-- `PSM_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
+- `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
+- `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
 
 Requests exceeding this limit receive a 413 Payload Too Large response.
 
@@ -52,7 +52,7 @@ The server uses a single storage backend per instance: `Filesystem` by default, 
 use server::storage::filesystem::FilesystemService;
 use std::path::PathBuf;
 
-let storage = FilesystemService::new(PathBuf::from("/var/psm/storage")).await?;
+let storage = FilesystemService::new(PathBuf::from("/var/guardian/storage")).await?;
 ```
 
 Filesystem is the default when the binary is built without the `postgres` feature.
@@ -66,14 +66,14 @@ Migrations run automatically at startup (the server runs migrations on boot).
 ```rust
 use server::storage::postgres::PostgresService;
 
-let database_url = "postgres://psm:psm_dev_password@localhost:5432/psm";
+let database_url = "postgres://guardian:guardian_dev_password@localhost:5432/guardian";
 
 let storage = PostgresService::new(&database_url).await?;
 ```
 
 ```bash
-DATABASE_URL=postgres://psm:psm_dev_password@localhost:5432/psm \
-cargo run --features postgres --package private-state-manager-server
+DATABASE_URL=postgres://guardian:guardian_dev_password@localhost:5432/guardian \
+cargo run --features postgres --package guardian-server
 ```
 
 ### Metadata Store
@@ -87,7 +87,7 @@ use server::metadata::filesystem::FilesystemMetadataStore;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/psm/metadata")).await?;
+let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/guardian/metadata")).await?;
 
 let builder = ServerBuilder::new()
     .metadata(Arc::new(metadata));
@@ -99,7 +99,7 @@ let builder = ServerBuilder::new()
 use server::metadata::postgres::PostgresMetadataStore;
 use std::sync::Arc;
 
-let database_url = "postgres://psm:psm_dev_password@localhost:5432/psm";
+let database_url = "postgres://guardian:guardian_dev_password@localhost:5432/guardian";
 
 let metadata = PostgresMetadataStore::new(&database_url).await?;
 
@@ -125,7 +125,7 @@ Or use the `RUST_LOG` environment variable to override:
 
 ```bash
 # Debug level for entire server
-RUST_LOG=debug cargo run --package private-state-manager-server
+RUST_LOG=debug cargo run --package guardian-server
 
 # Trace only canonicalization jobs
 RUST_LOG=server::jobs::canonicalization=trace cargo run
@@ -143,33 +143,33 @@ The HTTP API includes built-in rate limiting to protect against abuse. Rate limi
 - **IP-based limits**: All requests are tracked by client IP address
 - **Enhanced keying**: When `x-pubkey` header or `account_id` query parameter is present, limits are applied per IP+account/signer combination
 - **Two windows**: Burst (per second) and sustained (per minute) limits are enforced independently
-- **Proxy support**: `X-Forwarded-For` and `X-Real-IP` are trusted only when the direct peer IP is listed in `PSM_TRUSTED_PROXY_IPS`, otherwise socket peer IP is used
+- **Proxy support**: `X-Forwarded-For` and `X-Real-IP` are trusted only when the direct peer IP is listed in `GUARDIAN_TRUSTED_PROXY_IPS`, otherwise socket peer IP is used
 
 #### Proxy Trust Setup
 
 Use this rule of thumb:
 
-1. **PSM directly exposed to clients (no reverse proxy in front):**
-   - Leave `PSM_TRUSTED_PROXY_IPS` empty.
-   - PSM will ignore `X-Forwarded-For`/`X-Real-IP`.
+1. **GUARDIAN directly exposed to clients (no reverse proxy in front):**
+   - Leave `GUARDIAN_TRUSTED_PROXY_IPS` empty.
+   - GUARDIAN will ignore `X-Forwarded-For`/`X-Real-IP`.
    - Rate limiting is enforced using the direct socket peer IP.
 
-2. **PSM behind a reverse proxy/load balancer/CDN:**
-   - Set `PSM_TRUSTED_PROXY_IPS` to the proxy IPs that connect directly to PSM.
-   - PSM will trust forwarded headers only from those IPs.
-   - Also restrict network access so only those proxy IPs can reach PSM.
+2. **GUARDIAN behind a reverse proxy/load balancer/CDN:**
+   - Set `GUARDIAN_TRUSTED_PROXY_IPS` to the proxy IPs that connect directly to GUARDIAN.
+   - GUARDIAN will trust forwarded headers only from those IPs.
+   - Also restrict network access so only those proxy IPs can reach GUARDIAN.
 
 Examples:
 
 ```bash
 # Direct deployment (safe default)
-PSM_TRUSTED_PROXY_IPS=
+GUARDIAN_TRUSTED_PROXY_IPS=
 
 # Behind trusted proxies
-PSM_TRUSTED_PROXY_IPS=10.0.1.10,10.0.1.11,127.0.0.1,::1
+GUARDIAN_TRUSTED_PROXY_IPS=10.0.1.10,10.0.1.11,127.0.0.1,::1
 ```
 
-If PSM is behind a proxy but `PSM_TRUSTED_PROXY_IPS` is not configured, PSM will rate-limit by the proxy IP (clients may share the same limit bucket).
+If GUARDIAN is behind a proxy but `GUARDIAN_TRUSTED_PROXY_IPS` is not configured, GUARDIAN will rate-limit by the proxy IP (clients may share the same limit bucket).
 
 #### Response When Limited
 
@@ -197,7 +197,7 @@ ServerBuilder::new()
     .with_body_limit(BodyLimitConfig::new(5 * 1024 * 1024))  // 5 MB
     // ...
 
-// Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN, PSM_TRUSTED_PROXY_IPS, PSM_MAX_REQUEST_BYTES)
+// Load from environment (GUARDIAN_RATE_BURST_PER_SEC, GUARDIAN_RATE_PER_MIN, GUARDIAN_TRUSTED_PROXY_IPS, GUARDIAN_MAX_REQUEST_BYTES)
 ServerBuilder::new()
     .with_rate_limit(RateLimitConfig::from_env())
     .with_body_limit(BodyLimitConfig::from_env())
@@ -221,7 +221,7 @@ ServerBuilder::new()
 
 #### gRPC API (Port 50051)
 
-All methods are available through the `state_manager.StateManager` service:
+All methods are available through the `guardian.Guardian` service:
 - `Configure(ConfigureRequest) -> ConfigureResponse`
 - `PushDelta(PushDeltaRequest) -> PushDeltaResponse`
 - `GetDelta(GetDeltaRequest) -> GetDeltaResponse`
@@ -233,7 +233,7 @@ All methods are available through the `state_manager.StateManager` service:
 - `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`
 - `GetDeltaProposal(GetDeltaProposalRequest) -> GetDeltaProposalResponse`
 
-See `proto/state_manager.proto` for the complete protocol buffer definitions.
+See `proto/guardian.proto` for the complete protocol buffer definitions.
 
 
 ## Running with Docker Compose
@@ -247,7 +247,7 @@ docker-compose up -d
 # The services expose:
 # - Server HTTP: localhost:3000
 # - Server gRPC: localhost:50051
-# - Postgres: localhost:5432 (user: psm, password: psm_dev_password, db: psm)
+# - Postgres: localhost:5432 (user: guardian, password: guardian_dev_password, db: guardian)
 ```
 
 The Postgres service uses a health check and the server waits for it to be ready before starting.
@@ -271,7 +271,7 @@ Quick commands:
 ./crates/server/bench/scripts/run_matrix.sh
 ```
 
-For benchmark runs that need env-driven `PSM_NETWORK_TYPE` and `PSM_CANONICALIZATION_*`, use the runtime code switch documented in `crates/server/bench/README.md` under `Benchmark Runtime Code Switch (Main Branch)`.
+For benchmark runs that need env-driven `GUARDIAN_NETWORK_TYPE` and `GUARDIAN_CANONICALIZATION_*`, use the runtime code switch documented in `crates/server/bench/README.md` under `Benchmark Runtime Code Switch (Main Branch)`.
 
 ## Testing
 
@@ -284,17 +284,17 @@ cargo test
 Run specific integration tests:
 
 ```bash
-cargo test --package private-state-manager-server --test e2e_http_auth_test -- --test-threads=1
+cargo test --package guardian-server --test e2e_http_auth_test -- --test-threads=1
 ```
 
 Feature-gated test groups:
 
 ```bash
 # Integration tests (requires network/mocks as applicable)
-cargo test -p private-state-manager-server --features integration
+cargo test -p guardian-server --features integration
 
 # End-to-end tests
-cargo test -p private-state-manager-server --features e2e
+cargo test -p guardian-server --features e2e
 ```
 
 ### Reproducible Builds
@@ -345,7 +345,7 @@ Update the digests in `Dockerfile` to maintain reproducibility. Then verify that
 
 ### Building gRPC Clients
 
-Use the proto file at `proto/state_manager.proto` to generate client code:
+Use the proto file at `proto/guardian.proto` to generate client code:
 - **Rust**: `tonic` and `prost`
 - **Python**: `grpcio` and `grpcio-tools`
 - **Go**: Official `protoc` compiler with Go plugins

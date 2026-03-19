@@ -5,12 +5,12 @@ variable "aws_region" {
 }
 
 variable "server_image_uri" {
-  description = "ECR image URI for psm-server (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest)"
+  description = "ECR image URI for guardian-server (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest)"
   type        = string
 }
 
 variable "server_network_type" {
-  description = "Miden network for the PSM server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
+  description = "Miden network for the GUARDIAN server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
   type        = string
   default     = "MidenTestnet"
 }
@@ -30,19 +30,19 @@ variable "subnet_ids" {
 variable "postgres_db" {
   description = "Postgres database name"
   type        = string
-  default     = "psm"
+  default     = "guardian"
 }
 
 variable "postgres_user" {
   description = "Postgres username"
   type        = string
-  default     = "psm"
+  default     = "guardian"
 }
 
 variable "postgres_password" {
   description = "Postgres password"
   type        = string
-  default     = "psm_dev_password"
+  default     = "guardian_dev_password"
   sensitive   = true
 }
 
@@ -53,13 +53,13 @@ variable "domain_name" {
 }
 
 variable "subdomain" {
-  description = "Subdomain for the service (e.g., psm -> psm.openzeppelin.com). Empty uses the root domain."
+  description = "Subdomain for the service (e.g., guardian -> guardian.openzeppelin.com). Empty uses the root domain."
   type        = string
-  default     = "psm"
+  default     = "guardian"
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for the service domain (e.g., psm-stg.openzeppelin.com)"
+  description = "ACM certificate ARN for the service domain (e.g., guardian-stg.openzeppelin.com)"
   type        = string
   default     = ""
 }
@@ -129,29 +129,29 @@ variable "postgres_memory" {
 variable "cluster_name" {
   description = "ECS cluster name"
   type        = string
-  default     = "psm-cluster"
+  default     = "guardian-cluster"
 }
 
 variable "server_service_name" {
   description = "Server ECS service name"
   type        = string
-  default     = "psm-server"
+  default     = "guardian-server"
 }
 
 variable "postgres_service_name" {
   description = "Postgres ECS service name"
   type        = string
-  default     = "psm-postgres"
+  default     = "guardian-postgres"
 }
 
 variable "alb_name" {
   description = "ALB name"
   type        = string
-  default     = "psm-alb"
+  default     = "guardian-alb"
 }
 
 variable "sd_namespace_name" {
   description = "Cloud Map namespace name for service discovery"
   type        = string
-  default     = "psm.local"
+  default     = "guardian.local"
 }

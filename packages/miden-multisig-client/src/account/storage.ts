@@ -11,9 +11,9 @@ const MULTISIG_SLOT_NAMES = {
   PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
 } as const;
 
-const PSM_SLOT_NAMES = {
-  SELECTOR: 'openzeppelin::psm::selector',
-  PUBLIC_KEY: 'openzeppelin::psm::public_key',
+const GUARDIAN_SLOT_NAMES = {
+  SELECTOR: 'openzeppelin::guardian::selector',
+  PUBLIC_KEY: 'openzeppelin::guardian::public_key',
 } as const;
 
 export class StorageLayoutBuilder {
@@ -55,16 +55,16 @@ export class StorageLayoutBuilder {
     return [slot0, slot1, slot2, slot3];
   }
 
-  buildPsmSlots(config: MultisigConfig): StorageSlot[] {
-    const selector = config.psmEnabled !== false ? 1n : 0n;
+  buildGuardianSlots(config: MultisigConfig): StorageSlot[] {
+    const selector = config.guardianEnabled !== false ? 1n : 0n;
     const selectorWord = new Word(new BigUint64Array([selector, 0n, 0n, 0n]));
-    const slot0 = StorageSlot.fromValue(PSM_SLOT_NAMES.SELECTOR, selectorWord);
+    const slot0 = StorageSlot.fromValue(GUARDIAN_SLOT_NAMES.SELECTOR, selectorWord);
 
-    const psmKeyMap = new StorageMap();
+    const guardianKeyMap = new StorageMap();
     const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
-    const psmKey = Word.fromHex(ensureHexPrefix(config.psmCommitment));
-    psmKeyMap.insert(zeroKey, psmKey);
-    const slot1 = StorageSlot.map(PSM_SLOT_NAMES.PUBLIC_KEY, psmKeyMap);
+    const guardianKey = Word.fromHex(ensureHexPrefix(config.guardianCommitment));
+    guardianKeyMap.insert(zeroKey, guardianKey);
+    const slot1 = StorageSlot.map(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, guardianKeyMap);
 
     return [slot0, slot1];
   }
@@ -76,8 +76,8 @@ export function buildMultisigStorageSlots(config: MultisigConfig): StorageSlot[]
   return defaultStorageBuilder.buildMultisigSlots(config);
 }
 
-export function buildPsmStorageSlots(config: MultisigConfig): StorageSlot[] {
-  return defaultStorageBuilder.buildPsmSlots(config);
+export function buildGuardianStorageSlots(config: MultisigConfig): StorageSlot[] {
+  return defaultStorageBuilder.buildGuardianSlots(config);
 }
 
 export const storageLayoutBuilder = defaultStorageBuilder;

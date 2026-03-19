@@ -122,16 +122,16 @@ pub async fn action_create_account(
         shorten_hex(&account_id.to_string())
     ));
 
-    // Automatically configure account in PSM
-    print_waiting("Configuring account in PSM");
+    // Automatically configure account in GUARDIAN
+    print_waiting("Configuring account in GUARDIAN");
 
     let client = state.get_client_mut()?;
     client
         .push_account()
         .await
-        .map_err(|e| format!("PSM configuration failed: {}", e))?;
+        .map_err(|e| format!("GUARDIAN configuration failed: {}", e))?;
 
-    print_success("Account configured in PSM");
+    print_success("Account configured in GUARDIAN");
 
     Ok(())
 }

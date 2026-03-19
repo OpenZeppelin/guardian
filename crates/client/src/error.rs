@@ -1,14 +1,14 @@
-//! Error types for PSM client operations.
+//! Error types for GUARDIAN client operations.
 
 use thiserror::Error;
 
-/// A Result type alias for PSM client operations.
+/// A Result type alias for GUARDIAN client operations.
 pub type ClientResult<T> = Result<T, ClientError>;
 
-/// Errors that can occur when using the PSM client.
+/// Errors that can occur when using the GUARDIAN client.
 #[derive(Debug, Error)]
 pub enum ClientError {
-    /// Failed to establish connection to the PSM server.
+    /// Failed to establish connection to the GUARDIAN server.
     #[error("gRPC transport error: {0}")]
     Transport(#[from] tonic::transport::Error),
 

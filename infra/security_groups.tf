@@ -1,7 +1,7 @@
 # Security group for ALB
 resource "aws_security_group" "alb" {
-  name        = "psm-alb-sg"
-  description = "PSM ALB security group"
+  name        = "guardian-alb-sg"
+  description = "GUARDIAN ALB security group"
   vpc_id      = local.vpc_id
 
   # HTTP ingress
@@ -33,8 +33,8 @@ resource "aws_security_group" "alb" {
 
 # Security group for server
 resource "aws_security_group" "server" {
-  name        = "psm-server-sg"
-  description = "PSM server security group"
+  name        = "guardian-server-sg"
+  description = "GUARDIAN server security group"
   vpc_id      = local.vpc_id
 
   # HTTP from ALB
@@ -66,8 +66,8 @@ resource "aws_security_group" "server" {
 
 # Security group for Postgres
 resource "aws_security_group" "postgres" {
-  name        = "psm-postgres-sg"
-  description = "PSM Postgres security group"
+  name        = "guardian-postgres-sg"
+  description = "GUARDIAN Postgres security group"
   vpc_id      = local.vpc_id
 
   # Postgres from server

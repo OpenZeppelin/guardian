@@ -1,5 +1,5 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::error::PsmError;
+use crate::error::GuardianError;
 use crate::services::ResolvedAccount;
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -33,7 +33,7 @@ impl DeltaCommitStrategy {
         delta: &mut DeltaObject,
         new_state_json: serde_json::Value,
         new_commitment: &str,
-    ) -> Result<(), PsmError> {
+    ) -> Result<(), GuardianError> {
         match self {
             DeltaCommitStrategy::Candidate => {
                 delta.status = DeltaStatus::candidate(ctx.now.clone());
@@ -48,7 +48,7 @@ impl DeltaCommitStrategy {
                             error = %e,
                             "Failed to submit candidate delta"
                         );
-                        PsmError::StorageError(format!("Failed to submit delta: {e}"))
+                        GuardianError::StorageError(format!("Failed to submit delta: {e}"))
                     })?;
 
                 // Set flag indicating account has a pending candidate
@@ -62,7 +62,7 @@ impl DeltaCommitStrategy {
                             error = %e,
                             "Failed to set has_pending_candidate flag"
                         );
-                        PsmError::StorageError(format!("Failed to update metadata: {e}"))
+                        GuardianError::StorageError(format!("Failed to update metadata: {e}"))
                     })
             }
             DeltaCommitStrategy::Optimistic => {
@@ -87,7 +87,7 @@ impl DeltaCommitStrategy {
                             error = %e,
                             "Failed to update state in optimistic mode"
                         );
-                        PsmError::StorageError(format!("Failed to update state: {e}"))
+                        GuardianError::StorageError(format!("Failed to update state: {e}"))
                     })?;
 
                 ctx.resolved
@@ -101,7 +101,7 @@ impl DeltaCommitStrategy {
                             error = %e,
                             "Failed to submit canonical delta in optimistic mode"
                         );
-                        PsmError::StorageError(format!("Failed to submit delta: {e}"))
+                        GuardianError::StorageError(format!("Failed to submit delta: {e}"))
                     })?;
 
                 // Delete matching proposal now that delta is canonical
@@ -232,7 +232,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, PsmError::StorageError(_)));
+        assert!(matches!(err, GuardianError::StorageError(_)));
         assert!(err.to_string().contains("Storage unavailable"));
     }
 
@@ -276,7 +276,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, PsmError::StorageError(_)));
+        assert!(matches!(err, GuardianError::StorageError(_)));
         assert!(err.to_string().contains("State storage failed"));
     }
 
@@ -321,7 +321,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, PsmError::StorageError(_)));
+        assert!(matches!(err, GuardianError::StorageError(_)));
         assert!(err.to_string().contains("Delta storage failed"));
     }
 

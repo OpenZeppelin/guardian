@@ -1,10 +1,10 @@
 //! ECDSA secp256k1 signature-based authentication.
 
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
 use miden_protocol::utils::Serializable;
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
 use super::miden_falcon_rpo::account_id_timestamp_to_word;
 
@@ -37,7 +37,7 @@ impl EcdsaSigner {
         format!("0x{}", hex::encode(signature.to_bytes()))
     }
 
-    /// Signs the request-bound auth message used by authenticated PSM requests.
+    /// Signs the request-bound auth message used by authenticated GUARDIAN requests.
     pub fn sign_request_message(
         &self,
         account_id: &AccountId,

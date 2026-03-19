@@ -1,5 +1,5 @@
 [package]
-name = "private-state-manager-server"
+name = "guardian-server"
 version = "0.1.0"
 edition = "2024"
 
@@ -34,7 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 miden-protocol = { workspace = true, features = ["testing"] }
 
 # internal crates
-private-state-manager-shared = { path = "../shared" }
+guardian-shared = { path = "../shared" }
 miden-keystore = { path = "../miden-keystore" }
 miden-rpc-client = { path = "../miden-rpc-client" }
 

@@ -1,18 +1,18 @@
 # @openzeppelin/miden-multisig-client
 
-TypeScript SDK for private multisignature workflows on Miden. This package wraps the on-chain multisig contracts plus Private State Manager (PSM) coordination so you can:
+TypeScript SDK for private multisignature workflows on Miden. This package wraps the on-chain multisig contracts plus Guardian coordination so you can:
 
-- Create multisig accounts, register them with a PSM, and keep state off-chain
+- Create multisig accounts, register them with a GUARDIAN, and keep state off-chain
 - Propose, sign, and execute transactions with threshold enforcement
 - Export/import proposals as files for sharing using side channels
 
-## How Private Multisigs & PSM Work
+## How Private Multisigs & GUARDIAN Work
 
-Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. PSM acts as a coordination server:
+Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. GUARDIAN acts as a coordination server:
 
-1. A proposer pushes a delta (transaction plan) to Private State Manager (PSM). PSM tracks who signed and emits an ack signature once the threshold is met.
-2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to PSM.
-3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the PSM ack, executes it on-chain.
+1. A proposer pushes a delta (transaction plan) to Guardian. GUARDIAN tracks who signed and emits an ack signature once the threshold is met.
+2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to GUARDIAN.
+3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the GUARDIAN ack, executes it on-chain.
 
 ## Installation
 
@@ -35,19 +35,19 @@ const signer = new FalconSigner(secretKey);
 
 // Create MultisigClient
 const client = new MultisigClient(webClient, {
-  psmEndpoint: 'http://localhost:3000',
+  guardianEndpoint: 'http://localhost:3000',
   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
 });
 ```
 
 ## Usage
 
-### Get PSM Public Key
+### Get GUARDIAN Public Key
 
-Before creating a multisig, get the PSM server's public key commitment:
+Before creating a multisig, get the GUARDIAN server's public key commitment:
 
 ```typescript
-const psmCommitment = await client.psmClient.getPubkey();
+const guardianCommitment = await client.guardianClient.getPubkey();
 ```
 
 ### Create a Multisig Account
@@ -59,19 +59,19 @@ const config = {
     signer.commitment,      // Your commitment
     otherSigner.commitment, // Cosigner's commitment
   ],
-  psmCommitment,
+  guardianCommitment,
 };
 
 const multisig = await client.create(config, signer);
 console.log('Account ID:', multisig.accountId);
 ```
 
-### Register on PSM
+### Register on GUARDIAN
 
-After creating the account, register it on the PSM server:
+After creating the account, register it on the GUARDIAN server:
 
 ```typescript
-await multisig.registerOnPsm();
+await multisig.registerOnGuardian();
 ```
 
 ### Load an Existing Multisig
@@ -113,7 +113,7 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
-Fetches proposals from the PSM server and updates local state:
+Fetches proposals from the GUARDIAN server and updates local state:
 
 ```typescript
 const proposals = await multisig.syncProposals();

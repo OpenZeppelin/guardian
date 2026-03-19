@@ -1,7 +1,7 @@
 //! Miden Multisig Client SDK
 //!
 //! A high-level SDK for interacting with multisig accounts on Miden,
-//! coordinated through Private State Manager (PSM) servers.
+//! coordinated through Guardian servers.
 //!
 //! # Quick Start
 //!
@@ -25,7 +25,7 @@
 //!     // Create a 2-of-3 multisig
 //!     let account = client.create_account(2, vec![signer1, signer2, signer3]).await?;
 //!
-//!     // Register with PSM so other cosigners can pull
+//!     // Register with GUARDIAN so other cosigners can pull
 //!     client.push_account().await?;
 //!
 //!     Ok(())
@@ -39,11 +39,11 @@ mod client;
 mod error;
 mod execution;
 mod export;
+mod guardian_endpoint;
 mod keystore;
 mod payload;
 mod procedures;
 mod proposal;
-mod psm_endpoint;
 mod transaction;
 mod utils;
 
@@ -61,10 +61,10 @@ pub use account::MultisigAccount;
 
 // Key management and hex utilities
 pub use keystore::{
-    EcdsaPsmKeyStore,
+    EcdsaGuardianKeyStore,
     FalconKeyStore,
+    GuardianKeyStore,
     KeyManager,
-    PsmKeyStore,
     // Hex utilities
     commitment_from_hex,
     ensure_hex_prefix,
@@ -86,6 +86,7 @@ pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSig
 pub use error::{MultisigError, Result};
 
 // Re-exports for convenience
+pub use guardian_shared::SignatureScheme;
 pub use miden_client::rpc::Endpoint;
 pub use miden_protocol::Word;
 pub use miden_protocol::account::AccountId;
@@ -93,4 +94,3 @@ pub use miden_protocol::asset::Asset;
 pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 pub use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 pub use miden_protocol::note::NoteId;
-pub use private_state_manager_shared::SignatureScheme;

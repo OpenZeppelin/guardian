@@ -61,7 +61,9 @@ where
 mod tests {
     use super::*;
     use miden_client::transaction::TransactionScriptTemplate;
-    use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+    use miden_confidential_contracts::multisig_guardian::{
+        MultisigGuardianBuilder, MultisigGuardianConfig,
+    };
     use miden_protocol::Felt;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStorageMode;
@@ -74,7 +76,7 @@ mod tests {
     fn build_p2id_transaction_request_uses_custom_send_script() {
         let secret_key = SecretKey::new();
         let signer_commitment = secret_key.public_key().to_commitment();
-        let account = MultisigPsmBuilder::new(MultisigPsmConfig::new(
+        let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
             1,
             vec![signer_commitment],
             Word::from([9u32, 8, 7, 6]),

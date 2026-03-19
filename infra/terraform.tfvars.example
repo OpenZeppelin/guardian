@@ -1,11 +1,11 @@
 # Required: AWS region
 aws_region = "us-east-1"
 
-# Required: ECR image URI for psm-server
+# Required: ECR image URI for guardian-server
 # After pushing to ECR, set this to the full image URI
-server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest"
+server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
-# Optional: Miden network for the deployed PSM server
+# Optional: Miden network for the deployed GUARDIAN server
 # server_network_type = "MidenTestnet"
 
 # Optional: VPC and subnet configuration
@@ -14,9 +14,9 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:late
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 
 # Optional: Postgres credentials
-# postgres_db       = "psm"
-# postgres_user     = "psm"
-# postgres_password = "psm_dev_password"
+# postgres_db       = "guardian"
+# postgres_user     = "guardian"
+# postgres_password = "guardian_dev_password"
 
 # Optional: Route 53 hosted zone ID (auto-lookup by domain name)
 # route53_zone_id = "Z1234567890ABC"
@@ -34,8 +34,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:late
 # postgres_memory = 1024
 
 # Optional: Resource naming (defaults match the original bash script)
-# cluster_name          = "psm-cluster"
-# server_service_name   = "psm-server"
-# postgres_service_name = "psm-postgres"
-# alb_name              = "psm-alb"
-# sd_namespace_name     = "psm.local"
+# cluster_name          = "guardian-cluster"
+# server_service_name   = "guardian-server"
+# postgres_service_name = "guardian-postgres"
+# alb_name              = "guardian-alb"
+# sd_namespace_name     = "guardian.local"

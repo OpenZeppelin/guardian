@@ -1,11 +1,11 @@
 use crate::delta_object::DeltaObject;
-use crate::error::PsmError;
+use crate::error::GuardianError;
+use guardian_shared::FromJson;
 use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, ecdsa_commitment_hex};
 use miden_protocol::{
     Word, crypto::dsa::ecdsa_k256_keccak::Signature, transaction::TransactionSummary,
     utils::Serializable,
 };
-use private_state_manager_shared::FromJson;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -52,7 +52,7 @@ impl MidenEcdsaSigner {
 
     pub(crate) fn ack_delta(&self, mut delta: DeltaObject) -> crate::ack::Result<DeltaObject> {
         let tx_summary = TransactionSummary::from_json(&delta.delta_payload).map_err(|e| {
-            PsmError::InvalidDelta(format!("Failed to deserialize TransactionSummary: {e}"))
+            GuardianError::InvalidDelta(format!("Failed to deserialize TransactionSummary: {e}"))
         })?;
 
         let tx_commitment = tx_summary.to_commitment();
@@ -68,8 +68,10 @@ mod tests {
     use miden_keystore::EcdsaKeyStore;
 
     fn create_test_signer() -> (MidenEcdsaSigner, PathBuf) {
-        let temp_dir =
-            std::env::temp_dir().join(format!("psm_test_ecdsa_signer_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "guardian_test_ecdsa_signer_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let signer = MidenEcdsaSigner::new(temp_dir.clone()).unwrap();
         (signer, temp_dir)

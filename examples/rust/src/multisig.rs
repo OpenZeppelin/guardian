@@ -8,7 +8,9 @@ use miden_client::transaction::{
 };
 use miden_client::{Client, ClientError, Deserializable, Word};
 use miden_confidential_contracts::masm_builder::get_multisig_library;
-use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+use miden_confidential_contracts::multisig_guardian::{
+    MultisigGuardianBuilder, MultisigGuardianConfig,
+};
 use miden_protocol::account::auth::Signature;
 use miden_protocol::account::AccountId;
 use miden_protocol::{Felt, Hasher};
@@ -60,17 +62,17 @@ impl From<TransactionExecutorError> for MultisigError {
     }
 }
 
-/// Create a multisig PSM account with 2-of-2 threshold
-pub fn create_multisig_psm_account(
+/// Create a multisig GUARDIAN account with 2-of-2 threshold
+pub fn create_multisig_guardian_account(
     client1_pubkey_hex: &str,
     client2_pubkey_hex: &str,
-    psm_server_pubkey_hex: &str,
+    guardian_server_pubkey_hex: &str,
     init_seed: [u8; 32],
 ) -> Account {
-    let psm_pubkey_bytes =
-        hex::decode(&psm_server_pubkey_hex[2..]).expect("Failed to decode PSM pubkey");
-    let psm_commitment =
-        Word::read_from_bytes(&psm_pubkey_bytes).expect("Failed to convert PSM commitment to Word");
+    let guardian_pubkey_bytes =
+        hex::decode(&guardian_server_pubkey_hex[2..]).expect("Failed to decode GUARDIAN pubkey");
+    let guardian_commitment = Word::read_from_bytes(&guardian_pubkey_bytes)
+        .expect("Failed to convert GUARDIAN commitment to Word");
 
     let client1_pubkey_bytes =
         hex::decode(&client1_pubkey_hex[2..]).expect("Failed to decode client1 pubkey");
@@ -82,16 +84,16 @@ pub fn create_multisig_psm_account(
     let client2_commitment = Word::read_from_bytes(&client2_pubkey_bytes)
         .expect("Failed to convert client2 commitment to Word");
 
-    let config = MultisigPsmConfig::new(
+    let config = MultisigGuardianConfig::new(
         2, // 2-of-2 threshold
         vec![client1_commitment, client2_commitment],
-        psm_commitment,
+        guardian_commitment,
     );
 
-    MultisigPsmBuilder::new(config)
+    MultisigGuardianBuilder::new(config)
         .with_seed(init_seed)
         .build()
-        .expect("Failed to build MultisigPsm account")
+        .expect("Failed to build MultisigGuardian account")
 }
 
 #[allow(dead_code)]

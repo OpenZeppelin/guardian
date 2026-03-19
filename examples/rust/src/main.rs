@@ -18,13 +18,13 @@ use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RawFalconSignature;
 
-use private_state_manager_client::auth_config::AuthType;
-use private_state_manager_client::{
-    verify_commitment_signature, AuthConfig, ClientResult, FalconKeyStore, MidenFalconRpoAuth,
-    PsmClient,
+use guardian_client::auth_config::AuthType;
+use guardian_client::{
+    verify_commitment_signature, AuthConfig, ClientResult, FalconKeyStore, GuardianClient,
+    MidenFalconRpoAuth,
 };
-use private_state_manager_shared::hex::FromHex;
-use private_state_manager_shared::ToJson;
+use guardian_shared::hex::FromHex;
+use guardian_shared::ToJson;
 
 use tempfile::TempDir;
 
@@ -35,8 +35,8 @@ enum Network {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "psm-rust-example")]
-#[command(about = "PSM Multi-Client E2E Flow Example")]
+#[command(name = "guardian-rust-example")]
+#[command(about = "GUARDIAN Multi-Client E2E Flow Example")]
 struct Args {
     /// Network to connect to
     #[arg(long, value_enum, default_value = "local")]
@@ -99,7 +99,7 @@ async fn add_account_and_sync(
 async fn main() -> ClientResult<()> {
     let args = Args::parse();
 
-    println!("=== PSM Multi-Client E2E Flow ===\n");
+    println!("=== GUARDIAN Multi-Client E2E Flow ===\n");
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let keystore =
@@ -118,11 +118,11 @@ async fn main() -> ClientResult<()> {
 
     let miden_endpoint = match args.network {
         Network::Local => {
-            println!("Step 1: Connect to PSM and Miden node (local)...");
+            println!("Step 1: Connect to GUARDIAN and Miden node (local)...");
             Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
         }
         Network::Testnet => {
-            println!("Step 1: Connect to PSM and Miden node (testnet)...");
+            println!("Step 1: Connect to GUARDIAN and Miden node (testnet)...");
             Endpoint::new(
                 "https".to_string(),
                 "rpc.testnet.miden.io".to_string(),
@@ -133,19 +133,19 @@ async fn main() -> ClientResult<()> {
 
     let client1_signer = Arc::new(FalconKeyStore::new(client1_secret_key.clone()));
 
-    let psm_endpoint = "http://localhost:50051".to_string();
-    let mut psm_client1 = match PsmClient::connect(psm_endpoint.clone()).await {
+    let guardian_endpoint = "http://localhost:50051".to_string();
+    let mut guardian_client1 = match GuardianClient::connect(guardian_endpoint.clone()).await {
         Ok(client) => client.with_signer(client1_signer),
         Err(e) => {
-            println!("  ✗ Failed to connect to PSM: {}", e);
-            println!("  Hint: Start PSM server with: cargo run --package private-state-manager-server --bin server");
+            println!("  ✗ Failed to connect to GUARDIAN: {}", e);
+            println!("  Hint: Start GUARDIAN server with: cargo run --package guardian-server --bin server");
             return Ok(());
         }
     };
 
-    let server_commitment_hex = match psm_client1.get_pubkey(None).await {
+    let server_commitment_hex = match guardian_client1.get_pubkey(None).await {
         Ok((commitment, _)) => {
-            println!("  ✓ Connected to PSM server");
+            println!("  ✓ Connected to GUARDIAN server");
             println!("  ✓ Server commitment: {}...", &commitment[..18]);
             commitment
         }
@@ -198,11 +198,11 @@ async fn main() -> ClientResult<()> {
 
     println!();
 
-    println!("Step 2: Creating multisig PSM account...");
+    println!("Step 2: Creating multisig GUARDIAN account...");
 
     // Use random seed to avoid conflicts with existing accounts
     let init_seed: [u8; 32] = rand::random();
-    let account = multisig::create_multisig_psm_account(
+    let account = multisig::create_multisig_guardian_account(
         &client1_commitment_hex,
         &client2_commitment_hex,
         &server_commitment_hex,
@@ -211,7 +211,7 @@ async fn main() -> ClientResult<()> {
 
     let account_id = account.id();
     println!("  ✓ Account ID: {}", account_id);
-    println!("  ✓ Multisig: 2-of-2 with PSM");
+    println!("  ✓ Multisig: 2-of-2 with GUARDIAN");
 
     if let Err(e) = add_account_and_sync(&mut miden_client, &account).await {
         println!("  ✗ Failed to add account to Miden client: {}", e);
@@ -220,7 +220,7 @@ async fn main() -> ClientResult<()> {
     println!("  ✓ Account synced with Miden node");
     println!();
 
-    println!("Step 3: Client 1 - Configure account in PSM...");
+    println!("Step 3: Client 1 - Configure account in GUARDIAN...");
 
     let auth_config = AuthConfig {
         auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
@@ -240,7 +240,7 @@ async fn main() -> ClientResult<()> {
         "account_id": account_id.to_string(),
     });
 
-    match psm_client1
+    match guardian_client1
         .configure(&account_id, auth_config, initial_state)
         .await
     {
@@ -254,16 +254,16 @@ async fn main() -> ClientResult<()> {
     };
     println!();
 
-    println!("Step 4: Client 2 - Pull state from PSM...");
+    println!("Step 4: Client 2 - Pull state from GUARDIAN...");
 
     let client2_signer = Arc::new(FalconKeyStore::new(client2_secret_key.clone()));
 
-    let mut psm_client2 = PsmClient::connect(psm_endpoint.clone())
+    let mut guardian_client2 = GuardianClient::connect(guardian_endpoint.clone())
         .await
         .expect("Failed to connect")
         .with_signer(client2_signer);
 
-    let retrieved_account = match psm_client2.get_state(&account_id).await {
+    let retrieved_account = match guardian_client2.get_state(&account_id).await {
         Ok(response) => {
             println!("  ✓ {}", response.message);
             if let Some(state) = response.state {
@@ -354,12 +354,12 @@ async fn main() -> ClientResult<()> {
         };
         println!();
 
-        println!("Step 6: Push transaction summary to PSM...");
+        println!("Step 6: Push transaction summary to GUARDIAN...");
 
         let tx_summary_json = tx_summary.to_json();
         let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
 
-        let (_new_commitment, ack_sig) = match psm_client2
+        let (_new_commitment, ack_sig) = match guardian_client2
             .push_delta(
                 &account_id,
                 account.nonce().as_int(),
@@ -419,7 +419,7 @@ async fn main() -> ClientResult<()> {
                 let ack_signature = match RawFalconSignature::from_hex(&ack_sig_with_prefix) {
                     Ok(sig) => AccountSignature::from(sig),
                     Err(err) => {
-                        println!("  ✗ Failed to parse PSM signature: {}", err);
+                        println!("  ✗ Failed to parse GUARDIAN signature: {}", err);
                         return Ok(());
                     }
                 };
@@ -478,7 +478,7 @@ async fn main() -> ClientResult<()> {
                 );
             }
             Ok(false) => {
-                println!("  ✗ Invalid PSM signature");
+                println!("  ✗ Invalid GUARDIAN signature");
             }
             Err(e) => {
                 println!("  ✗ Verification error: {}", e);

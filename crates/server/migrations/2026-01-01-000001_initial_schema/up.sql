@@ -1,4 +1,4 @@
--- Initial schema for Private State Manager Postgres backend
+-- Initial schema for Guardian Postgres backend
 
 -- Account states table
 CREATE TABLE states (

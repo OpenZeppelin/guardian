@@ -12,7 +12,7 @@ import {
   type ProcedureName,
   type SignatureScheme,
 } from '@openzeppelin/miden-multisig-client';
-import { PsmHttpError } from '@openzeppelin/psm-client';
+import { GuardianHttpError } from '@openzeppelin/guardian-client';
 
 import { WebClient, AccountId } from '@miden-sdk/miden-sdk';
 
@@ -35,8 +35,8 @@ import {
   resolveLocalSigner,
   resolveMidenWalletSigner,
   resolveParaSigner,
-  registerOnPsm,
-  switchMultisigPsm,
+  registerOnGuardian,
+  switchMultisigGuardian,
   fetchAccountState,
   syncAll,
   verifyStateCommitment,
@@ -46,14 +46,14 @@ import {
   createUpdateProcedureThresholdProposal,
   createConsumeNotesProposal,
   createP2idProposal,
-  createSwitchPsmProposal,
+  createSwitchGuardianProposal,
   signProposal,
   executeProposal,
   exportProposalToJson,
   signProposalOffline,
   importProposal,
 } from '@/lib/multisigApi';
-import { MIDEN_RPC_URL, PSM_ENDPOINT } from '@/config';
+import { MIDEN_RPC_URL, GUARDIAN_ENDPOINT } from '@/config';
 import { useParaSession } from '@/hooks/useParaSession';
 import { useMidenWallet } from '@/hooks/useMidenWallet';
 import type { SignerInfo } from '@/types';
@@ -146,11 +146,11 @@ export default function App() {
   const [pendingCandidateWarning, setPendingCandidateWarning] = useState<string | null>(null);
   const [walletSource, setWalletSource] = useState<WalletSource>('local');
 
-  // PSM state
-  const [psmUrl, setPsmUrl] = useState(PSM_ENDPOINT);
-  const [psmStatus, setPsmStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
-  const [psmPubkey, setPsmPubkey] = useState('');
-  const [psmState, setPsmState] = useState<AccountState | null>(null);
+  // GUARDIAN state
+  const [guardianUrl, setGuardianUrl] = useState(GUARDIAN_ENDPOINT);
+  const [guardianStatus, setGuardianStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
+  const [guardianPubkey, setGuardianPubkey] = useState('');
+  const [guardianState, setGuardianState] = useState<AccountState | null>(null);
 
   // Dialog state
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -160,7 +160,7 @@ export default function App() {
 
   // Operation state
   const [creating, setCreating] = useState(false);
-  const [registeringOnPsm, setRegisteringOnPsm] = useState(false);
+  const [registeringOnGuardian, setRegisteringOnGuardian] = useState(false);
   const [loadingAccount, setLoadingAccount] = useState(false);
   const [detectedConfig, setDetectedConfig] = useState<DetectedMultisigConfig | null>(null);
   const [syncingState, setSyncingState] = useState(false);
@@ -289,7 +289,7 @@ export default function App() {
 
         const { state, config } = await fetchAccountState(reloaded);
         setDetectedConfig(config);
-        setPsmState(state);
+        setGuardianState(state);
 
         const { proposals: synced, notes } = await syncAll(reloaded);
         setProposals(synced);
@@ -312,10 +312,10 @@ export default function App() {
     ],
   );
 
-  // Connect to PSM server
-  const connectToPsm = useCallback(
+  // Connect to GUARDIAN server
+  const connectToGuardian = useCallback(
     async (url: string, client?: WebClient): Promise<void> => {
-      setPsmStatus('connecting');
+      setGuardianStatus('connecting');
       setError(null);
       try {
         const wc = client ?? webClient;
@@ -323,37 +323,37 @@ export default function App() {
           // Fallback when no WebClient - just fetch pubkey
           const response = await fetch(`${url}/pubkey`);
           const data = await response.json();
-          setPsmPubkey(data.commitment || '');
-          setPsmStatus('connected');
+          setGuardianPubkey(data.commitment || '');
+          setGuardianStatus('connected');
           return;
         }
 
-        const { client: msClient, psmPubkey: pubkey } = await initMultisigClient(
+        const { client: msClient, guardianPubkey: pubkey } = await initMultisigClient(
           wc,
           url,
           MIDEN_RPC_URL
         );
-        setPsmPubkey(pubkey);
+        setGuardianPubkey(pubkey);
         setMultisigClient(msClient);
-        setPsmStatus('connected');
+        setGuardianStatus('connected');
 
-        // If there's an active multisig, try to load or register on the new PSM
-        if (multisig && psmState?.stateDataBase64) {
-          setRegisteringOnPsm(true);
+        // If there's an active multisig, try to load or register on the new GUARDIAN
+        if (multisig && guardianState?.stateDataBase64) {
+          setRegisteringOnGuardian(true);
           try {
             const signerContext = resolveSignerContext(walletSource);
-            // First, try to load from the new PSM
+            // First, try to load from the new GUARDIAN
             const reloadedMs = await loadMultisigAccount(msClient, multisig.accountId, signerContext);
             setMultisig(reloadedMs);
 
             const { state, config } = await fetchAccountState(reloadedMs);
-            setPsmState(state);
+            setGuardianState(state);
             setDetectedConfig(config);
 
-            toast.success('Account loaded from PSM');
+            toast.success('Account loaded from GUARDIAN');
           } catch (loadErr) {
-            // Check if it's a 404 (account not found on this PSM)
-            const isNotFound = loadErr instanceof PsmHttpError && loadErr.status === 404;
+            // Check if it's a 404 (account not found on this GUARDIAN)
+            const isNotFound = loadErr instanceof GuardianHttpError && loadErr.status === 404;
 
             if (isNotFound) {
               try {
@@ -365,32 +365,32 @@ export default function App() {
                 const freshStateBytes = currentAccount.serialize();
                 const freshStateBase64 = btoa(String.fromCharCode(...freshStateBytes));
 
-                await switchMultisigPsm(msClient, multisig, freshStateBase64);
+                await switchMultisigGuardian(msClient, multisig, freshStateBase64);
 
                 const { state, config } = await fetchAccountState(multisig);
-                setPsmState(state);
+                setGuardianState(state);
                 setDetectedConfig(config);
 
-                toast.success('Account registered on new PSM');
+                toast.success('Account registered on new GUARDIAN');
               } catch (registerErr) {
-                setError(`Failed to register account on new PSM: ${formatError(registerErr)}`);
+                setError(`Failed to register account on new GUARDIAN: ${formatError(registerErr)}`);
               }
             } else {
-              setError(`Failed to load account from PSM: ${formatError(loadErr)}`);
+              setError(`Failed to load account from GUARDIAN: ${formatError(loadErr)}`);
             }
           } finally {
-            setRegisteringOnPsm(false);
+            setRegisteringOnGuardian(false);
           }
         }
       } catch (err) {
         const msg = formatError(err);
-        console.error('Failed to connect to PSM:', msg);
-        setPsmStatus('error');
-        setPsmPubkey('');
-        setError(`Failed to connect to PSM: ${msg}`);
+        console.error('Failed to connect to GUARDIAN:', msg);
+        setGuardianStatus('error');
+        setGuardianPubkey('');
+        setError(`Failed to connect to GUARDIAN: ${msg}`);
       }
     },
-    [webClient, multisig, psmState, resolveSignerContext, walletSource]
+    [webClient, multisig, guardianState, resolveSignerContext, walletSource]
   );
 
   // Initialize on mount
@@ -403,7 +403,7 @@ export default function App() {
         const client = await createWebClient();
         setWebClient(client);
 
-        await connectToPsm(psmUrl, client);
+        await connectToGuardian(guardianUrl, client);
 
         setGeneratingSigner(true);
         const signerInfo = await initSigner(client);
@@ -492,12 +492,12 @@ export default function App() {
     signatureScheme: SignatureScheme = activeWalletScheme ?? 'falcon',
   ) => {
     if (!multisigClient) {
-      setError('Client not initialized. Try reconnecting to PSM.');
+      setError('Client not initialized. Try reconnecting to GUARDIAN.');
       return;
     }
-    if (!psmPubkey) {
-      setPsmStatus('error');
-      setError('Missing PSM commitment. Reconnect to the PSM endpoint and try again.');
+    if (!guardianPubkey) {
+      setGuardianStatus('error');
+      setError('Missing GUARDIAN commitment. Reconnect to the GUARDIAN endpoint and try again.');
       return;
     }
 
@@ -505,13 +505,13 @@ export default function App() {
     setError(null);
     try {
       const signerContext = resolveSignerContext(walletSource, signatureScheme);
-      const { commitment: schemePsmCommitment } = await multisigClient.psmClient.getPubkey(signatureScheme);
+      const { commitment: schemeGuardianCommitment } = await multisigClient.guardianClient.getPubkey(signatureScheme);
       const ms = await createMultisigAccount(
         multisigClient,
         signerContext,
         otherSignerCommitments,
         threshold,
-        schemePsmCommitment,
+        schemeGuardianCommitment,
         procedureThresholds,
         signatureScheme,
       );
@@ -525,19 +525,19 @@ export default function App() {
       );
       setMultisig(ms);
 
-      // Auto-register on PSM
-      setRegisteringOnPsm(true);
+      // Auto-register on GUARDIAN
+      setRegisteringOnGuardian(true);
       try {
-        await registerOnPsm(ms);
+        await registerOnGuardian(ms);
 
         // Fetch account state to populate detectedConfig with procedure thresholds
         const { state, config } = await fetchAccountState(ms);
-        setPsmState(state);
+        setGuardianState(state);
         setDetectedConfig(config);
-      } catch (psmErr) {
-        setError(`Created but failed to register on PSM: ${psmErr instanceof Error ? psmErr.message : 'Unknown'}`);
+      } catch (guardianErr) {
+        setError(`Created but failed to register on GUARDIAN: ${guardianErr instanceof Error ? guardianErr.message : 'Unknown'}`);
       } finally {
-        setRegisteringOnPsm(false);
+        setRegisteringOnGuardian(false);
       }
 
       setCreateDialogOpen(false);
@@ -548,18 +548,18 @@ export default function App() {
     }
   };
 
-  // Load multisig from PSM
+  // Load multisig from GUARDIAN
   const handleLoad = async (
     accountId: string,
     signatureScheme: SignatureScheme = activeWalletScheme ?? 'falcon',
   ) => {
     if (!multisigClient) {
-      setError('Client not initialized. Try reconnecting to PSM.');
+      setError('Client not initialized. Try reconnecting to GUARDIAN.');
       return;
     }
-    if (!psmPubkey) {
-      setPsmStatus('error');
-      setError('Not connected to PSM. Check the endpoint and try again.');
+    if (!guardianPubkey) {
+      setGuardianStatus('error');
+      setError('Not connected to GUARDIAN. Check the endpoint and try again.');
       return;
     }
 
@@ -590,13 +590,13 @@ export default function App() {
 
       const { state, config } = await fetchAccountState(ms);
       setDetectedConfig(config);
-      setPsmState(state);
+      setGuardianState(state);
 
       setLoadDialogOpen(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown';
       if (message.includes('404') || message.includes('not found')) {
-        setError('Account not found on PSM');
+        setError('Account not found on GUARDIAN');
       } else {
         setError(`Failed to load: ${message}`);
       }
@@ -625,7 +625,7 @@ export default function App() {
       }
 
       const { state, config } = await fetchAccountState(multisig);
-      setPsmState(state);
+      setGuardianState(state);
       setDetectedConfig(config);
 
       const { proposals: synced, notes } = await syncAll(multisig);
@@ -767,13 +767,13 @@ export default function App() {
     );
   };
 
-  // Create switch PSM proposal
-  const handleCreateSwitchPsmProposal = async (newEndpoint: string, newPubkey: string) => {
+  // Create switch GUARDIAN proposal
+  const handleCreateSwitchGuardianProposal = async (newEndpoint: string, newPubkey: string) => {
     if (!multisig) return;
 
     await runProposalCreation(
-      () => createSwitchPsmProposal(multisig, newEndpoint, newPubkey),
-      'Switch PSM proposal created',
+      () => createSwitchGuardianProposal(multisig, newEndpoint, newPubkey),
+      'Switch GUARDIAN proposal created',
     );
   };
 
@@ -868,7 +868,7 @@ export default function App() {
   // Disconnect
   const handleDisconnect = () => {
     setMultisig(null);
-    setPsmState(null);
+    setGuardianState(null);
     setProposals([]);
     setError(null);
     setVerificationStatus(null);
@@ -881,7 +881,7 @@ export default function App() {
     setTimeout(() => window.location.reload(), 500);
   };
 
-  const ready = !!webClient && !!signer && !!multisigClient && !!psmPubkey && psmStatus === 'connected';
+  const ready = !!webClient && !!signer && !!multisigClient && !!guardianPubkey && guardianStatus === 'connected';
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -890,10 +890,10 @@ export default function App() {
         ecdsaCommitment={ecdsaCommitment}
         activeScheme={activeScheme}
         generatingSigner={generatingSigner}
-        psmStatus={psmStatus}
-        psmUrl={psmUrl}
-        onPsmUrlChange={setPsmUrl}
-        onReconnect={(url) => connectToPsm(url)}
+        guardianStatus={guardianStatus}
+        guardianUrl={guardianUrl}
+        onGuardianUrlChange={setGuardianUrl}
+        onReconnect={(url) => connectToGuardian(url)}
         walletSource={walletSource}
         onWalletSourceChange={handleWalletSourceChange}
         paraConnected={paraSession.connected}
@@ -921,7 +921,7 @@ export default function App() {
           <MultisigDashboard
             multisig={multisig}
             signatureScheme={activeWalletScheme ?? signer.activeScheme}
-            psmState={psmState}
+            guardianState={guardianState}
             proposals={proposals}
             consumableNotes={consumableNotes}
             vaultBalances={detectedConfig?.vaultBalances ?? []}
@@ -943,7 +943,7 @@ export default function App() {
             onCreateUpdateProcedureThreshold={handleCreateUpdateProcedureThresholdProposal}
             onCreateConsumeNotes={handleCreateConsumeNotesProposal}
             onCreateP2id={handleCreateP2idProposal}
-            onCreateSwitchPsm={handleCreateSwitchPsmProposal}
+            onCreateSwitchGuardian={handleCreateSwitchGuardianProposal}
             onSync={handleSync}
             onVerify={handleVerifyState}
             onSignProposal={handleSignProposal}
@@ -966,7 +966,7 @@ export default function App() {
             ecdsaCommitment={signer.ecdsa.commitment}
             defaultScheme={activeWalletScheme ?? signer.activeScheme}
             creating={creating}
-            registeringOnPsm={registeringOnPsm}
+            registeringOnGuardian={registeringOnGuardian}
             onCreate={handleCreate}
             walletSource={walletSource}
             walletCommitment={activeWalletCommitment}

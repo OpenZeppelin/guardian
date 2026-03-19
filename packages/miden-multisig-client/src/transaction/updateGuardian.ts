@@ -8,49 +8,49 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import { PSM_ECDSA_MASM, PSM_MASM } from '../account/masm/auth.js';
+import { GUARDIAN_ECDSA_MASM, GUARDIAN_MASM } from '../account/masm/auth.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-function buildUpdatePsmScript(
+function buildUpdateGuardianScript(
   webClient: WebClient,
   signatureScheme: SignatureScheme,
 ): TransactionScript {
   const libBuilder = webClient.createCodeBuilder();
-  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
-  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
-  const psmProcedure = signatureScheme === 'ecdsa' ? 'psm_ecdsa' : 'psm';
-  const psmLib = libBuilder.buildLibrary(psmLibraryPath, psmMasm);
-  libBuilder.linkDynamicLibrary(psmLib);
+  const guardianLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::guardian_ecdsa' : 'openzeppelin::guardian';
+  const guardianMasm = signatureScheme === 'ecdsa' ? GUARDIAN_ECDSA_MASM : GUARDIAN_MASM;
+  const guardianProcedure = signatureScheme === 'ecdsa' ? 'guardian_ecdsa' : 'guardian';
+  const guardianLib = libBuilder.buildLibrary(guardianLibraryPath, guardianMasm);
+  libBuilder.linkDynamicLibrary(guardianLib);
 
   const scriptSource = `
-use openzeppelin::${psmProcedure}
+use openzeppelin::${guardianProcedure}
 
 begin
     adv.push_mapval
     dropw
-    call.${psmProcedure}::update_psm_public_key
+    call.${guardianProcedure}::update_guardian_public_key
 end
   `;
 
   return libBuilder.compileTxScript(scriptSource);
 }
 
-export async function buildUpdatePsmTransactionRequest(
+export async function buildUpdateGuardianTransactionRequest(
   webClient: WebClient,
-  newPsmPubkey: string,
+  newGuardianPubkey: string,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   const signatureScheme = options.signatureScheme ?? 'falcon';
-  const script = buildUpdatePsmScript(webClient, signatureScheme);
+  const script = buildUpdateGuardianScript(webClient, signatureScheme);
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  const pubkeyWordForAdvice = WordType.fromHex(normalizeHexWord(newPsmPubkey));
-  const pubkeyWordForFelts = WordType.fromHex(normalizeHexWord(newPsmPubkey));
-  const pubkeyWordForScript = WordType.fromHex(normalizeHexWord(newPsmPubkey));
+  const pubkeyWordForAdvice = WordType.fromHex(normalizeHexWord(newGuardianPubkey));
+  const pubkeyWordForFelts = WordType.fromHex(normalizeHexWord(newGuardianPubkey));
+  const pubkeyWordForScript = WordType.fromHex(normalizeHexWord(newGuardianPubkey));
 
   const advice = new AdviceMap();
   advice.insert(pubkeyWordForAdvice, new FeltArray(pubkeyWordForFelts.toFelts()));

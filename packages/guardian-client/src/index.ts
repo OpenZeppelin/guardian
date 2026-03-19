@@ -1,4 +1,4 @@
-export { PsmHttpClient, PsmHttpError } from './http.js';
+export { GuardianHttpClient, GuardianHttpError } from './http.js';
 export { RequestAuthPayload } from './auth-request.js';
 
 export type {

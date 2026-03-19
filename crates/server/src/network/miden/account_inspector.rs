@@ -2,11 +2,11 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, StorageSlotName};
 use miden_protocol::utils::Serializable;
 
-// Storage slot names for OpenZeppelin multisig/psm components
+// Storage slot names for OpenZeppelin multisig/guardian components
 const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
 const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
-const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
-pub const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
+const OZ_GUARDIAN_SELECTOR: &str = "openzeppelin::guardian::selector";
+pub const OZ_GUARDIAN_PUBLIC_KEY: &str = "openzeppelin::guardian::public_key";
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -85,25 +85,25 @@ impl<'a> MidenAccountInspector<'a> {
         signer_pubkeys.iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account has PSM auth enabled by checking the PSM selector storage slot.
+    /// Check if the account has GUARDIAN auth enabled by checking the GUARDIAN selector storage slot.
     ///
-    /// PSM-enabled accounts have the PSM component which stores a selector.
-    /// PSM_ON = [1, 0, 0, 0].
-    pub fn has_psm_auth(&self) -> bool {
-        let Some(selector_value) = self.get_item_by_name(OZ_PSM_SELECTOR) else {
+    /// GUARDIAN-enabled accounts have the GUARDIAN component which stores a selector.
+    /// GUARDIAN_ON = [1, 0, 0, 0].
+    pub fn has_guardian_auth(&self) -> bool {
+        let Some(selector_value) = self.get_item_by_name(OZ_GUARDIAN_SELECTOR) else {
             return false;
         };
 
-        // PSM_ON value indicating PSM is enabled
-        let psm_on = Word::from([1u32, 0, 0, 0]);
-        selector_value == psm_on
+        // GUARDIAN_ON value indicating GUARDIAN is enabled
+        let guardian_on = Word::from([1u32, 0, 0, 0]);
+        selector_value == guardian_on
     }
 
-    /// Extract PSM public key commitment from the OpenZeppelin PSM public key map.
-    /// Requires the exact slot name `openzeppelin::psm::public_key`.
-    pub fn extract_psm_public_key(&self) -> Option<String> {
+    /// Extract GUARDIAN public key commitment from the OpenZeppelin GUARDIAN public key map.
+    /// Requires the exact slot name `openzeppelin::guardian::public_key`.
+    pub fn extract_guardian_public_key(&self) -> Option<String> {
         let key_zero = Word::from([0u32, 0, 0, 0]);
-        let value = self.get_map_item_by_name(OZ_PSM_PUBLIC_KEY, key_zero)?;
+        let value = self.get_map_item_by_name(OZ_GUARDIAN_PUBLIC_KEY, key_zero)?;
 
         if value == Word::default() {
             return None;
@@ -116,12 +116,12 @@ impl<'a> MidenAccountInspector<'a> {
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use guardian_shared::FromJson;
     use miden_protocol::account::{
         AccountCode, AccountId, AccountIdVersion, AccountStorage, AccountStorageMode, AccountType,
         StorageMap, StorageSlot, StorageSlotName,
     };
     use miden_protocol::asset::AssetVault;
-    use private_state_manager_shared::FromJson;
 
     fn word(v: u32) -> Word {
         Word::from([v, 0, 0, 0])
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_psm_auth() {
+    fn test_has_guardian_auth() {
         let fixture_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
                 .expect("Failed to parse fixture");
@@ -214,8 +214,8 @@ mod tests {
         let inspector = MidenAccountInspector::new(&account);
 
         assert!(
-            inspector.has_psm_auth(),
-            "Fixture account should have PSM auth enabled (auth_tx_falcon512_rpo_multisig procedure)"
+            inspector.has_guardian_auth(),
+            "Fixture account should have GUARDIAN auth enabled (auth_tx_falcon512_rpo_multisig procedure)"
         );
     }
 
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_psm_public_key() {
+    fn test_extract_guardian_public_key() {
         let fixture_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
                 .expect("Failed to parse fixture");
@@ -242,37 +242,37 @@ mod tests {
         let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
         let inspector = MidenAccountInspector::new(&account);
 
-        let psm_pubkey = inspector.extract_psm_public_key();
+        let guardian_pubkey = inspector.extract_guardian_public_key();
         assert!(
-            psm_pubkey.is_some(),
-            "Expected PSM public key from openzeppelin::psm::public_key slot"
+            guardian_pubkey.is_some(),
+            "Expected GUARDIAN public key from openzeppelin::guardian::public_key slot"
         );
         assert!(
-            psm_pubkey.unwrap().starts_with("0x"),
-            "PSM public key should be hex format"
+            guardian_pubkey.unwrap().starts_with("0x"),
+            "GUARDIAN public key should be hex format"
         );
     }
 
     #[test]
-    fn test_extract_psm_public_key_empty_value() {
+    fn test_extract_guardian_public_key_empty_value() {
         let fixture_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
                 .expect("Failed to parse fixture");
 
         let mut account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
-        let slot_name =
-            StorageSlotName::new(OZ_PSM_PUBLIC_KEY).expect("Failed to parse PSM public key slot");
+        let slot_name = StorageSlotName::new(OZ_GUARDIAN_PUBLIC_KEY)
+            .expect("Failed to parse GUARDIAN public key slot");
         let key_zero = Word::from([0u32, 0, 0, 0]);
 
         account
             .storage_mut()
             .set_map_item(&slot_name, key_zero, Word::default())
-            .expect("Failed to overwrite PSM public key value");
+            .expect("Failed to overwrite GUARDIAN public key value");
 
         let inspector = MidenAccountInspector::new(&account);
         assert!(
-            inspector.extract_psm_public_key().is_none(),
-            "Expected None for empty/default PSM public key value"
+            inspector.extract_guardian_public_key().is_none(),
+            "Expected None for empty/default GUARDIAN public key value"
         );
     }
 

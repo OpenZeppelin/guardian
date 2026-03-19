@@ -1,7 +1,7 @@
-//! MultisigPsm Account Builder
+//! MultisigGuardian Account Builder
 //!
-//! This module provides a high-level API for creating accounts with multisig + PSM authentication.
-//! It serves as the single source of truth for MultisigPsm account creation across the codebase.
+//! This module provides a high-level API for creating accounts with multisig + GUARDIAN authentication.
+//! It serves as the single source of truth for MultisigGuardian account creation across the codebase.
 
 use anyhow::{Result, anyhow};
 use miden_protocol::{
@@ -13,20 +13,22 @@ use miden_protocol::{
 };
 use miden_standards::account::wallets::BasicWallet;
 
-use crate::masm_builder::{build_multisig_psm_component, build_multisig_psm_ecdsa_component};
-use private_state_manager_shared::SignatureScheme;
+use crate::masm_builder::{
+    build_multisig_guardian_component, build_multisig_guardian_ecdsa_component,
+};
+use guardian_shared::SignatureScheme;
 
-/// Configuration for creating a MultisigPsm account.
+/// Configuration for creating a MultisigGuardian account.
 #[derive(Debug, Clone)]
-pub struct MultisigPsmConfig {
+pub struct MultisigGuardianConfig {
     /// The minimum number of signatures required to authorize a transaction.
     pub threshold: u32,
     /// Public key commitments of all signers (as Words).
     pub signer_commitments: Vec<Word>,
-    /// PSM public key commitment.
-    pub psm_commitment: Word,
-    /// Whether PSM verification is enabled (true = ON, false = OFF).
-    pub psm_enabled: bool,
+    /// GUARDIAN public key commitment.
+    pub guardian_commitment: Word,
+    /// Whether GUARDIAN verification is enabled (true = ON, false = OFF).
+    pub guardian_enabled: bool,
     /// Signature scheme for the account (Falcon or ECDSA).
     pub signature_scheme: SignatureScheme,
     /// Account storage mode (defaults to Private).
@@ -36,33 +38,33 @@ pub struct MultisigPsmConfig {
     pub proc_threshold_overrides: Vec<(Word, u32)>,
 }
 
-impl MultisigPsmConfig {
-    /// Creates a new MultisigPsm configuration.
+impl MultisigGuardianConfig {
+    /// Creates a new MultisigGuardian configuration.
     ///
     /// # Arguments
     /// * `threshold` - Minimum number of signatures required
     /// * `signer_commitments` - Public key commitments of all signers
-    /// * `psm_commitment` - PSM server public key commitment
+    /// * `guardian_commitment` - GUARDIAN server public key commitment
     ///
     /// # Example
     /// ```ignore
-    /// let config = MultisigPsmConfig::new(2, vec![pk1, pk2, pk3], psm_pk);
+    /// let config = MultisigGuardianConfig::new(2, vec![pk1, pk2, pk3], guardian_pk);
     /// ```
-    pub fn new(threshold: u32, signer_commitments: Vec<Word>, psm_commitment: Word) -> Self {
+    pub fn new(threshold: u32, signer_commitments: Vec<Word>, guardian_commitment: Word) -> Self {
         Self {
             threshold,
             signer_commitments,
-            psm_commitment,
-            psm_enabled: true,
+            guardian_commitment,
+            guardian_enabled: true,
             signature_scheme: SignatureScheme::Falcon,
             storage_mode: AccountStorageMode::Private,
             proc_threshold_overrides: Vec::new(),
         }
     }
 
-    /// Sets whether PSM verification is enabled.
-    pub fn with_psm_enabled(mut self, enabled: bool) -> Self {
-        self.psm_enabled = enabled;
+    /// Sets whether GUARDIAN verification is enabled.
+    pub fn with_guardian_enabled(mut self, enabled: bool) -> Self {
+        self.guardian_enabled = enabled;
         self
     }
 
@@ -85,9 +87,9 @@ impl MultisigPsmConfig {
     }
 }
 
-/// Builder for creating MultisigPsm accounts.
+/// Builder for creating MultisigGuardian accounts.
 ///
-/// This builder provides a fluent API for creating accounts with multisig + PSM authentication.
+/// This builder provides a fluent API for creating accounts with multisig + GUARDIAN authentication.
 ///
 /// # Storage Layout
 ///
@@ -98,28 +100,28 @@ impl MultisigPsmConfig {
 /// - Slot 1: Signer public keys map `[index, 0, 0, 0] => COMMITMENT`
 /// - Slot 2: Executed transactions map (for replay protection)
 /// - Slot 3: Procedure threshold overrides map
-/// - Slot 4: PSM selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
-/// - Slot 5: PSM public key map `[0, 0, 0, 0] => PSM_COMMITMENT`
+/// - Slot 4: GUARDIAN selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
+/// - Slot 5: GUARDIAN public key map `[0, 0, 0, 0] => GUARDIAN_COMMITMENT`
 ///
 /// # Example
 /// ```ignore
-/// use miden_confidential_contracts::multisig_psm::{MultisigPsmConfig, MultisigPsmBuilder};
+/// use miden_confidential_contracts::multisig_guardian::{MultisigGuardianConfig, MultisigGuardianBuilder};
 ///
-/// let config = MultisigPsmConfig::new(2, vec![pk1, pk2], psm_pk);
-/// let account = MultisigPsmBuilder::new(config)
+/// let config = MultisigGuardianConfig::new(2, vec![pk1, pk2], guardian_pk);
+/// let account = MultisigGuardianBuilder::new(config)
 ///     .with_seed([0u8; 32])
 ///     .build()?;
 /// ```
-pub struct MultisigPsmBuilder {
-    config: MultisigPsmConfig,
+pub struct MultisigGuardianBuilder {
+    config: MultisigGuardianConfig,
     seed: [u8; 32],
     account_type: AccountType,
     storage_mode: AccountStorageMode,
 }
 
-impl MultisigPsmBuilder {
-    /// Creates a new MultisigPsm builder with the given configuration.
-    pub fn new(config: MultisigPsmConfig) -> Self {
+impl MultisigGuardianBuilder {
+    /// Creates a new MultisigGuardian builder with the given configuration.
+    pub fn new(config: MultisigGuardianConfig) -> Self {
         let storage_mode = config.storage_mode;
         Self {
             config,
@@ -147,10 +149,10 @@ impl MultisigPsmBuilder {
         self
     }
 
-    /// Builds the MultisigPsm account.
+    /// Builds the MultisigGuardian account.
     ///
     /// This creates a new account with:
-    /// - Multisig authentication component with PSM procedures
+    /// - Multisig authentication component with GUARDIAN procedures
     /// - BasicWallet component for asset management
     pub fn build(self) -> Result<Account> {
         self.validate_config()?;
@@ -158,8 +160,8 @@ impl MultisigPsmBuilder {
         let auth_slots = self.build_auth_slots()?;
 
         let auth_component = match self.config.signature_scheme {
-            SignatureScheme::Falcon => build_multisig_psm_component(auth_slots)?,
-            SignatureScheme::Ecdsa => build_multisig_psm_ecdsa_component(auth_slots)?,
+            SignatureScheme::Falcon => build_multisig_guardian_component(auth_slots)?,
+            SignatureScheme::Ecdsa => build_multisig_guardian_ecdsa_component(auth_slots)?,
         };
 
         let account = AccountBuilder::new(self.seed)
@@ -180,8 +182,8 @@ impl MultisigPsmBuilder {
         let auth_slots = self.build_auth_slots()?;
 
         let auth_component = match self.config.signature_scheme {
-            SignatureScheme::Falcon => build_multisig_psm_component(auth_slots)?,
-            SignatureScheme::Ecdsa => build_multisig_psm_ecdsa_component(auth_slots)?,
+            SignatureScheme::Falcon => build_multisig_guardian_component(auth_slots)?,
+            SignatureScheme::Ecdsa => build_multisig_guardian_ecdsa_component(auth_slots)?,
         };
 
         let account = AccountBuilder::new(self.seed)
@@ -265,25 +267,32 @@ impl MultisigPsmBuilder {
 
     fn build_auth_slots(&self) -> Result<Vec<StorageSlot>> {
         let mut slots = self.build_multisig_slots()?;
-        slots.extend(self.build_psm_slots()?);
+        slots.extend(self.build_guardian_slots()?);
         Ok(slots)
     }
 
-    fn build_psm_slots(&self) -> Result<Vec<StorageSlot>> {
-        // Slot 0: PSM selector
-        let psm_selector_name = StorageSlotName::new("openzeppelin::psm::selector")
+    fn build_guardian_slots(&self) -> Result<Vec<StorageSlot>> {
+        // Slot 0: GUARDIAN selector
+        let guardian_selector_name = StorageSlotName::new("openzeppelin::guardian::selector")
             .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let selector = if self.config.psm_enabled { 1u32 } else { 0u32 };
-        let slot_0 = StorageSlot::with_value(psm_selector_name, Word::from([selector, 0, 0, 0]));
+        let selector = if self.config.guardian_enabled {
+            1u32
+        } else {
+            0u32
+        };
+        let slot_0 =
+            StorageSlot::with_value(guardian_selector_name, Word::from([selector, 0, 0, 0]));
 
-        // Slot 1: PSM public key map
-        let psm_public_key_name = StorageSlotName::new("openzeppelin::psm::public_key")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let psm_key_entries = vec![(Word::from([0u32, 0, 0, 0]), self.config.psm_commitment)];
+        // Slot 1: GUARDIAN public key map
+        let guardian_public_key_name =
+            StorageSlotName::new("openzeppelin::guardian::public_key")
+                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let guardian_key_entries =
+            vec![(Word::from([0u32, 0, 0, 0]), self.config.guardian_commitment)];
         let slot_1 = StorageSlot::with_map(
-            psm_public_key_name,
-            StorageMap::with_entries(psm_key_entries)
-                .map_err(|e| anyhow!("failed to create PSM key map: {e}"))?,
+            guardian_public_key_name,
+            StorageMap::with_entries(guardian_key_entries)
+                .map_err(|e| anyhow!("failed to create GUARDIAN key map: {e}"))?,
         );
 
         Ok(vec![slot_0, slot_1])
@@ -305,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_config_creation() {
-        let config = MultisigPsmConfig::new(
+        let config = MultisigGuardianConfig::new(
             2,
             vec![mock_commitment(1), mock_commitment(2), mock_commitment(3)],
             mock_commitment(10),
@@ -313,23 +322,23 @@ mod tests {
 
         assert_eq!(config.threshold, 2);
         assert_eq!(config.signer_commitments.len(), 3);
-        assert!(config.psm_enabled);
+        assert!(config.guardian_enabled);
         assert!(config.proc_threshold_overrides.is_empty());
     }
 
     #[test]
-    fn test_config_with_psm_disabled() {
-        let config = MultisigPsmConfig::new(1, vec![mock_commitment(1)], mock_commitment(10))
-            .with_psm_enabled(false);
+    fn test_config_with_guardian_disabled() {
+        let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10))
+            .with_guardian_enabled(false);
 
-        assert!(!config.psm_enabled);
+        assert!(!config.guardian_enabled);
     }
 
     #[test]
     fn test_validation_zero_threshold() {
-        let config = MultisigPsmConfig::new(0, vec![mock_commitment(1)], mock_commitment(10));
+        let config = MultisigGuardianConfig::new(0, vec![mock_commitment(1)], mock_commitment(10));
 
-        let result = MultisigPsmBuilder::new(config).build();
+        let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(
             result
@@ -341,9 +350,9 @@ mod tests {
 
     #[test]
     fn test_validation_empty_signers() {
-        let config = MultisigPsmConfig::new(1, vec![], mock_commitment(10));
+        let config = MultisigGuardianConfig::new(1, vec![], mock_commitment(10));
 
-        let result = MultisigPsmBuilder::new(config).build();
+        let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(
             result
@@ -355,26 +364,26 @@ mod tests {
 
     #[test]
     fn test_validation_threshold_exceeds_signers() {
-        let config = MultisigPsmConfig::new(
+        let config = MultisigGuardianConfig::new(
             3,
             vec![mock_commitment(1), mock_commitment(2)],
             mock_commitment(10),
         );
 
-        let result = MultisigPsmBuilder::new(config).build();
+        let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot exceed"));
     }
 
     #[test]
     fn test_build_account() {
-        let config = MultisigPsmConfig::new(
+        let config = MultisigGuardianConfig::new(
             2,
             vec![mock_commitment(1), mock_commitment(2)],
             mock_commitment(10),
         );
 
-        let account = MultisigPsmBuilder::new(config)
+        let account = MultisigGuardianBuilder::new(config)
             .with_seed([42u8; 32])
             .build();
 

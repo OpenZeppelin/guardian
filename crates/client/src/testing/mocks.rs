@@ -1,4 +1,4 @@
-use crate::proto::state_manager_server::{StateManager, StateManagerServer};
+use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AccountState, ConfigureRequest, ConfigureResponse, DeltaObject as ProtoDeltaObject,
     GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
@@ -13,7 +13,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 #[derive(Default)]
-pub struct MockStateManagerService {
+pub struct MockGuardianService {
     get_pubkey_response: Arc<StdMutex<Option<Result<String, Status>>>>,
     configure_response: Arc<StdMutex<Option<Result<ConfigureResponse, Status>>>>,
     push_delta_proposal_response: Arc<StdMutex<Option<Result<PushDeltaProposalResponse, Status>>>>,
@@ -26,7 +26,7 @@ pub struct MockStateManagerService {
     get_state_response: Arc<StdMutex<Option<Result<GetStateResponse, Status>>>>,
 }
 
-impl MockStateManagerService {
+impl MockGuardianService {
     pub fn with_get_pubkey(self, response: Result<String, Status>) -> Self {
         *self.get_pubkey_response.lock().unwrap() = Some(response);
         self
@@ -91,7 +91,7 @@ impl MockStateManagerService {
 }
 
 #[tonic::async_trait]
-impl StateManager for MockStateManagerService {
+impl Guardian for MockGuardianService {
     async fn get_pubkey(
         &self,
         _request: Request<GetPubkeyRequest>,
@@ -296,7 +296,7 @@ impl StateManager for MockStateManagerService {
 }
 
 pub async fn start_mock_server(
-    service: MockStateManagerService,
+    service: MockGuardianService,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let addr: SocketAddr = "127.0.0.1:0".parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -305,7 +305,7 @@ pub async fn start_mock_server(
 
     tokio::spawn(async move {
         Server::builder()
-            .add_service(StateManagerServer::new(service))
+            .add_service(GuardianServer::new(service))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .ok();

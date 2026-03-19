@@ -2,7 +2,13 @@ use crate::config::{AuthScheme, RunConfig, Scenario, Transport};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use chrono::Utc;
-use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+use guardian_client::{
+    Auth, AuthConfig, ClientError, EcdsaSigner, FalconRpoSigner, GuardianClient, MidenEcdsaAuth,
+    MidenFalconRpoAuth, ToJson, auth_config::AuthType,
+};
+use miden_confidential_contracts::multisig_guardian::{
+    MultisigGuardianBuilder, MultisigGuardianConfig,
+};
 use miden_protocol::Word;
 use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
 use miden_protocol::account::{AccountDelta, AccountId};
@@ -15,10 +21,6 @@ use miden_protocol::crypto::dsa::falcon512_rpo::{
 use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
 use miden_protocol::utils::{Deserializable, Serializable};
 use miden_protocol::{Felt, ZERO};
-use private_state_manager_client::{
-    Auth, AuthConfig, ClientError, EcdsaSigner, FalconRpoSigner, MidenEcdsaAuth,
-    MidenFalconRpoAuth, PsmClient, ToJson, auth_config::AuthType,
-};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,7 +41,7 @@ pub struct UserContext {
     user_id: usize,
     auth_scheme: AuthScheme,
     signer_commitment: String,
-    psm_commitment: Word,
+    guardian_commitment: Word,
     signers_per_account: usize,
     auth: Option<Auth>,
     last_timestamp_ms: i64,
@@ -48,7 +50,7 @@ pub struct UserContext {
 }
 
 pub enum LoadClient {
-    Grpc(Box<PsmClient>),
+    Grpc(Box<GuardianClient>),
     Http(HttpClient),
 }
 
@@ -347,26 +349,26 @@ async fn ensure_http_success(response: reqwest::Response, operation: &str) -> Re
     Ok(())
 }
 
-async fn fetch_psm_commitment(config: &RunConfig) -> Result<String> {
+async fn fetch_guardian_commitment(config: &RunConfig) -> Result<String> {
     match config.transport {
         Transport::Grpc => {
-            let mut probe_client = PsmClient::connect(config.psm_endpoint.clone())
+            let mut probe_client = GuardianClient::connect(config.guardian_endpoint.clone())
                 .await
-                .with_context(|| format!("failed to connect to {}", config.psm_endpoint))?;
-            let (psm_commitment_hex, _) = probe_client
+                .with_context(|| format!("failed to connect to {}", config.guardian_endpoint))?;
+            let (guardian_commitment_hex, _) = probe_client
                 .get_pubkey(None)
                 .await
-                .context("failed to read PSM commitment via get_pubkey")?;
-            Ok(psm_commitment_hex)
+                .context("failed to read GUARDIAN commitment via get_pubkey")?;
+            Ok(guardian_commitment_hex)
         }
         Transport::Http => {
-            let endpoint = config.psm_http_endpoint.trim_end_matches('/');
+            let endpoint = config.guardian_http_endpoint.trim_end_matches('/');
             let url = format!("{endpoint}/pubkey");
             let response = reqwest::Client::new()
                 .get(url)
                 .send()
                 .await
-                .context("failed to read PSM commitment via HTTP /pubkey")?;
+                .context("failed to read GUARDIAN commitment via HTTP /pubkey")?;
             let json = parse_http_json(response, "get_pubkey").await?;
             let parsed: HttpPubkeyResponse =
                 serde_json::from_value(json).context("failed to parse /pubkey response")?;
@@ -378,16 +380,19 @@ async fn fetch_psm_commitment(config: &RunConfig) -> Result<String> {
 async fn build_client(config: &RunConfig, auth: Auth) -> Result<(LoadClient, Option<Auth>)> {
     match config.transport {
         Transport::Grpc => {
-            let client = PsmClient::connect(config.psm_endpoint.clone())
+            let client = GuardianClient::connect(config.guardian_endpoint.clone())
                 .await
-                .with_context(|| format!("failed to connect to {}", config.psm_endpoint))?
+                .with_context(|| format!("failed to connect to {}", config.guardian_endpoint))?
                 .with_auth(auth);
             Ok((LoadClient::Grpc(Box::new(client)), None))
         }
         Transport::Http => Ok((
             LoadClient::Http(HttpClient {
                 client: reqwest::Client::new(),
-                endpoint: config.psm_http_endpoint.trim_end_matches('/').to_string(),
+                endpoint: config
+                    .guardian_http_endpoint
+                    .trim_end_matches('/')
+                    .to_string(),
             }),
             Some(auth),
         )),
@@ -395,8 +400,8 @@ async fn build_client(config: &RunConfig, auth: Auth) -> Result<(LoadClient, Opt
 }
 
 pub async fn seed_accounts(config: &RunConfig) -> Result<Vec<UserContext>> {
-    let psm_commitment_hex = fetch_psm_commitment(config).await?;
-    let psm_commitment_word = word_from_hex(&psm_commitment_hex)?;
+    let guardian_commitment_hex = fetch_guardian_commitment(config).await?;
+    let guardian_commitment_word = word_from_hex(&guardian_commitment_hex)?;
 
     let users = usize::try_from(config.users).context("users value is too large")?;
     let accounts = usize::try_from(config.accounts).context("accounts value is too large")?;
@@ -425,7 +430,7 @@ pub async fn seed_accounts(config: &RunConfig) -> Result<Vec<UserContext>> {
             user_id,
             auth_scheme: config.auth_scheme,
             signer_commitment: commitment,
-            psm_commitment: psm_commitment_word,
+            guardian_commitment: guardian_commitment_word,
             signers_per_account,
             auth: user_auth,
             last_timestamp_ms: 0,
@@ -441,7 +446,7 @@ pub async fn seed_accounts(config: &RunConfig) -> Result<Vec<UserContext>> {
         let account_seed = create_account_seed(
             &owner.signer_commitment,
             owner.signers_per_account,
-            owner.psm_commitment,
+            owner.guardian_commitment,
             owner.auth_scheme,
             seed,
         )
@@ -613,7 +618,7 @@ async fn run_write_operation(user: &mut UserContext) -> Result<()> {
     let account_seed = create_account_seed(
         &user.signer_commitment,
         user.signers_per_account,
-        user.psm_commitment,
+        user.guardian_commitment,
         user.auth_scheme,
         seed,
     )?;
@@ -757,7 +762,7 @@ fn random_commitment_hex(auth_scheme: AuthScheme) -> String {
 fn create_account_seed(
     owner_signer_commitment: &str,
     signers_per_account: usize,
-    psm_commitment: Word,
+    guardian_commitment: Word,
     auth_scheme: AuthScheme,
     seed: [u8; 32],
 ) -> Result<AccountSeed> {
@@ -770,10 +775,10 @@ fn create_account_seed(
         .collect::<Result<Vec<_>>>()?;
 
     let threshold = if signers_per_account == 1 { 1 } else { 2 };
-    let account = MultisigPsmBuilder::new(MultisigPsmConfig::new(
+    let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
         threshold,
         signer_words,
-        psm_commitment,
+        guardian_commitment,
     ))
     .with_seed(seed)
     .build()?;

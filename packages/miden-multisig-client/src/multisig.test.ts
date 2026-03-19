@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
-import { PsmHttpClient, type Signer } from '@openzeppelin/psm-client';
+import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
 import {
   buildUpdateProcedureThresholdTransactionRequest,
-  buildUpdatePsmTransactionRequest,
+  buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
   executeForSummary,
 } from './transaction.js';
@@ -72,7 +72,7 @@ vi.mock('./transaction.js', () => ({
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
     configHash: { toHex: () => '0x' + 'e'.repeat(64) },
   }),
-  buildUpdatePsmTransactionRequest: vi.fn().mockResolvedValue({
+  buildUpdateGuardianTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
@@ -112,7 +112,7 @@ vi.mock('./inspector.js', () => ({
   },
 }));
 
-// Mock fetch for PSM client
+// Mock fetch for GUARDIAN client
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
@@ -128,7 +128,7 @@ function mockedAccount(commitmentHex: string, nonce = 0): any {
 }
 
 describe('Multisig', () => {
-  let psm: PsmHttpClient;
+  let guardian: GuardianHttpClient;
   let mockSigner: Signer;
   let mockAccount: any;
   let mockWebClient: any;
@@ -154,13 +154,13 @@ describe('Multisig', () => {
       threshold: 1,
       numSigners: 1,
       signerCommitments: ['0x' + 'a'.repeat(64)],
-      psmEnabled: true,
-      psmCommitment: '0x' + 'c'.repeat(64),
+      guardianEnabled: true,
+      guardianCommitment: '0x' + 'c'.repeat(64),
       vaultBalances: [],
       procedureThresholds: new Map(),
     });
 
-    psm = new PsmHttpClient('http://localhost:3000');
+    guardian = new GuardianHttpClient('http://localhost:3000');
 
     mockSigner = {
       commitment: '0x' + '1'.repeat(64),
@@ -171,7 +171,7 @@ describe('Multisig', () => {
       signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
     };
 
-    psm.setSigner(mockSigner);
+    guardian.setSigner(mockSigner);
 
     mockAccount = {
       id: () => ({
@@ -199,14 +199,14 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(config.signerCommitments);
-      expect(multisig.psmCommitment).toBe(config.psmCommitment);
+      expect(multisig.guardianCommitment).toBe(config.guardianCommitment);
       expect(multisig.account).toBe(mockAccount);
     });
 
@@ -214,11 +214,11 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const accountId = '0x' + 'd'.repeat(30);
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient, accountId);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient, accountId);
 
       expect(multisig.account).toBe(mockAccount);
       expect(multisig.accountId).toBe(accountId);
@@ -230,10 +230,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       expect(multisig.accountId).toBe('0x' + 'a'.repeat(30));
     });
 
@@ -241,11 +241,11 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const accountId = '0x' + 'e'.repeat(30);
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient, accountId);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient, accountId);
       expect(multisig.accountId).toBe(accountId);
     });
   });
@@ -255,23 +255,23 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
     });
   });
 
   describe('fetchState', () => {
-    it('should fetch account state from PSM', async () => {
+    it('should fetch account state from GUARDIAN', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -297,13 +297,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -332,13 +332,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -371,13 +371,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -403,8 +403,8 @@ describe('Multisig', () => {
         threshold: 2,
         numSigners: 2,
         signerCommitments: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
-        psmEnabled: true,
-        psmCommitment: '0x' + 'd'.repeat(64),
+        guardianEnabled: true,
+        guardianCommitment: '0x' + 'd'.repeat(64),
         vaultBalances: [],
         procedureThresholds: new Map(),
       });
@@ -416,7 +416,7 @@ describe('Multisig', () => {
         '0x' + '1'.repeat(64),
         '0x' + '2'.repeat(64),
       ]);
-      expect(multisig.psmCommitment).toBe('0x' + 'd'.repeat(64));
+      expect(multisig.guardianCommitment).toBe('0x' + 'd'.repeat(64));
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
     });
 
@@ -424,13 +424,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -461,13 +461,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -500,13 +500,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -536,13 +536,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -574,7 +574,7 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
       mockWebClient.getAccount.mockResolvedValueOnce({
         commitment: () => ({
@@ -585,7 +585,7 @@ describe('Multisig', () => {
       const multisigWithRpc = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -603,14 +603,14 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
       mockWebClient.getAccount.mockResolvedValueOnce(null);
 
       const multisigWithRpc = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -626,7 +626,7 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
       mockWebClient.getAccount.mockResolvedValueOnce({
         commitment: () => ({
@@ -642,7 +642,7 @@ describe('Multisig', () => {
       const multisigWithRpc = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         undefined,
@@ -655,15 +655,15 @@ describe('Multisig', () => {
     });
   });
 
-  describe('registerOnPsm', () => {
-    it('should register account on PSM', async () => {
+  describe('registerOnGuardian', () => {
+    it('should register account on GUARDIAN', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -674,14 +674,14 @@ describe('Multisig', () => {
         }),
       });
 
-      await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
+      await expect(multisig.registerOnGuardian()).resolves.toBeUndefined();
     });
 
     it('should register ECDSA accounts with MidenEcdsa auth', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const ecdsaSigner: Signer = {
@@ -690,8 +690,8 @@ describe('Multisig', () => {
         scheme: 'ecdsa',
       };
 
-      psm.setSigner(ecdsaSigner);
-      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      guardian.setSigner(ecdsaSigner);
+      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -702,7 +702,7 @@ describe('Multisig', () => {
         }),
       });
 
-      await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
+      await expect(multisig.registerOnGuardian()).resolves.toBeUndefined();
 
       const [, requestInit] = mockFetch.mock.calls[0] as [string, RequestInit];
       const body = JSON.parse(String(requestInit.body));
@@ -717,13 +717,13 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = new Multisig(
         mockAccount,
         config,
-        psm,
+        guardian,
         mockSigner,
         mockWebClient,
         '0x' + 'e'.repeat(30),
@@ -737,17 +737,17 @@ describe('Multisig', () => {
         }),
       });
 
-      await expect(multisig.registerOnPsm('base64initialstate')).resolves.toBeUndefined();
+      await expect(multisig.registerOnGuardian('base64initialstate')).resolves.toBeUndefined();
     });
 
-    it('should throw on PSM registration failure', async () => {
+    it('should throw on GUARDIAN registration failure', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -757,19 +757,19 @@ describe('Multisig', () => {
         }),
       });
 
-      await expect(multisig.registerOnPsm()).rejects.toThrow('Failed to register on PSM');
+      await expect(multisig.registerOnGuardian()).rejects.toThrow('Failed to register on GUARDIAN');
     });
   });
 
   describe('syncProposals', () => {
-    it('should sync proposals from PSM', async () => {
+    it('should sync proposals from GUARDIAN', async () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -817,10 +817,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1, // Only 1 signature needed
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -866,10 +866,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -911,14 +911,14 @@ describe('Multisig', () => {
       );
     });
 
-    it('should reject non-32-byte signer IDs from PSM proposals', async () => {
+    it('should reject non-32-byte signer IDs from GUARDIAN proposals', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -958,14 +958,14 @@ describe('Multisig', () => {
       await expect(multisig.syncProposals()).rejects.toThrow('expected signerId as 32-byte hex');
     });
 
-    it('should reject duplicate normalized signer IDs from PSM proposals', async () => {
+    it('should reject duplicate normalized signer IDs from GUARDIAN proposals', async () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -1016,10 +1016,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       expect(multisig.listProposals()).toEqual([]);
     });
   });
@@ -1029,10 +1029,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1073,10 +1073,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1118,10 +1118,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1177,10 +1177,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1233,12 +1233,12 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
         scheme: 'ecdsa',
       };
-      psm.setSigner(ecdsaSigner);
+      guardian.setSigner(ecdsaSigner);
 
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const mockDelta = {
@@ -1270,7 +1270,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
       await multisig.createChangeThresholdProposal(2, 1);
 
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
@@ -1282,7 +1282,7 @@ describe('Multisig', () => {
     });
   });
 
-  describe('createSwitchPsmProposal', () => {
+  describe('createSwitchGuardianProposal', () => {
     it('should verify new endpoint commitment before creating proposal', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
         serialize: () => new Uint8Array([1, 2, 3]),
@@ -1291,25 +1291,25 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
-      const newPsmPubkey = '0x' + '1'.repeat(64);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ commitment: newPsmPubkey }),
+        json: async () => ({ commitment: newGuardianPubkey }),
       });
 
-      const proposal = await multisig.createSwitchPsmProposal('http://new-psm.com', newPsmPubkey);
+      const proposal = await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianPubkey);
 
-      expect(proposal.metadata?.proposalType).toBe('switch_psm');
-      if (proposal.metadata?.proposalType === 'switch_psm') {
-        expect(proposal.metadata.newPsmEndpoint).toBe('http://new-psm.com');
+      expect(proposal.metadata?.proposalType).toBe('switch_guardian');
+      if (proposal.metadata?.proposalType === 'switch_guardian') {
+        expect(proposal.metadata.newGuardianEndpoint).toBe('http://new-guardian.com');
       }
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://new-psm.com/pubkey?scheme=falcon',
+        'http://new-guardian.com/pubkey?scheme=falcon',
         expect.objectContaining({ method: 'GET' })
       );
     });
@@ -1322,10 +1322,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -1333,11 +1333,11 @@ describe('Multisig', () => {
       });
 
       await expect(
-        multisig.createSwitchPsmProposal('http://new-psm.com', '0x' + '1'.repeat(64))
-      ).rejects.toThrow('Refusing to use PSM endpoint');
+        multisig.createSwitchGuardianProposal('http://new-guardian.com', '0x' + '1'.repeat(64))
+      ).rejects.toThrow('Refusing to use GUARDIAN endpoint');
     });
 
-    it('should use the signer scheme when resolving new PSM commitments', async () => {
+    it('should use the signer scheme when resolving new GUARDIAN commitments', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
         serialize: () => new Uint8Array([1, 2, 3]),
       } as any);
@@ -1347,31 +1347,31 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
         scheme: 'ecdsa',
       };
-      psm.setSigner(ecdsaSigner);
+      guardian.setSigner(ecdsaSigner);
 
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
-      const newPsmCommitment = '0x' + '1'.repeat(64);
+      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const newGuardianCommitment = '0x' + '1'.repeat(64);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ commitment: newPsmCommitment }),
+        json: async () => ({ commitment: newGuardianCommitment }),
       });
 
-      await multisig.createSwitchPsmProposal('http://new-psm.com', newPsmCommitment);
+      await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianCommitment);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://new-psm.com/pubkey?scheme=ecdsa',
+        'http://new-guardian.com/pubkey?scheme=ecdsa',
         expect.objectContaining({ method: 'GET' }),
       );
-      expect(buildUpdatePsmTransactionRequest).toHaveBeenCalledWith(
+      expect(buildUpdateGuardianTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
-        newPsmCommitment,
+        newGuardianCommitment,
         { signatureScheme: 'ecdsa' },
       );
     });
@@ -1389,10 +1389,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1452,15 +1452,15 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
         scheme: 'ecdsa',
       };
-      psm.setSigner(ecdsaSigner);
+      guardian.setSigner(ecdsaSigner);
 
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1508,10 +1508,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: [mockSigner.commitment],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       // First create a proposal
       const mockDelta = {
@@ -1586,10 +1586,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1637,10 +1637,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: [mockSigner.commitment],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const proposalId = '0x' + 'd'.repeat(64);
 
       mockFetch.mockResolvedValueOnce({
@@ -1684,10 +1684,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       vi.mocked(executeForSummary).mockResolvedValueOnce({
         toCommitment: () => ({
@@ -1720,10 +1720,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       vi.mocked(executeForSummary).mockResolvedValueOnce({
         toCommitment: () => ({
@@ -1771,10 +1771,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockProposals = [
         {
@@ -1824,10 +1824,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const publicKey = '0x' + 'd'.repeat(66);
 
       mockFetch.mockResolvedValueOnce({
@@ -1882,10 +1882,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -1905,10 +1905,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const exported = {
         accountId: multisig.accountId,
@@ -1938,10 +1938,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const publicKey = '0x' + 'd'.repeat(66);
 
       const proposal = await multisig.importProposal(
@@ -1985,10 +1985,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       await expect(
         multisig.importProposal(
@@ -2019,10 +2019,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), mockSigner.commitment],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const exported = {
         accountId: multisig.accountId,
@@ -2053,10 +2053,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       await expect(
         multisig.executeProposal('0x' + 'nonexistent'.repeat(5))
@@ -2067,10 +2067,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2, // Need 2 signatures
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       // Sync with pending proposal (only 1 signature)
       const mockProposals = [
@@ -2116,14 +2116,14 @@ describe('Multisig', () => {
       ).rejects.toThrow('not ready for execution');
     });
 
-    it('should fail when PSM ack signature is missing (selector ON)', async () => {
+    it('should fail when GUARDIAN ack signature is missing (selector ON)', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const readyDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -2174,7 +2174,7 @@ describe('Multisig', () => {
       });
 
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
-        'PSM did not return acknowledgment signature'
+        'GUARDIAN did not return acknowledgment signature'
       );
     });
 
@@ -2186,8 +2186,8 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
-        psmPublicKey: '0x' + '1'.repeat(66),
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianPublicKey: '0x' + '1'.repeat(66),
       };
 
       const ecdsaSigner: Signer = {
@@ -2196,7 +2196,7 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
       const proposalId = '0x' + 'c'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
       const ackPubkey = '0x' + '4'.repeat(66);
@@ -2304,8 +2304,8 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
-        psmPublicKey: '0x' + '1'.repeat(66),
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianPublicKey: '0x' + '1'.repeat(66),
       };
 
       const ecdsaSigner: Signer = {
@@ -2314,7 +2314,7 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, ecdsaSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
       const proposalId = '0x' + 'c'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
       const ackPubkey = '0x' + '4'.repeat(66);
@@ -2413,16 +2413,16 @@ describe('Multisig', () => {
       );
     });
 
-    it('should verify switch_psm endpoint commitment before execution', async () => {
+    it('should verify switch_guardian endpoint commitment before execution', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const proposalId = '0x' + 'c'.repeat(64);
-      const newPsmPubkey = '0x' + '1'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
         id: proposalId,
@@ -2438,16 +2438,16 @@ describe('Multisig', () => {
           },
         ],
         metadata: {
-          proposalType: 'switch_psm',
-          newPsmPubkey,
-          newPsmEndpoint: 'http://new-psm.com',
+          proposalType: 'switch_guardian',
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
         },
       });
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ commitment: newPsmPubkey }),
+        json: async () => ({ commitment: newGuardianPubkey }),
       });
       mockWebClient.getAccount.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
@@ -2465,14 +2465,14 @@ describe('Multisig', () => {
       expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
     });
 
-    it('should reject switch_psm execution when endpoint commitment mismatches', async () => {
+    it('should reject switch_guardian execution when endpoint commitment mismatches', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -2489,9 +2489,9 @@ describe('Multisig', () => {
           },
         ],
         metadata: {
-          proposalType: 'switch_psm',
-          newPsmPubkey: '0x' + '1'.repeat(64),
-          newPsmEndpoint: 'http://new-psm.com',
+          proposalType: 'switch_guardian',
+          newGuardianPubkey: '0x' + '1'.repeat(64),
+          newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
         },
       });
@@ -2502,7 +2502,7 @@ describe('Multisig', () => {
       });
 
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
-        'Refusing to use PSM endpoint'
+        'Refusing to use GUARDIAN endpoint'
       );
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
     });
@@ -2511,10 +2511,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -2536,9 +2536,9 @@ describe('Multisig', () => {
           },
         ],
         metadata: {
-          proposalType: 'switch_psm',
-          newPsmPubkey: '0x' + '1'.repeat(64),
-          newPsmEndpoint: 'http://new-psm.com',
+          proposalType: 'switch_guardian',
+          newGuardianPubkey: '0x' + '1'.repeat(64),
+          newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
         },
       });
@@ -2563,10 +2563,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -2588,9 +2588,9 @@ describe('Multisig', () => {
           },
         ],
         metadata: {
-          proposalType: 'switch_psm',
-          newPsmPubkey: '0x' + '1'.repeat(64),
-          newPsmEndpoint: 'http://new-psm.com',
+          proposalType: 'switch_guardian',
+          newGuardianPubkey: '0x' + '1'.repeat(64),
+          newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
         },
       });
@@ -2606,10 +2606,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       // Create a proposal with metadata
       const mockDelta = {
@@ -2664,14 +2664,14 @@ describe('Multisig', () => {
       expect(syncedProposal?.metadata?.proposalType).toBe('add_signer');
     });
 
-    it('should use PSM metadata for new proposals from other signers', async () => {
+    it('should use GUARDIAN metadata for new proposals from other signers', async () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       // Sync proposals - no local proposals exist
       const mockProposals = [
@@ -2715,10 +2715,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -2763,10 +2763,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -2809,14 +2809,14 @@ describe('Multisig', () => {
       expect(proposal.metadata?.proposalType).toBe('p2id');
     });
 
-    it('should create switch_psm proposal', async () => {
+    it('should create switch_guardian proposal', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -2849,13 +2849,13 @@ describe('Multisig', () => {
       });
 
       const proposal = await multisig.createProposal(1, 'AQID', {
-        proposalType: 'switch_psm',
-        newPsmPubkey: '0xnewpubkey',
-        newPsmEndpoint: 'http://new-psm.com',
+        proposalType: 'switch_guardian',
+        newGuardianPubkey: '0xnewpubkey',
+        newGuardianEndpoint: 'http://new-guardian.com',
         description: '',
       });
 
-      expect(proposal.metadata?.proposalType).toBe('switch_psm');
+      expect(proposal.metadata?.proposalType).toBe('switch_guardian');
     });
   });
 
@@ -2864,10 +2864,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       // First sync with 1 signature (pending)
       const mockProposalsPending = [
@@ -2956,10 +2956,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 3,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'c'.repeat(64)],
-        psmCommitment: '0x' + 'd'.repeat(64),
+        guardianCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       expect(multisig.threshold).toBe(3);
     });
 
@@ -2968,33 +2968,33 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments,
-        psmCommitment: '0x' + 'd'.repeat(64),
+        guardianCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       expect(multisig.signerCommitments).toEqual(signerCommitments);
     });
 
-    it('should expose psmCommitment', () => {
-      const psmCommitment = '0x' + 'psm'.repeat(20);
+    it('should expose guardianCommitment', () => {
+      const guardianCommitment = '0x' + 'guardian'.repeat(20);
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment,
+        guardianCommitment,
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
-      expect(multisig.psmCommitment).toBe(psmCommitment);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      expect(multisig.guardianCommitment).toBe(guardianCommitment);
     });
 
     it('should expose account when provided', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'd'.repeat(64),
+        guardianCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
       expect(multisig.account).toBe(mockAccount);
     });
   });
@@ -3004,12 +3004,12 @@ describe('Multisig', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
-      // Simulates a PSM response with canonical snake_case metadata
+      // Simulates a GUARDIAN response with canonical snake_case metadata
       const rustProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
@@ -3054,10 +3054,10 @@ describe('Multisig', () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
       // P2ID proposal with canonical snake_case fields
       const p2idProposals = [
@@ -3107,16 +3107,16 @@ describe('Multisig', () => {
       }
     });
 
-    it('should parse switch_psm proposal with snake_case fields', async () => {
+    it('should parse switch_guardian proposal with snake_case fields', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, psm, mockSigner, mockWebClient);
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
 
-      const switchPsmProposals = [
+      const switchGuardianProposals = [
         {
           account_id: '0x' + 'a'.repeat(30),
           nonce: 1,
@@ -3125,9 +3125,9 @@ describe('Multisig', () => {
             tx_summary: { data: 'AQID' },
             signatures: [],
             metadata: {
-              proposal_type: 'switch_psm',
-              new_psm_pubkey: '0xnewpubkey',
-              new_psm_endpoint: 'http://new-psm.com',
+              proposal_type: 'switch_guardian',
+              new_guardian_pubkey: '0xnewpubkey',
+              new_guardian_endpoint: 'http://new-guardian.com',
               salt: '0xsalt',
             },
           },
@@ -3142,16 +3142,16 @@ describe('Multisig', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ proposals: switchPsmProposals }),
+        json: async () => ({ proposals: switchGuardianProposals }),
       });
 
       const proposals = await multisig.syncProposals();
 
       expect(proposals.length).toBe(1);
-      expect(proposals[0].metadata?.proposalType).toBe('switch_psm');
-      if (proposals[0].metadata?.proposalType === 'switch_psm') {
-        expect(proposals[0].metadata.newPsmPubkey).toBe('0xnewpubkey');
-        expect(proposals[0].metadata.newPsmEndpoint).toBe('http://new-psm.com');
+      expect(proposals[0].metadata?.proposalType).toBe('switch_guardian');
+      if (proposals[0].metadata?.proposalType === 'switch_guardian') {
+        expect(proposals[0].metadata.newGuardianPubkey).toBe('0xnewpubkey');
+        expect(proposals[0].metadata.newGuardianEndpoint).toBe('http://new-guardian.com');
       }
     });
   });

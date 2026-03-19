@@ -1,7 +1,7 @@
 /**
  * @openzeppelin/miden-multisig-client
  *
- * TypeScript SDK for Miden multisig accounts with PSM (Private State Manager) integration.
+ * TypeScript SDK for Miden multisig accounts with Guardian integration.
  *
  * @example
  * ```typescript
@@ -28,19 +28,19 @@
  *
  * // Create multisig client
  * const client = new MultisigClient(webClient, {
- *   psmEndpoint: 'http://localhost:3000',
+ *   guardianEndpoint: 'http://localhost:3000',
  *   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
  * });
  *
- * // Get PSM pubkey for config
- * const psmCommitment = await client.psmClient.getPubkey();
+ * // Get GUARDIAN pubkey for config
+ * const guardianCommitment = await client.guardianClient.getPubkey();
  *
  * // Create multisig account
- * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], psmCommitment };
+ * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], guardianCommitment };
  * const multisig = await client.create(config, signer);
  *
- * // Register on PSM and work with proposals
- * await multisig.registerOnPsm();
+ * // Register on GUARDIAN and work with proposals
+ * await multisig.registerOnGuardian();
  * await multisig.syncProposals();
  * ```
  */
@@ -52,12 +52,12 @@ export {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
-  buildUpdatePsmTransactionRequest,
+  buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
 } from './transaction.js';
 
-export { PsmHttpClient, PsmHttpError } from '@openzeppelin/psm-client';
+export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 
 export {
   FalconSigner,
@@ -75,7 +75,7 @@ export {
   createMultisigAccount,
   validateMultisigConfig,
   buildMultisigStorageSlots,
-  buildPsmStorageSlots,
+  buildGuardianStorageSlots,
   storageLayoutBuilder,
   StorageLayoutBuilder,
 } from './account/index.js';
@@ -120,7 +120,7 @@ export type {
   Signer,
   SignatureScheme,
 
-  // PSM API types
+  // GUARDIAN API types
   AuthConfig,
   DeltaObject,
   DeltaStatus,

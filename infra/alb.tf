@@ -11,7 +11,7 @@ resource "aws_lb" "main" {
 
 # Target group for server
 resource "aws_lb_target_group" "server" {
-  name        = "psm-server-tg"
+  name        = "guardian-server-tg"
   port        = 3000
   protocol    = "HTTP"
   vpc_id      = local.vpc_id

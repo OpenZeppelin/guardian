@@ -67,8 +67,8 @@ fn print_proposal_menu() {
     println!("\n┌─────────────────────────────────────────────┐");
     println!("│ Proposal Management                         │");
     println!("└─────────────────────────────────────────────┘");
-    println!("  PSM Operations:");
-    println!("  [1] Create proposal (via PSM)");
+    println!("  GUARDIAN Operations:");
+    println!("  [1] Create proposal (via GUARDIAN)");
     println!("  [2] View pending proposals");
     println!("  [3] Sign a proposal");
     println!("  [4] Execute a proposal");
@@ -82,10 +82,10 @@ fn print_proposal_menu() {
 }
 
 // =============================================================================
-// PSM Operations
+// GUARDIAN Operations
 // =============================================================================
 
-/// Create a proposal via PSM.
+/// Create a proposal via GUARDIAN.
 async fn action_create_proposal(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -110,7 +110,7 @@ async fn action_create_proposal(
     println!("    [2] Remove cosigner");
     println!("    [3] Transfer assets (P2ID)");
     println!("    [4] Consume notes");
-    println!("    [5] Switch PSM provider");
+    println!("    [5] Switch GUARDIAN provider");
     println!("    [6] Update procedure threshold override");
     println!("    [b] Back");
     println!();
@@ -122,19 +122,19 @@ async fn action_create_proposal(
         "2" => prompt_remove_cosigner(state, editor)?,
         "3" => prompt_p2id(state, editor)?,
         "4" => prompt_consume_notes(state, editor).await?,
-        "5" => prompt_switch_psm(state, editor)?,
+        "5" => prompt_switch_guardian(state, editor)?,
         "6" => prompt_update_procedure_threshold(state, editor)?,
         "b" | "B" => return Ok(()),
         _ => return Err("Invalid choice".to_string()),
     };
 
-    print_waiting("Creating proposal on PSM");
+    print_waiting("Creating proposal on GUARDIAN");
 
     // Try to create proposal with retry for non-canonical delta pending errors
     match create_proposal_with_retry(state, transaction_type.clone(), editor).await {
         Ok(proposal) => {
             let client = state.get_client()?;
-            print_success("Proposal created on PSM server");
+            print_success("Proposal created on GUARDIAN server");
             print_full_hex("Proposal ID", &proposal.id);
             print_success(&format!(
                 "Automatically signed with your key ({})",
@@ -150,7 +150,7 @@ async fn action_create_proposal(
         Err(e) => {
             // Check if this is a non-retriable error and offer offline fallback
             if !is_pending_candidate_error(&e) {
-                print_error(&format!("PSM proposal creation failed: {}", e));
+                print_error(&format!("GUARDIAN proposal creation failed: {}", e));
                 print_info("\nWould you like to create this proposal offline instead? [y/N]");
                 let fallback = prompt_input(editor, "Choice: ")?;
 
@@ -201,7 +201,7 @@ async fn create_proposal_with_retry(
                 last_error = e.to_string();
 
                 if is_commitment_mismatch_error(&last_error) && !commitment_mismatch_retried {
-                    // Account was updated on-chain - need to re-sync and re-pull from PSM
+                    // Account was updated on-chain - need to re-sync and re-pull from GUARDIAN
                     print_info("  Account was updated on-chain. Re-syncing...");
                     commitment_mismatch_retried = true;
 
@@ -218,7 +218,7 @@ async fn create_proposal_with_retry(
                             return Err(last_error);
                         }
 
-                        // Re-pull account from PSM
+                        // Re-pull account from GUARDIAN
                         let client = state.get_client_mut()?;
                         if let Err(e) = client.pull_account(account_id).await {
                             print_error(&format!("Failed to re-pull account: {}", e));
@@ -265,13 +265,13 @@ async fn create_proposal_with_retry(
     ))
 }
 
-/// View pending proposals from PSM.
+/// View pending proposals from GUARDIAN.
 async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
     print_section("View Pending Proposals");
 
     let client = state.get_client_mut()?;
 
-    print_waiting("Fetching proposals from PSM");
+    print_waiting("Fetching proposals from GUARDIAN");
     let proposals = client
         .list_proposals()
         .await
@@ -305,7 +305,7 @@ async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
     Ok(())
 }
 
-/// Sign a proposal via PSM.
+/// Sign a proposal via GUARDIAN.
 async fn action_sign_proposal(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -314,7 +314,7 @@ async fn action_sign_proposal(
 
     let client = state.get_client_mut()?;
 
-    print_waiting("Fetching proposals from PSM");
+    print_waiting("Fetching proposals from GUARDIAN");
     let proposals = client
         .list_proposals()
         .await
@@ -369,7 +369,7 @@ async fn action_sign_proposal(
     Ok(())
 }
 
-/// Execute a proposal via PSM.
+/// Execute a proposal via GUARDIAN.
 async fn action_execute_proposal(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -378,7 +378,7 @@ async fn action_execute_proposal(
 
     let client = state.get_client_mut()?;
 
-    print_waiting("Fetching proposals from PSM");
+    print_waiting("Fetching proposals from GUARDIAN");
     let proposals = client
         .list_proposals()
         .await
@@ -458,7 +458,7 @@ async fn action_execute_proposal(
 // Offline/Export Operations
 // =============================================================================
 
-/// Export a proposal from PSM to file.
+/// Export a proposal from GUARDIAN to file.
 async fn action_export_proposal(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -467,7 +467,7 @@ async fn action_export_proposal(
 
     let client = state.get_client_mut()?;
 
-    print_waiting("Fetching proposals from PSM");
+    print_waiting("Fetching proposals from GUARDIAN");
     let proposals = client
         .list_proposals()
         .await
@@ -726,7 +726,7 @@ fn save_imported_proposal(
     Ok(())
 }
 
-/// Create a proposal offline (fallback when PSM fails).
+/// Create a proposal offline (fallback when GUARDIAN fails).
 async fn create_proposal_offline(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -1007,20 +1007,20 @@ async fn prompt_consume_notes(
     Ok(TransactionType::consume_notes(note_ids))
 }
 
-fn prompt_switch_psm(
+fn prompt_switch_guardian(
     state: &SessionState,
     editor: &mut DefaultEditor,
 ) -> Result<TransactionType, String> {
     let client = state.get_client()?;
-    print_info(&format!("Current PSM: {}", client.psm_endpoint()));
+    print_info(&format!("Current GUARDIAN: {}", client.guardian_endpoint()));
 
-    print_info("\nEnter new PSM server details:");
-    let new_endpoint = prompt_input(editor, "  New PSM endpoint: ")?;
+    print_info("\nEnter new GUARDIAN server details:");
+    let new_endpoint = prompt_input(editor, "  New GUARDIAN endpoint: ")?;
     if new_endpoint.is_empty() {
         return Err("Endpoint is required".to_string());
     }
 
-    let pubkey_hex = prompt_input(editor, "  New PSM pubkey commitment: ")?;
+    let pubkey_hex = prompt_input(editor, "  New GUARDIAN pubkey commitment: ")?;
     if pubkey_hex.is_empty() {
         return Err("Pubkey commitment is required".to_string());
     }
@@ -1028,18 +1028,21 @@ fn prompt_switch_psm(
     let new_commitment = word_from_hex(&ensure_hex_prefix(&pubkey_hex))
         .map_err(|e| format!("Invalid pubkey: {}", e))?;
 
-    println!("\nPSM switch details:");
+    println!("\nGuardian switch details:");
     println!("  New endpoint: {}", new_endpoint);
     println!("  New pubkey:   {}", shorten_hex(&pubkey_hex));
 
-    print_info("\n⚠️  WARNING: After execution, all future transactions use the new PSM.");
+    print_info("\n⚠️  WARNING: After execution, all future transactions use the new GUARDIAN.");
 
-    let confirm = prompt_input(editor, "\nConfirm PSM switch? [y/N]: ")?;
+    let confirm = prompt_input(editor, "\nConfirm GUARDIAN switch? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::switch_psm(new_endpoint, new_commitment))
+    Ok(TransactionType::switch_guardian(
+        new_endpoint,
+        new_commitment,
+    ))
 }
 
 fn prompt_update_procedure_threshold(

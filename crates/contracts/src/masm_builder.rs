@@ -161,35 +161,37 @@ pub fn build_multisig_ecdsa_component(slots: Vec<StorageSlot>) -> Result<Account
     )
 }
 
-/// Build AccountComponent from masm/account_components/auth/multisig_psm.masm.
-pub fn build_multisig_psm_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+/// Build AccountComponent from masm/account_components/auth/multisig_guardian.masm.
+pub fn build_multisig_guardian_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
     compile_component(
-        &account_components_auth_dir().join("multisig_psm.masm"),
+        &account_components_auth_dir().join("multisig_guardian.masm"),
         slots,
     )
 }
 
-/// Build AccountComponent from masm/account_components/auth/multisig_psm_ecdsa.masm.
-pub fn build_multisig_psm_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+/// Build AccountComponent from masm/account_components/auth/multisig_guardian_ecdsa.masm.
+pub fn build_multisig_guardian_ecdsa_component(
+    slots: Vec<StorageSlot>,
+) -> Result<AccountComponent> {
     compile_component(
-        &account_components_auth_dir().join("multisig_psm_ecdsa.masm"),
+        &account_components_auth_dir().join("multisig_guardian_ecdsa.masm"),
         slots,
     )
 }
 
-/// Build AccountComponent from masm/auth/psm.masm.
-/// This component provides PSM (Private State Manager) signature verification.
+/// Build AccountComponent from masm/auth/guardian.masm.
+/// This component provides Guardian signature verification.
 ///
 /// Storage layout (2 slots):
-/// - Slot 0: PSM selector [selector, 0, 0, 0] where selector=1 means ON, 0 means OFF
-/// - Slot 1: PSM public key map
-pub fn build_psm_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    compile_component(&auth_dir().join("psm.masm"), slots)
+/// - Slot 0: GUARDIAN selector [selector, 0, 0, 0] where selector=1 means ON, 0 means OFF
+/// - Slot 1: GUARDIAN public key map
+pub fn build_guardian_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    compile_component(&auth_dir().join("guardian.masm"), slots)
 }
 
-/// Build AccountComponent from masm/auth/psm_ecdsa.masm.
-pub fn build_psm_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    compile_component(&auth_dir().join("psm_ecdsa.masm"), slots)
+/// Build AccountComponent from masm/auth/guardian_ecdsa.masm.
+pub fn build_guardian_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    compile_component(&auth_dir().join("guardian_ecdsa.masm"), slots)
 }
 
 /// Build Access component from masm/account/access.masm.
@@ -225,7 +227,7 @@ pub fn get_multisig_library() -> Result<Library> {
     let path = auth_dir().join("multisig.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    // Build with openzeppelin library linked (for psm dependency)
+    // Build with openzeppelin library linked (for guardian dependency)
     let asm = build_assembler()?;
 
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
@@ -268,10 +270,10 @@ pub fn get_multisig_ecdsa_library() -> Result<Library> {
     Ok(library)
 }
 
-/// Builds a library for PSM procedures for use in transaction scripts.
-/// The procedures are accessible via `use oz_psm::psm` and `call.psm::procedure_name` syntax.
-pub fn get_psm_library() -> Result<Library> {
-    let path = auth_dir().join("psm.masm");
+/// Builds a library for GUARDIAN procedures for use in transaction scripts.
+/// The procedures are accessible via `use oz_guardian::guardian` and `call.guardian::procedure_name` syntax.
+pub fn get_guardian_library() -> Result<Library> {
+    let path = auth_dir().join("guardian.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
     // Build with openzeppelin library and miden-standards linked
@@ -279,12 +281,16 @@ pub fn get_psm_library() -> Result<Library> {
 
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
     let module = Module::parser(ModuleKind::Library)
-        .parse_str(LibraryPath::new("oz_psm::psm"), code, source_manager)
-        .map_err(|e| anyhow!("failed to parse psm module: {e}"))?;
+        .parse_str(
+            LibraryPath::new("oz_guardian::guardian"),
+            code,
+            source_manager,
+        )
+        .map_err(|e| anyhow!("failed to parse guardian module: {e}"))?;
 
     let library = asm
         .assemble_library([module])
-        .map_err(|e| anyhow!("failed to assemble PSM library: {e}"))?;
+        .map_err(|e| anyhow!("failed to assemble GUARDIAN library: {e}"))?;
 
     Ok(library)
 }

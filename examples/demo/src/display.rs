@@ -48,7 +48,11 @@ pub fn print_account_info(account: &MultisigAccount) {
     println!("  Nonce:          {}", account.nonce());
 }
 
-pub fn print_storage_overview(account: &MultisigAccount, ecdsa_mode: bool, psm_endpoint: &str) {
+pub fn print_storage_overview(
+    account: &MultisigAccount,
+    ecdsa_mode: bool,
+    guardian_endpoint: &str,
+) {
     print_section("Storage Overview");
 
     match account.threshold() {
@@ -79,7 +83,7 @@ pub fn print_storage_overview(account: &MultisigAccount, ecdsa_mode: bool, psm_e
         _ => {}
     }
 
-    println!("  PSM Endpoint: {}", psm_endpoint);
+    println!("  GUARDIAN Endpoint: {}", guardian_endpoint);
 }
 
 pub fn print_vault(account: &MultisigAccount) {

@@ -60,11 +60,11 @@ pub trait NetworkClient: Send + Sync {
         auth: &Auth,
     ) -> Result<(), String>;
 
-    /// Validate that account storage is bound to this server's PSM public key commitment.
-    fn validate_psm_commitment(
+    /// Validate that account storage is bound to this server's GUARDIAN public key commitment.
+    fn validate_guardian_commitment(
         &self,
         state_json: &serde_json::Value,
-        expected_psm_commitment: &str,
+        expected_guardian_commitment: &str,
     ) -> Result<(), String>;
 
     /// Determine if account auth should be updated given the state
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn from_env_or_returns_default_when_var_missing() {
-        let var_name = "PSM_NETWORK_TYPE_TEST_MISSING";
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_MISSING";
         unsafe { std::env::remove_var(var_name) };
 
         let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn from_env_or_returns_parsed_value_when_var_present() {
-        let var_name = "PSM_NETWORK_TYPE_TEST_PRESENT";
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_PRESENT";
         unsafe { std::env::set_var(var_name, "devnet") };
 
         let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn from_env_or_falls_back_to_default_when_value_invalid() {
-        let var_name = "PSM_NETWORK_TYPE_TEST_INVALID";
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_INVALID";
         unsafe { std::env::set_var(var_name, "not-a-network") };
 
         let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);

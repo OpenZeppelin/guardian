@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PsmHttpClient, PsmHttpError } from './http.js';
+import { GuardianHttpClient, GuardianHttpError } from './http.js';
 import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse } from './types.js';
 
 // Mock fetch globally
@@ -16,11 +16,11 @@ const mockSigner: Signer = {
   signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
 };
 
-describe('PsmHttpClient', () => {
-  let client: PsmHttpClient;
+describe('GuardianHttpClient', () => {
+  let client: GuardianHttpClient;
 
   beforeEach(() => {
-    client = new PsmHttpClient('http://localhost:3000');
+    client = new GuardianHttpClient('http://localhost:3000');
     mockFetch.mockReset();
   });
 
@@ -30,8 +30,8 @@ describe('PsmHttpClient', () => {
 
   describe('constructor', () => {
     it('should create client with baseUrl', () => {
-      const c = new PsmHttpClient('http://example.com:8080');
-      expect(c).toBeInstanceOf(PsmHttpClient);
+      const c = new GuardianHttpClient('http://example.com:8080');
+      expect(c).toBeInstanceOf(GuardianHttpClient);
     });
   });
 
@@ -57,7 +57,7 @@ describe('PsmHttpClient', () => {
       );
     });
 
-    it('should throw PsmHttpError on non-ok response', async () => {
+    it('should throw GuardianHttpError on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 500,
@@ -66,7 +66,7 @@ describe('PsmHttpClient', () => {
       });
 
       const error = await client.getPubkey().catch((e) => e);
-      expect(error).toBeInstanceOf(PsmHttpError);
+      expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(500);
       expect(error.statusText).toBe('Internal Server Error');
     });
@@ -581,17 +581,17 @@ describe('PsmHttpClient', () => {
   });
 });
 
-describe('PsmHttpError', () => {
+describe('GuardianHttpError', () => {
   it('should create error with status, statusText, and body', () => {
-    const error = new PsmHttpError(404, 'Not Found', 'Resource not found');
+    const error = new GuardianHttpError(404, 'Not Found', 'Resource not found');
 
     expect(error).toBeInstanceOf(Error);
-    expect(error).toBeInstanceOf(PsmHttpError);
+    expect(error).toBeInstanceOf(GuardianHttpError);
     expect(error.status).toBe(404);
     expect(error.statusText).toBe('Not Found');
     expect(error.body).toBe('Resource not found');
     expect(error.message).toContain('404');
     expect(error.message).toContain('Not Found');
-    expect(error.name).toBe('PsmHttpError');
+    expect(error.name).toBe('GuardianHttpError');
   });
 });

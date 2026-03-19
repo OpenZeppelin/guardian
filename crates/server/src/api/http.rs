@@ -8,8 +8,8 @@ use crate::services::{
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use axum::{Json, extract::Query, extract::State, http::StatusCode};
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
-use private_state_manager_shared::{ProposalSignature, SignatureScheme};
+use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::{ProposalSignature, SignatureScheme};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]

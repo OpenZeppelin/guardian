@@ -3,7 +3,7 @@ pub mod miden_falcon_rpo;
 
 use crate::delta_object::DeltaObject;
 use crate::error::Result;
-use private_state_manager_shared::SignatureScheme;
+use guardian_shared::SignatureScheme;
 use std::path::PathBuf;
 
 pub use miden_ecdsa::MidenEcdsaSigner;

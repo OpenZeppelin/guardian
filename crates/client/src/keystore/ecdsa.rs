@@ -1,11 +1,11 @@
+use guardian_shared::SignatureScheme;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
 use miden_protocol::utils::Serializable;
-use private_state_manager_shared::SignatureScheme;
 
 use super::Signer;
 
-/// In-memory ECDSA signer used for PSM authentication and multisig signing.
+/// In-memory ECDSA signer used for GUARDIAN authentication and multisig signing.
 pub struct EcdsaKeyStore {
     secret_key: std::sync::Mutex<SecretKey>,
     commitment: Word,

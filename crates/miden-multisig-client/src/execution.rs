@@ -2,12 +2,12 @@
 
 use std::collections::HashSet;
 
+use guardian_shared::SignatureScheme;
 use miden_client::Client;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::{Felt, Word};
-use private_state_manager_shared::SignatureScheme;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
@@ -126,8 +126,8 @@ pub async fn build_final_transaction_request(
             )
             .await
         }
-        TransactionType::SwitchPsm { new_commitment, .. } => {
-            crate::transaction::build_update_psm_transaction_request(
+        TransactionType::SwitchGuardian { new_commitment, .. } => {
+            crate::transaction::build_update_guardian_transaction_request(
                 *new_commitment,
                 salt,
                 signature_advice,

@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-const baseUrl = __ENV.PSM_HTTP_URL || 'http://localhost:3000';
+const baseUrl = __ENV.GUARDIAN_HTTP_URL || 'http://localhost:3000';
 
 const largeDataBytes = Number(__ENV.K6_LARGE_BYTES || '1500000');
 const largeData = 'x'.repeat(largeDataBytes);

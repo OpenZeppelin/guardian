@@ -1,5 +1,5 @@
 [package]
-name = "psm-server-bench-loadgen"
+name = "guardian-server-bench-loadgen"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -11,7 +11,7 @@ clap = { version = "4.5", features = ["derive"] }
 hex = { workspace = true }
 miden-confidential-contracts = { path = "../../../contracts" }
 miden-protocol = { workspace = true }
-private-state-manager-client = { path = "../../../client" }
+guardian-client = { path = "../../../client" }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

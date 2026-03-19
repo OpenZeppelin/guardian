@@ -1,4 +1,4 @@
-import type { RequestAuthPayload } from '@openzeppelin/psm-client';
+import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
 import { AuthSecretKey, type Word } from '@miden-sdk/miden-sdk';
 import type { Signer, SignatureScheme } from '../types.js';
 import { bytesToHex } from '../utils/encoding.js';

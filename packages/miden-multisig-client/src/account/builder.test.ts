@@ -3,23 +3,23 @@ import { createMultisigAccount } from './builder.js';
 import {
   MULTISIG_ECDSA_MASM,
   MULTISIG_MASM,
-  PSM_ECDSA_MASM,
-  PSM_MASM,
+  GUARDIAN_ECDSA_MASM,
+  GUARDIAN_MASM,
 } from './masm/auth.js';
 import {
-  MULTISIG_PSM_ACCOUNT_COMPONENT_MASM,
-  MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM,
+  MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM,
+  MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM,
 } from './masm/account-components/auth.js';
 
 const {
   buildMultisigStorageSlots,
-  buildPsmStorageSlots,
+  buildGuardianStorageSlots,
   withSupportsAllTypes,
   compileComponent,
   MockAccountBuilder,
 } = vi.hoisted(() => {
   const buildMultisigStorageSlots = vi.fn(() => ['multisig-slots']);
-  const buildPsmStorageSlots = vi.fn(() => ['psm-slots']);
+  const buildGuardianStorageSlots = vi.fn(() => ['guardian-slots']);
   const withSupportsAllTypes = vi.fn((component) => component);
   const compileComponent = vi.fn((code, slots) => ({
     code,
@@ -57,7 +57,7 @@ const {
 
   return {
     buildMultisigStorageSlots,
-    buildPsmStorageSlots,
+    buildGuardianStorageSlots,
     withSupportsAllTypes,
     compileComponent,
     MockAccountBuilder,
@@ -66,7 +66,7 @@ const {
 
 vi.mock('./storage.js', () => ({
   buildMultisigStorageSlots,
-  buildPsmStorageSlots,
+  buildGuardianStorageSlots,
 }));
 
 vi.mock('@miden-sdk/miden-sdk', () => ({
@@ -91,7 +91,7 @@ describe('createMultisigAccount', () => {
       },
     });
     buildMultisigStorageSlots.mockClear();
-    buildPsmStorageSlots.mockClear();
+    buildGuardianStorageSlots.mockClear();
     withSupportsAllTypes.mockClear();
     compileComponent.mockClear();
   });
@@ -110,13 +110,13 @@ describe('createMultisigAccount', () => {
     await createMultisigAccount(webClient as never, {
       threshold: 1,
       signerCommitments: ['0x' + '1'.repeat(64)],
-      psmCommitment: '0x' + '2'.repeat(64),
+      guardianCommitment: '0x' + '2'.repeat(64),
     });
 
     expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
       1,
-      'openzeppelin::auth::psm',
-      PSM_MASM,
+      'openzeppelin::auth::guardian',
+      GUARDIAN_MASM,
     );
     expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
       2,
@@ -124,7 +124,7 @@ describe('createMultisigAccount', () => {
       MULTISIG_MASM,
     );
     expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(
-      MULTISIG_PSM_ACCOUNT_COMPONENT_MASM,
+      MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM,
     );
     expect(webClient.newAccount).toHaveBeenCalledTimes(1);
   });
@@ -143,14 +143,14 @@ describe('createMultisigAccount', () => {
     await createMultisigAccount(webClient as never, {
       threshold: 1,
       signerCommitments: ['0x' + '1'.repeat(64)],
-      psmCommitment: '0x' + '2'.repeat(64),
+      guardianCommitment: '0x' + '2'.repeat(64),
       signatureScheme: 'ecdsa',
     });
 
     expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
       1,
-      'openzeppelin::auth::psm_ecdsa',
-      PSM_ECDSA_MASM,
+      'openzeppelin::auth::guardian_ecdsa',
+      GUARDIAN_ECDSA_MASM,
     );
     expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
       2,
@@ -158,7 +158,7 @@ describe('createMultisigAccount', () => {
       MULTISIG_ECDSA_MASM,
     );
     expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(
-      MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM,
+      MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM,
     );
     expect(webClient.newAccount).toHaveBeenCalledTimes(1);
   });

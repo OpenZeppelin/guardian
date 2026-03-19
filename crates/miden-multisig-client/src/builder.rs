@@ -13,7 +13,7 @@ use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
-use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
+use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
 
 /// Builder for constructing MultisigClient instances.
 ///
@@ -25,7 +25,7 @@ use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
 ///
 /// let client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-///     .psm_endpoint("http://localhost:50051")
+///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
 ///     .generate_key()
 ///     .build()
@@ -33,7 +33,7 @@ use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
 /// ```
 pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
-    psm_endpoint: Option<String>,
+    guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
 }
@@ -49,7 +49,7 @@ impl MultisigClientBuilder {
     pub fn new() -> Self {
         Self {
             miden_endpoint: None,
-            psm_endpoint: None,
+            guardian_endpoint: None,
             account_dir: None,
             key_manager: None,
         }
@@ -61,9 +61,9 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Sets the PSM server endpoint.
-    pub fn psm_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.psm_endpoint = Some(endpoint.into());
+    /// Sets the GUARDIAN server endpoint.
+    pub fn guardian_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.guardian_endpoint = Some(endpoint.into());
         self
     }
 
@@ -75,7 +75,7 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Sets a custom key manager for PSM authentication and proposal signing.
+    /// Sets a custom key manager for GUARDIAN authentication and proposal signing.
     pub fn key_manager(mut self, key_manager: Box<dyn KeyManager>) -> Self {
         self.key_manager = Some(key_manager.into());
         self
@@ -83,25 +83,25 @@ impl MultisigClientBuilder {
 
     /// Uses a FalconKeyStore with the given secret key.
     pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
-        self.key_manager = Some(Arc::new(PsmKeyStore::new(secret_key)));
+        self.key_manager = Some(Arc::new(GuardianKeyStore::new(secret_key)));
         self
     }
 
     /// Uses an ECDSA key store with the given secret key.
     pub fn with_ecdsa_secret_key(mut self, secret_key: EcdsaSecretKey) -> Self {
-        self.key_manager = Some(Arc::new(EcdsaPsmKeyStore::new(secret_key)));
+        self.key_manager = Some(Arc::new(EcdsaGuardianKeyStore::new(secret_key)));
         self
     }
 
-    /// Generates a new random key for PSM authentication.
+    /// Generates a new random key for GUARDIAN authentication.
     pub fn generate_key(mut self) -> Self {
-        self.key_manager = Some(Arc::new(PsmKeyStore::generate()));
+        self.key_manager = Some(Arc::new(GuardianKeyStore::generate()));
         self
     }
 
-    /// Generates a new random ECDSA key for PSM authentication.
+    /// Generates a new random ECDSA key for GUARDIAN authentication.
     pub fn generate_ecdsa_key(mut self) -> Self {
-        self.key_manager = Some(Arc::new(EcdsaPsmKeyStore::generate()));
+        self.key_manager = Some(Arc::new(EcdsaGuardianKeyStore::generate()));
         self
     }
 
@@ -111,9 +111,9 @@ impl MultisigClientBuilder {
             .miden_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("miden_endpoint".to_string()))?;
 
-        let psm_endpoint = self
-            .psm_endpoint
-            .ok_or_else(|| MultisigError::MissingConfig("psm_endpoint".to_string()))?;
+        let guardian_endpoint = self
+            .guardian_endpoint
+            .ok_or_else(|| MultisigError::MissingConfig("guardian_endpoint".to_string()))?;
 
         let account_dir = self
             .account_dir
@@ -131,7 +131,7 @@ impl MultisigClientBuilder {
         Ok(MultisigClient::new(
             miden_client,
             key_manager,
-            psm_endpoint,
+            guardian_endpoint,
             account_dir,
             miden_endpoint,
         ))

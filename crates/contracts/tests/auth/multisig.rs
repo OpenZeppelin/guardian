@@ -1,7 +1,10 @@
+use guardian_shared::SignatureScheme;
 use miden_confidential_contracts::masm_builder::{
-    get_multisig_ecdsa_library, get_multisig_library, get_psm_library,
+    get_guardian_library, get_multisig_ecdsa_library, get_multisig_library,
 };
-use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+use miden_confidential_contracts::multisig_guardian::{
+    MultisigGuardianBuilder, MultisigGuardianConfig,
+};
 use miden_protocol::account::{Account, StorageSlotName, auth::AuthSecretKey};
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
@@ -18,7 +21,6 @@ use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{MockChainBuilder, TxContextInput};
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
-use private_state_manager_shared::SignatureScheme;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
@@ -26,13 +28,13 @@ use rand_chacha::ChaCha20Rng;
 const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
 const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
 const PROC_THRESHOLD_ROOTS_SLOT: &str = "openzeppelin::multisig::procedure_thresholds";
-const PSM_PUBLIC_KEY_SLOT: &str = "openzeppelin::psm::public_key";
+const GUARDIAN_PUBLIC_KEY_SLOT: &str = "openzeppelin::guardian::public_key";
 
 // ================================================================================================
 // HELPER FUNCTIONS
 // ================================================================================================
 
-type MultisigPlusPsmTestSetup = (
+type MultisigPlusGuardianTestSetup = (
     Vec<SecretKey>,
     Vec<PublicKey>,
     Vec<BasicAuthenticator>,
@@ -43,9 +45,9 @@ type MultisigPlusPsmTestSetup = (
 
 type MultisigTestSetup = (Vec<SecretKey>, Vec<PublicKey>, Vec<BasicAuthenticator>);
 
-type PsmTestSetup = (SecretKey, PublicKey, BasicAuthenticator);
+type GuardianTestSetup = (SecretKey, PublicKey, BasicAuthenticator);
 
-type EcdsaMultisigPlusPsmTestSetup = (
+type EcdsaMultisigPlusGuardianTestSetup = (
     Vec<EcdsaSecretKey>,
     Vec<EcdsaPublicKey>,
     Vec<BasicAuthenticator>,
@@ -84,10 +86,10 @@ fn setup_keys_and_authenticators(
     Ok((secret_keys, public_keys, authenticators))
 }
 
-fn setup_keys_and_authenticators_with_psm(
+fn setup_keys_and_authenticators_with_guardian(
     num_approvers: usize,
     threshold: usize,
-) -> anyhow::Result<MultisigPlusPsmTestSetup> {
+) -> anyhow::Result<MultisigPlusGuardianTestSetup> {
     let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
 
     let mut secret_keys = Vec::new();
@@ -109,39 +111,39 @@ fn setup_keys_and_authenticators_with_psm(
         authenticators.push(authenticator);
     }
 
-    // Create a PSM authenticator (assuming PSM uses a single key for simplicity)
-    let psm_sec_key = SecretKey::with_rng(&mut rng);
-    let psm_pub_key = psm_sec_key.public_key();
-    let psm_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(psm_sec_key.clone())]);
+    // Create a GUARDIAN authenticator (assuming GUARDIAN uses a single key for simplicity)
+    let guardian_sec_key = SecretKey::with_rng(&mut rng);
+    let guardian_pub_key = guardian_sec_key.public_key();
+    let guardian_authenticator =
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(guardian_sec_key.clone())]);
 
     Ok((
         secret_keys,
         public_keys,
         authenticators,
-        psm_sec_key,
-        psm_pub_key,
-        psm_authenticator,
+        guardian_sec_key,
+        guardian_pub_key,
+        guardian_authenticator,
     ))
 }
 
-fn setup_keys_and_authenticator_for_psm() -> anyhow::Result<PsmTestSetup> {
+fn setup_keys_and_authenticator_for_guardian() -> anyhow::Result<GuardianTestSetup> {
     // Change the RNG seed to avoid key collision with other setups!!!
     let mut rng = ChaCha20Rng::from_seed([8u8; 32]);
 
-    // Create a PSM authenticator (assuming PSM uses a single key for simplicity)
-    let psm_sec_key = SecretKey::with_rng(&mut rng);
-    let psm_pub_key = psm_sec_key.public_key();
-    let psm_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(psm_sec_key.clone())]);
+    // Create a GUARDIAN authenticator (assuming GUARDIAN uses a single key for simplicity)
+    let guardian_sec_key = SecretKey::with_rng(&mut rng);
+    let guardian_pub_key = guardian_sec_key.public_key();
+    let guardian_authenticator =
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(guardian_sec_key.clone())]);
 
-    Ok((psm_sec_key, psm_pub_key, psm_authenticator))
+    Ok((guardian_sec_key, guardian_pub_key, guardian_authenticator))
 }
 
-fn setup_ecdsa_keys_and_authenticators_with_psm(
+fn setup_ecdsa_keys_and_authenticators_with_guardian(
     num_approvers: usize,
     threshold: usize,
-) -> anyhow::Result<EcdsaMultisigPlusPsmTestSetup> {
+) -> anyhow::Result<EcdsaMultisigPlusGuardianTestSetup> {
     let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
 
     let mut secret_keys = Vec::new();
@@ -162,49 +164,49 @@ fn setup_ecdsa_keys_and_authenticators_with_psm(
         authenticators.push(authenticator);
     }
 
-    let psm_sec_key = EcdsaSecretKey::with_rng(&mut rng);
-    let psm_pub_key = psm_sec_key.public_key();
-    let psm_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::EcdsaK256Keccak(psm_sec_key.clone())]);
+    let guardian_sec_key = EcdsaSecretKey::with_rng(&mut rng);
+    let guardian_pub_key = guardian_sec_key.public_key();
+    let guardian_authenticator =
+        BasicAuthenticator::new(&[AuthSecretKey::EcdsaK256Keccak(guardian_sec_key.clone())]);
 
     Ok((
         secret_keys,
         public_keys,
         authenticators,
-        psm_sec_key,
-        psm_pub_key,
-        psm_authenticator,
+        guardian_sec_key,
+        guardian_pub_key,
+        guardian_authenticator,
     ))
 }
 
-fn create_multisig_account_with_psm_commitments(
+fn create_multisig_account_with_guardian_commitments(
     threshold: u32,
     signer_commitments: Vec<Word>,
-    psm_commitment: Word,
-    psm_enabled: bool,
+    guardian_commitment: Word,
+    guardian_enabled: bool,
     signature_scheme: SignatureScheme,
 ) -> anyhow::Result<Account> {
-    let config = MultisigPsmConfig::new(threshold, signer_commitments, psm_commitment)
-        .with_psm_enabled(psm_enabled)
+    let config = MultisigGuardianConfig::new(threshold, signer_commitments, guardian_commitment)
+        .with_guardian_enabled(guardian_enabled)
         .with_signature_scheme(signature_scheme);
 
-    MultisigPsmBuilder::new(config).build_existing()
+    MultisigGuardianBuilder::new(config).build_existing()
 }
 
-fn create_multisig_account_with_psm(
+fn create_multisig_account_with_guardian(
     threshold: u32,
     public_keys: &[PublicKey],
-    psm_public_key: PublicKey,
-    psm_enabled: bool,
+    guardian_public_key: PublicKey,
+    guardian_enabled: bool,
 ) -> anyhow::Result<Account> {
     let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
-    let psm_commitment = psm_public_key.to_commitment();
+    let guardian_commitment = guardian_public_key.to_commitment();
 
-    create_multisig_account_with_psm_commitments(
+    create_multisig_account_with_guardian_commitments(
         threshold,
         signer_commitments,
-        psm_commitment,
-        psm_enabled,
+        guardian_commitment,
+        guardian_enabled,
         SignatureScheme::Falcon,
     )
 }
@@ -261,22 +263,22 @@ fn build_update_procedure_threshold_script(
 /// **Roles:**
 /// - 2 Approvers (multisig signers)
 /// - 1 Multisig Contract
-/// - 1 PSM Approver
+/// - 1 GUARDIAN Approver
 #[tokio::test]
-async fn test_multisig_2_of_2_with_note_creation_with_psm() -> anyhow::Result<()> {
-    // Setup keys and authenticators with psm
+async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Result<()> {
+    // Setup keys and authenticators with guardian
     let (
         _secret_keys,
         public_keys,
         authenticators,
-        _psm_secret_key,
-        psm_public_key,
-        psm_authenticator,
-    ) = setup_keys_and_authenticators_with_psm(2, 2)?;
+        _guardian_secret_key,
+        guardian_public_key,
+        guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
 
-    // Create multisig + psm account with PSM enabled
+    // Create multisig + guardian account with GUARDIAN enabled
     let mut multisig_account =
-        create_multisig_account_with_psm(2, &public_keys, psm_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
 
     let output_note_asset = FungibleAsset::mock(0);
 
@@ -327,9 +329,9 @@ async fn test_multisig_2_of_2_with_note_creation_with_psm() -> anyhow::Result<()
         .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
         .await?;
 
-    // Get signature from psm
-    let psm_sig = psm_authenticator
-        .get_signature(psm_public_key.to_commitment().into(), &tx_summary)
+    // Get signature from guardian
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
         .await?;
 
     // Execute transaction with signatures - should succeed
@@ -342,7 +344,7 @@ async fn test_multisig_2_of_2_with_note_creation_with_psm() -> anyhow::Result<()
         .extend_expected_output_notes(vec![OutputNote::Full(output_note)])
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
-        .add_signature(psm_public_key.clone().into(), msg, psm_sig)
+        .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
         .auth_args(salt)
         .build()?
         .execute()
@@ -353,23 +355,23 @@ async fn test_multisig_2_of_2_with_note_creation_with_psm() -> anyhow::Result<()
     Ok(())
 }
 
-/// Tests updating multisig signers and threshold with PSM authentication.
+/// Tests updating multisig signers and threshold with GUARDIAN authentication.
 #[tokio::test]
-async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
+async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     // This function can be implemented similarly to test_multisig_update_signers,
-    // but with the addition of PSM related logic.
+    // but with the addition of GUARDIAN related logic.
     let (
         _secret_keys,
         public_keys,
         authenticators,
-        _psm_secret_key,
-        psm_public_key,
-        psm_authenticator,
-    ) = setup_keys_and_authenticators_with_psm(2, 2)?;
+        _guardian_secret_key,
+        guardian_public_key,
+        guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
 
-    // Create multisig + psm account with PSM enabled
+    // Create multisig + guardian account with GUARDIAN enabled
     let multisig_account =
-        create_multisig_account_with_psm(2, &public_keys, psm_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
 
     // SECTION 1: Execute a transaction script to update signers and threshold
     // ================================================================================
@@ -468,8 +470,8 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
         .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
         .await?;
 
-    let psm_sig = psm_authenticator
-        .get_signature(psm_public_key.to_commitment().into(), &tx_summary)
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
         .await?;
 
     // Execute transaction with signatures - should succeed
@@ -479,7 +481,7 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
         .tx_script_args(multisig_config_hash)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
-        .add_signature(psm_public_key.clone().into(), msg, psm_sig)
+        .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
         .auth_args(salt)
         .extend_advice_inputs(advice_inputs)
         .build()?
@@ -541,35 +543,35 @@ async fn test_multisig_update_signers_with_psm() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Tests psm public key update functionality.
+/// Tests guardian public key update functionality.
 ///
 /// This test verifies that a multisig account can:
-/// 1. Execute a transaction script to update the psm public key without needing a psm signature
-/// 2. Create a second transaction signed by the new psm public key
-/// 3. Properly handle multisig psm authentication with the updated psm public key.
+/// 1. Execute a transaction script to update the guardian public key without needing a guardian signature
+/// 2. Create a second transaction signed by the new guardian public key
+/// 3. Properly handle multisig guardian authentication with the updated guardian public key.
 ///
 /// **Roles:**
 /// - 2 Original Approvers (multisig signers)
-/// - 1 PSM Approver
+/// - 1 GUARDIAN Approver
 /// - 1 Multisig Contract
-/// - 1 Transaction Script calling the update_psm_public_key procedure
+/// - 1 Transaction Script calling the update_guardian_public_key procedure
 #[tokio::test]
-async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
+async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     let (
         _secret_keys,
         public_keys,
         authenticators,
-        _psm_secret_key,
-        psm_public_key,
-        _psm_authenticator,
-    ) = setup_keys_and_authenticators_with_psm(2, 2)?;
+        _guardian_secret_key,
+        guardian_public_key,
+        _guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
 
-    // Initialize with PSM selector = OFF so key update doesn't require PSM signature
-    // This is the expected flow: disable PSM, update key, then enable PSM in a follow-up tx
+    // Initialize with GUARDIAN selector = OFF so key update doesn't require GUARDIAN signature
+    // This is the expected flow: disable GUARDIAN, update key, then enable GUARDIAN in a follow-up tx
     let multisig_account =
-        create_multisig_account_with_psm(2, &public_keys, psm_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
 
-    // SECTION 1: Execute a transaction script to update PSM public key
+    // SECTION 1: Execute a transaction script to update GUARDIAN public key
     // ================================================================================
 
     let mut mock_chain_builder =
@@ -591,35 +593,35 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 
     let salt = Word::from([Felt::new(3); 4]);
 
-    // Setup New PSM Public Key
-    let (_new_psm_secret_key, _new_psm_public_key, _new_psm_authenticatior) =
-        setup_keys_and_authenticator_for_psm()?;
+    // Setup New GUARDIAN Public Key
+    let (_new_guardian_secret_key, _new_guardian_public_key, _new_guardian_authenticatior) =
+        setup_keys_and_authenticator_for_guardian()?;
 
-    // Add new psm public key to advice inputs
+    // Add new guardian public key to advice inputs
     let advice_inputs = AdviceInputs::default().with_stack(
-        _new_psm_public_key
+        _new_guardian_public_key
             .to_commitment()
             .as_elements()
             .iter()
             .copied(),
     );
 
-    // Build the PSM library for transaction script
-    let psm_library = get_psm_library()?;
+    // Build the GUARDIAN library for transaction script
+    let guardian_library = get_guardian_library()?;
 
     // Use namespaced call syntax for dynamically linked library procedures
-    // This script only calls update_psm_public_key.
-    // Note: enable_psm is now a private procedure and is automatically called
-    // by verify_psm_signature at the end of transaction authentication.
+    // This script only calls update_guardian_public_key.
+    // Note: enable_guardian is now a private procedure and is automatically called
+    // by verify_guardian_signature at the end of transaction authentication.
     let tx_script_code = r#"
-    use oz_psm::psm
+    use oz_guardian::guardian
     begin
-        call.psm::update_psm_public_key
+        call.guardian::update_guardian_public_key
     end
     "#;
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&psm_library)?
+        .with_dynamically_linked_library(&guardian_library)?
         .compile_tx_script(tx_script_code)?;
 
     // Execute transaction without signatures first to get tx summary
@@ -646,8 +648,8 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
         .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
         .await?;
 
-    // Execute transaction with signatures without a need of the PSM signature! - should succeed
-    let update_psm_public_key_tx = mock_chain
+    // Execute transaction with signatures without a need of the GUARDIAN signature! - should succeed
+    let update_guardian_public_key_tx = mock_chain
         .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
@@ -661,31 +663,31 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 
     // Verify the transaction executed successfully
     assert_eq!(
-        update_psm_public_key_tx.account_delta().nonce_delta(),
+        update_guardian_public_key_tx.account_delta().nonce_delta(),
         Felt::new(1)
     );
 
-    mock_chain.add_pending_executed_transaction(&update_psm_public_key_tx)?;
+    mock_chain.add_pending_executed_transaction(&update_guardian_public_key_tx)?;
     mock_chain.prove_next_block()?;
 
-    // Apply the delta to get the updated account with new psm public key
+    // Apply the delta to get the updated account with new guardian public key
     let mut updated_multisig_account = multisig_account.clone();
-    updated_multisig_account.apply_delta(update_psm_public_key_tx.account_delta())?;
+    updated_multisig_account.apply_delta(update_guardian_public_key_tx.account_delta())?;
 
     let storage_key = [Felt::new(0), Felt::new(0), Felt::new(0), Felt::new(0)].into();
 
-    // Verify the psm public key was actually updated in storage
-    let psm_public_key_name = StorageSlotName::new(PSM_PUBLIC_KEY_SLOT).unwrap();
+    // Verify the guardian public key was actually updated in storage
+    let guardian_public_key_name = StorageSlotName::new(GUARDIAN_PUBLIC_KEY_SLOT).unwrap();
     let storage_item = updated_multisig_account
         .storage()
-        .get_map_item(&psm_public_key_name, storage_key)
+        .get_map_item(&guardian_public_key_name, storage_key)
         .unwrap();
 
-    let expected_word: Word = _new_psm_public_key.to_commitment();
+    let expected_word: Word = _new_guardian_public_key.to_commitment();
 
     assert_eq!(
         storage_item, expected_word,
-        "PSM Public key doesn't match expected value"
+        "GUARDIAN Public key doesn't match expected value"
     );
 
     Ok(())
@@ -694,14 +696,15 @@ async fn test_multisig_update_psm_public_key() -> anyhow::Result<()> {
 #[tokio::test]
 async fn test_multisig_update_procedure_threshold_replaces_existing_override() -> anyhow::Result<()>
 {
-    let (_secret_keys, public_keys, authenticators, _, psm_public_key, psm_authenticator) =
-        setup_keys_and_authenticators_with_psm(2, 1)?;
+    let (_secret_keys, public_keys, authenticators, _, guardian_public_key, guardian_authenticator) =
+        setup_keys_and_authenticators_with_guardian(2, 1)?;
 
     let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
     let send_asset_root = BasicWallet::move_asset_to_note_digest();
-    let config = MultisigPsmConfig::new(1, signer_commitments, psm_public_key.to_commitment())
-        .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
-    let multisig_account = MultisigPsmBuilder::new(config).build_existing()?;
+    let config =
+        MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
+    let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
     let salt = Word::from([Felt::new(5); 4]);
@@ -723,15 +726,19 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
     let signer_sig = authenticators[0]
         .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
         .await?;
-    let psm_sig = psm_authenticator
-        .get_signature(psm_public_key.to_commitment().into(), &tx_summary)
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
         .await?;
 
     let executed_tx = mock_chain
         .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script)
         .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
-        .add_signature(psm_public_key.to_commitment().into(), msg, psm_sig)
+        .add_signature(
+            guardian_public_key.to_commitment().into(),
+            msg,
+            guardian_sig,
+        )
         .auth_args(salt)
         .build()?
         .execute()
@@ -754,15 +761,16 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
 #[tokio::test]
 async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_override()
 -> anyhow::Result<()> {
-    let (_secret_keys, public_keys, authenticators, _, psm_public_key, psm_authenticator) =
-        setup_ecdsa_keys_and_authenticators_with_psm(2, 1)?;
+    let (_secret_keys, public_keys, authenticators, _, guardian_public_key, guardian_authenticator) =
+        setup_ecdsa_keys_and_authenticators_with_guardian(2, 1)?;
 
     let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
     let send_asset_root = BasicWallet::move_asset_to_note_digest();
-    let config = MultisigPsmConfig::new(1, signer_commitments, psm_public_key.to_commitment())
-        .with_signature_scheme(SignatureScheme::Ecdsa)
-        .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
-    let multisig_account = MultisigPsmBuilder::new(config).build_existing()?;
+    let config =
+        MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_signature_scheme(SignatureScheme::Ecdsa)
+            .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
+    let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
     let salt = Word::from([Felt::new(7); 4]);
@@ -788,15 +796,19 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
     let signer_sig = authenticators[0]
         .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
         .await?;
-    let psm_sig = psm_authenticator
-        .get_signature(psm_public_key.to_commitment().into(), &tx_summary)
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
         .await?;
 
     let executed_tx = mock_chain
         .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
         .tx_script(tx_script)
         .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
-        .add_signature(psm_public_key.to_commitment().into(), msg, psm_sig)
+        .add_signature(
+            guardian_public_key.to_commitment().into(),
+            msg,
+            guardian_sig,
+        )
         .auth_args(salt)
         .build()?
         .execute()
@@ -819,14 +831,15 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
 #[tokio::test]
 async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override()
 -> anyhow::Result<()> {
-    let (_secret_keys, public_keys, _, _, psm_public_key, _) =
-        setup_keys_and_authenticators_with_psm(2, 1)?;
+    let (_secret_keys, public_keys, _, _, guardian_public_key, _) =
+        setup_keys_and_authenticators_with_guardian(2, 1)?;
 
     let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
     let send_asset_root = BasicWallet::move_asset_to_note_digest();
-    let config = MultisigPsmConfig::new(1, signer_commitments, psm_public_key.to_commitment())
-        .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
-    let multisig_account = MultisigPsmBuilder::new(config).build_existing()?;
+    let config =
+        MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
+    let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
     let salt = Word::from([Felt::new(6); 4]);

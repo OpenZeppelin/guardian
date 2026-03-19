@@ -1,14 +1,14 @@
 //! Signer re-exports and hex utilities used by the multisig client.
 
+use guardian_shared::SignatureScheme;
 use miden_protocol::{FieldElement, Word};
-use private_state_manager_shared::SignatureScheme;
 
-pub use private_state_manager_client::{
-    EcdsaKeyStore as EcdsaPsmKeyStore, FalconKeyStore, Signer as KeyManager,
+pub use guardian_client::{
+    EcdsaKeyStore as EcdsaGuardianKeyStore, FalconKeyStore, Signer as KeyManager,
 };
 
 /// Backward-compatible alias for the Falcon key store.
-pub type PsmKeyStore = FalconKeyStore;
+pub type GuardianKeyStore = FalconKeyStore;
 
 /// Strips the "0x" prefix from a hex string if present.
 pub fn strip_hex_prefix(input: &str) -> &str {
@@ -77,6 +77,7 @@ pub fn commitment_from_hex(hex_str: &str) -> Result<Word, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guardian_shared::hex::FromHex;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
         PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
     };
@@ -84,7 +85,6 @@ mod tests {
         PublicKey as FalconPublicKey, Signature as FalconSignature,
     };
     use miden_protocol::utils::Deserializable;
-    use private_state_manager_shared::hex::FromHex;
 
     #[test]
     fn falcon_signer_commitment_roundtrip_via_hex() {
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn ecdsa_signer_commitment_roundtrip_via_hex() {
-        let signer = EcdsaPsmKeyStore::generate();
+        let signer = EcdsaGuardianKeyStore::generate();
         let hex = signer.commitment_hex();
         let parsed = commitment_from_hex(&hex).unwrap();
         assert_eq!(parsed, signer.commitment());
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn ecdsa_signer_signature_hex_is_verifiable() {
-        let signer = EcdsaPsmKeyStore::generate();
+        let signer = EcdsaGuardianKeyStore::generate();
         let message = Word::default();
         let signature_bytes =
             hex::decode(signer.sign_word_hex(message).trim_start_matches("0x")).unwrap();
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn proposal_public_key_hex_is_present_for_ecdsa() {
-        let signer = EcdsaPsmKeyStore::generate();
+        let signer = EcdsaGuardianKeyStore::generate();
         assert_eq!(
             proposal_public_key_hex(&signer),
             Some(signer.public_key_hex())

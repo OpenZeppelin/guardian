@@ -1,12 +1,12 @@
 [package]
-name = "psm-rust-example"
+name = "guardian-rust-example"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [dependencies]
-private-state-manager-client = { path = "../../crates/client" }
-private-state-manager-shared = { path = "../../crates/shared" }
+guardian-client = { path = "../../crates/client" }
+guardian-shared = { path = "../../crates/shared" }
 miden-confidential-contracts = { path = "../../crates/contracts" }
 
 # Miden client for transaction execution and proving

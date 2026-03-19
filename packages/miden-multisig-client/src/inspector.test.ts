@@ -9,9 +9,9 @@ const MULTISIG_SLOT_NAMES = {
   PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
 } as const;
 
-const PSM_SLOT_NAMES = {
-  SELECTOR: 'openzeppelin::psm::selector',
-  PUBLIC_KEY: 'openzeppelin::psm::public_key',
+const GUARDIAN_SLOT_NAMES = {
+  SELECTOR: 'openzeppelin::guardian::selector',
+  PUBLIC_KEY: 'openzeppelin::guardian::public_key',
 } as const;
 
 // Mock the Miden SDK
@@ -44,25 +44,25 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     Account: {
       deserialize: vi.fn((bytes: Uint8Array) => {
         // Return different mocked accounts based on test scenario
-        // Default: 2-of-3 multisig with PSM enabled
+        // Default: 2-of-3 multisig with GUARDIAN enabled
         const slot0 = createMockWord([2n, 3n, 0n, 0n]); // threshold=2, numSigners=3
-        const slot4 = createMockWord([1n, 0n, 0n, 0n]); // PSM enabled
+        const slot4 = createMockWord([1n, 0n, 0n, 0n]); // GUARDIAN enabled
 
         const signerMap = new Map<string, any>();
         signerMap.set('0', createMockWord([BigInt('0x1111111111111111'), BigInt('0x2222222222222222'), BigInt('0x3333333333333333'), BigInt('0x4444444444444444')]));
         signerMap.set('1', createMockWord([BigInt('0x5555555555555555'), BigInt('0x6666666666666666'), BigInt('0x7777777777777777'), BigInt('0x8888888888888888')]));
         signerMap.set('2', createMockWord([BigInt('0xaaaaaaaaaaaaaaaa'), BigInt('0xbbbbbbbbbbbbbbbb'), BigInt('0xcccccccccccccccc'), BigInt('0xdddddddddddddddd')]));
 
-        const psmMap = new Map<string, any>();
-        psmMap.set('0', createMockWord([BigInt('0xeeeeeeeeeeeeeeee'), BigInt('0xffffffffffffffff'), BigInt('0x0000000000000001'), BigInt('0x0000000000000002')]));
+        const guardianMap = new Map<string, any>();
+        guardianMap.set('0', createMockWord([BigInt('0xeeeeeeeeeeeeeeee'), BigInt('0xffffffffffffffff'), BigInt('0x0000000000000001'), BigInt('0x0000000000000002')]));
 
         const slots = new Map<string, any>();
         slots.set('openzeppelin::multisig::threshold_config', slot0);
-        slots.set('openzeppelin::psm::selector', slot4);
+        slots.set('openzeppelin::guardian::selector', slot4);
 
         const maps = new Map<string, Map<string, any>>();
         maps.set('openzeppelin::multisig::signer_public_keys', signerMap);
-        maps.set('openzeppelin::psm::public_key', psmMap);
+        maps.set('openzeppelin::guardian::public_key', guardianMap);
 
         return {
           storage: () => createMockStorage(slots, maps),
@@ -94,12 +94,12 @@ describe('AccountInspector', () => {
       expect(config.numSigners).toBe(3);
     });
 
-    it('extracts PSM status', () => {
+    it('extracts GUARDIAN status', () => {
       const base64 = btoa(String.fromCharCode(...new Uint8Array([1, 2, 3])));
       const config = AccountInspector.fromBase64(base64);
 
-      expect(config.psmEnabled).toBe(true);
-      expect(config.psmCommitment).toMatch(/^0x[a-f0-9]+$/);
+      expect(config.guardianEnabled).toBe(true);
+      expect(config.guardianCommitment).toMatch(/^0x[a-f0-9]+$/);
     });
 
     it('extracts signer commitments', () => {
@@ -146,7 +146,7 @@ describe('AccountInspector edge cases', () => {
     vi.clearAllMocks();
   });
 
-  it('handles account with PSM disabled', async () => {
+  it('handles account with GUARDIAN disabled', async () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     // Override mock for this test
@@ -154,7 +154,7 @@ describe('AccountInspector edge cases', () => {
       storage: () => ({
         getItem: (slotName: string) => {
           if (slotName === 'openzeppelin::multisig::threshold_config') return { toU64s: () => [1n, 1n, 0n, 0n] };
-          if (slotName === 'openzeppelin::psm::selector') return { toU64s: () => [0n, 0n, 0n, 0n] }; // PSM disabled
+          if (slotName === 'openzeppelin::guardian::selector') return { toU64s: () => [0n, 0n, 0n, 0n] }; // GUARDIAN disabled
           return { toU64s: () => [0n, 0n, 0n, 0n] };
         },
         getMapItem: (slotName: string, key: any) => {
@@ -175,8 +175,8 @@ describe('AccountInspector edge cases', () => {
     const account = Account.deserialize(new Uint8Array([1, 2, 3]));
     const config = AccountInspector.fromAccount(account);
 
-    expect(config.psmEnabled).toBe(false);
-    expect(config.psmCommitment).toBeNull();
+    expect(config.guardianEnabled).toBe(false);
+    expect(config.guardianCommitment).toBeNull();
   });
 
   it('handles account with empty vault', async () => {
@@ -207,7 +207,7 @@ describe('AccountInspector edge cases', () => {
       storage: () => ({
         getItem: (slotName: string) => {
           if (slotName === 'openzeppelin::multisig::threshold_config') return { toU64s: () => [2n, 5n, 0n, 0n] }; // threshold=2, numSigners=5
-          if (slotName === 'openzeppelin::psm::selector') return { toU64s: () => [0n, 0n, 0n, 0n] };
+          if (slotName === 'openzeppelin::guardian::selector') return { toU64s: () => [0n, 0n, 0n, 0n] };
           return { toU64s: () => [0n, 0n, 0n, 0n] };
         },
         getMapItem: () => {
