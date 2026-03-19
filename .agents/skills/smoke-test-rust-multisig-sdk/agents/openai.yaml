@@ -1,0 +1,4 @@
+interface:
+  display_name: "Smoke Test Rust Multisig SDK"
+  short_description: "Run demo-driven Rust multisig smoke tests"
+  default_prompt: "Use $smoke-test-rust-multisig-sdk to smoke test the Rust multisig SDK through the interactive demo and core proposal workflows."

@@ -1,6 +1,8 @@
 //! Unified proposal management - all proposal operations in one place.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 use miden_multisig_client::{
     ensure_hex_prefix, word_from_hex, Asset, ExportedProposal, NoteId, ProcedureName,
@@ -15,6 +17,8 @@ use crate::display::{
 };
 use crate::menu::prompt_input;
 use crate::state::SessionState;
+
+type StateFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + 'a>>;
 
 /// Proposal Management submenu - all proposal operations.
 pub async fn action_proposal_management(
@@ -176,6 +180,36 @@ fn is_commitment_mismatch_error(error: &str) -> bool {
         || error.contains("commitment mismatch")
 }
 
+fn is_recency_condition_error(error: &str) -> bool {
+    error.contains("recency condition error") || error.contains("too far behind the chain tip")
+}
+
+async fn sync_network_only_for_retry(state: &mut SessionState) -> Result<(), String> {
+    print_info("  Client is behind the chain tip. Syncing with the Miden network and retrying...");
+    let client = state.get_client_mut()?;
+    client
+        .sync_network_only()
+        .await
+        .map_err(|e| format!("Failed to sync with Miden network: {}", e))
+}
+
+async fn retry_on_recency_condition<T, F>(
+    state: &mut SessionState,
+    mut operation: F,
+) -> Result<T, String>
+where
+    F: for<'a> FnMut(&'a mut SessionState) -> StateFuture<'a, T>,
+{
+    match operation(state).await {
+        Ok(value) => Ok(value),
+        Err(error) if is_recency_condition_error(&error) => {
+            sync_network_only_for_retry(state).await?;
+            operation(state).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Maximum number of retries for proposal creation when delta is pending.
 const MAX_PROPOSAL_RETRIES: u32 = 6;
 /// Delay between retries in seconds.
@@ -192,13 +226,22 @@ async fn create_proposal_with_retry(
     let mut commitment_mismatch_retried = false;
 
     for attempt in 1..=MAX_PROPOSAL_RETRIES {
-        let client = state.get_client_mut()?;
-        let result = client.propose_transaction(transaction_type.clone()).await;
+        let result = retry_on_recency_condition(state, |state| {
+            let transaction_type = transaction_type.clone();
+            Box::pin(async move {
+                let client = state.get_client_mut()?;
+                client
+                    .propose_transaction(transaction_type)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .await;
 
         match result {
             Ok(proposal) => return Ok(proposal),
             Err(e) => {
-                last_error = e.to_string();
+                last_error = e;
 
                 if is_commitment_mismatch_error(&last_error) && !commitment_mismatch_retried {
                     // Account was updated on-chain - need to re-sync and re-pull from GUARDIAN
@@ -269,13 +312,17 @@ async fn create_proposal_with_retry(
 async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
     print_section("View Pending Proposals");
 
-    let client = state.get_client_mut()?;
-
     print_waiting("Fetching proposals from GUARDIAN");
-    let proposals = client
-        .list_proposals()
-        .await
-        .map_err(|e| format!("Failed to fetch proposals: {}", e))?;
+    let proposals = retry_on_recency_condition(state, |state| {
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .list_proposals()
+                .await
+                .map_err(|e| format!("Failed to fetch proposals: {}", e))
+        })
+    })
+    .await?;
 
     if proposals.is_empty() {
         print_info("No pending proposals found for this account");
@@ -312,13 +359,17 @@ async fn action_sign_proposal(
 ) -> Result<(), String> {
     print_section("Sign a Proposal");
 
-    let client = state.get_client_mut()?;
-
     print_waiting("Fetching proposals from GUARDIAN");
-    let proposals = client
-        .list_proposals()
-        .await
-        .map_err(|e| format!("Failed to fetch proposals: {}", e))?;
+    let proposals = retry_on_recency_condition(state, |state| {
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .list_proposals()
+                .await
+                .map_err(|e| format!("Failed to fetch proposals: {}", e))
+        })
+    })
+    .await?;
 
     if proposals.is_empty() {
         print_info("No pending proposals found");
@@ -348,12 +399,19 @@ async fn action_sign_proposal(
     let proposal_id = proposals[idx].id.clone();
     print_waiting("Signing proposal");
 
-    let client = state.get_client_mut()?;
-    let updated = client
-        .sign_proposal(&proposal_id)
-        .await
-        .map_err(|e| format!("Failed to sign: {}", e))?;
+    let updated = retry_on_recency_condition(state, |state| {
+        let proposal_id = proposal_id.clone();
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .sign_proposal(&proposal_id)
+                .await
+                .map_err(|e| format!("Failed to sign: {}", e))
+        })
+    })
+    .await?;
 
+    let client = state.get_client()?;
     print_success(&format!(
         "Signed with key {}",
         shorten_hex(&client.user_commitment_hex())
@@ -376,13 +434,17 @@ async fn action_execute_proposal(
 ) -> Result<(), String> {
     print_section("Execute Proposal");
 
-    let client = state.get_client_mut()?;
-
     print_waiting("Fetching proposals from GUARDIAN");
-    let proposals = client
-        .list_proposals()
-        .await
-        .map_err(|e| format!("Failed to get proposals: {}", e))?;
+    let proposals = retry_on_recency_condition(state, |state| {
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .list_proposals()
+                .await
+                .map_err(|e| format!("Failed to get proposals: {}", e))
+        })
+    })
+    .await?;
 
     if proposals.is_empty() {
         print_info("No pending proposals found");
@@ -417,8 +479,17 @@ async fn action_execute_proposal(
 
     print_waiting("Executing proposal");
 
-    let client = state.get_client_mut()?;
-    let execute_result = client.execute_proposal(&proposal_id).await;
+    let execute_result = retry_on_recency_condition(state, |state| {
+        let proposal_id = proposal_id.clone();
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .execute_proposal(&proposal_id)
+                .await
+                .map_err(|e| format!("Failed to execute: {}", e))
+        })
+    })
+    .await;
 
     match execute_result {
         Ok(()) => {
@@ -444,12 +515,11 @@ async fn action_execute_proposal(
             Ok(())
         }
         Err(e) => {
-            let error_str = e.to_string();
-            if is_pending_candidate_error(&error_str) {
+            if is_pending_candidate_error(&e) {
                 print_error("A previous transaction is still being processed on-chain.");
                 print_info("Please wait for it to be confirmed before executing proposals.");
             }
-            Err(format!("Failed to execute: {}", e))
+            Err(e)
         }
     }
 }
@@ -465,13 +535,17 @@ async fn action_export_proposal(
 ) -> Result<(), String> {
     print_section("Export Proposal to File");
 
-    let client = state.get_client_mut()?;
-
     print_waiting("Fetching proposals from GUARDIAN");
-    let proposals = client
-        .list_proposals()
-        .await
-        .map_err(|e| format!("Failed to get proposals: {}", e))?;
+    let proposals = retry_on_recency_condition(state, |state| {
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .list_proposals()
+                .await
+                .map_err(|e| format!("Failed to get proposals: {}", e))
+        })
+    })
+    .await?;
 
     if proposals.is_empty() {
         print_info("No pending proposals found");
@@ -509,11 +583,18 @@ async fn action_export_proposal(
 
     print_waiting("Exporting proposal");
 
-    let client = state.get_client_mut()?;
-    client
-        .export_proposal(&proposal_id, Path::new(&path))
-        .await
-        .map_err(|e| format!("Failed to export: {}", e))?;
+    retry_on_recency_condition(state, |state| {
+        let proposal_id = proposal_id.clone();
+        let path = path.clone();
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .export_proposal(&proposal_id, Path::new(&path))
+                .await
+                .map_err(|e| format!("Failed to export: {}", e))
+        })
+    })
+    .await?;
 
     print_success(&format!("Proposal exported to: {}", path));
     print_info("Share this file with other cosigners for offline signing");
@@ -560,11 +641,17 @@ async fn action_import_and_work(
 
     print_waiting("Importing proposal");
 
-    let client = state.get_client_mut()?;
-    let proposal = client
-        .import_proposal(Path::new(&path))
-        .await
-        .map_err(|e| format!("Failed to import: {}", e))?;
+    let proposal = retry_on_recency_condition(state, |state| {
+        let path = path.clone();
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .import_proposal(Path::new(&path))
+                .await
+                .map_err(|e| format!("Failed to import: {}", e))
+        })
+    })
+    .await?;
 
     print_success("Proposal imported successfully!");
     print_proposal_details(&proposal);
@@ -619,11 +706,22 @@ async fn sign_imported_proposal(
 
     print_waiting("Signing proposal");
 
-    let client = state.get_client_mut()?;
-    client
+    match state
+        .get_client_mut()?
         .sign_imported_proposal(&mut proposal)
         .await
-        .map_err(|e| format!("Failed to sign: {}", e))?;
+    {
+        Ok(()) => {}
+        Err(e) if is_recency_condition_error(&e.to_string()) => {
+            sync_network_only_for_retry(state).await?;
+            state
+                .get_client_mut()?
+                .sign_imported_proposal(&mut proposal)
+                .await
+                .map_err(|retry_error| format!("Failed to sign: {}", retry_error))?;
+        }
+        Err(e) => return Err(format!("Failed to sign: {}", e)),
+    }
 
     print_success("Proposal signed!");
     println!(
@@ -682,12 +780,24 @@ async fn execute_imported_proposal(
 
     // Execute and get nonce in a scope to release borrow
     let nonce = {
-        let client = state.get_client_mut()?;
-        client
+        match state
+            .get_client_mut()?
             .execute_imported_proposal(&proposal)
             .await
-            .map_err(|e| format!("Failed to execute: {}", e))?;
+        {
+            Ok(()) => {}
+            Err(e) if is_recency_condition_error(&e.to_string()) => {
+                sync_network_only_for_retry(state).await?;
+                state
+                    .get_client_mut()?
+                    .execute_imported_proposal(&proposal)
+                    .await
+                    .map_err(|retry_error| format!("Failed to execute: {}", retry_error))?;
+            }
+            Err(e) => return Err(format!("Failed to execute: {}", e)),
+        }
 
+        let client = state.get_client()?;
         print_success("Transaction executed successfully!");
 
         client
