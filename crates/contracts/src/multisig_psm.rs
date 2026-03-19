@@ -13,10 +13,7 @@ use miden_protocol::{
 };
 use miden_standards::account::wallets::BasicWallet;
 
-use crate::masm_builder::{
-    build_multisig_component, build_multisig_ecdsa_component, build_psm_component,
-    build_psm_ecdsa_component,
-};
+use crate::masm_builder::{build_multisig_psm_component, build_multisig_psm_ecdsa_component};
 use private_state_manager_shared::SignatureScheme;
 
 /// Configuration for creating a MultisigPsm account.
@@ -94,15 +91,13 @@ impl MultisigPsmConfig {
 ///
 /// # Storage Layout
 ///
-/// The account uses two components with the following storage layout:
+/// The account uses a single auth component with the following storage layout:
 ///
-/// **Multisig Component (4 slots):**
+/// **Combined Auth Component (6 slots):**
 /// - Slot 0: Threshold config `[threshold, num_signers, 0, 0]`
 /// - Slot 1: Signer public keys map `[index, 0, 0, 0] => COMMITMENT`
 /// - Slot 2: Executed transactions map (for replay protection)
 /// - Slot 3: Procedure threshold overrides map
-///
-/// **PSM Component (2 slots, offset by 4):**
 /// - Slot 4: PSM selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
 /// - Slot 5: PSM public key map `[0, 0, 0, 0] => PSM_COMMITMENT`
 ///
@@ -155,29 +150,20 @@ impl MultisigPsmBuilder {
     /// Builds the MultisigPsm account.
     ///
     /// This creates a new account with:
-    /// - Multisig authentication component
-    /// - PSM verification component
+    /// - Multisig authentication component with PSM procedures
     /// - BasicWallet component for asset management
     pub fn build(self) -> Result<Account> {
         self.validate_config()?;
 
-        let multisig_slots = self.build_multisig_slots()?;
-        let psm_slots = self.build_psm_slots()?;
+        let auth_slots = self.build_auth_slots()?;
 
-        let (multisig_component, psm_component) = match self.config.signature_scheme {
-            SignatureScheme::Falcon => (
-                build_multisig_component(multisig_slots)?,
-                build_psm_component(psm_slots)?,
-            ),
-            SignatureScheme::Ecdsa => (
-                build_multisig_ecdsa_component(multisig_slots)?,
-                build_psm_ecdsa_component(psm_slots)?,
-            ),
+        let auth_component = match self.config.signature_scheme {
+            SignatureScheme::Falcon => build_multisig_psm_component(auth_slots)?,
+            SignatureScheme::Ecdsa => build_multisig_psm_ecdsa_component(auth_slots)?,
         };
 
         let account = AccountBuilder::new(self.seed)
-            .with_auth_component(multisig_component)
-            .with_component(psm_component)
+            .with_auth_component(auth_component)
             .with_component(BasicWallet)
             .account_type(self.account_type)
             .storage_mode(self.storage_mode)
@@ -191,23 +177,15 @@ impl MultisigPsmBuilder {
     pub fn build_existing(self) -> Result<Account> {
         self.validate_config()?;
 
-        let multisig_slots = self.build_multisig_slots()?;
-        let psm_slots = self.build_psm_slots()?;
+        let auth_slots = self.build_auth_slots()?;
 
-        let (multisig_component, psm_component) = match self.config.signature_scheme {
-            SignatureScheme::Falcon => (
-                build_multisig_component(multisig_slots)?,
-                build_psm_component(psm_slots)?,
-            ),
-            SignatureScheme::Ecdsa => (
-                build_multisig_ecdsa_component(multisig_slots)?,
-                build_psm_ecdsa_component(psm_slots)?,
-            ),
+        let auth_component = match self.config.signature_scheme {
+            SignatureScheme::Falcon => build_multisig_psm_component(auth_slots)?,
+            SignatureScheme::Ecdsa => build_multisig_psm_ecdsa_component(auth_slots)?,
         };
 
         let account = AccountBuilder::new(self.seed)
-            .with_auth_component(multisig_component)
-            .with_component(psm_component)
+            .with_auth_component(auth_component)
             .with_component(BasicWallet)
             .account_type(self.account_type)
             .storage_mode(self.storage_mode)
@@ -283,6 +261,12 @@ impl MultisigPsmBuilder {
         );
 
         Ok(vec![slot_0, slot_1, slot_2, slot_3])
+    }
+
+    fn build_auth_slots(&self) -> Result<Vec<StorageSlot>> {
+        let mut slots = self.build_multisig_slots()?;
+        slots.extend(self.build_psm_slots()?);
+        Ok(slots)
     }
 
     fn build_psm_slots(&self) -> Result<Vec<StorageSlot>> {

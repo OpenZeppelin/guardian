@@ -23,7 +23,7 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => {
-                word_from_hex("ee03e0b55aa93934e9cc1faa4e982e392a41ad627a93e72737a1e8f49160d229")
+                word_from_hex("cb3364ddaa023b48707a5b5cc48c74079b83b000fe198db9e4d0ce6327d7ae0b")
             }
             ProcedureName::UpdateProcedureThreshold => {
                 word_from_hex("d772d8edee882f6b6d7a78aff6e3041c5782294b6bdc5c8d94b23a0a12f9a1cd")

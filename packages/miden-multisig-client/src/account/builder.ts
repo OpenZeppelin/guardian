@@ -18,7 +18,11 @@ import {
   MULTISIG_MASM,
   PSM_ECDSA_MASM,
   PSM_MASM,
-} from './masm.js';
+} from './masm/auth.js';
+import {
+  MULTISIG_PSM_ACCOUNT_COMPONENT_MASM,
+  MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM,
+} from './masm/account-components/auth.js';
 import { normalizeSignerCommitment } from '../utils/signature.js';
 
 /**
@@ -34,23 +38,30 @@ export async function createMultisigAccount(
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const signatureScheme = config.signatureScheme ?? 'falcon';
-  const multisigSlots = buildMultisigStorageSlots(config);
-  const psmSlots = buildPsmStorageSlots(config);
+  const authSlots = [
+    ...buildMultisigStorageSlots(config),
+    ...buildPsmStorageSlots(config),
+  ];
   const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
   const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
-  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
+  const authComponentMasm = signatureScheme === 'ecdsa'
+    ? MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM
+    : MULTISIG_PSM_ACCOUNT_COMPONENT_MASM;
+  const psmLibraryPath = signatureScheme === 'ecdsa'
+    ? 'openzeppelin::auth::psm_ecdsa'
+    : 'openzeppelin::auth::psm';
+  const multisigLibraryPath = signatureScheme === 'ecdsa'
+    ? 'openzeppelin::auth::multisig_ecdsa'
+    : 'openzeppelin::auth::multisig';
 
-  const psmBuilder = webClient.createCodeBuilder();
-  const psmCode = psmBuilder.compileAccountComponentCode(psmMasm);
-  const psmComponent = AccountComponent
-    .compile(psmCode, psmSlots)
-    .withSupportsAllTypes();
-  const multisigBuilder = webClient.createCodeBuilder();
-  const psmLib = multisigBuilder.buildLibrary(psmLibraryPath, psmMasm);
-  multisigBuilder.linkStaticLibrary(psmLib);
-  const multisigCode = multisigBuilder.compileAccountComponentCode(multisigMasm);
-  const multisigComponent = AccountComponent
-    .compile(multisigCode, multisigSlots)
+  const authBuilder = webClient.createCodeBuilder();
+  const psmLib = authBuilder.buildLibrary(psmLibraryPath, psmMasm);
+  authBuilder.linkStaticLibrary(psmLib);
+  const multisigLib = authBuilder.buildLibrary(multisigLibraryPath, multisigMasm);
+  authBuilder.linkStaticLibrary(multisigLib);
+  const authCode = authBuilder.compileAccountComponentCode(authComponentMasm);
+  const authComponent = AccountComponent
+    .compile(authCode, authSlots)
     .withSupportsAllTypes();
 
   // Generate random seed
@@ -64,8 +75,7 @@ export async function createMultisigAccount(
   const accountBuilder = new AccountBuilder(seed)
     .accountType(AccountType.RegularAccountUpdatableCode)
     .storageMode(storageMode)
-    .withAuthComponent(multisigComponent)
-    .withComponent(psmComponent)
+    .withAuthComponent(authComponent)
     .withBasicWalletComponent();
 
   const result = accountBuilder.build();

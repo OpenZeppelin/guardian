@@ -1,14 +1,10 @@
-# Multi-Signature ECDSA secp256k1 Authentication Component
+# Multi-Signature ECDSA secp256k1 Authentication Core Library
 #
-# This component provides multi-signature authentication for accounts using
-# ECDSA secp256k1 (k256/keccak) signatures instead of RPO Falcon 512.
-# It integrates with the PSM component for optional PSM signature verification.
+# This library provides the reusable multisig procedures used by account wrappers.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::standards::auth
-use openzeppelin::psm_ecdsa
-
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # CONSTANTS
@@ -72,7 +68,7 @@ const ERR_PROC_THRESHOLD_EXCEEDS_NUM_APPROVERS="procedure threshold exceeds numb
 #!
 #! Panics if:
 #! - the same transaction has already been executed
-proc assert_new_tx(msg: BeWord)
+pub proc assert_new_tx(msg: BeWord)
     push.IS_EXECUTED_FLAG
     # => [[0, 0, 0, is_executed], MSG]
 
@@ -436,8 +432,7 @@ end
 #! 1. Computing the transaction summary message that needs to be signed
 #! 2. Verifying ECDSA signatures from multiple required signers against their public keys
 #! 3. Ensuring the minimum threshold of valid signatures is met
-#! 4. Implementing replay protection by tracking executed transactions
-#! 5. Verifying PSM signature if PSM selector is enabled (via PSM component)
+#! 4. Returning the transaction summary commitment for higher-level wrappers.
 #!
 #! Inputs:
 #!   Operand stack: [SALT]
@@ -447,7 +442,7 @@ end
 #!     h(PUB_KEY_n, MSG): SIG_n
 #!   }
 #! Outputs:
-#!   Operand stack: []
+#!   Operand stack: [TX_SUMMARY_COMMITMENT]
 #!
 #! Where:
 #! - SALT is a cryptographically random nonce that enables multiple concurrent
@@ -459,12 +454,11 @@ end
 #!
 #! Panics if:
 #! - insufficient number of valid signatures (below threshold).
-#! - the same transaction has already been executed (replay protection).
-#! - PSM signature verification fails (if PSM is enabled).
+#! - insufficient number of valid signatures (below threshold).
 #!
-#! Invocation: call
+#! Invocation: exec
 @locals(1)
-pub proc auth_tx_ecdsa_multisig(salt: BeWord)
+pub proc auth_tx(salt: BeWord) -> BeWord
     exec.native_account::incr_nonce drop
     # => [SALT]
 
@@ -518,11 +512,5 @@ pub proc auth_tx_ecdsa_multisig(salt: BeWord)
         push.0 assert.err="insufficient number of signatures"
     end
 
-    # ------ Verifying PSM Signature ------
     # => [TX_SUMMARY_COMMITMENT]
-    call.psm_ecdsa::verify_psm_signature
-
-    # ------ Writing executed transaction MSG to map ------
-    # => [TX_SUMMARY_COMMITMENT]
-    exec.assert_new_tx
 end

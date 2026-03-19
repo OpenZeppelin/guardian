@@ -1,0 +1,17 @@
+# Multi-Signature RPO Falcon 512 Authentication Component With PSM
+
+use openzeppelin::auth::multisig
+use openzeppelin::auth::psm
+
+type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
+
+pub use multisig::update_signers_and_threshold
+pub use multisig::update_procedure_threshold
+pub use psm::update_psm_public_key
+pub use psm::verify_psm_signature
+
+pub proc auth_tx_multisig_psm(salt: BeWord)
+    exec.multisig::auth_tx
+    exec.psm::verify_psm_signature
+    exec.multisig::assert_new_tx
+end

@@ -27,7 +27,7 @@ struct ProcedureRootRecord {
 
 #[derive(Debug, Serialize)]
 struct ProcedureRootOutput {
-    component_order: [&'static str; 3],
+    component_order: Vec<&'static str>,
     procedure_roots: Vec<ProcedureRootRecord>,
 }
 
@@ -61,8 +61,8 @@ fn procedure_name_and_component(
         match idx {
             0 => ("update_signers", "Multisig"),
             1 => ("update_procedure_threshold", "Multisig"),
-            2 => ("auth_tx", "Multisig"),
-            3 => ("update_psm", "PSM"),
+            2 => ("update_psm", "Multisig"),
+            3 => ("auth_tx", "Multisig"),
             4 => ("verify_psm", "PSM"),
             _ => ("unknown", "unknown"),
         }
@@ -110,7 +110,7 @@ fn main() {
 
     if env::args().any(|arg| arg == "--json") {
         let output = ProcedureRootOutput {
-            component_order: ["Multisig (auth)", "PSM", "BasicWallet"],
+            component_order: vec!["Multisig + PSM (auth)", "BasicWallet"],
             procedure_roots,
         };
         println!(
@@ -126,7 +126,7 @@ fn main() {
     println!("  send_asset:    {}", procedure_roots[5].rust_hex);
 
     println!("\nAll account procedures (ordered by component):");
-    println!("  Component order: Multisig (auth) -> PSM -> BasicWallet\n");
+    println!("  Component order: Multisig + PSM (auth) -> BasicWallet\n");
 
     for procedure in &procedure_roots {
         println!("  [{}] {}", procedure.index, procedure.rust_hex);

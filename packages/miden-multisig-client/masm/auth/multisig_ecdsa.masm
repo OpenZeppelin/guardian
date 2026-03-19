@@ -1,13 +1,10 @@
-# Multi-Signature RPO Falcon 512 Authentication Component
+# Multi-Signature ECDSA secp256k1 Authentication Core Library
 #
-# This component provides multi-signature authentication for accounts.
-# It integrates with the PSM component for optional PSM signature verification.
+# This library provides the reusable multisig procedures used by account wrappers.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::standards::auth
-use openzeppelin::psm
-
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # CONSTANTS
@@ -71,7 +68,7 @@ const ERR_PROC_THRESHOLD_EXCEEDS_NUM_APPROVERS="procedure threshold exceeds numb
 #!
 #! Panics if:
 #! - the same transaction has already been executed
-proc assert_new_tx(msg: BeWord)
+pub proc assert_new_tx(msg: BeWord)
     push.IS_EXECUTED_FLAG
     # => [[0, 0, 0, is_executed], MSG]
 
@@ -429,41 +426,39 @@ proc compute_transaction_threshold(default_threshold: u32) -> u32
     # => [effective_transaction_threshold]
 end
 
-#! Authenticate a transaction using the Falcon signature scheme with multi-signature support.
+#! Authenticate a transaction using ECDSA secp256k1 with multi-signature support.
 #!
 #! This procedure implements multi-signature authentication by:
 #! 1. Computing the transaction summary message that needs to be signed
-#! 2. Verifying signatures from multiple required signers against their public keys
+#! 2. Verifying ECDSA signatures from multiple required signers against their public keys
 #! 3. Ensuring the minimum threshold of valid signatures is met
-#! 4. Implementing replay protection by tracking executed transactions
-#! 5. Verifying PSM signature if PSM selector is enabled (via PSM component)
+#! 4. Returning the transaction summary commitment for higher-level wrappers.
 #!
 #! Inputs:
 #!   Operand stack: [SALT]
 #!   Advice map: {
-#!     h(SIG_0, MSG): SIG_0,
-#!     h(SIG_1, MSG): SIG_1,
-#!     h(SIG_n, MSG): SIG_n
+#!     h(PUB_KEY_0, MSG): SIG_0,
+#!     h(PUB_KEY_1, MSG): SIG_1,
+#!     h(PUB_KEY_n, MSG): SIG_n
 #!   }
 #! Outputs:
-#!   Operand stack: []
+#!   Operand stack: [TX_SUMMARY_COMMITMENT]
 #!
 #! Where:
 #! - SALT is a cryptographically random nonce that enables multiple concurrent
 #!   multisig transactions while maintaining replay protection. Each transaction
 #!   must use a unique SALT value to ensure transaction uniqueness.
-#! - SIG_i is the signature from the i-th signer.
+#! - SIG_i is the ECDSA signature from the i-th signer.
 #! - MSG is the transaction message being signed.
-#! - h(SIG_i, MSG) is the hash of the signature and message used as the advice map key.
+#! - h(PUB_KEY_i, MSG) is the hash of the public key and message used as the advice map key.
 #!
 #! Panics if:
 #! - insufficient number of valid signatures (below threshold).
-#! - the same transaction has already been executed (replay protection).
-#! - PSM signature verification fails (if PSM is enabled).
+#! - insufficient number of valid signatures (below threshold).
 #!
-#! Invocation: call
+#! Invocation: exec
 @locals(1)
-pub proc auth_tx_rpo_falcon512_multisig(salt: BeWord)
+pub proc auth_tx(salt: BeWord) -> BeWord
     exec.native_account::incr_nonce drop
     # => [SALT]
 
@@ -497,7 +492,7 @@ pub proc auth_tx_rpo_falcon512_multisig(salt: BeWord)
     push.PUBLIC_KEYS_MAP_SLOT[0..2]
     # => [pub_key_slot_prefix, pub_key_slot_suffix, num_of_approvers, TX_SUMMARY_COMMITMENT, default_threshold]
 
-    exec.::miden::standards::auth::falcon512_rpo::verify_signatures
+    exec.::miden::standards::auth::ecdsa_k256_keccak::verify_signatures
     # => [num_verified_signatures, TX_SUMMARY_COMMITMENT, default_threshold]
 
     # ------ Checking threshold is >= num_verified_signatures ------
@@ -517,11 +512,5 @@ pub proc auth_tx_rpo_falcon512_multisig(salt: BeWord)
         push.0 assert.err="insufficient number of signatures"
     end
 
-    # ------ Verifying PSM Signature ------
     # => [TX_SUMMARY_COMMITMENT]
-    call.psm::verify_psm_signature
-
-    # ------ Writing executed transaction MSG to map ------
-    # => [TX_SUMMARY_COMMITMENT]
-    exec.assert_new_tx
 end

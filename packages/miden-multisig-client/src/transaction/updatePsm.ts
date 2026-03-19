@@ -8,7 +8,7 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import { PSM_ECDSA_MASM, PSM_MASM } from '../account/masm.js';
+import { PSM_ECDSA_MASM, PSM_MASM } from '../account/masm/auth.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';

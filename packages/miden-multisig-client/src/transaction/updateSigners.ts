@@ -13,9 +13,7 @@ import {
 import {
   MULTISIG_ECDSA_MASM,
   MULTISIG_MASM,
-  PSM_ECDSA_MASM,
-  PSM_MASM,
-} from '../account/masm.js';
+} from '../account/masm/auth.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
@@ -46,11 +44,7 @@ function buildUpdateSignersScript(
   signatureScheme: SignatureScheme,
 ): TransactionScript {
   const libBuilder = webClient.createCodeBuilder();
-  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
-  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
   const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
-  const psmLib = libBuilder.buildLibrary(psmLibraryPath, psmMasm);
-  libBuilder.linkStaticLibrary(psmLib);
 
   const multisigLib = libBuilder.buildLibrary('auth::multisig', multisigMasm);
   libBuilder.linkDynamicLibrary(multisigLib);

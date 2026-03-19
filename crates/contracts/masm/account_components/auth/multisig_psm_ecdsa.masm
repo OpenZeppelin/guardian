@@ -1,0 +1,17 @@
+# Multi-Signature ECDSA secp256k1 Authentication Component With PSM
+
+use openzeppelin::auth::multisig_ecdsa
+use openzeppelin::auth::psm_ecdsa
+
+type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
+
+pub use multisig_ecdsa::update_signers_and_threshold
+pub use multisig_ecdsa::update_procedure_threshold
+pub use psm_ecdsa::update_psm_public_key
+pub use psm_ecdsa::verify_psm_signature
+
+pub proc auth_tx_multisig_psm_ecdsa(salt: BeWord)
+    exec.multisig_ecdsa::auth_tx
+    exec.psm_ecdsa::verify_psm_signature
+    exec.multisig_ecdsa::assert_new_tx
+end

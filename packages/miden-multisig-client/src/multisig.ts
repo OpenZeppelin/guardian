@@ -74,6 +74,8 @@ export interface AccountStateVerificationResult {
   onChainCommitment: string;
 }
 
+type MidenNetworkType = 'local' | 'devnet' | 'testnet';
+
 /**
  * Represents a multisig account with PSM integration.
  */
@@ -121,6 +123,22 @@ export class Multisig {
       throw new Error('Missing Miden RPC endpoint in MultisigClient configuration');
     }
     return this.midenRpcEndpoint;
+  }
+
+  private getPsmNetworkType(): MidenNetworkType {
+    const endpoint = this.midenRpcEndpoint?.toLowerCase();
+
+    if (!endpoint) {
+      return 'local';
+    }
+    if (endpoint.includes('testnet')) {
+      return 'testnet';
+    }
+    if (endpoint.includes('devnet')) {
+      return 'devnet';
+    }
+
+    return 'local';
   }
 
   private proposalFactory(): ProposalFactory {
@@ -392,6 +410,10 @@ export class Multisig {
     const response = await this.psm.configure({
       accountId: this._accountId,
       auth,
+      networkConfig: {
+        kind: 'miden',
+        networkType: this.getPsmNetworkType(),
+      },
       initialState: { data: stateData, accountId: this._accountId },
     });
 

@@ -11,7 +11,7 @@
  * human-readable encoding and should not be copied into this table.
  */
 export const PROCEDURE_ROOTS = {
-  update_signers: '0x29d26091f4e8a13727e7937a62ad412a392e984eaa1fcce93439a95ab5e003ee',
+  update_signers: '0x0baed72763ced0e4b98d19fe00b0839b07748cc45c5b7a70483b02aadd6433cb',
   update_procedure_threshold: '0xcda1f9120a3ab2948d5cdc6b4b2982571c04e3f6af787a6d6b2f88eeedd872d7',
   auth_tx: '0x611abcd570631ad98842cb6f0ef891fe8f9ee508b3245c55a5531d5a8f7fdca9',
   update_psm: '0x35498ce6e3bc24ae0e0094dc54a09b8b2bbcbc28607f86ba25684cd4a2d8f55b',

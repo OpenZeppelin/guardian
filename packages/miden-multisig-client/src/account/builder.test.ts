@@ -5,7 +5,11 @@ import {
   MULTISIG_MASM,
   PSM_ECDSA_MASM,
   PSM_MASM,
-} from './masm.js';
+} from './masm/auth.js';
+import {
+  MULTISIG_PSM_ACCOUNT_COMPONENT_MASM,
+  MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM,
+} from './masm/account-components/auth.js';
 
 const {
   buildMultisigStorageSlots,
@@ -93,19 +97,13 @@ describe('createMultisigAccount', () => {
   });
 
   it('uses Falcon MASM by default', async () => {
-    const psmBuilder = {
-      compileAccountComponentCode: vi.fn((source) => `psm:${source.slice(0, 16)}`),
-    };
-    const multisigBuilder = {
+    const authBuilder = {
       buildLibrary: vi.fn((libraryPath, source) => ({ libraryPath, source })),
       linkStaticLibrary: vi.fn(),
-      compileAccountComponentCode: vi.fn((source) => `multisig:${source.slice(0, 16)}`),
+      compileAccountComponentCode: vi.fn((source) => `auth:${source.slice(0, 16)}`),
     };
     const webClient = {
-      createCodeBuilder: vi
-        .fn()
-        .mockReturnValueOnce(psmBuilder)
-        .mockReturnValueOnce(multisigBuilder),
+      createCodeBuilder: vi.fn().mockReturnValue(authBuilder),
       newAccount: vi.fn(),
     };
 
@@ -115,26 +113,30 @@ describe('createMultisigAccount', () => {
       psmCommitment: '0x' + '2'.repeat(64),
     });
 
-    expect(psmBuilder.compileAccountComponentCode).toHaveBeenCalledWith(PSM_MASM);
-    expect(multisigBuilder.buildLibrary).toHaveBeenCalledWith('openzeppelin::psm', PSM_MASM);
-    expect(multisigBuilder.compileAccountComponentCode).toHaveBeenCalledWith(MULTISIG_MASM);
+    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+      1,
+      'openzeppelin::auth::psm',
+      PSM_MASM,
+    );
+    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+      2,
+      'openzeppelin::auth::multisig',
+      MULTISIG_MASM,
+    );
+    expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(
+      MULTISIG_PSM_ACCOUNT_COMPONENT_MASM,
+    );
     expect(webClient.newAccount).toHaveBeenCalledTimes(1);
   });
 
   it('uses ECDSA MASM when requested', async () => {
-    const psmBuilder = {
-      compileAccountComponentCode: vi.fn((source) => `psm:${source.slice(0, 16)}`),
-    };
-    const multisigBuilder = {
+    const authBuilder = {
       buildLibrary: vi.fn((libraryPath, source) => ({ libraryPath, source })),
       linkStaticLibrary: vi.fn(),
-      compileAccountComponentCode: vi.fn((source) => `multisig:${source.slice(0, 16)}`),
+      compileAccountComponentCode: vi.fn((source) => `auth:${source.slice(0, 16)}`),
     };
     const webClient = {
-      createCodeBuilder: vi
-        .fn()
-        .mockReturnValueOnce(psmBuilder)
-        .mockReturnValueOnce(multisigBuilder),
+      createCodeBuilder: vi.fn().mockReturnValue(authBuilder),
       newAccount: vi.fn(),
     };
 
@@ -145,12 +147,19 @@ describe('createMultisigAccount', () => {
       signatureScheme: 'ecdsa',
     });
 
-    expect(psmBuilder.compileAccountComponentCode).toHaveBeenCalledWith(PSM_ECDSA_MASM);
-    expect(multisigBuilder.buildLibrary).toHaveBeenCalledWith(
-      'openzeppelin::psm_ecdsa',
+    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+      1,
+      'openzeppelin::auth::psm_ecdsa',
       PSM_ECDSA_MASM,
     );
-    expect(multisigBuilder.compileAccountComponentCode).toHaveBeenCalledWith(MULTISIG_ECDSA_MASM);
+    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+      2,
+      'openzeppelin::auth::multisig_ecdsa',
+      MULTISIG_ECDSA_MASM,
+    );
+    expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(
+      MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM,
+    );
     expect(webClient.newAccount).toHaveBeenCalledTimes(1);
   });
 });
