@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# PSM Server AWS Deployment Script
+# GUARDIAN Server AWS Deployment Script
 # Usage: ./scripts/aws-deploy.sh [command] [options]
 #
 # Commands:
@@ -16,25 +16,25 @@ set -e
 # Optional environment variables:
 #   AWS_REGION            - AWS region (default: us-east-1)
 #   DOMAIN_NAME           - Root domain (default: openzeppelin.com)
-#   SUBDOMAIN             - Subdomain (default: psm)
+#   SUBDOMAIN             - Subdomain (default: guardian)
 #   ROUTE53_ZONE_ID       - Route 53 hosted zone ID (optional)
 #   CLOUDFLARE_ZONE_ID    - Cloudflare zone ID (optional)
 #   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
 #   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
-#   PSM_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
+#   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   IMPORT_EXISTING       - Import existing AWS resources (true/false)
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
-ECR_REPO_NAME="psm-server"
+ECR_REPO_NAME="guardian-server"
 DOMAIN_NAME="${DOMAIN_NAME-openzeppelin.com}"
-SUBDOMAIN="${SUBDOMAIN-psm}"
+SUBDOMAIN="${SUBDOMAIN-guardian}"
 ROUTE53_ZONE_ID="${ROUTE53_ZONE_ID-}"
 CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
 CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
-PSM_NETWORK_TYPE="${PSM_NETWORK_TYPE:-MidenTestnet}"
+GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 IMPORT_EXISTING="${IMPORT_EXISTING:-false}"
 
 RED='\033[0;31m'
@@ -89,7 +89,7 @@ cmd_import_existing_resources() {
   export TF_VAR_domain_name="$domain_name"
   export TF_VAR_subdomain="$subdomain"
   export TF_VAR_route53_zone_id="$route53_zone_id"
-  export TF_VAR_server_network_type="$PSM_NETWORK_TYPE"
+  export TF_VAR_server_network_type="$GUARDIAN_NETWORK_TYPE"
   export TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"
   export TF_VAR_cloudflare_proxied="$CLOUDFLARE_PROXIED"
   export TF_VAR_acm_certificate_arn="$ACM_CERTIFICATE_ARN"
@@ -98,18 +98,18 @@ cmd_import_existing_resources() {
   fi
 
   local failed=0
-  local cluster_name="${TF_CLUSTER_NAME:-psm-cluster}"
-  local alb_name="${TF_ALB_NAME:-psm-alb}"
-  local target_group_name="${TF_TG_NAME:-psm-server-tg}"
-  local alb_sg_name="${TF_ALB_SG_NAME:-psm-alb-sg}"
-  local server_sg_name="${TF_SERVER_SG_NAME:-psm-server-sg}"
-  local postgres_sg_name="${TF_POSTGRES_SG_NAME:-psm-postgres-sg}"
-  local namespace_name="${TF_SD_NAMESPACE_NAME:-psm.local}"
-  local sd_service_name="${TF_SD_SERVICE_NAME:-psm-postgres}"
-  local server_service_name="${TF_SERVER_SERVICE_NAME:-psm-server}"
-  local postgres_service_name="${TF_POSTGRES_SERVICE_NAME:-psm-postgres}"
-  local log_group_server="/ecs/psm-server"
-  local log_group_postgres="/ecs/psm-postgres"
+  local cluster_name="${TF_CLUSTER_NAME:-guardian-cluster}"
+  local alb_name="${TF_ALB_NAME:-guardian-alb}"
+  local target_group_name="${TF_TG_NAME:-guardian-server-tg}"
+  local alb_sg_name="${TF_ALB_SG_NAME:-guardian-alb-sg}"
+  local server_sg_name="${TF_SERVER_SG_NAME:-guardian-server-sg}"
+  local postgres_sg_name="${TF_POSTGRES_SG_NAME:-guardian-postgres-sg}"
+  local namespace_name="${TF_SD_NAMESPACE_NAME:-guardian.local}"
+  local sd_service_name="${TF_SD_SERVICE_NAME:-guardian-postgres}"
+  local server_service_name="${TF_SERVER_SERVICE_NAME:-guardian-server}"
+  local postgres_service_name="${TF_POSTGRES_SERVICE_NAME:-guardian-postgres}"
+  local log_group_server="/ecs/guardian-server"
+  local log_group_postgres="/ecs/guardian-postgres"
   local log_group_cluster="/aws/ecs/${cluster_name}/cluster"
 
   local cluster_status
@@ -122,7 +122,7 @@ cmd_import_existing_resources() {
     tf_import_if_exists "$tf_dir" "aws_ecs_cluster_capacity_providers.main" "$cluster_name" || failed=1
   fi
 
-  local role_name="psm-ecs-task-execution"
+  local role_name="guardian-ecs-task-execution"
   local role_arn
   role_arn=$(aws iam get-role --role-name "$role_name" --query 'Role.Arn' --output text 2>/dev/null || true)
   tf_import_if_exists "$tf_dir" "aws_iam_role.ecs_task_execution" "$role_name" || failed=1
@@ -258,17 +258,17 @@ cmd_build_and_push() {
     docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
   log_info "Building Docker image..."
-  docker build --platform linux/amd64 --no-cache -t psm-server .
+  docker build --platform linux/amd64 --no-cache -t guardian-server .
 
   log_info "Tagging and pushing to ECR..."
-  docker tag psm-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/psm-server:latest
-  docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/psm-server:latest
+  docker tag guardian-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
+  docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
 
   log_info "Image pushed successfully"
 }
 
 cmd_deploy() {
-  log_info "Deploying PSM server with Terraform..."
+  log_info "Deploying GUARDIAN server with Terraform..."
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -303,7 +303,7 @@ cmd_deploy() {
   local tf_vars=()
   tf_vars+=("-var" "aws_region=${AWS_REGION}")
   tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
-  tf_vars+=("-var" "server_network_type=${PSM_NETWORK_TYPE}")
+  tf_vars+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
   if [ -n "$DOMAIN_NAME" ]; then
     tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
     tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
@@ -389,7 +389,7 @@ cmd_logs() {
 }
 
 cmd_cleanup() {
-  log_warn "This will delete ALL PSM server AWS resources (Terraform destroy)"
+  log_warn "This will delete ALL GUARDIAN server AWS resources (Terraform destroy)"
   read -p "Are you sure? (yes/no): " confirm
   if [ "$confirm" != "yes" ]; then
     echo "Aborted"
@@ -416,7 +416,7 @@ cmd_cleanup() {
   local tf_vars=()
   tf_vars+=("-var" "aws_region=${AWS_REGION}")
   tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
-  tf_vars+=("-var" "server_network_type=${PSM_NETWORK_TYPE}")
+  tf_vars+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
   if [ -n "$DOMAIN_NAME" ]; then
     tf_vars+=("-var" "domain_name=${DOMAIN_NAME}")
     tf_vars+=("-var" "subdomain=${SUBDOMAIN}")
@@ -489,7 +489,7 @@ case "${COMMAND:-}" in
     cmd_cleanup
     ;;
   *)
-    echo "PSM Server AWS Deployment Script"
+    echo "GUARDIAN Server AWS Deployment Script"
     echo ""
     echo "Usage: $0 <command> [options]"
     echo ""
@@ -502,7 +502,7 @@ case "${COMMAND:-}" in
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
     echo "  --domain=     Override root domain (default: openzeppelin.com)"
-    echo "  --subdomain=  Override subdomain (default: psm)"
+    echo "  --subdomain=  Override subdomain (default: guardian)"
     echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"
     echo "  --cloudflare-zone-id=  Cloudflare zone ID (optional)"
     echo "  --cloudflare-proxied=  Cloudflare proxied setting (true/false)"

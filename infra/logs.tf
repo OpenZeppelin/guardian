@@ -7,11 +7,11 @@ resource "aws_cloudwatch_log_group" "cluster" {
 # CloudWatch log groups for ECS tasks
 
 resource "aws_cloudwatch_log_group" "server" {
-  name              = "/ecs/psm-server"
+  name              = "/ecs/guardian-server"
   retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "postgres" {
-  name              = "/ecs/psm-postgres"
+  name              = "/ecs/guardian-postgres"
   retention_in_days = var.log_retention_days
 }

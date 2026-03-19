@@ -2,10 +2,10 @@ use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
 
 /// Integration test for verifying we can connect to Miden testnet
-/// To run: cargo test --package private-state-manager-server --test miden_rpc_integration_test
+/// To run: cargo test --package guardian-server --test miden_rpc_integration_test
 #[tokio::test]
 async fn test_fetch_account_commitment_from_testnet() {
-    if std::env::var("PSM_NETWORK_TESTS").as_deref() != Ok("1") {
+    if std::env::var("GUARDIAN_NETWORK_TESTS").as_deref() != Ok("1") {
         return;
     }
 

@@ -7,12 +7,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "High-level SDK for interacting with multisig accounts on Miden via PSM"
+description = "High-level SDK for interacting with multisig accounts on Miden via GUARDIAN"
 
 [dependencies]
 # Internal crates
-private-state-manager-client = { version = "0.13.0", path = "../client" }
-private-state-manager-shared = { version = "0.13.0", path = "../shared" }
+guardian-client = { version = "0.13.0", path = "../client" }
+guardian-shared = { version = "0.13.0", path = "../shared" }
 miden-confidential-contracts = { version = "0.13.0", path = "../contracts" }
 
 # Miden

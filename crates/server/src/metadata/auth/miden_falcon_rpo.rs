@@ -1,8 +1,8 @@
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
 use miden_protocol::utils::{Deserializable, Serializable};
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
 /// Verify a Falcon RPO signature for a request with timestamp.
 ///

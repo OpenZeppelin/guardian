@@ -1038,9 +1038,9 @@ pub proc auth_tx(salt: BeWord) -> BeWord
 end
 `;
 
-export const PSM_MASM = `# Private State Manager (PSM) Authentication Component
+export const GUARDIAN_MASM = `# Guardian Authentication Component
 #
-# This component provides PSM signature verification for accounts.
+# This component provides GUARDIAN signature verification for accounts.
 # It can be used standalone or in conjunction with other auth components like multisig.
 
 use miden::protocol::active_account
@@ -1050,20 +1050,20 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # IMPORTANT SECURITY NOTES
 # --------------------------------------------------------------------------------
-# - The selector in \`PSM_SELECTOR_SLOT\` controls whether the extra PSM signature
+# - The selector in \`GUARDIAN_SELECTOR_SLOT\` controls whether the extra GUARDIAN signature
 #   is enforced:
-#     * PSM_ON  => exactly one valid PSM signature is required.
-#     * PSM_OFF => PSM signature is skipped for that call.
+#     * GUARDIAN_ON  => exactly one valid GUARDIAN signature is required.
+#     * GUARDIAN_OFF => GUARDIAN signature is skipped for that call.
 #
-# - \`verify_psm_signature\` reads the selector from initial storage state.
+# - \`verify_guardian_signature\` reads the selector from initial storage state.
 #   This means changes made during the same transaction won't affect the check.
 #
-# - \`enable_psm\` / \`disable_psm\` procedures allow explicit control over PSM state.
+# - \`enable_guardian\` / \`disable_guardian\` procedures allow explicit control over GUARDIAN state.
 #
-# - \`update_psm_public_key\`:
-#     * Installs a new PSM public key in the map at \`PSM_PUBLIC_KEY_MAP_SLOT\`.
+# - \`update_guardian_public_key\`:
+#     * Installs a new GUARDIAN public key in the map at \`GUARDIAN_PUBLIC_KEY_MAP_SLOT\`.
 #     * Does not itself perform any signature checks.
-#     * To update the key without requiring PSM signature, ensure selector is OFF.
+#     * To update the key without requiring GUARDIAN signature, ensure selector is OFF.
 #
 # Storage Layout
 # --------------------------------------------------------------------------------
@@ -1071,56 +1071,56 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # +---------------------+---------------+
 # |     DESCRIPTION     |     SLOT      |
 # +---------------------+---------------+
-# | PSM SELECTOR (word) |       0       |
-# | PSM PUBLIC KEY MAP  |       1       |
+# | GUARDIAN SELECTOR (word) |       0       |
+# | GUARDIAN PUBLIC KEY MAP  |       1       |
 # +---------------------+---------------+
 #
-# - PSM_SELECTOR_SLOT (0):
-#     * Stores a word that is compared against [1, 0, 0, 0] (PSM_ON).
-#     * Any value != PSM_ON is treated as PSM_OFF.
+# - GUARDIAN_SELECTOR_SLOT (0):
+#     * Stores a word that is compared against [1, 0, 0, 0] (GUARDIAN_ON).
+#     * Any value != GUARDIAN_ON is treated as GUARDIAN_OFF.
 #
-# - PSM_PUBLIC_KEY_MAP_SLOT (1):
-#     * A map from a fixed key [0, 0, 0, 0] to the single PSM public key:
-#         [0, 0, 0, 0] => PSM_PUBLIC_KEY
-#     * PSM_PUBLIC_KEY is a RPO Falcon 512 public key represented as a word.
+# - GUARDIAN_PUBLIC_KEY_MAP_SLOT (1):
+#     * A map from a fixed key [0, 0, 0, 0] to the single GUARDIAN public key:
+#         [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+#     * GUARDIAN_PUBLIC_KEY is a RPO Falcon 512 public key represented as a word.
 
 # CONSTANTS
 # =================================================================================================
 
-# Slot where the PSM selector flag is stored (using word() for named slot access):
-# - PSM_ON  => PSM signature required
-# - PSM_OFF => PSM signature skipped
-const PSM_SELECTOR_SLOT=word("openzeppelin::psm::selector")
+# Slot where the GUARDIAN selector flag is stored (using word() for named slot access):
+# - GUARDIAN_ON  => GUARDIAN signature required
+# - GUARDIAN_OFF => GUARDIAN signature skipped
+const GUARDIAN_SELECTOR_SLOT=word("openzeppelin::guardian::selector")
 
-# Map slot for PSM public key
-# Uses exactly one PSM public key at index [0, 0, 0, 0]
-# [0, 0, 0, 0] => PSM_PUBLIC_KEY
-const PSM_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::psm::public_key")
+# Map slot for GUARDIAN public key
+# Uses exactly one GUARDIAN public key at index [0, 0, 0, 0]
+# [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+const GUARDIAN_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::guardian::public_key")
 
 # Selector flag values
-const PSM_ON=[1, 0, 0, 0]
-const PSM_OFF=[0, 0, 0, 0]
+const GUARDIAN_ON=[1, 0, 0, 0]
+const GUARDIAN_OFF=[0, 0, 0, 0]
 
 # The event emitted when a signature is not found for a required signer.
 const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
 
-# PSM PROCEDURES
+# GUARDIAN PROCEDURES
 # =================================================================================================
 
-#! Enable PSM verification by setting the selector to ON.
+#! Enable GUARDIAN verification by setting the selector to ON.
 #!
 #! Operand stack inputs: []
 #! Outputs: []
 #!
 #! Notes:
-#! - Sets PSM_SELECTOR_SLOT to PSM_ON (1)
-#! - After this, transactions will require PSM signature verification
-proc enable_psm
-    push.PSM_ON
-    # => [PSM_ON]
+#! - Sets GUARDIAN_SELECTOR_SLOT to GUARDIAN_ON (1)
+#! - After this, transactions will require GUARDIAN signature verification
+proc enable_guardian
+    push.GUARDIAN_ON
+    # => [GUARDIAN_ON]
 
-    push.PSM_SELECTOR_SLOT[0..2]
-    # => [selector_slot_prefix, selector_slot_suffix, PSM_ON]
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, GUARDIAN_ON]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -1129,20 +1129,20 @@ proc enable_psm
     # => []
 end
 
-#! Disable PSM verification by setting the selector to OFF.
+#! Disable GUARDIAN verification by setting the selector to OFF.
 #!
 #! Operand stack inputs: []
 #! Outputs: []
 #!
 #! Notes:
-#! - Sets PSM_SELECTOR_SLOT to PSM_OFF (0)
-#! - After this, transactions will NOT require PSM signature verification
-proc disable_psm
-    push.PSM_OFF
-    # => [PSM_OFF]
+#! - Sets GUARDIAN_SELECTOR_SLOT to GUARDIAN_OFF (0)
+#! - After this, transactions will NOT require GUARDIAN signature verification
+proc disable_guardian
+    push.GUARDIAN_OFF
+    # => [GUARDIAN_OFF]
 
-    push.PSM_SELECTOR_SLOT[0..2]
-    # => [selector_slot_prefix, selector_slot_suffix, PSM_OFF]
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, GUARDIAN_OFF]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -1151,28 +1151,28 @@ proc disable_psm
     # => []
 end
 
-#! Update the PSM public key.
+#! Update the GUARDIAN public key.
 #!
 #! Operand stack inputs: []
 #! Advice stack inputs:  [PUB_KEY]
-#!   - PUB_KEY is the new PSM RPO Falcon 512 public key
+#!   - PUB_KEY is the new GUARDIAN RPO Falcon 512 public key
 #!
 #! Notes:
-#! - Stores PUB_KEY into PSM_PUBLIC_KEY_MAP_SLOT:
-#!      [0, 0, 0, 0] => PSM_PUBLIC_KEY
-#! - To update the key without requiring PSM signature, ensure
-#!   PSM_SELECTOR_SLOT = 0 (OFF) before calling this.
-pub proc update_psm_public_key
-    exec.disable_psm
-    # ------ Update the PSM public key ------
+#! - Stores PUB_KEY into GUARDIAN_PUBLIC_KEY_MAP_SLOT:
+#!      [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+#! - To update the key without requiring GUARDIAN signature, ensure
+#!   GUARDIAN_SELECTOR_SLOT = 0 (OFF) before calling this.
+pub proc update_guardian_public_key
+    exec.disable_guardian
+    # ------ Update the GUARDIAN public key ------
     adv_loadw
     # => [PUB_KEY]
 
     push.0.0.0.0
     # => [MAP_KEY, PUB_KEY]
-    # Note that MAP_KEY is [0, 0, 0, 0] for a single PSM_KEY
+    # Note that MAP_KEY is [0, 0, 0, 0] for a single GUARDIAN_KEY
 
-    push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+    push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
     # => [pub_key_slot_prefix, pub_key_slot_suffix, MAP_KEY, PUB_KEY]
 
     exec.native_account::set_map_item
@@ -1182,21 +1182,21 @@ pub proc update_psm_public_key
     # => []
 end
 
-#! Conditionally verify a "PSM" signature against a stored public key hash.
-#! The condition is controlled by the selector at PSM_SELECTOR_SLOT.
+#! Conditionally verify a "GUARDIAN" signature against a stored public key hash.
+#! The condition is controlled by the selector at GUARDIAN_SELECTOR_SLOT.
 #!
 #! Inputs:  [MSG]
 #! Outputs: [MSG]
 #!
 #! Panics if:
-#! - Selector is ON but the provided PSM signature is invalid or missing.
+#! - Selector is ON but the provided GUARDIAN signature is invalid or missing.
 #!
 #! Notes:
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
-#! - If selector is OFF (0), PSM verification is skipped
+#! - If selector is OFF (0), GUARDIAN verification is skipped
 #! - Selector value is read from initial storage state
-pub proc verify_psm_signature(msg: BeWord) -> BeWord
-    push.PSM_SELECTOR_SLOT[0..2]
+pub proc verify_guardian_signature(msg: BeWord) -> BeWord
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
     drop drop drop
     # => [selector, MSG]
@@ -1204,22 +1204,22 @@ pub proc verify_psm_signature(msg: BeWord) -> BeWord
     push.1 eq
     if.true
         push.1
-        push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+        push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
         exec.::miden::standards::auth::falcon512_rpo::verify_signatures
         push.1 neq
         if.true
             emit.AUTH_UNAUTHORIZED_EVENT
-            push.0 assert.err="invalid PSM signature"
+            push.0 assert.err="invalid GUARDIAN signature"
         end
     end
     # => [MSG]
-    exec.enable_psm
+    exec.enable_guardian
 end
 `;
 
-export const PSM_ECDSA_MASM = `# Private State Manager (PSM) Authentication Component (ECDSA)
+export const GUARDIAN_ECDSA_MASM = `# Guardian Authentication Component (ECDSA)
 #
-# This component provides PSM signature verification for accounts using
+# This component provides GUARDIAN signature verification for accounts using
 # ECDSA secp256k1 (k256/keccak) signatures.
 # It can be used standalone or in conjunction with other auth components like multisig.
 
@@ -1230,20 +1230,20 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # IMPORTANT SECURITY NOTES
 # --------------------------------------------------------------------------------
-# - The selector in \`PSM_SELECTOR_SLOT\` controls whether the extra PSM signature
+# - The selector in \`GUARDIAN_SELECTOR_SLOT\` controls whether the extra GUARDIAN signature
 #   is enforced:
-#     * PSM_ON  => exactly one valid PSM signature is required.
-#     * PSM_OFF => PSM signature is skipped for that call.
+#     * GUARDIAN_ON  => exactly one valid GUARDIAN signature is required.
+#     * GUARDIAN_OFF => GUARDIAN signature is skipped for that call.
 #
-# - \`verify_psm_signature\` reads the selector from initial storage state.
+# - \`verify_guardian_signature\` reads the selector from initial storage state.
 #   This means changes made during the same transaction won't affect the check.
 #
-# - \`enable_psm\` / \`disable_psm\` procedures allow explicit control over PSM state.
+# - \`enable_guardian\` / \`disable_guardian\` procedures allow explicit control over GUARDIAN state.
 #
-# - \`update_psm_public_key\`:
-#     * Installs a new PSM public key in the map at \`PSM_PUBLIC_KEY_MAP_SLOT\`.
+# - \`update_guardian_public_key\`:
+#     * Installs a new GUARDIAN public key in the map at \`GUARDIAN_PUBLIC_KEY_MAP_SLOT\`.
 #     * Does not itself perform any signature checks.
-#     * To update the key without requiring PSM signature, ensure selector is OFF.
+#     * To update the key without requiring GUARDIAN signature, ensure selector is OFF.
 #
 # Storage Layout
 # --------------------------------------------------------------------------------
@@ -1251,56 +1251,56 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # +---------------------+---------------+
 # |     DESCRIPTION     |     SLOT      |
 # +---------------------+---------------+
-# | PSM SELECTOR (word) |       0       |
-# | PSM PUBLIC KEY MAP  |       1       |
+# | GUARDIAN SELECTOR (word) |       0       |
+# | GUARDIAN PUBLIC KEY MAP  |       1       |
 # +---------------------+---------------+
 #
-# - PSM_SELECTOR_SLOT (0):
-#     * Stores a word that is compared against [1, 0, 0, 0] (PSM_ON).
-#     * Any value != PSM_ON is treated as PSM_OFF.
+# - GUARDIAN_SELECTOR_SLOT (0):
+#     * Stores a word that is compared against [1, 0, 0, 0] (GUARDIAN_ON).
+#     * Any value != GUARDIAN_ON is treated as GUARDIAN_OFF.
 #
-# - PSM_PUBLIC_KEY_MAP_SLOT (1):
-#     * A map from a fixed key [0, 0, 0, 0] to the single PSM public key:
-#         [0, 0, 0, 0] => PSM_PUBLIC_KEY
-#     * PSM_PUBLIC_KEY is an ECDSA secp256k1 public key represented as a word.
+# - GUARDIAN_PUBLIC_KEY_MAP_SLOT (1):
+#     * A map from a fixed key [0, 0, 0, 0] to the single GUARDIAN public key:
+#         [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+#     * GUARDIAN_PUBLIC_KEY is an ECDSA secp256k1 public key represented as a word.
 
 # CONSTANTS
 # =================================================================================================
 
-# Slot where the PSM selector flag is stored (using word() for named slot access):
-# - PSM_ON  => PSM signature required
-# - PSM_OFF => PSM signature skipped
-const PSM_SELECTOR_SLOT=word("openzeppelin::psm::selector")
+# Slot where the GUARDIAN selector flag is stored (using word() for named slot access):
+# - GUARDIAN_ON  => GUARDIAN signature required
+# - GUARDIAN_OFF => GUARDIAN signature skipped
+const GUARDIAN_SELECTOR_SLOT=word("openzeppelin::guardian::selector")
 
-# Map slot for PSM public key
-# Uses exactly one PSM public key at index [0, 0, 0, 0]
-# [0, 0, 0, 0] => PSM_PUBLIC_KEY
-const PSM_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::psm::public_key")
+# Map slot for GUARDIAN public key
+# Uses exactly one GUARDIAN public key at index [0, 0, 0, 0]
+# [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+const GUARDIAN_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::guardian::public_key")
 
 # Selector flag values
-const PSM_ON=[1, 0, 0, 0]
-const PSM_OFF=[0, 0, 0, 0]
+const GUARDIAN_ON=[1, 0, 0, 0]
+const GUARDIAN_OFF=[0, 0, 0, 0]
 
 # The event emitted when a signature is not found for a required signer.
 const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
 
-# PSM PROCEDURES
+# GUARDIAN PROCEDURES
 # =================================================================================================
 
-#! Enable PSM verification by setting the selector to ON.
+#! Enable GUARDIAN verification by setting the selector to ON.
 #!
 #! Operand stack inputs: []
 #! Outputs: []
 #!
 #! Notes:
-#! - Sets PSM_SELECTOR_SLOT to PSM_ON (1)
-#! - After this, transactions will require PSM signature verification
-proc enable_psm
-    push.PSM_ON
-    # => [PSM_ON]
+#! - Sets GUARDIAN_SELECTOR_SLOT to GUARDIAN_ON (1)
+#! - After this, transactions will require GUARDIAN signature verification
+proc enable_guardian
+    push.GUARDIAN_ON
+    # => [GUARDIAN_ON]
 
-    push.PSM_SELECTOR_SLOT[0..2]
-    # => [selector_slot_prefix, selector_slot_suffix, PSM_ON]
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, GUARDIAN_ON]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -1309,20 +1309,20 @@ proc enable_psm
     # => []
 end
 
-#! Disable PSM verification by setting the selector to OFF.
+#! Disable GUARDIAN verification by setting the selector to OFF.
 #!
 #! Operand stack inputs: []
 #! Outputs: []
 #!
 #! Notes:
-#! - Sets PSM_SELECTOR_SLOT to PSM_OFF (0)
-#! - After this, transactions will NOT require PSM signature verification
-proc disable_psm
-    push.PSM_OFF
-    # => [PSM_OFF]
+#! - Sets GUARDIAN_SELECTOR_SLOT to GUARDIAN_OFF (0)
+#! - After this, transactions will NOT require GUARDIAN signature verification
+proc disable_guardian
+    push.GUARDIAN_OFF
+    # => [GUARDIAN_OFF]
 
-    push.PSM_SELECTOR_SLOT[0..2]
-    # => [selector_slot_prefix, selector_slot_suffix, PSM_OFF]
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, GUARDIAN_OFF]
 
     exec.native_account::set_item
     # => [OLD_ROOT]
@@ -1331,28 +1331,28 @@ proc disable_psm
     # => []
 end
 
-#! Update the PSM public key.
+#! Update the GUARDIAN public key.
 #!
 #! Operand stack inputs: []
 #! Advice stack inputs:  [PUB_KEY]
-#!   - PUB_KEY is the new PSM ECDSA secp256k1 public key
+#!   - PUB_KEY is the new GUARDIAN ECDSA secp256k1 public key
 #!
 #! Notes:
-#! - Stores PUB_KEY into PSM_PUBLIC_KEY_MAP_SLOT:
-#!      [0, 0, 0, 0] => PSM_PUBLIC_KEY
-#! - To update the key without requiring PSM signature, ensure
-#!   PSM_SELECTOR_SLOT = 0 (OFF) before calling this.
-pub proc update_psm_public_key
-    exec.disable_psm
-    # ------ Update the PSM public key ------
+#! - Stores PUB_KEY into GUARDIAN_PUBLIC_KEY_MAP_SLOT:
+#!      [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+#! - To update the key without requiring GUARDIAN signature, ensure
+#!   GUARDIAN_SELECTOR_SLOT = 0 (OFF) before calling this.
+pub proc update_guardian_public_key
+    exec.disable_guardian
+    # ------ Update the GUARDIAN public key ------
     adv_loadw
     # => [PUB_KEY]
 
     push.0.0.0.0
     # => [MAP_KEY, PUB_KEY]
-    # Note that MAP_KEY is [0, 0, 0, 0] for a single PSM_KEY
+    # Note that MAP_KEY is [0, 0, 0, 0] for a single GUARDIAN_KEY
 
-    push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+    push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
     # => [pub_key_slot_prefix, pub_key_slot_suffix, MAP_KEY, PUB_KEY]
 
     exec.native_account::set_map_item
@@ -1362,21 +1362,21 @@ pub proc update_psm_public_key
     # => []
 end
 
-#! Conditionally verify a "PSM" signature against a stored public key hash.
-#! The condition is controlled by the selector at PSM_SELECTOR_SLOT.
+#! Conditionally verify a "GUARDIAN" signature against a stored public key hash.
+#! The condition is controlled by the selector at GUARDIAN_SELECTOR_SLOT.
 #!
 #! Inputs:  [MSG]
 #! Outputs: [MSG]
 #!
 #! Panics if:
-#! - Selector is ON but the provided PSM signature is invalid or missing.
+#! - Selector is ON but the provided GUARDIAN signature is invalid or missing.
 #!
 #! Notes:
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
-#! - If selector is OFF (0), PSM verification is skipped
+#! - If selector is OFF (0), GUARDIAN verification is skipped
 #! - Selector value is read from initial storage state
-pub proc verify_psm_signature(msg: BeWord) -> BeWord
-    push.PSM_SELECTOR_SLOT[0..2]
+pub proc verify_guardian_signature(msg: BeWord) -> BeWord
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
     drop drop drop
     # => [selector, MSG]
@@ -1384,15 +1384,15 @@ pub proc verify_psm_signature(msg: BeWord) -> BeWord
     push.1 eq
     if.true
         push.1
-        push.PSM_PUBLIC_KEY_MAP_SLOT[0..2]
+        push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
         exec.::miden::standards::auth::ecdsa_k256_keccak::verify_signatures
         push.1 neq
         if.true
             emit.AUTH_UNAUTHORIZED_EVENT
-            push.0 assert.err="invalid PSM signature"
+            push.0 assert.err="invalid GUARDIAN signature"
         end
     end
     # => [MSG]
-    exec.enable_psm
+    exec.enable_guardian
 end
 `;

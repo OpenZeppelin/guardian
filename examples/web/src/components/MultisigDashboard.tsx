@@ -22,7 +22,7 @@ import type { WalletSource } from '@/wallets/types';
 interface MultisigDashboardProps {
   multisig: Multisig;
   signatureScheme: SignatureScheme;
-  psmState: AccountState | null;
+  guardianState: AccountState | null;
   proposals: Proposal[];
   consumableNotes: ConsumableNote[];
   vaultBalances: VaultBalance[];
@@ -44,7 +44,7 @@ interface MultisigDashboardProps {
   onCreateUpdateProcedureThreshold: (procedure: ProcedureName, threshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
-  onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
+  onCreateSwitchGuardian: (newEndpoint: string, newPubkey: string) => void;
   onSync: () => void;
   onVerify: () => void;
   onSignProposal: (proposalId: string) => void;
@@ -58,7 +58,7 @@ interface MultisigDashboardProps {
 export function MultisigDashboard({
   multisig,
   signatureScheme,
-  psmState,
+  guardianState,
   proposals,
   consumableNotes,
   vaultBalances,
@@ -80,7 +80,7 @@ export function MultisigDashboard({
   onCreateUpdateProcedureThreshold,
   onCreateConsumeNotes,
   onCreateP2id,
-  onCreateSwitchPsm,
+  onCreateSwitchGuardian,
   onSync,
   onVerify,
   onSignProposal,
@@ -138,9 +138,9 @@ export function MultisigDashboard({
             </div>
           )}
 
-          {psmState && (
+          {guardianState && (
             <div className="pt-2 border-t text-xs text-muted-foreground">
-              Last synced: {new Date(psmState.updatedAt).toLocaleString()}
+              Last synced: {new Date(guardianState.updatedAt).toLocaleString()}
             </div>
           )}
 
@@ -219,7 +219,7 @@ export function MultisigDashboard({
         onCreateUpdateProcedureThreshold={onCreateUpdateProcedureThreshold}
         onCreateConsumeNotes={onCreateConsumeNotes}
         onCreateP2id={onCreateP2id}
-        onCreateSwitchPsm={onCreateSwitchPsm}
+        onCreateSwitchGuardian={onCreateSwitchGuardian}
       />
 
       {/* Proposals List */}

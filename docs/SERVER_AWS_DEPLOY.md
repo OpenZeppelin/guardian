@@ -1,6 +1,6 @@
-# Deploying PSM Server to AWS ECS
+# Deploying GUARDIAN Server to AWS ECS
 
-This guide walks through deploying the Private State Manager (PSM) server to AWS Elastic Container Service (ECS) using Terraform.
+This guide walks through deploying the Guardian server to AWS Elastic Container Service (ECS) using Terraform.
 
 ## Prerequisites
 
@@ -30,7 +30,7 @@ export AWS_PROFILE=<your-profile>
 set -a && source .env && set +a
 
 # Optional: pin the server to a specific Miden network
-export PSM_NETWORK_TYPE=MidenTestnet
+export GUARDIAN_NETWORK_TYPE=MidenTestnet
 
 # Verify AWS credentials
 aws sts get-caller-identity
@@ -58,12 +58,12 @@ If you need to override defaults, edit `infra/terraform.tfvars`:
 
 ```hcl
 aws_region = "us-east-1"
-server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest"
+server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
 # Optional: Postgres credentials (defaults shown)
-# postgres_db       = "psm"
-# postgres_user     = "psm"
-# postgres_password = "psm_dev_password"
+# postgres_db       = "guardian"
+# postgres_user     = "guardian"
+# postgres_password = "guardian_dev_password"
 
 # Optional: Miden network for the server runtime
 # server_network_type = "MidenTestnet"
@@ -87,7 +87,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:late
 ### 5. Test the Deployment
 
 ```bash
-curl https://psm.openzeppelin.com/pubkey
+curl https://guardian.openzeppelin.com/pubkey
 ```
 
 ## Operations
@@ -121,25 +121,25 @@ Re-run the deploy script after pushing a new image:
 Note: ECR repository is not managed by Terraform. Delete manually if needed:
 
 ```bash
-aws ecr delete-repository --repository-name psm-server --force --region us-east-1
+aws ecr delete-repository --repository-name guardian-server --force --region us-east-1
 ```
 
 ## Configuration Reference
 
-Defaults assume `psm.openzeppelin.com`. See `infra/terraform.tfvars.example`
+Defaults assume `guardian.openzeppelin.com`. See `infra/terraform.tfvars.example`
 for all available options.
 
 ### Resources Created
 
 | Resource | Description |
 |----------|-------------|
-| ECS Cluster | Fargate cluster (`psm-cluster`) |
-| ECS Services | `psm-server`, `psm-postgres` |
-| Application Load Balancer | Internet-facing ALB (`psm-alb`) |
+| ECS Cluster | Fargate cluster (`guardian-cluster`) |
+| ECS Services | `guardian-server`, `guardian-postgres` |
+| Application Load Balancer | Internet-facing ALB (`guardian-alb`) |
 | Target Group | Routes to server on port 3000 |
-| Cloud Map Namespace | Service discovery (`psm.local`) |
+| Cloud Map Namespace | Service discovery (`guardian.local`) |
 | Security Groups | ALB, server, and postgres SGs |
-| CloudWatch Log Groups | `/ecs/psm-server`, `/ecs/psm-postgres` |
+| CloudWatch Log Groups | `/ecs/guardian-server`, `/ecs/guardian-postgres` |
 | IAM Role | ECS task execution role |
 
 ### Outputs
@@ -153,9 +153,9 @@ for all available options.
 
 ## HTTPS Configuration
 
-HTTPS is automated via Route 53 + ACM for `psm.openzeppelin.com`. Terraform:
+HTTPS is automated via Route 53 + ACM for `guardian.openzeppelin.com`. Terraform:
 
-1. Requests an ACM certificate for `psm.openzeppelin.com`
+1. Requests an ACM certificate for `guardian.openzeppelin.com`
 2. Creates the DNS validation records in the existing Route 53 hosted zone
 3. Creates the ALB alias record
 

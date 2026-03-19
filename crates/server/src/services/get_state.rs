@@ -1,4 +1,4 @@
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 use crate::state::AppState;
@@ -28,7 +28,7 @@ pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetSt
         .storage
         .pull_state(&params.account_id)
         .await
-        .map_err(|_e| PsmError::StateNotFound(params.account_id.clone()))?;
+        .map_err(|_e| GuardianError::StateNotFound(params.account_id.clone()))?;
 
     account_state.auth_scheme = resolved.metadata.auth.scheme().to_string();
 

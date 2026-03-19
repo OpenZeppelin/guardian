@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ack::AckRegistry;
-use crate::api::grpc::StateManagerService;
+use crate::api::grpc::GuardianService;
 use crate::metadata::auth::Auth;
 use crate::metadata::filesystem::FilesystemMetadataStore;
 use crate::network::NetworkClient;
@@ -12,19 +12,19 @@ use crate::storage::filesystem::FilesystemService;
 use crate::testing::mocks::MockNetworkClient;
 use async_trait::async_trait;
 use chrono::Utc;
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::hex::IntoHex;
+use guardian_shared::{FromJson, ToJson};
 use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
 use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
 use miden_protocol::utils::Serializable;
 use miden_protocol::{Felt, FieldElement, Word, ZERO};
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
-use private_state_manager_shared::hex::IntoHex;
-use private_state_manager_shared::{FromJson, ToJson};
 use prost::Message;
 
-pub use crate::api::grpc::state_manager::*;
+pub use crate::api::grpc::guardian::*;
 pub use tonic::{Request, metadata::MetadataValue};
 
 pub struct IntegrationMockNetworkClient {
@@ -140,10 +140,10 @@ impl NetworkClient for IntegrationMockNetworkClient {
         Ok(())
     }
 
-    fn validate_psm_commitment(
+    fn validate_guardian_commitment(
         &self,
         _state_json: &serde_json::Value,
-        _expected_psm_commitment: &str,
+        _expected_guardian_commitment: &str,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -161,11 +161,11 @@ impl NetworkClient for IntegrationMockNetworkClient {
 
 pub async fn create_test_app_state() -> AppState {
     let storage_dir =
-        std::env::temp_dir().join(format!("psm_test_storage_{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("guardian_test_storage_{}", uuid::Uuid::new_v4()));
     let metadata_dir =
-        std::env::temp_dir().join(format!("psm_test_metadata_{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("guardian_test_metadata_{}", uuid::Uuid::new_v4()));
     let keystore_dir =
-        std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
 
     std::fs::create_dir_all(&storage_dir).expect("Failed to create storage directory");
     std::fs::create_dir_all(&metadata_dir).expect("Failed to create metadata directory");
@@ -193,8 +193,8 @@ pub async fn create_test_app_state() -> AppState {
     }
 }
 
-pub fn create_grpc_service(state: AppState) -> StateManagerService {
-    StateManagerService { app_state: state }
+pub fn create_grpc_service(state: AppState) -> GuardianService {
+    GuardianService { app_state: state }
 }
 
 pub fn create_request_with_auth<T>(
@@ -580,7 +580,7 @@ pub fn create_test_app_state_with_mocks(
     metadata: Arc<dyn crate::metadata::MetadataStore>,
 ) -> AppState {
     let keystore_dir =
-        std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
 
     let storage_backend: Arc<dyn StorageBackend> = storage;

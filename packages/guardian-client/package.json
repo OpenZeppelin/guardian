@@ -1,7 +1,7 @@
 {
-  "name": "@openzeppelin/psm-client",
+  "name": "@openzeppelin/guardian-client",
   "version": "0.13.1",
-  "description": "TypeScript HTTP client for Private State Manager (PSM) server",
+  "description": "TypeScript HTTP client for Guardian server",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

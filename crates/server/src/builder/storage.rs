@@ -43,13 +43,13 @@ impl StorageMetadataBuilder {
     pub fn from_env() -> Self {
         Self::new()
             .storage_path(
-                std::env::var("PSM_STORAGE_PATH")
-                    .unwrap_or_else(|_| "/var/psm/storage".to_string())
+                std::env::var("GUARDIAN_STORAGE_PATH")
+                    .unwrap_or_else(|_| "/var/guardian/storage".to_string())
                     .into(),
             )
             .metadata_path(
-                std::env::var("PSM_METADATA_PATH")
-                    .unwrap_or_else(|_| "/var/psm/metadata".to_string())
+                std::env::var("GUARDIAN_METADATA_PATH")
+                    .unwrap_or_else(|_| "/var/guardian/metadata".to_string())
                     .into(),
             )
             .database_url(std::env::var("DATABASE_URL").ok().unwrap_or_default())
@@ -74,10 +74,10 @@ impl StorageMetadataBuilder {
         {
             let storage_path = self
                 .storage_path
-                .ok_or_else(|| "PSM_STORAGE_PATH is required".to_string())?;
+                .ok_or_else(|| "GUARDIAN_STORAGE_PATH is required".to_string())?;
             let metadata_path = self
                 .metadata_path
-                .ok_or_else(|| "PSM_METADATA_PATH is required".to_string())?;
+                .ok_or_else(|| "GUARDIAN_METADATA_PATH is required".to_string())?;
 
             let storage = FilesystemService::new(storage_path).await?;
             let metadata = FilesystemMetadataStore::new(metadata_path).await?;
@@ -162,7 +162,7 @@ mod tests {
 
         let result = builder.build().await;
         assert!(result.is_err());
-        assert_eq!(result.err().unwrap(), "PSM_STORAGE_PATH is required");
+        assert_eq!(result.err().unwrap(), "GUARDIAN_STORAGE_PATH is required");
     }
 
     #[cfg(not(feature = "postgres"))]
@@ -172,13 +172,13 @@ mod tests {
 
         let result = builder.build().await;
         assert!(result.is_err());
-        assert_eq!(result.err().unwrap(), "PSM_METADATA_PATH is required");
+        assert_eq!(result.err().unwrap(), "GUARDIAN_METADATA_PATH is required");
     }
 
     #[cfg(not(feature = "postgres"))]
     #[tokio::test]
     async fn test_build_with_valid_paths_succeeds() {
-        let temp_dir = std::env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage_path = temp_dir.join("storage");
         let metadata_path = temp_dir.join("metadata");
 

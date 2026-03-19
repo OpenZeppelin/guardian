@@ -1,8 +1,8 @@
 import type {
   DeltaObject,
   DeltaStatus,
-  ProposalMetadata as PsmProposalMetadata,
-} from '@openzeppelin/psm-client';
+  ProposalMetadata as GuardianProposalMetadata,
+} from '@openzeppelin/guardian-client';
 import type {
   ProposalMetadata,
   ProposalType,
@@ -11,8 +11,8 @@ import type {
   TransactionProposalStatus,
 } from '../../types.js';
 
-export function buildPsmMetadata(metadata: ProposalMetadata): PsmProposalMetadata {
-  const base: PsmProposalMetadata = {
+export function buildGuardianMetadata(metadata: ProposalMetadata): GuardianProposalMetadata {
+  const base: GuardianProposalMetadata = {
     proposalType: metadata.proposalType,
     description: metadata.description,
     salt: metadata.saltHex,
@@ -31,13 +31,13 @@ export function buildPsmMetadata(metadata: ProposalMetadata): PsmProposalMetadat
         faucetId: metadata.faucetId,
         amount: metadata.amount,
       };
-    case 'switch_psm':
+    case 'switch_guardian':
       return {
         ...base,
         targetThreshold: metadata.targetThreshold,
         signerCommitments: metadata.targetSignerCommitments,
-        newPsmPubkey: metadata.newPsmPubkey,
-        newPsmEndpoint: metadata.newPsmEndpoint,
+        newGuardianPubkey: metadata.newGuardianPubkey,
+        newGuardianEndpoint: metadata.newGuardianEndpoint,
       };
     case 'add_signer':
     case 'remove_signer':
@@ -54,46 +54,46 @@ export function buildPsmMetadata(metadata: ProposalMetadata): PsmProposalMetadat
   }
 }
 
-export function fromPsmMetadata(psm: PsmProposalMetadata): ProposalMetadata | undefined {
-  if (!psm.proposalType) return undefined;
+export function fromGuardianMetadata(guardian: GuardianProposalMetadata): ProposalMetadata | undefined {
+  if (!guardian.proposalType) return undefined;
 
   const base = {
-    description: psm.description ?? '',
-    saltHex: psm.salt,
+    description: guardian.description ?? '',
+    saltHex: guardian.salt,
   };
 
-  switch (psm.proposalType) {
+  switch (guardian.proposalType) {
     case 'p2id':
       return {
         ...base,
         proposalType: 'p2id',
-        recipientId: psm.recipientId ?? '',
-        faucetId: psm.faucetId ?? '',
-        amount: psm.amount ?? '0',
+        recipientId: guardian.recipientId ?? '',
+        faucetId: guardian.faucetId ?? '',
+        amount: guardian.amount ?? '0',
       };
     case 'consume_notes':
       return {
         ...base,
         proposalType: 'consume_notes',
-        noteIds: psm.noteIds ?? [],
+        noteIds: guardian.noteIds ?? [],
       };
-    case 'switch_psm':
+    case 'switch_guardian':
       return {
         ...base,
-        proposalType: 'switch_psm',
-        newPsmPubkey: psm.newPsmPubkey ?? '',
-        newPsmEndpoint: psm.newPsmEndpoint,
-        targetThreshold: psm.targetThreshold,
-        targetSignerCommitments: psm.signerCommitments,
+        proposalType: 'switch_guardian',
+        newGuardianPubkey: guardian.newGuardianPubkey ?? '',
+        newGuardianEndpoint: guardian.newGuardianEndpoint,
+        targetThreshold: guardian.targetThreshold,
+        targetSignerCommitments: guardian.signerCommitments,
       };
     case 'add_signer':
     case 'remove_signer':
     case 'change_threshold':
       return {
         ...base,
-        proposalType: psm.proposalType,
-        targetThreshold: psm.targetThreshold ?? 0,
-        targetSignerCommitments: psm.signerCommitments ?? [],
+        proposalType: guardian.proposalType,
+        targetThreshold: guardian.targetThreshold ?? 0,
+        targetSignerCommitments: guardian.signerCommitments ?? [],
       };
     default:
       return undefined;
@@ -178,7 +178,7 @@ export function resolveMetadata(
 ): ProposalMetadata | undefined {
   if (existingMetadata) return existingMetadata;
   if (!delta.deltaPayload.metadata) return undefined;
-  return fromPsmMetadata(delta.deltaPayload.metadata);
+  return fromGuardianMetadata(delta.deltaPayload.metadata);
 }
 
 export function signatureRequirementForProposal(

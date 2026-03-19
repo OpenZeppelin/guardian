@@ -1,6 +1,6 @@
 # IAM role for ECS task execution
 resource "aws_iam_role" "ecs_task_execution" {
-  name = "psm-ecs-task-execution"
+  name = "guardian-ecs-task-execution"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -23,7 +23,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
 
 # IAM role for ECS tasks (runtime)
 resource "aws_iam_role" "ecs_task" {
-  name = "psm-ecs-task"
+  name = "guardian-ecs-task"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

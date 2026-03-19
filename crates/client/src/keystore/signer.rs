@@ -1,7 +1,7 @@
+use guardian_shared::SignatureScheme;
 use miden_protocol::Word;
-use private_state_manager_shared::SignatureScheme;
 
-/// Signing boundary for PSM authentication and multisig proposal workflows.
+/// Signing boundary for GUARDIAN authentication and multisig proposal workflows.
 pub trait Signer: Send + Sync {
     /// Returns the signer's signature scheme.
     fn scheme(&self) -> SignatureScheme;

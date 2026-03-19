@@ -1,5 +1,5 @@
 use crate::delta_object::DeltaObject;
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 use crate::state::AppState;
@@ -36,7 +36,7 @@ pub async fn get_delta_since(
         .storage
         .pull_deltas_after(&params.account_id, params.from_nonce)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to fetch deltas: {e}")))?;
+        .map_err(|e| GuardianError::StorageError(format!("Failed to fetch deltas: {e}")))?;
 
     // Only include canonical deltas to avoid surfacing candidates that may be discarded later
     let deltas: Vec<DeltaObject> = all_deltas
@@ -45,7 +45,7 @@ pub async fn get_delta_since(
         .collect();
 
     if deltas.is_empty() {
-        return Err(PsmError::DeltaNotFound {
+        return Err(GuardianError::DeltaNotFound {
             account_id: params.account_id.clone(),
             nonce: params.from_nonce,
         });
@@ -58,7 +58,7 @@ pub async fn get_delta_since(
         let client = state.network_client.lock().await;
         client
             .merge_deltas(delta_payloads)
-            .map_err(PsmError::InvalidDelta)?
+            .map_err(GuardianError::InvalidDelta)?
     };
 
     let last_delta = deltas.last().unwrap();

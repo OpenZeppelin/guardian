@@ -7,9 +7,9 @@ BENCH_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
 
 POSTGRES_SERVICE=${POSTGRES_SERVICE:-postgres}
-POSTGRES_USER=${POSTGRES_USER:-psm}
-POSTGRES_DB=${POSTGRES_DB:-psm}
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-psm_dev_password}
+POSTGRES_USER=${POSTGRES_USER:-guardian}
+POSTGRES_DB=${POSTGRES_DB:-guardian}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-guardian_dev_password}
 
 {
   echo "-- pg_stat_statements snapshot"

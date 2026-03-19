@@ -1,4 +1,4 @@
-pub use private_state_manager_shared::{FromJson, ToJson};
+pub use guardian_shared::{FromJson, ToJson};
 
 use server::ack::AckRegistry;
 use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
@@ -14,8 +14,8 @@ use tower_http::cors::{Any, CorsLayer};
 async fn main() {
     dotenvy::dotenv().ok();
 
-    let keystore_path: PathBuf = env::var("PSM_KEYSTORE_PATH")
-        .unwrap_or_else(|_| "/var/psm/keystore".to_string())
+    let keystore_path: PathBuf = env::var("GUARDIAN_KEYSTORE_PATH")
+        .unwrap_or_else(|_| "/var/guardian/keystore".to_string())
         .into();
 
     let (storage_backend, metadata) = StorageMetadataBuilder::from_env()
@@ -31,7 +31,7 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let network_type = NetworkType::from_env_or("PSM_NETWORK_TYPE", NetworkType::MidenTestnet);
+    let network_type = NetworkType::from_env_or("GUARDIAN_NETWORK_TYPE", NetworkType::MidenTestnet);
 
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())

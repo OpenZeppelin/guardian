@@ -1,15 +1,15 @@
 pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
-use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_PSM_PUBLIC_KEY};
+use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_GUARDIAN_PUBLIC_KEY};
 use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
+use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId, StorageSlotName};
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::transaction::{InputNote, InputNotes, OutputNote, OutputNotes};
 use miden_rpc_client::MidenRpcClient;
-use private_state_manager_shared::{FromJson, ToJson};
 
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
@@ -181,9 +181,9 @@ impl NetworkClient for MidenNetworkClient {
         };
 
         let inspector = MidenAccountInspector::new(&account);
-        let has_psm_auth = inspector.has_psm_auth();
+        let has_guardian_auth = inspector.has_guardian_auth();
 
-        if has_psm_auth {
+        if has_guardian_auth {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
             // This affects determinism on simulations as the simulation won't pass the authentication,
             // therefore, the transaction won't be added to the mapping.
@@ -351,23 +351,23 @@ impl NetworkClient for MidenNetworkClient {
         }
     }
 
-    fn validate_psm_commitment(
+    fn validate_guardian_commitment(
         &self,
         state_json: &serde_json::Value,
-        expected_psm_commitment: &str,
+        expected_guardian_commitment: &str,
     ) -> Result<(), String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let actual_psm_commitment = inspector
-            .extract_psm_public_key()
-            .ok_or_else(|| format!("Missing required slot '{OZ_PSM_PUBLIC_KEY}'"))?;
+        let actual_guardian_commitment = inspector
+            .extract_guardian_public_key()
+            .ok_or_else(|| format!("Missing required slot '{OZ_GUARDIAN_PUBLIC_KEY}'"))?;
 
-        if actual_psm_commitment == expected_psm_commitment {
+        if actual_guardian_commitment == expected_guardian_commitment {
             Ok(())
         } else {
             Err(format!(
-                "Slot '{OZ_PSM_PUBLIC_KEY}' mismatch: expected {expected_psm_commitment}, got {actual_psm_commitment}"
+                "Slot '{OZ_GUARDIAN_PUBLIC_KEY}' mismatch: expected {expected_guardian_commitment}, got {actual_guardian_commitment}"
             ))
         }
     }
@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_psm_commitment_success() {
+    async fn test_validate_guardian_commitment_success() {
         let network = NetworkType::MidenTestnet;
         let client = MidenNetworkClient::from_network(network)
             .await
@@ -461,16 +461,20 @@ mod tests {
         let account =
             Account::from_json(&account_json).expect("Failed to deserialize fixture account");
         let inspector = MidenAccountInspector::new(&account);
-        let expected_psm_commitment = inspector
-            .extract_psm_public_key()
-            .expect("Fixture must contain OpenZeppelin PSM public key slot");
+        let expected_guardian_commitment = inspector
+            .extract_guardian_public_key()
+            .expect("Fixture must contain OpenZeppelin GUARDIAN public key slot");
 
-        let result = client.validate_psm_commitment(&account_json, &expected_psm_commitment);
-        assert!(result.is_ok(), "Expected matching PSM commitment to pass");
+        let result =
+            client.validate_guardian_commitment(&account_json, &expected_guardian_commitment);
+        assert!(
+            result.is_ok(),
+            "Expected matching GUARDIAN commitment to pass"
+        );
     }
 
     #[tokio::test]
-    async fn test_validate_psm_commitment_mismatch() {
+    async fn test_validate_guardian_commitment_mismatch() {
         let network = NetworkType::MidenTestnet;
         let client = MidenNetworkClient::from_network(network)
             .await
@@ -480,18 +484,18 @@ mod tests {
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
                 .expect("Failed to parse account fixture");
 
-        let result = client.validate_psm_commitment(
+        let result = client.validate_guardian_commitment(
             &account_json,
             "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
         );
         assert!(
             result.is_err(),
-            "Expected mismatched PSM commitment to fail"
+            "Expected mismatched GUARDIAN commitment to fail"
         );
         assert!(
             result
                 .unwrap_err()
-                .contains("openzeppelin::psm::public_key"),
+                .contains("openzeppelin::guardian::public_key"),
             "Error should mention required OpenZeppelin slot name"
         );
     }
@@ -515,10 +519,10 @@ mod tests {
             .get("delta_payload")
             .expect("delta_payload field missing");
 
-        // Expected commitment after applying delta_1
-        // This should match the new_commitment from the delta_1.json fixture
-        let expected_commitment =
-            "0x10495aa5bcac25a2ee1faaeead93014951f381e25aa3f7fc90dc6679fa2e4339";
+        let expected_commitment = delta_fixture
+            .get("new_commitment")
+            .and_then(serde_json::Value::as_str)
+            .expect("new_commitment field missing");
 
         let (new_state_json, new_commitment) = client
             .apply_delta(&account_json, delta_payload)
@@ -549,7 +553,7 @@ mod tests {
             .await
             .expect("Failed to create client");
 
-        // Create a simple account without PSM auth to test the full state delta path
+        // Create a simple account without GUARDIAN auth to test the full state delta path
         // This avoids the replay protection logic which requires proper storage maps
         let account = AccountBuilder::new([0xAB; 32])
             .account_type(AccountType::RegularAccountUpdatableCode)

@@ -1,26 +1,27 @@
 //! Proposal builder for multisig transactions.
 
+use guardian_client::GuardianClient;
+use guardian_shared::ToJson;
 use miden_client::Client;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::note::NoteId;
-use private_state_manager_client::PsmClient;
-use private_state_manager_shared::ToJson;
 
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
+use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{Proposal, ProposalMetadata, TransactionType};
-use crate::psm_endpoint::verify_endpoint_commitment;
 use crate::utils::hex_body_eq;
 
 use super::{
     build_consume_notes_transaction_request, build_p2id_transaction_request,
-    build_update_procedure_threshold_transaction_request, build_update_psm_transaction_request,
-    build_update_signers_transaction_request, execute_for_summary, generate_salt, word_to_hex,
+    build_update_guardian_transaction_request,
+    build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
+    execute_for_summary, generate_salt, word_to_hex,
 };
 
 /// Builder for creating multisig transaction proposals.
@@ -31,7 +32,7 @@ use super::{
 /// use miden_multisig_client::TransactionType;
 ///
 /// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment })
-///     .build(&mut miden_client, &mut psm_client, &account, key_manager)
+///     .build(&mut miden_client, &mut guardian_client, &account, key_manager)
 ///     .await?;
 /// ```
 pub struct ProposalBuilder {
@@ -44,11 +45,11 @@ impl ProposalBuilder {
         Self { transaction_type }
     }
 
-    /// Builds and submits the proposal to PSM.
+    /// Builds and submits the proposal to GUARDIAN.
     pub async fn build(
         self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
@@ -56,7 +57,7 @@ impl ProposalBuilder {
             TransactionType::AddCosigner { new_commitment } => {
                 self.build_add_cosigner(
                     miden_client,
-                    psm_client,
+                    guardian_client,
                     account,
                     new_commitment,
                     key_manager,
@@ -66,7 +67,7 @@ impl ProposalBuilder {
             TransactionType::RemoveCosigner { commitment } => {
                 self.build_remove_cosigner(
                     miden_client,
-                    psm_client,
+                    guardian_client,
                     account,
                     commitment,
                     key_manager,
@@ -80,7 +81,7 @@ impl ProposalBuilder {
             } => {
                 self.build_p2id(
                     miden_client,
-                    psm_client,
+                    guardian_client,
                     account,
                     recipient,
                     faucet_id,
@@ -92,20 +93,20 @@ impl ProposalBuilder {
             TransactionType::ConsumeNotes { ref note_ids } => {
                 self.build_consume_notes(
                     miden_client,
-                    psm_client,
+                    guardian_client,
                     account,
                     note_ids.clone(),
                     key_manager,
                 )
                 .await
             }
-            TransactionType::SwitchPsm {
+            TransactionType::SwitchGuardian {
                 ref new_endpoint,
                 new_commitment,
             } => {
-                self.build_switch_psm(
+                self.build_switch_guardian(
                     miden_client,
-                    psm_client,
+                    guardian_client,
                     account,
                     new_commitment,
                     new_endpoint.clone(),
@@ -119,7 +120,7 @@ impl ProposalBuilder {
             } => {
                 self.build_update_procedure_threshold(
                     miden_client,
-                    psm_client,
+                    guardian_client,
                     account,
                     procedure,
                     new_threshold,
@@ -139,8 +140,8 @@ impl ProposalBuilder {
             return Ok(());
         }
 
-        Err(MultisigError::PsmServer(format!(
-            "PSM returned proposal commitment {} but transaction summary commitment is {}",
+        Err(MultisigError::GuardianServer(format!(
+            "GUARDIAN returned proposal commitment {} but transaction summary commitment is {}",
             response_commitment, proposal.id
         )))
     }
@@ -148,7 +149,7 @@ impl ProposalBuilder {
     async fn build_add_cosigner(
         &self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         new_commitment: Word,
         key_manager: &dyn KeyManager,
@@ -196,8 +197,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: Vec::new(),
-            new_psm_pubkey_hex: None,
-            new_psm_endpoint: None,
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
@@ -213,12 +214,14 @@ impl ProposalBuilder {
             )
             .with_required_signatures(required_signatures);
 
-        // Push proposal to PSM
+        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = psm_client
+        let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -235,7 +238,7 @@ impl ProposalBuilder {
     async fn build_remove_cosigner(
         &self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         commitment_to_remove: Word,
         key_manager: &dyn KeyManager,
@@ -299,8 +302,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: Vec::new(),
-            new_psm_pubkey_hex: None,
-            new_psm_endpoint: None,
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
@@ -316,12 +319,14 @@ impl ProposalBuilder {
             )
             .with_required_signatures(required_signatures);
 
-        // Push proposal to PSM
+        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = psm_client
+        let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -341,7 +346,7 @@ impl ProposalBuilder {
     async fn build_p2id(
         &self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         recipient: AccountId,
         faucet_id: AccountId,
@@ -385,8 +390,8 @@ impl ProposalBuilder {
             faucet_id_hex: Some(faucet_id.to_string()),
             amount: Some(amount),
             note_ids_hex: Vec::new(),
-            new_psm_pubkey_hex: None,
-            new_psm_endpoint: None,
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
@@ -403,12 +408,14 @@ impl ProposalBuilder {
             )
             .with_required_signatures(required_signatures);
 
-        // Push proposal to PSM
+        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = psm_client
+        let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -429,7 +436,7 @@ impl ProposalBuilder {
     async fn build_consume_notes(
         &self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         note_ids: Vec<NoteId>,
         key_manager: &dyn KeyManager,
@@ -469,8 +476,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: note_ids_hex.clone(),
-            new_psm_pubkey_hex: None,
-            new_psm_endpoint: None,
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
@@ -482,12 +489,14 @@ impl ProposalBuilder {
             .with_note_consumption_metadata(&note_ids_hex, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 
-        // Push proposal to PSM
+        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = psm_client
+        let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -502,27 +511,30 @@ impl ProposalBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn build_switch_psm(
+    async fn build_switch_guardian(
         &self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
-        new_psm_pubkey: Word,
-        new_psm_endpoint: String,
+        new_guardian_pubkey: Word,
+        new_guardian_endpoint: String,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdatePsm)? as usize;
+            account.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)? as usize;
 
-        verify_endpoint_commitment(&new_psm_endpoint, new_psm_pubkey).await?;
+        verify_endpoint_commitment(&new_guardian_endpoint, new_guardian_pubkey).await?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
 
-        // Build the PSM update transaction request (no signatures for proposal)
-        let tx_request =
-            build_update_psm_transaction_request(new_psm_pubkey, salt, std::iter::empty())?;
+        // Build the GUARDIAN update transaction request (no signatures for proposal)
+        let tx_request = build_update_guardian_transaction_request(
+            new_guardian_pubkey,
+            salt,
+            std::iter::empty(),
+        )?;
 
         // Execute to get the TransactionSummary
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
@@ -541,8 +553,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: Vec::new(),
-            new_psm_pubkey_hex: Some(word_to_hex(&new_psm_pubkey)),
-            new_psm_endpoint: Some(new_psm_endpoint.clone()),
+            new_guardian_pubkey_hex: Some(word_to_hex(&new_guardian_pubkey)),
+            new_guardian_endpoint: Some(new_guardian_endpoint.clone()),
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
@@ -551,27 +563,29 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
-            .with_psm_update_metadata(
-                word_to_hex(&new_psm_pubkey),
-                new_psm_endpoint.clone(),
+            .with_guardian_update_metadata(
+                word_to_hex(&new_guardian_pubkey),
+                new_guardian_endpoint.clone(),
                 word_to_hex(&salt),
             )
             .with_required_signatures(required_signatures);
 
-        // Push proposal to PSM
+        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = psm_client
+        let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
 
         // Build the Proposal
         let proposal = Proposal::new(
             tx_summary,
             nonce,
-            TransactionType::SwitchPsm {
-                new_endpoint: new_psm_endpoint,
-                new_commitment: new_psm_pubkey,
+            TransactionType::SwitchGuardian {
+                new_endpoint: new_guardian_endpoint,
+                new_commitment: new_guardian_pubkey,
             },
             metadata,
         );
@@ -583,7 +597,7 @@ impl ProposalBuilder {
     async fn build_update_procedure_threshold(
         &self,
         miden_client: &mut Client<()>,
-        psm_client: &mut PsmClient,
+        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         procedure: ProcedureName,
         new_threshold: u32,
@@ -615,8 +629,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: Vec::new(),
-            new_psm_pubkey_hex: None,
-            new_psm_endpoint: None,
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
             target_procedure: Some(procedure.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
@@ -628,10 +642,12 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
-        let response = psm_client
+        let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
 
         let proposal = Proposal::new(
             tx_summary,

@@ -1,11 +1,11 @@
 import type {
   ProposalSignature,
-  ProposalType as PsmProposalType,
+  ProposalType as GuardianProposalType,
   SignatureScheme,
-} from '@openzeppelin/psm-client';
+} from '@openzeppelin/guardian-client';
 import type { ProcedureName } from '../procedures.js';
 
-export type ProposalType = Exclude<PsmProposalType, 'custom'>;
+export type ProposalType = Exclude<GuardianProposalType, 'custom'>;
 
 export type ProposalStatus = 'pending' | 'ready' | 'finalized';
 
@@ -35,10 +35,10 @@ export interface UpdateSignersProposalMetadata extends BaseProposalMetadata {
   targetSignerCommitments: string[];
 }
 
-export interface SwitchPsmProposalMetadata extends BaseProposalMetadata {
-  proposalType: 'switch_psm';
-  newPsmPubkey: string;
-  newPsmEndpoint?: string;
+export interface SwitchGuardianProposalMetadata extends BaseProposalMetadata {
+  proposalType: 'switch_guardian';
+  newGuardianPubkey: string;
+  newGuardianEndpoint?: string;
   targetThreshold?: number;
   targetSignerCommitments?: string[];
 }
@@ -67,7 +67,7 @@ export interface UnknownProposalMetadata extends BaseProposalMetadata {
 
 export type ProposalMetadata =
   | UpdateSignersProposalMetadata
-  | SwitchPsmProposalMetadata
+  | SwitchGuardianProposalMetadata
   | UpdateProcedureThresholdProposalMetadata
   | ConsumeNotesProposalMetadata
   | P2IdProposalMetadata

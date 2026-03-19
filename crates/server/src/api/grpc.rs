@@ -5,30 +5,29 @@ use crate::services::{
     PushDeltaParams,
 };
 use crate::state::AppState;
-use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::SignatureScheme;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use tonic::{Request, Response, Status};
 
 // Include the generated protobuf code
-pub mod state_manager {
-    tonic::include_proto!("state_manager");
+pub mod guardian {
+    tonic::include_proto!("guardian");
 
     // Include the file descriptor set for reflection
-    pub const FILE_DESCRIPTOR_SET: &[u8] =
-        include_bytes!("../../proto/state_manager_descriptor.bin");
+    pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../../proto/guardian_descriptor.bin");
 }
 
-use state_manager::state_manager_server::StateManager;
-use state_manager::*;
+use guardian::guardian_server::Guardian;
+use guardian::*;
 
-use state_manager::DeltaStatus as DeltaStatusGrpc;
+use guardian::DeltaStatus as DeltaStatusGrpc;
 
-pub struct StateManagerService {
+pub struct GuardianService {
     pub app_state: AppState,
 }
 
 #[tonic::async_trait]
-impl StateManager for StateManagerService {
+impl Guardian for GuardianService {
     async fn configure(
         &self,
         request: Request<ConfigureRequest>,
@@ -380,7 +379,7 @@ impl StateManager for StateManagerService {
 }
 
 // Helper functions to convert between internal types and protobuf types
-fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
+fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
     let (candidate_at, canonical_at, discarded_at) = match &delta.status {
         crate::delta_object::DeltaStatus::Pending { timestamp, .. } => {
             (Some(timestamp.clone()), None, None)
@@ -405,7 +404,7 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
         } => {
             let proto_cosigner_sigs = cosigner_sigs
                 .iter()
-                .map(|sig| state_manager::CosignerSignature {
+                .map(|sig| guardian::CosignerSignature {
                     signer_id: sig.signer_id.clone(),
                     signature: Some(proposal_signature_to_proto(&sig.signature)),
                     timestamp: sig.timestamp.clone(),
@@ -413,8 +412,8 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
                 .collect();
 
             Some(DeltaStatusGrpc {
-                status: Some(state_manager::delta_status::Status::Pending(
-                    state_manager::PendingStatus {
+                status: Some(guardian::delta_status::Status::Pending(
+                    guardian::PendingStatus {
                         timestamp: timestamp.clone(),
                         proposer_id: proposer_id.clone(),
                         cosigner_sigs: proto_cosigner_sigs,
@@ -423,23 +422,23 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
-            status: Some(state_manager::delta_status::Status::CandidateAt(
+            status: Some(guardian::delta_status::Status::CandidateAt(
                 timestamp.clone(),
             )),
         }),
         crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
-            status: Some(state_manager::delta_status::Status::CanonicalAt(
+            status: Some(guardian::delta_status::Status::CanonicalAt(
                 timestamp.clone(),
             )),
         }),
         crate::delta_object::DeltaStatus::Discarded { timestamp } => Some(DeltaStatusGrpc {
-            status: Some(state_manager::delta_status::Status::DiscardedAt(
+            status: Some(guardian::delta_status::Status::DiscardedAt(
                 timestamp.clone(),
             )),
         }),
     };
 
-    state_manager::DeltaObject {
+    guardian::DeltaObject {
         account_id: delta.account_id.clone(),
         nonce: delta.nonce,
         prev_commitment: delta.prev_commitment.clone(),
@@ -455,8 +454,8 @@ fn delta_to_proto(delta: &DeltaObject) -> state_manager::DeltaObject {
     }
 }
 
-fn state_to_proto(state: &crate::state_object::StateObject) -> state_manager::AccountState {
-    state_manager::AccountState {
+fn state_to_proto(state: &crate::state_object::StateObject) -> guardian::AccountState {
+    guardian::AccountState {
         account_id: state.account_id.clone(),
         state_json: state.state_json.to_string(),
         commitment: state.commitment.clone(),
@@ -466,9 +465,9 @@ fn state_to_proto(state: &crate::state_object::StateObject) -> state_manager::Ac
     }
 }
 
-fn proposal_signature_to_proto(signature: &ProposalSignature) -> state_manager::ProposalSignature {
+fn proposal_signature_to_proto(signature: &ProposalSignature) -> guardian::ProposalSignature {
     match signature {
-        ProposalSignature::Falcon { signature } => state_manager::ProposalSignature {
+        ProposalSignature::Falcon { signature } => guardian::ProposalSignature {
             scheme: "falcon".to_string(),
             signature: signature.clone(),
             public_key: None,
@@ -476,7 +475,7 @@ fn proposal_signature_to_proto(signature: &ProposalSignature) -> state_manager::
         ProposalSignature::Ecdsa {
             signature,
             public_key,
-        } => state_manager::ProposalSignature {
+        } => guardian::ProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
             public_key: public_key.clone(),
@@ -486,7 +485,7 @@ fn proposal_signature_to_proto(signature: &ProposalSignature) -> state_manager::
 
 #[allow(clippy::result_large_err)]
 fn proto_signature_to_internal(
-    signature: state_manager::ProposalSignature,
+    signature: guardian::ProposalSignature,
 ) -> Result<ProposalSignature, Status> {
     match signature.scheme.as_str() {
         "falcon" => Ok(ProposalSignature::Falcon {
@@ -586,8 +585,8 @@ mod tests {
         request
     }
 
-    fn create_service(state: AppState) -> StateManagerService {
-        StateManagerService { app_state: state }
+    fn create_service(state: AppState) -> GuardianService {
+        GuardianService { app_state: state }
     }
 
     #[tokio::test]
@@ -595,7 +594,7 @@ mod tests {
         let (state, _storage, _network, _metadata) = create_test_state();
         let service = create_service(state);
 
-        let request = Request::new(state_manager::GetPubkeyRequest { scheme: None });
+        let request = Request::new(guardian::GetPubkeyRequest { scheme: None });
         let response = service.get_pubkey(request).await.unwrap();
         let inner = response.into_inner();
 
@@ -608,7 +607,7 @@ mod tests {
         let (state, _storage, _network, _metadata) = create_test_state();
         let service = create_service(state);
 
-        let request = Request::new(state_manager::GetPubkeyRequest {
+        let request = Request::new(guardian::GetPubkeyRequest {
             scheme: Some("ecdsa".to_string()),
         });
         let response = service.get_pubkey(request).await.unwrap();
@@ -634,11 +633,11 @@ mod tests {
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
 
-        let request = state_manager::ConfigureRequest {
+        let request = guardian::ConfigureRequest {
             account_id: account_id.clone(),
-            auth: Some(state_manager::AuthConfig {
-                auth_type: Some(state_manager::auth_config::AuthType::MidenFalconRpo(
-                    state_manager::MidenFalconRpoAuth {
+            auth: Some(guardian::AuthConfig {
+                auth_type: Some(guardian::auth_config::AuthType::MidenFalconRpo(
+                    guardian::MidenFalconRpoAuth {
                         cosigner_commitments: vec![commitment],
                     },
                 )),
@@ -685,7 +684,7 @@ mod tests {
             account_json,
         )));
 
-        let request = state_manager::PushDeltaProposalRequest {
+        let request = guardian::PushDeltaProposalRequest {
             account_id: account_id.clone(),
             nonce: 1,
             delta_payload: serde_json::to_string(&serde_json::json!({
@@ -732,7 +731,7 @@ mod tests {
             account_json,
         )));
 
-        let request = state_manager::PushDeltaProposalRequest {
+        let request = guardian::PushDeltaProposalRequest {
             account_id: account_id.clone(),
             nonce: 1,
             delta_payload: serde_json::to_string(&serde_json::json!({
@@ -793,7 +792,7 @@ mod tests {
 
         let _storage = storage.with_pull_all_delta_proposals(Ok(vec![pending_delta]));
 
-        let request = state_manager::GetDeltaProposalsRequest {
+        let request = guardian::GetDeltaProposalsRequest {
             account_id: account_id.clone(),
         };
 
@@ -827,7 +826,7 @@ mod tests {
 
         let _storage = storage.with_pull_all_delta_proposals(Ok(vec![]));
 
-        let request = state_manager::GetDeltaProposalsRequest {
+        let request = guardian::GetDeltaProposalsRequest {
             account_id: account_id.clone(),
         };
 
@@ -878,7 +877,7 @@ mod tests {
 
         let _storage = storage.with_pull_delta_proposal(Ok(pending_delta));
 
-        let request = state_manager::GetDeltaProposalRequest {
+        let request = guardian::GetDeltaProposalRequest {
             account_id: account_id.clone(),
             commitment: "0xproposal".to_string(),
         };
@@ -913,7 +912,7 @@ mod tests {
 
         let _storage = storage.with_pull_delta_proposal(Err("Proposal not found".to_string()));
 
-        let request = state_manager::GetDeltaProposalRequest {
+        let request = guardian::GetDeltaProposalRequest {
             account_id: account_id.clone(),
             commitment: "0xmissing".to_string(),
         };
@@ -939,7 +938,7 @@ mod tests {
             vec![signer.commitment_hex.clone()],
         ))));
 
-        let request = state_manager::GetDeltaProposalRequest {
+        let request = guardian::GetDeltaProposalRequest {
             account_id: account_id.clone(),
             commitment: "0xproposal".to_string(),
         };
@@ -973,10 +972,10 @@ mod tests {
         let _storage = storage.with_pull_delta_proposal(Err("Proposal not found".to_string()));
 
         let dummy_sig = format!("0x{}", "a".repeat(666));
-        let request = state_manager::SignDeltaProposalRequest {
+        let request = guardian::SignDeltaProposalRequest {
             account_id: account_id.clone(),
             commitment: "nonexistent_proposal".to_string(),
-            signature: Some(state_manager::ProposalSignature {
+            signature: Some(guardian::ProposalSignature {
                 scheme: "falcon".to_string(),
                 signature: dummy_sig,
                 public_key: None,

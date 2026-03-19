@@ -314,7 +314,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::PsmError::AuthenticationFailed(_) => {}
+            crate::error::GuardianError::AuthenticationFailed(_) => {}
             e => panic!("Expected AuthenticationFailed error, got: {:?}", e),
         }
     }
@@ -339,7 +339,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::PsmError::AccountNotFound(_) => {}
+            crate::error::GuardianError::AccountNotFound(_) => {}
             e => panic!("Expected AccountNotFound error, got: {:?}", e),
         }
     }

@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { check } from 'k6';
 import { Rate } from 'k6/metrics';
 
-const baseUrl = __ENV.PSM_HTTP_URL || 'http://localhost:3000';
+const baseUrl = __ENV.GUARDIAN_HTTP_URL || 'http://localhost:3000';
 const sawStatus429 = new Rate('rate_limit_seen_429');
 const sawStatus200 = new Rate('rate_limit_seen_200');
 

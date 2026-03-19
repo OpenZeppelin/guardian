@@ -9,7 +9,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@miden-sdk/miden-sdk': path.resolve(__dirname, 'node_modules/@miden-sdk/miden-sdk/dist/index.js'),
-      '@openzeppelin/psm-client': path.resolve(__dirname, '../../packages/psm-client/dist/index.js'),
+      '@openzeppelin/guardian-client': path.resolve(__dirname, '../../packages/guardian-client/dist/index.js'),
       '@openzeppelin/miden-multisig-client': path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
     },
   },
@@ -39,7 +39,7 @@ export default defineConfig({
   optimizeDeps: {
     exclude: [
       '@miden-sdk/miden-sdk',
-      '@openzeppelin/psm-client',
+      '@openzeppelin/guardian-client',
       '@openzeppelin/miden-multisig-client',
     ],
   },

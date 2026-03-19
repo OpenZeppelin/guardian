@@ -4,8 +4,8 @@ use crate::testing::helpers::{
 };
 use tonic::Request;
 
-use crate::api::grpc::state_manager::state_manager_server::StateManager;
-use crate::api::grpc::state_manager::{ConfigureRequest, GetDeltaRequest, PushDeltaRequest};
+use crate::api::grpc::guardian::guardian_server::Guardian;
+use crate::api::grpc::guardian::{ConfigureRequest, GetDeltaRequest, PushDeltaRequest};
 
 #[tokio::test]
 async fn test_grpc_configure_and_push_delta_with_auth() {

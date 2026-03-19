@@ -2,6 +2,10 @@
 
 use std::collections::HashSet;
 
+use guardian_client::DeltaObject;
+use guardian_shared::FromJson;
+use guardian_shared::hex::FromHex;
+use guardian_shared::{ProposalSignature, SignatureScheme};
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
@@ -11,10 +15,6 @@ use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::Deserializable;
 use miden_protocol::{Felt, Word};
-use private_state_manager_client::DeltaObject;
-use private_state_manager_shared::FromJson;
-use private_state_manager_shared::hex::FromHex;
-use private_state_manager_shared::{ProposalSignature, SignatureScheme};
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
@@ -57,7 +57,7 @@ pub enum TransactionType {
     RemoveCosigner {
         commitment: Word,
     },
-    SwitchPsm {
+    SwitchGuardian {
         new_endpoint: String,
         new_commitment: Word,
     },
@@ -96,9 +96,9 @@ impl TransactionType {
         Self::RemoveCosigner { commitment }
     }
 
-    /// Creates a SwitchPsm transaction.
-    pub fn switch_psm(new_endpoint: impl Into<String>, new_commitment: Word) -> Self {
-        Self::SwitchPsm {
+    /// Creates a SwitchGuardian transaction.
+    pub fn switch_guardian(new_endpoint: impl Into<String>, new_commitment: Word) -> Self {
+        Self::SwitchGuardian {
             new_endpoint: new_endpoint.into(),
             new_commitment,
         }
@@ -126,7 +126,7 @@ impl TransactionType {
             Self::ConsumeNotes { .. } => Some("consume_notes"),
             Self::AddCosigner { .. } => Some("add_signer"),
             Self::RemoveCosigner { .. } => Some("remove_signer"),
-            Self::SwitchPsm { .. } => Some("switch_psm"),
+            Self::SwitchGuardian { .. } => Some("switch_guardian"),
             Self::UpdateProcedureThreshold { .. } => Some("update_procedure_threshold"),
             Self::UpdateSigners { .. } => None,
         }
@@ -139,19 +139,19 @@ impl TransactionType {
             Self::ConsumeNotes { .. } => "ConsumeNotes",
             Self::AddCosigner { .. } => "AddCosigner",
             Self::RemoveCosigner { .. } => "RemoveCosigner",
-            Self::SwitchPsm { .. } => "SwitchPsm",
+            Self::SwitchGuardian { .. } => "SwitchGuardian",
             Self::UpdateProcedureThreshold { .. } => "UpdateProcedureThreshold",
             Self::UpdateSigners { .. } => "UpdateSigners",
         }
     }
 
-    /// Returns true when execution can proceed without a PSM acknowledgment.
+    /// Returns true when execution can proceed without a GUARDIAN acknowledgment.
     pub fn supports_offline_execution(&self) -> bool {
-        matches!(self, Self::SwitchPsm { .. })
+        matches!(self, Self::SwitchGuardian { .. })
     }
 
-    /// Returns true when execution requires a PSM acknowledgment signature.
-    pub fn requires_psm_ack(&self) -> bool {
+    /// Returns true when execution requires a GUARDIAN acknowledgment signature.
+    pub fn requires_guardian_ack(&self) -> bool {
         !self.supports_offline_execution()
     }
 }
@@ -171,8 +171,8 @@ pub struct ProposalMetadata {
 
     pub note_ids_hex: Vec<String>,
 
-    pub new_psm_pubkey_hex: Option<String>,
-    pub new_psm_endpoint: Option<String>,
+    pub new_guardian_pubkey_hex: Option<String>,
+    pub new_guardian_endpoint: Option<String>,
     pub target_procedure: Option<String>,
 
     pub required_signatures: Option<usize>,
@@ -265,20 +265,22 @@ impl ProposalMetadata {
                     amount: parsed_amount,
                 })
             }
-            "switch_psm" => {
-                let pubkey_hex = self.new_psm_pubkey_hex.as_ref().ok_or_else(|| {
+            "switch_guardian" => {
+                let pubkey_hex = self.new_guardian_pubkey_hex.as_ref().ok_or_else(|| {
                     MultisigError::InvalidConfig(
-                        "switch_psm proposal requires metadata.new_psm_pubkey".to_string(),
+                        "switch_guardian proposal requires metadata.new_guardian_pubkey"
+                            .to_string(),
                     )
                 })?;
-                let endpoint = self.new_psm_endpoint.as_ref().ok_or_else(|| {
+                let endpoint = self.new_guardian_endpoint.as_ref().ok_or_else(|| {
                     MultisigError::InvalidConfig(
-                        "switch_psm proposal requires metadata.new_psm_endpoint".to_string(),
+                        "switch_guardian proposal requires metadata.new_guardian_endpoint"
+                            .to_string(),
                     )
                 })?;
                 let new_commitment =
                     word_from_hex(pubkey_hex).map_err(MultisigError::InvalidConfig)?;
-                Ok(TransactionType::SwitchPsm {
+                Ok(TransactionType::SwitchGuardian {
                     new_endpoint: endpoint.clone(),
                     new_commitment,
                 })
@@ -469,8 +471,8 @@ impl Proposal {
         };
         let note_ids_hex = metadata_payload.note_ids;
 
-        let new_psm_pubkey_hex = metadata_payload.new_psm_pubkey;
-        let new_psm_endpoint = metadata_payload.new_psm_endpoint;
+        let new_guardian_pubkey_hex = metadata_payload.new_guardian_pubkey;
+        let new_guardian_endpoint = metadata_payload.new_guardian_endpoint;
         let target_procedure = metadata_payload.target_procedure;
 
         let mut metadata = ProposalMetadata {
@@ -483,8 +485,8 @@ impl Proposal {
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
             note_ids_hex: note_ids_hex.clone(),
-            new_psm_pubkey_hex: new_psm_pubkey_hex.clone(),
-            new_psm_endpoint: new_psm_endpoint.clone(),
+            new_guardian_pubkey_hex: new_guardian_pubkey_hex.clone(),
+            new_guardian_endpoint: new_guardian_endpoint.clone(),
             target_procedure: target_procedure.clone(),
             required_signatures: Some(required_signatures),
             signers: Vec::new(),
@@ -747,15 +749,15 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_type_switch_psm() {
-        let endpoint = "http://new-psm.example.com";
+    fn test_transaction_type_switch_guardian() {
+        let endpoint = "http://new-guardian.example.com";
         let commitment = Word::default();
 
-        let tx = TransactionType::switch_psm(endpoint, commitment);
+        let tx = TransactionType::switch_guardian(endpoint, commitment);
 
         assert_eq!(
             tx,
-            TransactionType::SwitchPsm {
+            TransactionType::SwitchGuardian {
                 new_endpoint: endpoint.to_string(),
                 new_commitment: commitment
             }
@@ -763,16 +765,16 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_type_switch_psm_rejects_non_canonical_commitment() {
+    fn test_transaction_type_switch_guardian_rejects_non_canonical_commitment() {
         let metadata = ProposalMetadata {
-            new_psm_pubkey_hex: Some(format!("0x{}{}", "ff".repeat(8), "00".repeat(24))),
-            new_psm_endpoint: Some("http://new-psm.example.com".to_string()),
+            new_guardian_pubkey_hex: Some(format!("0x{}{}", "ff".repeat(8), "00".repeat(24))),
+            new_guardian_endpoint: Some("http://new-guardian.example.com".to_string()),
             ..Default::default()
         };
 
         let err = metadata
-            .to_transaction_type("switch_psm")
-            .expect_err("non-canonical PSM commitment should be rejected");
+            .to_transaction_type("switch_guardian")
+            .expect_err("non-canonical GUARDIAN commitment should be rejected");
         assert!(err.to_string().contains("invalid field element"));
     }
 
@@ -793,14 +795,14 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_type_requires_psm_ack() {
+    fn test_transaction_type_requires_guardian_ack() {
         let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
         let faucet_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594171").unwrap();
 
-        assert!(TransactionType::transfer(recipient, faucet_id, 1).requires_psm_ack());
+        assert!(TransactionType::transfer(recipient, faucet_id, 1).requires_guardian_ack());
         assert!(
-            !TransactionType::switch_psm("http://new-psm.example.com", Word::default())
-                .requires_psm_ack()
+            !TransactionType::switch_guardian("http://new-guardian.example.com", Word::default())
+                .requires_guardian_ack()
         );
     }
 
@@ -809,7 +811,7 @@ mod tests {
         let note_id = NoteId::from_raw(Word::default());
         assert!(!TransactionType::consume_notes(vec![note_id]).supports_offline_execution());
         assert!(
-            TransactionType::switch_psm("http://new-psm.example.com", Word::default())
+            TransactionType::switch_guardian("http://new-guardian.example.com", Word::default())
                 .supports_offline_execution()
         );
     }

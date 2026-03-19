@@ -22,15 +22,15 @@ const masmFiles = [
     generatedPath: ['masm', 'auth.ts'],
   },
   {
-    canonicalPath: ['auth', 'psm.masm'],
-    packagedPath: ['auth', 'psm.masm'],
-    exportName: 'PSM_MASM',
+    canonicalPath: ['auth', 'guardian.masm'],
+    packagedPath: ['auth', 'guardian.masm'],
+    exportName: 'GUARDIAN_MASM',
     generatedPath: ['masm', 'auth.ts'],
   },
   {
-    canonicalPath: ['auth', 'psm_ecdsa.masm'],
-    packagedPath: ['auth', 'psm_ecdsa.masm'],
-    exportName: 'PSM_ECDSA_MASM',
+    canonicalPath: ['auth', 'guardian_ecdsa.masm'],
+    packagedPath: ['auth', 'guardian_ecdsa.masm'],
+    exportName: 'GUARDIAN_ECDSA_MASM',
     generatedPath: ['masm', 'auth.ts'],
   },
   {
@@ -40,9 +40,9 @@ const masmFiles = [
     generatedPath: ['masm', 'account-components', 'auth.ts'],
   },
   {
-    canonicalPath: ['account_components', 'auth', 'multisig_psm.masm'],
-    packagedPath: ['account_components', 'auth', 'multisig_psm.masm'],
-    exportName: 'MULTISIG_PSM_ACCOUNT_COMPONENT_MASM',
+    canonicalPath: ['account_components', 'auth', 'multisig_guardian.masm'],
+    packagedPath: ['account_components', 'auth', 'multisig_guardian.masm'],
+    exportName: 'MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM',
     generatedPath: ['masm', 'account-components', 'auth.ts'],
   },
   {
@@ -52,9 +52,9 @@ const masmFiles = [
     generatedPath: ['masm', 'account-components', 'auth.ts'],
   },
   {
-    canonicalPath: ['account_components', 'auth', 'multisig_psm_ecdsa.masm'],
-    packagedPath: ['account_components', 'auth', 'multisig_psm_ecdsa.masm'],
-    exportName: 'MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM',
+    canonicalPath: ['account_components', 'auth', 'multisig_guardian_ecdsa.masm'],
+    packagedPath: ['account_components', 'auth', 'multisig_guardian_ecdsa.masm'],
+    exportName: 'MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM',
     generatedPath: ['masm', 'account-components', 'auth.ts'],
   },
 ];

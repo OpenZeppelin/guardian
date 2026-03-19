@@ -30,7 +30,7 @@ export function WelcomeView({ ready, onCreateClick, onLoadClick, onResetData }: 
           <CardHeader className="text-center">
             <CardTitle>Load Multisig</CardTitle>
             <CardDescription>
-              Load an existing multisig account from PSM by account ID.
+              Load an existing multisig account from GUARDIAN by account ID.
             </CardDescription>
           </CardHeader>
           <CardContent>

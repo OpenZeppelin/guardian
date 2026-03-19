@@ -1,6 +1,6 @@
 use crate::canonicalization::CanonicalizationConfig;
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use async_trait::async_trait;
@@ -36,7 +36,7 @@ impl DeltasProcessorBase {
             .metadata
             .list_with_pending_candidates()
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to list accounts: {e}")))?;
+            .map_err(|e| GuardianError::StorageError(format!("Failed to list accounts: {e}")))?;
 
         tracing::info!(
             accounts_with_candidates = account_ids.len(),
@@ -62,15 +62,15 @@ impl DeltasProcessorBase {
             .metadata
             .get(account_id)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
-            .ok_or_else(|| PsmError::InvalidInput("Account metadata not found".to_string()))?;
+            .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
+            .ok_or_else(|| GuardianError::InvalidInput("Account metadata not found".to_string()))?;
 
         let storage_backend = self.state.storage.clone();
 
         let all_deltas = storage_backend
             .pull_deltas_after(account_id, 0)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to pull deltas: {e}")))?;
+            .map_err(|e| GuardianError::StorageError(format!("Failed to pull deltas: {e}")))?;
 
         tracing::debug!(
             account_id = %account_id,
@@ -108,21 +108,23 @@ impl DeltasProcessorBase {
             .metadata
             .get(&delta.account_id)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
-            .ok_or_else(|| PsmError::AccountNotFound(delta.account_id.clone()))?;
+            .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
+            .ok_or_else(|| GuardianError::AccountNotFound(delta.account_id.clone()))?;
 
         let storage_backend = self.state.storage.clone();
 
         let current_state = storage_backend
             .pull_state(&delta.account_id)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to get current state: {e}")))?;
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to get current state: {e}"))
+            })?;
 
         let (new_state_json, _) = {
             let client = self.state.network_client.lock().await;
             client
                 .apply_delta(&current_state.state_json, &delta.delta_payload)
-                .map_err(PsmError::InvalidDelta)?
+                .map_err(GuardianError::InvalidDelta)?
         };
 
         let verify_result = {
@@ -164,7 +166,7 @@ impl DeltasProcessorBase {
                         .delete_delta(&delta.account_id, delta.nonce)
                         .await
                         .map_err(|e| {
-                            PsmError::StorageError(format!("Failed to delete delta: {e}"))
+                            GuardianError::StorageError(format!("Failed to delete delta: {e}"))
                         })?;
 
                     // Clear the pending candidate flag after discard
@@ -198,7 +200,9 @@ impl DeltasProcessorBase {
                         .update_delta_status(&delta.account_id, delta.nonce, new_status)
                         .await
                         .map_err(|e| {
-                            PsmError::StorageError(format!("Failed to update delta status: {e}"))
+                            GuardianError::StorageError(format!(
+                                "Failed to update delta status: {e}"
+                            ))
                         })?;
                 }
 
@@ -224,15 +228,17 @@ impl DeltasProcessorBase {
             .metadata
             .get(&delta.account_id)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
-            .ok_or_else(|| PsmError::AccountNotFound(delta.account_id.clone()))?;
+            .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
+            .ok_or_else(|| GuardianError::AccountNotFound(delta.account_id.clone()))?;
 
         let storage_backend = self.state.storage.clone();
 
         let current_state = storage_backend
             .pull_state(&delta.account_id)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to get current state: {e}")))?;
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to get current state: {e}"))
+            })?;
 
         let now = self.state.clock.now_rfc3339();
 
@@ -248,14 +254,18 @@ impl DeltasProcessorBase {
         storage_backend
             .submit_state(&updated_state)
             .await
-            .map_err(|e| PsmError::StorageError(format!("Failed to update account state: {e}")))?;
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to update account state: {e}"))
+            })?;
 
         let new_auth = {
             let mut client = self.state.network_client.lock().await;
             client
                 .should_update_auth(&new_state_json, &account_metadata.auth)
                 .await
-                .map_err(|e| PsmError::StorageError(format!("Failed to check auth update: {e}")))?
+                .map_err(|e| {
+                    GuardianError::StorageError(format!("Failed to check auth update: {e}"))
+                })?
         };
 
         if let Some(new_auth) = new_auth {
@@ -268,7 +278,7 @@ impl DeltasProcessorBase {
                 .metadata
                 .update_auth(&delta.account_id, new_auth, &now)
                 .await
-                .map_err(|e| PsmError::StorageError(format!("Failed to update auth: {e}")))?;
+                .map_err(|e| GuardianError::StorageError(format!("Failed to update auth: {e}")))?;
 
             tracing::debug!(
                 account_id = %delta.account_id,
@@ -283,7 +293,7 @@ impl DeltasProcessorBase {
             .submit_delta(&canonical_delta)
             .await
             .map_err(|e| {
-                PsmError::StorageError(format!("Failed to update delta as canonical: {e}"))
+                GuardianError::StorageError(format!("Failed to update delta as canonical: {e}"))
             })?;
 
         // Clear the pending candidate flag
@@ -297,7 +307,7 @@ impl DeltasProcessorBase {
                     error = %e,
                     "Failed to clear has_pending_candidate flag"
                 );
-                PsmError::StorageError(format!("Failed to update metadata: {e}"))
+                GuardianError::StorageError(format!("Failed to update metadata: {e}"))
             })?;
 
         // Delete matching proposal now that delta is canonical
@@ -540,7 +550,10 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PsmError::StorageError(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            GuardianError::StorageError(_)
+        ));
     }
 
     #[tokio::test]

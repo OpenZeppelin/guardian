@@ -21,7 +21,7 @@ export const USER_PROCEDURES: ProcedureInfo[] = [
   { name: 'send_asset', label: 'Send Assets', description: 'Send assets to other accounts' },
   { name: 'update_signers', label: 'Update Signers', description: 'Add/remove signers or change threshold' },
   { name: 'update_procedure_threshold', label: 'Update Procedure Threshold', description: 'Set or clear threshold overrides' },
-  { name: 'update_psm', label: 'Update PSM', description: 'Change PSM server configuration' },
+  { name: 'update_guardian', label: 'Update GUARDIAN', description: 'Change GUARDIAN server configuration' },
 ];
 
 /**
@@ -42,8 +42,8 @@ export function getProposalProcedure(proposalType: ProposalType): ProcedureName 
       return 'update_signers';
     case 'update_procedure_threshold':
       return 'update_procedure_threshold';
-    case 'switch_psm':
-      return 'update_psm';
+    case 'switch_guardian':
+      return 'update_guardian';
     default:
         return null;
   }

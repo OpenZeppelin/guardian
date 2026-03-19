@@ -2,9 +2,9 @@ use axum::{Router, extract::DefaultBodyLimit, routing::get, routing::post, routi
 use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
-use crate::api::grpc::StateManagerService;
-use crate::api::grpc::state_manager::FILE_DESCRIPTOR_SET;
-use crate::api::grpc::state_manager::state_manager_server::StateManagerServer;
+use crate::api::grpc::GuardianService;
+use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
+use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
     configure, get_delta, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
     get_state, push_delta, push_delta_proposal, sign_delta_proposal,
@@ -117,7 +117,7 @@ impl ServerHandle {
                     .parse()
                     .expect("Invalid gRPC address");
 
-                let service = StateManagerService { app_state: state };
+                let service = GuardianService { app_state: state };
 
                 // Enable gRPC reflection
                 let reflection_service = tonic_reflection::server::Builder::configure()
@@ -128,7 +128,7 @@ impl ServerHandle {
                 tracing::info!(address = %addr, "gRPC server listening");
 
                 Server::builder()
-                    .add_service(StateManagerServer::new(service))
+                    .add_service(GuardianServer::new(service))
                     .add_service(reflection_service)
                     .serve(addr)
                     .await

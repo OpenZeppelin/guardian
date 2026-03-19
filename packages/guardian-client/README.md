@@ -1,19 +1,19 @@
-# @openzeppelin/psm-client
+# @openzeppelin/guardian-client
 
-TypeScript HTTP client for Private State Manager (PSM) server.
+TypeScript HTTP client for Guardian server.
 
 ## Installation
 
 ```bash
-npm install @openzeppelin/psm-client
+npm install @openzeppelin/guardian-client
 ```
 
 ## Setup
 
 ```typescript
-import { PsmHttpClient } from '@openzeppelin/psm-client';
+import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 
-const client = new PsmHttpClient('http://localhost:3000');
+const client = new GuardianHttpClient('http://localhost:3000');
 ```
 
 ## Usage
@@ -22,7 +22,7 @@ const client = new PsmHttpClient('http://localhost:3000');
 
 ```typescript
 const pubkey = await client.getPubkey();
-console.log('PSM pubkey:', pubkey);
+console.log('GUARDIAN pubkey:', pubkey);
 ```
 
 ### Set Signer for Authenticated Requests
@@ -30,7 +30,7 @@ console.log('PSM pubkey:', pubkey);
 All endpoints except `getPubkey()` require authentication. You must provide a signer that implements the `Signer` interface:
 
 ```typescript
-import type { Signer, RequestAuthPayload } from '@openzeppelin/psm-client';
+import type { Signer, RequestAuthPayload } from '@openzeppelin/guardian-client';
 
 const signer: Signer = {
   commitment: '0x...', // 64 hex chars
@@ -117,15 +117,15 @@ const merged = await client.getDeltaSince(accountId, 3);
 
 ## Error Handling
 
-The client throws `PsmHttpError` for non-2xx responses:
+The client throws `GuardianHttpError` for non-2xx responses:
 
 ```typescript
-import { PsmHttpError } from '@openzeppelin/psm-client';
+import { GuardianHttpError } from '@openzeppelin/guardian-client';
 
 try {
   await client.getState(accountId);
 } catch (error) {
-  if (error instanceof PsmHttpError) {
+  if (error instanceof GuardianHttpError) {
     console.error(`HTTP ${error.status}: ${error.statusText}`);
     console.error('Body:', error.body);
   }

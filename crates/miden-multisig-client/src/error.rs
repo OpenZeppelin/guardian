@@ -17,13 +17,13 @@ pub enum MultisigError {
     #[error("proposal not found: {0}")]
     ProposalNotFound(String),
 
-    /// PSM connection error.
-    #[error("PSM connection error: {0}")]
-    PsmConnection(String),
+    /// GUARDIAN connection error.
+    #[error("GUARDIAN connection error: {0}")]
+    GuardianConnection(String),
 
-    /// PSM server returned an error.
-    #[error("PSM server error: {0}")]
-    PsmServer(String),
+    /// GUARDIAN server returned an error.
+    #[error("GUARDIAN server error: {0}")]
+    GuardianServer(String),
 
     /// Miden client error.
     #[error("miden client error: {0}")]
@@ -89,14 +89,14 @@ pub enum MultisigError {
     #[error("invalid filter: {0}")]
     InvalidFilter(String),
 
-    /// Transaction type is not supported in offline mode without PSM.
-    #[error("offline mode only supports SwitchPsm transactions, got: {0}")]
+    /// Transaction type is not supported in offline mode without GUARDIAN.
+    #[error("offline mode only supports SwitchGuardian transactions, got: {0}")]
     OfflineUnsupportedTransaction(String),
 }
 
-impl From<private_state_manager_client::ClientError> for MultisigError {
-    fn from(err: private_state_manager_client::ClientError) -> Self {
-        MultisigError::PsmServer(err.to_string())
+impl From<guardian_client::ClientError> for MultisigError {
+    fn from(err: guardian_client::ClientError) -> Self {
+        MultisigError::GuardianServer(err.to_string())
     }
 }
 

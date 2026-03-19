@@ -2,7 +2,7 @@
 resource "aws_service_discovery_private_dns_namespace" "main" {
   name        = var.sd_namespace_name
   vpc         = local.vpc_id
-  description = "PSM service discovery namespace"
+  description = "GUARDIAN service discovery namespace"
 }
 
 # Cloud Map service for Postgres

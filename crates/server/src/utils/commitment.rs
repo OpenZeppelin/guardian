@@ -1,4 +1,4 @@
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 
 pub fn normalize_commitment_hex(commitment: &str) -> Result<String> {
     let normalized = commitment
@@ -7,13 +7,13 @@ pub fn normalize_commitment_hex(commitment: &str) -> Result<String> {
         .unwrap_or(commitment);
 
     if normalized.is_empty() {
-        return Err(PsmError::InvalidCommitment(
+        return Err(GuardianError::InvalidCommitment(
             "commitment cannot be empty".to_string(),
         ));
     }
 
     if !normalized.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(PsmError::InvalidCommitment(
+        return Err(GuardianError::InvalidCommitment(
             "commitment must be hex-encoded".to_string(),
         ));
     }
@@ -53,6 +53,6 @@ mod tests {
     fn normalize_commitment_rejects_non_hex() {
         let err = normalize_commitment_hex("../../other_account/proposals/abc")
             .expect_err("non-hex commitment must fail");
-        assert!(matches!(err, PsmError::InvalidCommitment(_)));
+        assert!(matches!(err, GuardianError::InvalidCommitment(_)));
     }
 }

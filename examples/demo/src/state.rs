@@ -14,7 +14,7 @@ pub struct SessionState {
     signature_scheme: SignatureScheme,
     /// Stored endpoints for reinitialization.
     miden_endpoint: Option<Endpoint>,
-    psm_endpoint: Option<String>,
+    guardian_endpoint: Option<String>,
 }
 
 impl SessionState {
@@ -28,7 +28,7 @@ impl SessionState {
             imported_proposal: None,
             signature_scheme: SignatureScheme::Falcon,
             miden_endpoint: None,
-            psm_endpoint: None,
+            guardian_endpoint: None,
         })
     }
 
@@ -36,19 +36,19 @@ impl SessionState {
     pub async fn initialize_client(
         &mut self,
         miden_endpoint: Endpoint,
-        psm_endpoint: &str,
+        guardian_endpoint: &str,
         signature_scheme: SignatureScheme,
     ) -> Result<(), String> {
         // Store endpoints for potential reinitialization
         self.miden_endpoint = Some(miden_endpoint.clone());
-        self.psm_endpoint = Some(psm_endpoint.to_string());
+        self.guardian_endpoint = Some(guardian_endpoint.to_string());
         self.signature_scheme = signature_scheme;
 
         let account_dir = self.account_directory.path().to_path_buf();
 
         let builder = MultisigClient::builder()
             .miden_endpoint(miden_endpoint)
-            .psm_endpoint(psm_endpoint)
+            .guardian_endpoint(guardian_endpoint)
             .account_dir(account_dir);
 
         let mut client = match self.signature_scheme {

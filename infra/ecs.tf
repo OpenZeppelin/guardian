@@ -30,7 +30,7 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 
 # Server task definition
 resource "aws_ecs_task_definition" "server" {
-  family                   = "psm-server"
+  family                   = "guardian-server"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = var.server_cpu
@@ -40,7 +40,7 @@ resource "aws_ecs_task_definition" "server" {
 
   container_definitions = jsonencode([
     {
-      name      = "psm-server"
+      name      = "guardian-server"
       image     = var.server_image_uri
       essential = true
 
@@ -65,7 +65,7 @@ resource "aws_ecs_task_definition" "server" {
           value = local.database_url
         },
         {
-          name  = "PSM_NETWORK_TYPE"
+          name  = "GUARDIAN_NETWORK_TYPE"
           value = var.server_network_type
         }
       ]
@@ -84,7 +84,7 @@ resource "aws_ecs_task_definition" "server" {
 
 # Postgres task definition
 resource "aws_ecs_task_definition" "postgres" {
-  family                   = "psm-postgres"
+  family                   = "guardian-postgres"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = var.postgres_cpu
@@ -152,7 +152,7 @@ resource "aws_ecs_service" "server" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.server.arn
-    container_name   = "psm-server"
+    container_name   = "guardian-server"
     container_port   = 3000
   }
 

@@ -1,19 +1,19 @@
 # Miden Multisig Client
 
-High-level Rust SDK built on top of `miden-client` for private multisignature workflows on Miden. The crate wraps the on-chain multisig contracts plus Private State Manager (PSM) coordination so you can:
+High-level Rust SDK built on top of `miden-client` for private multisignature workflows on Miden. The crate wraps the on-chain multisig contracts plus Guardian coordination so you can:
 
-- create multisig accounts, register them with a PSM, and keep state off-chain,
+- create multisig accounts, register them with a GUARDIAN, and keep state off-chain,
 - propose, sign, and execute transactions with threshold enforcement,
-- fall back to offline `SwitchPsm` workflows when connectivity is limited,
+- fall back to offline `SwitchGuardian` workflows when connectivity is limited,
 - export/import proposals as files for sharing using side channels,
 
-## How Private Multisigs & PSM Work
+## How Private Multisigs & GUARDIAN Work
 
-Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. PSM acts as a coordination server:
+Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. GUARDIAN acts as a coordination server:
 
-1. A proposer pushes a delta (transaction plan) to Private State Manager (PSM). PSM tracks who signed and emits an ack signature once the threshold is met.
-2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to PSM.
-3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the PSM ack, executes it on-chain.
+1. A proposer pushes a delta (transaction plan) to Guardian. GUARDIAN tracks who signed and emits an ack signature once the threshold is met.
+2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to GUARDIAN.
+3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the GUARDIAN ack, executes it on-chain.
 
 ## Installation
 
@@ -21,7 +21,7 @@ Add the crate to your workspace (already available in this repo). From another p
 
 ```toml
 [dependencies]
-miden-multisig-client = { git = "https://github.com/OpenZeppelin/private-state-manager", package = "miden-multisig-client" }
+miden-multisig-client = { git = "https://github.com/OpenZeppelin/guardian", package = "miden-multisig-client" }
 ```
 
 ## Quick Start
@@ -37,16 +37,16 @@ let signer2: Word = Word::default();
 
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-    .psm_endpoint("http://localhost:50051")
+    .guardian_endpoint("http://localhost:50051")
     // Directory where the underlying miden-client SQLite store will live
     .account_dir("/tmp/multisig")
-    // Generate a new Falcon keypair for PSM authentication (builder can also accept your own key)
+    // Generate a new Falcon keypair for GUARDIAN authentication (builder can also accept your own key)
     .generate_key()
     .build()
     .await?;
 
 let account = client.create_account(2, vec![signer1, signer2]).await?;
-println!("Account registered on PSM endpoint: {}", client.psm_endpoint());
+println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint());
 # Ok(())
 # }
 ```
@@ -63,7 +63,7 @@ let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170")?;
 let faucet = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594171")?;
 let tx = TransactionType::transfer(recipient, faucet, 1_000);
 
-// Proposer creates the delta on PSM
+// Proposer creates the delta on GUARDIAN
 let proposal = client.propose_transaction(tx).await?;
 
 // Second cosigner lists available proposals and signs the matching one
@@ -78,22 +78,22 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
-### Fallback to Offline (if PSM unavailable)
+### Fallback to Offline (if GUARDIAN unavailable)
 
-If the PSM endpoint can’t be reached, the SDK can produce an offline proposal only for `SwitchPsm` transactions:
+If the GUARDIAN endpoint can’t be reached, the SDK can produce an offline proposal only for `SwitchGuardian` transactions:
 
 ```rust
 use miden_multisig_client::{ProposalResult, TransactionType};
 
-let tx = TransactionType::switch_psm("https://new-psm.example.com", new_psm_commitment);
+let tx = TransactionType::switch_guardian("https://new-guardian.example.com", new_guardian_commitment);
 match client.propose_with_fallback(tx).await? {
     ProposalResult::Online(p) => {
-        println!("Proposal {} is live on PSM", p.id);
+        println!("Proposal {} is live on GUARDIAN", p.id);
     }
     ProposalResult::Offline(exported) => {
         let path = "proposal_offline.json";
         std::fs::write(path, exported.to_json()?)?;
-        println!("PSM unavailable. Share {} with cosigners, collect signatures, then run `execute_imported_proposal` once ready.", path);
+        println!("GUARDIAN unavailable. Share {} with cosigners, collect signatures, then run `execute_imported_proposal` once ready.", path);
     }
 }
 ```
@@ -103,7 +103,7 @@ match client.propose_with_fallback(tx).await? {
 ```rust
 use miden_multisig_client::TransactionType;
 
-let tx = TransactionType::switch_psm("https://psm.example.com", new_psm_commitment);
+let tx = TransactionType::switch_guardian("https://guardian.example.com", new_guardian_commitment);
 let mut exported = client.create_proposal_offline(tx).await?;
 
 // Cosigner signs locally

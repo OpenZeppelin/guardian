@@ -24,7 +24,7 @@ Each file documents **how** a specific pattern should be used (storage layout, n
 
 ### List
 
-- [PSM Usage Standard](./standards/PSM.md)
+- [GUARDIAN Usage Standard](./standards/GUARDIAN.md)
 
 ## License
 

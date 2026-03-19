@@ -11,7 +11,9 @@
 
 use std::env;
 
-use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+use miden_confidential_contracts::multisig_guardian::{
+    MultisigGuardianBuilder, MultisigGuardianConfig,
+};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::wallets::BasicWallet;
 use serde::Serialize;
@@ -61,9 +63,9 @@ fn procedure_name_and_component(
         match idx {
             0 => ("update_signers", "Multisig"),
             1 => ("update_procedure_threshold", "Multisig"),
-            2 => ("update_psm", "Multisig"),
+            2 => ("update_guardian", "Multisig"),
             3 => ("auth_tx", "Multisig"),
-            4 => ("verify_psm", "PSM"),
+            4 => ("verify_guardian", "GUARDIAN"),
             _ => ("unknown", "unknown"),
         }
     }
@@ -82,8 +84,8 @@ fn main() {
     let receive_asset = BasicWallet::receive_asset_digest();
     let send_asset = BasicWallet::move_asset_to_note_digest();
 
-    let config = MultisigPsmConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
-    let account = MultisigPsmBuilder::new(config)
+    let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
+    let account = MultisigGuardianBuilder::new(config)
         .with_seed([42u8; 32])
         .build()
         .expect("Failed to build account");
@@ -110,7 +112,7 @@ fn main() {
 
     if env::args().any(|arg| arg == "--json") {
         let output = ProcedureRootOutput {
-            component_order: vec!["Multisig + PSM (auth)", "BasicWallet"],
+            component_order: vec!["Multisig + GUARDIAN (auth)", "BasicWallet"],
             procedure_roots,
         };
         println!(
@@ -126,7 +128,7 @@ fn main() {
     println!("  send_asset:    {}", procedure_roots[5].rust_hex);
 
     println!("\nAll account procedures (ordered by component):");
-    println!("  Component order: Multisig + PSM (auth) -> BasicWallet\n");
+    println!("  Component order: Multisig + GUARDIAN (auth) -> BasicWallet\n");
 
     for procedure in &procedure_roots {
         println!("  [{}] {}", procedure.index, procedure.rust_hex);

@@ -1,4 +1,4 @@
-import type { DeltaObject, DeltaStatus } from '@openzeppelin/psm-client';
+import type { DeltaObject, DeltaStatus } from '@openzeppelin/guardian-client';
 import type {
   ExportedProposal,
   Proposal,
@@ -60,7 +60,7 @@ export class ProposalFactory {
     );
 
     const resolvedMetadata = ProposalMetadataCodec.validate(
-      metadata ?? ProposalMetadataCodec.fromPsm(delta.deltaPayload.metadata),
+      metadata ?? ProposalMetadataCodec.fromGuardian(delta.deltaPayload.metadata),
     );
 
     const localSignatures = new ProposalSignatures(

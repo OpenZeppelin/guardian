@@ -1,4 +1,4 @@
-//! Authentication types for PSM client requests.
+//! Authentication types for GUARDIAN client requests.
 
 pub mod miden_ecdsa;
 pub mod miden_falcon_rpo;
@@ -8,10 +8,10 @@ pub use miden_falcon_rpo::{
     FalconRpoSigner, account_id_timestamp_to_word, verify_commitment_signature,
 };
 
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::account::AccountId;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
-/// Authentication provider for PSM requests.
+/// Authentication provider for GUARDIAN requests.
 pub enum Auth {
     /// Falcon-based authentication using RPO hashing.
     FalconRpoSigner(FalconRpoSigner),
@@ -65,11 +65,11 @@ impl Auth {
 mod tests {
     use super::*;
     use crate::auth::miden_falcon_rpo::account_id_timestamp_to_word;
+    use guardian_shared::auth_request_message::AuthRequestMessage;
+    use guardian_shared::auth_request_payload::AuthRequestPayload;
     use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
     use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
     use miden_protocol::utils::Deserializable;
-    use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-    use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 
     #[test]
     fn test_auth_enum_falcon_signer_with_timestamp() {

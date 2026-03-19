@@ -19,7 +19,7 @@ import type {
 } from '@openzeppelin/miden-multisig-client';
 import { USER_PROCEDURES } from '@/lib/procedures';
 
-type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'update_procedure_threshold' | 'consume_notes' | 'p2id' | 'switch_psm';
+type ProposalType = 'add_signer' | 'remove_signer' | 'change_threshold' | 'update_procedure_threshold' | 'consume_notes' | 'p2id' | 'switch_guardian';
 
 interface CreateProposalFormProps {
   currentThreshold: number;
@@ -35,7 +35,7 @@ interface CreateProposalFormProps {
   onCreateUpdateProcedureThreshold: (procedure: ProcedureName, threshold: number) => void;
   onCreateConsumeNotes: (noteIds: string[]) => void;
   onCreateP2id: (recipientId: string, faucetId: string, amount: bigint) => void;
-  onCreateSwitchPsm: (newEndpoint: string, newPubkey: string) => void;
+  onCreateSwitchGuardian: (newEndpoint: string, newPubkey: string) => void;
 }
 
 export function CreateProposalForm({
@@ -52,7 +52,7 @@ export function CreateProposalForm({
   onCreateUpdateProcedureThreshold,
   onCreateConsumeNotes,
   onCreateP2id,
-  onCreateSwitchPsm,
+  onCreateSwitchGuardian,
 }: CreateProposalFormProps) {
   const [proposalType, setProposalType] = useState<ProposalType>('add_signer');
 
@@ -79,17 +79,17 @@ export function CreateProposalForm({
   const [selectedFaucetId, setSelectedFaucetId] = useState('');
   const [sendAmount, setSendAmount] = useState('');
 
-  // Switch PSM state
-  const [newPsmEndpoint, setNewPsmEndpoint] = useState('');
-  const [newPsmPubkey, setNewPsmPubkey] = useState('');
+  // Switch GUARDIAN state
+  const [newGuardianEndpoint, setNewGuardianEndpoint] = useState('');
+  const [newGuardianPubkey, setNewGuardianPubkey] = useState('');
   const [fetchingPubkey, setFetchingPubkey] = useState(false);
   const [pubkeyError, setPubkeyError] = useState<string | null>(null);
   const debounceRef = useRef<number | null>(null);
 
   // Auto-fetch pubkey when endpoint changes
   useEffect(() => {
-    if (!newPsmEndpoint.trim()) {
-      setNewPsmPubkey('');
+    if (!newGuardianEndpoint.trim()) {
+      setNewGuardianPubkey('');
       setPubkeyError(null);
       return;
     }
@@ -103,18 +103,18 @@ export function CreateProposalForm({
     debounceRef.current = window.setTimeout(async () => {
       setFetchingPubkey(true);
       setPubkeyError(null);
-      setNewPsmPubkey('');
+      setNewGuardianPubkey('');
 
       try {
         const response = await fetch(
-          `${newPsmEndpoint.trim()}/pubkey?scheme=${signatureScheme}`,
+          `${newGuardianEndpoint.trim()}/pubkey?scheme=${signatureScheme}`,
         );
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
         if (data.commitment) {
-          setNewPsmPubkey(data.commitment);
+          setNewGuardianPubkey(data.commitment);
         } else {
           throw new Error('No commitment in response');
         }
@@ -130,7 +130,7 @@ export function CreateProposalForm({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [newPsmEndpoint, signatureScheme]);
+  }, [newGuardianEndpoint, signatureScheme]);
 
   const handleCreate = () => {
     switch (proposalType) {
@@ -178,11 +178,11 @@ export function CreateProposalForm({
           }
         }
         break;
-      case 'switch_psm':
-        if (newPsmEndpoint.trim() && newPsmPubkey) {
-          onCreateSwitchPsm(newPsmEndpoint.trim(), newPsmPubkey);
-          setNewPsmEndpoint('');
-          setNewPsmPubkey('');
+      case 'switch_guardian':
+        if (newGuardianEndpoint.trim() && newGuardianPubkey) {
+          onCreateSwitchGuardian(newGuardianEndpoint.trim(), newGuardianPubkey);
+          setNewGuardianEndpoint('');
+          setNewGuardianPubkey('');
           setPubkeyError(null);
         }
         break;
@@ -217,8 +217,8 @@ export function CreateProposalForm({
           return false;
         }
       }
-      case 'switch_psm':
-        return newPsmEndpoint.trim().length > 0 && newPsmPubkey.length > 0 && !fetchingPubkey && !pubkeyError;
+      case 'switch_guardian':
+        return newGuardianEndpoint.trim().length > 0 && newGuardianPubkey.length > 0 && !fetchingPubkey && !pubkeyError;
     }
   };
 
@@ -236,8 +236,8 @@ export function CreateProposalForm({
         return 'Create a proposal to consume notes sent to the multisig account.';
       case 'p2id':
         return 'Create a proposal to send funds to another account.';
-      case 'switch_psm':
-        return 'Create a proposal to switch the PSM provider for this multisig.';
+      case 'switch_guardian':
+        return 'Create a proposal to switch the GUARDIAN provider for this multisig.';
     }
   };
 
@@ -278,7 +278,7 @@ export function CreateProposalForm({
               <SelectItem value="update_procedure_threshold">Update Procedure Threshold</SelectItem>
               <SelectItem value="consume_notes">Consume Notes</SelectItem>
               <SelectItem value="p2id">Send Payment</SelectItem>
-              <SelectItem value="switch_psm">Switch PSM</SelectItem>
+              <SelectItem value="switch_guardian">Switch GUARDIAN</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -541,27 +541,27 @@ export function CreateProposalForm({
           </div>
         )}
 
-        {/* Switch PSM Form */}
-        {proposalType === 'switch_psm' && (
+        {/* Switch GUARDIAN Form */}
+        {proposalType === 'switch_guardian' && (
           <div className="space-y-3">
             <div className="space-y-2">
-              <Label>New PSM Endpoint</Label>
+              <Label>New GUARDIAN Endpoint</Label>
               <Input
                 placeholder="http://localhost:3000"
-                value={newPsmEndpoint}
-                onChange={(e) => setNewPsmEndpoint(e.target.value)}
+                value={newGuardianEndpoint}
+                onChange={(e) => setNewGuardianEndpoint(e.target.value)}
               />
             </div>
 
             <div className="space-y-2">
-              <Label>PSM Commitment</Label>
+              <Label>GUARDIAN Commitment</Label>
               {fetchingPubkey ? (
                 <p className="text-sm text-muted-foreground">Fetching commitment...</p>
               ) : pubkeyError ? (
                 <p className="text-sm text-destructive">Failed to fetch: {pubkeyError}</p>
-              ) : newPsmPubkey ? (
+              ) : newGuardianPubkey ? (
                 <code className="block text-xs bg-muted px-2 py-1 rounded font-mono break-all">
-                  {newPsmPubkey}
+                  {newGuardianPubkey}
                 </code>
               ) : (
                 <p className="text-sm text-muted-foreground">

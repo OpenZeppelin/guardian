@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-package state_manager;
+package guardian;
 
 // Account state service
-service StateManager {
+service Guardian {
   // Configure a new account
   rpc Configure(ConfigureRequest) returns (ConfigureResponse);
 

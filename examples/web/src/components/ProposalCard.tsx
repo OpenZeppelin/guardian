@@ -32,8 +32,8 @@ function getProposalTypeLabel(type?: ProposalType): string {
       return 'Change Threshold';
     case 'update_procedure_threshold':
       return 'Update Procedure Threshold';
-    case 'switch_psm':
-      return 'Switch PSM';
+    case 'switch_guardian':
+      return 'Switch GUARDIAN';
     case 'consume_notes':
       return 'Consume Notes';
     case 'p2id':
@@ -53,7 +53,7 @@ function getProposalTypeVariant(type?: ProposalType): 'default' | 'secondary' | 
       return 'secondary';
     case 'update_procedure_threshold':
       return 'secondary';
-    case 'switch_psm':
+    case 'switch_guardian':
       return 'secondary';
     case 'consume_notes':
       return 'default';

@@ -6,8 +6,8 @@ export {
   buildP2idTransactionRequest,
 } from './transaction/p2id.js';
 export {
-  buildUpdatePsmTransactionRequest,
-} from './transaction/updatePsm.js';
+  buildUpdateGuardianTransactionRequest,
+} from './transaction/updateGuardian.js';
 export {
   buildUpdateProcedureThresholdTransactionRequest,
 } from './transaction/updateProcedureThreshold.js';

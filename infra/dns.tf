@@ -24,7 +24,7 @@ resource "cloudflare_dns_record" "service" {
   count = local.domain_enabled && var.cloudflare_zone_id != "" ? 1 : 0
 
   zone_id = data.cloudflare_zone.domain[0].zone_id
-  comment = "PSM service domain"
+  comment = "GUARDIAN service domain"
   content = aws_lb.main.dns_name
   name    = local.cloudflare_record_name
   proxied = var.cloudflare_proxied

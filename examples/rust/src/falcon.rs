@@ -35,7 +35,7 @@ pub fn generate_falcon_keypair(keystore: &FilesystemKeyStore) -> (String, String
     );
 
     // Return both full public key (for auth) and commitment (for account storage)
-    use private_state_manager_shared::hex::IntoHex;
+    use guardian_shared::hex::IntoHex;
     let full_pubkey_hex = (&actual_pubkey).into_hex();
     let commitment_hex = format!("0x{}", hex::encode(actual_commitment.to_bytes()));
 

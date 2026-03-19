@@ -9,7 +9,7 @@ export {
 
 export {
   buildMultisigStorageSlots,
-  buildPsmStorageSlots,
+  buildGuardianStorageSlots,
   storageLayoutBuilder,
   StorageLayoutBuilder,
 } from './storage.js';

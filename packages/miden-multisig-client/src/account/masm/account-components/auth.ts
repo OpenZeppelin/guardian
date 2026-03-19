@@ -16,21 +16,21 @@ pub proc auth_tx_multisig(salt: BeWord)
 end
 `;
 
-export const MULTISIG_PSM_ACCOUNT_COMPONENT_MASM = `# Multi-Signature RPO Falcon 512 Authentication Component With PSM
+export const MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM = `# Multi-Signature RPO Falcon 512 Authentication Component With GUARDIAN
 
 use openzeppelin::auth::multisig
-use openzeppelin::auth::psm
+use openzeppelin::auth::guardian
 
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 pub use multisig::update_signers_and_threshold
 pub use multisig::update_procedure_threshold
-pub use psm::update_psm_public_key
-pub use psm::verify_psm_signature
+pub use guardian::update_guardian_public_key
+pub use guardian::verify_guardian_signature
 
-pub proc auth_tx_multisig_psm(salt: BeWord)
+pub proc auth_tx_multisig_guardian(salt: BeWord)
     exec.multisig::auth_tx
-    exec.psm::verify_psm_signature
+    exec.guardian::verify_guardian_signature
     exec.multisig::assert_new_tx
 end
 `;
@@ -50,21 +50,21 @@ pub proc auth_tx_multisig_ecdsa(salt: BeWord)
 end
 `;
 
-export const MULTISIG_PSM_ECDSA_ACCOUNT_COMPONENT_MASM = `# Multi-Signature ECDSA secp256k1 Authentication Component With PSM
+export const MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM = `# Multi-Signature ECDSA secp256k1 Authentication Component With GUARDIAN
 
 use openzeppelin::auth::multisig_ecdsa
-use openzeppelin::auth::psm_ecdsa
+use openzeppelin::auth::guardian_ecdsa
 
 type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 pub use multisig_ecdsa::update_signers_and_threshold
 pub use multisig_ecdsa::update_procedure_threshold
-pub use psm_ecdsa::update_psm_public_key
-pub use psm_ecdsa::verify_psm_signature
+pub use guardian_ecdsa::update_guardian_public_key
+pub use guardian_ecdsa::verify_guardian_signature
 
-pub proc auth_tx_multisig_psm_ecdsa(salt: BeWord)
+pub proc auth_tx_multisig_guardian_ecdsa(salt: BeWord)
     exec.multisig_ecdsa::auth_tx
-    exec.psm_ecdsa::verify_psm_signature
+    exec.guardian_ecdsa::verify_guardian_signature
     exec.multisig_ecdsa::assert_new_tx
 end
 `;

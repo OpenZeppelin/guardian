@@ -28,7 +28,7 @@ export type ServerProposalType =
   | 'remove_signer'
   | 'change_threshold'
   | 'update_procedure_threshold'
-  | 'switch_psm'
+  | 'switch_guardian'
   | 'consume_notes'
   | 'p2id'
   | 'custom';
@@ -41,8 +41,8 @@ export interface ServerProposalMetadata {
   target_procedure?: string;
   salt?: string;
   description?: string;
-  new_psm_pubkey?: string;
-  new_psm_endpoint?: string;
+  new_guardian_pubkey?: string;
+  new_guardian_endpoint?: string;
   note_ids?: string[];
   recipient_id?: string;
   faucet_id?: string;

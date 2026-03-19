@@ -1,6 +1,6 @@
-# Private State Manager Client
+# Guardian Client
 
-A minimal Rust client library for interacting with the Private State Manager gRPC service.
+A minimal Rust client library for interacting with the Guardian gRPC service.
 
 ## API Reference
 
@@ -10,15 +10,15 @@ A minimal Rust client library for interacting with the Private State Manager gRP
 use std::sync::Arc;
 
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use private_state_manager_client::{FalconKeyStore, PsmClient};
+use guardian_client::{FalconKeyStore, GuardianClient};
 
 // Without authentication (only for configure endpoint)
-let client = PsmClient::connect("https://testnet-psm.miden.network:50051").await?;
+let client = GuardianClient::connect("https://testnet-guardian.miden.network:50051").await?;
 
 // With request signing (required for all other endpoints)
 let secret_key = SecretKey::new();
 let signer = Arc::new(FalconKeyStore::new(secret_key));
-let client = PsmClient::connect("https://testnet-psm.miden.network:50051")
+let client = GuardianClient::connect("https://testnet-guardian.miden.network:50051")
     .await?
     .with_signer(signer);
 ```
@@ -33,7 +33,7 @@ The client uses Falcon RPO signatures for authenticated requests. Here is how to
 use std::sync::Arc;
 
 use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use private_state_manager_client::FalconKeyStore;
+use guardian_client::FalconKeyStore;
 
 // Generate a new secret key
 let secret_key = SecretKey::new();
@@ -46,7 +46,7 @@ let pubkey_hex = signer.public_key_hex();
 ### 2. Configure Client with Signer
 
 ```rust
-let client = PsmClient::connect("https://testnet-psm.miden.network:50051")
+let client = GuardianClient::connect("https://testnet-guardian.miden.network:50051")
     .await?
     .with_signer(signer.clone());
 ```
@@ -54,7 +54,7 @@ let client = PsmClient::connect("https://testnet-psm.miden.network:50051")
 ### 3. Set Up Account Authorization
 
 ```rust
-use private_state_manager_client::auth;
+use guardian_client::auth;
 
 // Add the public key to the account's authorized cosigners
 let auth_config = auth::miden_falcon_rpo_auth(vec![pubkey_hex]);
@@ -65,7 +65,7 @@ let auth_config = auth::miden_falcon_rpo_auth(vec![pubkey_hex]);
 After pushing a delta, the server returns an Acknowledgment signature that signs the new commitment. You should verify this signature to ensure the server is signing with the expected public key.
 
 ```rust
-use private_state_manager_client::verify_commitment_signature;
+use guardian_client::verify_commitment_signature;
 
 let push_response = client.push_delta(&account_id, 1, prev_commitment, delta).await?;
 
@@ -94,6 +94,6 @@ The server signs the `new_commitment` (the resulting commitment after applying t
 ### Example
 
 ```bash
-cargo run --package private-state-manager-client --example e2e
+cargo run --package guardian-client --example e2e
 ```
  

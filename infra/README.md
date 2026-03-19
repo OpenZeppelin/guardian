@@ -1,6 +1,6 @@
-# PSM Server AWS Infrastructure (Terraform)
+# GUARDIAN Server AWS Infrastructure (Terraform)
 
-This directory contains Terraform configuration to deploy the Private State Manager (PSM) server to AWS ECS with Fargate, behind an Application Load Balancer.
+This directory contains Terraform configuration to deploy the Guardian server to AWS ECS with Fargate, behind an Application Load Balancer.
 
 ## Prerequisites
 
@@ -11,12 +11,12 @@ This directory contains Terraform configuration to deploy the Private State Mana
 ## Architecture
 
 ```
-Internet → ALB (HTTP/HTTPS) → ECS Service (psm-server) → Cloud Map → ECS Service (postgres)
+Internet → ALB (HTTP/HTTPS) → ECS Service (guardian-server) → Cloud Map → ECS Service (postgres)
 ```
 
 Resources created:
 - ECS Cluster (Fargate)
-- ECS Services: psm-server, psm-postgres
+- ECS Services: guardian-server, guardian-postgres
 - Application Load Balancer + Target Group + Listener
 - Cloud Map namespace for service discovery
 - Security Groups (ALB, server, postgres)
@@ -35,16 +35,16 @@ export AWS_REGION=us-east-1
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 # Create ECR repository (if it doesn't exist)
-aws ecr create-repository --repository-name psm-server --region $AWS_REGION 2>/dev/null || true
+aws ecr create-repository --repository-name guardian-server --region $AWS_REGION 2>/dev/null || true
 
 # Login to ECR
 aws ecr get-login-password --region $AWS_REGION | \
   docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
 # Build and push (from repo root)
-docker build --platform linux/amd64 -t psm-server .
-docker tag psm-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/psm-server:latest
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/psm-server:latest
+docker build --platform linux/amd64 -t guardian-server .
+docker tag guardian-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
 ```
 
 ### 2. Configure Variables
@@ -55,16 +55,16 @@ Create a `terraform.tfvars` file:
 aws_region = "us-east-1"
 
 # Required: ECR image URI
-server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest"
+server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
 # Optional: Use specific VPC/subnets (defaults to default VPC)
 # vpc_id     = "vpc-xxxxxxxx"
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 
 # Optional: Postgres credentials (defaults shown)
-# postgres_db       = "psm"
-# postgres_user     = "psm"
-# postgres_password = "psm_dev_password"
+# postgres_db       = "guardian"
+# postgres_user     = "guardian"
+# postgres_password = "guardian_dev_password"
 
 # Optional: Route 53 hosted zone ID for openzeppelin.com
 # route53_zone_id = "Z1234567890ABC"
@@ -107,7 +107,7 @@ curl http://$ALB_DNS/
 curl http://$ALB_DNS/pubkey
 
 # Custom domain (requires Route 53 hosted zone for openzeppelin.com)
-curl https://psm.openzeppelin.com/pubkey
+curl https://guardian.openzeppelin.com/pubkey
 ```
 
 ### 6. Destroy
@@ -119,7 +119,7 @@ terraform destroy
 Note: ECR repository is not managed by Terraform to avoid accidental image deletion. Delete manually if needed:
 
 ```bash
-aws ecr delete-repository --repository-name psm-server --force --region $AWS_REGION
+aws ecr delete-repository --repository-name guardian-server --force --region $AWS_REGION
 ```
 
 ## Variables Reference
@@ -127,14 +127,14 @@ aws ecr delete-repository --repository-name psm-server --force --region $AWS_REG
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `aws_region` | `us-east-1` | AWS region |
-| `server_image_uri` | (required) | ECR image URI for psm-server |
+| `server_image_uri` | (required) | ECR image URI for guardian-server |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
-| `postgres_db` | `psm` | Postgres database name |
-| `postgres_user` | `psm` | Postgres username |
-| `postgres_password` | `psm_dev_password` | Postgres password |
+| `postgres_db` | `guardian` | Postgres database name |
+| `postgres_user` | `guardian` | Postgres username |
+| `postgres_password` | `guardian_dev_password` | Postgres password |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
-| `subdomain` | `psm` | Subdomain for HTTPS endpoint |
+| `subdomain` | `guardian` | Subdomain for HTTPS endpoint |
 | `route53_zone_id` | `""` | Route 53 hosted zone ID for the domain |
 | `alb_ingress_cidrs` | `["0.0.0.0/0"]` | CIDR blocks allowed to reach the ALB |
 | `server_cpu` | `512` | Server task CPU units |
@@ -159,9 +159,9 @@ aws ecr delete-repository --repository-name psm-server --force --region $AWS_REG
 
 ## HTTPS Configuration
 
-HTTPS is automated via Route 53 + ACM for `psm.openzeppelin.com`. Terraform:
+HTTPS is automated via Route 53 + ACM for `guardian.openzeppelin.com`. Terraform:
 
-1. Requests an ACM certificate for `psm.openzeppelin.com`
+1. Requests an ACM certificate for `guardian.openzeppelin.com`
 2. Creates the DNS validation records in the existing Route 53 hosted zone
 3. Creates the ALB alias record
 

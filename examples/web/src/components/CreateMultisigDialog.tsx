@@ -31,7 +31,7 @@ interface CreateMultisigDialogProps {
   ecdsaCommitment: string;
   defaultScheme: SignatureScheme;
   creating: boolean;
-  registeringOnPsm: boolean;
+  registeringOnGuardian: boolean;
   onCreate: (
     otherSigners: string[],
     threshold: number,
@@ -49,7 +49,7 @@ export function CreateMultisigDialog({
   ecdsaCommitment,
   defaultScheme,
   creating,
-  registeringOnPsm,
+  registeringOnGuardian,
   onCreate,
   walletSource = 'local',
   walletCommitment,
@@ -322,8 +322,8 @@ export function CreateMultisigDialog({
           {/* Create button */}
           <Button onClick={handleCreate} className="w-full" disabled={creating}>
             {creating
-              ? registeringOnPsm
-                ? walletSource !== 'local' ? 'Awaiting wallet approval...' : 'Registering on PSM...'
+              ? registeringOnGuardian
+                ? walletSource !== 'local' ? 'Awaiting wallet approval...' : 'Registering on GUARDIAN...'
                 : 'Creating...'
               : `Create ${threshold}-of-${totalSigners} Multisig`}
           </Button>

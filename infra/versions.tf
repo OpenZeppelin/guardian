@@ -18,7 +18,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project   = "psm"
+      Project   = "guardian"
       ManagedBy = "terraform"
     }
   }

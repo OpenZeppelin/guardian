@@ -10,8 +10,8 @@ pub enum ProcedureName {
     UpdateSigners,
     UpdateProcedureThreshold,
     AuthTx,
-    UpdatePsm,
-    VerifyPsm,
+    UpdateGuardian,
+    VerifyGuardian,
     SendAsset,
     ReceiveAsset,
 }
@@ -31,10 +31,10 @@ impl ProcedureName {
             ProcedureName::AuthTx => {
                 word_from_hex("a9dc7f8f5a1d53a5555c24b308e59e8ffe91f80e6fcb4288d91a6370d5bc1a61")
             }
-            ProcedureName::UpdatePsm => {
+            ProcedureName::UpdateGuardian => {
                 word_from_hex("5bf5d8a2d44c6825ba867f6028bcbc2b8b9ba054dc94000eae24bce3e68c4935")
             }
-            ProcedureName::VerifyPsm => {
+            ProcedureName::VerifyGuardian => {
                 word_from_hex("d1dfb9694996bf59bf7e1454ef660a3e9dbaed441462d81d541a9fd8e9901b2f")
             }
             ProcedureName::SendAsset => {
@@ -52,8 +52,8 @@ impl ProcedureName {
             ProcedureName::UpdateSigners,
             ProcedureName::UpdateProcedureThreshold,
             ProcedureName::AuthTx,
-            ProcedureName::UpdatePsm,
-            ProcedureName::VerifyPsm,
+            ProcedureName::UpdateGuardian,
+            ProcedureName::VerifyGuardian,
             ProcedureName::SendAsset,
             ProcedureName::ReceiveAsset,
         ]
@@ -97,8 +97,8 @@ impl std::fmt::Display for ProcedureName {
             ProcedureName::UpdateSigners => write!(f, "update_signers"),
             ProcedureName::UpdateProcedureThreshold => write!(f, "update_procedure_threshold"),
             ProcedureName::AuthTx => write!(f, "auth_tx"),
-            ProcedureName::UpdatePsm => write!(f, "update_psm"),
-            ProcedureName::VerifyPsm => write!(f, "verify_psm"),
+            ProcedureName::UpdateGuardian => write!(f, "update_guardian"),
+            ProcedureName::VerifyGuardian => write!(f, "verify_guardian"),
             ProcedureName::SendAsset => write!(f, "send_asset"),
             ProcedureName::ReceiveAsset => write!(f, "receive_asset"),
         }
@@ -113,8 +113,8 @@ impl std::str::FromStr for ProcedureName {
             "update_signers" => Ok(ProcedureName::UpdateSigners),
             "update_procedure_threshold" => Ok(ProcedureName::UpdateProcedureThreshold),
             "auth_tx" => Ok(ProcedureName::AuthTx),
-            "update_psm" => Ok(ProcedureName::UpdatePsm),
-            "verify_psm" => Ok(ProcedureName::VerifyPsm),
+            "update_guardian" => Ok(ProcedureName::UpdateGuardian),
+            "verify_guardian" => Ok(ProcedureName::VerifyGuardian),
             "send_asset" => Ok(ProcedureName::SendAsset),
             "receive_asset" => Ok(ProcedureName::ReceiveAsset),
             _ => Err(format!("unknown procedure name: {}", s)),

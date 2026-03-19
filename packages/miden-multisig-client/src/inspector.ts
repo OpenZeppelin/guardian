@@ -15,9 +15,9 @@ const MULTISIG_SLOT_NAMES = {
   PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
 } as const;
 
-const PSM_SLOT_NAMES = {
-  SELECTOR: 'openzeppelin::psm::selector',
-  PUBLIC_KEY: 'openzeppelin::psm::public_key',
+const GUARDIAN_SLOT_NAMES = {
+  SELECTOR: 'openzeppelin::guardian::selector',
+  PUBLIC_KEY: 'openzeppelin::guardian::public_key',
 } as const;
 
 export interface VaultBalance {
@@ -29,8 +29,8 @@ export interface DetectedMultisigConfig {
   threshold: number;
   numSigners: number;
   signerCommitments: string[];
-  psmEnabled: boolean;
-  psmCommitment: string | null;
+  guardianEnabled: boolean;
+  guardianCommitment: string | null;
   vaultBalances: VaultBalance[];
   procedureThresholds: Map<ProcedureName, number>;
 }
@@ -90,19 +90,19 @@ export class AccountInspector {
       }
     }
 
-    let psmEnabled = false;
-    let psmCommitment: string | null = null;
+    let guardianEnabled = false;
+    let guardianCommitment: string | null = null;
 
     try {
-      const psmSlot0 = storage.getItem(PSM_SLOT_NAMES.SELECTOR) as Word;
-      const selector = Number(wordElementToBigInt(psmSlot0, 0));
-      psmEnabled = selector === 1;
+      const guardianSlot0 = storage.getItem(GUARDIAN_SLOT_NAMES.SELECTOR) as Word;
+      const selector = Number(wordElementToBigInt(guardianSlot0, 0));
+      guardianEnabled = selector === 1;
 
-      if (psmEnabled) {
+      if (guardianEnabled) {
         const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
-        const psmKey = storage.getMapItem(PSM_SLOT_NAMES.PUBLIC_KEY, zeroKey) as Word;
-        if (psmKey) {
-          psmCommitment = wordToHex(psmKey);
+        const guardianKey = storage.getMapItem(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, zeroKey) as Word;
+        if (guardianKey) {
+          guardianCommitment = wordToHex(guardianKey);
         }
       }
     } catch (error) {
@@ -146,8 +146,8 @@ export class AccountInspector {
       threshold,
       numSigners,
       signerCommitments,
-      psmEnabled,
-      psmCommitment,
+      guardianEnabled,
+      guardianCommitment,
       vaultBalances,
       procedureThresholds,
     };
