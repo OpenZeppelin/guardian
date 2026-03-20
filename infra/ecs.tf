@@ -1,6 +1,6 @@
 # ECS Cluster
 resource "aws_ecs_cluster" "main" {
-  name = var.cluster_name
+  name = local.cluster_name
 
   setting {
     name  = "containerInsights"
@@ -30,7 +30,7 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 
 # Server task definition
 resource "aws_ecs_task_definition" "server" {
-  family                   = "guardian-server"
+  family                   = local.server_task_family
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = var.server_cpu
@@ -38,9 +38,14 @@ resource "aws_ecs_task_definition" "server" {
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
+  runtime_platform {
+    cpu_architecture        = var.cpu_architecture
+    operating_system_family = "LINUX"
+  }
+
   container_definitions = jsonencode([
     {
-      name      = "guardian-server"
+      name      = local.server_container_name
       image     = var.server_image_uri
       essential = true
 
@@ -84,7 +89,7 @@ resource "aws_ecs_task_definition" "server" {
 
 # Postgres task definition
 resource "aws_ecs_task_definition" "postgres" {
-  family                   = "guardian-postgres"
+  family                   = local.postgres_task_family
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = var.postgres_cpu
@@ -92,9 +97,14 @@ resource "aws_ecs_task_definition" "postgres" {
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
+  runtime_platform {
+    cpu_architecture        = var.cpu_architecture
+    operating_system_family = "LINUX"
+  }
+
   container_definitions = jsonencode([
     {
-      name      = var.postgres_service_name
+      name      = local.postgres_service_name
       image     = "postgres:16-alpine"
       essential = true
 
@@ -108,15 +118,15 @@ resource "aws_ecs_task_definition" "postgres" {
       environment = [
         {
           name  = "POSTGRES_USER"
-          value = var.postgres_user
+          value = local.postgres_user
         },
         {
           name  = "POSTGRES_PASSWORD"
-          value = var.postgres_password
+          value = local.postgres_password
         },
         {
           name  = "POSTGRES_DB"
-          value = var.postgres_db
+          value = local.postgres_db
         }
       ]
 
@@ -134,7 +144,7 @@ resource "aws_ecs_task_definition" "postgres" {
 
 # Server ECS service
 resource "aws_ecs_service" "server" {
-  name                   = var.server_service_name
+  name                   = local.server_service_name
   cluster                = aws_ecs_cluster.main.id
   task_definition        = aws_ecs_task_definition.server.arn
   desired_count          = 1
@@ -152,7 +162,7 @@ resource "aws_ecs_service" "server" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.server.arn
-    container_name   = "guardian-server"
+    container_name   = local.server_container_name
     container_port   = 3000
   }
 
@@ -164,7 +174,7 @@ resource "aws_ecs_service" "server" {
 
 # Postgres ECS service
 resource "aws_ecs_service" "postgres" {
-  name                   = var.postgres_service_name
+  name                   = local.postgres_service_name
   cluster                = aws_ecs_cluster.main.id
   task_definition        = aws_ecs_task_definition.postgres.arn
   desired_count          = 1

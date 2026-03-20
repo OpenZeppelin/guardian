@@ -1,6 +1,6 @@
 # Application Load Balancer
 resource "aws_lb" "main" {
-  name               = var.alb_name
+  name               = local.alb_name
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -11,7 +11,7 @@ resource "aws_lb" "main" {
 
 # Target group for server
 resource "aws_lb_target_group" "server" {
-  name        = "guardian-server-tg"
+  name        = local.target_group_name
   port        = 3000
   protocol    = "HTTP"
   vpc_id      = local.vpc_id

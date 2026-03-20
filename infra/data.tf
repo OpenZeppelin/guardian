@@ -28,11 +28,32 @@ locals {
   primary_subnet_id = local.subnet_ids[0]
   vpc_cidr          = data.aws_vpc.selected.cidr_block
 
+  cluster_name                 = var.cluster_name != "" ? var.cluster_name : "${var.stack_name}-cluster"
+  server_service_name          = var.server_service_name != "" ? var.server_service_name : "${var.stack_name}-server"
+  postgres_service_name        = var.postgres_service_name != "" ? var.postgres_service_name : "${var.stack_name}-postgres"
+  alb_name                     = var.alb_name != "" ? var.alb_name : "${var.stack_name}-alb"
+  sd_namespace_name            = var.sd_namespace_name != "" ? var.sd_namespace_name : "${var.stack_name}.local"
+  target_group_name            = var.target_group_name != "" ? var.target_group_name : "${var.stack_name}-server-tg"
+  alb_security_group_name      = var.alb_security_group_name != "" ? var.alb_security_group_name : "${var.stack_name}-alb-sg"
+  server_security_group_name   = var.server_security_group_name != "" ? var.server_security_group_name : "${var.stack_name}-server-sg"
+  postgres_security_group_name = var.postgres_security_group_name != "" ? var.postgres_security_group_name : "${var.stack_name}-postgres-sg"
+  task_execution_role_name     = var.task_execution_role_name != "" ? var.task_execution_role_name : "${var.stack_name}-ecs-task-execution"
+  task_role_name               = var.task_role_name != "" ? var.task_role_name : "${var.stack_name}-ecs-task"
+  server_task_family           = var.server_task_family != "" ? var.server_task_family : "${var.stack_name}-server"
+  postgres_task_family         = var.postgres_task_family != "" ? var.postgres_task_family : "${var.stack_name}-postgres"
+  server_container_name        = var.server_container_name != "" ? var.server_container_name : "${var.stack_name}-server"
+  server_log_group_name        = var.server_log_group_name != "" ? var.server_log_group_name : "/ecs/${local.server_service_name}"
+  postgres_log_group_name      = var.postgres_log_group_name != "" ? var.postgres_log_group_name : "/ecs/${local.postgres_service_name}"
+  cluster_log_group_name       = "/aws/ecs/${local.cluster_name}/cluster"
+  postgres_db                  = var.postgres_db != "" ? var.postgres_db : var.stack_name
+  postgres_user                = var.postgres_user != "" ? var.postgres_user : var.stack_name
+  postgres_password            = var.postgres_password != "" ? var.postgres_password : "${var.stack_name}_dev_password"
+
   # Service discovery DNS
-  postgres_dns = "${var.postgres_service_name}.${var.sd_namespace_name}"
+  postgres_dns = "${local.postgres_service_name}.${local.sd_namespace_name}"
 
   # Database URL
-  database_url = "postgres://${var.postgres_user}:${var.postgres_password}@${local.postgres_dns}:5432/${var.postgres_db}"
+  database_url = "postgres://${local.postgres_user}:${local.postgres_password}@${local.postgres_dns}:5432/${local.postgres_db}"
 
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""

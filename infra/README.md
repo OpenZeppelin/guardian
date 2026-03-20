@@ -11,12 +11,12 @@ This directory contains Terraform configuration to deploy the Guardian server to
 ## Architecture
 
 ```
-Internet → ALB (HTTP/HTTPS) → ECS Service (guardian-server) → Cloud Map → ECS Service (postgres)
+Internet → ALB (HTTP/HTTPS) → ECS Service (server) → Cloud Map → ECS Service (postgres)
 ```
 
 Resources created:
 - ECS Cluster (Fargate)
-- ECS Services: guardian-server, guardian-postgres
+- ECS Services derived from `stack_name` (for example `guardian-server`, `guardian-postgres`, `psm-server`, `psm-postgres`)
 - Application Load Balancer + Target Group + Listener
 - Cloud Map namespace for service discovery
 - Security Groups (ALB, server, postgres)
@@ -32,19 +32,23 @@ Before running Terraform, build and push the Docker image to ECR:
 ```bash
 # Set variables
 export AWS_REGION=us-east-1
+export CPU_ARCHITECTURE=X86_64
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 # Create ECR repository (if it doesn't exist)
-aws ecr create-repository --repository-name guardian-server --region $AWS_REGION 2>/dev/null || true
+export STACK_NAME=guardian
+export ECR_REPO_NAME="${STACK_NAME}-server"
+
+aws ecr create-repository --repository-name $ECR_REPO_NAME --region $AWS_REGION 2>/dev/null || true
 
 # Login to ECR
 aws ecr get-login-password --region $AWS_REGION | \
   docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
 # Build and push (from repo root)
-docker build --platform linux/amd64 -t guardian-server .
-docker tag guardian-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
+docker build --platform linux/amd64 -t $ECR_REPO_NAME .
+docker tag $ECR_REPO_NAME:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:latest
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:latest
 ```
 
 ### 2. Configure Variables
@@ -54,6 +58,13 @@ Create a `terraform.tfvars` file:
 ```hcl
 aws_region = "us-east-1"
 
+# Optional: image/task architecture
+# cpu_architecture = "X86_64"
+# cpu_architecture = "ARM64"
+
+# Optional: stack base name
+# stack_name = "guardian"
+
 # Required: ECR image URI
 server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
@@ -61,7 +72,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # vpc_id     = "vpc-xxxxxxxx"
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 
-# Optional: Postgres credentials (defaults shown)
+# Optional: Postgres credentials
+# Defaults derive from stack_name when omitted.
 # postgres_db       = "guardian"
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
@@ -119,7 +131,7 @@ terraform destroy
 Note: ECR repository is not managed by Terraform to avoid accidental image deletion. Delete manually if needed:
 
 ```bash
-aws ecr delete-repository --repository-name guardian-server --force --region $AWS_REGION
+aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS_REGION
 ```
 
 ## Variables Reference
@@ -127,7 +139,9 @@ aws ecr delete-repository --repository-name guardian-server --force --region $AW
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `aws_region` | `us-east-1` | AWS region |
-| `server_image_uri` | (required) | ECR image URI for guardian-server |
+| `cpu_architecture` | `X86_64` | ECS task and image architecture |
+| `stack_name` | `guardian` | Base name used to derive stack resource names |
+| `server_image_uri` | (required) | ECR image URI for the server |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `postgres_db` | `guardian` | Postgres database name |
@@ -159,11 +173,6 @@ aws ecr delete-repository --repository-name guardian-server --force --region $AW
 
 ## HTTPS Configuration
 
-HTTPS is automated via Route 53 + ACM for `guardian.openzeppelin.com`. Terraform:
+HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. In the current `psm-stg` deployment, Terraform state shows Cloudflare DNS management and no Route 53 record.
 
-1. Requests an ACM certificate for `guardian.openzeppelin.com`
-2. Creates the DNS validation records in the existing Route 53 hosted zone
-3. Creates the ALB alias record
-
-Ensure the `openzeppelin.com` hosted zone exists in the AWS account and the
-deployer has Route 53 permissions. Set `route53_zone_id` if auto-lookup fails.
+On Apple Silicon hosts, building `X86_64` images is slower because Docker builds `linux/amd64` images under emulation. If you want faster native local builds and your ECS deployment can run ARM64, set `cpu_architecture = "ARM64"` and deploy an ARM64 task definition.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Guardian AWS"
+  short_description: "Deploy and debug the repo AWS ECS stack"
+  default_prompt: "Use $deploy-guardian-aws to deploy or troubleshoot the GUARDIAN AWS ECS stack in this repository."

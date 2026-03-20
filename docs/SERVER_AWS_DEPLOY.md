@@ -29,8 +29,16 @@ export AWS_PROFILE=<your-profile>
 # Load environment variables
 set -a && source .env && set +a
 
+# Optional: select ECS/image architecture
+# export CPU_ARCHITECTURE=ARM64
+
 # Optional: pin the server to a specific Miden network
 export GUARDIAN_NETWORK_TYPE=MidenTestnet
+
+# Optional: pick a stack base name and custom subdomain
+export STACK_NAME=guardian
+# export STACK_NAME=psm
+# export SUBDOMAIN=psm-stg
 
 # Verify AWS credentials
 aws sts get-caller-identity
@@ -58,6 +66,14 @@ If you need to override defaults, edit `infra/terraform.tfvars`:
 
 ```hcl
 aws_region = "us-east-1"
+
+# Optional: ECS/image architecture
+# cpu_architecture = "X86_64"
+# cpu_architecture = "ARM64"
+
+# Optional: derive resource names from a base stack name
+# stack_name = "guardian"
+
 server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
 # Optional: Postgres credentials (defaults shown)
@@ -70,6 +86,10 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 # Optional: Route 53 hosted zone ID for openzeppelin.com
 # route53_zone_id = "Z1234567890ABC"
+
+# Optional: Cloudflare DNS management
+# cloudflare_zone_id = "..."
+# cloudflare_api_token = "..."
 ```
 
 ### 3. Deploy Infrastructure
@@ -133,13 +153,13 @@ for all available options.
 
 | Resource | Description |
 |----------|-------------|
-| ECS Cluster | Fargate cluster (`guardian-cluster`) |
-| ECS Services | `guardian-server`, `guardian-postgres` |
-| Application Load Balancer | Internet-facing ALB (`guardian-alb`) |
+| ECS Cluster | Fargate cluster derived from `stack_name` |
+| ECS Services | Services derived from `stack_name` |
+| Application Load Balancer | Internet-facing ALB derived from `stack_name` |
 | Target Group | Routes to server on port 3000 |
-| Cloud Map Namespace | Service discovery (`guardian.local`) |
+| Cloud Map Namespace | Service discovery namespace derived from `stack_name` |
 | Security Groups | ALB, server, and postgres SGs |
-| CloudWatch Log Groups | `/ecs/guardian-server`, `/ecs/guardian-postgres` |
+| CloudWatch Log Groups | Log groups derived from service names |
 | IAM Role | ECS task execution role |
 
 ### Outputs
@@ -153,14 +173,9 @@ for all available options.
 
 ## HTTPS Configuration
 
-HTTPS is automated via Route 53 + ACM for `guardian.openzeppelin.com`. Terraform:
+HTTPS is enabled when `acm_certificate_arn` is set. Cloudflare DNS records are managed only when both `cloudflare_zone_id` and `cloudflare_api_token` are set. Route 53 records are managed only when `route53_zone_id` is set.
 
-1. Requests an ACM certificate for `guardian.openzeppelin.com`
-2. Creates the DNS validation records in the existing Route 53 hosted zone
-3. Creates the ALB alias record
-
-Ensure the `openzeppelin.com` hosted zone exists in the AWS account and the
-deployer has Route 53 permissions. Set `route53_zone_id` if auto-lookup fails.
+On Apple Silicon hosts, `CPU_ARCHITECTURE=X86_64` builds are slower because Docker builds `linux/amd64` images under emulation. Switching to `ARM64` avoids that local emulation cost, but it also changes the ECS task definition runtime architecture.
 
 ## Legacy Script
 

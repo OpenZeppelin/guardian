@@ -1,6 +1,6 @@
 # Security group for ALB
 resource "aws_security_group" "alb" {
-  name        = "guardian-alb-sg"
+  name        = local.alb_security_group_name
   description = "GUARDIAN ALB security group"
   vpc_id      = local.vpc_id
 
@@ -33,7 +33,7 @@ resource "aws_security_group" "alb" {
 
 # Security group for server
 resource "aws_security_group" "server" {
-  name        = "guardian-server-sg"
+  name        = local.server_security_group_name
   description = "GUARDIAN server security group"
   vpc_id      = local.vpc_id
 
@@ -66,7 +66,7 @@ resource "aws_security_group" "server" {
 
 # Security group for Postgres
 resource "aws_security_group" "postgres" {
-  name        = "guardian-postgres-sg"
+  name        = local.postgres_security_group_name
   description = "GUARDIAN Postgres security group"
   vpc_id      = local.vpc_id
 
