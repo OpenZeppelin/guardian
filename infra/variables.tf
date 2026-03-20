@@ -4,6 +4,23 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "cpu_architecture" {
+  description = "CPU architecture for ECS tasks and the server image (X86_64 or ARM64)"
+  type        = string
+  default     = "X86_64"
+
+  validation {
+    condition     = contains(["X86_64", "ARM64"], var.cpu_architecture)
+    error_message = "cpu_architecture must be X86_64 or ARM64."
+  }
+}
+
+variable "stack_name" {
+  description = "Base name for the deployment stack (e.g., guardian or psm)"
+  type        = string
+  default     = "guardian"
+}
+
 variable "server_image_uri" {
   description = "ECR image URI for guardian-server (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest)"
   type        = string
@@ -30,19 +47,19 @@ variable "subnet_ids" {
 variable "postgres_db" {
   description = "Postgres database name"
   type        = string
-  default     = "guardian"
+  default     = ""
 }
 
 variable "postgres_user" {
   description = "Postgres username"
   type        = string
-  default     = "guardian"
+  default     = ""
 }
 
 variable "postgres_password" {
   description = "Postgres password"
   type        = string
-  default     = "guardian_dev_password"
+  default     = ""
   sensitive   = true
 }
 
@@ -129,29 +146,95 @@ variable "postgres_memory" {
 variable "cluster_name" {
   description = "ECS cluster name"
   type        = string
-  default     = "guardian-cluster"
+  default     = ""
 }
 
 variable "server_service_name" {
   description = "Server ECS service name"
   type        = string
-  default     = "guardian-server"
+  default     = ""
 }
 
 variable "postgres_service_name" {
   description = "Postgres ECS service name"
   type        = string
-  default     = "guardian-postgres"
+  default     = ""
 }
 
 variable "alb_name" {
   description = "ALB name"
   type        = string
-  default     = "guardian-alb"
+  default     = ""
 }
 
 variable "sd_namespace_name" {
   description = "Cloud Map namespace name for service discovery"
   type        = string
-  default     = "guardian.local"
+  default     = ""
+}
+
+variable "target_group_name" {
+  description = "ALB target group name for the server"
+  type        = string
+  default     = ""
+}
+
+variable "alb_security_group_name" {
+  description = "Security group name for the ALB"
+  type        = string
+  default     = ""
+}
+
+variable "server_security_group_name" {
+  description = "Security group name for the server service"
+  type        = string
+  default     = ""
+}
+
+variable "postgres_security_group_name" {
+  description = "Security group name for the Postgres service"
+  type        = string
+  default     = ""
+}
+
+variable "task_execution_role_name" {
+  description = "IAM role name for ECS task execution"
+  type        = string
+  default     = ""
+}
+
+variable "task_role_name" {
+  description = "IAM role name for ECS task runtime"
+  type        = string
+  default     = ""
+}
+
+variable "server_task_family" {
+  description = "Task definition family name for the server"
+  type        = string
+  default     = ""
+}
+
+variable "postgres_task_family" {
+  description = "Task definition family name for Postgres"
+  type        = string
+  default     = ""
+}
+
+variable "server_container_name" {
+  description = "Container name for the server task definition"
+  type        = string
+  default     = ""
+}
+
+variable "server_log_group_name" {
+  description = "CloudWatch log group name for the server"
+  type        = string
+  default     = ""
+}
+
+variable "postgres_log_group_name" {
+  description = "CloudWatch log group name for Postgres"
+  type        = string
+  default     = ""
 }

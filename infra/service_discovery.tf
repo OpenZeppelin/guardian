@@ -1,13 +1,13 @@
 # Cloud Map namespace for service discovery
 resource "aws_service_discovery_private_dns_namespace" "main" {
-  name        = var.sd_namespace_name
+  name        = local.sd_namespace_name
   vpc         = local.vpc_id
   description = "GUARDIAN service discovery namespace"
 }
 
 # Cloud Map service for Postgres
 resource "aws_service_discovery_service" "postgres" {
-  name = var.postgres_service_name
+  name = local.postgres_service_name
 
   dns_config {
     namespace_id = aws_service_discovery_private_dns_namespace.main.id

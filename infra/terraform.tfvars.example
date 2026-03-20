@@ -1,7 +1,15 @@
 # Required: AWS region
 aws_region = "us-east-1"
 
-# Required: ECR image URI for guardian-server
+# Optional: ECS/image architecture
+# cpu_architecture = "X86_64"
+# cpu_architecture = "ARM64"
+
+# Optional: Base stack name used to derive AWS resource names
+# stack_name = "guardian"
+# stack_name = "psm"
+
+# Required: ECR image URI for the server image
 # After pushing to ECR, set this to the full image URI
 server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
@@ -14,6 +22,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 
 # Optional: Postgres credentials
+# Defaults derive from stack_name when omitted
 # postgres_db       = "guardian"
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
@@ -34,8 +43,19 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # postgres_memory = 1024
 
 # Optional: Resource naming (defaults match the original bash script)
-# cluster_name          = "guardian-cluster"
-# server_service_name   = "guardian-server"
-# postgres_service_name = "guardian-postgres"
-# alb_name              = "guardian-alb"
-# sd_namespace_name     = "guardian.local"
+# cluster_name                 = "guardian-cluster"
+# server_service_name          = "guardian-server"
+# postgres_service_name        = "guardian-postgres"
+# alb_name                     = "guardian-alb"
+# sd_namespace_name            = "guardian.local"
+# target_group_name            = "guardian-server-tg"
+# alb_security_group_name      = "guardian-alb-sg"
+# server_security_group_name   = "guardian-server-sg"
+# postgres_security_group_name = "guardian-postgres-sg"
+# task_execution_role_name     = "guardian-ecs-task-execution"
+# task_role_name               = "guardian-ecs-task"
+# server_task_family           = "guardian-server"
+# postgres_task_family         = "guardian-postgres"
+# server_container_name        = "guardian-server"
+# server_log_group_name        = "/ecs/guardian-server"
+# postgres_log_group_name      = "/ecs/guardian-postgres"

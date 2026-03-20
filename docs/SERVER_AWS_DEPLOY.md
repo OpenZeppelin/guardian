@@ -29,8 +29,16 @@ export AWS_PROFILE=<your-profile>
 # Load environment variables
 set -a && source .env && set +a
 
+# Optional: select ECS/image architecture
+# export CPU_ARCHITECTURE=ARM64
+
 # Optional: pin the server to a specific Miden network
 export GUARDIAN_NETWORK_TYPE=MidenTestnet
+
+# Optional: pick a stack base name and custom subdomain
+export STACK_NAME=guardian
+# export STACK_NAME=psm
+# export SUBDOMAIN=psm-stg
 
 # Verify AWS credentials
 aws sts get-caller-identity
@@ -58,6 +66,14 @@ If you need to override defaults, edit `infra/terraform.tfvars`:
 
 ```hcl
 aws_region = "us-east-1"
+
+# Optional: ECS/image architecture
+# cpu_architecture = "X86_64"
+# cpu_architecture = "ARM64"
+
+# Optional: derive resource names from a base stack name
+# stack_name = "guardian"
+
 server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
 # Optional: Postgres credentials (defaults shown)
@@ -70,6 +86,10 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 # Optional: Route 53 hosted zone ID for openzeppelin.com
 # route53_zone_id = "Z1234567890ABC"
+
+# Optional: Cloudflare DNS management
+# cloudflare_zone_id = "..."
+# cloudflare_api_token = "..."
 ```
 
 ### 3. Deploy Infrastructure
@@ -88,6 +108,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 ```bash
 curl https://guardian.openzeppelin.com/pubkey
+grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
 ## Operations
@@ -133,13 +154,13 @@ for all available options.
 
 | Resource | Description |
 |----------|-------------|
-| ECS Cluster | Fargate cluster (`guardian-cluster`) |
-| ECS Services | `guardian-server`, `guardian-postgres` |
-| Application Load Balancer | Internet-facing ALB (`guardian-alb`) |
-| Target Group | Routes to server on port 3000 |
-| Cloud Map Namespace | Service discovery (`guardian.local`) |
+| ECS Cluster | Fargate cluster derived from `stack_name` |
+| ECS Services | Services derived from `stack_name` |
+| Application Load Balancer | Internet-facing ALB derived from `stack_name` |
+| Target Groups | Route HTTPS traffic to server HTTP on port 3000 and gRPC on port 50051 |
+| Cloud Map Namespace | Service discovery namespace derived from `stack_name` |
 | Security Groups | ALB, server, and postgres SGs |
-| CloudWatch Log Groups | `/ecs/guardian-server`, `/ecs/guardian-postgres` |
+| CloudWatch Log Groups | Log groups derived from service names |
 | IAM Role | ECS task execution role |
 
 ### Outputs
@@ -148,19 +169,17 @@ for all available options.
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name |
 | `alb_url` | Full URL (http or https) |
+| `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server service ARN |
 
 ## HTTPS Configuration
 
-HTTPS is automated via Route 53 + ACM for `guardian.openzeppelin.com`. Terraform:
+HTTPS is enabled when `acm_certificate_arn` is set. Cloudflare DNS records are managed only when both `cloudflare_zone_id` and `cloudflare_api_token` are set. Route 53 records are managed only when `route53_zone_id` is set.
 
-1. Requests an ACM certificate for `guardian.openzeppelin.com`
-2. Creates the DNS validation records in the existing Route 53 hosted zone
-3. Creates the ALB alias record
+When HTTPS is enabled, the ALB also exposes the server gRPC API on the same public hostname over port `443`. Regular HTTP requests continue to route to port `3000`, while gRPC requests for `/guardian.Guardian/*` route to port `50051`.
 
-Ensure the `openzeppelin.com` hosted zone exists in the AWS account and the
-deployer has Route 53 permissions. Set `route53_zone_id` if auto-lookup fails.
+On Apple Silicon hosts, `CPU_ARCHITECTURE=X86_64` builds are slower because Docker builds `linux/amd64` images under emulation. Switching to `ARM64` avoids that local emulation cost, but it also changes the ECS task definition runtime architecture.
 
 ## Legacy Script
 

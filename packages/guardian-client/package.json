@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/guardian-client",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "TypeScript HTTP client for Guardian server",
   "type": "module",
   "main": "./dist/index.js",

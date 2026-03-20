@@ -15,6 +15,9 @@ set -e
 #
 # Optional environment variables:
 #   AWS_REGION            - AWS region (default: us-east-1)
+#   CPU_ARCHITECTURE      - ECS/image architecture (X86_64 or ARM64, default: X86_64)
+#   STACK_NAME            - Base stack name used for AWS resources (default: guardian)
+#   ECR_REPO_NAME         - ECR repository/image name (default: <stack-name>-server)
 #   DOMAIN_NAME           - Root domain (default: openzeppelin.com)
 #   SUBDOMAIN             - Subdomain (default: guardian)
 #   ROUTE53_ZONE_ID       - Route 53 hosted zone ID (optional)
@@ -27,7 +30,9 @@ set -e
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
-ECR_REPO_NAME="guardian-server"
+CPU_ARCHITECTURE="${CPU_ARCHITECTURE:-${TF_VAR_cpu_architecture:-X86_64}}"
+STACK_NAME="${STACK_NAME:-${TF_VAR_stack_name:-guardian}}"
+ECR_REPO_NAME="${ECR_REPO_NAME:-${STACK_NAME}-server}"
 DOMAIN_NAME="${DOMAIN_NAME-openzeppelin.com}"
 SUBDOMAIN="${SUBDOMAIN-guardian}"
 ROUTE53_ZONE_ID="${ROUTE53_ZONE_ID-}"
@@ -45,6 +50,45 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+tf_var_or_default() {
+  local name="$1"
+  local default_value="$2"
+  local current_value="${!name:-}"
+  if [ -n "$current_value" ]; then
+    echo "$current_value"
+  else
+    echo "$default_value"
+  fi
+}
+
+validate_deploy_config() {
+  local cloudflare_api_token="${CLOUDFLARE_API_TOKEN:-${TF_VAR_cloudflare_api_token:-}}"
+  if [ -n "$CLOUDFLARE_ZONE_ID" ] && [ -z "$cloudflare_api_token" ]; then
+    log_error "CLOUDFLARE_ZONE_ID is set but CLOUDFLARE_API_TOKEN is empty"
+    return 1
+  fi
+
+  case "$CPU_ARCHITECTURE" in
+    X86_64|ARM64)
+      ;;
+    *)
+      log_error "CPU_ARCHITECTURE must be X86_64 or ARM64"
+      return 1
+      ;;
+  esac
+}
+
+docker_platform_for_arch() {
+  case "$1" in
+    X86_64)
+      echo "linux/amd64"
+      ;;
+    ARM64)
+      echo "linux/arm64"
+      ;;
+  esac
+}
 
 get_aws_account_id() {
   aws sts get-caller-identity --query Account --output text
@@ -86,6 +130,8 @@ cmd_import_existing_resources() {
 
   export TF_VAR_server_image_uri="$image_uri"
   export TF_VAR_aws_region="$aws_region"
+  export TF_VAR_cpu_architecture="$CPU_ARCHITECTURE"
+  export TF_VAR_stack_name="$STACK_NAME"
   export TF_VAR_domain_name="$domain_name"
   export TF_VAR_subdomain="$subdomain"
   export TF_VAR_route53_zone_id="$route53_zone_id"
@@ -98,18 +144,29 @@ cmd_import_existing_resources() {
   fi
 
   local failed=0
-  local cluster_name="${TF_CLUSTER_NAME:-guardian-cluster}"
-  local alb_name="${TF_ALB_NAME:-guardian-alb}"
-  local target_group_name="${TF_TG_NAME:-guardian-server-tg}"
-  local alb_sg_name="${TF_ALB_SG_NAME:-guardian-alb-sg}"
-  local server_sg_name="${TF_SERVER_SG_NAME:-guardian-server-sg}"
-  local postgres_sg_name="${TF_POSTGRES_SG_NAME:-guardian-postgres-sg}"
-  local namespace_name="${TF_SD_NAMESPACE_NAME:-guardian.local}"
-  local sd_service_name="${TF_SD_SERVICE_NAME:-guardian-postgres}"
-  local server_service_name="${TF_SERVER_SERVICE_NAME:-guardian-server}"
-  local postgres_service_name="${TF_POSTGRES_SERVICE_NAME:-guardian-postgres}"
-  local log_group_server="/ecs/guardian-server"
-  local log_group_postgres="/ecs/guardian-postgres"
+  local cluster_name
+  cluster_name=$(tf_var_or_default TF_VAR_cluster_name "${STACK_NAME}-cluster")
+  local alb_name
+  alb_name=$(tf_var_or_default TF_VAR_alb_name "${STACK_NAME}-alb")
+  local target_group_name
+  target_group_name=$(tf_var_or_default TF_VAR_target_group_name "${STACK_NAME}-server-tg")
+  local alb_sg_name
+  alb_sg_name=$(tf_var_or_default TF_VAR_alb_security_group_name "${STACK_NAME}-alb-sg")
+  local server_sg_name
+  server_sg_name=$(tf_var_or_default TF_VAR_server_security_group_name "${STACK_NAME}-server-sg")
+  local postgres_sg_name
+  postgres_sg_name=$(tf_var_or_default TF_VAR_postgres_security_group_name "${STACK_NAME}-postgres-sg")
+  local namespace_name
+  namespace_name=$(tf_var_or_default TF_VAR_sd_namespace_name "${STACK_NAME}.local")
+  local server_service_name
+  server_service_name=$(tf_var_or_default TF_VAR_server_service_name "${STACK_NAME}-server")
+  local postgres_service_name
+  postgres_service_name=$(tf_var_or_default TF_VAR_postgres_service_name "${STACK_NAME}-postgres")
+  local sd_service_name="$postgres_service_name"
+  local log_group_server
+  log_group_server=$(tf_var_or_default TF_VAR_server_log_group_name "/ecs/${server_service_name}")
+  local log_group_postgres
+  log_group_postgres=$(tf_var_or_default TF_VAR_postgres_log_group_name "/ecs/${postgres_service_name}")
   local log_group_cluster="/aws/ecs/${cluster_name}/cluster"
 
   local cluster_status
@@ -122,7 +179,8 @@ cmd_import_existing_resources() {
     tf_import_if_exists "$tf_dir" "aws_ecs_cluster_capacity_providers.main" "$cluster_name" || failed=1
   fi
 
-  local role_name="guardian-ecs-task-execution"
+  local role_name
+  role_name=$(tf_var_or_default TF_VAR_task_execution_role_name "${STACK_NAME}-ecs-task-execution")
   local role_arn
   role_arn=$(aws iam get-role --role-name "$role_name" --query 'Role.Arn' --output text 2>/dev/null || true)
   tf_import_if_exists "$tf_dir" "aws_iam_role.ecs_task_execution" "$role_name" || failed=1
@@ -184,7 +242,7 @@ cmd_import_existing_resources() {
   namespace_id=$(aws servicediscovery list-namespaces \
     --region "$AWS_REGION" \
     --query "Namespaces[?Name=='${namespace_name}'].Id" --output text 2>/dev/null || true)
-  local namespace_vpc_id="${TF_VPC_ID:-}"
+  local namespace_vpc_id="${TF_VAR_vpc_id:-}"
   if [ -z "$namespace_vpc_id" ]; then
     namespace_vpc_id=$(aws ec2 describe-vpcs \
       --filters "Name=is-default,Values=true" \
@@ -247,6 +305,8 @@ cmd_import_existing_resources() {
 
 cmd_build_and_push() {
   local AWS_ACCOUNT_ID=$(get_aws_account_id)
+  local docker_platform
+  docker_platform=$(docker_platform_for_arch "$CPU_ARCHITECTURE")
 
   log_info "Creating ECR repository..."
   aws ecr create-repository \
@@ -258,17 +318,18 @@ cmd_build_and_push() {
     docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
   log_info "Building Docker image..."
-  docker build --platform linux/amd64 --no-cache -t guardian-server .
+  docker build --platform "$docker_platform" --no-cache -t "${ECR_REPO_NAME}:latest" .
 
   log_info "Tagging and pushing to ECR..."
-  docker tag guardian-server:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
-  docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/guardian-server:latest
+  docker tag "${ECR_REPO_NAME}:latest" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/${ECR_REPO_NAME}:latest"
+  docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/${ECR_REPO_NAME}:latest"
 
   log_info "Image pushed successfully"
 }
 
 cmd_deploy() {
   log_info "Deploying GUARDIAN server with Terraform..."
+  validate_deploy_config
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -302,6 +363,8 @@ cmd_deploy() {
   log_info "Applying Terraform..."
   local tf_vars=()
   tf_vars+=("-var" "aws_region=${AWS_REGION}")
+  tf_vars+=("-var" "cpu_architecture=${CPU_ARCHITECTURE}")
+  tf_vars+=("-var" "stack_name=${STACK_NAME}")
   tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
   tf_vars+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
   if [ -n "$DOMAIN_NAME" ]; then
@@ -326,9 +389,11 @@ cmd_deploy() {
   local ALB_DNS
   local HTTPS_URL
   local CUSTOM_DOMAIN_URL
+  local GRPC_ENDPOINT
   ALB_URL=$(terraform -chdir="$TF_DIR" output -raw alb_url 2>/dev/null || true)
   ALB_DNS=$(terraform -chdir="$TF_DIR" output -raw alb_dns_name 2>/dev/null || true)
   CUSTOM_DOMAIN_URL=$(terraform -chdir="$TF_DIR" output -raw custom_domain_url 2>/dev/null || true)
+  GRPC_ENDPOINT=$(terraform -chdir="$TF_DIR" output -raw grpc_endpoint 2>/dev/null || true)
   if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
     HTTPS_URL="https://${ALB_DNS}"
   fi
@@ -344,9 +409,15 @@ cmd_deploy() {
     if [ -n "$CUSTOM_DOMAIN_URL" ]; then
       echo "  Custom domain: ${CUSTOM_DOMAIN_URL}"
     fi
+    if [ -n "$GRPC_ENDPOINT" ]; then
+      echo "  gRPC endpoint: ${GRPC_ENDPOINT}"
+    fi
     echo ""
     echo "  Health check: curl ${ALB_URL}/"
     echo "  Public key:   curl ${ALB_URL}/pubkey"
+    if [ -n "$GRPC_ENDPOINT" ]; then
+      echo "  gRPC check:   grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${GRPC_ENDPOINT#https://}:443 guardian.Guardian/GetPubkey"
+    fi
   fi
   echo ""
 }
@@ -390,6 +461,7 @@ cmd_logs() {
 
 cmd_cleanup() {
   log_warn "This will delete ALL GUARDIAN server AWS resources (Terraform destroy)"
+  validate_deploy_config
   read -p "Are you sure? (yes/no): " confirm
   if [ "$confirm" != "yes" ]; then
     echo "Aborted"
@@ -415,6 +487,8 @@ cmd_cleanup() {
   log_info "Running Terraform destroy..."
   local tf_vars=()
   tf_vars+=("-var" "aws_region=${AWS_REGION}")
+  tf_vars+=("-var" "cpu_architecture=${CPU_ARCHITECTURE}")
+  tf_vars+=("-var" "stack_name=${STACK_NAME}")
   tf_vars+=("-var" "server_image_uri=${IMAGE_URI}")
   tf_vars+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
   if [ -n "$DOMAIN_NAME" ]; then
@@ -509,8 +583,14 @@ case "${COMMAND:-}" in
     echo "  --acm-certificate-arn= ACM certificate ARN for HTTPS"
     echo "  --import-existing Import existing AWS resources into state"
     echo ""
+    echo "Environment:"
+    echo "  CPU_ARCHITECTURE=  ECS/image architecture (X86_64 or ARM64, default: X86_64)"
+    echo "  STACK_NAME=   Base stack name for AWS resources (default: guardian)"
+    echo "  ECR_REPO_NAME= Override the ECR/image repository name (default: <stack-name>-server)"
+    echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
+    echo "  STACK_NAME=psm SUBDOMAIN=psm-stg ./scripts/aws-deploy.sh deploy"
     echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"

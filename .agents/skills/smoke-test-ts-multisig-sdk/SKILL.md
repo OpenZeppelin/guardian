@@ -29,7 +29,7 @@ Use `examples/smoke-web` as the primary smoke surface for `@openzeppelin/miden-m
    cd examples/smoke-web && npm run dev
    ```
 5. Open the smoke harness in separate real browsers or fully isolated browser profiles. Do not rely on same-profile parallel tabs. Prefer Chrome + Brave or Chrome + Firefox when driving concurrent cosigners.
-6. In each browser console, initialize a session with `window.smoke.initSession(...)`.
+6. Let the page-load bootstrap settle first. If `await window.smoke.status()` is not `ready`, or you need to override the default endpoints or signer settings, initialize the session with `window.smoke.initSession(...)`.
 7. Default to local signers and Falcon unless the prompt explicitly asks for ECDSA, Para, or Miden Wallet.
 8. Record each browser's signer commitment from `await window.smoke.status()` before account creation.
 9. Create the multisig in one browser by passing the other browsers' commitments to `createAccount`.
@@ -52,6 +52,8 @@ Use this as the default setup unless the prompt explicitly asks for something el
 
 Treat each browser or browser profile as one cosigner. Prefer distinct browser binaries over multiple profiles when available. `initSession` clears the local IndexedDB state for that profile, so do not share one profile across concurrent cosigner sessions. Use `browserLabel` to make reports readable.
 
+`examples/smoke-web` attempts a bootstrap on page load. For automation or console-driven smoke, check `await window.smoke.status()` before calling `initSession()`. Use `initSession()` as recovery or explicit reconfiguration, not as the automatic first step for an already-ready profile.
+
 ## Workflow Selection
 
 - Run `browser-baseline` first when the prompt asks for a general smoke test or does not narrow the target behavior yet.
@@ -69,6 +71,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Prefer truly isolated browsers for concurrent cosigners. Same-browser automation is not a supported canary path unless it uses proven storage isolation.
 - Use `await window.smoke.status()` after any meaningful state transition.
 - Use `await window.smoke.events()` as the default command-history and timing source.
+- If page-load bootstrap already reached `ready`, do not immediately call `initSession()` again on the same profile unless you are intentionally changing config or recovering from a failed bootstrap.
 - Treat `examples/smoke-web` as the required manual smoke surface for browser SDK behavior; package tests and builds support this but do not replace it.
 - Build `examples/web` whenever shared browser code changes; if the change is risky, note whether `examples/web` was also launched manually.
 - Trust current source in `examples/smoke-web/src/` and `examples/_shared/multisig-browser/src/` over README text when they disagree, and note the mismatch in your result.
