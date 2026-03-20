@@ -227,7 +227,7 @@ impl MultisigClient {
     }
 
     /// Syncs only with the Miden network and refreshes local cached account state.
-    pub(crate) async fn sync_network_only(&mut self) -> Result<()> {
+    pub async fn sync_network_only(&mut self) -> Result<()> {
         self.sync_network_state().await?;
         self.refresh_cached_account_from_store().await
     }

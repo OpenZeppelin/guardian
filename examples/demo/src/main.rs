@@ -51,17 +51,15 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     };
 
     // GUARDIAN endpoint selection
-    println!("\n  Select GUARDIAN server:");
+    println!("\n  Select GUARDIAN gRPC server:");
     println!("    [1] Local gRPC (http://localhost:50051)");
-    println!("    [2] Local HTTP (http://localhost:3000)");
-    println!("    [3] Custom URL");
+    println!("    [2] Custom gRPC URL");
     println!();
 
     let guardian_choice = prompt_input(editor, "GUARDIAN Server [1]: ")?;
     let guardian_endpoint = match guardian_choice.trim() {
         "" | "1" => "http://localhost:50051".to_string(),
-        "2" => "http://localhost:3000".to_string(),
-        "3" => prompt_input(editor, "Enter GUARDIAN Server URL: ")?,
+        "2" => prompt_input(editor, "Enter GUARDIAN gRPC URL: ")?,
         _ => {
             println!("  Invalid choice, using local gRPC");
             "http://localhost:50051".to_string()
