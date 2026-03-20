@@ -4,15 +4,15 @@ Use this reference when the target endpoint is `psm-stg.openzeppelin.com` or whe
 
 ## Current OpenZeppelin Login Flow
 
-The current operator pattern is:
+Use the active OpenZeppelin AWS SSO profile and assume the target account access role before running deploy commands. A generic pattern is:
 
 ```bash
-aws sso login --profile dev
+aws sso login --profile <sso-profile>
 
 export STS_CMD=$(aws sts assume-role \
-  --role-arn arn:aws:iam::598931145132:role/OrganizationAccountAccessRole \
-  --role-session-name "marcos" \
-  --profile dev)
+  --role-arn <target-role-arn> \
+  --role-session-name "<session-name>" \
+  --profile <sso-profile>)
 
 export AWS_ACCESS_KEY_ID="$(echo "$STS_CMD" | jq -r '.Credentials.AccessKeyId')"
 export AWS_SECRET_ACCESS_KEY="$(echo "$STS_CMD" | jq -r '.Credentials.SecretAccessKey')"
@@ -22,7 +22,7 @@ export AWS_REGION="us-east-1"
 
 After exporting temporary credentials:
 
-- `AWS_PROFILE=dev` can remain set, but it is not required for later `aws`, `docker`, or `terraform` commands
+- `AWS_PROFILE` can remain set, but it is not required for later `aws`, `docker`, or `terraform` commands
 - `STS_CMD` is only a convenience shell variable and can be unset
 - verify the active identity with `aws sts get-caller-identity`
 - if deployment vars already live in repo `.env`, prefer `set -a && source .env && set +a` instead of re-exporting them one by one

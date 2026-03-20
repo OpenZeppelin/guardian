@@ -26,7 +26,7 @@ Use this file as the timing reference for future smoke runs of `guardian-demo` a
 ## Reference Environment
 
 - Date: 2026-03-19
-- Repo: `/Users/marcos/repos/guardian`
+- Repo: current Guardian workspace
 - GUARDIAN endpoint: local gRPC `http://localhost:50051`
 - Network: Miden testnet
 - Signature scheme: Falcon

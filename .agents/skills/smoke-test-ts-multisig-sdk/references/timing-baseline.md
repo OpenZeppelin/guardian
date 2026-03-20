@@ -26,9 +26,9 @@ Use this file as the timing reference for future smoke runs of `examples/smoke-w
 
 ## Reference Environment
 
-- Repo: `/Users/marcos/repos/guardian`
+- Repo: current Guardian workspace
 - GUARDIAN endpoint: local HTTP `http://localhost:3000`
-- Smoke harness: `http://127.0.0.1:3012` for the first verified isolated-browser canary because `3002` was occupied by another local Vite app
+- Smoke harness: local isolated-browser canary harness on a free local port
 - Network: Miden testnet
 - Default signer source: local
 - Default signature scheme: Falcon
