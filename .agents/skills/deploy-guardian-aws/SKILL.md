@@ -1,9 +1,9 @@
 ---
 name: deploy-guardian-aws
-description: Deploy, update, inspect, and troubleshoot the GUARDIAN server AWS ECS environment in this repository using `scripts/aws-deploy.sh` and Terraform in `infra/`. Use when Codex needs to verify AWS auth, run the repo deploy script, reason about ECR, ECS, ALB, CloudWatch, Route 53, ACM, or Cloudflare deployment variables, or compare the current `psm-stg` deployment state with the newer `guardian-*` Terraform defaults before changing infrastructure.
+description: Deploy, update, inspect, and troubleshoot the repository AWS ECS environment using `scripts/aws-deploy.sh` and Terraform in `infra/`. Use when Codex needs to verify AWS auth, run the repo deploy script, reason about ECR, ECS, ALB, CloudWatch, Route 53, ACM, or Cloudflare deployment variables before changing infrastructure.
 ---
 
-# Deploy Guardian AWS
+# Deploy AWS Stack
 
 Read the current source of truth at the start of every task:
 
@@ -12,7 +12,6 @@ Read the current source of truth at the start of every task:
 - `infra/variables.tf`
 - `infra/terraform.tfvars.example`
 - the relevant `infra/*.tf` files for the behavior being changed
-- `references/current-psm-stg.md` when the target environment is `psm-stg.openzeppelin.com` or when old `PSM_*` naming appears
 
 Trust these sources in this order:
 
@@ -32,7 +31,7 @@ Trust these sources in this order:
    ```bash
    set -a && source .env && set +a
    ```
-3. If working in the OpenZeppelin AWS account, use the current assume-role flow from `references/current-psm-stg.md`.
+3. If the environment uses AWS SSO plus an assumed role, refresh SSO, export temporary credentials, and verify them before deploy commands.
 4. Run `terraform -chdir=infra output` or `./scripts/aws-deploy.sh status` before the first mutating command in a session.
 
 ## Primary Commands
@@ -79,25 +78,14 @@ Use `TF_VAR_*` only for Terraform variables that the script does not map directl
 
 Treat these as stale or conditional:
 
-- `PSM_NETWORK_TYPE` is stale; use `GUARDIAN_NETWORK_TYPE`
+- legacy network env naming is stale; use `GUARDIAN_NETWORK_TYPE`
 - `CPU_ARCHITECTURE=X86_64` preserves the current amd64 deployment behavior
 - `CPU_ARCHITECTURE=ARM64` is the native build path on Apple Silicon and usually much faster locally, but it changes the ECS task definition runtime architecture too
-- `STACK_NAME=psm` is the preferred way to keep the current `psm-*` resource naming aligned across Terraform and the deploy script
+- set `STACK_NAME` only when the deployment should preserve non-default resource names
 - `AWS_PROFILE` is only needed for the initial SSO or `assume-role` step if temporary credentials are exported afterward
 - `STS_CMD` is only a temporary shell helper and can be unset after exporting credentials
 - `CLOUDFLARE_ZONE_ID` without `CLOUDFLARE_API_TOKEN` is invalid for Terraform-managed Cloudflare DNS
 - `ROUTE53_ZONE_ID` is only needed if Terraform should create the AWS Route 53 record; current Terraform does not auto-discover the zone
-
-## Existing Stack Guardrail
-
-The checked-in Terraform state currently describes a `psm-*` stack, while the current Terraform code and deploy script default to `guardian-*` names and `GUARDIAN_NETWORK_TYPE`.
-
-When the target environment is the existing `psm-stg.openzeppelin.com` deployment:
-
-- inspect `infra/terraform.tfstate` and `terraform -chdir=infra output` before applying changes
-- read `references/current-psm-stg.md`
-- do not assume `./scripts/aws-deploy.sh deploy` is safe without matching naming overrides and an inspected plan
-- stop and surface drift if the task appears to preserve the existing `psm` stack identity, because several names are still hardcoded in Terraform and cannot be preserved via env vars alone
 
 ## Validation
 
@@ -118,7 +106,6 @@ Default to giving the user the exact commands to run for the requested deploymen
 - Omit stale or unnecessary variables
 - Use placeholders only for secrets or values the user has not provided
 - If the task is risky or destructive, separate inspection commands from mutating commands
-- If the task is `psm-stg`, prefer `STACK_NAME=psm` and `SUBDOMAIN=psm-stg`
 
 ## Reporting
 
@@ -130,4 +117,4 @@ Report:
 - env vars and `TF_VAR_*` overrides used
 - Terraform outputs that changed
 - health checks performed
-- drift or blockers found between state, docs, and Terraform code
+- blockers found between state, docs, and Terraform code
