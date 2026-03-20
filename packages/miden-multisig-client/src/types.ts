@@ -84,6 +84,7 @@ export interface MultisigConfig {
   storageMode?: 'private' | 'public';
   procedureThresholds?: ProcedureThreshold[];
   signatureScheme?: SignatureScheme;
+  seed?: Uint8Array
 }
 
 export interface CreateAccountResult {

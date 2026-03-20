@@ -34,8 +34,7 @@ import { normalizeSignerCommitment } from '../utils/signature.js';
  */
 export async function createMultisigAccount(
   webClient: WebClient,
-  config: MultisigConfig,
-  seed?: Uint8Array
+  config: MultisigConfig
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const signatureScheme = config.signatureScheme ?? 'falcon';
@@ -65,7 +64,8 @@ export async function createMultisigAccount(
     .compile(authCode, authSlots)
     .withSupportsAllTypes();
 
-  // Generate random seed
+  let seed = config.seed;
+  // Generate random seed if not provided
   if (!seed) {
     seed = crypto.getRandomValues(new Uint8Array(32));
   }
