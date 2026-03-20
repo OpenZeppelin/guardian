@@ -1,0 +1,22 @@
+{
+  "name": "multisig-browser-shared",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@demox-labs/miden-wallet-adapter-base": "^0.10.0",
+    "@getpara/cosmos-wallet-connectors": "^2.15.0",
+    "@getpara/evm-wallet-connectors": "^2.15.0",
+    "@getpara/react-sdk-lite": "^2.2.0",
+    "@getpara/solana-wallet-connectors": "^2.15.0",
+    "@miden-sdk/miden-para": "0.13.0",
+    "@miden-sdk/miden-sdk": "0.13.0",
+    "@miden-sdk/use-miden-para-react": "0.13.0",
+    "@openzeppelin/guardian-client": "file:../../../packages/guardian-client",
+    "@openzeppelin/miden-multisig-client": "file:../../../packages/miden-multisig-client",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2"
+  }
+}
