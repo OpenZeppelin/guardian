@@ -103,6 +103,25 @@ Local ECDSA samples recorded later on March 20, 2026 using isolated Chrome profi
 | `switch-guardian-offline-canary` | `executeProposal` | `4369ms` | high | pass | Fully-signed 2-of-2 offline switch executed directly |
 | `switch-guardian-offline-canary` | Post-switch `sync` with GUARDIAN A down | `355ms` | high | pass | Sync succeeded only after the account switched to GUARDIAN B |
 
+Published-package remote Falcon sample recorded on March 20, 2026 against `https://psm-stg.openzeppelin.com` using Playwright and isolated Chromium profiles.
+
+| Workflow | Operation | Elapsed | Confidence | Outcome | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `browser-baseline` | A bootstrap timeout + recovered `initSession` | `30000ms` + `2347ms` | high | recovered failure | Page bootstrap timed out, explicit `initSession()` recovered |
+| `browser-baseline` | B bootstrap | `2728ms` | high | pass | Clean page-load bootstrap |
+| `browser-baseline` | C `ConstraintError` + recovered `initSession` | `1291ms` + `1765ms` | high | recovered failure | Bootstrap hit IndexedDB duplicate genesis state, explicit `initSession()` recovered |
+| `online-proposal-canary` | `createAccount` | `498ms` | high | pass | 2-of-2 local Falcon account on published npm packages |
+| `online-proposal-canary` | `registerOnGuardian` | `1611ms` | high | pass | Remote GUARDIAN registration on `psm-stg` |
+| `online-proposal-canary` | B `loadAccount` | `1248ms` | high | pass | Loaded A-created account from remote GUARDIAN |
+| `online-proposal-canary` | B initial `sync` | `691ms` | high | pass | Reached registered 2-of-2 state |
+| `online-proposal-canary` | `createProposal(add_signer)` | `974ms` | high | pass | A created add-signer proposal for reserved cosigner C |
+| `online-proposal-canary` | B `signProposal` | `854ms` | high | pass | First signature |
+| `online-proposal-canary` | A `signProposal` | `868ms` | high | pass | Proposal became executable in the 2-of-2 setup |
+| `online-proposal-canary` | `executeProposal` first response | `19856ms` | high | recovered failure | Returned nonce-overwrite error before canonicalization |
+| `online-proposal-canary` | A/B convergence | `9569ms` | high | pass | Existing cosigners converged to the 2-of-3 signer set |
+| `online-proposal-canary` | C `loadAccount + sync` | `2220ms` | high | pass | Newly-added cosigner loaded updated account after canonicalization |
+| `online-proposal-canary` | `verifyStateCommitment` | `534ms` | high | pass | Local and on-chain commitments matched after convergence |
+
 ## Future Samples
 
 Append future runs in the same format. Once at least three clean samples exist for a step under the same network, signer source, and signature scheme, use the median as the working baseline in reports.

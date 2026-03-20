@@ -32,7 +32,7 @@ Default startup choices:
 
 If `3002` is occupied by another local app, start `examples/smoke-web` on a free port and use that exact URL consistently in every browser and automation command.
 
-Default session bootstrap in each browser console:
+Default session bootstrap in each browser console when page-load bootstrap did not already succeed, or when you need to override the defaults:
 
 ```js
 await window.smoke.initSession({
@@ -48,7 +48,7 @@ Record commitments from `await window.smoke.status()`. For local signers, use `s
 
 Use `await window.smoke.events()` as the primary timing source for command durations. Record extra manual timings for wallet modal latency, faucet confirmation, and canonicalization lag.
 
-If page-load bootstrap fails with `ConstraintError: Key already exists in the object store`, record that failure, then retry with an explicit `await window.smoke.initSession(...)` before abandoning the workflow.
+If page-load bootstrap fails with `ConstraintError: Key already exists in the object store`, record that failure, then retry with an explicit `await window.smoke.initSession(...)` before abandoning the workflow. If page-load bootstrap already reached `ready`, avoid an immediate second `initSession()` on that same profile.
 
 ## `browser-baseline`
 
@@ -119,17 +119,22 @@ Steps:
    await window.smoke.sync();
    await window.smoke.signProposal({ proposalId: created.proposal.id });
    ```
-3. In A or B, execute:
+3. In A, sign too. In the default 2-of-2 initial account, both existing cosigners must sign before the add-signer proposal becomes executable:
+   ```js
+   await window.smoke.signProposal({ proposalId: created.proposal.id });
+   ```
+4. In A or B, execute:
    ```js
    await window.smoke.executeProposal({ proposalId: created.proposal.id });
    ```
-4. If execute returns `Refusing to overwrite local state: incoming nonce ... is not greater than local nonce ...`, record the error and keep syncing A and B until the canonicalized 2-of-3 state appears.
-5. In C, load the updated account using the shared `accountId`.
+5. If execute returns `Refusing to overwrite local state: incoming nonce ... is not greater than local nonce ...`, record the error and keep syncing A and B until the canonicalized 2-of-3 state appears.
+6. In C, load the updated account using the shared `accountId`.
 
 Expect:
 
 - proposal creation succeeds in A
 - B can sync, see the proposal, and sign it
+- A also signs before execute in the default 2-of-2 setup; B signing alone is not enough to move the proposal to `ready`
 - execution may return a reportable nonce-overwrite error before server canonicalization finishes; the pass condition is eventual convergence to the updated signer set
 - existing cosigners resync successfully after execute
 - C can load the updated account after canonicalization finishes
