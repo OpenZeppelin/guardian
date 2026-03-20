@@ -108,6 +108,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 ```bash
 curl https://guardian.openzeppelin.com/pubkey
+grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
 ## Operations
@@ -156,7 +157,7 @@ for all available options.
 | ECS Cluster | Fargate cluster derived from `stack_name` |
 | ECS Services | Services derived from `stack_name` |
 | Application Load Balancer | Internet-facing ALB derived from `stack_name` |
-| Target Group | Routes to server on port 3000 |
+| Target Groups | Route HTTPS traffic to server HTTP on port 3000 and gRPC on port 50051 |
 | Cloud Map Namespace | Service discovery namespace derived from `stack_name` |
 | Security Groups | ALB, server, and postgres SGs |
 | CloudWatch Log Groups | Log groups derived from service names |
@@ -168,12 +169,15 @@ for all available options.
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name |
 | `alb_url` | Full URL (http or https) |
+| `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server service ARN |
 
 ## HTTPS Configuration
 
 HTTPS is enabled when `acm_certificate_arn` is set. Cloudflare DNS records are managed only when both `cloudflare_zone_id` and `cloudflare_api_token` are set. Route 53 records are managed only when `route53_zone_id` is set.
+
+When HTTPS is enabled, the ALB also exposes the server gRPC API on the same public hostname over port `443`. Regular HTTP requests continue to route to port `3000`, while gRPC requests for `/guardian.Guardian/*` route to port `50051`.
 
 On Apple Silicon hosts, `CPU_ARCHITECTURE=X86_64` builds are slower because Docker builds `linux/amd64` images under emulation. Switching to `ARM64` avoids that local emulation cost, but it also changes the ECS task definition runtime architecture.
 

@@ -13,6 +13,13 @@ output "custom_domain_url" {
   value       = local.domain_enabled ? "https://${local.service_fqdn}" : ""
 }
 
+output "grpc_endpoint" {
+  description = "Public gRPC endpoint when HTTPS is enabled"
+  value = local.acm_certificate_arn != "" ? (
+    local.domain_enabled ? "https://${local.service_fqdn}" : "https://${aws_lb.main.dns_name}"
+  ) : ""
+}
+
 output "ecs_cluster_arn" {
   description = "ECS cluster ARN"
   value       = aws_ecs_cluster.main.arn

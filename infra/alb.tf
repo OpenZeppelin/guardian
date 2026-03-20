@@ -29,6 +29,27 @@ resource "aws_lb_target_group" "server" {
   }
 }
 
+resource "aws_lb_target_group" "server_grpc" {
+  count = local.acm_certificate_arn != "" ? 1 : 0
+
+  name             = local.grpc_target_group_name
+  port             = 50051
+  protocol         = "HTTP"
+  protocol_version = "GRPC"
+  vpc_id           = local.vpc_id
+  target_type      = "ip"
+
+  health_check {
+    enabled             = true
+    healthy_threshold   = 5
+    unhealthy_threshold = 2
+    timeout             = 5
+    interval            = 30
+    path                = "/guardian.Guardian/GetPubkey"
+    matcher             = "0"
+  }
+}
+
 # HTTP listener (always created)
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
@@ -76,5 +97,23 @@ resource "aws_lb_listener" "https" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.server.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "https_grpc" {
+  count = local.acm_certificate_arn != "" ? 1 : 0
+
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.server_grpc[0].arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/guardian.Guardian/*"]
+    }
   }
 }

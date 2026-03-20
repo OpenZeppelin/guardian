@@ -11,13 +11,13 @@ This directory contains Terraform configuration to deploy the Guardian server to
 ## Architecture
 
 ```
-Internet → ALB (HTTP/HTTPS) → ECS Service (server) → Cloud Map → ECS Service (postgres)
+Internet → ALB (HTTP/HTTPS + gRPC over HTTPS) → ECS Service (server) → Cloud Map → ECS Service (postgres)
 ```
 
 Resources created:
 - ECS Cluster (Fargate)
 - ECS Services derived from `stack_name` (for example `guardian-server`, `guardian-postgres`, `psm-server`, `psm-postgres`)
-- Application Load Balancer + Target Group + Listener
+- Application Load Balancer + HTTP target group + gRPC target group + listener rules
 - Cloud Map namespace for service discovery
 - Security Groups (ALB, server, postgres)
 - CloudWatch Log Groups
@@ -120,6 +120,9 @@ curl http://$ALB_DNS/pubkey
 
 # Custom domain (requires Route 53 hosted zone for openzeppelin.com)
 curl https://guardian.openzeppelin.com/pubkey
+
+# Public gRPC (requires HTTPS/certificate)
+grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
 ### 6. Destroy
@@ -164,6 +167,7 @@ aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS
 | `alb_dns_name` | ALB DNS name for accessing the server |
 | `alb_url` | Full URL (http or https) |
 | `custom_domain_url` | Custom domain URL when configured |
+| `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
 | `postgres_service_arn` | Postgres ECS service ARN |
@@ -174,5 +178,7 @@ aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS
 ## HTTPS Configuration
 
 HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. In the current `psm-stg` deployment, Terraform state shows Cloudflare DNS management and no Route 53 record.
+
+When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP port `3000` and gRPC requests for `/guardian.Guardian/*` to the server gRPC port `50051`. The public gRPC endpoint uses the same hostname on port `443`.
 
 On Apple Silicon hosts, building `X86_64` images is slower because Docker builds `linux/amd64` images under emulation. If you want faster native local builds and your ECS deployment can run ARM64, set `cpu_architecture = "ARM64"` and deploy an ARM64 task definition.

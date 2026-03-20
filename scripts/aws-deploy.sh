@@ -389,9 +389,11 @@ cmd_deploy() {
   local ALB_DNS
   local HTTPS_URL
   local CUSTOM_DOMAIN_URL
+  local GRPC_ENDPOINT
   ALB_URL=$(terraform -chdir="$TF_DIR" output -raw alb_url 2>/dev/null || true)
   ALB_DNS=$(terraform -chdir="$TF_DIR" output -raw alb_dns_name 2>/dev/null || true)
   CUSTOM_DOMAIN_URL=$(terraform -chdir="$TF_DIR" output -raw custom_domain_url 2>/dev/null || true)
+  GRPC_ENDPOINT=$(terraform -chdir="$TF_DIR" output -raw grpc_endpoint 2>/dev/null || true)
   if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
     HTTPS_URL="https://${ALB_DNS}"
   fi
@@ -407,9 +409,15 @@ cmd_deploy() {
     if [ -n "$CUSTOM_DOMAIN_URL" ]; then
       echo "  Custom domain: ${CUSTOM_DOMAIN_URL}"
     fi
+    if [ -n "$GRPC_ENDPOINT" ]; then
+      echo "  gRPC endpoint: ${GRPC_ENDPOINT}"
+    fi
     echo ""
     echo "  Health check: curl ${ALB_URL}/"
     echo "  Public key:   curl ${ALB_URL}/pubkey"
+    if [ -n "$GRPC_ENDPOINT" ]; then
+      echo "  gRPC check:   grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${GRPC_ENDPOINT#https://}:443 guardian.Guardian/GetPubkey"
+    fi
   fi
   echo ""
 }

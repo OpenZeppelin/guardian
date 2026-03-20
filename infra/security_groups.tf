@@ -46,13 +46,13 @@ resource "aws_security_group" "server" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # gRPC from anywhere (public)
+  # gRPC from ALB
   ingress {
-    description = "gRPC from anywhere"
-    from_port   = 50051
-    to_port     = 50051
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "gRPC from ALB"
+    from_port       = 50051
+    to_port         = 50051
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   egress {

@@ -166,8 +166,20 @@ resource "aws_ecs_service" "server" {
     container_port   = 3000
   }
 
+  dynamic "load_balancer" {
+    for_each = local.acm_certificate_arn != "" ? [1] : []
+
+    content {
+      target_group_arn = aws_lb_target_group.server_grpc[0].arn
+      container_name   = local.server_container_name
+      container_port   = 50051
+    }
+  }
+
   depends_on = [
     aws_lb_listener.http,
+    aws_lb_listener.https,
+    aws_lb_listener_rule.https_grpc,
     aws_ecs_service.postgres
   ]
 }

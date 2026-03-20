@@ -34,6 +34,7 @@ locals {
   alb_name                     = var.alb_name != "" ? var.alb_name : "${var.stack_name}-alb"
   sd_namespace_name            = var.sd_namespace_name != "" ? var.sd_namespace_name : "${var.stack_name}.local"
   target_group_name            = var.target_group_name != "" ? var.target_group_name : "${var.stack_name}-server-tg"
+  grpc_target_group_name       = "${var.stack_name}-grpc-tg"
   alb_security_group_name      = var.alb_security_group_name != "" ? var.alb_security_group_name : "${var.stack_name}-alb-sg"
   server_security_group_name   = var.server_security_group_name != "" ? var.server_security_group_name : "${var.stack_name}-server-sg"
   postgres_security_group_name = var.postgres_security_group_name != "" ? var.postgres_security_group_name : "${var.stack_name}-postgres-sg"
