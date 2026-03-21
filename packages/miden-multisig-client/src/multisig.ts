@@ -866,24 +866,75 @@ export class Multisig {
     return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
   }
 
+  async createTransactionProposalRequest(proposalId: string): Promise<TransactionRequest> {
+    const { finalRequest } = await this.prepareProposalExecution(proposalId);
+    return finalRequest;
+  }
+
   /**
    * Execute a proposal that has enough signatures.
    *
    * @param proposalId - The proposal commitment/ID
    */
   async executeProposal(proposalId: string): Promise<void> {
-    const proposal = this.proposals.get(proposalId);
+    const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
+
+    const accountId = AccountId.fromHex(this._accountId);
+    const result = await this.webClient.executeTransaction(accountId, finalRequest);
+    const proven = await this.webClient.proveTransaction(result, null);
+    const submissionHeight = await this.webClient.submitProvenTransaction(proven, result);
+    await this.webClient.applyTransaction(result, submissionHeight);
+
+    if (metadata.proposalType === 'switch_guardian') {
+      if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
+        throw new Error('Switch GUARDIAN proposal metadata is incomplete after execution');
+      }
+
+      try {
+        await this.webClient.syncState();
+
+        const updatedAccount = await this.webClient.getAccount(accountId);
+        if (!updatedAccount) {
+          throw new Error(
+            `Updated account ${this._accountId} is missing from local client`
+          );
+        }
+
+        const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
+        const nextGuardian = new GuardianHttpClient(metadata.newGuardianEndpoint);
+        this.setGuardianClient(nextGuardian);
+        this.guardianPublicKey = metadata.newGuardianPubkey;
+
+        await this.registerOnGuardian(updatedStateBase64);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Transaction executed successfully but failed to register on new GUARDIAN: ${message}`
+        );
+      }
+    }
+
+    proposal.status = 'finalized';
+  }
+
+  private getLocalProposal(proposalId: string): Proposal | undefined {
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
+  }
+
+  private async prepareProposalExecution(
+    proposalId: string,
+  ): Promise<{ finalRequest: TransactionRequest; metadata: ProposalMetadata; proposal: Proposal }> {
+    const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
 
+    this.proposalFactory().assertAccountId(proposal.accountId);
     await this.verifyProposalMetadataBinding(proposal);
 
-    const proposalType = proposal.metadata?.proposalType;
-    const effectiveThreshold = proposalType
-      ? this.getEffectiveThreshold(proposalType)
-      : this.threshold;
-
+    const metadata = proposal.metadata;
+    const effectiveThreshold = this.getEffectiveThreshold(metadata.proposalType);
     const signatureContext = `Invalid proposal signatures for ${proposalId}`;
     const signaturesForExecution = new ProposalSignatures(
       proposal.signatures,
@@ -895,7 +946,8 @@ export class Multisig {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
-    const isSwitchGuardian = proposalType === 'switch_guardian';
+    const isSwitchGuardian = metadata.proposalType === 'switch_guardian';
+    const normalizedProposalId = normalizeHexWord(proposal.id);
 
     let txSummaryBase64: string;
     let delta: DeltaObject | undefined;
@@ -903,7 +955,7 @@ export class Multisig {
     if (isSwitchGuardian) {
       txSummaryBase64 = proposal.txSummary;
     } else {
-      delta = await this.guardian.getDeltaProposal(this._accountId, proposalId);
+      delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
       txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
 
@@ -911,12 +963,13 @@ export class Multisig {
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
     const saltHex = txSummary.salt().toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
+    const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(
       this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
     );
-
     const adviceMap = new AdviceMap();
     const adviceMapKeys = new Set<string>();
+    const createTxCommitmentWord = (): Word => Word.fromHex(normalizedTxCommitmentHex);
 
     for (const cosignerSig of signaturesForExecution) {
       let signerCommitmentHex = normalizeHexWord(cosignerSig.signerId);
@@ -949,10 +1002,9 @@ export class Multisig {
         cosignerSig.signature.scheme,
       );
       const signature = Signature.deserialize(sigBytes);
-      const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
-        txCommitment,
+        createTxCommitmentWord(),
         signature,
         ecdsaPublicKey,
         cosignerSig.signature.scheme === 'ecdsa'
@@ -993,10 +1045,9 @@ export class Multisig {
       }
       const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
       const ackSignature = Signature.deserialize(ackSigBytes);
-      const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
       const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
         guardianCommitment,
-        txCommitmentForAck,
+        createTxCommitmentWord(),
         ackSignature,
         ackScheme === 'ecdsa' ? ackPubkey : undefined,
         ackScheme === 'ecdsa' ? ackSigHex : undefined,
@@ -1009,13 +1060,10 @@ export class Multisig {
       adviceMap.insert(ackKey, new FeltArray(ackValues));
     }
 
-    const metadata = proposal.metadata;
-    if (!metadata) {
-      throw new Error('Proposal missing metadata');
-    }
     if (metadata.proposalType === 'switch_guardian') {
       await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
     }
+
     const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
     const finalRequest = await this.buildTransactionRequestFromMetadata(
       metadata,
@@ -1023,42 +1071,7 @@ export class Multisig {
       adviceMap,
     );
 
-    const accountId = AccountId.fromHex(this._accountId);
-    const result = await this.webClient.executeTransaction(accountId, finalRequest);
-    const proven = await this.webClient.proveTransaction(result, null);
-    const submissionHeight = await this.webClient.submitProvenTransaction(proven, result);
-    await this.webClient.applyTransaction(result, submissionHeight);
-
-    if (metadata.proposalType === 'switch_guardian') {
-      if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
-        throw new Error('Switch GUARDIAN proposal metadata is incomplete after execution');
-      }
-
-      try {
-        await this.webClient.syncState();
-
-        const updatedAccount = await this.webClient.getAccount(accountId);
-        if (!updatedAccount) {
-          throw new Error(
-            `Updated account ${this._accountId} is missing from local client`
-          );
-        }
-
-        const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
-        const nextGuardian = new GuardianHttpClient(metadata.newGuardianEndpoint);
-        this.setGuardianClient(nextGuardian);
-        this.guardianPublicKey = metadata.newGuardianPubkey;
-
-        await this.registerOnGuardian(updatedStateBase64);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Transaction executed successfully but failed to register on new GUARDIAN: ${message}`
-        );
-      }
-    }
-
-    proposal.status = 'finalized';
+    return { finalRequest, metadata, proposal };
   }
 
   /**
