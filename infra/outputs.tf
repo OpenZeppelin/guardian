@@ -20,6 +20,81 @@ output "grpc_endpoint" {
   ) : ""
 }
 
+output "database_endpoint" {
+  description = "Database endpoint used by the Guardian server"
+  value       = local.database_endpoint
+}
+
+output "direct_database_endpoint" {
+  description = "Direct RDS instance endpoint"
+  value       = local.direct_database_endpoint
+}
+
+output "rds_proxy_endpoint" {
+  description = "RDS Proxy endpoint when enabled"
+  value       = local.database_proxy_endpoint
+}
+
+output "rds_proxy_enabled" {
+  description = "Whether RDS Proxy is enabled"
+  value       = local.effective_rds_proxy_enabled
+}
+
+output "rds_max_allocated_storage" {
+  description = "Configured maximum allocated RDS storage for storage autoscaling"
+  value       = local.effective_rds_max_allocated_storage
+}
+
+output "database_url_secret_arn" {
+  description = "Secrets Manager ARN for the server database URL"
+  value       = aws_secretsmanager_secret.database_url.arn
+}
+
+output "deployment_stage" {
+  description = "Active deployment stage"
+  value       = local.stage_name
+}
+
+output "server_desired_count" {
+  description = "Configured ECS service desired task count"
+  value       = local.effective_server_desired_count
+}
+
+output "server_autoscaling_enabled" {
+  description = "Whether ECS service autoscaling is enabled"
+  value       = local.effective_server_autoscaling_enabled
+}
+
+output "server_autoscaling_min_capacity" {
+  description = "Configured ECS service autoscaling minimum task count"
+  value       = local.effective_server_autoscaling_min_capacity
+}
+
+output "server_autoscaling_max_capacity" {
+  description = "Configured ECS service autoscaling maximum task count"
+  value       = local.effective_server_autoscaling_max_capacity
+}
+
+output "guardian_rate_burst_per_sec" {
+  description = "Effective Guardian HTTP burst rate limit"
+  value       = local.effective_guardian_rate_burst_per_sec
+}
+
+output "guardian_rate_per_min" {
+  description = "Effective Guardian HTTP sustained rate limit"
+  value       = local.effective_guardian_rate_per_min
+}
+
+output "guardian_db_pool_max_size" {
+  description = "Effective Guardian storage DB pool maximum size"
+  value       = local.effective_guardian_db_pool_max_size
+}
+
+output "guardian_metadata_db_pool_max_size" {
+  description = "Effective Guardian metadata DB pool maximum size"
+  value       = local.effective_guardian_metadata_db_pool_max_size
+}
+
 output "ecs_cluster_arn" {
   description = "ECS cluster ARN"
   value       = aws_ecs_cluster.main.arn
@@ -40,16 +115,6 @@ output "server_service_name" {
   value       = aws_ecs_service.server.name
 }
 
-output "postgres_service_arn" {
-  description = "Postgres ECS service ARN"
-  value       = aws_ecs_service.postgres.id
-}
-
-output "postgres_service_name" {
-  description = "Postgres ECS service name"
-  value       = aws_ecs_service.postgres.name
-}
-
 output "server_log_group" {
   description = "CloudWatch log group for server"
   value       = aws_cloudwatch_log_group.server.name
@@ -58,9 +123,4 @@ output "server_log_group" {
 output "cluster_log_group" {
   description = "CloudWatch log group for ECS execute command"
   value       = aws_cloudwatch_log_group.cluster.name
-}
-
-output "postgres_log_group" {
-  description = "CloudWatch log group for postgres"
-  value       = aws_cloudwatch_log_group.postgres.name
 }

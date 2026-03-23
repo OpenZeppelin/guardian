@@ -1,6 +1,6 @@
 ---
 name: deploy-guardian-aws
-description: Deploy, update, inspect, and troubleshoot the repository AWS ECS environment using `scripts/aws-deploy.sh` and Terraform in `infra/`. Use when Codex needs to verify AWS auth, run the repo deploy script, reason about ECR, ECS, ALB, CloudWatch, Route 53, ACM, or Cloudflare deployment variables before changing infrastructure.
+description: Deploy, update, inspect, and troubleshoot the repository AWS ECS environment using `scripts/aws-deploy.sh` and Terraform in `infra/`. Use when Codex needs to verify AWS auth, run the repo deploy script, reason about ECR, ECS, ALB, CloudWatch, RDS, Secrets Manager, Route 53, ACM, or Cloudflare deployment variables before changing infrastructure.
 ---
 
 # Deploy AWS Stack
@@ -44,6 +44,13 @@ Trust these sources in this order:
 
 Prefer the deploy script over raw `terraform apply` and `terraform destroy` unless the task is explicitly about Terraform debugging or plan inspection.
 
+## Current Deployment Model
+
+- The AWS stack is RDS-backed. There is no supported `database_mode` or legacy ECS Postgres path anymore.
+- `./scripts/aws-deploy.sh deploy` provisions or updates the ECS server service, the RDS instance, and the Secrets Manager `DATABASE_URL` wiring together.
+- Do not tell the user to preserve or re-enable the retired Postgres ECS or Cloud Map resources.
+- If the task involves an old stack that still has ECS-hosted Postgres data, treat it as an operator-managed cutover outside the steady-state Terraform design.
+
 ## Variable Discipline
 
 Use the deploy script env vars for the normal workflow:
@@ -51,6 +58,7 @@ Use the deploy script env vars for the normal workflow:
 - `AWS_REGION`
 - `CPU_ARCHITECTURE`
 - `STACK_NAME`
+- `DEPLOY_STAGE`
 - `DOMAIN_NAME`
 - `SUBDOMAIN`
 - `ACM_CERTIFICATE_ARN`
@@ -59,26 +67,44 @@ Use the deploy script env vars for the normal workflow:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_PROXIED`
 - `GUARDIAN_NETWORK_TYPE`
-- `IMPORT_EXISTING`
 
 Use `TF_VAR_*` only for Terraform variables that the script does not map directly, such as:
 
 - `TF_VAR_cluster_name`
 - `TF_VAR_server_service_name`
-- `TF_VAR_postgres_service_name`
 - `TF_VAR_alb_name`
-- `TF_VAR_sd_namespace_name`
 - `TF_VAR_vpc_id`
 - `TF_VAR_subnet_ids`
 - `TF_VAR_postgres_db`
 - `TF_VAR_postgres_user`
 - `TF_VAR_postgres_password`
+- `TF_VAR_rds_instance_class`
+- `TF_VAR_rds_allocated_storage`
+- `TF_VAR_rds_max_allocated_storage`
+- `TF_VAR_rds_engine_version`
+- `TF_VAR_rds_backup_retention_days`
+- `TF_VAR_rds_deletion_protection`
+- `TF_VAR_rds_skip_final_snapshot`
+- `TF_VAR_rds_publicly_accessible`
+- `TF_VAR_rds_proxy_enabled`
+- `TF_VAR_server_desired_count`
+- `TF_VAR_server_autoscaling_enabled`
+- `TF_VAR_server_autoscaling_min_capacity`
+- `TF_VAR_server_autoscaling_max_capacity`
+- `TF_VAR_server_autoscaling_cpu_target`
+- `TF_VAR_server_autoscaling_memory_target`
+- `TF_VAR_guardian_rate_burst_per_sec`
+- `TF_VAR_guardian_rate_per_min`
+- `TF_VAR_guardian_db_pool_max_size`
+- `TF_VAR_guardian_metadata_db_pool_max_size`
 - `TF_VAR_alb_ingress_cidrs`
 - `TF_VAR_log_retention_days`
 
 Treat these as stale or conditional:
 
 - legacy network env naming is stale; use `GUARDIAN_NETWORK_TYPE`
+- `DEPLOY_STAGE=dev` keeps the stack close to the current fixed-capacity profile
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, and benchmark-oriented runtime defaults
 - `CPU_ARCHITECTURE=X86_64` preserves the current amd64 deployment behavior
 - `CPU_ARCHITECTURE=ARM64` is the native build path on Apple Silicon and usually much faster locally, but it changes the ECS task definition runtime architecture too
 - set `STACK_NAME` only when the deployment should preserve non-default resource names
@@ -86,6 +112,8 @@ Treat these as stale or conditional:
 - `STS_CMD` is only a temporary shell helper and can be unset after exporting credentials
 - `CLOUDFLARE_ZONE_ID` without `CLOUDFLARE_API_TOKEN` is invalid for Terraform-managed Cloudflare DNS
 - `ROUTE53_ZONE_ID` is only needed if Terraform should create the AWS Route 53 record; current Terraform does not auto-discover the zone
+- `DATABASE_MODE` is stale and should not appear in commands or advice
+- old ECS Postgres naming overrides such as `TF_VAR_postgres_service_name`, `TF_VAR_sd_namespace_name`, `TF_VAR_postgres_task_family`, and `TF_VAR_postgres_log_group_name` are stale and should not be used
 
 ## Validation
 
@@ -93,6 +121,9 @@ After every deploy:
 
 - run `./scripts/aws-deploy.sh status`
 - verify the root URL and `/pubkey`
+- verify the gRPC endpoint when HTTPS is enabled
+- note the RDS endpoint and `database_url_secret_arn`
+- note whether the server is using direct RDS or the RDS Proxy endpoint
 - note whether the active URL is the ALB DNS name or the custom domain
 - record the AWS account, region, network type, and DNS mode used
 

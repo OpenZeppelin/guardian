@@ -66,12 +66,31 @@ resource "aws_ecs_task_definition" "server" {
           value = "info"
         },
         {
-          name  = "DATABASE_URL"
-          value = local.database_url
-        },
-        {
           name  = "GUARDIAN_NETWORK_TYPE"
           value = var.server_network_type
+        },
+        {
+          name  = "GUARDIAN_RATE_BURST_PER_SEC"
+          value = tostring(local.effective_guardian_rate_burst_per_sec)
+        },
+        {
+          name  = "GUARDIAN_RATE_PER_MIN"
+          value = tostring(local.effective_guardian_rate_per_min)
+        },
+        {
+          name  = "GUARDIAN_DB_POOL_MAX_SIZE"
+          value = tostring(local.effective_guardian_db_pool_max_size)
+        },
+        {
+          name  = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE"
+          value = tostring(local.effective_guardian_metadata_db_pool_max_size)
+        }
+      ]
+
+      secrets = [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = aws_secretsmanager_secret.database_url.arn
         }
       ]
 
@@ -87,67 +106,12 @@ resource "aws_ecs_task_definition" "server" {
   ])
 }
 
-# Postgres task definition
-resource "aws_ecs_task_definition" "postgres" {
-  family                   = local.postgres_task_family
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = var.postgres_cpu
-  memory                   = var.postgres_memory
-  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
-
-  runtime_platform {
-    cpu_architecture        = var.cpu_architecture
-    operating_system_family = "LINUX"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name      = local.postgres_service_name
-      image     = "postgres:16-alpine"
-      essential = true
-
-      portMappings = [
-        {
-          containerPort = 5432
-          protocol      = "tcp"
-        }
-      ]
-
-      environment = [
-        {
-          name  = "POSTGRES_USER"
-          value = local.postgres_user
-        },
-        {
-          name  = "POSTGRES_PASSWORD"
-          value = local.postgres_password
-        },
-        {
-          name  = "POSTGRES_DB"
-          value = local.postgres_db
-        }
-      ]
-
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.postgres.name
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "ecs"
-        }
-      }
-    }
-  ])
-}
-
 # Server ECS service
 resource "aws_ecs_service" "server" {
   name                   = local.server_service_name
   cluster                = aws_ecs_cluster.main.id
   task_definition        = aws_ecs_task_definition.server.arn
-  desired_count          = 1
+  desired_count          = local.effective_server_desired_count
   launch_type            = "FARGATE"
   platform_version       = "LATEST"
   enable_execute_command = true
@@ -155,7 +119,7 @@ resource "aws_ecs_service" "server" {
   health_check_grace_period_seconds = 30
 
   network_configuration {
-    subnets          = [local.primary_subnet_id]
+    subnets          = local.subnet_ids
     security_groups  = [aws_security_group.server.id]
     assign_public_ip = true
   }
@@ -180,29 +144,6 @@ resource "aws_ecs_service" "server" {
     aws_lb_listener.http,
     aws_lb_listener.https,
     aws_lb_listener_rule.https_grpc,
-    aws_ecs_service.postgres
+    aws_secretsmanager_secret_version.database_url
   ]
-}
-
-# Postgres ECS service
-resource "aws_ecs_service" "postgres" {
-  name                   = local.postgres_service_name
-  cluster                = aws_ecs_cluster.main.id
-  task_definition        = aws_ecs_task_definition.postgres.arn
-  desired_count          = 1
-  launch_type            = "FARGATE"
-  platform_version       = "LATEST"
-  enable_execute_command = true
-
-  network_configuration {
-    subnets          = [local.primary_subnet_id]
-    security_groups  = [aws_security_group.postgres.id]
-    assign_public_ip = true
-  }
-
-  service_registries {
-    registry_arn = aws_service_discovery_service.postgres.arn
-  }
-
-  depends_on = [aws_service_discovery_service.postgres]
 }

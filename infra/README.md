@@ -1,59 +1,52 @@
 # GUARDIAN Server AWS Infrastructure (Terraform)
 
-This directory contains Terraform configuration to deploy the Guardian server to AWS ECS with Fargate, behind an Application Load Balancer.
+This directory contains the Terraform configuration for the current Guardian AWS deployment: ECS/Fargate behind an ALB, backed by Amazon RDS for PostgreSQL.
 
-## Prerequisites
-
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
-- AWS CLI configured with appropriate permissions
-- Docker image already pushed to ECR (see below)
+The deployment is stage-aware:
+- `deployment_stage = "dev"` keeps the stack close to the current fixed-capacity profile
+- `deployment_stage = "prod"` enables ECS autoscaling, RDS storage autoscaling, and RDS Proxy
 
 ## Architecture
 
-```
-Internet → ALB (HTTP/HTTPS + gRPC over HTTPS) → ECS Service (server) → Cloud Map → ECS Service (postgres)
+```text
+Internet → ALB (HTTP/HTTPS + gRPC over HTTPS) → ECS Service (server) → RDS PostgreSQL
 ```
 
 Resources created:
 - ECS Cluster (Fargate)
-- ECS Services derived from `stack_name` (for example `guardian-server`, `guardian-postgres`, `psm-server`, `psm-postgres`)
-- Application Load Balancer + HTTP target group + gRPC target group + listener rules
-- Cloud Map namespace for service discovery
-- Security Groups (ALB, server, postgres)
-- CloudWatch Log Groups
-- IAM Role for ECS task execution
+- ECS service derived from `stack_name` for the Guardian server
+- Application Load Balancer with HTTP and gRPC target groups
+- RDS PostgreSQL instance and subnet group
+- Secrets Manager secret for `DATABASE_URL`
+- Security groups for the ALB, server task, and database
+- CloudWatch log groups
+- IAM roles for ECS task execution and runtime
 
 ## Usage
 
-### 1. Build and Push Docker Image
-
-Before running Terraform, build and push the Docker image to ECR:
+### 1. Build And Push Docker Image
 
 ```bash
-# Set variables
 export AWS_REGION=us-east-1
 export CPU_ARCHITECTURE=X86_64
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-# Create ECR repository (if it doesn't exist)
 export STACK_NAME=guardian
 export ECR_REPO_NAME="${STACK_NAME}-server"
 
-aws ecr create-repository --repository-name $ECR_REPO_NAME --region $AWS_REGION 2>/dev/null || true
+aws ecr create-repository --repository-name "$ECR_REPO_NAME" --region "$AWS_REGION" 2>/dev/null || true
 
-# Login to ECR
-aws ecr get-login-password --region $AWS_REGION | \
-  docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-# Build and push (from repo root)
-docker build --platform linux/amd64 -t $ECR_REPO_NAME .
-docker tag $ECR_REPO_NAME:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:latest
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:latest
+docker build --platform linux/amd64 -t "$ECR_REPO_NAME" .
+docker tag "$ECR_REPO_NAME:latest" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:latest"
+docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:latest"
 ```
 
 ### 2. Configure Variables
 
-Create a `terraform.tfvars` file:
+Create `terraform.tfvars`:
 
 ```hcl
 aws_region = "us-east-1"
@@ -65,20 +58,38 @@ aws_region = "us-east-1"
 # Optional: stack base name
 # stack_name = "guardian"
 
-# Required: ECR image URI
+# Optional: deployment profile
+# deployment_stage = "dev"
+# deployment_stage = "prod"
+
 server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
 
-# Optional: Use specific VPC/subnets (defaults to default VPC)
+# Optional: Use specific VPC/subnets
 # vpc_id     = "vpc-xxxxxxxx"
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 
 # Optional: Postgres credentials
-# Defaults derive from stack_name when omitted.
 # postgres_db       = "guardian"
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
 
-# Optional: Route 53 hosted zone ID for openzeppelin.com
+# Optional: RDS sizing
+# rds_instance_class = "db.t3.micro"
+# rds_allocated_storage = 20
+# rds_max_allocated_storage = 100
+# rds_proxy_enabled = true
+
+# Optional: stage/runtime capacity overrides
+# server_desired_count = 2
+# server_autoscaling_enabled = true
+# server_autoscaling_min_capacity = 2
+# server_autoscaling_max_capacity = 6
+# guardian_rate_burst_per_sec = 200
+# guardian_rate_per_min = 5000
+# guardian_db_pool_max_size = 32
+# guardian_metadata_db_pool_max_size = 32
+
+# Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
 ```
 
@@ -86,24 +97,15 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 ```bash
 cd infra
-
-# Initialize Terraform
 terraform init
-
-# Review the plan
 terraform plan
-
-# Apply changes
 terraform apply
 ```
 
 ### 4. Get Outputs
 
 ```bash
-# Get the ALB DNS name
 terraform output alb_dns_name
-
-# Get all outputs
 terraform output
 ```
 
@@ -112,16 +114,9 @@ terraform output
 ```bash
 ALB_DNS=$(terraform output -raw alb_dns_name)
 
-# Health check
-curl http://$ALB_DNS/
-
-# Get public key
-curl http://$ALB_DNS/pubkey
-
-# Custom domain (requires Route 53 hosted zone for openzeppelin.com)
-curl https://guardian.openzeppelin.com/pubkey
-
-# Public gRPC (requires HTTPS/certificate)
+curl "http://$ALB_DNS/"
+curl "http://$ALB_DNS/pubkey"
+curl "https://guardian.openzeppelin.com/pubkey"
 grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
@@ -131,10 +126,10 @@ grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardi
 terraform destroy
 ```
 
-Note: ECR repository is not managed by Terraform to avoid accidental image deletion. Delete manually if needed:
+ECR repositories are not managed by Terraform:
 
 ```bash
-aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS_REGION
+aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$AWS_REGION"
 ```
 
 ## Variables Reference
@@ -144,20 +139,29 @@ aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS
 | `aws_region` | `us-east-1` | AWS region |
 | `cpu_architecture` | `X86_64` | ECS task and image architecture |
 | `stack_name` | `guardian` | Base name used to derive stack resource names |
+| `deployment_stage` | `dev` | Deployment stage profile |
 | `server_image_uri` | (required) | ECR image URI for the server |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `postgres_db` | `guardian` | Postgres database name |
 | `postgres_user` | `guardian` | Postgres username |
 | `postgres_password` | `guardian_dev_password` | Postgres password |
+| `rds_instance_class` | `db.t3.micro` | RDS instance class |
+| `rds_allocated_storage` | `20` | RDS allocated storage in GiB |
+| `rds_max_allocated_storage` | `null` in dev, `100` in prod | RDS storage autoscaling ceiling |
+| `rds_proxy_enabled` | `false` in dev, `true` in prod | Whether RDS Proxy is enabled |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
 | `subdomain` | `guardian` | Subdomain for HTTPS endpoint |
 | `route53_zone_id` | `""` | Route 53 hosted zone ID for the domain |
 | `alb_ingress_cidrs` | `["0.0.0.0/0"]` | CIDR blocks allowed to reach the ALB |
 | `server_cpu` | `512` | Server task CPU units |
 | `server_memory` | `1024` | Server task memory (MB) |
-| `postgres_cpu` | `512` | Postgres task CPU units |
-| `postgres_memory` | `1024` | Postgres task memory (MB) |
+| `server_desired_count` | `1` in dev, `2` in prod | ECS service desired task count |
+| `server_autoscaling_enabled` | `false` in dev, `true` in prod | Whether ECS autoscaling is enabled |
+| `guardian_rate_burst_per_sec` | `10` in dev, `200` in prod | Guardian HTTP burst limit |
+| `guardian_rate_per_min` | `60` in dev, `5000` in prod | Guardian HTTP sustained limit |
+| `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
+| `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
 
 ## Outputs
@@ -168,17 +172,53 @@ aws ecr delete-repository --repository-name $ECR_REPO_NAME --force --region $AWS
 | `alb_url` | Full URL (http or https) |
 | `custom_domain_url` | Custom domain URL when configured |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
+| `database_endpoint` | RDS endpoint used by the server |
+| `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
+| `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
-| `postgres_service_arn` | Postgres ECS service ARN |
-| `server_log_group` | CloudWatch log group for server |
+| `server_log_group` | CloudWatch log group for the server |
 | `cluster_log_group` | CloudWatch log group for ECS execute command |
-| `postgres_log_group` | CloudWatch log group for postgres |
+
+## Stage Profiles
+
+### Dev
+
+- single ECS task
+- direct ECS to RDS connectivity
+- no ECS autoscaling
+- no RDS Proxy
+- conservative runtime rate limits and DB pool sizes
+
+### Prod
+
+- higher ECS desired count
+- ECS target-tracking autoscaling
+- RDS storage autoscaling
+- RDS Proxy between ECS and RDS
+- higher runtime rate limits and DB pool sizes for benchmark traffic
 
 ## HTTPS Configuration
 
-HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. In the current `psm-stg` deployment, Terraform state shows Cloudflare DNS management and no Route 53 record.
+HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. In the current `guardian-stg` deployment, Terraform state shows Cloudflare DNS management and no Route 53 record.
 
 When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP port `3000` and gRPC requests for `/guardian.Guardian/*` to the server gRPC port `50051`. The public gRPC endpoint uses the same hostname on port `443`.
 
 On Apple Silicon hosts, building `X86_64` images is slower because Docker builds `linux/amd64` images under emulation. If you want faster native local builds and your ECS deployment can run ARM64, set `cpu_architecture = "ARM64"` and deploy an ARM64 task definition.
+
+## Existing Stack Cutover
+
+This Terraform stack is RDS-only. Existing stacks that still run ECS-hosted Postgres must be migrated with an explicit backup-and-restore cutover:
+
+1. Capture the current outputs with `terraform output` or `./scripts/aws-deploy.sh status`.
+2. Create a logical backup from the existing Postgres runtime before applying the updated stack.
+3. Apply the updated Terraform stack so the server is wired to RDS.
+4. Restore the backup into the RDS database.
+5. Validate the public Guardian endpoints.
+6. Confirm the old Postgres ECS and Cloud Map resources are gone from AWS before considering the cutover complete.
+
+## Troubleshooting
+
+- If the server task does not start, inspect the server log group and confirm the `database_endpoint` output points to the expected RDS host.
+- If RDS subnet-group creation fails, verify the selected subnets cover at least two subnets for the database deployment.
+- If gRPC works against the ALB but not the public hostname, check Cloudflare gRPC settings.

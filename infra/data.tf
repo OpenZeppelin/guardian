@@ -24,37 +24,54 @@ data "aws_vpc" "selected" {
 locals {
   vpc_id     = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
   subnet_ids = length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.default[0].ids
-  # Use the first subnet for single-task services (postgres)
-  primary_subnet_id = local.subnet_ids[0]
-  vpc_cidr          = data.aws_vpc.selected.cidr_block
+  vpc_cidr   = data.aws_vpc.selected.cidr_block
+  is_prod    = var.deployment_stage == "prod"
+  stage_name = var.deployment_stage
 
-  cluster_name                 = var.cluster_name != "" ? var.cluster_name : "${var.stack_name}-cluster"
-  server_service_name          = var.server_service_name != "" ? var.server_service_name : "${var.stack_name}-server"
-  postgres_service_name        = var.postgres_service_name != "" ? var.postgres_service_name : "${var.stack_name}-postgres"
-  alb_name                     = var.alb_name != "" ? var.alb_name : "${var.stack_name}-alb"
-  sd_namespace_name            = var.sd_namespace_name != "" ? var.sd_namespace_name : "${var.stack_name}.local"
-  target_group_name            = var.target_group_name != "" ? var.target_group_name : "${var.stack_name}-server-tg"
-  grpc_target_group_name       = "${var.stack_name}-grpc-tg"
-  alb_security_group_name      = var.alb_security_group_name != "" ? var.alb_security_group_name : "${var.stack_name}-alb-sg"
-  server_security_group_name   = var.server_security_group_name != "" ? var.server_security_group_name : "${var.stack_name}-server-sg"
-  postgres_security_group_name = var.postgres_security_group_name != "" ? var.postgres_security_group_name : "${var.stack_name}-postgres-sg"
-  task_execution_role_name     = var.task_execution_role_name != "" ? var.task_execution_role_name : "${var.stack_name}-ecs-task-execution"
-  task_role_name               = var.task_role_name != "" ? var.task_role_name : "${var.stack_name}-ecs-task"
-  server_task_family           = var.server_task_family != "" ? var.server_task_family : "${var.stack_name}-server"
-  postgres_task_family         = var.postgres_task_family != "" ? var.postgres_task_family : "${var.stack_name}-postgres"
-  server_container_name        = var.server_container_name != "" ? var.server_container_name : "${var.stack_name}-server"
-  server_log_group_name        = var.server_log_group_name != "" ? var.server_log_group_name : "/ecs/${local.server_service_name}"
-  postgres_log_group_name      = var.postgres_log_group_name != "" ? var.postgres_log_group_name : "/ecs/${local.postgres_service_name}"
-  cluster_log_group_name       = "/aws/ecs/${local.cluster_name}/cluster"
-  postgres_db                  = var.postgres_db != "" ? var.postgres_db : var.stack_name
-  postgres_user                = var.postgres_user != "" ? var.postgres_user : var.stack_name
-  postgres_password            = var.postgres_password != "" ? var.postgres_password : "${var.stack_name}_dev_password"
+  cluster_name                                 = var.cluster_name != "" ? var.cluster_name : "${var.stack_name}-cluster"
+  server_service_name                          = var.server_service_name != "" ? var.server_service_name : "${var.stack_name}-server"
+  alb_name                                     = var.alb_name != "" ? var.alb_name : "${var.stack_name}-alb"
+  target_group_name                            = var.target_group_name != "" ? var.target_group_name : "${var.stack_name}-server-tg"
+  grpc_target_group_name                       = "${var.stack_name}-grpc-tg"
+  alb_security_group_name                      = var.alb_security_group_name != "" ? var.alb_security_group_name : "${var.stack_name}-alb-sg"
+  server_security_group_name                   = var.server_security_group_name != "" ? var.server_security_group_name : "${var.stack_name}-server-sg"
+  postgres_security_group_name                 = var.postgres_security_group_name != "" ? var.postgres_security_group_name : "${var.stack_name}-postgres-sg"
+  task_execution_role_name                     = var.task_execution_role_name != "" ? var.task_execution_role_name : "${var.stack_name}-ecs-task-execution"
+  task_role_name                               = var.task_role_name != "" ? var.task_role_name : "${var.stack_name}-ecs-task"
+  server_task_family                           = var.server_task_family != "" ? var.server_task_family : "${var.stack_name}-server"
+  server_container_name                        = var.server_container_name != "" ? var.server_container_name : "${var.stack_name}-server"
+  server_log_group_name                        = var.server_log_group_name != "" ? var.server_log_group_name : "/ecs/${local.server_service_name}"
+  cluster_log_group_name                       = "/aws/ecs/${local.cluster_name}/cluster"
+  postgres_db                                  = var.postgres_db != "" ? var.postgres_db : var.stack_name
+  postgres_user                                = var.postgres_user != "" ? var.postgres_user : var.stack_name
+  postgres_password                            = var.postgres_password != "" ? var.postgres_password : "${var.stack_name}_dev_password"
+  postgres_port                                = 5432
+  rds_instance_identifier                      = "${var.stack_name}-postgres"
+  rds_subnet_group_name                        = "${var.stack_name}-postgres-subnets"
+  database_secret_name                         = "${var.stack_name}/server/database-url"
+  database_credentials_secret_name             = "${var.stack_name}/server/database-credentials"
+  rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
+  rds_proxy_role_name                          = "${var.stack_name}-rds-proxy"
+  rds_proxy_security_group_name                = "${var.stack_name}-rds-proxy-sg"
+  rds_master_password                          = var.postgres_password != "" ? var.postgres_password : random_password.postgres[0].result
+  effective_server_desired_count               = var.server_desired_count != null ? var.server_desired_count : (local.is_prod ? 2 : 1)
+  effective_server_autoscaling_enabled         = var.server_autoscaling_enabled != null ? var.server_autoscaling_enabled : local.is_prod
+  effective_server_autoscaling_min_capacity    = var.server_autoscaling_min_capacity != null ? var.server_autoscaling_min_capacity : local.effective_server_desired_count
+  effective_server_autoscaling_max_capacity    = var.server_autoscaling_max_capacity != null ? var.server_autoscaling_max_capacity : (local.is_prod ? max(local.effective_server_desired_count, 6) : local.effective_server_desired_count)
+  effective_server_autoscaling_cpu_target      = var.server_autoscaling_cpu_target != null ? var.server_autoscaling_cpu_target : 65
+  effective_server_autoscaling_memory_target   = var.server_autoscaling_memory_target != null ? var.server_autoscaling_memory_target : 75
+  effective_rds_proxy_enabled                  = var.rds_proxy_enabled != null ? var.rds_proxy_enabled : local.is_prod
+  effective_rds_max_allocated_storage          = var.rds_max_allocated_storage != null ? var.rds_max_allocated_storage : (local.is_prod ? max(var.rds_allocated_storage, 100) : null)
+  effective_guardian_rate_burst_per_sec        = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
+  effective_guardian_rate_per_min              = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
+  effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
+  effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
 
-  # Service discovery DNS
-  postgres_dns = "${local.postgres_service_name}.${local.sd_namespace_name}"
+  direct_database_endpoint = aws_db_instance.postgres.address
+  database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""
+  database_endpoint        = local.effective_rds_proxy_enabled ? local.database_proxy_endpoint : local.direct_database_endpoint
 
-  # Database URL
-  database_url = "postgres://${local.postgres_user}:${local.postgres_password}@${local.postgres_dns}:5432/${local.postgres_db}"
+  database_url = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}"
 
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""

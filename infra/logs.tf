@@ -10,8 +10,3 @@ resource "aws_cloudwatch_log_group" "server" {
   name              = local.server_log_group_name
   retention_in_days = var.log_retention_days
 }
-
-resource "aws_cloudwatch_log_group" "postgres" {
-  name              = local.postgres_log_group_name
-  retention_in_days = var.log_retention_days
-}

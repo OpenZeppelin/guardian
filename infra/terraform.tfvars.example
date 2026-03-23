@@ -27,6 +27,10 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
 
+# Optional: Managed RDS sizing
+# rds_instance_class = "db.t3.micro"
+# rds_allocated_storage = 20
+
 # Optional: Route 53 hosted zone ID (auto-lookup by domain name)
 # route53_zone_id = "Z1234567890ABC"
 
@@ -39,15 +43,11 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Task resource configuration
 # server_cpu    = 512
 # server_memory = 1024
-# postgres_cpu    = 512
-# postgres_memory = 1024
 
 # Optional: Resource naming (defaults match the original bash script)
 # cluster_name                 = "guardian-cluster"
 # server_service_name          = "guardian-server"
-# postgres_service_name        = "guardian-postgres"
 # alb_name                     = "guardian-alb"
-# sd_namespace_name            = "guardian.local"
 # target_group_name            = "guardian-server-tg"
 # alb_security_group_name      = "guardian-alb-sg"
 # server_security_group_name   = "guardian-server-sg"
@@ -55,7 +55,5 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # task_execution_role_name     = "guardian-ecs-task-execution"
 # task_role_name               = "guardian-ecs-task"
 # server_task_family           = "guardian-server"
-# postgres_task_family         = "guardian-postgres"
 # server_container_name        = "guardian-server"
 # server_log_group_name        = "/ecs/guardian-server"
-# postgres_log_group_name      = "/ecs/guardian-postgres"

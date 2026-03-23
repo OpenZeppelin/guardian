@@ -21,6 +21,17 @@ variable "stack_name" {
   default     = "guardian"
 }
 
+variable "deployment_stage" {
+  description = "Deployment stage profile (dev or prod)"
+  type        = string
+  default     = "dev"
+
+  validation {
+    condition     = contains(["dev", "prod"], var.deployment_stage)
+    error_message = "deployment_stage must be dev or prod."
+  }
+}
+
 variable "server_image_uri" {
   description = "ECR image URI for guardian-server (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest)"
   type        = string
@@ -130,16 +141,118 @@ variable "server_memory" {
   default     = 1024
 }
 
-variable "postgres_cpu" {
-  description = "Postgres task CPU units"
+variable "server_desired_count" {
+  description = "Optional override for the ECS service desired task count"
   type        = number
-  default     = 512
+  default     = null
 }
 
-variable "postgres_memory" {
-  description = "Postgres task memory (MB)"
+variable "server_autoscaling_enabled" {
+  description = "Optional override to enable ECS service autoscaling"
+  type        = bool
+  default     = null
+}
+
+variable "server_autoscaling_min_capacity" {
+  description = "Optional override for the ECS service autoscaling minimum task count"
   type        = number
-  default     = 1024
+  default     = null
+}
+
+variable "server_autoscaling_max_capacity" {
+  description = "Optional override for the ECS service autoscaling maximum task count"
+  type        = number
+  default     = null
+}
+
+variable "server_autoscaling_cpu_target" {
+  description = "Optional override for the ECS service CPU target-tracking percentage"
+  type        = number
+  default     = null
+}
+
+variable "server_autoscaling_memory_target" {
+  description = "Optional override for the ECS service memory target-tracking percentage"
+  type        = number
+  default     = null
+}
+
+variable "rds_instance_class" {
+  description = "RDS instance class for the managed PostgreSQL database"
+  type        = string
+  default     = "db.t3.micro"
+}
+
+variable "rds_allocated_storage" {
+  description = "Allocated RDS storage in GiB"
+  type        = number
+  default     = 20
+}
+
+variable "rds_max_allocated_storage" {
+  description = "Optional maximum allocated RDS storage in GiB for storage autoscaling"
+  type        = number
+  default     = null
+}
+
+variable "rds_engine_version" {
+  description = "Optional PostgreSQL engine version override for RDS"
+  type        = string
+  default     = ""
+}
+
+variable "rds_backup_retention_days" {
+  description = "Backup retention in days for RDS"
+  type        = number
+  default     = 7
+}
+
+variable "rds_deletion_protection" {
+  description = "Whether to enable deletion protection for RDS"
+  type        = bool
+  default     = false
+}
+
+variable "rds_skip_final_snapshot" {
+  description = "Whether to skip the final snapshot when destroying RDS"
+  type        = bool
+  default     = true
+}
+
+variable "rds_publicly_accessible" {
+  description = "Whether the RDS instance should be publicly accessible"
+  type        = bool
+  default     = false
+}
+
+variable "rds_proxy_enabled" {
+  description = "Optional override to enable RDS Proxy"
+  type        = bool
+  default     = null
+}
+
+variable "guardian_rate_burst_per_sec" {
+  description = "Optional override for the Guardian HTTP burst rate limit"
+  type        = number
+  default     = null
+}
+
+variable "guardian_rate_per_min" {
+  description = "Optional override for the Guardian HTTP sustained rate limit"
+  type        = number
+  default     = null
+}
+
+variable "guardian_db_pool_max_size" {
+  description = "Optional override for the Guardian storage DB pool maximum size"
+  type        = number
+  default     = null
+}
+
+variable "guardian_metadata_db_pool_max_size" {
+  description = "Optional override for the Guardian metadata DB pool maximum size"
+  type        = number
+  default     = null
 }
 
 # Resource naming
@@ -155,20 +268,8 @@ variable "server_service_name" {
   default     = ""
 }
 
-variable "postgres_service_name" {
-  description = "Postgres ECS service name"
-  type        = string
-  default     = ""
-}
-
 variable "alb_name" {
   description = "ALB name"
-  type        = string
-  default     = ""
-}
-
-variable "sd_namespace_name" {
-  description = "Cloud Map namespace name for service discovery"
   type        = string
   default     = ""
 }
@@ -192,7 +293,7 @@ variable "server_security_group_name" {
 }
 
 variable "postgres_security_group_name" {
-  description = "Security group name for the Postgres service"
+  description = "Security group name for the managed PostgreSQL database"
   type        = string
   default     = ""
 }
@@ -215,12 +316,6 @@ variable "server_task_family" {
   default     = ""
 }
 
-variable "postgres_task_family" {
-  description = "Task definition family name for Postgres"
-  type        = string
-  default     = ""
-}
-
 variable "server_container_name" {
   description = "Container name for the server task definition"
   type        = string
@@ -229,12 +324,6 @@ variable "server_container_name" {
 
 variable "server_log_group_name" {
   description = "CloudWatch log group name for the server"
-  type        = string
-  default     = ""
-}
-
-variable "postgres_log_group_name" {
-  description = "CloudWatch log group name for Postgres"
   type        = string
   default     = ""
 }
