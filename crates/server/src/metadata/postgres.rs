@@ -11,10 +11,10 @@ pub struct PostgresMetadataStore {
 }
 
 impl PostgresMetadataStore {
-    pub async fn new(database_url: &str) -> Result<Self, String> {
+    pub async fn new(database_url: &str, pool_max_size: usize) -> Result<Self, String> {
         let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
         let pool = Pool::builder(config)
-            .max_size(16)
+            .max_size(pool_max_size)
             .build()
             .map_err(|e| format!("Failed to create connection pool: {e}"))?;
 
