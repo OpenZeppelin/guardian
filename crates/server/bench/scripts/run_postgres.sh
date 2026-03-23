@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BENCH_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+COMPOSE_FILE="${BENCH_COMPOSE_FILE:-$REPO_ROOT/docker-compose.postgres.yml}"
 source "$SCRIPT_DIR/lib.sh"
 
 set -a
@@ -56,13 +57,13 @@ trap cleanup EXIT
 
 (
   cd "$REPO_ROOT"
-  POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose up -d "$POSTGRES_SERVICE"
+  POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose -f "$COMPOSE_FILE" up -d "$POSTGRES_SERVICE"
 )
 
 for _ in $(seq 1 90); do
   if (
     cd "$REPO_ROOT" &&
-      POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose exec -T "$POSTGRES_SERVICE" \
+      POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose -f "$COMPOSE_FILE" exec -T "$POSTGRES_SERVICE" \
         pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1
   ); then
     break
@@ -72,7 +73,7 @@ done
 
 (
   cd "$REPO_ROOT" &&
-    POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose exec -T "$POSTGRES_SERVICE" \
+    POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose -f "$COMPOSE_FILE" exec -T "$POSTGRES_SERVICE" \
       psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
 ) >/dev/null
 

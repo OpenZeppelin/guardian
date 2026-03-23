@@ -13,6 +13,7 @@ WORKDIR /app
 # Set environment variables for reproducible builds
 ENV SOURCE_DATE_EPOCH=0
 ENV RUSTFLAGS="--remap-path-prefix /app=. --remap-path-prefix $HOME=~"
+ARG GUARDIAN_SERVER_FEATURES=postgres
 
 # Copy workspace manifests
 COPY Cargo.toml Cargo.lock ./
@@ -22,7 +23,11 @@ COPY crates ./crates
 COPY examples ./examples
 
 # Build for release (only server)
-RUN cargo build --release --package guardian-server --bin server --features postgres
+RUN if [ -n "$GUARDIAN_SERVER_FEATURES" ]; then \
+      cargo build --release --package guardian-server --bin server --features "$GUARDIAN_SERVER_FEATURES"; \
+    else \
+      cargo build --release --package guardian-server --bin server; \
+    fi
 
 # Runtime stage
 FROM debian:bookworm-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0

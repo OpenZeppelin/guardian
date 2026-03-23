@@ -40,8 +40,7 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 
 #### Environment Variables
 
-- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata)
-- `POSTGRES_PASSWORD` - PostgreSQL password (used by docker-compose)
+- `DATABASE_URL` - PostgreSQL connection URL (required only for explicit Postgres-backed runs)
 - `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `RUST_LOG` - Logging level (default: `info`)
   - Supports: `trace`, `debug`, `info`, `warn`, `error`
@@ -73,24 +72,26 @@ cp .env.example .env
 3. Start the server:
 
 ```bash
-docker-compose up --build -d
+docker compose up --build -d
 ```
 
 4. View logs:
 
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
 5. Stop services:
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 The HTTP server will be available at `http://localhost:3000`
 
 The gRPC server will be available at `localhost:50051`
+
+This default Compose flow uses the filesystem backend. If you need a local Postgres container for benchmark or explicit Postgres-backed runs, use [docker-compose.postgres.yml](/Users/marcos/repos/guardian/docker-compose.postgres.yml) instead.
 
 ### Testing
 

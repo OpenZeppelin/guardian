@@ -61,7 +61,7 @@ Run Filesystem benchmark:
 ./crates/server/bench/scripts/run_fs.sh
 ```
 
-Run Postgres benchmark (Postgres via docker compose):
+Run Postgres benchmark (Postgres via the dedicated Compose file):
 
 ```bash
 ./crates/server/bench/scripts/run_postgres.sh
@@ -100,7 +100,7 @@ Current workflow note:
 Stop the Postgres container when done:
 
 ```bash
-docker compose down
+docker compose -f docker-compose.postgres.yml down
 ```
 
 Run both:

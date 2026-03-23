@@ -5,6 +5,7 @@ OUTPUT=${1:?output path is required}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BENCH_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+COMPOSE_FILE="${BENCH_COMPOSE_FILE:-$REPO_ROOT/docker-compose.postgres.yml}"
 
 POSTGRES_SERVICE=${POSTGRES_SERVICE:-postgres}
 POSTGRES_USER=${POSTGRES_USER:-guardian}
@@ -21,12 +22,12 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! (cd "$REPO_ROOT" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose ps "$POSTGRES_SERVICE" >/dev/null 2>&1); then
+if ! (cd "$REPO_ROOT" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose -f "$COMPOSE_FILE" ps "$POSTGRES_SERVICE" >/dev/null 2>&1); then
   echo "postgres service is not running" >> "$OUTPUT"
   exit 0
 fi
 
-(cd "$REPO_ROOT" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose exec -T "$POSTGRES_SERVICE" \
+(cd "$REPO_ROOT" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose -f "$COMPOSE_FILE" exec -T "$POSTGRES_SERVICE" \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /dev/stdin <<'SQL' >> "$OUTPUT" 2>&1
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SELECT
@@ -46,7 +47,7 @@ SQL
   echo "-- pg_stat_database snapshot"
 } >> "$OUTPUT"
 
-(cd "$REPO_ROOT" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose exec -T "$POSTGRES_SERVICE" \
+(cd "$REPO_ROOT" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" docker compose -f "$COMPOSE_FILE" exec -T "$POSTGRES_SERVICE" \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /dev/stdin <<'SQL' >> "$OUTPUT" 2>&1
 SELECT
   datname,

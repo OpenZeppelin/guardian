@@ -18,8 +18,7 @@ let builder = ServerBuilder::new()
 
 ### Environment Variables
 
-- `POSTGRES_PASSWORD` - PostgreSQL password (required for Postgres storage/metadata)
-- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata, e.g., `postgres://guardian:${POSTGRES_PASSWORD}@localhost:5432/guardian`)
+- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata, e.g., `postgres://guardian:guardian_dev_password@localhost:5432/guardian`)
 - `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `RUST_LOG` - Logging level (default: `info`)
 
@@ -238,19 +237,22 @@ See `proto/guardian.proto` for the complete protocol buffer definitions.
 
 ## Running with Docker Compose
 
-The project includes a `docker-compose.yml` with a Postgres service for local development:
+The project includes a root [docker-compose.yml](/Users/marcos/repos/guardian/docker-compose.yml) for a filesystem-backed local server:
 
 ```bash
-# Start the server with Postgres
-docker-compose up -d
+# Start the local server
+docker compose up -d
 
-# The services expose:
+# The service exposes:
 # - Server HTTP: localhost:3000
 # - Server gRPC: localhost:50051
-# - Postgres: localhost:5432 (user: guardian, password: guardian_dev_password, db: guardian)
 ```
 
-The Postgres service uses a health check and the server waits for it to be ready before starting.
+If you need a local Postgres container, use [docker-compose.postgres.yml](/Users/marcos/repos/guardian/docker-compose.postgres.yml):
+
+```bash
+POSTGRES_PASSWORD=guardian_dev_password docker compose -f docker-compose.postgres.yml up -d
+```
 
 ## Benchmarking
 
