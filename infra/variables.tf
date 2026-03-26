@@ -33,7 +33,7 @@ variable "deployment_stage" {
 }
 
 variable "server_image_uri" {
-  description = "ECR image URI for guardian-server (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest)"
+  description = "ECR image URI for guardian-server, including either a tag or an immutable digest"
   type        = string
 }
 

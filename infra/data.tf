@@ -71,7 +71,7 @@ locals {
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""
   database_endpoint        = local.effective_rds_proxy_enabled ? local.database_proxy_endpoint : local.direct_database_endpoint
 
-  database_url = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}"
+  database_url = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?sslmode=require"
 
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""

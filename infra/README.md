@@ -62,7 +62,7 @@ aws_region = "us-east-1"
 # deployment_stage = "dev"
 # deployment_stage = "prod"
 
-server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
+server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server@sha256:..."
 
 # Optional: Use specific VPC/subnets
 # vpc_id     = "vpc-xxxxxxxx"
@@ -140,7 +140,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `cpu_architecture` | `X86_64` | ECS task and image architecture |
 | `stack_name` | `guardian` | Base name used to derive stack resource names |
 | `deployment_stage` | `dev` | Deployment stage profile |
-| `server_image_uri` | (required) | ECR image URI for the server |
+| `server_image_uri` | (required) | ECR image URI for the server, preferably pinned to a digest |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `postgres_db` | `guardian` | Postgres database name |

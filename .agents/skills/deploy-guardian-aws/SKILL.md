@@ -48,6 +48,7 @@ Prefer the deploy script over raw `terraform apply` and `terraform destroy` unle
 
 - The AWS stack is RDS-backed. There is no supported `database_mode` or legacy ECS Postgres path anymore.
 - `./scripts/aws-deploy.sh deploy` provisions or updates the ECS server service, the RDS instance, and the Secrets Manager `DATABASE_URL` wiring together.
+- The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so a new image push should produce a new ECS task-definition revision even if the repo tag stays `latest`.
 - Do not tell the user to preserve or re-enable the retired Postgres ECS or Cloud Map resources.
 - If the task involves an old stack that still has ECS-hosted Postgres data, treat it as an operator-managed cutover outside the steady-state Terraform design.
 
@@ -122,6 +123,7 @@ After every deploy:
 - run `./scripts/aws-deploy.sh status`
 - verify the root URL and `/pubkey`
 - verify the gRPC endpoint when HTTPS is enabled
+- verify the running ECS task definition or image reference when the task is specifically about image rollout or stale containers
 - note the RDS endpoint and `database_url_secret_arn`
 - note whether the server is using direct RDS or the RDS Proxy endpoint
 - note whether the active URL is the ALB DNS name or the custom domain

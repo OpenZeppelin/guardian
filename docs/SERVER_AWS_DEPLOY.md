@@ -101,6 +101,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 ./scripts/aws-deploy.sh deploy
 ```
 
+The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
+
 Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes:
 
 ```bash

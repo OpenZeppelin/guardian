@@ -1,8 +1,8 @@
 use crate::metadata::{AccountMetadata, Auth, MetadataStore};
 use crate::schema::account_metadata;
+use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
 use diesel::prelude::*;
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
@@ -12,18 +12,7 @@ pub struct PostgresMetadataStore {
 
 impl PostgresMetadataStore {
     pub async fn new(database_url: &str, pool_max_size: usize) -> Result<Self, String> {
-        let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
-        let pool = Pool::builder(config)
-            .max_size(pool_max_size)
-            .build()
-            .map_err(|e| format!("Failed to create connection pool: {e}"))?;
-
-        // Test connection
-        let _ = pool
-            .get()
-            .await
-            .map_err(|e| format!("Failed to connect to Postgres: {e}"))?;
-
+        let pool = build_postgres_pool(database_url, pool_max_size).await?;
         Ok(Self { pool })
     }
 

@@ -95,6 +95,31 @@ get_aws_account_id() {
   aws sts get-caller-identity --query Account --output text
 }
 
+get_ecr_repo_uri() {
+  local aws_account_id
+  aws_account_id=$(get_aws_account_id)
+  echo "${aws_account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
+}
+
+resolve_deploy_image_uri() {
+  local repo_uri
+  local image_digest
+  repo_uri=$(get_ecr_repo_uri)
+  image_digest=$(aws ecr describe-images \
+    --repository-name "$ECR_REPO_NAME" \
+    --region "$AWS_REGION" \
+    --image-ids imageTag=latest \
+    --query 'imageDetails[0].imageDigest' \
+    --output text 2>/dev/null || true)
+
+  if [ -z "$image_digest" ] || [ "$image_digest" = "None" ]; then
+    log_error "Could not resolve ${ECR_REPO_NAME}:latest from ECR. Build/push the image first or remove --skip-build."
+    return 1
+  fi
+
+  echo "${repo_uri}@${image_digest}"
+}
+
 require_terraform_dir() {
   if [ ! -d "$TF_DIR" ]; then
     log_error "Terraform directory not found: $TF_DIR"
@@ -143,8 +168,9 @@ terraform_output_raw() {
 }
 
 cmd_build_and_push() {
-  local AWS_ACCOUNT_ID=$(get_aws_account_id)
+  local ecr_repo_uri
   local docker_platform
+  ecr_repo_uri=$(get_ecr_repo_uri)
   docker_platform=$(docker_platform_for_arch "$CPU_ARCHITECTURE")
 
   log_info "Creating ECR repository..."
@@ -154,14 +180,14 @@ cmd_build_and_push() {
 
   log_info "Logging into ECR..."
   aws ecr get-login-password --region "$AWS_REGION" | \
-    docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+    docker login --username AWS --password-stdin "${ecr_repo_uri%/*}"
 
   log_info "Building Docker image..."
   docker build --platform "$docker_platform" --build-arg GUARDIAN_SERVER_FEATURES=postgres --no-cache -t "${ECR_REPO_NAME}:latest" .
 
   log_info "Tagging and pushing to ECR..."
-  docker tag "${ECR_REPO_NAME}:latest" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/${ECR_REPO_NAME}:latest"
-  docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/${ECR_REPO_NAME}:latest"
+  docker tag "${ECR_REPO_NAME}:latest" "${ecr_repo_uri}:latest"
+  docker push "${ecr_repo_uri}:latest"
 
   log_info "Image pushed successfully"
 }
@@ -176,11 +202,12 @@ cmd_deploy() {
     log_info "Skipping Docker build (--skip-build)"
   fi
 
-  local AWS_ACCOUNT_ID=$(get_aws_account_id)
-  local IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest"
+  local IMAGE_URI
+  IMAGE_URI=$(resolve_deploy_image_uri) || return 1
   ensure_terraform_init || return 1
   build_tf_vars "$IMAGE_URI"
 
+  log_info "Deploying image ${IMAGE_URI}"
   log_info "Applying Terraform..."
   terraform -chdir="$TF_DIR" apply -auto-approve "${TF_VARS[@]}"
 
