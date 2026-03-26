@@ -299,25 +299,6 @@ impl From<ProposalRow> for DeltaObject {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::database_url_requires_tls;
-
-    #[test]
-    fn detects_sslmode_require() {
-        assert!(database_url_requires_tls(
-            "postgres://guardian:password@example.com:5432/guardian?sslmode=require",
-        ));
-    }
-
-    #[test]
-    fn ignores_non_tls_database_urls() {
-        assert!(!database_url_requires_tls(
-            "postgres://guardian:password@localhost:5432/guardian",
-        ));
-    }
-}
-
 #[async_trait]
 impl StorageBackend for PostgresService {
     async fn submit_state(&self, state: &StateObject) -> Result<(), String> {
@@ -700,6 +681,20 @@ impl StorageBackend for PostgresService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_sslmode_require() {
+        assert!(database_url_requires_tls(
+            "postgres://guardian:password@example.com:5432/guardian?sslmode=require",
+        ));
+    }
+
+    #[test]
+    fn ignores_non_tls_database_urls() {
+        assert!(!database_url_requires_tls(
+            "postgres://guardian:password@localhost:5432/guardian",
+        ));
+    }
 
     fn create_test_delta(account_id: &str, nonce: u64) -> DeltaObject {
         DeltaObject {
