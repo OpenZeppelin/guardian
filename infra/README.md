@@ -4,7 +4,7 @@ This directory contains the Terraform configuration for the current Guardian AWS
 
 The deployment is stage-aware:
 - `deployment_stage = "dev"` keeps the stack close to the current fixed-capacity profile
-- `deployment_stage = "prod"` enables ECS autoscaling, RDS storage autoscaling, and RDS Proxy
+- `deployment_stage = "prod"` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, and larger default RDS sizing for benchmark traffic
 
 ## Architecture
 
@@ -18,6 +18,7 @@ Resources created:
 - Application Load Balancer with HTTP and gRPC target groups
 - RDS PostgreSQL instance and subnet group
 - Secrets Manager secret for `DATABASE_URL`
+- Secrets Manager secrets for stable Falcon and ECDSA ack keys in `prod`
 - Security groups for the ALB, server task, and database
 - CloudWatch log groups
 - IAM roles for ECS task execution and runtime
@@ -73,10 +74,13 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
 
-# Optional: RDS sizing
-# rds_instance_class = "db.t3.micro"
-# rds_allocated_storage = 20
-# rds_max_allocated_storage = 100
+# Optional: RDS sizing overrides
+# Stage defaults:
+# - dev  -> db.t3.micro, 20 GiB allocated, no storage autoscaling ceiling
+# - prod -> db.t3.medium, 50 GiB allocated, 200 GiB max allocated
+# rds_instance_class = "db.t3.medium"
+# rds_allocated_storage = 50
+# rds_max_allocated_storage = 200
 # rds_proxy_enabled = true
 
 # Optional: stage/runtime capacity overrides
@@ -101,6 +105,32 @@ terraform init
 terraform plan
 terraform apply
 ```
+
+When you use `scripts/aws-deploy.sh`, it keeps separate local Terraform state files per `STACK_NAME` and `deployment_stage`, using:
+
+```text
+infra/terraform.<stack>.<stage>.tfstate
+```
+
+by default.
+
+If you still have an older local state file at `infra/terraform.tfstate`, move it manually before switching to the split-state workflow:
+
+```bash
+cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
+cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
+```
+
+For `prod`, create the ACK key secrets once before the first deploy:
+
+```bash
+DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
+```
+
+Normal deploys do not create or rotate ACK keys. The server fetches these prod Secrets Manager entries at startup, imports them into the filesystem keystore, and then signs through the filesystem keystore like every other environment:
+
+- `guardian-prod/server/ack-falcon-secret-key`
+- `guardian-prod/server/ack-ecdsa-secret-key`
 
 ### 4. Get Outputs
 
@@ -146,9 +176,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `postgres_db` | `guardian` | Postgres database name |
 | `postgres_user` | `guardian` | Postgres username |
 | `postgres_password` | `guardian_dev_password` | Postgres password |
-| `rds_instance_class` | `db.t3.micro` | RDS instance class |
-| `rds_allocated_storage` | `20` | RDS allocated storage in GiB |
-| `rds_max_allocated_storage` | `null` in dev, `100` in prod | RDS storage autoscaling ceiling |
+| `rds_instance_class` | `db.t3.micro` in dev, `db.t3.medium` in prod | RDS instance class |
+| `rds_allocated_storage` | `20` in dev, `50` in prod | RDS allocated storage in GiB |
+| `rds_max_allocated_storage` | `null` in dev, `200` in prod | RDS storage autoscaling ceiling |
 | `rds_proxy_enabled` | `false` in dev, `true` in prod | Whether RDS Proxy is enabled |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
 | `subdomain` | `guardian` | Subdomain for HTTPS endpoint |
@@ -174,7 +204,11 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
+| `rds_instance_class` | Effective RDS instance class |
+| `rds_allocated_storage` | Effective allocated RDS storage in GiB |
 | `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
+| `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
+| `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
 | `server_log_group` | CloudWatch log group for the server |
@@ -194,6 +228,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 
 - higher ECS desired count
 - ECS target-tracking autoscaling
+- larger default RDS instance class and base storage
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
 - higher runtime rate limits and DB pool sizes for benchmark traffic

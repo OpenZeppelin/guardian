@@ -37,6 +37,7 @@ Trust these sources in this order:
 ## Primary Commands
 
 - Normal deploy: `./scripts/aws-deploy.sh deploy`
+- Create the prod ACK secrets once: `./scripts/aws-deploy.sh bootstrap-ack-keys`
 - Infra or runtime update without rebuilding the image: `./scripts/aws-deploy.sh deploy --skip-build`
 - Outputs and URLs: `./scripts/aws-deploy.sh status`
 - Server logs: `./scripts/aws-deploy.sh logs`
@@ -47,8 +48,11 @@ Prefer the deploy script over raw `terraform apply` and `terraform destroy` unle
 ## Current Deployment Model
 
 - The AWS stack is RDS-backed. There is no supported `database_mode` or legacy ECS Postgres path anymore.
-- `./scripts/aws-deploy.sh deploy` provisions or updates the ECS server service, the RDS instance, and the Secrets Manager `DATABASE_URL` wiring together.
+- `./scripts/aws-deploy.sh deploy` provisions or updates the ECS server service, the RDS instance, and the Secrets Manager `DATABASE_URL` wiring.
+- `./scripts/aws-deploy.sh bootstrap-ack-keys` is the create-only command for the prod Falcon/ECDSA ack key secrets used by `prod`.
 - The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so a new image push should produce a new ECS task-definition revision even if the repo tag stays `latest`.
+- The deploy script keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
+- If an older local state still exists at `infra/terraform.tfstate`, handle that move explicitly instead of relying on the script to migrate it.
 - Do not tell the user to preserve or re-enable the retired Postgres ECS or Cloud Map resources.
 - If the task involves an old stack that still has ECS-hosted Postgres data, treat it as an operator-managed cutover outside the steady-state Terraform design.
 
@@ -60,6 +64,7 @@ Use the deploy script env vars for the normal workflow:
 - `CPU_ARCHITECTURE`
 - `STACK_NAME`
 - `DEPLOY_STAGE`
+- `TF_STATE_PATH`
 - `DOMAIN_NAME`
 - `SUBDOMAIN`
 - `ACM_CERTIFICATE_ARN`
@@ -105,7 +110,7 @@ Treat these as stale or conditional:
 
 - legacy network env naming is stale; use `GUARDIAN_NETWORK_TYPE`
 - `DEPLOY_STAGE=dev` keeps the stack close to the current fixed-capacity profile
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, and benchmark-oriented runtime defaults
 - `CPU_ARCHITECTURE=X86_64` preserves the current amd64 deployment behavior
 - `CPU_ARCHITECTURE=ARM64` is the native build path on Apple Silicon and usually much faster locally, but it changes the ECS task definition runtime architecture too
 - set `STACK_NAME` only when the deployment should preserve non-default resource names
@@ -124,7 +129,7 @@ After every deploy:
 - verify the root URL and `/pubkey`
 - verify the gRPC endpoint when HTTPS is enabled
 - verify the running ECS task definition or image reference when the task is specifically about image rollout or stale containers
-- note the RDS endpoint and `database_url_secret_arn`
+- note the RDS endpoint, `database_url_secret_arn`, and the ack secret names
 - note whether the server is using direct RDS or the RDS Proxy endpoint
 - note whether the active URL is the ALB DNS name or the custom domain
 - record the AWS account, region, network type, and DNS mode used

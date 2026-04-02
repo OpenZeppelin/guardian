@@ -292,7 +292,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use tokio::sync::Mutex;
 
-    fn create_test_state_with_mocks_and_clock(
+    async fn create_test_state_with_mocks_and_clock(
         metadata: MockMetadataStore,
         clock: MockClock,
     ) -> AppState {
@@ -302,7 +302,9 @@ mod tests {
         let keystore_dir =
             std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
-        let ack = AckRegistry::new(keystore_dir).expect("Failed to create ack registry");
+        let ack = AckRegistry::new(keystore_dir)
+            .await
+            .expect("Failed to create ack registry");
 
         AppState {
             storage: Arc::new(storage),
@@ -341,7 +343,7 @@ mod tests {
             vec![signer_commitment],
         ))));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone());
+        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone()).await;
 
         // Create credentials with timestamp way in the past (10 minutes = 600000ms ago)
         let old_timestamp = clock.now().timestamp_millis() - 600_000;
@@ -374,7 +376,7 @@ mod tests {
             vec![signer_commitment],
         ))));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone());
+        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone()).await;
 
         // Create credentials with timestamp way in the future (10 minutes = 600000ms ahead)
         let future_timestamp = clock.now().timestamp_millis() + 600_000;
@@ -412,7 +414,7 @@ mod tests {
             ))))
             .with_update_timestamp_cas(Ok(false));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(test_signer.pubkey_hex, signature, timestamp);
 
@@ -446,7 +448,7 @@ mod tests {
             ))))
             .with_update_timestamp_cas(Err("Database connection failed".to_string()));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(test_signer.pubkey_hex, signature, timestamp);
 
@@ -471,7 +473,7 @@ mod tests {
         // Configure metadata mock to return None (account not found)
         let metadata = MockMetadataStore::new().with_get(Ok(None));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(signer_pubkey, signer_signature, signer_timestamp);
 
@@ -494,7 +496,7 @@ mod tests {
         // Configure metadata mock to return error
         let metadata = MockMetadataStore::new().with_get(Err("Database error".to_string()));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(signer_pubkey, signer_signature, signer_timestamp);
 

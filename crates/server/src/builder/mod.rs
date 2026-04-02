@@ -142,7 +142,7 @@ impl ServerBuilder {
     /// use std::path::PathBuf;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let ack = AckRegistry::new(PathBuf::from("/var/guardian/keystore"))?;
+    /// # let ack = AckRegistry::new(PathBuf::from("/var/guardian/keystore")).await?;
     ///
     /// # let builder = ServerBuilder::new()
     /// #     .ack(ack);

@@ -4,6 +4,7 @@ store.sqlite3
 miden-client.toml
 templates/
 .env
+.env.prod
 
 .cursor/
 .claude/

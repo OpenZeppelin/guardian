@@ -19,7 +19,9 @@ let builder = ServerBuilder::new()
 ### Environment Variables
 
 - `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata, e.g., `postgres://guardian:guardian_dev_password@localhost:5432/guardian`)
+- `GUARDIAN_ENV` - Runtime environment (`prod` uses Secrets Manager-backed ack bootstrap, anything else uses filesystem ack keys)
 - `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
+- `AWS_REGION` - AWS region used to fetch production ack keys from Secrets Manager
 - `RUST_LOG` - Logging level (default: `info`)
 
 #### Rate Limiting
@@ -55,6 +57,7 @@ let storage = FilesystemService::new(PathBuf::from("/var/guardian/storage")).awa
 ```
 
 Filesystem is the default when the binary is built without the `postgres` feature.
+It is also the default ack-key mode for local runs, using `GUARDIAN_KEYSTORE_PATH`.
 
 #### Postgres Storage
 
@@ -74,6 +77,24 @@ let storage = PostgresService::new(&database_url).await?;
 DATABASE_URL=postgres://guardian:guardian_dev_password@localhost:5432/guardian \
 cargo run --features postgres --package guardian-server
 ```
+
+### Ack Key Backends
+
+Local runs and non-prod environments default to filesystem-backed ack keys under `GUARDIAN_KEYSTORE_PATH`.
+
+Production ECS runs bootstrap the filesystem keystore from Secrets Manager when:
+
+```bash
+GUARDIAN_ENV=prod
+AWS_REGION=us-east-1
+```
+
+On startup, the server fetches these two fixed Secrets Manager entries once, imports them into `GUARDIAN_KEYSTORE_PATH`, and then uses the normal filesystem keystore for signing:
+
+- `guardian-prod/server/ack-falcon-secret-key`
+- `guardian-prod/server/ack-ecdsa-secret-key`
+
+Local and `dev` deployments stay on the filesystem-only path.
 
 ### Metadata Store
 
