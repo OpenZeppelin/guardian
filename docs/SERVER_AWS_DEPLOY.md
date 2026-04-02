@@ -4,7 +4,7 @@ This guide covers the current AWS deployment for Guardian. The AWS stack now use
 
 The deployment surface supports two stage profiles:
 - `DEPLOY_STAGE=dev` keeps the current low-cost, fixed-capacity behavior
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, and benchmark-oriented runtime defaults
 
 ## Prerequisites
 
@@ -65,10 +65,13 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
 
-# Optional: managed database sizing
-# rds_instance_class = "db.t3.micro"
-# rds_allocated_storage = 20
-# rds_max_allocated_storage = 100
+# Optional: managed database sizing overrides
+# Stage defaults:
+# - dev  -> db.t3.micro, 20 GiB allocated, no storage autoscaling ceiling
+# - prod -> db.t3.medium, 50 GiB allocated, 200 GiB max allocated
+# rds_instance_class = "db.t3.medium"
+# rds_allocated_storage = 50
+# rds_max_allocated_storage = 200
 
 # Optional: Miden network for the server runtime
 # server_network_type = "MidenTestnet"
@@ -102,6 +105,25 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 ```
 
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
+It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
+
+For `DEPLOY_STAGE=prod`, bootstrap the ACK secrets once before the first deploy:
+
+```bash
+DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
+```
+
+The normal deploy path does not create or rotate ACK keys. It expects these prod Secrets Manager entries to already exist, and the server reads them directly at startup before importing them into the filesystem keystore:
+
+- `guardian-prod/server/ack-falcon-secret-key`
+- `guardian-prod/server/ack-ecdsa-secret-key`
+
+If you still have an older local state file at `infra/terraform.tfstate`, move it manually before using the split-state workflow:
+
+```bash
+cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
+cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
+```
 
 Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes:
 
@@ -131,6 +153,14 @@ grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.
 ./scripts/aws-deploy.sh status
 ```
 
+The script reads the state file for the active `STACK_NAME` and `DEPLOY_STAGE`. The current default path is:
+
+```text
+infra/terraform.<stack>.<stage>.tfstate
+```
+
+You can override that with `TF_STATE_PATH` if needed.
+
 ### Destroy
 
 ```bash
@@ -154,6 +184,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | RDS | Managed PostgreSQL instance and subnet group |
 | RDS Proxy | Managed PostgreSQL proxy in the production profile |
 | Secrets Manager | Secret containing `DATABASE_URL` for the server task |
+| Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
 | CloudWatch Log Groups | Cluster execute-command logs and server logs |
 | IAM Role | ECS task execution and runtime roles |
@@ -168,7 +199,11 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
+| `rds_instance_class` | Effective RDS instance class |
+| `rds_allocated_storage` | Effective allocated RDS storage in GiB |
 | `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
+| `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
+| `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
 
@@ -186,6 +221,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 
 - higher ECS desired count
 - ECS service autoscaling
+- larger default RDS instance class and base storage
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
@@ -225,6 +261,7 @@ Use this cutover flow for an existing stack:
 ## Troubleshooting
 
 - If the server task fails during startup, check `./scripts/aws-deploy.sh logs` first and confirm the reported `database_endpoint` matches the expected RDS host.
+- If a prod deploy fails before Terraform starts, confirm the fixed prod ACK secrets exist by running `./scripts/aws-deploy.sh bootstrap-ack-keys` once and then retrying the deploy.
 - If RDS subnet-group creation fails, verify the selected subnets cover at least two subnets for the database deployment.
 - If gRPC works against the ALB directly but fails on the public hostname, check Cloudflare gRPC settings on the zone.
 

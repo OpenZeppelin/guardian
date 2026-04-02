@@ -66,5 +66,5 @@ miden-standards = "0.13"
 miden-tx = "0.13"
 miden-node-proto = "0.13"
 miden-testing = "0.13"
-miden-client = { version = "0.13", git = "https://github.com/0xMiden/miden-client", branch = "next" }
-miden-client-sqlite-store = { version = "0.13", git = "https://github.com/0xMiden/miden-client", branch = "next" }
+miden-client = "0.13"
+miden-client-sqlite-store = "0.13"

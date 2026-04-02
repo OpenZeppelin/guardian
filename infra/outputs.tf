@@ -45,9 +45,29 @@ output "rds_max_allocated_storage" {
   value       = local.effective_rds_max_allocated_storage
 }
 
+output "rds_instance_class" {
+  description = "Effective RDS instance class"
+  value       = local.effective_rds_instance_class
+}
+
+output "rds_allocated_storage" {
+  description = "Effective allocated RDS storage in GiB"
+  value       = local.effective_rds_allocated_storage
+}
+
 output "database_url_secret_arn" {
   description = "Secrets Manager ARN for the server database URL"
   value       = aws_secretsmanager_secret.database_url.arn
+}
+
+output "ack_falcon_secret_name" {
+  description = "Secrets Manager name for the Falcon ack key"
+  value       = local.ack_falcon_secret_name
+}
+
+output "ack_ecdsa_secret_name" {
+  description = "Secrets Manager name for the ECDSA ack key"
+  value       = local.ack_ecdsa_secret_name
 }
 
 output "deployment_stage" {

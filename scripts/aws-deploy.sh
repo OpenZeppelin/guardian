@@ -6,6 +6,7 @@ set -euo pipefail
 #
 # Commands:
 #   deploy   - Build/push image and run Terraform apply
+#   bootstrap-ack-keys - Create the prod ACK key secrets in Secrets Manager
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
@@ -43,6 +44,10 @@ ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${SCRIPT_DIR}/../infra"
+TF_STATE_PATH_OVERRIDE="${TF_STATE_PATH:-}"
+TF_STATE_BACKUP_PATH_OVERRIDE="${TF_STATE_BACKUP_PATH:-}"
+TF_STATE_PATH="${TF_STATE_PATH_OVERRIDE:-${TF_DIR}/terraform.${STACK_NAME}.${DEPLOY_STAGE}.tfstate}"
+TF_STATE_BACKUP_PATH="${TF_STATE_BACKUP_PATH_OVERRIDE:-${TF_STATE_PATH}.backup}"
 TF_VARS=()
 
 RED='\033[0;31m'
@@ -164,7 +169,92 @@ build_tf_vars() {
 
 terraform_output_raw() {
   local output_name="$1"
-  terraform -chdir="$TF_DIR" output -raw "$output_name" 2>/dev/null || true
+  terraform -chdir="$TF_DIR" output -state="$TF_STATE_PATH" -raw "$output_name" 2>/dev/null || true
+}
+
+ack_falcon_secret_name() {
+  echo "guardian-prod/server/ack-falcon-secret-key"
+}
+
+ack_ecdsa_secret_name() {
+  echo "guardian-prod/server/ack-ecdsa-secret-key"
+}
+
+secret_exists() {
+  local secret_id="$1"
+  aws secretsmanager describe-secret --secret-id "$secret_id" --region "$AWS_REGION" >/dev/null 2>&1
+}
+
+validate_ack_secrets_exist() {
+  if [ "$DEPLOY_STAGE" != "prod" ]; then
+    return 0
+  fi
+
+  local falcon_secret_name
+  local ecdsa_secret_name
+  falcon_secret_name=$(ack_falcon_secret_name)
+  ecdsa_secret_name=$(ack_ecdsa_secret_name)
+
+  if ! secret_exists "$falcon_secret_name"; then
+    log_error "Missing Falcon ACK secret ${falcon_secret_name}. Run ./scripts/aws-deploy.sh bootstrap-ack-keys first."
+    return 1
+  fi
+
+  if ! secret_exists "$ecdsa_secret_name"; then
+    log_error "Missing ECDSA ACK secret ${ecdsa_secret_name}. Run ./scripts/aws-deploy.sh bootstrap-ack-keys first."
+    return 1
+  fi
+}
+
+cmd_bootstrap_ack_keys() {
+  local falcon_secret_name
+  local ecdsa_secret_name
+  local existing_secrets=()
+  local generated_keys
+  local falcon_secret_value
+  local ecdsa_secret_value
+  falcon_secret_name=$(ack_falcon_secret_name)
+  ecdsa_secret_name=$(ack_ecdsa_secret_name)
+
+  if secret_exists "$falcon_secret_name"; then
+    existing_secrets+=("$falcon_secret_name")
+  fi
+  if secret_exists "$ecdsa_secret_name"; then
+    existing_secrets+=("$ecdsa_secret_name")
+  fi
+
+  if [ "${#existing_secrets[@]}" -gt 0 ]; then
+    log_error "Refusing to overwrite existing ACK secret(s): ${existing_secrets[*]}"
+    return 1
+  fi
+
+  log_info "Generating ACK keys locally..."
+  generated_keys=$(cargo run --quiet --package guardian-server --bin ack-keygen)
+  falcon_secret_value=$(printf '%s' "$generated_keys" | jq -r '.falcon_secret_key')
+  ecdsa_secret_value=$(printf '%s' "$generated_keys" | jq -r '.ecdsa_secret_key')
+
+  if [ -z "$falcon_secret_value" ] || [ "$falcon_secret_value" = "null" ]; then
+    log_error "Failed to generate Falcon ACK key material"
+    return 1
+  fi
+  if [ -z "$ecdsa_secret_value" ] || [ "$ecdsa_secret_value" = "null" ]; then
+    log_error "Failed to generate ECDSA ACK key material"
+    return 1
+  fi
+
+  log_info "Creating Falcon ACK secret ${falcon_secret_name}"
+  aws secretsmanager create-secret \
+    --name "$falcon_secret_name" \
+    --secret-string "$falcon_secret_value" \
+    --region "$AWS_REGION" >/dev/null
+
+  log_info "Creating ECDSA ACK secret ${ecdsa_secret_name}"
+  aws secretsmanager create-secret \
+    --name "$ecdsa_secret_name" \
+    --secret-string "$ecdsa_secret_value" \
+    --region "$AWS_REGION" >/dev/null
+
+  log_info "ACK key bootstrap complete"
 }
 
 cmd_build_and_push() {
@@ -195,6 +285,7 @@ cmd_build_and_push() {
 cmd_deploy() {
   log_info "Deploying GUARDIAN server with Terraform..."
   validate_deploy_config
+  validate_ack_secrets_exist || return 1
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -208,8 +299,9 @@ cmd_deploy() {
   build_tf_vars "$IMAGE_URI"
 
   log_info "Deploying image ${IMAGE_URI}"
+  log_info "Using Terraform state ${TF_STATE_PATH}"
   log_info "Applying Terraform..."
-  terraform -chdir="$TF_DIR" apply -auto-approve "${TF_VARS[@]}"
+  terraform -chdir="$TF_DIR" apply -auto-approve -state="$TF_STATE_PATH" -backup="$TF_STATE_BACKUP_PATH" "${TF_VARS[@]}"
 
   local ALB_URL
   local ALB_DNS
@@ -307,13 +399,21 @@ cmd_deploy() {
 cmd_status() {
   log_info "Checking Terraform outputs..."
   require_terraform_dir || return 1
+  ensure_terraform_init || return 1
 
-  terraform -chdir="$TF_DIR" output 2>/dev/null || log_warn "No Terraform outputs found (run deploy first)"
+  if [ ! -f "$TF_STATE_PATH" ]; then
+    log_warn "No Terraform state found at ${TF_STATE_PATH} (run deploy first)"
+    return 0
+  fi
+
+  log_info "Using Terraform state ${TF_STATE_PATH}"
+  terraform -chdir="$TF_DIR" output -state="$TF_STATE_PATH" 2>/dev/null || log_warn "No Terraform outputs found (run deploy first)"
 }
 
 cmd_logs() {
   log_info "Tailing CloudWatch logs (Ctrl+C to exit)..."
   require_terraform_dir || return 1
+  ensure_terraform_init || return 1
 
   local LOG_GROUP
   LOG_GROUP=$(terraform_output_raw server_log_group)
@@ -339,8 +439,9 @@ cmd_cleanup() {
   ensure_terraform_init || return 1
   build_tf_vars "$IMAGE_URI"
 
+  log_info "Using Terraform state ${TF_STATE_PATH}"
   log_info "Running Terraform destroy..."
-  terraform -chdir="$TF_DIR" destroy -auto-approve "${TF_VARS[@]}"
+  terraform -chdir="$TF_DIR" destroy -auto-approve -state="$TF_STATE_PATH" -backup="$TF_STATE_BACKUP_PATH" "${TF_VARS[@]}"
 
   log_info "Cleanup complete!"
 }
@@ -383,6 +484,9 @@ case "${COMMAND:-}" in
   deploy)
     cmd_deploy
     ;;
+  bootstrap-ack-keys)
+    cmd_bootstrap_ack_keys
+    ;;
   status)
     cmd_status
     ;;
@@ -399,6 +503,7 @@ case "${COMMAND:-}" in
     echo ""
     echo "Commands:"
     echo "  deploy   Build/push image and run Terraform apply"
+    echo "  bootstrap-ack-keys  Create the prod ACK key secrets in Secrets Manager"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"
     echo "  cleanup  Remove all AWS resources"
@@ -416,12 +521,14 @@ case "${COMMAND:-}" in
     echo "  STACK_NAME=   Base stack name for AWS resources (default: guardian)"
     echo "  DEPLOY_STAGE= Deployment profile (dev or prod, default: dev)"
     echo "  ECR_REPO_NAME= Override the ECR/image repository name (default: <stack-name>-server)"
+    echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
+    echo "  DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys"
     echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
-    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy --skip-build"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"

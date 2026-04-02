@@ -181,7 +181,9 @@ pub async fn create_test_app_state() -> AppState {
     let storage_backend: Arc<dyn StorageBackend> = Arc::new(storage);
 
     let mock_client = MockNetworkClient::new();
-    let ack = AckRegistry::new(keystore_dir).expect("Failed to create signer registry");
+    let ack = AckRegistry::new(keystore_dir)
+        .await
+        .expect("Failed to create signer registry");
 
     AppState {
         storage: storage_backend,
@@ -585,7 +587,8 @@ pub fn create_test_app_state_with_mocks(
 
     let storage_backend: Arc<dyn StorageBackend> = storage;
 
-    let ack = AckRegistry::new(keystore_dir).expect("Failed to create signer registry");
+    let ack = futures::executor::block_on(AckRegistry::new(keystore_dir))
+        .expect("Failed to create signer registry");
 
     AppState {
         storage: storage_backend,

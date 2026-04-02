@@ -70,6 +70,14 @@ resource "aws_ecs_task_definition" "server" {
           value = var.server_network_type
         },
         {
+          name  = "GUARDIAN_ENV"
+          value = var.deployment_stage
+        },
+        {
+          name  = "AWS_REGION"
+          value = var.aws_region
+        },
+        {
           name  = "GUARDIAN_RATE_BURST_PER_SEC"
           value = tostring(local.effective_guardian_rate_burst_per_sec)
         },

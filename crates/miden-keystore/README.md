@@ -23,7 +23,6 @@ The main implementation that stores keys on the filesystem.
 impl<R: RngCore + SeedableRng + Send + Sync> FilesystemKeyStore<R> {
     pub fn new(keys_directory: PathBuf) -> Result<Self>
     pub fn with_rng(keys_directory: PathBuf, rng: R) -> Result<Self>
-    pub fn keys_directory(&self) -> &PathBuf
 }
 ```
 

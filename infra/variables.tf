@@ -178,15 +178,15 @@ variable "server_autoscaling_memory_target" {
 }
 
 variable "rds_instance_class" {
-  description = "RDS instance class for the managed PostgreSQL database"
+  description = "Optional override for the RDS instance class for the managed PostgreSQL database"
   type        = string
-  default     = "db.t3.micro"
+  default     = ""
 }
 
 variable "rds_allocated_storage" {
-  description = "Allocated RDS storage in GiB"
+  description = "Optional override for allocated RDS storage in GiB"
   type        = number
-  default     = 20
+  default     = null
 }
 
 variable "rds_max_allocated_storage" {

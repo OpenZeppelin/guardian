@@ -4,7 +4,7 @@ use guardian_shared::{FromJson, hex::IntoHex};
 use miden_keystore::{FilesystemKeyStore, KeyStore};
 use miden_protocol::{
     Word,
-    crypto::dsa::falcon512_rpo::{PublicKey, Signature},
+    crypto::dsa::falcon512_rpo::{SecretKey, Signature},
     transaction::TransactionSummary,
     utils::Serializable,
 };
@@ -16,17 +16,33 @@ use std::sync::Arc;
 pub struct MidenFalconRpoSigner {
     keystore: Arc<FilesystemKeyStore<ChaCha20Rng>>,
     server_pubkey_word: Word,
+    pubkey_hex: String,
+    commitment_hex: String,
 }
 
 impl MidenFalconRpoSigner {
-    pub fn new(keystore_path: PathBuf) -> Result<Self> {
-        let keystore = FilesystemKeyStore::<ChaCha20Rng>::new(keystore_path)?;
-        let keystore = Arc::new(keystore);
-        let server_pubkey_word = keystore.generate_key()?;
+    pub fn new(keystore_path: PathBuf, secret_key: Option<&SecretKey>) -> Result<Self> {
+        let keystore = Arc::new(FilesystemKeyStore::<ChaCha20Rng>::new(keystore_path)?);
+        let (server_pubkey_word, public_key) = match secret_key {
+            Some(secret_key) => {
+                let server_pubkey_word = secret_key.public_key().to_commitment();
+                keystore.add_key(secret_key)?;
+                (server_pubkey_word, secret_key.public_key())
+            }
+            None => {
+                let server_pubkey_word = keystore.generate_key()?;
+                let public_key = keystore.get_key(server_pubkey_word)?.public_key();
+                (server_pubkey_word, public_key)
+            }
+        };
+        let pubkey_hex = (&public_key).into_hex();
+        let commitment_hex = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
 
         Ok(Self {
             keystore,
             server_pubkey_word,
+            pubkey_hex,
+            commitment_hex,
         })
     }
 }
@@ -36,21 +52,12 @@ impl MidenFalconRpoSigner {
         Ok(self.keystore.sign(self.server_pubkey_word, message)?)
     }
 
-    pub(crate) fn pubkey(&self) -> PublicKey {
-        let secret_key = self
-            .keystore
-            .get_key(self.server_pubkey_word)
-            .expect("Server key must exist in keystore");
-        secret_key.public_key()
-    }
-
     pub(crate) fn pubkey_hex(&self) -> String {
-        self.pubkey().into_hex()
+        self.pubkey_hex.clone()
     }
 
     pub(crate) fn commitment_hex(&self) -> String {
-        let commitment = self.pubkey().to_commitment();
-        format!("0x{}", hex::encode(commitment.to_bytes()))
+        self.commitment_hex.clone()
     }
 
     pub(crate) fn ack_delta(&self, mut delta: DeltaObject) -> crate::ack::Result<DeltaObject> {

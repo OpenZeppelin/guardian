@@ -154,7 +154,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    fn create_test_app_state(
+    async fn create_test_app_state(
         network_client: MockNetworkClient,
         storage_backend: MockStorageBackend,
         metadata_store: MockMetadataStore,
@@ -165,7 +165,9 @@ mod tests {
             std::env::temp_dir().join(format!("test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
 
-        let ack = AckRegistry::new(keystore_dir).expect("Failed to create ack registry");
+        let ack = AckRegistry::new(keystore_dir)
+            .await
+            .expect("Failed to create ack registry");
 
         AppState {
             storage,
@@ -193,7 +195,7 @@ mod tests {
 
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         // Use a valid account JSON fixture
         let account_json = include_str!("../testing/fixtures/account.json");
@@ -245,7 +247,7 @@ mod tests {
 
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
@@ -311,7 +313,7 @@ mod tests {
             .with_get(Ok(Some(existing_metadata)))
             .with_set(Ok(()));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
@@ -349,7 +351,7 @@ mod tests {
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
@@ -388,7 +390,8 @@ mod tests {
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));
 
-        let state = create_test_app_state(network_client, storage_backend.clone(), metadata_store);
+        let state =
+            create_test_app_state(network_client, storage_backend.clone(), metadata_store).await;
 
         let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 

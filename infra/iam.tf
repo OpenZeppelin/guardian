@@ -59,6 +59,29 @@ resource "aws_iam_role" "ecs_task" {
   })
 }
 
+resource "aws_iam_role_policy" "ecs_task_ack_secrets" {
+  count = local.is_prod ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-ack-secrets"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          data.aws_secretsmanager_secret.ack_falcon[0].arn,
+          data.aws_secretsmanager_secret.ack_ecdsa[0].arn
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "rds_proxy" {
   count = local.effective_rds_proxy_enabled ? 1 : 0
 

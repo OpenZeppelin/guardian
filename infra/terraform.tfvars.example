@@ -27,9 +27,13 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # postgres_user     = "guardian"
 # postgres_password = "guardian_dev_password"
 
-# Optional: Managed RDS sizing
-# rds_instance_class = "db.t3.micro"
-# rds_allocated_storage = 20
+# Optional: Managed RDS sizing overrides
+# Stage defaults:
+# - dev  -> db.t3.micro, 20 GiB allocated
+# - prod -> db.t3.medium, 50 GiB allocated, 200 GiB max allocated
+# rds_instance_class = "db.t3.medium"
+# rds_allocated_storage = 50
+# rds_max_allocated_storage = 200
 
 # Optional: Route 53 hosted zone ID (auto-lookup by domain name)
 # route53_zone_id = "Z1234567890ABC"

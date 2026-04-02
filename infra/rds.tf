@@ -21,8 +21,8 @@ resource "aws_db_instance" "postgres" {
   identifier                 = local.rds_instance_identifier
   engine                     = "postgres"
   engine_version             = var.rds_engine_version != "" ? var.rds_engine_version : null
-  instance_class             = var.rds_instance_class
-  allocated_storage          = var.rds_allocated_storage
+  instance_class             = local.effective_rds_instance_class
+  allocated_storage          = local.effective_rds_allocated_storage
   max_allocated_storage      = local.effective_rds_max_allocated_storage
   db_name                    = local.postgres_db
   username                   = local.postgres_user
