@@ -99,7 +99,11 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
 - Verify collected vs required signatures before execute.
 - Verify proposal IDs and account IDs stay stable across export/import.
 - Verify nonce or state commitment changes after a successful execute.
-- Verify all existing cosigner tabs resync after execute and that newly-added cosigners can pull the updated account state.
+- Verify all existing cosigner tabs resync after execute.
+- Treat newly-added cosigner pulls as canonicalization-sensitive:
+  - poll until GUARDIAN canonicalization catches up
+  - record time from execute success to first successful pull
+  - do not treat an immediate post-execute authorization failure as a product bug by itself
 - Verify public-note receipt after faucet mint and post-sync before attempting `Consume notes`.
 - Verify the vault gains assets after `Consume notes` executes.
 - Verify a self-addressed P2ID transfer produces a new received note after the final sync.
