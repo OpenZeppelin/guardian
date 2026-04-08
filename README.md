@@ -45,9 +45,9 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 - `RUST_LOG` - Logging level (default: `info`)
   - Supports: `trace`, `debug`, `info`, `warn`, `error`
   - Module-specific: `RUST_LOG=server::jobs::canonicalization=debug`
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
 - `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
-- `GUARDIAN_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
 - `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
 - `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
 

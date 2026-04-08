@@ -43,7 +43,7 @@
   - HTTP endpoints are rate limited by client IP.
   - Burst limits are applied per IP and per endpoint path.
   - Sustained limits are applied per IP and per IP+account/signer when available.
-  - `X-Forwarded-For`/`X-Real-IP` are used only when the direct peer IP is configured in `GUARDIAN_TRUSTED_PROXY_IPS`, otherwise socket peer IP is used.
+  - Client IP detection prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP.
   - Exceeded limits return `429 Too Many Requests` and include a `Retry-After` header.
 
 - Request size limits:

@@ -55,6 +55,12 @@ variable "subnet_ids" {
   default     = []
 }
 
+variable "rds_proxy_subnet_ids" {
+  description = "Subnet IDs for RDS Proxy. If not specified, uses the shared subnet_ids after filtering region-specific unsupported RDS Proxy AZs"
+  type        = list(string)
+  default     = []
+}
+
 variable "postgres_db" {
   description = "Postgres database name"
   type        = string
@@ -231,6 +237,12 @@ variable "rds_proxy_enabled" {
   default     = null
 }
 
+variable "rds_proxy_route_database_url" {
+  description = "Optional override to route the server DATABASE_URL secret through the RDS Proxy endpoint when the proxy exists"
+  type        = bool
+  default     = null
+}
+
 variable "guardian_rate_burst_per_sec" {
   description = "Optional override for the Guardian HTTP burst rate limit"
   type        = number
@@ -240,6 +252,12 @@ variable "guardian_rate_burst_per_sec" {
 variable "guardian_rate_per_min" {
   description = "Optional override for the Guardian HTTP sustained rate limit"
   type        = number
+  default     = null
+}
+
+variable "guardian_rate_limit_enabled" {
+  description = "Optional override to enable or disable Guardian HTTP rate limiting"
+  type        = bool
   default     = null
 }
 

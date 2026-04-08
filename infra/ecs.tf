@@ -78,6 +78,10 @@ resource "aws_ecs_task_definition" "server" {
           value = var.aws_region
         },
         {
+          name  = "GUARDIAN_RATE_LIMIT_ENABLED"
+          value = tostring(local.effective_guardian_rate_limit_enabled)
+        },
+        {
           name  = "GUARDIAN_RATE_BURST_PER_SEC"
           value = tostring(local.effective_guardian_rate_burst_per_sec)
         },
@@ -116,13 +120,15 @@ resource "aws_ecs_task_definition" "server" {
 
 # Server ECS service
 resource "aws_ecs_service" "server" {
-  name                   = local.server_service_name
-  cluster                = aws_ecs_cluster.main.id
-  task_definition        = aws_ecs_task_definition.server.arn
-  desired_count          = local.effective_server_desired_count
-  launch_type            = "FARGATE"
-  platform_version       = "LATEST"
-  enable_execute_command = true
+  name                               = local.server_service_name
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.server.arn
+  desired_count                      = local.effective_server_desired_count
+  deployment_maximum_percent         = local.effective_server_desired_count == 1 ? 100 : 200
+  deployment_minimum_healthy_percent = local.effective_server_desired_count == 1 ? 0 : 100
+  launch_type                        = "FARGATE"
+  platform_version                   = "LATEST"
+  enable_execute_command             = true
 
   health_check_grace_period_seconds = 30
 

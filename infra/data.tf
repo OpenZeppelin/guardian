@@ -31,12 +31,35 @@ data "aws_vpc" "selected" {
   id = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
 }
 
+data "aws_subnet" "rds_proxy_candidate" {
+  for_each = toset(
+    length(var.rds_proxy_subnet_ids) > 0 ? var.rds_proxy_subnet_ids : (
+      length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.default[0].ids
+    )
+  )
+
+  id = each.value
+}
+
 locals {
   vpc_id     = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
-  subnet_ids = length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.default[0].ids
+  subnet_ids = sort(length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.default[0].ids)
   vpc_cidr   = data.aws_vpc.selected.cidr_block
   is_prod    = var.deployment_stage == "prod"
   stage_name = var.deployment_stage
+  unsupported_rds_proxy_zone_ids_by_region = {
+    us-east-1 = ["use1-az3"]
+    us-west-1 = ["usw1-az2"]
+  }
+  unsupported_rds_proxy_zone_ids = lookup(local.unsupported_rds_proxy_zone_ids_by_region, var.aws_region, [])
+  rds_proxy_candidate_subnet_ids = sort(length(var.rds_proxy_subnet_ids) > 0 ? var.rds_proxy_subnet_ids : local.subnet_ids)
+  effective_rds_proxy_subnet_ids = [
+    for subnet_id in local.rds_proxy_candidate_subnet_ids : subnet_id
+    if !contains(local.unsupported_rds_proxy_zone_ids, data.aws_subnet.rds_proxy_candidate[subnet_id].availability_zone_id)
+  ]
+  effective_rds_proxy_zone_ids = distinct([
+    for subnet_id in local.effective_rds_proxy_subnet_ids : data.aws_subnet.rds_proxy_candidate[subnet_id].availability_zone_id
+  ])
 
   cluster_name                                 = var.cluster_name != "" ? var.cluster_name : "${var.stack_name}-cluster"
   server_service_name                          = var.server_service_name != "" ? var.server_service_name : "${var.stack_name}-server"
@@ -78,7 +101,9 @@ locals {
   effective_server_autoscaling_cpu_target      = var.server_autoscaling_cpu_target != null ? var.server_autoscaling_cpu_target : 65
   effective_server_autoscaling_memory_target   = var.server_autoscaling_memory_target != null ? var.server_autoscaling_memory_target : 75
   effective_rds_proxy_enabled                  = var.rds_proxy_enabled != null ? var.rds_proxy_enabled : local.is_prod
+  effective_rds_proxy_route_database_url       = local.effective_rds_proxy_enabled && (var.rds_proxy_route_database_url != null ? var.rds_proxy_route_database_url : true)
   effective_rds_max_allocated_storage          = var.rds_max_allocated_storage != null ? var.rds_max_allocated_storage : (local.is_prod ? max(local.effective_rds_allocated_storage, 200) : null)
+  effective_guardian_rate_limit_enabled        = var.guardian_rate_limit_enabled != null ? var.guardian_rate_limit_enabled : true
   effective_guardian_rate_burst_per_sec        = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
   effective_guardian_rate_per_min              = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
@@ -86,7 +111,7 @@ locals {
 
   direct_database_endpoint = aws_db_instance.postgres.address
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""
-  database_endpoint        = local.effective_rds_proxy_enabled ? local.database_proxy_endpoint : local.direct_database_endpoint
+  database_endpoint        = local.effective_rds_proxy_route_database_url ? local.database_proxy_endpoint : local.direct_database_endpoint
 
   database_url = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?sslmode=require"
 

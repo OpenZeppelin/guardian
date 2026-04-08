@@ -40,6 +40,16 @@ output "rds_proxy_enabled" {
   value       = local.effective_rds_proxy_enabled
 }
 
+output "rds_proxy_route_database_url" {
+  description = "Whether the DATABASE_URL secret points at the RDS Proxy endpoint"
+  value       = local.effective_rds_proxy_route_database_url
+}
+
+output "rds_proxy_subnet_ids" {
+  description = "Effective subnet IDs used for RDS Proxy placement"
+  value       = local.effective_rds_proxy_subnet_ids
+}
+
 output "rds_max_allocated_storage" {
   description = "Configured maximum allocated RDS storage for storage autoscaling"
   value       = local.effective_rds_max_allocated_storage
@@ -80,6 +90,16 @@ output "server_desired_count" {
   value       = local.effective_server_desired_count
 }
 
+output "server_cpu" {
+  description = "Configured ECS task CPU units"
+  value       = var.server_cpu
+}
+
+output "server_memory" {
+  description = "Configured ECS task memory in MiB"
+  value       = var.server_memory
+}
+
 output "server_autoscaling_enabled" {
   description = "Whether ECS service autoscaling is enabled"
   value       = local.effective_server_autoscaling_enabled
@@ -98,6 +118,11 @@ output "server_autoscaling_max_capacity" {
 output "guardian_rate_burst_per_sec" {
   description = "Effective Guardian HTTP burst rate limit"
   value       = local.effective_guardian_rate_burst_per_sec
+}
+
+output "guardian_rate_limit_enabled" {
+  description = "Whether Guardian HTTP rate limiting is enabled"
+  value       = local.effective_guardian_rate_limit_enabled
 }
 
 output "guardian_rate_per_min" {

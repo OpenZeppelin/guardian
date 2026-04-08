@@ -68,6 +68,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Use specific VPC/subnets
 # vpc_id     = "vpc-xxxxxxxx"
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# rds_proxy_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# In us-east-1, avoid subnets in us-east-1e/use1-az3 for RDS Proxy.
 
 # Optional: Postgres credentials
 # postgres_db       = "guardian"
@@ -88,6 +90,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # server_autoscaling_enabled = true
 # server_autoscaling_min_capacity = 2
 # server_autoscaling_max_capacity = 6
+# guardian_rate_limit_enabled = false
 # guardian_rate_burst_per_sec = 200
 # guardian_rate_per_min = 5000
 # guardian_db_pool_max_size = 32
@@ -173,6 +176,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_image_uri` | (required) | ECR image URI for the server, preferably pinned to a digest |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
+| `rds_proxy_subnet_ids` | filtered `subnet_ids` | Optional dedicated subnet IDs for RDS Proxy |
 | `postgres_db` | `guardian` | Postgres database name |
 | `postgres_user` | `guardian` | Postgres username |
 | `postgres_password` | `guardian_dev_password` | Postgres password |
@@ -188,6 +192,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_memory` | `1024` | Server task memory (MB) |
 | `server_desired_count` | `1` in dev, `2` in prod | ECS service desired task count |
 | `server_autoscaling_enabled` | `false` in dev, `true` in prod | Whether ECS autoscaling is enabled |
+| `guardian_rate_limit_enabled` | `true` | Whether Guardian HTTP rate limiting is enabled |
 | `guardian_rate_burst_per_sec` | `10` in dev, `200` in prod | Guardian HTTP burst limit |
 | `guardian_rate_per_min` | `60` in dev, `5000` in prod | Guardian HTTP sustained limit |
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
@@ -213,6 +218,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_service_arn` | Server ECS service ARN |
 | `server_log_group` | CloudWatch log group for the server |
 | `cluster_log_group` | CloudWatch log group for ECS execute command |
+| `guardian_rate_limit_enabled` | Whether HTTP rate limiting is enabled |
 
 ## Stage Profiles
 

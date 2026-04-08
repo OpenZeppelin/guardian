@@ -76,8 +76,20 @@ resource "aws_db_proxy" "postgres" {
   idle_client_timeout    = 1800
   require_tls            = true
   role_arn               = aws_iam_role.rds_proxy[0].arn
-  vpc_subnet_ids         = local.subnet_ids
+  vpc_subnet_ids         = local.effective_rds_proxy_subnet_ids
   vpc_security_group_ids = [aws_security_group.rds_proxy[0].id]
+
+  lifecycle {
+    precondition {
+      condition     = length(local.effective_rds_proxy_subnet_ids) >= 2
+      error_message = "RDS Proxy requires at least two supported subnets. Configure rds_proxy_subnet_ids to exclude unsupported Availability Zones."
+    }
+
+    precondition {
+      condition     = length(local.effective_rds_proxy_zone_ids) >= 2
+      error_message = "RDS Proxy requires subnets in at least two supported Availability Zones."
+    }
+  }
 
   auth {
     auth_scheme = "SECRETS"
@@ -109,4 +121,15 @@ resource "aws_db_proxy_target" "postgres" {
   db_proxy_name          = aws_db_proxy.postgres[0].name
   target_group_name      = "default"
   db_instance_identifier = aws_db_instance.postgres.identifier
+
+  depends_on = [
+    aws_db_proxy_default_target_group.postgres
+  ]
+
+  lifecycle {
+    replace_triggered_by = [
+      aws_db_proxy.postgres[0],
+      aws_db_proxy_default_target_group.postgres[0],
+    ]
+  }
 }

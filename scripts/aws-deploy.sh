@@ -316,6 +316,9 @@ cmd_deploy() {
   local SERVER_AUTOSCALING_ENABLED
   local SERVER_AUTOSCALING_MIN_CAPACITY
   local SERVER_AUTOSCALING_MAX_CAPACITY
+  local SERVER_CPU
+  local SERVER_MEMORY
+  local RATE_LIMIT_ENABLED
   local RATE_BURST
   local RATE_PER_MIN
   local DB_POOL_MAX
@@ -330,9 +333,12 @@ cmd_deploy() {
   RDS_PROXY_ENDPOINT=$(terraform_output_raw rds_proxy_endpoint)
   RDS_PROXY_ENABLED=$(terraform_output_raw rds_proxy_enabled)
   RDS_MAX_ALLOCATED_STORAGE=$(terraform_output_raw rds_max_allocated_storage)
+  SERVER_CPU=$(terraform_output_raw server_cpu)
+  SERVER_MEMORY=$(terraform_output_raw server_memory)
   SERVER_AUTOSCALING_ENABLED=$(terraform_output_raw server_autoscaling_enabled)
   SERVER_AUTOSCALING_MIN_CAPACITY=$(terraform_output_raw server_autoscaling_min_capacity)
   SERVER_AUTOSCALING_MAX_CAPACITY=$(terraform_output_raw server_autoscaling_max_capacity)
+  RATE_LIMIT_ENABLED=$(terraform_output_raw guardian_rate_limit_enabled)
   RATE_BURST=$(terraform_output_raw guardian_rate_burst_per_sec)
   RATE_PER_MIN=$(terraform_output_raw guardian_rate_per_min)
   DB_POOL_MAX=$(terraform_output_raw guardian_db_pool_max_size)
@@ -371,13 +377,19 @@ cmd_deploy() {
     if [ -n "$RDS_MAX_ALLOCATED_STORAGE" ]; then
       echo "  RDS max allocated storage: ${RDS_MAX_ALLOCATED_STORAGE}"
     fi
+    if [ -n "$SERVER_CPU" ] && [ -n "$SERVER_MEMORY" ]; then
+      echo "  ECS task size: cpu=${SERVER_CPU} memory=${SERVER_MEMORY}"
+    fi
     if [ -n "$SERVER_AUTOSCALING_ENABLED" ]; then
       echo "  ECS autoscaling enabled: ${SERVER_AUTOSCALING_ENABLED}"
     fi
     if [ -n "$SERVER_AUTOSCALING_MIN_CAPACITY" ] && [ -n "$SERVER_AUTOSCALING_MAX_CAPACITY" ]; then
       echo "  ECS autoscaling range: ${SERVER_AUTOSCALING_MIN_CAPACITY}-${SERVER_AUTOSCALING_MAX_CAPACITY}"
     fi
-    if [ -n "$RATE_BURST" ] && [ -n "$RATE_PER_MIN" ]; then
+    if [ -n "$RATE_LIMIT_ENABLED" ]; then
+      echo "  HTTP rate limiting enabled: ${RATE_LIMIT_ENABLED}"
+    fi
+    if [ "$RATE_LIMIT_ENABLED" = "true" ] && [ -n "$RATE_BURST" ] && [ -n "$RATE_PER_MIN" ]; then
       echo "  HTTP rate limits: burst=${RATE_BURST}/sec sustained=${RATE_PER_MIN}/min"
     fi
     if [ -n "$DB_POOL_MAX" ] && [ -n "$METADATA_DB_POOL_MAX" ]; then

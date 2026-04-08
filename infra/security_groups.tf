@@ -94,16 +94,12 @@ resource "aws_security_group" "postgres" {
   description = "GUARDIAN database security group"
   vpc_id      = local.vpc_id
 
-  dynamic "ingress" {
-    for_each = local.effective_rds_proxy_enabled ? [] : [1]
-
-    content {
-      description     = "Database from server"
-      from_port       = 5432
-      to_port         = 5432
-      protocol        = "tcp"
-      security_groups = [aws_security_group.server.id]
-    }
+  ingress {
+    description     = "Database from server"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.server.id]
   }
 
   dynamic "ingress" {

@@ -85,6 +85,9 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # server_autoscaling_cpu_target = 65
 # server_autoscaling_memory_target = 75
 # rds_proxy_enabled = true
+# rds_proxy_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# In us-east-1, avoid subnets in us-east-1e/use1-az3 for RDS Proxy.
+# guardian_rate_limit_enabled = false
 # guardian_rate_burst_per_sec = 200
 # guardian_rate_per_min = 5000
 # guardian_db_pool_max_size = 32
@@ -128,6 +131,29 @@ cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>
 Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes:
 
 ```bash
+./scripts/aws-deploy.sh deploy --skip-build
+```
+
+For benchmark-oriented production deploys, prefer explicit overrides rather than changing the base prod profile in code. A typical starting point is:
+
+```bash
+set -a && source .env && set +a
+
+export DEPLOY_STAGE=prod
+export STACK_NAME=guardian-prod
+export TF_VAR_server_cpu=2048
+export TF_VAR_server_memory=4096
+export TF_VAR_server_desired_count=3
+export TF_VAR_server_autoscaling_min_capacity=3
+export TF_VAR_server_autoscaling_max_capacity=10
+export TF_VAR_rds_instance_class=db.r6g.large
+export TF_VAR_rds_allocated_storage=100
+export TF_VAR_rds_max_allocated_storage=400
+export TF_VAR_rds_proxy_subnet_ids='["subnet-25c1722b","subnet-4d0eca6c"]'
+export TF_VAR_guardian_db_pool_max_size=64
+export TF_VAR_guardian_metadata_db_pool_max_size=64
+export TF_VAR_guardian_rate_limit_enabled=false
+
 ./scripts/aws-deploy.sh deploy --skip-build
 ```
 

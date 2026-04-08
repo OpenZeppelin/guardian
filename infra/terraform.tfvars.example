@@ -20,6 +20,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # If not specified, uses the default VPC and all its subnets
 # vpc_id     = "vpc-xxxxxxxx"
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# rds_proxy_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# In us-east-1, avoid subnets in us-east-1e/use1-az3 for RDS Proxy.
 
 # Optional: Postgres credentials
 # Defaults derive from stack_name when omitted
@@ -47,6 +49,13 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Task resource configuration
 # server_cpu    = 512
 # server_memory = 1024
+
+# Optional: HTTP rate limiting and DB pool overrides
+# guardian_rate_limit_enabled = false
+# guardian_rate_burst_per_sec = 200
+# guardian_rate_per_min = 5000
+# guardian_db_pool_max_size = 32
+# guardian_metadata_db_pool_max_size = 32
 
 # Optional: Resource naming (defaults match the original bash script)
 # cluster_name                 = "guardian-cluster"

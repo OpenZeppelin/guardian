@@ -26,9 +26,9 @@ let builder = ServerBuilder::new()
 
 #### Rate Limiting
 
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
 - `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
-- `GUARDIAN_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
 
 #### Request Size Limits
 
@@ -163,33 +163,10 @@ The HTTP API includes built-in rate limiting to protect against abuse. Rate limi
 - **IP-based limits**: All requests are tracked by client IP address
 - **Enhanced keying**: When `x-pubkey` header or `account_id` query parameter is present, limits are applied per IP+account/signer combination
 - **Two windows**: Burst (per second) and sustained (per minute) limits are enforced independently
-- **Proxy support**: `X-Forwarded-For` and `X-Real-IP` are trusted only when the direct peer IP is listed in `GUARDIAN_TRUSTED_PROXY_IPS`, otherwise socket peer IP is used
+- **Ingress assumption**: GUARDIAN prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP. Deployments should restrict direct access so only the ingress proxy/load balancer can reach the server
+- **Disable switch**: `GUARDIAN_RATE_LIMIT_ENABLED=false` bypasses HTTP rate limiting entirely
 
-#### Proxy Trust Setup
-
-Use this rule of thumb:
-
-1. **GUARDIAN directly exposed to clients (no reverse proxy in front):**
-   - Leave `GUARDIAN_TRUSTED_PROXY_IPS` empty.
-   - GUARDIAN will ignore `X-Forwarded-For`/`X-Real-IP`.
-   - Rate limiting is enforced using the direct socket peer IP.
-
-2. **GUARDIAN behind a reverse proxy/load balancer/CDN:**
-   - Set `GUARDIAN_TRUSTED_PROXY_IPS` to the proxy IPs that connect directly to GUARDIAN.
-   - GUARDIAN will trust forwarded headers only from those IPs.
-   - Also restrict network access so only those proxy IPs can reach GUARDIAN.
-
-Examples:
-
-```bash
-# Direct deployment (safe default)
-GUARDIAN_TRUSTED_PROXY_IPS=
-
-# Behind trusted proxies
-GUARDIAN_TRUSTED_PROXY_IPS=10.0.1.10,10.0.1.11,127.0.0.1,::1
-```
-
-If GUARDIAN is behind a proxy but `GUARDIAN_TRUSTED_PROXY_IPS` is not configured, GUARDIAN will rate-limit by the proxy IP (clients may share the same limit bucket).
+If `GUARDIAN_RATE_LIMIT_ENABLED=false`, the HTTP server skips rate limiting regardless of the other rate-limit settings.
 
 #### Response When Limited
 
@@ -217,7 +194,7 @@ ServerBuilder::new()
     .with_body_limit(BodyLimitConfig::new(5 * 1024 * 1024))  // 5 MB
     // ...
 
-// Load from environment (GUARDIAN_RATE_BURST_PER_SEC, GUARDIAN_RATE_PER_MIN, GUARDIAN_TRUSTED_PROXY_IPS, GUARDIAN_MAX_REQUEST_BYTES)
+// Load from environment (GUARDIAN_RATE_LIMIT_ENABLED, GUARDIAN_RATE_BURST_PER_SEC, GUARDIAN_RATE_PER_MIN, GUARDIAN_MAX_REQUEST_BYTES)
 ServerBuilder::new()
     .with_rate_limit(RateLimitConfig::from_env())
     .with_body_limit(BodyLimitConfig::from_env())
