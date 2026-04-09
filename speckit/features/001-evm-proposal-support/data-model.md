@@ -78,7 +78,7 @@ radius, but proposal semantics become network-aware.
 | Field | Type | Notes |
 |-------|------|-------|
 | `account_id` | `String` | Existing account namespace |
-| `nonce` | `u64` | Ordering field; for EVM this is PSM-local ordering only |
+| `nonce` | `u64` | Ordering field; for EVM this is Guardian-local ordering only |
 | `commitment` | `String` | Deterministic proposal identifier; currently carried as response `commitment` |
 | `delta_payload` | `serde_json::Value` / JSON object | Network-specific proposal payload plus signatures/metadata |
 | `status` | `DeltaStatus` | Pending proposal state remains shared |

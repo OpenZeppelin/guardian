@@ -9,21 +9,21 @@ Introduce account-level `network_config` so Miden and EVM accounts can coexist
 in the same server, then refactor proposal and auth flows to route through
 network-specific capabilities instead of the current server-global network
 client. The implementation starts in `crates/server`, propagates contract
-changes into `crates/client` and `packages/psm-client`, preserves current Miden
+changes into `crates/client` and `packages/guardian-client`, preserves current Miden
 behavior, and makes unsupported EVM delta/state/canonicalization flows fail
 explicitly until a later lifecycle feature is defined.
 
 ## Technical Context
 
 **Language/Version**: Rust workspace crates + TypeScript packages; Miden `0.13.x` compatibility remains required  
-**Primary Dependencies**: `axum`, `tonic`/`prost`, `tokio`, `serde_json`, current metadata/storage backends, `private_state_manager_shared`, TS `packages/psm-client`; EVM RPC integration stays behind a server adapter boundary while the concrete contract-read surface is finalized  
+**Primary Dependencies**: `axum`, `tonic`/`prost`, `tokio`, `serde_json`, current metadata/storage backends, `private_state_manager_shared`, TS `packages/guardian-client`; EVM RPC integration stays behind a server adapter boundary while the concrete contract-read surface is finalized  
 **Storage**: Filesystem by default; Postgres metadata/storage parity remains required  
-**Testing**: Targeted Rust server/client tests, HTTP/gRPC adapter tests, TS `packages/psm-client` tests, backend parity tests, and conditional example smoke checks if the base-client surface reaches examples  
+**Testing**: Targeted Rust server/client tests, HTTP/gRPC adapter tests, TS `packages/guardian-client` tests, backend parity tests, and conditional example smoke checks if the base-client surface reaches examples  
 **Target Platform**: Rust server, Rust gRPC client, and TypeScript HTTP client  
 **Project Type**: Multi-language monorepo  
 **Performance Goals**: One signer-authority RPC read per authenticated EVM action is acceptable in v1; avoid backend-specific behavioral drift or unbounded proposal scans  
 **Constraints**: Preserve existing Miden behavior, keep HTTP/gRPC and Rust/TS parity, keep fallback behavior explicit, require explicit `network_config` without backward-compatibility fallbacks, keep append-only proposal storage semantics, and avoid broad API replacement while the EVM contract shape is still settling  
-**Scale/Scope**: `crates/server` (builder, main, network, metadata, services, api, proto, tests), `crates/client` (proto + request/response support), `packages/psm-client` (types, conversion, HTTP client, tests); multisig SDKs and examples are assessed but expected to remain unchanged in v1 unless lower-layer contract changes force propagation
+**Scale/Scope**: `crates/server` (builder, main, network, metadata, services, api, proto, tests), `crates/client` (proto + request/response support), `packages/guardian-client` (types, conversion, HTTP client, tests); multisig SDKs and examples are assessed but expected to remain unchanged in v1 unless lower-layer contract changes force propagation
 
 Implementation guidance: perform the account/network refactor as one unified
 network-aware architecture, optionally guarded by a rollout switch that rejects
@@ -98,7 +98,7 @@ service path behind a deep feature flag.
 - Extend HTTP and gRPC configure requests with `network_config`.
 - Extend auth config support to include an EVM ECDSA variant while keeping the
   overall auth model extensible.
-- Update `crates/client` and `packages/psm-client` request/response types,
+- Update `crates/client` and `packages/guardian-client` request/response types,
   conversion layers, and tests to reflect the new account-configuration and
   proposal semantics.
 - Assess multisig SDKs and examples after server/base-client design is settled;
@@ -139,7 +139,7 @@ crates/
 └── miden-keystore/
 
 packages/
-├── psm-client/
+├── guardian-client/
 └── miden-multisig-client/
 
 examples/
@@ -159,7 +159,7 @@ spec/
 - `crates/server/src/api/` and `crates/server/proto/`: carry the network-aware contract changes through HTTP and gRPC.
 - `crates/server/src/error.rs`: add explicit unsupported-operation errors for network/capability mismatches.
 - `crates/client/`: mirror gRPC contract changes and keep request-auth behavior aligned.
-- `packages/psm-client/src/`: update request/response types, conversion, and HTTP behavior for network-aware accounts and EVM proposals.
+- `packages/guardian-client/src/`: update request/response types, conversion, and HTTP behavior for network-aware accounts and EVM proposals.
 - `examples/` and multisig SDKs: assess impact after base-layer changes; keep out of scope unless propagation is required.
 
 ## Validation Plan
@@ -168,7 +168,7 @@ spec/
   `cargo test -p private-state-manager-server`
   `cargo test -p private-state-manager-client`
 - Targeted TypeScript tests:
-  `cd packages/psm-client && npm test`
+  `cd packages/guardian-client && npm test`
 - Server-specific regression targets:
   - account metadata serialization for filesystem and Postgres
   - `configure_account` for Miden and EVM
@@ -178,9 +178,9 @@ spec/
   - HTTP and gRPC adapter parity for configure and proposal flows
 - Upstream validation:
   - at least one Rust client path in `crates/client`
-  - at least one TypeScript client path in `packages/psm-client`
+  - at least one TypeScript client path in `packages/guardian-client`
 - Example validation when affected:
-  `cargo run -p psm-demo`
+  `cargo run -p guardian-demo`
   `cd examples/web && npm run dev`
 - Broader validation to run if blast radius grows:
   `cargo test --workspace`

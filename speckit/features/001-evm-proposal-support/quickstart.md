@@ -99,7 +99,7 @@ Miden behavior.
 ```bash
 cargo test -p private-state-manager-server
 cargo test -p private-state-manager-client
-cd packages/psm-client && npm test
+cd packages/guardian-client && npm test
 ```
 
 Run example smoke checks only if the base-client changes propagate into example

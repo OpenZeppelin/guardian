@@ -34,8 +34,8 @@ case "${agent_name}" in
     ;;
 esac
 
-active_technologies=$'- Rust monorepo centered on crates/server, crates/client, and crates/miden-multisig-client\n- TypeScript SDK packages: packages/psm-client and packages/miden-multisig-client\n- Dual transport surface: HTTP + gRPC with semantic parity requirements\n- Examples as validation surfaces: examples/demo, examples/web, examples/rust'
-commands=$'- `cargo test -p private-state-manager-server`\n- `cargo test -p private-state-manager-client`\n- `cargo test -p miden-multisig-client`\n- `cd packages/psm-client && npm test`\n- `cd packages/miden-multisig-client && npm test`'
+active_technologies=$'- Rust monorepo centered on crates/server, crates/client, and crates/miden-multisig-client\n- TypeScript SDK packages: packages/guardian-client and packages/miden-multisig-client\n- Dual transport surface: HTTP + gRPC with semantic parity requirements\n- Examples as validation surfaces: examples/demo, examples/web, examples/rust'
+commands=$'- `cargo test -p private-state-manager-server`\n- `cargo test -p private-state-manager-client`\n- `cargo test -p miden-multisig-client`\n- `cd packages/guardian-client && npm test`\n- `cd packages/miden-multisig-client && npm test`'
 recent_changes=$'- Constitution v1.0.0: bottom-up propagation, transport parity, append-only integrity, explicit auth, evidence-driven validation.\n- Feature workspaces live under `speckit/features/`.\n- Branch creation is manual; scripts only record the suggested feature branch.'
 
 if [ -n "${plan_file}" ] && [ -f "${plan_file}" ]; then
@@ -46,7 +46,7 @@ if [ -n "${plan_file}" ] && [ -f "${plan_file}" ]; then
 fi
 
 cat > "${target_file}" <<EOF
-# Private State Manager Agent Context
+# Guardian Agent Context
 
 Auto-generated from the active feature plan.
 
@@ -61,7 +61,7 @@ ${active_technologies}
 
 \`\`\`text
 crates/{server,client,shared,miden-multisig-client,miden-rpc-client,miden-keystore}
-packages/{psm-client,miden-multisig-client}
+packages/{guardian-client,miden-multisig-client}
 examples/{demo,web,rust}
 speckit/features/${feature_key:-[###-feature-name]}
 \`\`\`

@@ -82,7 +82,7 @@
 
 ## Decision 7: Use a hash-based proposal identifier and defer only the normalized input set
 
-- Decision: the EVM proposal identifier is a deterministic hash-based PSM value.
+- Decision: the EVM proposal identifier is a deterministic hash-based Guardian value.
 - Rationale: this gives cross-language determinism and avoids collisions that
   raw concatenation could allow once the executable payload becomes richer than
   `chain_id + address + nonce`.

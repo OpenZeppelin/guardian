@@ -8,7 +8,7 @@
 
 ## Context
 
-Private State Manager currently assumes a Miden-centric account and proposal
+Guardian currently assumes a Miden-centric account and proposal
 model. This feature introduces per-account network configuration so the system
 can support both existing Miden accounts and new EVM accounts without moving
 network selection to a server-global setting.
@@ -27,14 +27,14 @@ in v1 unless they surface the new EVM proposal workflow.
 
 ### Session 2026-03-18
 
-- Q: What is the canonical identity of an EVM account in PSM? -> A: `chain_id + contract_address`
+- Q: What is the canonical identity of an EVM account in Guardian? -> A: `chain_id + contract_address`
 - Q: Which EVM account configuration fields are initially expected? -> A: start with `chain_id`, `contract_address`, and required `rpc_endpoint`
 - Q: What EVM scope is desired for v1? -> A: proposal sharing and signing only; delta/state/canonicalization support for EVM is not in v1
 - Q: How should signer authority be validated for EVM accounts? -> A: re-check signer authority on every relevant action
 - Q: Which auth/signature model should EVM v1 use? -> A: keep the auth model extensible, but implement ECDSA only for EVM in v1
 - Q: How should per-account network configuration be represented? -> A: prefer a `network_config` model rather than unrelated top-level fields
 - Q: Should v1 use an indexer for EVM signer validation? -> A: no; use direct RPC reads only in v1 and require `rpc_endpoint`
-- Q: How should the EVM proposal identifier be represented? -> A: use a deterministic hash-based PSM proposal identifier rather than raw concatenation
+- Q: How should the EVM proposal identifier be represented? -> A: use a deterministic hash-based Guardian proposal identifier rather than raw concatenation
 - Q: Should this feature preserve backward compatibility for accounts missing `network_config`? -> A: no; missing `network_config` is invalid and new account configuration must be explicit
 
 ### Session 2026-04-09
@@ -45,9 +45,9 @@ in v1 unless they surface the new EVM proposal workflow.
 - Q: Which ERC-7579 modes are supported in v1? -> A: single-call and batch-call only, with default exec type and zero selector/mode payload; delegatecall, try-mode, and custom selector/payload are out of scope
 - Q: What signer types should EVM v1 support? -> A: normalized EOA addresses only
 - Q: What transport auth shape should EVM v1 use? -> A: keep `x-pubkey`, `x-signature`, and `x-timestamp`, but verify EVM requests using EIP-712 over a server-reconstructed payload; `x-pubkey` remains the legacy header name and carries the normalized signer address for EVM
-- Q: What exact bytes should EVM proposal cosigners sign? -> A: a PSM-defined EIP-712 coordination message over `(mode, keccak256(execution_calldata))`; execution is out of scope and the signature is not required to be directly reusable on-chain in v1
+- Q: What exact bytes should EVM proposal cosigners sign? -> A: a Guardian-defined EIP-712 coordination message over `(mode, keccak256(execution_calldata))`; execution is out of scope and the signature is not required to be directly reusable on-chain in v1
 - Q: Is the proposal create path allowed to include already-collected EVM signatures? -> A: no; create rejects non-empty signature arrays and signatures are appended only through `sign_delta_proposal`
-- Q: What does the EVM proposal `nonce` mean? -> A: it is PSM-local ordering only, not an on-chain multisig nonce and not part of the proposal identifier
+- Q: What does the EVM proposal `nonce` mean? -> A: it is Guardian-local ordering only, not an on-chain multisig nonce and not part of the proposal identifier
 - Q: How should duplicate EVM proposal creation behave? -> A: same computed proposal identifier is idempotent and returns the existing pending proposal
 - Q: What do legacy delta fields mean for EVM proposals? -> A: `prev_commitment`, `new_commitment`, `ack_sig`, `ack_pubkey`, and `ack_scheme` are explicitly unused for EVM v1 proposals
 - Q: How should pending EVM proposals age out in v1? -> A: they stay pending until a future explicit cleanup/reconciliation feature, subject to the existing pending-proposal cap
@@ -88,7 +88,7 @@ in v1 unless they surface the new EVM proposal workflow.
 ### User Story 1 - Configure Network-Aware Accounts (Priority: P1)
 
 As an operator, I can configure an account with explicit per-account network
-settings so PSM knows whether the account follows Miden or EVM behavior and can
+settings so Guardian knows whether the account follows Miden or EVM behavior and can
 preserve the correct validation rules for that account.
 
 **Why this priority**: Every later EVM flow depends on account-level network
@@ -129,7 +129,7 @@ signatures are rejected.
 
 1. **Given** an EVM account with valid signer authority, **When** an authorized
    caller creates a proposal, **Then** the proposal is stored as pending with a
-   deterministic hash-based PSM proposal identifier.
+   deterministic hash-based Guardian proposal identifier.
 2. **Given** a pending EVM proposal, **When** an authorized cosigner signs it,
    **Then** the signature is appended and the updated pending proposal is
    returned.
@@ -203,20 +203,20 @@ silent fallback semantics.
   a server-reconstructed request message derived from the canonical account ID,
   request timestamp, and request payload hash, while preserving the existing
   `x-pubkey`, `x-signature`, and `x-timestamp` transport fields.
-- **FR-007b**: EVM proposal cosigning MUST use a PSM-defined EIP-712
+- **FR-007b**: EVM proposal cosigning MUST use a Guardian-defined EIP-712
   coordination message over the normalized proposal payload and MUST remain
   separate from any future on-chain execution signature format.
 - **FR-008**: EVM proposal identifiers MUST be deterministic hash-based values
   derived from the normalized tuple `(chain_id, contract_address, mode,
   keccak256(execution_calldata))`.
 - **FR-008a**: EVM proposal identifiers MUST exclude collected signatures,
-  timestamps, and the PSM-local proposal nonce.
+  timestamps, and the Guardian-local proposal nonce.
 - **FR-009**: Unsupported EVM flows, including `push_delta`, `get_delta`,
   `get_delta_since`, `get_state`, and canonicalization-related behavior, MUST
   fail explicitly rather than reusing Miden semantics or silently degrading.
 - **FR-010**: Existing Miden proposal behavior MUST remain unaffected by EVM
   support.
-- **FR-011**: The EVM proposal `nonce` field MUST remain a PSM-local ordering
+- **FR-011**: The EVM proposal `nonce` field MUST remain a Guardian-local ordering
   field and MUST NOT be interpreted as an on-chain multisig nonce.
 - **FR-012**: Re-submitting an EVM proposal whose normalized identity matches an
   existing pending proposal MUST be idempotent and return the existing proposal.
@@ -273,7 +273,7 @@ silent fallback semantics.
 - EVM proposals are pending-only proposals in v1 and model ERC-7579
   `execute(mode, executionCalldata)` requests rather than Miden `tx_summary`
   payloads.
-- EVM proposal records use a deterministic PSM-defined hash identifier derived
+- EVM proposal records use a deterministic Guardian-defined hash identifier derived
   from normalized proposal contents rather than raw field concatenation.
 - EVM proposal signatures append to pending proposal records within the
   account/network namespace; v1 does not redefine append-only proposal storage
@@ -331,11 +331,11 @@ silent fallback semantics.
 ## Assumptions
 
 - The first EVM target is OpenZeppelin `ERC7579Multisig` as the signer and
-  threshold read model for PSM account validation.
+  threshold read model for Guardian account validation.
 - EVM signer validation is re-checked on every relevant action.
 - ECDSA is the only implemented EVM signature scheme in v1, but the model is
   intentionally extensible.
-- EVM request authentication and EVM proposal cosigning both use PSM-defined
+- EVM request authentication and EVM proposal cosigning both use Guardian-defined
   EIP-712 typed messages reconstructed by the server from the received request
   and proposal payloads.
 - EVM signer identities are normalized EOA addresses only in v1.

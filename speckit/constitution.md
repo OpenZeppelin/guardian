@@ -15,7 +15,7 @@ Templates requiring updates:
 Follow-up TODOs:
 - Revisit whether observability and offline import/export compatibility should become first-class principles.
 -->
-# Private State Manager Constitution
+# Guardian Constitution
 
 **Version**: 1.1.0  
 **Ratified**: 2026-03-18  
@@ -24,7 +24,7 @@ Follow-up TODOs:
 ## Purpose
 
 This constitution governs how feature work is specified, planned, and delivered
-in Private State Manager. It exists to preserve protocol integrity across the
+in Guardian. It exists to preserve protocol integrity across the
 server, Rust and TypeScript client layers, multisig SDKs, and validation
 examples in a multi-language codebase.
 

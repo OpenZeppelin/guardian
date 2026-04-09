@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Private State Manager EVM Proposal Support Draft
+  title: Guardian EVM Proposal Support Draft
   version: 0.1.0-draft
   description: >
     Draft HTTP contract changes for account-level network configuration and EVM
@@ -289,7 +289,7 @@ components:
         nonce:
           type: integer
           minimum: 0
-          description: PSM-local ordering field. For EVM it is not part of proposal identity.
+          description: Guardian-local ordering field. For EVM it is not part of proposal identity.
         delta_payload:
           oneOf:
             - $ref: '#/components/schemas/MidenProposalPayload'

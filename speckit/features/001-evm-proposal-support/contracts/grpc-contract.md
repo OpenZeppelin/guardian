@@ -80,7 +80,7 @@ message:
 
 ```text
 Domain:
-  name = "Private State Manager Request"
+  name = "Guardian Request"
   version = "1"
   chainId = network_config.chain_id
   verifyingContract = network_config.contract_address
@@ -121,15 +121,15 @@ network-aware:
 - EVM `mode` encodes ERC-7579 execution and v1 supports only single-call and
   batch-call modes with default exec type and zero selector/mode payload.
 - EVM proposal creation rejects non-empty `signatures`.
-- EVM proposal `nonce` remains a PSM-local ordering field only.
+- EVM proposal `nonce` remains a Guardian-local ordering field only.
 
 ## EVM Proposal Signature Meaning
 
-EVM proposal cosigners sign a PSM-defined EIP-712 coordination message:
+EVM proposal cosigners sign a Guardian-defined EIP-712 coordination message:
 
 ```text
 Domain:
-  name = "Private State Manager EVM Proposal"
+  name = "Guardian EVM Proposal"
   version = "1"
   chainId = network_config.chain_id
   verifyingContract = network_config.contract_address
