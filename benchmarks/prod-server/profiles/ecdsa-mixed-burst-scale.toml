@@ -1,0 +1,32 @@
+profile_name = "ecdsa-mixed-burst-scale"
+guardian_endpoint = "https://guardian.openzeppelin.com"
+transport = "grpc"
+duration_seconds = 300
+warmup_seconds = 0
+users = 4096
+accounts_per_user = 1
+deployment_shape = "prod-single-task-arm64-rds-proxy"
+artifacts_dir = "benchmarks/prod-server/reports"
+
+[operation_mix]
+read_operation = "get_state"
+reads_per_push = 4
+retire_after_first_successful_push = true
+
+[scheme_distribution]
+falcon_percent = 0
+ecdsa_percent = 100
+
+[canonicalization]
+sample_rate = 0.0
+poll_interval_ms = 1000
+timeout_seconds = 180
+
+[cleanup]
+enabled = true
+
+[aws]
+profile = "dev"
+region = "us-east-1"
+ecs_cluster = "guardian-prod-cluster"
+ecs_service = "guardian-prod-server"

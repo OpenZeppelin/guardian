@@ -14,3 +14,4 @@ CLAUDE.md
 
 crates/server/bench/results/*
 !crates/server/bench/results/.gitkeep
+benchmarks/prod-server/reports/

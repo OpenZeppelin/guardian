@@ -1,0 +1,28 @@
+[package]
+name = "guardian-prod-benchmarks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "guardian_prod_benchmarks"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+guardian-client = { path = "../../crates/client" }
+hex = { workspace = true }
+miden-confidential-contracts = { path = "../../crates/contracts" }
+miden-protocol = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "process", "rt-multi-thread", "time"] }
+tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }
