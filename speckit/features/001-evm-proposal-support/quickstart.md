@@ -1,8 +1,8 @@
 # Quickstart: Add generic EVM proposal sharing and signing support
 
 This quickstart is a validation-oriented walkthrough for the planned feature.
-It focuses on the safe refactor path that can proceed before the final EVM
-contract details are settled.
+It focuses on the agreed v1 shape for network-aware EVM proposal sharing and
+signing.
 
 ## 1. Configure a Miden account
 
@@ -18,10 +18,10 @@ Expected request shape:
 
 ```json
 {
-  "account_id": "evm-account-placeholder",
+  "account_id": "evm:1:0x0000000000000000000000000000000000000000",
   "auth": {
     "EvmEcdsa": {
-      "cosigner_commitments": []
+      "signers": []
     }
   },
   "network_config": {
@@ -37,29 +37,47 @@ Expected request shape:
 Expected result:
 
 - account configuration succeeds only if RPC-backed signer validation succeeds
+- `account_id` matches the canonical `chain_id + contract_address` identity
+- the server derives the EVM signer snapshot and threshold view from RPC
 - account metadata persists `network_config`
 - request-auth headers and replay protection still apply
+- for EVM accounts, request auth uses EIP-712 over a server-reconstructed
+  `AuthRequest(accountId, timestampMs, payloadHash)` message
 
 ## 3. Create an EVM proposal
+
+Expected request shape:
+
+```json
+{
+  "account_id": "evm:1:0x0000000000000000000000000000000000000000",
+  "nonce": 1,
+  "delta_payload": {
+    "kind": "evm",
+    "mode": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "execution_calldata": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "signatures": []
+  }
+}
+```
 
 Expected result:
 
 - proposal create routes through the EVM proposal capability
 - signer authority is re-validated through RPC
+- payload is validated as an ERC-7579 `execute(mode, executionCalldata)` shape
+- non-empty submitted signature arrays are rejected on create
 - proposal is stored as `pending`
 - response returns a deterministic hash-based proposal identifier
-
-Note:
-
-- the exact inner EVM proposal payload remains pending the contract-team answer
-- contract drafts currently treat the EVM executable payload as a normalized
-  object placeholder
+- repeated create of the same normalized proposal is idempotent
 
 ## 4. List, get, and sign an EVM proposal
 
 Expected result:
 
 - list/get/sign routes stay aligned between HTTP and gRPC
+- proposal signatures use EIP-712 over `(mode, keccak256(execution_calldata))`
+- signer identities are normalized EOA addresses
 - repeated signatures by the same signer are rejected explicitly
 - request auth remains explicit and replay-protected
 

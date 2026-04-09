@@ -101,10 +101,8 @@
   - Force a sync operation into v1 now. Rejected because the contract-readable
     state needed for correct reconciliation is not agreed yet.
 
-## Remaining External Inputs
+## Deferred Topics
 
-- Exact multisig contract shape and RPC-readable methods
-- Exact EVM proposal payload shape
-- Exact signed-bytes definition for cosigners
-- Final pending-only versus sync lifecycle decision
-- Final policy for RPC endpoint failure, rotation, and security constraints
+- RPC endpoint replacement or rotation policy remains deferred in v1.
+- On-chain execution reuse and explicit proposal reconciliation remain deferred
+  follow-up features.

@@ -4,8 +4,8 @@ info:
   version: 0.1.0-draft
   description: >
     Draft HTTP contract changes for account-level network configuration and EVM
-    proposal support. EVM executable payload details remain intentionally opaque
-    until the contract team finalizes the multisig contract shape.
+    proposal support based on OpenZeppelin ERC7579Multisig as the signer and
+    threshold read model.
 paths:
   /configure:
     post:
@@ -144,6 +144,9 @@ components:
       properties:
         account_id:
           type: string
+          description: >
+            Canonical account identifier. For EVM this is
+            `evm:<chain_id>:<normalized_contract_address>`.
         auth:
           $ref: '#/components/schemas/AuthConfig'
         network_config:
@@ -151,7 +154,8 @@ components:
         initial_state:
           description: >
             Existing network-specific account initialization payload. Miden keeps
-            its current shape; EVM may use a minimal placeholder object in v1.
+            its current shape; EVM uses an empty object placeholder in v1 and
+            the server derives signer snapshot and threshold from RPC.
           oneOf:
             - type: object
             - type: string
@@ -173,11 +177,20 @@ components:
       type: object
       required:
         - success
+        - code
         - error
       properties:
         success:
           type: boolean
           enum: [false]
+        code:
+          type: string
+          description: >
+            Stable application error code. Expected EVM-related values include
+            `unsupported_for_network`, `invalid_network_config`,
+            `rpc_unavailable`, `rpc_validation_failed`,
+            `signer_not_authorized`, `invalid_evm_proposal`,
+            `invalid_proposal_signature`, and `proposal_already_signed`.
         error:
           type: string
     NetworkConfig:
@@ -212,6 +225,7 @@ components:
           minimum: 1
         contract_address:
           type: string
+          description: Normalized `0x`-prefixed lowercase 20-byte hex address.
         rpc_endpoint:
           type: string
           format: uri
@@ -250,15 +264,16 @@ components:
       properties:
         EvmEcdsa:
           type: object
-          required: [cosigner_commitments]
+          required: [signers]
           properties:
-            cosigner_commitments:
+            signers:
               type: array
               items:
                 type: string
               description: >
-                Persisted signer snapshot. RPC remains the source of truth for
-                authorization on each relevant action.
+                Persisted signer snapshot as normalized EOA addresses. RPC
+                remains the source of truth for authorization on each relevant
+                action.
     DeltaProposalRequest:
       type: object
       required:
@@ -268,9 +283,13 @@ components:
       properties:
         account_id:
           type: string
+          description: >
+            Canonical account identifier. For EVM this is
+            `evm:<chain_id>:<normalized_contract_address>`.
         nonce:
           type: integer
           minimum: 0
+          description: PSM-local ordering field. For EVM it is not part of proposal identity.
         delta_payload:
           oneOf:
             - $ref: '#/components/schemas/MidenProposalPayload'
@@ -297,24 +316,29 @@ components:
       type: object
       required:
         - kind
-        - proposal
+        - mode
+        - execution_calldata
         - signatures
       properties:
         kind:
           type: string
           enum: [evm]
-        proposal:
-          type: object
-          additionalProperties: true
+        mode:
+          type: string
           description: >
-            Normalized executable EVM proposal payload. Exact fields remain TBD
-            pending the contract-team answer.
+            `0x`-prefixed 32-byte ERC-7579 mode. V1 supports only single-call
+            and batch-call execution with default exec type and zero
+            selector/mode payload.
+        execution_calldata:
+          type: string
+          description: >
+            `0x`-prefixed ERC-7579 execution calldata bytes corresponding to the
+            selected `mode`.
         signatures:
           type: array
           items:
             $ref: '#/components/schemas/SubmittedSignature'
-        metadata:
-          $ref: '#/components/schemas/ProposalMetadata'
+          description: Must be empty on proposal create; the server appends signatures later.
     ProposalMetadata:
       type: object
       additionalProperties: true
@@ -326,6 +350,9 @@ components:
       properties:
         signer_id:
           type: string
+          description: >
+            Signer identity. For EVM this is the normalized EOA address derived
+            from the signature.
         signature:
           $ref: '#/components/schemas/ProposalSignature'
     ProposalSignature:
@@ -346,8 +373,13 @@ components:
               enum: [ecdsa]
             signature:
               type: string
+              description: >
+                ECDSA signature. For EVM proposal signing, the signer address is
+                recovered from this signature against the EIP-712 proposal
+                message.
             public_key:
               type: string
+              description: Optional legacy field; not required for EVM proposal signing.
     DeltaProposalResponse:
       type: object
       required:
@@ -358,7 +390,9 @@ components:
           $ref: '#/components/schemas/DeltaObject'
         commitment:
           type: string
-          description: Deterministic hash-based proposal identifier
+          description: >
+            Deterministic hash-based proposal identifier derived from
+            `(chain_id, contract_address, mode, keccak256(execution_calldata))`.
     ProposalsResponse:
       type: object
       required: [proposals]
@@ -376,6 +410,9 @@ components:
       properties:
         account_id:
           type: string
+          description: >
+            Canonical account identifier. For EVM this is
+            `evm:<chain_id>:<normalized_contract_address>`.
         commitment:
           type: string
         signature:
@@ -395,17 +432,22 @@ components:
           type: integer
         prev_commitment:
           type: string
+          description: Unused for EVM proposal records in v1.
         new_commitment:
           type: string
+          description: Unused for EVM proposal records in v1.
         delta_payload:
           type: object
           additionalProperties: true
         ack_sig:
           type: string
+          description: Unused for EVM proposal records in v1.
         ack_pubkey:
           type: string
+          description: Unused for EVM proposal records in v1.
         ack_scheme:
           type: string
+          description: Unused for EVM proposal records in v1.
         status:
           $ref: '#/components/schemas/DeltaStatus'
     DeltaStatus:

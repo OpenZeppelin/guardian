@@ -25,6 +25,11 @@ explicitly until a later lifecycle feature is defined.
 **Constraints**: Preserve existing Miden behavior, keep HTTP/gRPC and Rust/TS parity, keep fallback behavior explicit, require explicit `network_config` without backward-compatibility fallbacks, keep append-only proposal storage semantics, and avoid broad API replacement while the EVM contract shape is still settling  
 **Scale/Scope**: `crates/server` (builder, main, network, metadata, services, api, proto, tests), `crates/client` (proto + request/response support), `packages/psm-client` (types, conversion, HTTP client, tests); multisig SDKs and examples are assessed but expected to remain unchanged in v1 unless lower-layer contract changes force propagation
 
+Implementation guidance: perform the account/network refactor as one unified
+network-aware architecture, optionally guarded by a rollout switch that rejects
+new EVM account configuration until enabled. Avoid a long-lived forked EVM
+service path behind a deep feature flag.
+
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
@@ -99,14 +104,11 @@ explicitly until a later lifecycle feature is defined.
 - Assess multisig SDKs and examples after server/base-client design is settled;
   update them only if the lower-layer contract change becomes observable there.
 
-### Open Blockers Carried Into Implementation
+### Deferred Topics
 
-- Final RPC-readable contract shape for signer set, threshold, nonce, and
-  related reads.
-- Final EVM proposal payload shape.
-- Final signed-bytes definition for EVM cosigners.
-- Final decision on whether pending-only is sufficient or a sync path is needed.
-- Final RPC mutability and failure policy for EVM accounts.
+- RPC endpoint replacement or rotation policy for EVM accounts.
+- Future sync/reconciliation or execution-tracking behavior for pending EVM
+  proposals.
 
 ## Project Structure
 

@@ -44,6 +44,9 @@ message ConfigureRequest {
 }
 ```
 
+For EVM accounts, `account_id` uses the canonical form
+`evm:<chain_id>:<normalized_contract_address>`.
+
 ### 3. Extend `AuthConfig`
 
 ```proto
@@ -56,9 +59,40 @@ message AuthConfig {
 }
 
 message EvmEcdsaAuth {
-  repeated string cosigner_commitments = 1;
+  repeated string signers = 1;
 }
 ```
+
+For EVM accounts, `signers` are normalized EOA addresses. V1 does not support
+ERC-1271 or generic ERC-7913 verifier-key signers.
+
+## Request Authentication
+
+Transport metadata remains:
+
+- `x-pubkey`
+- `x-signature`
+- `x-timestamp`
+
+For EVM accounts, `x-pubkey` keeps its legacy name and carries the normalized
+signer address. EVM request auth uses EIP-712 over a server-reconstructed typed
+message:
+
+```text
+Domain:
+  name = "Private State Manager Request"
+  version = "1"
+  chainId = network_config.chain_id
+  verifyingContract = network_config.contract_address
+
+AuthRequest(
+  string accountId,
+  uint64 timestampMs,
+  bytes32 payloadHash
+)
+```
+
+For gRPC, `payloadHash = keccak256(protobuf_request_bytes)`.
 
 ## Proposal RPC Direction
 
@@ -73,9 +107,43 @@ The outer RPC names stay stable. The inner `delta_payload` JSON becomes
 network-aware:
 
 - Miden keeps its current `tx_summary`-driven JSON shape.
-- EVM uses normalized JSON representing the executable proposal payload plus
-  signature entries.
-- The exact EVM inner JSON fields remain pending the contract-team answer.
+- EVM uses the exact normalized JSON shape:
+
+```json
+{
+  "kind": "evm",
+  "mode": "0x...",
+  "execution_calldata": "0x...",
+  "signatures": []
+}
+```
+
+- EVM `mode` encodes ERC-7579 execution and v1 supports only single-call and
+  batch-call modes with default exec type and zero selector/mode payload.
+- EVM proposal creation rejects non-empty `signatures`.
+- EVM proposal `nonce` remains a PSM-local ordering field only.
+
+## EVM Proposal Signature Meaning
+
+EVM proposal cosigners sign a PSM-defined EIP-712 coordination message:
+
+```text
+Domain:
+  name = "Private State Manager EVM Proposal"
+  version = "1"
+  chainId = network_config.chain_id
+  verifyingContract = network_config.contract_address
+
+PsmEvmProposal(
+  bytes32 mode,
+  bytes32 executionCalldataHash
+)
+```
+
+Where `executionCalldataHash = keccak256(execution_calldata)`.
+
+The signer address is recovered from the ECDSA signature and recorded as the
+normalized EOA `signer_id`.
 
 ## Unsupported EVM RPC Behavior
 
@@ -92,14 +160,29 @@ Canonicalization-related flows also remain unsupported for EVM accounts.
 ## Response Semantics
 
 - `PushDeltaProposalResponse.commitment` remains the outward proposal identifier.
-- For EVM v1, that identifier is a deterministic hash-based PSM value.
+- For EVM v1, that identifier is
+  `keccak256(abi.encode(chain_id, contract_address, mode, keccak256(execution_calldata)))`.
 - HTTP and gRPC must produce the same proposal identifier for equivalent
   normalized EVM proposals.
+- The identifier excludes local proposal nonce, collected signatures, and
+  timestamps.
+- Re-submitting the same EVM proposal is idempotent and returns the existing
+  pending proposal.
 
-## Remaining Team Inputs
+## Stable Application Error Codes
 
-- exact multisig contract reads required over RPC
-- final EVM proposal payload structure
-- exact signed-bytes definition for EVM cosigners
-- final lifecycle behavior for pending proposals
-- final RPC failure and endpoint-rotation policy
+Both transports should expose the same application-level error codes alongside
+their native HTTP or gRPC status:
+
+- `unsupported_for_network`
+- `invalid_network_config`
+- `rpc_unavailable`
+- `rpc_validation_failed`
+- `signer_not_authorized`
+- `invalid_evm_proposal`
+- `invalid_proposal_signature`
+- `proposal_already_signed`
+
+## Deferred Topics
+
+- RPC endpoint replacement or rotation policy is deferred in v1.

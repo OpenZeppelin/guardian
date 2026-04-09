@@ -33,5 +33,5 @@ ready for planning and implementation
 
 ## Notes
 
-- The spec is ready to move into planning with the remaining team questions kept
-  explicitly in `Open Questions For Team`.
+- The spec is ready to move into planning with deferred follow-up items kept in
+  `Deferred Topics`.
