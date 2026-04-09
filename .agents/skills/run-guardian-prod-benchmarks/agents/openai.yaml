@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Guardian Prod Benchmarks"
+  short_description: "Run and report Guardian prod benchmarks"
+  default_prompt: "Use $run-guardian-prod-benchmarks to prepare, execute, and report Guardian production benchmarks with the ECS client harness."
