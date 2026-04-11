@@ -30,8 +30,8 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.13.3"
-miden-client = "0.13.0"
+miden-multisig-client = "0.14.0"
+miden-client = "0.14.0"
 ```
 
 ### 5-Minute Example
@@ -41,16 +41,16 @@ Create a 1-of-3 multisig account, propose a transfer, collect signatures, and ex
 #### TypeScript
 
 ```typescript
-import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
+import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 
 // 1. Setup clients
-const midenClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+const midenClient = await MidenClient.createDevnet();
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 const client = new MultisigClient(midenClient, {
   guardianEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
 
 // 2. Get GUARDIAN server public key
@@ -200,7 +200,7 @@ For air-gapped or offline signing scenarios:
 ### Installation & Setup
 
 ```typescript
-import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
+import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import {
   MultisigClient,
   Multisig,
@@ -209,17 +209,17 @@ import {
   type MultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
 
-// Initialize web client (connects to Miden node)
-const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+// Initialize Miden client (connects to Miden node)
+const midenClient = await MidenClient.createDevnet();
 
 // Create signer from secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
 // Initialize multisig client
-const client = new MultisigClient(webClient, {
+const client = new MultisigClient(midenClient, {
   guardianEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
 ```
 
@@ -814,6 +814,7 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
+| 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
 | 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
 | 0.12.x | 0.12.5 | ^0.12.5 | Initial release |
 
@@ -904,8 +905,8 @@ cd packages/miden-multisig-client && npm publish --access public
 1. Tag the release:
 
 ```bash
-git tag v0.13.3
-git push origin v0.13.3
+git tag v0.14.0
+git push origin v0.14.0
 ```
 
 2. Create a GitHub release from the tag with release notes.

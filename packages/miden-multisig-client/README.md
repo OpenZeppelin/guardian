@@ -17,26 +17,25 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @demox-labs/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```
 
 ## Setup
 
 ```typescript
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 
-// Initialize Miden WebClient
-const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+const midenClient = await MidenClient.createDevnet();
 
 // Create a signer from your secret key
-const secretKey = SecretKey.rpoFalconWithRNG(seed);
+const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
 // Create MultisigClient
-const client = new MultisigClient(webClient, {
+const client = new MultisigClient(midenClient, {
   guardianEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
 ```
 
@@ -94,12 +93,10 @@ console.log('Created:', state.createdAt);
 
 ```typescript
 // Create a proposal to add a new signer
-const nonce = Math.floor(Math.random() * 1_000_000_000);
 const proposal = await multisig.createAddSignerProposal(
-  webClient,
   newSignerCommitment, // Commitment of signer to add
-  nonce,               // Optional nonce (random value)
-  3,                   // Optional new threshold
+  undefined,
+  3,
 );
 console.log('Proposal ID:', proposal.id);
 ```
@@ -143,7 +140,7 @@ When a proposal has enough signatures:
 
 ```typescript
 if (proposal.status === 'ready') {
-  await multisig.executeProposal(proposal.id, webClient);
+  await multisig.executeProposal(proposal.id);
   console.log('Transaction executed on-chain!');
 }
 ```
@@ -190,7 +187,7 @@ const bytes = hexToUint8Array('deadbeef');
 
 // Add auth scheme prefix to signature
 const sigBytes = signatureHexToBytes(signatureHex);
-// => Uint8Array with 0x00 prefix (RpoFalcon512)
+// => Uint8Array with the Falcon Poseidon2 auth prefix
 ```
 
 ## Testing

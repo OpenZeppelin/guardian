@@ -77,6 +77,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Trust current source in `examples/smoke-web/src/` and `examples/_shared/multisig-browser/src/` over README text when they disagree, and note the mismatch in your result.
 - Do not mark a workflow as passed unless the expected state transition is visible in `status()`, `events()`, proposal lists, notes, or explicit command output.
 - For external actions that happen outside the command API, such as faucet submission or wallet modal interaction, pair the manual step with an immediate `status()` or `events()` capture.
+- In the GUARDIAN-ack flow, remember that the browser client pushes the delta to GUARDIAN before the final transaction is submitted on-chain. Early canonicalization polls can therefore see the previous or zero on-chain commitment while proving or submission is still in flight.
 - When `executeProposal` fails with `Refusing to overwrite local state: incoming nonce ... is not greater than local nonce ...`, treat that as a reportable pre-canonicalization state, not an immediate terminal failure. Keep syncing until the expected account state converges or the workflow times out.
 
 ## Timing Discipline
@@ -119,6 +120,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Verify proposal IDs stay stable across export, import, offline sign, and execute.
 - Verify collected vs required signatures before execute.
 - Verify execute changes account state, proposal visibility, nonce-sensitive behavior, or detected vault state.
+- Treat an early post-`push_delta` or post-execute on-chain `0x000...0` commitment, or a first canonicalization mismatch, as expected pending state by itself. Only treat it as a product failure if the account never converges after the proving/submission window or reaches a terminal discard/timeout.
 - Verify note visibility before `consume_notes` and after self-P2ID transfer.
 - Verify Para and Miden Wallet sessions expose commitment, public key, and connected state after connect.
 - Verify `Switch GUARDIAN` proves real post-switch behavior, not just local proposal mutation.

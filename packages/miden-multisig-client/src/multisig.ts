@@ -16,7 +16,12 @@ import type {
   ProposalType,
 } from './types.js';
 import type { ProcedureName } from './procedures.js';
-import type { WebClient, TransactionRequest } from '@miden-sdk/miden-sdk';
+import type {
+  MidenClient,
+  TransactionProver,
+  TransactionRequest,
+  WasmWebClient,
+} from '@miden-sdk/miden-sdk';
 import {
   Account,
   AccountId,
@@ -53,6 +58,7 @@ import { AccountInspector } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
+import { getRawMidenClient, getTransactionProver } from './raw-client.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -87,7 +93,9 @@ export class Multisig {
 
   private guardian: GuardianHttpClient;
   private readonly signer: Signer;
-  private readonly webClient: WebClient;
+  private readonly midenClient: MidenClient;
+  private readonly rawClientPromise: Promise<WasmWebClient>;
+  private readonly transactionProver: TransactionProver | null;
   private readonly _accountId: string;
   private readonly midenRpcEndpoint?: string;
   private proposals: Map<string, Proposal> = new Map();
@@ -97,7 +105,7 @@ export class Multisig {
     config: MultisigConfig,
     guardian: GuardianHttpClient,
     signer: Signer,
-    webClient: WebClient,
+    midenClient: MidenClient,
     accountId?: string,
     midenRpcEndpoint?: string
   ) {
@@ -111,9 +119,11 @@ export class Multisig {
     );
     this.guardian = guardian;
     this.signer = signer;
-    this.webClient = webClient;
+    this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
     this.midenRpcEndpoint = midenRpcEndpoint;
+    this.rawClientPromise = getRawMidenClient(midenClient, midenRpcEndpoint);
+    this.transactionProver = getTransactionProver(midenClient);
   }
 
   private getMidenRpcEndpoint(): string {
@@ -121,6 +131,10 @@ export class Multisig {
       throw new Error('Missing Miden RPC endpoint in MultisigClient configuration');
     }
     return this.midenRpcEndpoint;
+  }
+
+  private async getRawClient(): Promise<WasmWebClient> {
+    return this.rawClientPromise;
   }
 
   private proposalFactory(): ProposalFactory {
@@ -228,7 +242,7 @@ export class Multisig {
   }
 
   /**
-   * Sync account state from GUARDIAN into the local WebClient store.
+   * Sync account state from GUARDIAN into the local Miden client store.
    *
    * If the GUARDIAN commitment differs from the local commitment (or the account
    * is missing locally), the local store is overwritten with the GUARDIAN state.
@@ -236,19 +250,20 @@ export class Multisig {
   async syncState(): Promise<AccountState> {
     const state = await this.fetchState();
     const accountId = AccountId.fromHex(this._accountId);
-    const localAccount = await this.webClient.getAccount(accountId);
+    const webClient = await this.getRawClient();
+    const localAccount = await webClient.getAccount(accountId);
     let accountForConfigRefresh: Account | null = localAccount ?? null;
 
     const guardianCommitment = normalizeHexWord(state.commitment);
     const localCommitment = localAccount
-      ? normalizeHexWord(localAccount.commitment().toHex())
+      ? normalizeHexWord(localAccount.to_commitment().toHex())
       : null;
 
     if (!localAccount || localCommitment !== guardianCommitment) {
       const accountBytes = base64ToUint8Array(state.stateDataBase64);
       const incomingAccount = Account.deserialize(accountBytes);
       await this.ensureSafeToOverwriteLocalState(incomingAccount, localAccount);
-      await this.webClient.newAccount(incomingAccount, true);
+      await webClient.newAccount(incomingAccount, true);
       accountForConfigRefresh = incomingAccount;
     }
 
@@ -259,7 +274,8 @@ export class Multisig {
 
   async verifyStateCommitment(): Promise<AccountStateVerificationResult> {
     const accountId = AccountId.fromHex(this._accountId);
-    const localAccount = await this.webClient.getAccount(accountId);
+    const webClient = await this.getRawClient();
+    const localAccount = await webClient.getAccount(accountId);
 
     if (!localAccount) {
       throw new Error(
@@ -267,7 +283,7 @@ export class Multisig {
       );
     }
 
-    const localCommitment = normalizeHexWord(localAccount.commitment().toHex());
+    const localCommitment = normalizeHexWord(localAccount.to_commitment().toHex());
     const onChainCommitment = await this.getOnChainCommitment(accountId);
 
     if (!onChainCommitment) {
@@ -308,7 +324,7 @@ export class Multisig {
       return;
     }
 
-    const incomingCommitment = normalizeHexWord(incomingAccount.commitment().toHex());
+    const incomingCommitment = normalizeHexWord(incomingAccount.to_commitment().toHex());
     if (incomingCommitment !== onChainCommitment) {
       throw new Error(
         `Refusing to overwrite local state: incoming commitment does not match on-chain commitment for account ${this._accountId}`
@@ -472,17 +488,18 @@ export class Multisig {
     nonce?: number,
     newThreshold?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     const targetThreshold = newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      this.webClient,
+      webClient,
       targetThreshold,
       targetSignerCommitments,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -510,6 +527,7 @@ export class Multisig {
     nonce?: number,
     newThreshold?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
@@ -531,13 +549,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      this.webClient,
+      webClient,
       targetThreshold,
       targetSignerCommitments,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -563,6 +581,7 @@ export class Multisig {
     newThreshold: number,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
@@ -574,13 +593,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      this.webClient,
+      webClient,
       newThreshold,
       this.signerCommitments,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -601,6 +620,7 @@ export class Multisig {
     targetThreshold: number,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${targetThreshold}. Must be between 0 and ${this.signerCommitments.length}`
@@ -619,13 +639,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateProcedureThresholdTransactionRequest(
-      this.webClient,
+      webClient,
       targetProcedure,
       targetThreshold,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
     const action = targetThreshold === 0
@@ -656,15 +676,16 @@ export class Multisig {
     newGuardianPubkey: string,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
     const { request, salt } = await buildUpdateGuardianTransactionRequest(
-      this.webClient,
+      webClient,
       newGuardianPubkey,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -702,13 +723,14 @@ export class Multisig {
     noteIds: string[],
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
     }
 
-    const { request, salt } = await buildConsumeNotesTransactionRequest(this.webClient, noteIds);
+    const { request, salt } = await buildConsumeNotesTransactionRequest(webClient, noteIds);
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -737,6 +759,7 @@ export class Multisig {
     amount: bigint,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (amount <= 0n) {
       throw new Error('Amount must be greater than 0');
     }
@@ -748,7 +771,7 @@ export class Multisig {
       amount,
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -773,9 +796,10 @@ export class Multisig {
    */
   async getConsumableNotes(): Promise<ConsumableNote[]> {
     const accountId = AccountId.fromHex(this._accountId);
+    const webClient = await this.getRawClient();
 
     // Get consumable notes for this account
-    const consumableRecords = await this.webClient.getConsumableNotes(accountId);
+    const consumableRecords = await webClient.getConsumableNotes(accountId);
 
     // Convert to our simplified ConsumableNote type
     const notes: ConsumableNote[] = [];
@@ -880,10 +904,7 @@ export class Multisig {
     const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
 
     const accountId = AccountId.fromHex(this._accountId);
-    const result = await this.webClient.executeTransaction(accountId, finalRequest);
-    const proven = await this.webClient.proveTransaction(result, null);
-    const submissionHeight = await this.webClient.submitProvenTransaction(proven, result);
-    await this.webClient.applyTransaction(result, submissionHeight);
+    await this.midenClient.transactions.submit(accountId, finalRequest);
 
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
@@ -891,9 +912,10 @@ export class Multisig {
       }
 
       try {
-        await this.webClient.syncState();
+        const webClient = await this.getRawClient();
+        await webClient.syncState();
 
-        const updatedAccount = await this.webClient.getAccount(accountId);
+        const updatedAccount = await webClient.getAccount(accountId);
         if (!updatedAccount) {
           throw new Error(
             `Updated account ${this._accountId} is missing from local client`
@@ -1249,7 +1271,8 @@ export class Multisig {
       : summary.salt();
 
     const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
-    const reconstructed = await executeForSummary(this.webClient, this._accountId, request);
+    const webClient = await this.getRawClient();
+    const reconstructed = await executeForSummary(webClient, this._accountId, request);
     const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
 
     if (reconstructedCommitment !== txSummaryCommitment) {
@@ -1264,12 +1287,14 @@ export class Multisig {
     salt: Word,
     signatureAdviceMap?: AdviceMap,
   ): Promise<TransactionRequest> {
+    const webClient = await this.getRawClient();
+
     switch (metadata.proposalType) {
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold': {
         const { request } = await buildUpdateSignersTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
           { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
@@ -1278,7 +1303,7 @@ export class Multisig {
       }
       case 'switch_guardian': {
         const { request } = await buildUpdateGuardianTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.newGuardianPubkey,
           { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
         );
@@ -1286,7 +1311,7 @@ export class Multisig {
       }
       case 'update_procedure_threshold': {
         const { request } = await buildUpdateProcedureThresholdTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.targetProcedure,
           metadata.targetThreshold,
           { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
@@ -1295,7 +1320,7 @@ export class Multisig {
       }
       case 'consume_notes': {
         const { request } = await buildConsumeNotesTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.noteIds,
           { salt, signatureAdviceMap }
         );

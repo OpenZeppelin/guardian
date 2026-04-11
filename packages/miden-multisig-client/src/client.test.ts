@@ -63,14 +63,13 @@ describe('MultisigClient', () => {
     mockFetch.mockReset();
 
     webClient = {
-      createScriptBuilder: vi.fn(),
-      executeTransaction: vi.fn(),
-      proveTransaction: vi.fn(),
-      submitProvenTransaction: vi.fn(),
-      applyTransaction: vi.fn(),
-      syncState: vi.fn(),
-      newAccount: vi.fn(),
-      getAccount: vi.fn().mockResolvedValue(null),
+      accounts: {
+        get: vi.fn().mockResolvedValue(null),
+        insert: vi.fn().mockResolvedValue(undefined),
+      },
+      keystore: {
+        insert: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     mockSigner = {
@@ -132,6 +131,23 @@ describe('MultisigClient', () => {
       const multisig = await client.create(config, mockSigner);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
     });
+
+    it('binds the signer auth key to the created account when supported', async () => {
+      const client = new MultisigClient(webClient);
+      const bindAccountKey = vi.fn().mockResolvedValue(undefined);
+      const bindingSigner = {
+        ...mockSigner,
+        bindAccountKey,
+      };
+
+      await client.create({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      }, bindingSigner);
+
+      expect(bindAccountKey).toHaveBeenCalledWith(webClient, '0x' + 'a'.repeat(30));
+    });
   });
 
   describe('load', () => {
@@ -160,6 +176,8 @@ describe('MultisigClient', () => {
       expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)]);
       expect(multisig.guardianCommitment).toBe('0x' + 'c'.repeat(64));
       expect(multisig.account).not.toBeNull();
+      expect(webClient.accounts.get).toHaveBeenCalledTimes(1);
+      expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
     });
 
     it('should throw if account not found on GUARDIAN', async () => {
@@ -204,6 +222,32 @@ describe('MultisigClient', () => {
       const multisig = await client.load(accountId, mockSigner);
 
       await expect(multisig.registerOnGuardian()).resolves.toBeUndefined();
+      expect(webClient.accounts.get).toHaveBeenCalledTimes(1);
+      expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('binds the signer auth key after loading an account when supported', async () => {
+      const client = new MultisigClient(webClient);
+      const bindAccountKey = vi.fn().mockResolvedValue(undefined);
+      const bindingSigner = {
+        ...mockSigner,
+        bindAccountKey,
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await client.load('0x' + 'd'.repeat(30), bindingSigner);
+
+      expect(bindAccountKey).toHaveBeenCalledWith(webClient, '0x' + 'd'.repeat(30));
     });
   });
 });

@@ -6,10 +6,12 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     serialize: () => new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
   };
 
+  const mockCommitment = {
+    toHex: () => '0x' + 'a'.repeat(64),
+  };
+
   const mockPublicKey = {
-    toCommitment: () => ({
-      toHex: () => '0x' + 'a'.repeat(64),
-    }),
+    toCommitment: () => mockCommitment,
     serialize: () => new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
   };
 
@@ -30,6 +32,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     },
     AccountId: {
       fromHex: vi.fn((hex: string) => ({
+        toString: () => hex,
         prefix: () => ({ asInt: () => BigInt(1) }),
         suffix: () => ({ asInt: () => BigInt(2) }),
       })),
@@ -145,6 +148,50 @@ describe('FalconSigner', () => {
     it('returns signature without first byte', async () => {
       const signature = await signer.signCommitment('0x' + 'c'.repeat(64));
       expect(signature).toBe('0x010203040506070809');
+    });
+  });
+
+  describe('bindAccountKey', () => {
+    it('inserts the signer key when the commitment is not bound yet', async () => {
+      const midenClient = {
+        keystore: {
+          getAccountId: vi.fn().mockResolvedValue(null),
+          insert: vi.fn().mockResolvedValue(undefined),
+        },
+      };
+
+      await signer.bindAccountKey(midenClient as never, '0x' + 'd'.repeat(30));
+
+      expect(midenClient.keystore.getAccountId).toHaveBeenCalledTimes(1);
+      expect(midenClient.keystore.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips insert when the signer key is already bound to the same account', async () => {
+      const accountId = '0x' + 'd'.repeat(30);
+      const midenClient = {
+        keystore: {
+          getAccountId: vi.fn().mockResolvedValue({ toString: () => accountId }),
+          insert: vi.fn().mockResolvedValue(undefined),
+        },
+      };
+
+      await signer.bindAccountKey(midenClient as never, accountId);
+
+      expect(midenClient.keystore.insert).not.toHaveBeenCalled();
+    });
+
+    it('throws when the signer key is already bound to a different account', async () => {
+      const midenClient = {
+        keystore: {
+          getAccountId: vi.fn().mockResolvedValue({ toString: () => '0x' + 'e'.repeat(30) }),
+          insert: vi.fn().mockResolvedValue(undefined),
+        },
+      };
+
+      await expect(
+        signer.bindAccountKey(midenClient as never, '0x' + 'd'.repeat(30)),
+      ).rejects.toThrow('already bound to account');
+      expect(midenClient.keystore.insert).not.toHaveBeenCalled();
     });
   });
 });

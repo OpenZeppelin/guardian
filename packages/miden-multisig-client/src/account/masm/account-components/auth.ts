@@ -5,12 +5,11 @@ export const MULTISIG_ACCOUNT_COMPONENT_MASM = `# Multi-Signature RPO Falcon 512
 
 use openzeppelin::auth::multisig
 
-type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
-
 pub use multisig::update_signers_and_threshold
 pub use multisig::update_procedure_threshold
 
-pub proc auth_tx_multisig(salt: BeWord)
+@auth_script
+pub proc auth_tx_multisig(salt: word)
     exec.multisig::auth_tx
     exec.multisig::assert_new_tx
 end
@@ -21,14 +20,13 @@ export const MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM = `# Multi-Signature RPO F
 use openzeppelin::auth::multisig
 use openzeppelin::auth::guardian
 
-type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
-
 pub use multisig::update_signers_and_threshold
 pub use multisig::update_procedure_threshold
 pub use guardian::update_guardian_public_key
 pub use guardian::verify_guardian_signature
 
-pub proc auth_tx_multisig_guardian(salt: BeWord)
+@auth_script
+pub proc auth_tx_multisig_guardian(salt: word)
     exec.multisig::auth_tx
     exec.guardian::verify_guardian_signature
     exec.multisig::assert_new_tx
@@ -39,12 +37,11 @@ export const MULTISIG_ECDSA_ACCOUNT_COMPONENT_MASM = `# Multi-Signature ECDSA se
 
 use openzeppelin::auth::multisig_ecdsa
 
-type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
-
 pub use multisig_ecdsa::update_signers_and_threshold
 pub use multisig_ecdsa::update_procedure_threshold
 
-pub proc auth_tx_multisig_ecdsa(salt: BeWord)
+@auth_script
+pub proc auth_tx_multisig_ecdsa(salt: word)
     exec.multisig_ecdsa::auth_tx
     exec.multisig_ecdsa::assert_new_tx
 end
@@ -55,14 +52,13 @@ export const MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM = `# Multi-Signature
 use openzeppelin::auth::multisig_ecdsa
 use openzeppelin::auth::guardian_ecdsa
 
-type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
-
 pub use multisig_ecdsa::update_signers_and_threshold
 pub use multisig_ecdsa::update_procedure_threshold
 pub use guardian_ecdsa::update_guardian_public_key
 pub use guardian_ecdsa::verify_guardian_signature
 
-pub proc auth_tx_multisig_guardian_ecdsa(salt: BeWord)
+@auth_script
+pub proc auth_tx_multisig_guardian_ecdsa(salt: word)
     exec.multisig_ecdsa::auth_tx
     exec.guardian_ecdsa::verify_guardian_signature
     exec.multisig_ecdsa::assert_new_tx

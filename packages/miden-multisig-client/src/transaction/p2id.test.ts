@@ -21,10 +21,20 @@ const {
     mockRandomWord: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'aa'.repeat(32),
     }),
-    mockWordFromHex: vi.fn((hex: string) => ({
-      toHex: () => hex,
-      toFelts: () => saltFelts,
-    })),
+    mockWordFromHex: vi.fn((hex: string) => {
+      const normalized = hex.toLowerCase();
+      return {
+        toHex: () => hex,
+        toFelts: () => normalized === `0x${'00'.repeat(32)}`
+          ? [
+              { value: 0n },
+              { value: 0n },
+              { value: 0n },
+              { value: 0n },
+            ]
+          : saltFelts,
+      };
+    }),
     saltFelts,
   };
 });
@@ -50,7 +60,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     constructor(_assets: unknown[]) {}
   }
 
-  class NoteInputs {
+  class NoteStorage {
     constructor(_inputs: FeltArray) {}
   }
 
@@ -82,7 +92,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     constructor(_faucet: unknown, _amount: bigint) {}
   }
 
-  class OutputNoteArray {
+  class NoteArray {
     constructor(_notes: unknown[]) {}
   }
 
@@ -116,13 +126,13 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     FeltArray,
     FungibleAsset,
     MidenArrays: {
-      OutputNoteArray,
+      NoteArray,
     },
     Note,
     NoteAssets,
-    NoteInputs,
     NoteMetadata,
     NoteRecipient,
+    NoteStorage,
     NoteScript: {
       p2id: vi.fn(() => ({ kind: 'p2id-script' })),
     },
@@ -135,7 +145,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     OutputNote: {
       full: vi.fn((note: unknown) => ({ note })),
     },
-    Rpo256: {
+    Poseidon2: {
       hashElements: mockHashElements,
     },
     TransactionRequestBuilder,

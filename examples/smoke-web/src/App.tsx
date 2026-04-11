@@ -557,7 +557,7 @@ export default function App() {
 
 await window.smoke.initSession({
   guardianEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
   signerSource: 'local',
   signatureScheme: 'falcon',
   browserLabel: 'chrome-a',

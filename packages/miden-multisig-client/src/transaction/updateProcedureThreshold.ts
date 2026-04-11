@@ -1,11 +1,12 @@
 import {
   Felt,
   FeltArray,
-  Rpo256,
+  type MidenClient,
+  Poseidon2,
   TransactionRequest,
   TransactionRequestBuilder,
   TransactionScript,
-  WebClient,
+  type WasmWebClient,
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
@@ -14,6 +15,7 @@ import {
   MULTISIG_MASM,
 } from '../account/masm/auth.js';
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
+import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
@@ -31,25 +33,22 @@ function buildProcedureThresholdAdvice(
     new Felt(0n),
     new Felt(0n),
   ]);
-  const configHash = Rpo256.hashElements(payload);
+  const configHash = Poseidon2.hashElements(payload);
   return { configHash, payload };
 }
 
-function buildUpdateProcedureThresholdScript(
-  webClient: WebClient,
+async function buildUpdateProcedureThresholdScript(
+  client: MidenClient | WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
   signatureScheme: SignatureScheme,
-): TransactionScript {
-  const libBuilder = webClient.createCodeBuilder();
+  midenRpcEndpoint?: string,
+): Promise<TransactionScript> {
   const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
-
-  const multisigLib = libBuilder.buildLibrary('auth::multisig', multisigMasm);
-  libBuilder.linkDynamicLibrary(multisigLib);
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
 
   const scriptSource = `
-use auth::multisig
+use oz_multisig::multisig
 
 begin
     push.${procedureRoot}
@@ -60,11 +59,16 @@ begin
 end
   `;
 
-  return libBuilder.compileTxScript(scriptSource);
+  return compileTxScript(
+    client,
+    scriptSource,
+    [{ namespace: 'oz_multisig::multisig', code: multisigMasm }],
+    midenRpcEndpoint,
+  );
 }
 
 export async function buildUpdateProcedureThresholdTransactionRequest(
-  webClient: WebClient,
+  client: MidenClient | WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
   options: SignatureOptions = {},
@@ -72,11 +76,12 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
   const signatureScheme = options.signatureScheme ?? 'falcon';
   const { configHash } = buildProcedureThresholdAdvice(procedure, threshold);
 
-  const script = buildUpdateProcedureThresholdScript(
-    webClient,
+  const script = await buildUpdateProcedureThresholdScript(
+    client,
     procedure,
     threshold,
     signatureScheme,
+    options.midenRpcEndpoint,
   );
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
   const authSalt = WordType.fromHex(normalizeHexWord(authSaltHex));

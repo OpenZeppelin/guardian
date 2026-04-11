@@ -48,7 +48,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     insert: vi.fn(),
   })),
   FeltArray: vi.fn().mockImplementation((arr: any[]) => arr),
-  Rpo256: {
+  Poseidon2: {
     hashElements: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'e'.repeat(64),
     }),
@@ -121,6 +121,9 @@ function mockedAccount(commitmentHex: string, nonce = 0): any {
     commitment: () => ({
       toHex: () => commitmentHex,
     }),
+    to_commitment: () => ({
+      toHex: () => commitmentHex,
+    }),
     nonce: () => ({
       asInt: () => BigInt(nonce),
     }),
@@ -187,6 +190,11 @@ describe('Multisig', () => {
       proveTransaction: vi.fn(),
       submitProvenTransaction: vi.fn(),
       applyTransaction: vi.fn(),
+      submitNewTransaction: vi.fn(),
+      submitNewTransactionWithProver: vi.fn(),
+      transactions: {
+        submit: vi.fn(),
+      },
       getConsumableNotes: vi.fn().mockResolvedValue([]),
       syncState: vi.fn(),
       getAccount: vi.fn().mockResolvedValue(null),
@@ -384,11 +392,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'b'.repeat(64),
-        }),
-      });
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -576,11 +580,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      mockWebClient.getAccount.mockResolvedValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'b'.repeat(64),
-        }),
-      });
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
 
       const multisigWithRpc = new Multisig(
         mockAccount,
@@ -628,11 +628,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      mockWebClient.getAccount.mockResolvedValueOnce({
-        commitment: () => ({
-          toHex: () => '0x' + 'f'.repeat(64),
-        }),
-      });
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'f'.repeat(64), 0));
       mockRpcGetAccountDetails.mockResolvedValueOnce({
         commitment: () => ({
           toHex: () => '0x' + 'b'.repeat(64),
@@ -2816,12 +2812,10 @@ describe('Multisig', () => {
           ack_scheme: 'ecdsa',
         }),
       });
-      mockWebClient.executeTransaction.mockResolvedValueOnce({});
-      mockWebClient.proveTransaction.mockResolvedValueOnce({});
-      mockWebClient.submitProvenTransaction.mockResolvedValueOnce(1n);
-      mockWebClient.applyTransaction.mockResolvedValueOnce(undefined);
+      mockWebClient.transactions.submit.mockResolvedValueOnce({});
 
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
 
       expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
         1,
@@ -2933,10 +2927,7 @@ describe('Multisig', () => {
           ack_scheme: 'ecdsa',
         }),
       });
-      mockWebClient.executeTransaction.mockResolvedValueOnce({});
-      mockWebClient.proveTransaction.mockResolvedValueOnce({});
-      mockWebClient.submitProvenTransaction.mockResolvedValueOnce(1n);
-      mockWebClient.applyTransaction.mockResolvedValueOnce(undefined);
+      mockWebClient.transactions.submit.mockResolvedValueOnce({});
 
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
 
@@ -3011,13 +3002,10 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
       });
-      mockWebClient.executeTransaction.mockResolvedValueOnce({});
-      mockWebClient.proveTransaction.mockResolvedValueOnce({});
-      mockWebClient.submitProvenTransaction.mockResolvedValueOnce(1n);
-      mockWebClient.applyTransaction.mockResolvedValueOnce(undefined);
+      mockWebClient.transactions.submit.mockResolvedValueOnce({});
 
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
     });
 
     it('should reject switch_guardian execution when endpoint commitment mismatches', async () => {

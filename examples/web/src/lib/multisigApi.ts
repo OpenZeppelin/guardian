@@ -18,7 +18,7 @@ import {
   AccountInspector,
   type DetectedMultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
-import type { WebClient } from '@miden-sdk/miden-sdk';
+import type { MidenClient } from '@miden-sdk/miden-sdk';
 import type { SignerInfo } from '@/types';
 import type { WalletSource } from '@/wallets/types';
 
@@ -174,11 +174,11 @@ async function createProposalResult(
  * Initialize MultisigClient and get GUARDIAN pubkey.
  */
 export async function initMultisigClient(
-  webClient: WebClient,
+  midenClient: MidenClient,
   guardianEndpoint: string,
   midenRpcEndpoint: string,
 ): Promise<{ client: MultisigClient; guardianPubkey: string }> {
-  const client = new MultisigClientClass(webClient, { guardianEndpoint, midenRpcEndpoint });
+  const client = new MultisigClientClass(midenClient, { guardianEndpoint, midenRpcEndpoint });
   const response = await client.guardianClient.getPubkey();
   const guardianPubkey = typeof response === 'string' ? response : response.commitment;
   return { client, guardianPubkey };

@@ -18,6 +18,8 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
 }));
 
 vi.mock('./signature.js', () => ({
+  ECDSA_AUTH_SCHEME_ID: 1,
+  FALCON_AUTH_SCHEME_ID: 2,
   tryComputeCommitmentHex: vi.fn((_hex: string, _scheme: string) => '0x' + 'cc'.repeat(32)),
 }));
 
@@ -32,9 +34,9 @@ describe('PublicKeyFormat', () => {
       expect(result.publicKeyHex).toMatch(/^0x[a-f0-9]{64}$/);
     });
 
-    it('should detect 0x00-prefixed key as falcon', () => {
+    it('should detect 0x02-prefixed key as falcon', () => {
       const bytes = new Uint8Array(200);
-      bytes[0] = 0x00;
+      bytes[0] = 0x02;
       bytes[1] = 0xab;
       const result = PublicKeyFormat.parse(bytes);
       expect(result.scheme).toBe('falcon');

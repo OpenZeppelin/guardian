@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { useModal } from '@getpara/react-sdk-lite';
 import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
-import type { WebClient } from '@miden-sdk/miden-sdk';
+import type { MidenClient } from '@miden-sdk/miden-sdk';
 import {
   AccountInspector,
   type AccountState,
@@ -25,7 +25,7 @@ import {
   createRemoveSignerProposal,
   createSwitchGuardianProposal,
   createUpdateProcedureThresholdProposal,
-  createWebClient,
+  createMidenClient,
   executeProposal as executeOnlineProposal,
   exportProposalToJson,
   fetchAccountState,
@@ -148,7 +148,7 @@ export interface SmokeApi {
 
 interface SnapshotState {
   sessionConfig: SessionConfig;
-  webClient: WebClient | null;
+  webClient: MidenClient | null;
   multisigClient: MultisigClient | null;
   bootStatus: SmokeBootStatus;
   bootError: string | null;
@@ -218,12 +218,12 @@ async function waitForCondition(
   }
 }
 
-async function syncBrowserClientState(client: WebClient): Promise<void> {
+async function syncBrowserClientState(client: MidenClient): Promise<void> {
   try {
-    await client.syncState();
+    await client.sync();
   } catch {
     await sleep(500);
-    await client.syncState();
+    await client.sync();
   }
 }
 
@@ -326,7 +326,7 @@ export function useSmokeHarness(): {
 } {
   const [sessionConfig, sessionConfigRef, setSessionConfig] =
     useStateRef<SessionConfig>(defaultSessionConfig);
-  const [webClient, webClientRef, setWebClient] = useStateRef<WebClient | null>(null);
+  const [webClient, webClientRef, setWebClient] = useStateRef<MidenClient | null>(null);
   const [multisigClient, multisigClientRef, setMultisigClient] =
     useStateRef<MultisigClient | null>(null);
   const [bootStatus, bootStatusRef, setBootStatus] = useStateRef<SmokeBootStatus>(
@@ -541,7 +541,7 @@ export function useSmokeHarness(): {
   const refreshMultisigState = useCallback(
     async (
       targetMultisig: Multisig,
-      targetClient?: WebClient,
+      targetClient?: MidenClient,
     ): Promise<{
       state: AccountState;
       config: DetectedMultisigConfig;
@@ -550,7 +550,7 @@ export function useSmokeHarness(): {
     }> => {
       const activeClient = targetClient ?? webClientRef.current;
       if (!activeClient) {
-        throw new Error('WebClient is not initialized');
+        throw new Error('MidenClient is not initialized');
       }
 
       await syncBrowserClientState(activeClient);
@@ -616,7 +616,10 @@ export function useSmokeHarness(): {
             (async () => {
               await clearIndexedDbDatabasesByPrefix([DEFAULT_MIDEN_DB_NAME]);
 
-              const nextClient = await createWebClient(nextConfig.midenRpcEndpoint);
+              const nextClient = await createMidenClient(
+                nextConfig.midenRpcEndpoint,
+                DEFAULT_MIDEN_DB_NAME,
+              );
               const {
                 client: nextMultisigClient,
                 guardianPubkey: nextGuardianPubkey,
@@ -872,8 +875,9 @@ export function useSmokeHarness(): {
           throw new Error('No multisig account is loaded');
         }
 
-        if (input.stateDataBase64?.trim()) {
-          await registerOnGuardianWithState(currentMultisig, input.stateDataBase64.trim());
+        const stateDataBase64 = input?.stateDataBase64?.trim();
+        if (stateDataBase64) {
+          await registerOnGuardianWithState(currentMultisig, stateDataBase64);
         } else {
           await registerOnlineAccount(currentMultisig);
         }

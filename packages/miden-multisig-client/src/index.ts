@@ -9,27 +9,21 @@
  *   MultisigClient,
  *   FalconSigner,
  * } from '@openzeppelin/miden-multisig-client';
- * import { WebClient, SecretKey } from '@miden-sdk/miden-sdk';
+ * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
- * // Initialize WebClient
- * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
- * await webClient.syncState();
- *
- * // Generate a key dynamically
- * const seed = new Uint8Array(32);
- * crypto.getRandomValues(seed);
- * const secretKey = SecretKey.rpoFalconWithRNG(seed);
+ * const midenClient = await MidenClient.createDevnet();
+ * const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
  *
  * // Store in miden-sdk's keystore
- * await webClient.addAccountSecretKeyToWebStore(secretKey);
+ * await midenClient.keystore.insert(secretKey.publicKey(), secretKey);
  *
  * // Create a signer
  * const signer = new FalconSigner(secretKey);
  *
  * // Create multisig client
- * const client = new MultisigClient(webClient, {
+ * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
- *   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+ *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
  * });
  *
  * // Get GUARDIAN pubkey for config

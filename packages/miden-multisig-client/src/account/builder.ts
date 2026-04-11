@@ -9,9 +9,10 @@ import {
   AccountComponent,
   AccountType,
   AccountStorageMode,
-  type WebClient,
+  type MidenClient,
 } from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
+import { getRawMidenClient } from '../raw-client.js';
 import { buildMultisigStorageSlots, buildGuardianStorageSlots } from './storage.js';
 import {
   MULTISIG_ECDSA_MASM,
@@ -28,16 +29,18 @@ import { normalizeSignerCommitment } from '../utils/signature.js';
 /**
  * Creates a multisig account with GUARDIAN authentication.
  *
- * @param webClient - Initialized Miden WebClient
+ * @param midenClient - Initialized MidenClient
  * @param config - Multisig configuration
  * @returns The created account and seed
  */
 export async function createMultisigAccount(
-  webClient: WebClient,
-  config: MultisigConfig
+  midenClient: MidenClient,
+  config: MultisigConfig,
+  midenRpcEndpoint?: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const signatureScheme = config.signatureScheme ?? 'falcon';
+  const rawClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
   const authSlots = [
     ...buildMultisigStorageSlots(config),
     ...buildGuardianStorageSlots(config),
@@ -54,14 +57,12 @@ export async function createMultisigAccount(
     ? 'openzeppelin::auth::multisig_ecdsa'
     : 'openzeppelin::auth::multisig';
 
-  const authBuilder = webClient.createCodeBuilder();
-  const guardianLib = authBuilder.buildLibrary(guardianLibraryPath, guardianMasm);
-  authBuilder.linkStaticLibrary(guardianLib);
-  const multisigLib = authBuilder.buildLibrary(multisigLibraryPath, multisigMasm);
-  authBuilder.linkStaticLibrary(multisigLib);
-  const authCode = authBuilder.compileAccountComponentCode(authComponentMasm);
+  const authBuilder = rawClient.createCodeBuilder();
+  authBuilder.linkModule(guardianLibraryPath, guardianMasm);
+  authBuilder.linkModule(multisigLibraryPath, multisigMasm);
+  const authComponentCode = authBuilder.compileAccountComponentCode(authComponentMasm);
   const authComponent = AccountComponent
-    .compile(authCode, authSlots)
+    .compile(authComponentCode, authSlots)
     .withSupportsAllTypes();
 
   let seed = config.seed;
@@ -82,7 +83,7 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.build();
 
-  await webClient.newAccount(result.account, false);
+  await midenClient.accounts.insert({ account: result.account, overwrite: false });
 
   return {
     account: result.account,

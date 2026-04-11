@@ -1,7 +1,10 @@
 import { type DeltaObject, type GuardianHttpClient } from '@openzeppelin/guardian-client';
-import type { WebClient, TransactionRequest } from '@miden-sdk/miden-sdk';
+import type {
+  MidenClient,
+  TransactionProver,
+  TransactionRequest,
+} from '@miden-sdk/miden-sdk';
 import {
-  AccountId,
   AdviceMap,
   FeltArray,
   Signature,
@@ -45,7 +48,8 @@ interface ExecuteProposalWorkflowParams {
   signatureScheme: 'falcon' | 'ecdsa';
   getEffectiveThreshold: (proposalType: ProposalType) => number;
   guardian: GuardianHttpClient;
-  webClient: WebClient;
+  midenClient: MidenClient;
+  transactionProver?: TransactionProver | null;
 }
 
 export async function executeProposalWorkflow(
@@ -89,7 +93,12 @@ export async function executeProposalWorkflow(
     executionData.saltHex,
     adviceMap,
   );
-  await submitTransaction(params.webClient, params.accountId, finalRequest);
+  await submitTransaction(
+    params.midenClient,
+    params.accountId,
+    finalRequest,
+    params.transactionProver,
+  );
 }
 
 
@@ -297,7 +306,7 @@ async function buildFinalRequest(
         );
       }
       const { request } = await buildConsumeNotesTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.noteIds,
         { salt: normalizedSalt, signatureAdviceMap: adviceMap },
       );
@@ -310,7 +319,7 @@ async function buildFinalRequest(
         );
       }
       const { request } = await buildUpdateGuardianTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.newGuardianPubkey,
         {
           salt: normalizedSalt,
@@ -322,7 +331,7 @@ async function buildFinalRequest(
     }
     case 'update_procedure_threshold': {
       const { request } = await buildUpdateProcedureThresholdTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.targetProcedure,
         metadata.targetThreshold,
         {
@@ -354,7 +363,7 @@ async function buildFinalRequest(
       );
     default: {
       const { request } = await buildUpdateSignersTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.targetThreshold,
         metadata.targetSignerCommitments,
         {
@@ -369,13 +378,9 @@ async function buildFinalRequest(
 }
 
 async function submitTransaction(
-  webClient: WebClient,
+  midenClient: MidenClient,
   accountIdHex: string,
   request: TransactionRequest,
 ): Promise<void> {
-  const accountId = AccountId.fromHex(accountIdHex);
-  const result = await webClient.executeTransaction(accountId, request);
-  const proven = await webClient.proveTransaction(result, null);
-  const submissionHeight = await webClient.submitProvenTransaction(proven, result);
-  await webClient.applyTransaction(result, submissionHeight);
+  await midenClient.transactions.submit(accountIdHex, request);
 }

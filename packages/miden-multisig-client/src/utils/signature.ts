@@ -1,7 +1,14 @@
-import { AdviceMap, Felt, FeltArray, Rpo256, Signature, Word } from '@miden-sdk/miden-sdk';
+import { AdviceMap, Felt, FeltArray, Poseidon2, Signature, Word } from '@miden-sdk/miden-sdk';
 import * as midenSdk from '@miden-sdk/miden-sdk';
 import { hexToBytes, normalizeHexWord } from './encoding.js';
 import type { ProposalSignatureEntry, SignatureScheme } from '../types.js';
+
+export const ECDSA_AUTH_SCHEME_ID = 1;
+export const FALCON_AUTH_SCHEME_ID = 2;
+
+function authSchemeId(scheme: SignatureScheme): number {
+  return scheme === 'ecdsa' ? ECDSA_AUTH_SCHEME_ID : FALCON_AUTH_SCHEME_ID;
+}
 
 export function signatureHexToBytes(
   hex: string,
@@ -9,7 +16,7 @@ export function signatureHexToBytes(
 ): Uint8Array {
   const sigBytes = hexToBytes(hex);
   const withPrefix = new Uint8Array(sigBytes.length + 1);
-  withPrefix[0] = scheme === 'ecdsa' ? 1 : 0;
+  withPrefix[0] = authSchemeId(scheme);
   withPrefix.set(sigBytes, 1);
   return withPrefix;
 }
@@ -45,7 +52,7 @@ export function buildSignatureAdviceEntry(
     ...pubkeyCommitment.toFelts(),
     ...message.toFelts(),
   ]);
-  const key = Rpo256.hashElements(elements);
+  const key = Poseidon2.hashElements(elements);
 
   let values: Felt[];
   if (ecdsaPubkeyHex && ecdsaSigHex) {
@@ -69,7 +76,7 @@ export function tryComputeCommitmentHex(
 ): string | null {
   const bytes = hexToBytes(pubkeyHex);
   const withPrefix = new Uint8Array(bytes.length + 1);
-  withPrefix[0] = scheme === 'ecdsa' ? 1 : 0;
+  withPrefix[0] = authSchemeId(scheme);
   withPrefix.set(bytes, 1);
 
   try {
@@ -98,7 +105,7 @@ export function verifyEcdsaCommitment(
 
     const packedFelts = bytesToPackedU32Felts(bytes);
     const feltArray = new FeltArray(packedFelts);
-    const computed = Rpo256.hashElements(feltArray);
+    const computed = Poseidon2.hashElements(feltArray);
     const computedHex = normalizeHexWord(computed.toHex());
     const expectedNorm = normalizeHexWord(expectedCommitmentHex);
     return {

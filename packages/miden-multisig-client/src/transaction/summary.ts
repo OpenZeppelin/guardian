@@ -1,12 +1,19 @@
-import type { TransactionRequest, TransactionSummary, WebClient } from '@miden-sdk/miden-sdk';
+import type {
+  MidenClient,
+  TransactionRequest,
+  TransactionSummary,
+  WasmWebClient,
+} from '@miden-sdk/miden-sdk';
 import { AccountId } from '@miden-sdk/miden-sdk';
+import { getRawMidenClient } from '../raw-client.js';
 
 export async function executeForSummary(
-  client: WebClient,
+  client: MidenClient | WasmWebClient,
   accountId: string,
   txRequest: TransactionRequest,
+  midenRpcEndpoint?: string,
 ): Promise<TransactionSummary> {
   const acc = AccountId.fromHex(accountId);
-  return (client as any).executeForSummary(acc, txRequest);
+  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
+  return rawClient.executeForSummary(acc, txRequest);
 }
-

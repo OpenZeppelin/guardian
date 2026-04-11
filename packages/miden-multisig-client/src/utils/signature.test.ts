@@ -14,7 +14,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   })),
   Felt: vi.fn().mockImplementation((v: bigint) => ({ value: v })),
   FeltArray: vi.fn().mockImplementation((arr: any[]) => arr),
-  Rpo256: {
+  Poseidon2: {
     hashElements: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'h'.repeat(64),
     }),
@@ -48,15 +48,15 @@ describe('signature utilities', () => {
   });
 
   describe('signatureHexToBytes', () => {
-    it('prepends auth scheme byte (0 = RpoFalcon512)', () => {
+    it('prepends auth scheme byte (2 = Falcon Poseidon2)', () => {
       const result = signatureHexToBytes('deadbeef');
-      expect(result[0]).toBe(0); // RpoFalcon512 scheme byte
+      expect(result[0]).toBe(2);
     });
 
     it('prepends auth scheme byte (1 = ECDSA)', () => {
       const result = signatureHexToBytes('deadbeef', 'ecdsa');
-      expect(result[0]).toBe(1); // ECDSA scheme byte
-    });
+      expect(result[0]).toBe(1);
+   });
 
     it('converts hex to bytes after prefix', () => {
       const result = signatureHexToBytes('deadbeef');
@@ -65,7 +65,7 @@ describe('signature utilities', () => {
 
     it('handles 0x prefix', () => {
       const result = signatureHexToBytes('0xaabbccdd');
-      expect(result[0]).toBe(0);
+      expect(result[0]).toBe(2);
       expect(result.slice(1)).toEqual(new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]));
     });
 
@@ -77,12 +77,12 @@ describe('signature utilities', () => {
 
     it('handles empty signature', () => {
       const result = signatureHexToBytes('');
-      expect(result).toEqual(new Uint8Array([0])); // Just the prefix
+      expect(result).toEqual(new Uint8Array([2]));
     });
 
     it('handles empty with 0x prefix', () => {
       const result = signatureHexToBytes('0x');
-      expect(result).toEqual(new Uint8Array([0]));
+      expect(result).toEqual(new Uint8Array([2]));
     });
   });
 
@@ -100,14 +100,14 @@ describe('signature utilities', () => {
     });
 
     it('hashes pubkey commitment and message to produce key', async () => {
-      const { Word, Signature, Rpo256 } = await import('@miden-sdk/miden-sdk');
+      const { Word, Signature, Poseidon2 } = await import('@miden-sdk/miden-sdk');
       const pubkeyCommitment = Word.fromHex('0x' + 'a'.repeat(64));
       const message = Word.fromHex('0x' + 'b'.repeat(64));
       const signature = Signature.deserialize(new Uint8Array([0, 1, 2, 3]));
 
       buildSignatureAdviceEntry(pubkeyCommitment, message, signature);
 
-      expect(Rpo256.hashElements).toHaveBeenCalled();
+      expect(Poseidon2.hashElements).toHaveBeenCalled();
     });
 
     it('uses toPreparedSignature to get values', async () => {

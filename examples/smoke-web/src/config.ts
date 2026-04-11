@@ -1,5 +1,5 @@
 export const DEFAULT_GUARDIAN_ENDPOINT = 'http://localhost:3000';
-export const DEFAULT_MIDEN_RPC_URL = 'https://rpc.testnet.miden.io';
+export const DEFAULT_MIDEN_RPC_URL = 'https://rpc.devnet.miden.io';
 export const DEFAULT_MIDEN_DB_NAME = 'MidenClientDB';
 export const DEFAULT_BROWSER_LABEL = '';
 export const DEFAULT_APP_NAME = 'Miden Multisig Smoke';

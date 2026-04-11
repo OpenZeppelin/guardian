@@ -1,50 +1,58 @@
 import {
   AdviceMap,
   FeltArray,
+  type MidenClient,
   TransactionRequest,
   TransactionRequestBuilder,
   TransactionScript,
-  WebClient,
+  type WasmWebClient,
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
 import { GUARDIAN_ECDSA_MASM, GUARDIAN_MASM } from '../account/masm/auth.js';
+import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-function buildUpdateGuardianScript(
-  webClient: WebClient,
+async function buildUpdateGuardianScript(
+  client: MidenClient | WasmWebClient,
   signatureScheme: SignatureScheme,
-): TransactionScript {
-  const libBuilder = webClient.createCodeBuilder();
-  const guardianLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::guardian_ecdsa' : 'openzeppelin::guardian';
+  midenRpcEndpoint?: string,
+): Promise<TransactionScript> {
+  const guardianLibraryPath = 'oz_guardian::guardian';
   const guardianMasm = signatureScheme === 'ecdsa' ? GUARDIAN_ECDSA_MASM : GUARDIAN_MASM;
-  const guardianProcedure = signatureScheme === 'ecdsa' ? 'guardian_ecdsa' : 'guardian';
-  const guardianLib = libBuilder.buildLibrary(guardianLibraryPath, guardianMasm);
-  libBuilder.linkDynamicLibrary(guardianLib);
 
   const scriptSource = `
-use openzeppelin::${guardianProcedure}
+use oz_guardian::guardian
 
 begin
     adv.push_mapval
     dropw
-    call.${guardianProcedure}::update_guardian_public_key
+    call.guardian::update_guardian_public_key
 end
   `;
 
-  return libBuilder.compileTxScript(scriptSource);
+  return compileTxScript(
+    client,
+    scriptSource,
+    [{ namespace: guardianLibraryPath, code: guardianMasm }],
+    midenRpcEndpoint,
+  );
 }
 
 export async function buildUpdateGuardianTransactionRequest(
-  webClient: WebClient,
+  client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   const signatureScheme = options.signatureScheme ?? 'falcon';
-  const script = buildUpdateGuardianScript(webClient, signatureScheme);
+  const script = await buildUpdateGuardianScript(
+    client,
+    signatureScheme,
+    options.midenRpcEndpoint,
+  );
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 

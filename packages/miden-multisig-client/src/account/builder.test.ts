@@ -98,13 +98,14 @@ describe('createMultisigAccount', () => {
 
   it('uses Falcon MASM by default', async () => {
     const authBuilder = {
-      buildLibrary: vi.fn((libraryPath, source) => ({ libraryPath, source })),
-      linkStaticLibrary: vi.fn(),
-      compileAccountComponentCode: vi.fn((source) => `auth:${source.slice(0, 16)}`),
+      linkModule: vi.fn(),
+      compileAccountComponentCode: vi.fn((source) => ({ source })),
     };
     const webClient = {
       createCodeBuilder: vi.fn().mockReturnValue(authBuilder),
-      newAccount: vi.fn(),
+      accounts: {
+        insert: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     await createMultisigAccount(webClient as never, {
@@ -113,12 +114,12 @@ describe('createMultisigAccount', () => {
       guardianCommitment: '0x' + '2'.repeat(64),
     });
 
-    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+    expect(authBuilder.linkModule).toHaveBeenNthCalledWith(
       1,
       'openzeppelin::auth::guardian',
       GUARDIAN_MASM,
     );
-    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+    expect(authBuilder.linkModule).toHaveBeenNthCalledWith(
       2,
       'openzeppelin::auth::multisig',
       MULTISIG_MASM,
@@ -126,18 +127,19 @@ describe('createMultisigAccount', () => {
     expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(
       MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM,
     );
-    expect(webClient.newAccount).toHaveBeenCalledTimes(1);
+    expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
   });
 
   it('uses ECDSA MASM when requested', async () => {
     const authBuilder = {
-      buildLibrary: vi.fn((libraryPath, source) => ({ libraryPath, source })),
-      linkStaticLibrary: vi.fn(),
-      compileAccountComponentCode: vi.fn((source) => `auth:${source.slice(0, 16)}`),
+      linkModule: vi.fn(),
+      compileAccountComponentCode: vi.fn((source) => ({ source })),
     };
     const webClient = {
       createCodeBuilder: vi.fn().mockReturnValue(authBuilder),
-      newAccount: vi.fn(),
+      accounts: {
+        insert: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     await createMultisigAccount(webClient as never, {
@@ -147,12 +149,12 @@ describe('createMultisigAccount', () => {
       signatureScheme: 'ecdsa',
     });
 
-    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+    expect(authBuilder.linkModule).toHaveBeenNthCalledWith(
       1,
       'openzeppelin::auth::guardian_ecdsa',
       GUARDIAN_ECDSA_MASM,
     );
-    expect(authBuilder.buildLibrary).toHaveBeenNthCalledWith(
+    expect(authBuilder.linkModule).toHaveBeenNthCalledWith(
       2,
       'openzeppelin::auth::multisig_ecdsa',
       MULTISIG_ECDSA_MASM,
@@ -160,6 +162,6 @@ describe('createMultisigAccount', () => {
     expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(
       MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM,
     );
-    expect(webClient.newAccount).toHaveBeenCalledTimes(1);
+    expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
   });
 });

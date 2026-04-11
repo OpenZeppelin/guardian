@@ -1,4 +1,4 @@
-import { AuthSecretKey, WebClient } from '@miden-sdk/miden-sdk';
+import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 import { EcdsaSigner, FalconSigner } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo } from './types';
 
@@ -47,10 +47,58 @@ export async function clearIndexedDbDatabases(names?: string[]): Promise<void> {
   );
 }
 
-export async function createWebClient(rpcUrl: string): Promise<WebClient> {
-  const client = await WebClient.createClient(rpcUrl);
-  await client.syncState();
-  return client;
+function prefersLocalProver(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const prover = new URLSearchParams(window.location.search).get('prover');
+  return prover?.trim().toLowerCase() === 'local';
+}
+
+export async function createMidenClient(
+  rpcUrl: string,
+  storeName = 'MidenClientDB',
+): Promise<MidenClient> {
+  const normalizedRpcUrl = rpcUrl.trim().toLowerCase();
+  const useLocalProver = prefersLocalProver();
+  if (normalizedRpcUrl === 'devnet' || normalizedRpcUrl === 'https://rpc.devnet.miden.io') {
+    if (useLocalProver) {
+      return MidenClient.create({
+        rpcUrl,
+        noteTransportUrl: 'devnet',
+        proverUrl: 'local',
+        storeName,
+        autoSync: true,
+      });
+    }
+    return MidenClient.createDevnet({ rpcUrl, storeName });
+  }
+
+  if (normalizedRpcUrl === 'testnet' || normalizedRpcUrl === 'https://rpc.testnet.miden.io') {
+    if (useLocalProver) {
+      return MidenClient.create({
+        rpcUrl,
+        noteTransportUrl: 'testnet',
+        proverUrl: 'local',
+        storeName,
+        autoSync: true,
+      });
+    }
+    return MidenClient.createTestnet({ rpcUrl, storeName });
+  }
+
+  return MidenClient.create({
+    rpcUrl,
+    proverUrl:
+      normalizedRpcUrl === 'local' ||
+      normalizedRpcUrl === 'localhost' ||
+      normalizedRpcUrl === 'http://localhost:57291'
+        ? 'local'
+        : undefined,
+    storeName,
+    autoSync: true,
+  });
 }
 
 export async function initializeLocalSigners(): Promise<SignerInfo> {

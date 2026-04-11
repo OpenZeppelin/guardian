@@ -14,7 +14,7 @@ import {
 } from '@openzeppelin/miden-multisig-client';
 import { GuardianHttpError } from '@openzeppelin/guardian-client';
 
-import { WebClient, AccountId } from '@miden-sdk/miden-sdk';
+import { MidenClient, AccountId } from '@miden-sdk/miden-sdk';
 
 import {
   Header,
@@ -27,7 +27,7 @@ import {
 
 import { normalizeCommitment } from '@/lib/helpers';
 import { classifyWalletError, formatError } from '@/lib/errors';
-import { clearMidenDatabase, createWebClient, initializeSigner as initSigner } from '@/lib/initClient';
+import { clearMidenDatabase, createMidenClient, initializeSigner as initSigner } from '@/lib/initClient';
 import {
   initMultisigClient,
   createMultisigAccount,
@@ -137,7 +137,7 @@ function activeWalletCommitmentForSource(
 
 export default function App() {
   // Core state
-  const [webClient, setWebClient] = useState<WebClient | null>(null);
+  const [midenClient, setMidenClient] = useState<MidenClient | null>(null);
   const [multisigClient, setMultisigClient] = useState<MultisigClient | null>(null);
   const [signer, setSigner] = useState<SignerInfo | null>(null);
   const [generatingSigner, setGeneratingSigner] = useState(false);
@@ -314,13 +314,13 @@ export default function App() {
 
   // Connect to GUARDIAN server
   const connectToGuardian = useCallback(
-    async (url: string, client?: WebClient): Promise<void> => {
+    async (url: string, client?: MidenClient): Promise<void> => {
       setGuardianStatus('connecting');
       setError(null);
       try {
-        const wc = client ?? webClient;
+        const wc = client ?? midenClient;
         if (!wc) {
-          // Fallback when no WebClient - just fetch pubkey
+          // Fallback when no local Miden client is available
           const response = await fetch(`${url}/pubkey`);
           const data = await response.json();
           setGuardianPubkey(data.commitment || '');
@@ -358,7 +358,7 @@ export default function App() {
             if (isNotFound) {
               try {
                 const accountId = AccountId.fromHex(multisig.accountId);
-                const currentAccount = await wc.getAccount(accountId);
+                const currentAccount = await wc.accounts.get(accountId);
                 if (!currentAccount) {
                   throw new Error('Account not found in local client');
                 }
@@ -390,7 +390,7 @@ export default function App() {
         setError(`Failed to connect to GUARDIAN: ${msg}`);
       }
     },
-    [webClient, multisig, guardianState, resolveSignerContext, walletSource]
+    [midenClient, multisig, guardianState, resolveSignerContext, walletSource]
   );
 
   // Initialize on mount
@@ -400,8 +400,8 @@ export default function App() {
         // Clear IndexedDB to start fresh on each page load
         await clearMidenDatabase();
 
-        const client = await createWebClient();
-        setWebClient(client);
+        const client = await createMidenClient();
+        setMidenClient(client);
 
         await connectToGuardian(guardianUrl, client);
 
@@ -607,7 +607,7 @@ export default function App() {
 
   // Sync state and proposals
   const handleSync = async () => {
-    if (!multisig || !webClient) return;
+    if (!multisig || !midenClient) return;
 
     setSyncingState(true);
     setError(null);
@@ -616,12 +616,11 @@ export default function App() {
     try {
       // Sync miden client state first (with retry for IndexedDB race conditions)
       try {
-        await webClient.syncState();
+        await midenClient.sync();
       } catch (syncErr) {
-        // IndexedDB can have PrematureCommitError - retry once after a short delay
-        console.warn('First syncState attempt failed, retrying...', syncErr);
+        console.warn('First sync attempt failed, retrying...', syncErr);
         await new Promise(resolve => setTimeout(resolve, 500));
-        await webClient.syncState();
+        await midenClient.sync();
       }
 
       const { state, config } = await fetchAccountState(multisig);
@@ -881,7 +880,7 @@ export default function App() {
     setTimeout(() => window.location.reload(), 500);
   };
 
-  const ready = !!webClient && !!signer && !!multisigClient && !!guardianPubkey && guardianStatus === 'connected';
+  const ready = !!midenClient && !!signer && !!multisigClient && !!guardianPubkey && guardianStatus === 'connected';
 
   return (
     <div className="min-h-screen flex flex-col">

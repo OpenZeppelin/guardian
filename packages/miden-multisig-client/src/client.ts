@@ -5,12 +5,28 @@
  * to create new multisig accounts and load existing ones.
  */
 
-import { type WebClient, Account, AccountId } from '@miden-sdk/miden-sdk';
+import { type MidenClient, Account, AccountId } from '@miden-sdk/miden-sdk';
 import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
 import { AccountInspector } from './inspector.js';
+import { getRawMidenClient, resolveMidenRpcEndpoint } from './raw-client.js';
 import type { MultisigConfig, Signer } from './types.js';
+
+interface AccountKeyBindingSigner {
+  bindAccountKey?(midenClient: MidenClient, accountId: string): Promise<void>;
+}
+
+async function bindSignerAccountKey(
+  signer: Signer,
+  midenClient: MidenClient,
+  accountId: string,
+): Promise<void> {
+  const bindingSigner = signer as Signer & AccountKeyBindingSigner;
+  if (typeof bindingSigner.bindAccountKey === 'function') {
+    await bindingSigner.bindAccountKey(midenClient, accountId);
+  }
+}
 
 /**
  * Configuration for MultisigClient.
@@ -28,17 +44,17 @@ export interface MultisigClientConfig {
  * @example
  * ```typescript
  * import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
- * import { WebClient, SecretKey } from '@miden-sdk/miden-sdk';
+ * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
  * // Initialize
- * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
- * const secretKey = SecretKey.rpoFalconWithRNG(seed);
+ * const midenClient = await MidenClient.createDevnet();
+ * const secretKey = AuthSecretKey.rpoFalconWithRNG(seed);
  * const signer = new FalconSigner(secretKey);
  *
  * // Create client
- * const client = new MultisigClient(webClient, {
+ * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
- *   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+ *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
  * });
  *
  * // Get GUARDIAN pubkey for config
@@ -50,13 +66,13 @@ export interface MultisigClientConfig {
  * ```
  */
 export class MultisigClient {
-  private readonly webClient: WebClient;
-  private readonly midenRpcEndpoint?: string;
+  private readonly midenClient: MidenClient;
+  private readonly midenRpcEndpoint: string;
   private _guardianClient: GuardianHttpClient;
 
-  constructor(webClient: WebClient, config: MultisigClientConfig = {}) {
-    this.webClient = webClient;
-    this.midenRpcEndpoint = config.midenRpcEndpoint;
+  constructor(midenClient: MidenClient, config: MultisigClientConfig = {}) {
+    this.midenClient = midenClient;
+    this.midenRpcEndpoint = resolveMidenRpcEndpoint(config.midenRpcEndpoint);
     this._guardianClient = new GuardianHttpClient(config.guardianEndpoint ?? 'http://localhost:3000');
   }
 
@@ -86,14 +102,20 @@ export class MultisigClient {
   async create(config: MultisigConfig, signer: Signer): Promise<Multisig> {
     this._guardianClient.setSigner(signer);
 
-    const { account } = await createMultisigAccount(this.webClient, config);
+    const { account } = await createMultisigAccount(
+      this.midenClient,
+      config,
+      this.midenRpcEndpoint,
+    );
+    const accountId = account.id().toString();
+    await bindSignerAccountKey(signer, this.midenClient, accountId);
 
     return new Multisig(
       account,
       config,
       this._guardianClient,
       signer,
-      this.webClient,
+      this.midenClient,
       undefined,
       this.midenRpcEndpoint
     );
@@ -134,17 +156,18 @@ export class MultisigClient {
       ),
     };
 
-    const existingAccount = await this.webClient.getAccount(AccountId.fromHex(accountId));
+    const existingAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
     if (!existingAccount) {
-        await this.webClient.newAccount(account, true);
+      await this.midenClient.accounts.insert({ account, overwrite: true });
     }
+    await bindSignerAccountKey(signer, this.midenClient, accountId);
 
     return new Multisig(
       account,
       config,
       this._guardianClient,
       signer,
-      this.webClient,
+      this.midenClient,
       accountId,
       this.midenRpcEndpoint
     );
