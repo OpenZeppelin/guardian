@@ -312,10 +312,9 @@ impl MultisigClient {
 mod tests {
     use guardian_client::DeltaObject;
     use guardian_shared::ToJson;
-    use miden_protocol::FieldElement;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
 
     use crate::error::{MultisigError, Result};
@@ -334,7 +333,7 @@ mod tests {
         TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([Felt::new(seed), ZERO, ZERO, ZERO]),
         )
     }

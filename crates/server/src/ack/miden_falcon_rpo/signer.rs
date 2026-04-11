@@ -4,9 +4,9 @@ use guardian_shared::{FromJson, hex::IntoHex};
 use miden_keystore::{FilesystemKeyStore, KeyStore};
 use miden_protocol::{
     Word,
-    crypto::dsa::falcon512_rpo::{SecretKey, Signature},
+    crypto::dsa::falcon512_poseidon2::{SecretKey, Signature},
     transaction::TransactionSummary,
-    utils::Serializable,
+    utils::serde::Serializable,
 };
 use rand_chacha::ChaCha20Rng;
 use std::path::PathBuf;

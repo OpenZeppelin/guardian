@@ -1,6 +1,6 @@
 use miden_protocol::Word;
 use miden_protocol::account::{Account, StorageSlotName};
-use miden_protocol::utils::Serializable;
+use miden_protocol::utils::serde::Serializable;
 
 // Storage slot names for OpenZeppelin multisig/guardian components
 const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
@@ -119,7 +119,7 @@ mod tests {
     use guardian_shared::FromJson;
     use miden_protocol::account::{
         AccountCode, AccountId, AccountIdVersion, AccountStorage, AccountStorageMode, AccountType,
-        StorageMap, StorageSlot, StorageSlotName,
+        StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
     };
     use miden_protocol::asset::AssetVault;
 
@@ -130,10 +130,12 @@ mod tests {
     fn build_account_with_signer_slots(oz_pubkeys: Vec<Word>) -> Account {
         fn signer_slot(slot_name: &str, pubkeys: Vec<Word>) -> StorageSlot {
             let slot_name = StorageSlotName::new(slot_name).expect("valid slot name");
-            let entries = pubkeys
-                .into_iter()
-                .enumerate()
-                .map(|(index, pubkey)| (Word::from([index as u32, 0, 0, 0]), pubkey));
+            let entries = pubkeys.into_iter().enumerate().map(|(index, pubkey)| {
+                (
+                    StorageMapKey::new(Word::from([index as u32, 0, 0, 0])),
+                    pubkey,
+                )
+            });
             let map = StorageMap::with_entries(entries).expect("valid signer map");
             StorageSlot::with_map(slot_name, map)
         }
@@ -215,7 +217,7 @@ mod tests {
 
         assert!(
             inspector.has_guardian_auth(),
-            "Fixture account should have GUARDIAN auth enabled (auth_tx_falcon512_rpo_multisig procedure)"
+            "Fixture account should have GUARDIAN auth enabled (auth_tx_falcon512_poseidon2_multisig procedure)"
         );
     }
 
@@ -266,7 +268,7 @@ mod tests {
 
         account
             .storage_mut()
-            .set_map_item(&slot_name, key_zero, Word::default())
+            .set_map_item(&slot_name, StorageMapKey::new(key_zero), Word::default())
             .expect("Failed to overwrite GUARDIAN public key value");
 
         let inspector = MidenAccountInspector::new(&account);

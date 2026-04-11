@@ -6,7 +6,8 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use miden_protocol::{
-    account::{AccountComponent, StorageSlot},
+    CoreLibrary, ProtocolLib,
+    account::{AccountComponent, AccountComponentMetadata, AccountType, StorageSlot},
     assembly::{
         Assembler, DefaultSourceManager, Library, Module, ModuleKind, Path as LibraryPath,
         SourceManager,
@@ -73,9 +74,12 @@ fn compile_component(path: &Path, slots: Vec<StorageSlot>) -> Result<AccountComp
     let asm = build_component_assembler()?;
     let code = fs::read_to_string(path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
     let library = compile_to_library(&code, &asm)?;
-    let component = AccountComponent::new(library, slots)
-        .map_err(|e| anyhow!("failed to create component: {e}"))?
-        .with_supports_all_types();
+    let metadata = AccountComponentMetadata::new(
+        openzeppelin_library_path(path, &masm_root())?,
+        AccountType::all(),
+    );
+    let component = AccountComponent::new(library, slots, metadata)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?;
 
     Ok(component)
 }
@@ -84,23 +88,31 @@ fn build_component_assembler() -> Result<Assembler> {
     let oz_lib = build_openzeppelin_library()?;
     let standards_lib: Library = StandardsLib::default().into();
 
-    let mut asm: Assembler = TransactionKernel::assembler();
+    let mut asm = build_library_assembler()?;
     let _ = asm.link_static_library(oz_lib);
     let _ = asm.link_static_library(standards_lib);
 
     Ok(asm)
 }
 
-/// Builds the OpenZeppelin library from all MASM files under `masm/`.
+fn build_library_assembler() -> Result<Assembler> {
+    Assembler::default()
+        .with_dynamic_library(CoreLibrary::default())
+        .map_err(|e| anyhow!("failed to load Miden core library: {e}"))?
+        .with_dynamic_library(ProtocolLib::default())
+        .map_err(|e| anyhow!("failed to load Miden protocol library: {e}"))
+}
+
+/// Builds the reusable OpenZeppelin auth library from canonical MASM sources.
 fn build_openzeppelin_library() -> Result<Library> {
-    let root = masm_root();
+    let root = auth_dir();
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
     let masm_files = collect_all_masm_files(&root)?;
     let mut modules = Vec::new();
 
-    for path in masm_files {
-        let lib_path = openzeppelin_library_path(&path, &root)?;
+    for path in &masm_files {
+        let lib_path = openzeppelin_library_path(&path, &masm_root())?;
         let code = fs::read_to_string(&path)?;
 
         let module = Module::parser(ModuleKind::Library)
@@ -111,16 +123,23 @@ fn build_openzeppelin_library() -> Result<Library> {
     }
 
     // Assemble library with miden-standards library linked (provides miden::standards::auth::*)
-    let mut assembler: Assembler = TransactionKernel::assembler();
+    let mut assembler = build_library_assembler()?;
     let standards_lib: Library = StandardsLib::default().into();
     let _ = assembler.link_dynamic_library(&standards_lib);
 
-    let library: Library = assembler
+    for (path, module) in masm_files.iter().zip(modules.iter().cloned()) {
+        assembler
+            .clone()
+            .assemble_library([module])
+            .map_err(|e| anyhow!("failed to assemble auth module {}: {e:?}", path.display()))?;
+    }
+
+    let library = assembler
         .clone()
         .assemble_library(modules)
-        .map_err(|e| anyhow!("failed to assemble openzeppelin library: {e}"))?;
+        .map_err(|e| anyhow!("failed to assemble openzeppelin library: {e:?}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }
 
 // Builds the assembler with the openzeppelin library and miden-standards library linked.
@@ -128,7 +147,7 @@ fn build_assembler() -> Result<Assembler> {
     let oz_lib = build_openzeppelin_library()?;
     let standards_lib: Library = StandardsLib::default().into();
 
-    let mut asm: Assembler = TransactionKernel::assembler();
+    let mut asm = build_library_assembler()?;
     let _ = asm.link_dynamic_library(&oz_lib);
     let _ = asm.link_dynamic_library(&standards_lib);
 
@@ -141,7 +160,7 @@ fn compile_to_library(code: &str, assembler: &Assembler) -> Result<Library> {
         .clone()
         .assemble_library([code])
         .map_err(|e| anyhow!("failed to assemble library: {e}"))?;
-    Ok(library)
+    Ok((*library).clone())
 }
 
 // ============================================================================
@@ -212,7 +231,7 @@ pub fn create_library(
         source_manager,
     )?;
     let library = assembler.clone().assemble_library([module])?;
-    Ok(library)
+    Ok((*library).clone())
 }
 
 /// Builds the OpenZeppelin library for use in transaction scripts.
@@ -243,7 +262,7 @@ pub fn get_multisig_library() -> Result<Library> {
         .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig library: {e}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }
 
 /// Builds an ECDSA multisig library for use in transaction scripts.
@@ -267,7 +286,7 @@ pub fn get_multisig_ecdsa_library() -> Result<Library> {
         .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig ecdsa library: {e}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }
 
 /// Builds a library for GUARDIAN procedures for use in transaction scripts.
@@ -292,5 +311,5 @@ pub fn get_guardian_library() -> Result<Library> {
         .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble GUARDIAN library: {e}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }

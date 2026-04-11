@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_sdk_secretsmanager::Client;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey as FalconSecretKey;
-use miden_protocol::utils::Deserializable;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+use miden_protocol::utils::serde::Deserializable;
 
 const ENV_AWS_REGION: &str = "AWS_REGION";
 pub const PROD_FALCON_SECRET_ID: &str = "guardian-prod/server/ack-falcon-secret-key";

@@ -1,8 +1,7 @@
 use guardian_shared::hex::FromHex;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
-use miden_protocol::utils::Deserializable;
-use miden_protocol::utils::Serializable;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 /// Verifies a signature using commitment-based authentication.
 ///

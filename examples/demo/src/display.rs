@@ -110,9 +110,9 @@ pub fn print_vault(account: &MultisigAccount) {
             }
             Asset::NonFungible(nft) => {
                 println!(
-                    "  [{}] NFT (faucet prefix: {})",
+                    "  [{}] NFT (faucet: {})",
                     i + 1,
-                    shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                    shorten_hex(&nft.faucet_id().to_hex())
                 );
             }
         }

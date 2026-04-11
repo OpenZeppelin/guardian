@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use guardian_client::ToJson;
 use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
 use miden_protocol::account::{AccountDelta, AccountId};
-use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
 use miden_protocol::{Felt, Word, ZERO};
 use serde_json::Value;
 
@@ -33,7 +33,7 @@ pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value>
         account_delta,
         InputNotes::new(Vec::new())
             .map_err(|error| anyhow!("failed to build input notes: {error}"))?,
-        OutputNotes::new(Vec::new())
+        RawOutputNotes::new(Vec::new())
             .map_err(|error| anyhow!("failed to build output notes: {error}"))?,
         Word::from([ZERO; 4]),
     );

@@ -24,9 +24,9 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.13.3"
+version = "0.14.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.93"
 authors = ["OpenZeppelin"]
 license = "AGPL-3.0"
 repository = "https://github.com/OpenZeppelin/guardian"
@@ -62,10 +62,10 @@ futures = "0.3"
 chrono = "0.4"
 
 # Miden
-miden-protocol = "0.13"
-miden-standards = "0.13"
-miden-tx = "0.13"
-miden-node-proto = "0.13"
-miden-testing = "0.13"
-miden-client = "0.13"
-miden-client-sqlite-store = "0.13"
+miden-protocol = "0.14.4"
+miden-standards = "0.14.4"
+miden-tx = "0.14.4"
+miden-node-proto = "0.14.5"
+miden-testing = "0.14.4"
+miden-client = "0.14.0"
+miden-client-sqlite-store = "0.14.0"

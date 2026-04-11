@@ -24,7 +24,7 @@ Use `cargo run -p guardian-demo` as the primary smoke harness for `miden-multisi
    ```bash
    cargo run -p guardian-demo
    ```
-5. Point all demo sessions at the local GUARDIAN server and Miden testnet.
+5. Point all demo sessions at the local GUARDIAN server and Miden devnet.
 6. Default to Falcon unless the prompt explicitly asks for ECDSA.
 7. Record each session's displayed signer commitment before creating the account.
 8. Create the multisig account in one session by pasting the other sessions' commitments.
@@ -40,7 +40,7 @@ Use this as the default setup unless the prompt explicitly asks for something el
 - one tab for the GUARDIAN server
 - three tabs running `cargo run -p guardian-demo`
 - local GUARDIAN endpoint for every demo tab
-- Miden testnet for every demo tab
+- Miden devnet for every demo tab
 - Falcon signature scheme unless the prompt explicitly asks for ECDSA
 
 Treat the three demo tabs as three cosigners of the same account. Capture the commitments shown at startup, then use one tab to create the account and the other tabs to pull it with `Sync account`. Expect initial sync to take time; allow for retries before calling it a failure.
@@ -63,7 +63,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
 ## Execution Rules
 
 - Prefer the baseline harness unless the task explicitly requires a different setup.
-- Use the local GUARDIAN server and Miden testnet as the default endpoint pair for manual smoke.
+- Use the local GUARDIAN server and Miden devnet as the default endpoint pair for manual smoke.
 - Treat `examples/demo` as the required manual smoke surface for SDK behavior; crate tests support this but do not replace it.
 - Use three demo sessions for the standard cosigner flow. If fewer sessions are used, say which cosigner paths were not exercised.
 - Trust current source in `examples/demo/src/` over README text when they disagree, and note the mismatch in your result.
@@ -89,6 +89,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
   - time to first failure
   - time to eventual recovery
 - For proof-generation steps, explicitly note that the time is proof-generation dominated rather than generic waiting.
+- In the GUARDIAN-ack flow, remember that the client pushes the delta to GUARDIAN before the final transaction is submitted on-chain. An early canonicalization poll can therefore see the previous or zero on-chain commitment while proving or submission is still in flight.
 - For canonicalization-sensitive steps, record the lag separately from the execute time. Example: time from `Transaction executed successfully!` to the first successful pull by a newly-added cosigner.
 - Use exact timestamps when possible. If the timing was collected from manual polling instead of a stopwatch, mark it as approximate.
 - Compare each captured duration with `references/timing-baseline.md`. If no baseline exists yet for that exact step, append the new timing as the first reference sample.
@@ -100,6 +101,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
 - Verify proposal IDs and account IDs stay stable across export/import.
 - Verify nonce or state commitment changes after a successful execute.
 - Verify all existing cosigner tabs resync after execute.
+- Treat an early post-`push_delta` or post-execute on-chain `0x000...0` commitment, or a first canonicalization mismatch, as expected pending state by itself. Only treat it as a product failure if the account never converges after the proving/submission window or reaches a terminal discard/timeout.
 - Treat newly-added cosigner pulls as canonicalization-sensitive:
   - poll until GUARDIAN canonicalization catches up
   - record time from execute success to first successful pull

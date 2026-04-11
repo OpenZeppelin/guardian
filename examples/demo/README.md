@@ -5,7 +5,7 @@ Interactive CLI that exercises the `miden-multisig-client` SDK end-to-end: gener
 ## Requirements
 
 - Guardian server (default `http://localhost:50051`)
-- Miden node (default `https://rpc.testnet.miden.io:443` for testnet)
+- Miden node (default public endpoint `https://rpc.devnet.miden.io`)
 
 ## Run
 

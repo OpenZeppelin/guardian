@@ -14,9 +14,9 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2FalconSignature;
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::utils::Deserializable;
+use miden_protocol::utils::serde::Deserializable;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
@@ -139,7 +139,7 @@ impl ExportedProposal {
             let signature_hex = ensure_hex_prefix(&signature.signature);
             match signature.scheme {
                 SignatureScheme::Falcon => {
-                    RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
+                    Poseidon2FalconSignature::from_hex(&signature_hex).map_err(|e| {
                         MultisigError::Signature(format!("invalid exported signature: {}", e))
                     })?;
                 }
@@ -424,11 +424,10 @@ impl ExportedProposal {
 mod tests {
     use guardian_shared::ToJson;
     use miden_client::Serializable;
-    use miden_protocol::FieldElement;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
 
     use super::*;
@@ -679,7 +678,7 @@ mod tests {
         TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([Felt::new(7), ZERO, ZERO, ZERO]),
         )
     }

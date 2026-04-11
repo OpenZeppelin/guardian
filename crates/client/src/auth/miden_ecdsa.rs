@@ -4,7 +4,7 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
-use miden_protocol::utils::Serializable;
+use miden_protocol::utils::serde::Serializable;
 
 use super::miden_falcon_rpo::account_id_timestamp_to_word;
 
@@ -53,7 +53,7 @@ impl EcdsaSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::utils::Deserializable;
+    use miden_protocol::utils::serde::Deserializable;
 
     #[test]
     fn test_ecdsa_signer_creates_valid_signature_with_timestamp() {

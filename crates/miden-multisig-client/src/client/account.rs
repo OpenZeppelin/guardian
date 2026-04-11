@@ -312,7 +312,7 @@ impl MultisigClient {
     async fn sync_from_guardian_internal(&mut self) -> Result<bool> {
         let account = self.require_account()?;
         let account_id = account.id();
-        let local_commitment = account.inner().commitment();
+        let local_commitment = account.inner().to_commitment();
         let local_nonce = account.nonce();
 
         // Fetch state from GUARDIAN
@@ -352,13 +352,13 @@ impl MultisigClient {
 
         // Compare nonces - if local is newer or equal, don't overwrite with GUARDIAN's older state.
         // This happens after executing a transaction before GUARDIAN canonicalizes.
-        let guardian_nonce = fresh_account.nonce().as_int();
+        let guardian_nonce = fresh_account.nonce().as_canonical_u64();
         if local_nonce >= guardian_nonce {
             // Local state is newer, skip GUARDIAN update
             return Ok(false);
         }
 
-        self.ensure_safe_to_overwrite_local_state(account_id, fresh_account.commitment())
+        self.ensure_safe_to_overwrite_local_state(account_id, fresh_account.to_commitment())
             .await?;
 
         // GUARDIAN has newer state - try to add/update.
@@ -444,7 +444,7 @@ impl MultisigClient {
             acc
         };
 
-        self.ensure_safe_to_overwrite_local_state(account_id, updated_account.commitment())
+        self.ensure_safe_to_overwrite_local_state(account_id, updated_account.to_commitment())
             .await?;
 
         // Try to add/update account. If we get a commitment mismatch, reset the miden client
@@ -489,8 +489,11 @@ impl MultisigClient {
                     MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
                 })?;
 
-                self.ensure_safe_to_overwrite_local_state(account_id, fresh_account.commitment())
-                    .await?;
+                self.ensure_safe_to_overwrite_local_state(
+                    account_id,
+                    fresh_account.to_commitment(),
+                )
+                .await?;
 
                 self.add_or_update_account(&fresh_account, true).await?;
 

@@ -1,7 +1,7 @@
 //! Signer re-exports and hex utilities used by the multisig client.
 
 use guardian_shared::SignatureScheme;
-use miden_protocol::{FieldElement, Word};
+use miden_protocol::Word;
 
 pub use guardian_client::{
     EcdsaKeyStore as EcdsaGuardianKeyStore, FalconKeyStore, Signer as KeyManager,
@@ -81,10 +81,10 @@ mod tests {
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
         PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
     };
-    use miden_protocol::crypto::dsa::falcon512_rpo::{
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::{
         PublicKey as FalconPublicKey, Signature as FalconSignature,
     };
-    use miden_protocol::utils::Deserializable;
+    use miden_protocol::utils::serde::Deserializable;
 
     #[test]
     fn falcon_signer_commitment_roundtrip_via_hex() {

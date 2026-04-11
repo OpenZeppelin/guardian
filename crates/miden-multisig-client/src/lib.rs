@@ -33,6 +33,9 @@
 //! ```
 //!
 
+use miden_client::Client;
+use miden_client::keystore::FilesystemKeyStore;
+
 mod account;
 mod builder;
 mod client;
@@ -46,6 +49,8 @@ mod procedures;
 mod proposal;
 mod transaction;
 mod utils;
+
+pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 
 // Main client
 pub use builder::MultisigClientBuilder;
@@ -92,5 +97,5 @@ pub use miden_protocol::Word;
 pub use miden_protocol::account::AccountId;
 pub use miden_protocol::asset::Asset;
 pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-pub use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+pub use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 pub use miden_protocol::note::NoteId;

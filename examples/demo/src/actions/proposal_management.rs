@@ -960,9 +960,9 @@ fn prompt_p2id(
             }
             Asset::NonFungible(nft) => {
                 println!(
-                    "  [{}] NFT (faucet prefix: {}) - NOT SUPPORTED for P2ID",
+                    "  [{}] NFT (faucet: {}) - NOT SUPPORTED for P2ID",
                     i + 1,
-                    shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                    shorten_hex(&nft.faucet_id().to_hex())
                 );
             }
         }
@@ -1081,7 +1081,7 @@ async fn prompt_consume_notes(
                     );
                 }
                 Asset::NonFungible(nft) => {
-                    println!("      - NFT (faucet: {:?})", nft.faucet_id_prefix());
+                    println!("      - NFT (faucet: {})", shorten_hex(&nft.faucet_id().to_hex()));
                 }
             }
         }

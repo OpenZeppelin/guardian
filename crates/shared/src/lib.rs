@@ -2,7 +2,7 @@ use base64::Engine;
 use miden_protocol::account::Account;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as FalconSignature;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as FalconSignature;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Hasher, Word};
@@ -66,7 +66,7 @@ impl SignatureScheme {
         let key = signature_advice_key(pubkey_commitment, message);
 
         let values = match (self, signature) {
-            (Self::Falcon, AccountSignature::Falcon512Rpo(_)) => {
+            (Self::Falcon, AccountSignature::Falcon512Poseidon2(_)) => {
                 signature.to_prepared_signature(message)
             }
             (Self::Falcon, _) => {
@@ -77,9 +77,16 @@ impl SignatureScheme {
                     "ECDSA signature requires public key for advice preparation".to_string()
                 })?;
                 let public_key = parse_ecdsa_public_key_hex(public_key_hex)?;
-                let mut encoded = encode_ecdsa_signature_felts(&public_key, ecdsa_signature);
-                encoded.reverse();
-                encoded
+                let actual_commitment = public_key.to_commitment();
+                if actual_commitment != pubkey_commitment {
+                    return Err(format!(
+                        "ECDSA public key commitment mismatch: expected {}, got {}",
+                        word_to_hex(pubkey_commitment),
+                        word_to_hex(actual_commitment)
+                    ));
+                }
+                AccountSignature::EcdsaK256Keccak(ecdsa_signature.clone())
+                    .to_prepared_signature(message)
             }
             (Self::Ecdsa, _) => {
                 return Err("expected ECDSA signature for ecdsa scheme".to_string());
@@ -104,6 +111,10 @@ fn ensure_hex_prefix(hex: &str) -> String {
     }
 }
 
+fn word_to_hex(word: Word) -> String {
+    format!("0x{}", ::hex::encode(word.to_bytes()))
+}
+
 fn signature_advice_key(pubkey_commitment: Word, message: Word) -> Word {
     let mut elements = Vec::with_capacity(8);
     elements.extend_from_slice(pubkey_commitment.as_elements());
@@ -118,27 +129,6 @@ fn parse_ecdsa_public_key_hex(
         .map_err(|e| format!("invalid ECDSA public key hex: {}", e))?;
     ecdsa_k256_keccak::PublicKey::read_from_bytes(&public_key_bytes)
         .map_err(|e| format!("failed to deserialize ECDSA public key: {}", e))
-}
-
-fn bytes_to_packed_u32_felts(bytes: &[u8]) -> Vec<Felt> {
-    bytes
-        .chunks(4)
-        .map(|chunk| {
-            let mut packed = [0u8; 4];
-            packed[..chunk.len()].copy_from_slice(chunk);
-            Felt::from(u32::from_le_bytes(packed))
-        })
-        .collect()
-}
-
-fn encode_ecdsa_signature_felts(
-    public_key: &ecdsa_k256_keccak::PublicKey,
-    signature: &ecdsa_k256_keccak::Signature,
-) -> Vec<Felt> {
-    let mut out = Vec::new();
-    out.extend(bytes_to_packed_u32_felts(&public_key.to_bytes()));
-    out.extend(bytes_to_packed_u32_felts(&signature.to_bytes()));
-    out
 }
 
 /// Signature type for delta proposals
@@ -281,12 +271,12 @@ impl FromJson for TransactionSummary {
 mod tests {
     use super::*;
     use miden_protocol::{
-        account::auth::Signature as AccountSignature,
+        account::auth::{AuthScheme, Signature as AccountSignature},
         account::{AccountBuilder, auth::PublicKeyCommitment},
         crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey,
-        crypto::dsa::falcon512_rpo::SecretKey,
+        crypto::dsa::falcon512_poseidon2::SecretKey,
     };
-    use miden_standards::account::{auth::AuthFalcon512Rpo, wallets::BasicWallet};
+    use miden_standards::account::{auth::AuthSingleSig, wallets::BasicWallet};
 
     #[test]
     fn test_account_json_round_trip() {
@@ -295,7 +285,10 @@ mod tests {
         let public_key_commitment =
             PublicKeyCommitment::from(secret_key.public_key().to_commitment());
         let account = AccountBuilder::new([0xff; 32])
-            .with_auth_component(AuthFalcon512Rpo::new(public_key_commitment))
+            .with_auth_component(AuthSingleSig::new(
+                public_key_commitment,
+                AuthScheme::Falcon512Poseidon2,
+            ))
             .with_component(BasicWallet)
             .build()
             .unwrap();
@@ -310,7 +303,10 @@ mod tests {
         // Verify round-trip
         assert_eq!(account.id(), deserialized_account.id());
         assert_eq!(account.nonce(), deserialized_account.nonce());
-        assert_eq!(account.commitment(), deserialized_account.commitment());
+        assert_eq!(
+            account.to_commitment(),
+            deserialized_account.to_commitment()
+        );
         assert_eq!(
             account.storage().to_commitment(),
             deserialized_account.storage().to_commitment()
@@ -351,7 +347,7 @@ mod tests {
             .parse_signature_hex(&signature_hex)
             .unwrap();
 
-        assert!(matches!(parsed, AccountSignature::Falcon512Rpo(_)));
+        assert!(matches!(parsed, AccountSignature::Falcon512Poseidon2(_)));
     }
 
     #[test]
@@ -420,5 +416,27 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("requires public key"));
+    }
+
+    #[test]
+    fn signature_scheme_build_signature_advice_entry_rejects_mismatched_ecdsa_public_key() {
+        let secret_key = EcdsaSecretKey::new();
+        let other_secret_key = EcdsaSecretKey::new();
+        let other_public_key = other_secret_key.public_key();
+        let other_public_key_hex = format!("0x{}", ::hex::encode(other_public_key.to_bytes()));
+        let message = Word::from([1u32, 2, 3, 4]);
+        let commitment = secret_key.public_key().to_commitment();
+        let signature = AccountSignature::EcdsaK256Keccak(secret_key.sign(message));
+
+        let error = SignatureScheme::Ecdsa
+            .build_signature_advice_entry(
+                commitment,
+                message,
+                &signature,
+                Some(&other_public_key_hex),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("ECDSA public key commitment mismatch"));
     }
 }

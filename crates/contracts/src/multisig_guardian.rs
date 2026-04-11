@@ -7,7 +7,8 @@ use anyhow::{Result, anyhow};
 use miden_protocol::{
     Word,
     account::{
-        Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageSlot,
+        Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageMapKey,
+        StorageSlot,
         StorageSlotName,
     },
 };
@@ -98,10 +99,12 @@ impl MultisigGuardianConfig {
 /// **Combined Auth Component (6 slots):**
 /// - Slot 0: Threshold config `[threshold, num_signers, 0, 0]`
 /// - Slot 1: Signer public keys map `[index, 0, 0, 0] => COMMITMENT`
-/// - Slot 2: Executed transactions map (for replay protection)
-/// - Slot 3: Procedure threshold overrides map
-/// - Slot 4: GUARDIAN selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
-/// - Slot 5: GUARDIAN public key map `[0, 0, 0, 0] => GUARDIAN_COMMITMENT`
+/// - Slot 2: Signer scheme IDs map `[index, 0, 0, 0] => [scheme_id, 0, 0, 0]`
+/// - Slot 3: Executed transactions map (for replay protection)
+/// - Slot 4: Procedure threshold overrides map
+/// - Slot 5: GUARDIAN selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
+/// - Slot 6: GUARDIAN public key map `[0, 0, 0, 0] => GUARDIAN_COMMITMENT`
+/// - Slot 7: GUARDIAN scheme ID map `[0, 0, 0, 0] => [scheme_id, 0, 0, 0]`
 ///
 /// # Example
 /// ```ignore
@@ -216,6 +219,10 @@ impl MultisigGuardianBuilder {
 
     fn build_multisig_slots(&self) -> Result<Vec<StorageSlot>> {
         let num_signers = self.config.signer_commitments.len() as u32;
+        let scheme_id = match self.config.signature_scheme {
+            SignatureScheme::Falcon => 2u32,
+            SignatureScheme::Ecdsa => 1u32,
+        };
 
         // Slot 0: Threshold config
         let threshold_config_name =
@@ -234,20 +241,36 @@ impl MultisigGuardianBuilder {
             .signer_commitments
             .iter()
             .enumerate()
-            .map(|(i, commitment)| (Word::from([i as u32, 0, 0, 0]), *commitment));
+            .map(|(i, commitment)| (StorageMapKey::from_index(i as u32), *commitment));
         let slot_1 = StorageSlot::with_map(
             signer_keys_name,
             StorageMap::with_entries(map_entries)
                 .map_err(|e| anyhow!("failed to create signer keys map: {e}"))?,
         );
 
-        // Slot 2: Executed transactions map (empty)
+        // Slot 2: Signer scheme IDs map
+        let signer_scheme_ids_name =
+            StorageSlotName::new("openzeppelin::multisig::signer_scheme_ids")
+                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let scheme_entries = (0..num_signers).map(|i| {
+            (
+                StorageMapKey::from_index(i),
+                Word::from([scheme_id, 0, 0, 0]),
+            )
+        });
+        let slot_2 = StorageSlot::with_map(
+            signer_scheme_ids_name,
+            StorageMap::with_entries(scheme_entries)
+                .map_err(|e| anyhow!("failed to create signer scheme map: {e}"))?,
+        );
+
+        // Slot 3: Executed transactions map (empty)
         let executed_txs_name =
             StorageSlotName::new("openzeppelin::multisig::executed_transactions")
                 .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let slot_2 = StorageSlot::with_map(executed_txs_name, StorageMap::default());
+        let slot_3 = StorageSlot::with_map(executed_txs_name, StorageMap::default());
 
-        // Slot 3: Procedure threshold overrides
+        // Slot 4: Procedure threshold overrides
         let proc_thresholds_name =
             StorageSlotName::new("openzeppelin::multisig::procedure_thresholds")
                 .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
@@ -255,14 +278,16 @@ impl MultisigGuardianBuilder {
             .config
             .proc_threshold_overrides
             .iter()
-            .map(|(proc_root, threshold)| (*proc_root, Word::from([*threshold, 0, 0, 0])));
-        let slot_3 = StorageSlot::with_map(
+            .map(|(proc_root, threshold)| {
+                (StorageMapKey::new(*proc_root), Word::from([*threshold, 0, 0, 0]))
+            });
+        let slot_4 = StorageSlot::with_map(
             proc_thresholds_name,
             StorageMap::with_entries(proc_overrides)
                 .map_err(|e| anyhow!("failed to create proc threshold map: {e}"))?,
         );
 
-        Ok(vec![slot_0, slot_1, slot_2, slot_3])
+        Ok(vec![slot_0, slot_1, slot_2, slot_3, slot_4])
     }
 
     fn build_auth_slots(&self) -> Result<Vec<StorageSlot>> {
@@ -272,6 +297,11 @@ impl MultisigGuardianBuilder {
     }
 
     fn build_guardian_slots(&self) -> Result<Vec<StorageSlot>> {
+        let scheme_id = match self.config.signature_scheme {
+            SignatureScheme::Falcon => 2u32,
+            SignatureScheme::Ecdsa => 1u32,
+        };
+
         // Slot 0: GUARDIAN selector
         let guardian_selector_name = StorageSlotName::new("openzeppelin::guardian::selector")
             .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
@@ -287,21 +317,35 @@ impl MultisigGuardianBuilder {
         let guardian_public_key_name =
             StorageSlotName::new("openzeppelin::guardian::public_key")
                 .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let guardian_key_entries =
-            vec![(Word::from([0u32, 0, 0, 0]), self.config.guardian_commitment)];
+        let guardian_key_entries = vec![(
+            StorageMapKey::from_index(0),
+            self.config.guardian_commitment,
+        )];
         let slot_1 = StorageSlot::with_map(
             guardian_public_key_name,
             StorageMap::with_entries(guardian_key_entries)
                 .map_err(|e| anyhow!("failed to create GUARDIAN key map: {e}"))?,
         );
 
-        Ok(vec![slot_0, slot_1])
+        let guardian_scheme_id_name = StorageSlotName::new("openzeppelin::guardian::scheme_id")
+            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
+        let guardian_scheme_entries =
+            vec![(StorageMapKey::from_index(0), Word::from([scheme_id, 0, 0, 0]))];
+        let slot_2 = StorageSlot::with_map(
+            guardian_scheme_id_name,
+            StorageMap::with_entries(guardian_scheme_entries)
+                .map_err(|e| anyhow!("failed to create GUARDIAN scheme map: {e}"))?,
+        );
+
+        Ok(vec![slot_0, slot_1, slot_2])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guardian_shared::hex::{FromHex, IntoHex};
+    use crate::masm_builder::build_multisig_guardian_component;
 
     fn mock_commitment(seed: u8) -> Word {
         Word::from([
@@ -388,5 +432,56 @@ mod tests {
             .build();
 
         assert!(account.is_ok());
+    }
+
+    #[test]
+    fn test_guardian_auth_procedure_is_first_in_account_code() {
+        let config = MultisigGuardianConfig::new(
+            2,
+            vec![mock_commitment(1), mock_commitment(2)],
+            mock_commitment(10),
+        )
+        .with_storage_mode(AccountStorageMode::Public);
+
+        let builder = MultisigGuardianBuilder::new(config.clone());
+        let auth_slots = builder.build_auth_slots().expect("auth slots");
+        let component = build_multisig_guardian_component(auth_slots).expect("guardian component");
+        let auth_procedures = component
+            .procedures()
+            .filter_map(|(root, is_auth)| is_auth.then_some(root))
+            .collect::<Vec<_>>();
+
+        assert_eq!(auth_procedures.len(), 1);
+
+        let auth_root = auth_procedures[0];
+
+        let account = MultisigGuardianBuilder::new(config)
+            .build_existing()
+            .expect("guardian account");
+
+        assert_eq!(account.code().procedures()[0], auth_root);
+    }
+
+    #[test]
+    fn test_browser_deterministic_account_matches_rust_builder() {
+        let signer_commitment =
+            Word::from_hex("0x260a375ca01f1f05cd7bf22298b40c47290fc09f209011d39049b7f2ef61387b")
+                .expect("signer commitment");
+        let guardian_commitment =
+            Word::from_hex("0xc35d79423c41d46b5289aafef48be2364e9ea494c6b14d6aefad10f1a46e6d7c")
+                .expect("guardian commitment");
+
+        let config =
+            MultisigGuardianConfig::new(1, vec![signer_commitment], guardian_commitment);
+        let account = MultisigGuardianBuilder::new(config)
+            .with_seed([9u8; 32])
+            .build()
+            .expect("account");
+
+        assert_eq!(account.id().to_hex(), "0x4c053cea120ba890494eba281a8e5c");
+        assert_eq!(
+            account.to_commitment().into_hex(),
+            "0x49f0b7a53c9104ae8b370ac5db29a0ad04348b1aa4b104f5ec260775cf6bd5b9"
+        );
     }
 }

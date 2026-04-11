@@ -1,6 +1,6 @@
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_rpo::{SecretKey, Signature};
-use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::crypto::dsa::falcon512_poseidon2::{SecretKey, Signature};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rand::{RngCore, SeedableRng};
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};

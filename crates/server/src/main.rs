@@ -33,12 +33,14 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let network_type = NetworkType::from_env_or("GUARDIAN_NETWORK_TYPE", NetworkType::MidenTestnet);
+    let network_type = NetworkType::from_env_or("GUARDIAN_NETWORK_TYPE", NetworkType::MidenDevnet);
 
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
-        .with_canonicalization(Some(CanonicalizationConfig::new(10, 48)))
+        .with_canonicalization(Some(
+            CanonicalizationConfig::new(10, 48).with_submission_grace_period_seconds(600),
+        ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())
         .storage(storage_backend)

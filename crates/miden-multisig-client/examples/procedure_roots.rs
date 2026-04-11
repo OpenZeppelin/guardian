@@ -36,7 +36,7 @@ struct ProcedureRootOutput {
 fn word_to_rust_hex(word: &Word) -> String {
     word.iter()
         .rev()
-        .map(|felt| format!("{:016x}", felt.as_int()))
+        .map(|felt| format!("{:016x}", felt.as_canonical_u64()))
         .collect::<Vec<_>>()
         .join("")
 }
@@ -44,7 +44,7 @@ fn word_to_rust_hex(word: &Word) -> String {
 fn word_to_typescript_hex(word: &Word) -> String {
     let bytes: Vec<u8> = word
         .iter()
-        .flat_map(|felt| felt.as_int().to_le_bytes())
+        .flat_map(|felt| felt.as_canonical_u64().to_le_bytes())
         .collect();
     hex::encode(bytes)
 }

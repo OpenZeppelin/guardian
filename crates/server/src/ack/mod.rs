@@ -6,7 +6,7 @@ use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use guardian_shared::SignatureScheme;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey as FalconSecretKey;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
 use std::path::PathBuf;
 
 use self::secrets_manager::{AckSecretProvider, AwsSecretsManagerProvider};
@@ -64,8 +64,8 @@ impl AckRegistry {
         keystore_path: PathBuf,
         provider: &P,
     ) -> Result<Self> {
-        let (falcon_secret, ecdsa_secret) =
-            tokio::try_join!(provider.falcon_secret_key(), provider.ecdsa_secret_key())?;
+        let falcon_secret = provider.falcon_secret_key().await?;
+        let ecdsa_secret = provider.ecdsa_secret_key().await?;
 
         Self::from_secret_keys(keystore_path, &falcon_secret, &ecdsa_secret)
     }
@@ -96,7 +96,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, FilesystemKeyStore, KeyStore};
-    use miden_protocol::utils::Serializable;
+    use miden_protocol::utils::serde::Serializable;
     use rand_chacha::ChaCha20Rng;
 
     struct MockAckSecretProvider {

@@ -19,7 +19,7 @@
 //! use std::sync::Arc;
 //!
 //! use guardian_client::{FalconKeyStore, GuardianClient};
-//! use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+//! use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

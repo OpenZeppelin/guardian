@@ -1,7 +1,7 @@
 use guardian_shared::SignatureScheme;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
-use miden_protocol::utils::Serializable;
+use miden_protocol::utils::serde::Serializable;
 
 use super::Signer;
 
@@ -63,7 +63,7 @@ impl Signer for EcdsaKeyStore {
 #[cfg(test)]
 mod tests {
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
-    use miden_protocol::utils::Deserializable;
+    use miden_protocol::utils::serde::Deserializable;
 
     use super::*;
 

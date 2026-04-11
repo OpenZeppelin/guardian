@@ -5,20 +5,20 @@ use miden_confidential_contracts::masm_builder::{
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
-use miden_protocol::account::{Account, StorageSlotName, auth::AuthSecretKey};
+use miden_protocol::account::{Account, AccountStorageMode, StorageSlotName, auth::AuthSecretKey};
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SecretKey as EcdsaSecretKey,
 };
-use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey};
+use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
-use miden_protocol::transaction::OutputNote;
+use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_testing::{MockChainBuilder, TxContextInput};
+use miden_testing::MockChainBuilder;
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use rand::SeedableRng;
@@ -79,7 +79,7 @@ fn setup_keys_and_authenticators(
     // Create authenticators for required signers
     for secret_key in secret_keys.iter().take(threshold) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(secret_key.clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(secret_key.clone())]);
         authenticators.push(authenticator);
     }
 
@@ -107,7 +107,7 @@ fn setup_keys_and_authenticators_with_guardian(
     // Create authenticators only for the signers we'll actually use
     for secret_key in secret_keys.iter().take(threshold) {
         let authenticator =
-            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(secret_key.clone())]);
+            BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(secret_key.clone())]);
         authenticators.push(authenticator);
     }
 
@@ -115,7 +115,7 @@ fn setup_keys_and_authenticators_with_guardian(
     let guardian_sec_key = SecretKey::with_rng(&mut rng);
     let guardian_pub_key = guardian_sec_key.public_key();
     let guardian_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(guardian_sec_key.clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(guardian_sec_key.clone())]);
 
     Ok((
         secret_keys,
@@ -135,7 +135,7 @@ fn setup_keys_and_authenticator_for_guardian() -> anyhow::Result<GuardianTestSet
     let guardian_sec_key = SecretKey::with_rng(&mut rng);
     let guardian_pub_key = guardian_sec_key.public_key();
     let guardian_authenticator =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Rpo(guardian_sec_key.clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(guardian_sec_key.clone())]);
 
     Ok((guardian_sec_key, guardian_pub_key, guardian_authenticator))
 }
@@ -187,6 +187,7 @@ fn create_multisig_account_with_guardian_commitments(
     signature_scheme: SignatureScheme,
 ) -> anyhow::Result<Account> {
     let config = MultisigGuardianConfig::new(threshold, signer_commitments, guardian_commitment)
+        .with_storage_mode(AccountStorageMode::Public)
         .with_guardian_enabled(guardian_enabled)
         .with_signature_scheme(signature_scheme);
 
@@ -304,12 +305,9 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
 
     // Execute transaction without signatures - should fail
     let tx_context_init = mock_chain
-        .build_tx_context(
-            TxContextInput::Account(multisig_account.clone()),
-            &[input_note.id()],
-            &[],
-        )?
-        .extend_expected_output_notes(vec![OutputNote::Full(output_note.clone())])
+        .build_tx_context(multisig_account.id(), &[input_note.id()], &[])?
+        .authenticator(None)
+        .extend_expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
         .auth_args(salt)
         .build()?;
 
@@ -336,12 +334,9 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
 
     // Execute transaction with signatures - should succeed
     let tx_context_execute = mock_chain
-        .build_tx_context(
-            TxContextInput::Account(multisig_account.clone()),
-            &[input_note.id()],
-            &[],
-        )?
-        .extend_expected_output_notes(vec![OutputNote::Full(output_note)])
+        .build_tx_context(multisig_account.id(), &[input_note.id()], &[])?
+        .authenticator(None)
+        .extend_expected_output_notes(vec![RawOutputNote::Full(output_note)])
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
         .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
@@ -447,7 +442,8 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script.clone())
         .tx_script_args(tx_script_args)
         .extend_advice_inputs(advice_inputs.clone())
@@ -476,7 +472,8 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
 
     // Execute transaction with signatures - should succeed
     let update_approvers_tx = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script)
         .tx_script_args(multisig_config_hash)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
@@ -543,6 +540,149 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::Result<()> {
+    let (
+        _secret_keys,
+        public_keys,
+        authenticators,
+        _guardian_secret_key,
+        guardian_public_key,
+        guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(1, 1)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(1, &public_keys, guardian_public_key.clone(), true)?;
+
+    let mut mock_chain_builder =
+        MockChainBuilder::with_accounts([multisig_account.clone()]).unwrap();
+
+    let output_note_asset = FungibleAsset::mock(0);
+    let _output_note = mock_chain_builder.add_p2id_note(
+        multisig_account.id(),
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE
+            .try_into()
+            .unwrap(),
+        &[output_note_asset],
+        NoteType::Public,
+    )?;
+
+    let mock_chain = mock_chain_builder.clone().build().unwrap();
+
+    let salt = Word::from([Felt::new(9); 4]);
+    let mut advice_map = AdviceMap::default();
+    let (_new_secret_keys, new_public_keys, _new_authenticators) =
+        setup_keys_and_authenticators(2, 2)?;
+
+    let threshold = 1u64;
+    let num_of_approvers = 2u64;
+
+    let mut config_and_pubkeys_vector = Vec::new();
+    config_and_pubkeys_vector.extend_from_slice(&[
+        Felt::new(threshold),
+        Felt::new(num_of_approvers),
+        Felt::new(0),
+        Felt::new(0),
+    ]);
+
+    for public_key in new_public_keys.iter().rev() {
+        let key_word: Word = public_key.to_commitment();
+        config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
+    }
+
+    let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys_vector);
+    advice_map.insert(multisig_config_hash, config_and_pubkeys_vector);
+
+    let multisig_library = get_multisig_library()?;
+    let tx_script_code = r#"
+    use oz_multisig::multisig
+    begin
+        call.multisig::update_signers_and_threshold
+    end
+    "#;
+
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&multisig_library)?
+        .compile_tx_script(tx_script_code)?;
+
+    let advice_inputs = AdviceInputs::default()
+        .with_map(advice_map.clone().into_iter().map(|(k, v)| (k, v.to_vec())));
+
+    let tx_context_init = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .tx_script(tx_script.clone())
+        .tx_script_args(multisig_config_hash)
+        .extend_advice_inputs(advice_inputs.clone())
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+
+    let signer_sig = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    let update_approvers_tx = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .tx_script(tx_script)
+        .tx_script_args(multisig_config_hash)
+        .add_signature(public_keys[0].clone().into(), msg, signer_sig)
+        .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
+        .auth_args(salt)
+        .extend_advice_inputs(advice_inputs)
+        .build()?
+        .execute()
+        .await?;
+
+    assert_eq!(
+        update_approvers_tx.account_delta().nonce_delta(),
+        Felt::new(1)
+    );
+
+    let mut updated_multisig_account = multisig_account.clone();
+    updated_multisig_account.apply_delta(update_approvers_tx.account_delta())?;
+
+    let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
+    for (i, expected_key) in new_public_keys.iter().enumerate() {
+        let storage_key = [
+            Felt::new(i as u64),
+            Felt::new(0),
+            Felt::new(0),
+            Felt::new(0),
+        ]
+        .into();
+        let storage_item = updated_multisig_account
+            .storage()
+            .get_map_item(&signer_pubkeys_name, storage_key)
+            .unwrap();
+
+        let expected_word: Word = expected_key.to_commitment();
+        assert_eq!(storage_item, expected_word, "Public key {i} doesn't match expected value");
+    }
+
+    let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT).unwrap();
+    let threshold_config_storage = updated_multisig_account
+        .storage()
+        .get_item(&threshold_config_name)
+        .unwrap();
+
+    assert_eq!(threshold_config_storage[0], Felt::new(threshold));
+    assert_eq!(threshold_config_storage[1], Felt::new(num_of_approvers));
+
+    Ok(())
+}
+
 /// Tests guardian public key update functionality.
 ///
 /// This test verifies that a multisig account can:
@@ -569,7 +709,7 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     // Initialize with GUARDIAN selector = OFF so key update doesn't require GUARDIAN signature
     // This is the expected flow: disable GUARDIAN, update key, then enable GUARDIAN in a follow-up tx
     let multisig_account =
-        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), false)?;
 
     // SECTION 1: Execute a transaction script to update GUARDIAN public key
     // ================================================================================
@@ -626,7 +766,8 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script.clone())
         .extend_advice_inputs(advice_inputs.clone())
         .auth_args(salt)
@@ -650,7 +791,8 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
 
     // Execute transaction with signatures without a need of the GUARDIAN signature! - should succeed
     let update_guardian_public_key_tx = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
@@ -703,6 +845,7 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
     let send_asset_root = BasicWallet::move_asset_to_note_digest();
     let config =
         MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_storage_mode(AccountStorageMode::Public)
             .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
     let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
 
@@ -711,7 +854,8 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
     let tx_script = build_update_procedure_threshold_script(send_asset_root, 1)?;
 
     let tx_context_init = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script.clone())
         .auth_args(salt)
         .build()?;
@@ -731,7 +875,8 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
         .await?;
 
     let executed_tx = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script)
         .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
         .add_signature(
@@ -768,6 +913,7 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
     let send_asset_root = BasicWallet::move_asset_to_note_digest();
     let config =
         MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_storage_mode(AccountStorageMode::Public)
             .with_signature_scheme(SignatureScheme::Ecdsa)
             .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
     let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
@@ -781,7 +927,8 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
     )?;
 
     let tx_context_init = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script.clone())
         .auth_args(salt)
         .build()?;
@@ -801,7 +948,8 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
         .await?;
 
     let executed_tx = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script)
         .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
         .add_signature(
@@ -838,6 +986,7 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
     let send_asset_root = BasicWallet::move_asset_to_note_digest();
     let config =
         MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_storage_mode(AccountStorageMode::Public)
             .with_proc_threshold_overrides(vec![(send_asset_root, 2)]);
     let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
 
@@ -873,7 +1022,8 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
         )?;
 
     let result = mock_chain
-        .build_tx_context(TxContextInput::Account(multisig_account.clone()), &[], &[])?
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
         .tx_script(tx_script)
         .tx_script_args(multisig_config_hash)
         .extend_advice_inputs(advice_inputs)

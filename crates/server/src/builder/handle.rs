@@ -41,6 +41,7 @@ impl ServerHandle {
             tracing::info!(
                 check_interval_seconds = config.check_interval_seconds,
                 max_retries = config.max_retries,
+                submission_grace_period_seconds = config.submission_grace_period_seconds,
                 "Starting canonicalization worker"
             );
             start_canonicalization_worker(self.app_state.clone());

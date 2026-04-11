@@ -7,10 +7,10 @@ mod fixtures {
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
     use miden_protocol::account::AccountDelta;
-    use miden_protocol::account::StorageSlotName;
     use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::account::{StorageMapKey, StorageSlotName};
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word as MidenWord, ZERO};
     use std::fs;
 
@@ -99,7 +99,7 @@ mod fixtures {
 
         let account_json = account.to_json();
         let account_id = account.id();
-        let mut current_commitment = account.commitment();
+        let mut current_commitment = account.to_commitment();
 
         println!("\n📦 Generated Multisig Account:");
         println!("  Account ID: {}", account_id);
@@ -150,7 +150,7 @@ mod fixtures {
         storage_delta_1
             .set_map_item(
                 signer_pubkeys_name.clone(),
-                MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO]),
+                StorageMapKey::new(MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO])),
                 commitment_4,
             )
             .expect("Failed to set signer pubkey in delta 1");
@@ -172,7 +172,7 @@ mod fixtures {
         let tx_summary_1 = TransactionSummary::new(
             delta_1,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
         );
 
@@ -189,12 +189,12 @@ mod fixtures {
             .storage_mut()
             .set_map_item(
                 &executed_txs_name,
-                tx_commitment_1,
+                StorageMapKey::new(tx_commitment_1),
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
-        current_commitment = account_state.commitment();
+        current_commitment = account_state.to_commitment();
 
         println!(
             "  New commitment: 0x{}",
@@ -238,7 +238,7 @@ mod fixtures {
         storage_delta_2
             .set_map_item(
                 signer_pubkeys_name.clone(),
-                MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO]),
+                StorageMapKey::new(MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO])),
                 commitment_5,
             )
             .expect("Failed to set signer pubkey in delta 2");
@@ -260,7 +260,7 @@ mod fixtures {
         let tx_summary_2 = TransactionSummary::new(
             delta_2,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
         );
 
@@ -275,12 +275,12 @@ mod fixtures {
             .storage_mut()
             .set_map_item(
                 &executed_txs_name,
-                tx_commitment_2,
+                StorageMapKey::new(tx_commitment_2),
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
-        current_commitment = account_state.commitment();
+        current_commitment = account_state.to_commitment();
 
         println!(
             "  New commitment: 0x{}",
@@ -333,7 +333,7 @@ mod fixtures {
         let tx_summary_3 = TransactionSummary::new(
             delta_3,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
         );
 
@@ -348,12 +348,12 @@ mod fixtures {
             .storage_mut()
             .set_map_item(
                 &executed_txs_name,
-                tx_commitment_3,
+                StorageMapKey::new(tx_commitment_3),
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
-        current_commitment = account_state.commitment();
+        current_commitment = account_state.to_commitment();
 
         println!("  New threshold: 3/5");
         println!(

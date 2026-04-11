@@ -6,11 +6,11 @@ use miden_client::account::{Account, AccountInterfaceExt};
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
-use miden_protocol::crypto::rand::RpoRandomCoin;
+use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::interface::AccountInterface;
-use miden_standards::note::create_p2id_note;
+use miden_standards::note::P2idNote;
 
 use crate::error::{MultisigError, Result};
 
@@ -27,9 +27,9 @@ pub fn build_p2id_transaction_request<I>(
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let mut rng = RpoRandomCoin::new(salt);
+    let mut rng = RandomCoin::new(salt);
 
-    let note = create_p2id_note(
+    let note = P2idNote::create(
         sender_account.id(),
         recipient,
         assets,
@@ -67,9 +67,10 @@ mod tests {
     use miden_protocol::Felt;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStorageMode;
+    use miden_protocol::account::auth::AuthScheme;
     use miden_protocol::asset::TokenSymbol;
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-    use miden_standards::AuthScheme;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_standards::AuthMethod;
     use miden_standards::account::faucets::create_basic_fungible_faucet;
 
     #[test]
@@ -89,8 +90,11 @@ mod tests {
             8,
             Felt::from(1_000_000u32),
             AccountStorageMode::Public,
-            AuthScheme::Falcon512Rpo {
-                pub_key: secret_key.public_key().to_commitment().into(),
+            AuthMethod::SingleSig {
+                approver: (
+                    secret_key.public_key().to_commitment().into(),
+                    AuthScheme::Falcon512Poseidon2,
+                ),
             },
         )
         .unwrap();

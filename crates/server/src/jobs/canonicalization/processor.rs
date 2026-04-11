@@ -4,6 +4,7 @@ use crate::error::{GuardianError, Result};
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 #[async_trait]
 pub trait Processor: Send + Sync {
@@ -27,9 +28,20 @@ fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
 struct DeltasProcessorBase {
     state: AppState,
     max_retries: u32,
+    submission_grace_period_seconds: u64,
 }
 
 impl DeltasProcessorBase {
+    fn candidate_age_seconds(&self, delta: &DeltaObject, now: DateTime<Utc>) -> Option<u64> {
+        let DeltaStatus::Candidate { timestamp, .. } = &delta.status else {
+            return None;
+        };
+
+        let candidate_at = DateTime::parse_from_rfc3339(timestamp).ok()?;
+        let age = now.signed_duration_since(candidate_at.with_timezone(&Utc));
+        Some(age.num_seconds().max(0) as u64)
+    }
+
     async fn process_all_accounts(&self) -> Result<()> {
         let account_ids = self
             .state
@@ -149,8 +161,25 @@ impl DeltasProcessorBase {
                 }
             }
             Err(e) => {
+                let now = self.state.clock.now();
+                if let Some(candidate_age_seconds) = self.candidate_age_seconds(&delta, now)
+                    && candidate_age_seconds < self.submission_grace_period_seconds
+                {
+                    tracing::info!(
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        candidate_age_seconds,
+                        submission_grace_period_seconds = self.submission_grace_period_seconds,
+                        error = %e,
+                        "Delta verification failed during submission grace period; will retry without consuming retry budget"
+                    );
+
+                    return Ok(());
+                }
+
                 let current_retry = delta.status.retry_count();
                 let new_retry = current_retry + 1;
+                let now = now.to_rfc3339();
 
                 if new_retry >= self.max_retries {
                     tracing::warn!(
@@ -170,7 +199,6 @@ impl DeltasProcessorBase {
                         })?;
 
                     // Clear the pending candidate flag after discard
-                    let now = self.state.clock.now_rfc3339();
                     if let Err(e) = self
                         .state
                         .metadata
@@ -193,7 +221,6 @@ impl DeltasProcessorBase {
                         "Delta verification failed, will retry"
                     );
 
-                    let now = self.state.clock.now_rfc3339();
                     let new_status = delta.status.with_incremented_retry(now);
 
                     storage_backend
@@ -355,6 +382,7 @@ impl DeltasProcessor {
             base: DeltasProcessorBase {
                 state,
                 max_retries: config.max_retries,
+                submission_grace_period_seconds: config.submission_grace_period_seconds,
             },
         }
     }
@@ -381,6 +409,7 @@ impl TestDeltasProcessor {
             base: DeltasProcessorBase {
                 state,
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
+                submission_grace_period_seconds: 0,
             },
         }
     }
@@ -400,12 +429,14 @@ impl Processor for TestDeltasProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builder::clock::test::MockClock;
     use crate::delta_object::DeltaStatus;
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
     use crate::state_object::StateObject;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::{TimeZone, Utc};
     use std::sync::Arc;
 
     fn create_test_metadata(account_id: &str) -> AccountMetadata {
@@ -458,6 +489,17 @@ mod tests {
             ack_scheme: String::new(),
             status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
         }
+    }
+
+    fn create_test_app_state_with_clock(
+        storage: Arc<dyn crate::storage::StorageBackend>,
+        network_client: Arc<tokio::sync::Mutex<dyn crate::network::NetworkClient>>,
+        metadata: Arc<dyn crate::metadata::MetadataStore>,
+        clock: Arc<dyn crate::clock::Clock>,
+    ) -> AppState {
+        let mut state = create_test_app_state_with_mocks(storage, network_client, metadata);
+        state.clock = clock;
+        state
     }
 
     #[test]
@@ -676,6 +718,47 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_candidate_within_submission_grace_does_not_discard() {
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status =
+            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 17);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate]))
+            .with_pull_state(Ok(create_test_state(account_id)));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Err("Verification failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(30);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+        assert!(metadata.get_set_calls().is_empty());
     }
 
     #[tokio::test]

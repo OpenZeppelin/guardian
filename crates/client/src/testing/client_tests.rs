@@ -10,7 +10,7 @@ use crate::{
 };
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use std::sync::Arc;
 use tonic::Status;
 

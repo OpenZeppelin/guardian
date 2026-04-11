@@ -1,7 +1,7 @@
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f as base-builder
+FROM rust:1.93.0-bookworm@sha256:7274e0edb5b47eda8053b350ebf3d489f7e0f65d2d7e77b16076299c7c047c28 as base-builder
 
 # Install protobuf compiler (pinned to specific version)
 RUN apt-get update && apt-get install -y \

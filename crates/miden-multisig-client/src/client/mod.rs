@@ -20,11 +20,11 @@ mod proposals;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miden_client::Client;
 use miden_client::rpc::Endpoint;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 
+use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
 use crate::export::ExportedProposal;
@@ -81,7 +81,7 @@ pub struct StateVerificationResult {
 /// let account = client.create_account(2, vec![signer1, signer2]).await?;
 /// ```
 pub struct MultisigClient {
-    pub(crate) miden_client: Client<()>,
+    pub(crate) miden_client: MidenSdkClient,
     pub(crate) key_manager: Arc<dyn KeyManager>,
     /// Guardian server endpoint.
     pub(crate) guardian_endpoint: String,
@@ -101,7 +101,7 @@ impl MultisigClient {
 
     /// Creates a new MultisigClient (internal use, prefer builder).
     pub(crate) fn new(
-        miden_client: Client<()>,
+        miden_client: MidenSdkClient,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,

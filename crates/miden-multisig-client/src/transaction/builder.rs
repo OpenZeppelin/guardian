@@ -2,12 +2,12 @@
 
 use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
-use miden_client::Client;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::note::NoteId;
 
+use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::guardian_endpoint::verify_endpoint_commitment;
@@ -48,7 +48,7 @@ impl ProposalBuilder {
     /// Builds and submits the proposal to GUARDIAN.
     pub async fn build(
         self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         key_manager: &dyn KeyManager,
@@ -148,7 +148,7 @@ impl ProposalBuilder {
 
     async fn build_add_cosigner(
         &self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         new_commitment: Word,
@@ -237,7 +237,7 @@ impl ProposalBuilder {
 
     async fn build_remove_cosigner(
         &self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         commitment_to_remove: Word,
@@ -345,7 +345,7 @@ impl ProposalBuilder {
     #[allow(clippy::too_many_arguments)]
     async fn build_p2id(
         &self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         recipient: AccountId,
@@ -435,7 +435,7 @@ impl ProposalBuilder {
 
     async fn build_consume_notes(
         &self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         note_ids: Vec<NoteId>,
@@ -513,7 +513,7 @@ impl ProposalBuilder {
     #[allow(clippy::too_many_arguments)]
     async fn build_switch_guardian(
         &self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         new_guardian_pubkey: Word,
@@ -596,7 +596,7 @@ impl ProposalBuilder {
 
     async fn build_update_procedure_threshold(
         &self,
-        miden_client: &mut Client<()>,
+        miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         procedure: ProcedureName,
@@ -667,9 +667,8 @@ impl ProposalBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::FieldElement;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, ZERO};
 
     fn test_proposal() -> Proposal {
@@ -685,7 +684,7 @@ mod tests {
         let tx_summary = TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([Felt::new(9), ZERO, ZERO, ZERO]),
         );
 

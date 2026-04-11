@@ -70,8 +70,8 @@ pub async fn action_list_notes(state: &mut SessionState) -> Result<(), String> {
                     }
                     Asset::NonFungible(nft) => {
                         println!(
-                            "        - NFT (faucet prefix: {})",
-                            shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                            "        - NFT (faucet: {})",
+                            shorten_hex(&nft.faucet_id().to_hex())
                         );
                     }
                 }

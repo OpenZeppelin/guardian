@@ -43,8 +43,8 @@ mod tests {
     use guardian_shared::ToJson;
     use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
     use miden_protocol::account::{AccountDelta, AccountId};
-    use miden_protocol::transaction::{InputNotes, OutputNotes};
-    use miden_protocol::{Felt, FieldElement, Word, ZERO};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+    use miden_protocol::{Felt, Word, ZERO};
 
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a valid hex account ID from the test fixtures
@@ -62,7 +62,7 @@ mod tests {
         TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([ZERO; 4]),
         )
     }

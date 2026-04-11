@@ -4,10 +4,10 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, SecretKey, Signature};
+use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey, Signature};
 use miden_protocol::crypto::hash::rpo::Rpo256;
-use miden_protocol::utils::{Deserializable, Serializable};
-use miden_protocol::{Felt, FieldElement, Word};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::{Felt, Word};
 
 /// A signer that uses Falcon signatures with RPO hashing.
 pub struct FalconRpoSigner {

@@ -4,9 +4,8 @@
 # It can be used standalone or in conjunction with other auth components like multisig.
 
 use miden::protocol::active_account
+use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
 use miden::protocol::native_account
-
-type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 
 # IMPORTANT SECURITY NOTES
 # --------------------------------------------------------------------------------
@@ -33,6 +32,7 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # +---------------------+---------------+
 # | GUARDIAN SELECTOR (word) |       0       |
 # | GUARDIAN PUBLIC KEY MAP  |       1       |
+# | GUARDIAN SCHEME ID MAP   |       2       |
 # +---------------------+---------------+
 #
 # - GUARDIAN_SELECTOR_SLOT (0):
@@ -42,7 +42,7 @@ type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
 # - GUARDIAN_PUBLIC_KEY_MAP_SLOT (1):
 #     * A map from a fixed key [0, 0, 0, 0] to the single GUARDIAN public key:
 #         [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
-#     * GUARDIAN_PUBLIC_KEY is a RPO Falcon 512 public key represented as a word.
+#     * GUARDIAN_PUBLIC_KEY is a Falcon Poseidon2 public key represented as a word.
 
 # CONSTANTS
 # =================================================================================================
@@ -57,12 +57,15 @@ const GUARDIAN_SELECTOR_SLOT=word("openzeppelin::guardian::selector")
 # [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
 const GUARDIAN_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::guardian::public_key")
 
+# Map slot for GUARDIAN signature scheme IDs
+# Uses exactly one scheme ID entry at index [0, 0, 0, 0]
+# [0, 0, 0, 0] => [scheme_id, 0, 0, 0]
+const GUARDIAN_SCHEME_ID_MAP_SLOT=word("openzeppelin::guardian::scheme_id")
+
 # Selector flag values
 const GUARDIAN_ON=[1, 0, 0, 0]
 const GUARDIAN_OFF=[0, 0, 0, 0]
-
-# The event emitted when a signature is not found for a required signer.
-const AUTH_UNAUTHORIZED_EVENT=event("miden::auth::unauthorized")
+const FALCON_512_POSEIDON2_SCHEME_WORD=[2, 0, 0, 0]
 
 # GUARDIAN PROCEDURES
 # =================================================================================================
@@ -140,6 +143,24 @@ pub proc update_guardian_public_key
 
     dropw
     # => []
+
+    push.0.0.0.0
+    # => [MAP_KEY]
+
+    push.FALCON_512_POSEIDON2_SCHEME_WORD
+    # => [SCHEME_ID_WORD, MAP_KEY]
+
+    swapw
+    # => [MAP_KEY, SCHEME_ID_WORD]
+
+    push.GUARDIAN_SCHEME_ID_MAP_SLOT[0..2]
+    # => [scheme_id_slot_prefix, scheme_id_slot_suffix, MAP_KEY, SCHEME_ID_WORD]
+
+    exec.native_account::set_map_item
+    # => [OLD_MAP_VALUE]
+
+    dropw
+    # => []
 end
 
 #! Conditionally verify a "GUARDIAN" signature against a stored public key hash.
@@ -155,7 +176,7 @@ end
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
 #! - If selector is OFF (0), GUARDIAN verification is skipped
 #! - Selector value is read from initial storage state
-pub proc verify_guardian_signature(msg: BeWord) -> BeWord
+pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
     drop drop drop
@@ -165,7 +186,8 @@ pub proc verify_guardian_signature(msg: BeWord) -> BeWord
     if.true
         push.1
         push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
-        exec.::miden::standards::auth::falcon512_rpo::verify_signatures
+        push.GUARDIAN_SCHEME_ID_MAP_SLOT[0..2]
+        exec.::miden::standards::auth::signature::verify_signatures
         push.1 neq
         if.true
             emit.AUTH_UNAUTHORIZED_EVENT

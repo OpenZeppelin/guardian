@@ -74,7 +74,7 @@ impl ServerBuilder {
     /// use server::network::NetworkType;
     ///
     /// let builder = ServerBuilder::new()
-    ///     .network(NetworkType::MidenTestnet);
+    ///     .network(NetworkType::MidenDevnet);
     /// ```
     pub fn network(mut self, network_type: NetworkType) -> Self {
         self.network_type = Some(network_type);
@@ -350,7 +350,7 @@ impl ServerBuilder {
     /// let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/guardian/metadata")).await?;
     ///
     /// let handle = ServerBuilder::new()
-    ///     .network(NetworkType::MidenTestnet)
+    ///     .network(NetworkType::MidenDevnet)
     ///     .storage(Arc::new(storage))
     ///     .metadata(Arc::new(metadata))
     ///     .build()

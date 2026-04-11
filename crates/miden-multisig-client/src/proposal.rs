@@ -10,10 +10,10 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2FalconSignature;
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::utils::Deserializable;
+use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
 use serde_json::Value;
 
@@ -379,7 +379,7 @@ impl ProposalSignatureEntry {
         let signature_hex = ensure_hex_prefix(&self.signature_hex);
         match self.scheme {
             SignatureScheme::Falcon => {
-                RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
+                Poseidon2FalconSignature::from_hex(&signature_hex).map_err(|e| {
                     MultisigError::Signature(format!("invalid proposal signature: {}", e))
                 })?;
             }
@@ -638,16 +638,15 @@ impl Proposal {
 /// Converts a Word to bytes.
 fn word_to_bytes(word: &Word) -> Vec<u8> {
     word.iter()
-        .flat_map(|felt| felt.as_int().to_le_bytes())
+        .flat_map(|felt| felt.as_canonical_u64().to_le_bytes())
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::FieldElement;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, OutputNotes};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes};
 
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a minimal valid account ID
@@ -663,7 +662,7 @@ mod tests {
         TransactionSummary::new(
             delta,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             Word::default(),
         )
     }

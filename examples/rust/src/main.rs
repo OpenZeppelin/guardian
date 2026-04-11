@@ -6,17 +6,15 @@ use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use miden_client::account::Account;
-use miden_client::crypto::RpoRandomCoin;
+use miden_client::builder::ClientBuilder;
+use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
-use miden_client::{
-    Client, ClientError, Deserializable, ExecutionOptions, Felt, Serializable, Word,
-};
+use miden_client::{Client, ClientError, DebugMode, Deserializable, Felt, Serializable, Word};
 use miden_client_sqlite_store::SqliteStore;
-use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 
 use miden_protocol::account::auth::Signature as AccountSignature;
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RawFalconSignature;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as RawFalconSignature;
 
 use guardian_client::auth_config::AuthType;
 use guardian_client::{
@@ -28,9 +26,22 @@ use guardian_shared::ToJson;
 
 use tempfile::TempDir;
 
+fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKeyStore> {
+    if endpoint == &Endpoint::devnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_devnet()
+    } else if endpoint == &Endpoint::testnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_testnet()
+    } else if endpoint == &Endpoint::localhost() {
+        ClientBuilder::<FilesystemKeyStore>::for_localhost()
+    } else {
+        ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(10_000))
+    }
+}
+
 #[derive(Debug, Clone, ValueEnum)]
 enum Network {
     Local,
+    Devnet,
     Testnet,
 }
 
@@ -52,42 +63,31 @@ fn commitment_from_hex(hex_commitment: &str) -> Result<Word, String> {
         .map_err(|err| format!("Failed to deserialize commitment word '{hex_commitment}': {err}"))
 }
 
-async fn create_miden_client(data_dir: &Path, endpoint: &Endpoint) -> Result<Client<()>, String> {
+async fn create_miden_client(
+    data_dir: &Path,
+    endpoint: &Endpoint,
+) -> Result<Client<FilesystemKeyStore>, String> {
     let store_path = data_dir.join("miden-client.sqlite");
     let store = SqliteStore::new(store_path)
         .await
         .map_err(|err| format!("Failed to open SQLite store: {err}"))?;
     let store = Arc::new(store);
 
-    let rng = Box::new(RpoRandomCoin::new(Word::default()));
-    let exec_options = ExecutionOptions::new(
-        Some(MAX_TX_EXECUTION_CYCLES),
-        MIN_TX_EXECUTION_CYCLES,
-        false,
-        true,
-    )
-    .map_err(|err| format!("Failed to build execution options: {err}"))?;
+    let rng = Box::new(RandomCoin::new(Word::default()));
 
-    let grpc_client = GrpcClient::new(endpoint, 10_000);
-    let rpc_client: Arc<dyn NodeRpcClient> = Arc::new(grpc_client);
-
-    Client::new(
-        rpc_client,
-        rng,
-        store,
-        None,
-        exec_options,
-        Some(20),
-        Some(256),
-        None,
-        None, // prover
-    )
-    .await
-    .map_err(|err| format!("Failed to create Miden client: {err}"))
+    configured_client_builder(endpoint)
+        .store(store)
+        .rng(rng)
+        .in_debug_mode(DebugMode::Enabled)
+        .tx_discard_delta(Some(20))
+        .max_block_number_delta(256)
+        .build()
+        .await
+        .map_err(|err| format!("Failed to create Miden client: {err}"))
 }
 
 async fn add_account_and_sync(
-    client: &mut Client<()>,
+    client: &mut Client<FilesystemKeyStore>,
     account: &Account,
 ) -> Result<(), ClientError> {
     client.add_account(account, false).await?;
@@ -120,6 +120,10 @@ async fn main() -> ClientResult<()> {
         Network::Local => {
             println!("Step 1: Connect to GUARDIAN and Miden node (local)...");
             Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
+        }
+        Network::Devnet => {
+            println!("Step 1: Connect to GUARDIAN and Miden node (devnet)...");
+            Endpoint::new("https".to_string(), "rpc.devnet.miden.io".to_string(), None)
         }
         Network::Testnet => {
             println!("Step 1: Connect to GUARDIAN and Miden node (testnet)...");
@@ -191,7 +195,7 @@ async fn main() -> ClientResult<()> {
             println!(
                 "    The Miden node is running a different kernel version than the client library."
             );
-            println!("    Please ensure both use the same miden-lib version (currently: 0.12.4).");
+            println!("    Please ensure both use the same miden-lib version (currently: 0.14.x).");
             return Ok(());
         }
     }
@@ -357,12 +361,12 @@ async fn main() -> ClientResult<()> {
         println!("Step 6: Push transaction summary to GUARDIAN...");
 
         let tx_summary_json = tx_summary.to_json();
-        let prev_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+        let prev_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
 
         let (_new_commitment, ack_sig) = match guardian_client2
             .push_delta(
                 &account_id,
-                account.nonce().as_int(),
+                account.nonce().as_canonical_u64(),
                 prev_commitment,
                 tx_summary_json,
             )
@@ -474,7 +478,7 @@ async fn main() -> ClientResult<()> {
 
                 println!(
                     "  ✓ Transaction executed (nonce: {})",
-                    tx_result.account_delta().nonce_delta().as_int()
+                    tx_result.account_delta().nonce_delta().as_canonical_u64()
                 );
             }
             Ok(false) => {

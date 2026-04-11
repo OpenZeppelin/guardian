@@ -68,7 +68,7 @@ impl MultisigClient {
                     Ok(Some(commitment))
                 }
             }
-            Err(RpcError::GrpcError {
+            Err(RpcError::RequestError {
                 error_kind: GrpcError::NotFound,
                 ..
             }) => Ok(None),
@@ -365,8 +365,8 @@ mod tests {
     use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
-    use miden_protocol::{Felt, FieldElement, Word};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, Word};
 
     use super::MultisigClient;
 
@@ -382,7 +382,7 @@ mod tests {
         TransactionSummary::new(
             delta,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             Word::default(),
         )
         .to_json()

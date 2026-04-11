@@ -29,7 +29,7 @@ set -a && source .env && set +a
 # export CPU_ARCHITECTURE=ARM64
 
 # Optional: pin the server to a specific Miden network
-export GUARDIAN_NETWORK_TYPE=MidenTestnet
+export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
 # Optional: choose the deployment profile
 export DEPLOY_STAGE=dev
@@ -74,7 +74,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # rds_max_allocated_storage = 200
 
 # Optional: Miden network for the server runtime
-# server_network_type = "MidenTestnet"
+# server_network_type = "MidenDevnet"
 
 # Optional: stage/runtime capacity overrides
 # deployment_stage = "prod"

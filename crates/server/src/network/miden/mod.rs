@@ -6,9 +6,10 @@ use crate::network::{NetworkClient, NetworkType};
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
-use miden_protocol::account::{Account, AccountId, StorageSlotName};
-use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::transaction::{InputNote, InputNotes, OutputNote, OutputNotes};
+use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
+use miden_protocol::transaction::{
+    InputNote, InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
+};
 use miden_rpc_client::MidenRpcClient;
 
 /// Miden network client for fetching on-chain account data
@@ -65,7 +66,7 @@ impl NetworkClient for MidenNetworkClient {
         })?;
 
         let account = Self::construct_account_from_json(&account_id, state_json)?;
-        let local_commitment = account.commitment();
+        let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         Ok(local_commitment_hex)
@@ -86,7 +87,7 @@ impl NetworkClient for MidenNetworkClient {
         })?;
 
         let account = Self::construct_account_from_json(&account_id, state_json)?;
-        let local_commitment = account.commitment();
+        let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         let on_chain_commitment = self
@@ -126,7 +127,7 @@ impl NetworkClient for MidenNetworkClient {
         TransactionSummary::from_json(delta_payload)?;
         let account = Account::from_json(prev_state_json)?;
 
-        let current_commitment = account.commitment();
+        let current_commitment = account.to_commitment();
         let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
 
         if current_commitment_hex != prev_commitment {
@@ -202,7 +203,7 @@ impl NetworkClient for MidenNetworkClient {
 
             account
                 .storage_mut()
-                .set_map_item(&slot_name, tx_commitment, flag_word)
+                .set_map_item(&slot_name, StorageMapKey::new(tx_commitment), flag_word)
                 .map_err(|e| {
                     tracing::error!(
                         account_id = %account.id().to_hex(),
@@ -219,7 +220,7 @@ impl NetworkClient for MidenNetworkClient {
             );
         }
 
-        let new_commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+        let new_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
         let new_state_json = account.to_json();
 
         Ok((new_state_json, new_commitment))
@@ -248,7 +249,8 @@ impl NetworkClient for MidenNetworkClient {
         let first = &tx_summaries[0];
         let mut merged_account_delta = first.account_delta().clone();
         let mut all_input_notes: Vec<InputNote> = first.input_notes().iter().cloned().collect();
-        let mut all_output_notes: Vec<OutputNote> = first.output_notes().iter().cloned().collect();
+        let mut all_output_notes: Vec<RawOutputNote> =
+            first.output_notes().iter().cloned().collect();
 
         for tx_summary in tx_summaries.iter().skip(1) {
             all_input_notes.extend(tx_summary.input_notes().iter().cloned());
@@ -272,7 +274,7 @@ impl NetworkClient for MidenNetworkClient {
             );
             format!("Failed to create aggregated input notes: {e}")
         })?;
-        let aggregated_output_notes = OutputNotes::new(all_output_notes).map_err(|e| {
+        let aggregated_output_notes = RawOutputNotes::new(all_output_notes).map_err(|e| {
             tracing::error!(
                 error = %e,
                 "Failed to create aggregated output notes"
@@ -585,7 +587,7 @@ mod tests {
         let tx_summary = TransactionSummary::new(
             full_state_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::default(),
         );
 

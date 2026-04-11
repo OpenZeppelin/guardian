@@ -1,8 +1,8 @@
 //! Well-known procedure roots for multisig accounts.
 //!
-//! Extracted from: `cargo run --example procedure_roots -p miden-multisig-client`
+//! Extracted from: `cargo run --example procedure_roots -p miden-multisig-client -- --json`
 
-use miden_protocol::{Felt, Word};
+use miden_protocol::Word;
 
 /// Procedure names that can be used for threshold overrides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,27 +22,27 @@ impl ProcedureName {
     /// These roots are deterministic based on the MASM bytecode.
     pub fn root(&self) -> Word {
         match self {
-            ProcedureName::UpdateSigners => {
-                word_from_hex("cb3364ddaa023b48707a5b5cc48c74079b83b000fe198db9e4d0ce6327d7ae0b")
-            }
-            ProcedureName::UpdateProcedureThreshold => {
-                word_from_hex("d772d8edee882f6b6d7a78aff6e3041c5782294b6bdc5c8d94b23a0a12f9a1cd")
-            }
-            ProcedureName::AuthTx => {
-                word_from_hex("a9dc7f8f5a1d53a5555c24b308e59e8ffe91f80e6fcb4288d91a6370d5bc1a61")
-            }
-            ProcedureName::UpdateGuardian => {
-                word_from_hex("5bf5d8a2d44c6825ba867f6028bcbc2b8b9ba054dc94000eae24bce3e68c4935")
-            }
-            ProcedureName::VerifyGuardian => {
-                word_from_hex("d1dfb9694996bf59bf7e1454ef660a3e9dbaed441462d81d541a9fd8e9901b2f")
-            }
-            ProcedureName::SendAsset => {
-                word_from_hex("d6c130dba13c67ac4733915f24bea9d19f517f51a65c74ded7bcd27e066b400e")
-            }
-            ProcedureName::ReceiveAsset => {
-                word_from_hex("016ab79593165e5b849776919e0c0298fb9dac880d593d93edd7134bdcdb4b6f")
-            }
+            ProcedureName::UpdateSigners => procedure_root_word(
+                "0x3d382ad461f9914c487c6fe908991d088eb54ecbd4aa8560ef79c66c3746bf19",
+            ),
+            ProcedureName::UpdateProcedureThreshold => procedure_root_word(
+                "0x1f43e9d56ceff5d547ffdcb89896fb38cae0be1b74d9235ed2b4aa525df85f8d",
+            ),
+            ProcedureName::AuthTx => procedure_root_word(
+                "0x415530d7169f849d7219e810065f9119bba9af2c55070de0bf4f082a1c0aea5c",
+            ),
+            ProcedureName::UpdateGuardian => procedure_root_word(
+                "0xc8ea876f1837e5cd1d6031becdbd40ce262ecd55930d65400f6890a37149d80c",
+            ),
+            ProcedureName::VerifyGuardian => procedure_root_word(
+                "0x9bc6e7b25c8dbaa29d6ad41e354a545dd0a4bac7f3a521bb5195ba101f0213cc",
+            ),
+            ProcedureName::SendAsset => procedure_root_word(
+                "0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89",
+            ),
+            ProcedureName::ReceiveAsset => procedure_root_word(
+                "0x75f638c65584d058542bcf4674b066ae394183021bc9b44dc2fdd97d52f9bcfb",
+            ),
         }
     }
 
@@ -122,19 +122,8 @@ impl std::str::FromStr for ProcedureName {
     }
 }
 
-/// Convert a 64-char hex string to Word (big-endian format).
-///
-/// The hex string represents 4 field elements in big-endian order.
-fn word_from_hex(hex_str: &str) -> Word {
-    let bytes = hex::decode(hex_str).expect("invalid hex in procedure root constant");
-    assert_eq!(bytes.len(), 32, "procedure root must be 32 bytes");
-
-    let e3 = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
-    let e2 = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
-    let e1 = u64::from_be_bytes(bytes[16..24].try_into().unwrap());
-    let e0 = u64::from_be_bytes(bytes[24..32].try_into().unwrap());
-
-    Word::from([Felt::new(e0), Felt::new(e1), Felt::new(e2), Felt::new(e3)])
+fn procedure_root_word(hex_str: &str) -> Word {
+    Word::parse(hex_str).expect("valid procedure root constant")
 }
 
 #[cfg(test)]

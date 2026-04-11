@@ -1,8 +1,8 @@
 use guardian_shared::SignatureScheme;
 use guardian_shared::hex::IntoHex;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use miden_protocol::utils::Serializable;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::utils::serde::Serializable;
 
 use super::Signer;
 
@@ -64,7 +64,7 @@ impl Signer for FalconKeyStore {
 #[cfg(test)]
 mod tests {
     use guardian_shared::hex::FromHex;
-    use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, Signature};
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, Signature};
 
     use super::*;
 

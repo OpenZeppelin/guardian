@@ -111,7 +111,7 @@ impl NetworkClient for MockNetworkClient {
 
         let account = Account::from_json(state_json)
             .map_err(|e| format!("Failed to deserialize account: {e}"))?;
-        let commitment_hex = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+        let commitment_hex = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
         Ok(commitment_hex)
     }
 

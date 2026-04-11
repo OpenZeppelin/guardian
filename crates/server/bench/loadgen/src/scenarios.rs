@@ -15,11 +15,11 @@ use miden_protocol::account::{AccountDelta, AccountId};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SecretKey as EcdsaSecretKey,
 };
-use miden_protocol::crypto::dsa::falcon512_rpo::{
+use miden_protocol::crypto::dsa::falcon512_poseidon2::{
     PublicKey as FalconPublicKey, SecretKey as FalconSecretKey,
 };
-use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
-use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, ZERO};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -784,7 +784,7 @@ fn create_account_seed(
     .build()?;
 
     let account_id = account.id();
-    let commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+    let commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
     let account_data = base64::engine::general_purpose::STANDARD.encode(account.to_bytes());
     let initial_state = serde_json::json!({
         "data": account_data,
@@ -811,7 +811,8 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
     let tx_summary = TransactionSummary::new(
         account_delta,
         InputNotes::new(Vec::new()).map_err(|e| anyhow!("failed to build input notes: {e}"))?,
-        OutputNotes::new(Vec::new()).map_err(|e| anyhow!("failed to build output notes: {e}"))?,
+        RawOutputNotes::new(Vec::new())
+            .map_err(|e| anyhow!("failed to build output notes: {e}"))?,
         Word::from([ZERO; 4]),
     );
     Ok(tx_summary.to_json())

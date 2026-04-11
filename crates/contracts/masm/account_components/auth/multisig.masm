@@ -2,12 +2,11 @@
 
 use openzeppelin::auth::multisig
 
-type BeWord = struct @bigendian { a: felt, b: felt, c: felt, d: felt }
-
 pub use multisig::update_signers_and_threshold
 pub use multisig::update_procedure_threshold
 
-pub proc auth_tx_multisig(salt: BeWord)
+@auth_script
+pub proc auth_tx_multisig(salt: word)
     exec.multisig::auth_tx
     exec.multisig::assert_new_tx
 end

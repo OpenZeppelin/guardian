@@ -3,7 +3,7 @@
 use miden_client::Serializable;
 use miden_protocol::Word;
 use miden_protocol::account::{
-    Account, AccountId, AccountStorage, StorageMap, StorageSlot, StorageSlotName,
+    Account, AccountId, AccountStorage, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 
 use crate::error::{MultisigError, Result};
@@ -44,12 +44,12 @@ impl MultisigAccount {
 
     /// Returns the account nonce.
     pub fn nonce(&self) -> u64 {
-        self.account.nonce().as_int()
+        self.account.nonce().as_canonical_u64()
     }
 
     /// Returns the account commitment (hash).
     pub fn commitment(&self) -> Word {
-        self.account.commitment()
+        self.account.to_commitment()
     }
 
     /// Returns a reference to the underlying Account.
@@ -80,7 +80,7 @@ impl MultisigAccount {
                 MultisigError::AccountStorage("threshold config slot not found".to_string())
             })?;
 
-        Ok(slot_value[0].as_int() as u32)
+        Ok(slot_value[0].as_canonical_u64() as u32)
     }
 
     /// Returns the number of signers from storage.
@@ -91,7 +91,7 @@ impl MultisigAccount {
                 MultisigError::AccountStorage("threshold config slot not found".to_string())
             })?;
 
-        Ok(slot_value[1].as_int() as u32)
+        Ok(slot_value[1].as_canonical_u64() as u32)
     }
 
     /// Returns the configured threshold override for a specific procedure, if present.
@@ -105,7 +105,7 @@ impl MultisigAccount {
             return Ok(None);
         }
 
-        let threshold = value[0].as_int() as u32;
+        let threshold = value[0].as_canonical_u64() as u32;
         if threshold == 0 {
             return Ok(None);
         }
@@ -196,7 +196,7 @@ impl MultisigAccount {
             MultisigError::AccountStorage("GUARDIAN selector slot not found".to_string())
         })?;
 
-        Ok(slot_value[0].as_int() == 1)
+        Ok(slot_value[0].as_canonical_u64() == 1)
     }
 
     /// Returns the GUARDIAN server commitment from GUARDIAN public key map slot.
@@ -222,9 +222,12 @@ impl MultisigAccount {
         let slot_name = StorageSlotName::new(OZ_MULTISIG_PROCEDURE_THRESHOLDS).map_err(|e| {
             MultisigError::AccountStorage(format!("invalid procedure threshold slot name: {}", e))
         })?;
-        let entries = overrides
-            .into_iter()
-            .map(|(procedure, threshold)| (procedure.root(), Word::from([threshold, 0, 0, 0])));
+        let entries = overrides.into_iter().map(|(procedure, threshold)| {
+            (
+                StorageMapKey::new(procedure.root()),
+                Word::from([threshold, 0, 0, 0]),
+            )
+        });
         let map = StorageMap::with_entries(entries).map_err(|e| {
             MultisigError::AccountStorage(format!("failed to build procedure threshold map: {}", e))
         })?;
@@ -282,7 +285,7 @@ mod tests {
             let entries = commitments
                 .into_iter()
                 .enumerate()
-                .map(|(index, commitment)| (Word::from([index as u32, 0, 0, 0]), commitment));
+                .map(|(index, commitment)| (StorageMapKey::from_index(index as u32), commitment));
             let map = StorageMap::with_entries(entries).expect("valid signer map");
             StorageSlot::with_map(slot_name, map)
         }

@@ -3,12 +3,12 @@
 use std::collections::HashSet;
 
 use guardian_shared::SignatureScheme;
-use miden_client::Client;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::{Felt, Word};
 
+use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
@@ -90,7 +90,7 @@ pub fn collect_signature_advice(
     reason = "execution needs transaction metadata and signature scheme to stay explicit"
 )]
 pub async fn build_final_transaction_request(
-    client: &Client<()>,
+    client: &MidenSdkClient,
     transaction_type: &TransactionType,
     account: &Account,
     salt: Word,
@@ -175,7 +175,7 @@ pub async fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 
     #[test]
     fn test_collect_signature_advice_filters_by_required() {

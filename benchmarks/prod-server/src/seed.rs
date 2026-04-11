@@ -12,10 +12,10 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SecretKey as EcdsaSecretKey,
 };
-use miden_protocol::crypto::dsa::falcon512_rpo::{
+use miden_protocol::crypto::dsa::falcon512_poseidon2::{
     PublicKey as FalconPublicKey, SecretKey as FalconSecretKey,
 };
-use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -191,7 +191,7 @@ fn create_account_seed(
     .build()?;
 
     let account_id = account.id();
-    let commitment = format!("0x{}", hex::encode(account.commitment().as_bytes()));
+    let commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
     let account_data = base64::engine::general_purpose::STANDARD.encode(account.to_bytes());
     let initial_state = serde_json::json!({
         "data": account_data,

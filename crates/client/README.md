@@ -9,30 +9,30 @@ A minimal Rust client library for interacting with the Guardian gRPC service.
 ```rust
 use std::sync::Arc;
 
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use guardian_client::{FalconKeyStore, GuardianClient};
 
 // Without authentication (only for configure endpoint)
-let client = GuardianClient::connect("https://testnet-guardian.miden.network:50051").await?;
+let client = GuardianClient::connect("http://localhost:50051").await?;
 
 // With request signing (required for all other endpoints)
 let secret_key = SecretKey::new();
 let signer = Arc::new(FalconKeyStore::new(secret_key));
-let client = GuardianClient::connect("https://testnet-guardian.miden.network:50051")
+let client = GuardianClient::connect("http://localhost:50051")
     .await?
     .with_signer(signer);
 ```
 
 ## Authentication
 
-The client uses Falcon RPO signatures for authenticated requests. Here is how to set it up:
+The client uses Falcon Poseidon2 signatures for authenticated requests. Here is how to set it up:
 
 ### 1. Create a Signer
 
 ```rust
 use std::sync::Arc;
 
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use guardian_client::FalconKeyStore;
 
 // Generate a new secret key
@@ -46,7 +46,7 @@ let pubkey_hex = signer.public_key_hex();
 ### 2. Configure Client with Signer
 
 ```rust
-let client = GuardianClient::connect("https://testnet-guardian.miden.network:50051")
+let client = GuardianClient::connect("http://localhost:50051")
     .await?
     .with_signer(signer.clone());
 ```

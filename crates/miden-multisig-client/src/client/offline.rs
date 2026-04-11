@@ -86,15 +86,7 @@ impl MultisigClient {
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
 
-        let id = format!(
-            "0x{}",
-            hex::encode(
-                tx_commitment
-                    .iter()
-                    .flat_map(|f| f.as_int().to_le_bytes())
-                    .collect::<Vec<_>>()
-            )
-        );
+        let id = crate::transaction::word_to_hex(&tx_commitment);
 
         let exported = ExportedProposal {
             version: EXPORT_VERSION,

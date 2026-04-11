@@ -18,10 +18,10 @@ use guardian_shared::hex::IntoHex;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
-use miden_protocol::utils::Serializable;
-use miden_protocol::{Felt, FieldElement, Word, ZERO};
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+use miden_protocol::utils::serde::Serializable;
+use miden_protocol::{Felt, Word, ZERO};
 use prost::Message;
 
 pub use crate::api::grpc::guardian::*;
@@ -57,7 +57,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         let account = Account::from_json(state_json)
             .map_err(|e| format!("Failed to deserialize account: {e}"))?;
 
-        let local_commitment = account.commitment();
+        let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         Ok(local_commitment_hex)
@@ -73,7 +73,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         let account = Account::from_json(state_json)
             .map_err(|e| format!("Failed to deserialize account: {e}"))?;
 
-        let local_commitment = account.commitment();
+        let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         if let Some(on_chain_commitment) = self.initial_commitments.get(account_id) {
@@ -326,7 +326,7 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
     let tx_summary = TransactionSummary::new(
         delta,
         InputNotes::new(Vec::new()).unwrap(),
-        OutputNotes::new(Vec::new()).unwrap(),
+        RawOutputNotes::new(Vec::new()).unwrap(),
         Word::from([ZERO; 4]), // Salt
     );
 
@@ -556,8 +556,8 @@ pub fn generate_ecdsa_signature(account_id_hex: &str) -> (String, String, String
 }
 
 pub fn pubkey_hex_to_commitment_hex(pubkey_hex: &str) -> String {
-    use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey;
-    use miden_protocol::utils::{Deserializable, Serializable};
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::PublicKey;
+    use miden_protocol::utils::serde::{Deserializable, Serializable};
 
     let pubkey_hex = pubkey_hex.strip_prefix("0x").unwrap_or(pubkey_hex);
     let pubkey_bytes = hex::decode(pubkey_hex).expect("Valid public key hex");

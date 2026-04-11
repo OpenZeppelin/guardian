@@ -96,10 +96,16 @@ impl DeltaStatus {
 
     pub fn with_incremented_retry(&self, new_timestamp: String) -> Self {
         match self {
-            Self::Candidate { retry_count, .. } => Self::Candidate {
-                timestamp: new_timestamp,
-                retry_count: retry_count + 1,
-            },
+            Self::Candidate {
+                timestamp,
+                retry_count,
+            } => {
+                let _ = new_timestamp;
+                Self::Candidate {
+                    timestamp: timestamp.clone(),
+                    retry_count: retry_count + 1,
+                }
+            }
             _ => self.clone(),
         }
     }
@@ -380,10 +386,11 @@ mod tests {
 
         let incremented = candidate.with_incremented_retry("2024-01-02".to_string());
         assert_eq!(incremented.retry_count(), 1);
-        assert_eq!(incremented.timestamp(), "2024-01-02");
+        assert_eq!(incremented.timestamp(), "2024-01-01");
 
         let incremented_again = incremented.with_incremented_retry("2024-01-03".to_string());
         assert_eq!(incremented_again.retry_count(), 2);
+        assert_eq!(incremented_again.timestamp(), "2024-01-01");
     }
 
     #[test]

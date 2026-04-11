@@ -6,7 +6,7 @@ use miden_protocol::{
     Word,
     crypto::dsa::ecdsa_k256_keccak::{SecretKey, Signature},
     transaction::TransactionSummary,
-    utils::Serializable,
+    utils::serde::Serializable,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
