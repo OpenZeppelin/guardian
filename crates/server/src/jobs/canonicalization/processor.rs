@@ -429,7 +429,7 @@ impl Processor for TestDeltasProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::clock::test::MockClock;
+    use crate::clock::test::MockClock;
     use crate::delta_object::DeltaStatus;
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;

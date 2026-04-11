@@ -259,9 +259,7 @@ impl MultisigClient {
                 .ok_or_else(|| {
                     MultisigError::MissingConfig("account not found after sync".to_string())
                 })?;
-            let account: Account = account_record.try_into().map_err(|e| {
-                MultisigError::MidenClient(format!("account record is not full: {}", e))
-            })?;
+            let account: Account = account_record;
             let refreshed = MultisigAccount::new(account);
             self.account = Some(refreshed);
         }

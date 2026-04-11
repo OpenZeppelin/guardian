@@ -294,9 +294,7 @@ impl MultisigClient {
                 MultisigError::MissingConfig("account not found after execution".to_string())
             })?;
 
-        let updated_account: Account = account_record.try_into().map_err(|e| {
-            MultisigError::MidenClient(format!("account record is not full: {}", e))
-        })?;
+        let updated_account: Account = account_record;
 
         // Update GUARDIAN endpoint if this was a SwitchGuardian transaction, then register on new GUARDIAN
         if let Some(endpoint) = new_guardian_endpoint {

@@ -76,10 +76,11 @@ pub trait NetworkClient: Send + Sync {
 }
 
 /// Network type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum NetworkType {
     MidenTestnet,
     MidenDevnet,
+    #[default]
     MidenLocal,
 }
 
@@ -111,12 +112,6 @@ impl NetworkType {
             NetworkType::MidenDevnet => "https://rpc.devnet.miden.io",
             NetworkType::MidenLocal => "http://localhost:57291",
         }
-    }
-}
-
-impl Default for NetworkType {
-    fn default() -> Self {
-        Self::MidenLocal
     }
 }
 

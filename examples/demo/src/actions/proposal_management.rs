@@ -1081,7 +1081,10 @@ async fn prompt_consume_notes(
                     );
                 }
                 Asset::NonFungible(nft) => {
-                    println!("      - NFT (faucet: {})", shorten_hex(&nft.faucet_id().to_hex()));
+                    println!(
+                        "      - NFT (faucet: {})",
+                        shorten_hex(&nft.faucet_id().to_hex())
+                    );
                 }
             }
         }

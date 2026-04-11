@@ -668,7 +668,10 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
             .unwrap();
 
         let expected_word: Word = expected_key.to_commitment();
-        assert_eq!(storage_item, expected_word, "Public key {i} doesn't match expected value");
+        assert_eq!(
+            storage_item, expected_word,
+            "Public key {i} doesn't match expected value"
+        );
     }
 
     let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT).unwrap();

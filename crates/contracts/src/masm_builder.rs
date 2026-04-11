@@ -112,8 +112,8 @@ fn build_openzeppelin_library() -> Result<Library> {
     let mut modules = Vec::new();
 
     for path in &masm_files {
-        let lib_path = openzeppelin_library_path(&path, &masm_root())?;
-        let code = fs::read_to_string(&path)?;
+        let lib_path = openzeppelin_library_path(path, &masm_root())?;
+        let code = fs::read_to_string(path)?;
 
         let module = Module::parser(ModuleKind::Library)
             .parse_str(LibraryPath::new(&lib_path), code, source_manager.clone())

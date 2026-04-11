@@ -8,8 +8,7 @@ use miden_protocol::{
     Word,
     account::{
         Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageMapKey,
-        StorageSlot,
-        StorageSlotName,
+        StorageSlot, StorageSlotName,
     },
 };
 use miden_standards::account::wallets::BasicWallet;
@@ -274,13 +273,16 @@ impl MultisigGuardianBuilder {
         let proc_thresholds_name =
             StorageSlotName::new("openzeppelin::multisig::procedure_thresholds")
                 .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let proc_overrides = self
-            .config
-            .proc_threshold_overrides
-            .iter()
-            .map(|(proc_root, threshold)| {
-                (StorageMapKey::new(*proc_root), Word::from([*threshold, 0, 0, 0]))
-            });
+        let proc_overrides =
+            self.config
+                .proc_threshold_overrides
+                .iter()
+                .map(|(proc_root, threshold)| {
+                    (
+                        StorageMapKey::new(*proc_root),
+                        Word::from([*threshold, 0, 0, 0]),
+                    )
+                });
         let slot_4 = StorageSlot::with_map(
             proc_thresholds_name,
             StorageMap::with_entries(proc_overrides)
@@ -329,8 +331,10 @@ impl MultisigGuardianBuilder {
 
         let guardian_scheme_id_name = StorageSlotName::new("openzeppelin::guardian::scheme_id")
             .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let guardian_scheme_entries =
-            vec![(StorageMapKey::from_index(0), Word::from([scheme_id, 0, 0, 0]))];
+        let guardian_scheme_entries = vec![(
+            StorageMapKey::from_index(0),
+            Word::from([scheme_id, 0, 0, 0]),
+        )];
         let slot_2 = StorageSlot::with_map(
             guardian_scheme_id_name,
             StorageMap::with_entries(guardian_scheme_entries)
@@ -344,8 +348,8 @@ impl MultisigGuardianBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use guardian_shared::hex::{FromHex, IntoHex};
     use crate::masm_builder::build_multisig_guardian_component;
+    use guardian_shared::hex::{FromHex, IntoHex};
 
     fn mock_commitment(seed: u8) -> Word {
         Word::from([
@@ -471,8 +475,7 @@ mod tests {
             Word::from_hex("0xc35d79423c41d46b5289aafef48be2364e9ea494c6b14d6aefad10f1a46e6d7c")
                 .expect("guardian commitment");
 
-        let config =
-            MultisigGuardianConfig::new(1, vec![signer_commitment], guardian_commitment);
+        let config = MultisigGuardianConfig::new(1, vec![signer_commitment], guardian_commitment);
         let account = MultisigGuardianBuilder::new(config)
             .with_seed([9u8; 32])
             .build()
