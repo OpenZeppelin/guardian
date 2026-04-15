@@ -6,12 +6,19 @@ use guardian_prod_benchmarks::report::{
     ArtifactReport, BenchmarkRunReport, CapacityEstimate, CleanupReport, LatencyReport,
     OperationReport, SchemeDistributionReport,
 };
+use std::path::PathBuf;
 use tempfile::tempdir;
+
+fn profile_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("profiles")
+        .join(name)
+}
 
 #[test]
 fn loads_and_validates_profile() {
-    let path = "/Users/marcos/repos/guardian/benchmarks/prod-server/profiles/falcon-mixed-burst-scale.toml";
-    let config = RunConfig::load_from_path(path.as_ref()).expect("profile should load");
+    let path = profile_path("falcon-mixed-burst-scale.toml");
+    let config = RunConfig::load_from_path(path.as_path()).expect("profile should load");
 
     assert_eq!(config.profile_name, "falcon-mixed-burst-scale");
     assert_eq!(config.users, 4096);
