@@ -91,6 +91,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
 - For proof-generation steps, explicitly note that the time is proof-generation dominated rather than generic waiting.
 - In the GUARDIAN-ack flow, remember that the client pushes the delta to GUARDIAN before the final transaction is submitted on-chain. An early canonicalization poll can therefore see the previous or zero on-chain commitment while proving or submission is still in flight.
 - For canonicalization-sensitive steps, record the lag separately from the execute time. Example: time from `Transaction executed successfully!` to the first successful pull by a newly-added cosigner.
+- Apply the same rule to the first post-submit sync or pull. A temporary nonce/state mismatch or newly-added cosigner authorization failure is expected pending state by itself until canonicalization catches up.
 - Use exact timestamps when possible. If the timing was collected from manual polling instead of a stopwatch, mark it as approximate.
 - Compare each captured duration with `references/timing-baseline.md`. If no baseline exists yet for that exact step, append the new timing as the first reference sample.
 - Treat timing regression as reportable when a step exceeds the baseline by more than 2x or by more than 60 seconds, whichever is larger. Treat more than 3x or timeout/retry loops as severe degradation.
@@ -106,6 +107,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
   - poll until GUARDIAN canonicalization catches up
   - record time from execute success to first successful pull
   - do not treat an immediate post-execute authorization failure as a product bug by itself
+- Treat an immediate post-execute sync mismatch in an existing cosigner tab the same way: report it, keep polling, and only fail the workflow if the tab never converges to the expected canonicalized state.
 - Verify public-note receipt after faucet mint and post-sync before attempting `Consume notes`.
 - Verify the vault gains assets after `Consume notes` executes.
 - Verify a self-addressed P2ID transfer produces a new received note after the final sync.

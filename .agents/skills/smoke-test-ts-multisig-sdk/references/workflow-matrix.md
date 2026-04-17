@@ -26,7 +26,7 @@ Default startup choices:
 - one local GUARDIAN server at `http://localhost:3000`
 - one `examples/smoke-web` dev server at `http://localhost:3002`
 - one real browser or fully isolated browser profile per cosigner
-- Miden testnet RPC: `https://rpc.testnet.miden.io`
+- Miden devnet RPC: `https://rpc.devnet.miden.io`
 - signer source: `local`
 - signature scheme: Falcon unless the task specifically targets ECDSA, Para, or Miden Wallet
 
@@ -37,7 +37,7 @@ Default session bootstrap in each browser console when page-load bootstrap did n
 ```js
 await window.smoke.initSession({
   guardianEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
   signerSource: 'local',
   signatureScheme: 'falcon',
   browserLabel: 'A',
@@ -47,6 +47,8 @@ await window.smoke.initSession({
 Record commitments from `await window.smoke.status()`. For local signers, use `status.localSigners.falconCommitment` or `status.localSigners.ecdsaCommitment`. For Para or Miden Wallet, use `status.para.commitment` or `status.midenWallet.commitment`.
 
 Use `await window.smoke.events()` as the primary timing source for command durations. Record extra manual timings for wallet modal latency, faucet confirmation, and canonicalization lag.
+
+If a `window.smoke.*` call throws an opaque value such as `[object Object]`, read the newest matching entry from `await window.smoke.events()` and classify the error from that event instead of from the thrown value.
 
 If page-load bootstrap fails with `ConstraintError: Key already exists in the object store`, record that failure, then retry with an explicit `await window.smoke.initSession(...)` before abandoning the workflow. If page-load bootstrap already reached `ready`, avoid an immediate second `initSession()` on that same profile.
 
@@ -127,7 +129,7 @@ Steps:
    ```js
    await window.smoke.executeProposal({ proposalId: created.proposal.id });
    ```
-5. If execute returns `Refusing to overwrite local state: incoming nonce ... is not greater than local nonce ...`, record the error and keep syncing A and B until the canonicalized 2-of-3 state appears.
+5. If execute returns `Refusing to overwrite local state: incoming nonce ... is not greater than local nonce ...`, record the error and keep syncing A and B until the canonicalized 2-of-3 state appears. Treat the first post-execute `sync()` nonce-overwrite the same way.
 6. In C, load the updated account using the shared `accountId`.
 
 Expect:
@@ -136,13 +138,14 @@ Expect:
 - B can sync, see the proposal, and sign it
 - A also signs before execute in the default 2-of-2 setup; B signing alone is not enough to move the proposal to `ready`
 - execution may return a reportable nonce-overwrite error before server canonicalization finishes; the pass condition is eventual convergence to the updated signer set
-- existing cosigners resync successfully after execute
-- C can load the updated account after canonicalization finishes
+- existing cosigners may see temporary nonce-overwrite sync failures before canonicalization finishes, then resync successfully
+- C may initially fail `loadAccount()` with unauthorized auth before canonicalization finishes, then load the updated account successfully
 
 Canary checks:
 
 - report canonicalization lag separately from execute time
 - if execute first fails with the nonce-overwrite error but later sync converges to the expected state, report it as a recovered failure rather than a terminal canary failure
+- if post-execute `sync()` or `loadAccount()` first fails with nonce-overwrite or unauthorized auth but later converges, report the first failure and the later recovery rather than treating it as a terminal canary failure
 - if C initially cannot load the account, report the first failure and the eventual recovery
 - if A or B executes successfully but C never becomes able to load, mark the canary failed
 

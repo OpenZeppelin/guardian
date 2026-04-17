@@ -46,7 +46,7 @@ Use this as the default setup unless the prompt explicitly asks for something el
 - one `examples/smoke-web` dev server
 - one browser or browser profile per cosigner session
 - local GUARDIAN HTTP endpoint: `http://localhost:3000`
-- Miden testnet RPC endpoint: `https://rpc.testnet.miden.io`
+- Miden devnet RPC endpoint: `https://rpc.devnet.miden.io`
 - signer source: `local`
 - signature scheme: `falcon`
 
@@ -71,6 +71,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Prefer truly isolated browsers for concurrent cosigners. Same-browser automation is not a supported canary path unless it uses proven storage isolation.
 - Use `await window.smoke.status()` after any meaningful state transition.
 - Use `await window.smoke.events()` as the default command-history and timing source.
+- When a `window.smoke.*` command throws an opaque JS value such as `[object Object]`, classify the failure from the newest matching `window.smoke.events()` entry rather than from the thrown value.
 - If page-load bootstrap already reached `ready`, do not immediately call `initSession()` again on the same profile unless you are intentionally changing config or recovering from a failed bootstrap.
 - Treat `examples/smoke-web` as the required manual smoke surface for browser SDK behavior; package tests and builds support this but do not replace it.
 - Build `examples/web` whenever shared browser code changes; if the change is risky, note whether `examples/web` was also launched manually.
@@ -79,6 +80,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - For external actions that happen outside the command API, such as faucet submission or wallet modal interaction, pair the manual step with an immediate `status()` or `events()` capture.
 - In the GUARDIAN-ack flow, remember that the browser client pushes the delta to GUARDIAN before the final transaction is submitted on-chain. Early canonicalization polls can therefore see the previous or zero on-chain commitment while proving or submission is still in flight.
 - When `executeProposal` fails with `Refusing to overwrite local state: incoming nonce ... is not greater than local nonce ...`, treat that as a reportable pre-canonicalization state, not an immediate terminal failure. Keep syncing until the expected account state converges or the workflow times out.
+- Apply the same canonicalization rule to the first post-submit `sync()` and to a newly-added cosigner's `loadAccount()`. A temporary nonce-overwrite or unauthorized failure is expected pending state by itself; the workflow only fails if later sync/load never converges.
 
 ## Timing Discipline
 
@@ -131,7 +133,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Treat any error during setup, connect, create, load, sync, sign, execute, import, export, or post-execute sync as reportable.
 - Report transient errors even if a retry or later sync succeeds.
 - Treat bootstrap `ConstraintError: Key already exists in the object store` as reportable even if a later `initSession()` succeeds and the workflow recovers.
-- Treat the post-execute nonce-overwrite error as a recovered failure only if later sync proves the expected canonicalized state. If the state never converges, mark the workflow failed.
+- Treat the first post-submit nonce-overwrite or unauthorized sync/load error as a recovered failure only if later sync/load proves the expected canonicalized state. If the state never converges, mark the workflow failed.
 - Include the browser label, workflow step, command name, full error text, relevant event entries, whether a retry was attempted, and whether the run eventually recovered.
 - Do not collapse multiple failures into one summary line; preserve the sequence so the user can see where the canary first degraded.
 - If the smoke harness itself lacks a direct verification surface for a claimed SDK behavior, report that as a harness gap rather than silently marking the workflow passed.
