@@ -30,8 +30,8 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.14.0"
-miden-client = "0.14.0"
+miden-multisig-client = "0.14.3"
+miden-client = "0.14.3"
 ```
 
 ### 5-Minute Example

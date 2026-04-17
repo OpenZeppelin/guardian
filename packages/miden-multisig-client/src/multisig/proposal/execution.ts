@@ -97,7 +97,6 @@ export async function executeProposalWorkflow(
     params.midenClient,
     params.accountId,
     finalRequest,
-    params.transactionProver,
   );
 }
 
