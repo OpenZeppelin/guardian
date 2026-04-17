@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -10,28 +11,14 @@ interface P2idSerialVector {
   output: string;
 }
 
-const originalFetch = globalThis.fetch.bind(globalThis);
+const require = createRequire(import.meta.url);
+const sdkEntryPath = require.resolve('@miden-sdk/miden-sdk');
+const sdkDistDir = dirname(sdkEntryPath);
+const sdkWasmPath = join(sdkDistDir, 'assets', 'miden_client_web.wasm');
 
-globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-  const url =
-    input instanceof URL
-      ? input
-      : typeof input === 'string'
-        ? new URL(input)
-        : new URL(input.url);
+const { initSync, Word } = await import('@miden-sdk/miden-sdk');
+initSync({ module: readFileSync(sdkWasmPath) });
 
-  if (url.protocol === 'file:') {
-    const wasm = await readFile(fileURLToPath(url));
-    return new Response(wasm, {
-      status: 200,
-      headers: { 'Content-Type': 'application/wasm' },
-    });
-  }
-
-  return originalFetch(input, init);
-};
-
-const { Word } = await import('@miden-sdk/miden-sdk');
 const { deriveP2idSerialNumber } = await import('../src/transaction/p2id.js');
 
 function loadVectors(): P2idSerialVector[] {
