@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Contract Change"
+  short_description: "Propagate Guardian API and schema changes safely"
+  default_prompt: "Use $guardian-contract-change to update a Guardian contract change across server, clients, SDKs, examples, and tests."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Validation Matrix"
+  short_description: "Choose the smallest meaningful Guardian validation set"
+  default_prompt: "Use $guardian-validation-matrix to choose and run the minimal Guardian tests, builds, and smoke checks for this change."

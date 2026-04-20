@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Change Impact"
+  short_description: "Map a Guardian change to impacted layers and checks"
+  default_prompt: "Use $guardian-change-impact to map this repo change to the affected layers, files, and validation steps."
