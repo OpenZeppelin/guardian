@@ -18,7 +18,7 @@ Layers affected: a new authentication surface in the existing Guardian server (c
 
 ### In Scope
 
-- Configuration-driven operator allowlist that maps an operator identifier to a registered Falcon public key.
+- Configuration-driven operator allowlist that maps an operator identifier to a registered Falcon commitment.
 - Challenge-response login protocol (`GET /auth/challenge`, `POST /auth/verify`) with domain-bound, short-lived, single-use nonces.
 - Issuance and validation of opaque, HttpOnly, Secure, SameSite=Strict session cookies after successful signature verification.
 - Server-side session storage with absolute (non-sliding) expiry.
@@ -44,11 +44,11 @@ A registered Guardian operator visits the dashboard in their browser. They are p
 
 **Why this priority**: This is the core login flow. Without it, no protected dashboard endpoint is reachable, and every other feature in the dashboard is blocked.
 
-**Independent Test**: With an operator entry present in configuration, issue a challenge for that public key, sign the returned payload in-browser through Miden Wallet with the matching Falcon private key, submit the signature to the verify endpoint, and confirm the response sets a session cookie and that a subsequent protected request succeeds using only that cookie.
+**Independent Test**: With an operator entry present in configuration, issue a challenge for that commitment, sign the returned payload in-browser through Miden Wallet with the matching Falcon private key, submit the signature to the verify endpoint, and confirm the response sets a session cookie and that a subsequent protected request succeeds using only that cookie.
 
 **Acceptance Scenarios**:
 
-1. **Given** an operator public key is listed in the allowlist and the operator possesses the matching private key, **When** the operator requests a challenge and submits a valid signature over the returned payload within the nonce's validity window, **Then** the verify endpoint returns success, sets a single HttpOnly, Secure, SameSite=Strict session cookie, and the session is recorded server-side with an absolute expiry.
+1. **Given** an operator commitment is listed in the allowlist and the operator possesses the matching private key, **When** the operator requests a challenge and submits a valid signature over the returned payload within the nonce's validity window, **Then** the verify endpoint returns success, sets a single HttpOnly, Secure, SameSite=Strict session cookie, and the session is recorded server-side with an absolute expiry.
 2. **Given** a valid session cookie, **When** the operator calls a protected dashboard endpoint, **Then** the request succeeds and the operator identity is available to the handler.
 3. **Given** no session cookie (or an unknown/expired one), **When** the operator calls a protected dashboard endpoint, **Then** the server responds with 401 Unauthorized and does not leak operator-allowlist information.
 
@@ -60,15 +60,15 @@ A malicious actor attempts to authenticate as a registered operator without poss
 
 **Why this priority**: The entire security posture of the dashboard depends on this. A weak verify path means the auth layer is worse than no auth, because it creates a false sense of safety.
 
-**Independent Test**: Exercise each rejection path individually (unknown pubkey, valid pubkey with invalid signature, valid signature over a stale/expired nonce, valid signature over a consumed nonce, valid signature over a payload bound to a different domain) and confirm each returns a non-success response, does not issue a session cookie, and does not consume or create server-side state beyond nonce accounting.
+**Independent Test**: Exercise each rejection path individually (unknown commitment, allowlisted commitment with invalid signature, valid signature over a stale/expired nonce, valid signature over a consumed nonce, valid signature over a payload bound to a different domain) and confirm each returns a non-success response, does not issue a session cookie, and does not consume or create server-side state beyond nonce accounting.
 
 **Acceptance Scenarios**:
 
-1. **Given** a challenge was issued and its signed payload was submitted successfully once, **When** the same `{pubkey, signature}` is submitted again, **Then** verification is rejected because the nonce has already been consumed.
+1. **Given** a challenge was issued and its signed payload was submitted successfully once, **When** the same `{commitment, signature}` is submitted again, **Then** verification is rejected because the nonce has already been consumed.
 2. **Given** a challenge was issued more than the configured nonce lifetime ago, **When** a valid signature over that payload is submitted, **Then** verification is rejected due to expiry.
 3. **Given** a challenge issued for domain A, **When** the same signature is replayed against a server configured for domain B, **Then** verification is rejected because the signed payload is bound to the issuing domain.
-4. **Given** a public key that is not in the operator allowlist, **When** a challenge is requested, **Then** the server either declines to issue a challenge or issues one that cannot ultimately produce a session, and in no case is a session ever created for a non-allowlisted key.
-5. **Given** a valid pubkey in the allowlist, **When** an invalid signature is submitted, **Then** verification is rejected and the nonce is not consumed, preserving the operator's ability to retry.
+4. **Given** a commitment that is not in the operator allowlist, **When** a challenge is requested, **Then** the server either declines to issue a challenge or issues one that cannot ultimately produce a session, and in no case is a session ever created for a non-allowlisted key.
+5. **Given** a valid commitment in the allowlist, **When** an invalid signature is submitted, **Then** verification is rejected and the nonce is not consumed, preserving the operator's ability to retry.
 
 ---
 
@@ -90,19 +90,19 @@ An operator explicitly logs out at the end of their session, or an administrator
 
 ### Functional Requirements
 
-- **FR-001 — Operator allowlist configuration**: The dashboard backend MUST read an operator allowlist at startup from configuration (environment variable and/or configuration file). Each entry MUST include a stable operator identifier and a Falcon public key. Duplicate identifiers or duplicate public keys MUST be treated as a configuration error and prevent startup.
-- **FR-002 — Challenge issuance**: `GET /auth/challenge?pubkey=<encoded_pubkey>` MUST, when the public key is present in the allowlist, return a fresh nonce and its absolute expiry timestamp, and record the nonce server-side keyed by `(pubkey, nonce)` with a short validity window. The server MUST NOT reveal whether an unknown pubkey is unknown versus rate-limited; it MAY return an indistinguishable response (either a decoy or a uniform error) for unknown pubkeys to reduce allowlist enumeration.
+- **FR-001 — Operator allowlist configuration**: The dashboard backend MUST read an operator allowlist at startup from configuration (environment variable and/or configuration file). Each entry MUST include a stable operator identifier and a Falcon commitment. Duplicate identifiers or duplicate commitments MUST be treated as a configuration error and prevent startup.
+- **FR-002 — Challenge issuance**: `GET /auth/challenge?commitment=<encoded_commitment>` MUST, when the commitment is present in the allowlist, return a fresh nonce and its absolute expiry timestamp, and record the nonce server-side keyed by `(commitment, nonce)` with a short validity window. The server MUST NOT reveal whether an unknown commitment is unknown versus rate-limited; it MAY return an indistinguishable response (either a decoy or a uniform error) for unknown commitments to reduce allowlist enumeration.
 - **FR-003 — Domain-bound signed payload**: The payload the operator signs MUST include at minimum the nonce, the server's canonical domain (host identity), and the nonce's expiry. The server MUST reject any verification whose signed payload does not exactly match what the server would reconstruct for the referenced nonce.
-- **FR-004 — Signature verification**: `POST /auth/verify` accepting `{pubkey, signature}` MUST validate, in order: pubkey is in the allowlist; a matching unused, unexpired nonce exists; the signature verifies against the reconstructed payload using Falcon verification for that registered public key. Any failure MUST return an error response without issuing a session.
+- **FR-004 — Signature verification**: `POST /auth/verify` accepting `{commitment, signature}` MUST validate, in order: commitment is in the allowlist; a matching unused, unexpired nonce exists; the signature's embedded Falcon public key reconstructs to the allowlisted commitment; and the signature verifies against the reconstructed payload. Any failure MUST return an error response without issuing a session.
 - **FR-005 — Nonce consumption**: On successful verification, the nonce MUST be consumed atomically (single-use). On failed verification due to an invalid signature, the nonce MUST NOT be consumed, so that an honest operator who mis-signed can retry without requesting a new challenge. On expiry or explicit nonce cleanup, entries MUST be removed from server-side storage.
-- **FR-006 — Session issuance**: On successful verification, the server MUST generate a cryptographically random opaque session token of at least 32 bytes, record `{token → operator_id, pubkey, issued_at, expires_at}` server-side, and return the token in a single `Set-Cookie` header with the attributes `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and `Expires`/`Max-Age` matching the session's absolute expiry. The token MUST NOT be derivable from the pubkey or nonce.
+- **FR-006 — Session issuance**: On successful verification, the server MUST generate a cryptographically random opaque session token of at least 32 bytes, record `{token → operator_id, commitment, issued_at, expires_at}` server-side, and return the token in a single `Set-Cookie` header with the attributes `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and `Expires`/`Max-Age` matching the session's absolute expiry. The token MUST NOT be derivable from the commitment or nonce.
 - **FR-007 — Session expiry policy**: Sessions MUST use absolute expiry with no sliding renewal. The default absolute lifetime is 8 hours; the exact value MUST be configurable but MUST NOT exceed 24 hours in v1.
 - **FR-008 — Authentication middleware**: All dashboard API endpoints, except the three auth endpoints themselves and any explicitly whitelisted health/metadata endpoint, MUST pass through middleware that extracts the session cookie, looks up the corresponding server-side record, verifies it is present and unexpired, re-confirms the operator is still in the current allowlist, and attaches the operator identity to the request context. Any failing check MUST produce a 401 response without revealing which check failed.
 - **FR-009 — Logout**: `POST /auth/logout`, when called with a valid session cookie, MUST delete the server-side session record and return a response that clears the cookie on the client (e.g., `Set-Cookie` with `Max-Age=0`). Logout MUST be idempotent — calling it with an already-invalid cookie MUST still return success.
 - **FR-010 — Revocation by allowlist change**: When the backend's operator allowlist is reloaded (on restart, and optionally via hot-reload), sessions whose operator is no longer in the allowlist MUST be rejected at the next request. Implementations MAY eagerly purge affected session records, but the security-relevant guarantee is rejection at request time.
 - **FR-011 — TLS enforcement**: The auth endpoints MUST only be served over TLS in any non-local environment. Serving them over plain HTTP in production is a configuration error. Local development MAY relax the `Secure` cookie attribute but MUST NOT be the default and MUST require an explicit opt-in flag.
 - **FR-012 — Observable authentication events**: The backend MUST emit structured log events for every auth decision (challenge issued, verify success, verify failure with reason category, logout, session rejected, allowlist reload) including the operator identifier when known and a correlation ID, but MUST NOT log raw signatures, private data, or full session tokens.
-- **FR-013 — Rate limiting**: The `challenge` and `verify` endpoints MUST be rate-limited per source IP and per pubkey to constrain brute-force and enumeration attempts. Specific limits are implementation-defined but MUST exist from v1.
+- **FR-013 — Rate limiting**: The `challenge` and `verify` endpoints MUST be rate-limited per source IP and per commitment to constrain brute-force and enumeration attempts. Specific limits are implementation-defined but MUST exist from v1.
 
 ### Contract / Transport Impact
 
@@ -113,22 +113,22 @@ An operator explicitly logs out at the end of their session, or an administrator
 
 ### Data / Lifecycle Impact
 
-- Introduces two short-lived server-side records: **nonces** (keyed by `(pubkey, nonce)`, TTL = nonce validity window) and **sessions** (keyed by token, TTL = absolute session expiry).
+- Introduces two short-lived server-side records: **nonces** (keyed by `(commitment, nonce)`, TTL = nonce validity window) and **sessions** (keyed by token, TTL = absolute session expiry).
 - No changes to account, proposal, signer, or transaction entities or their state transitions.
 - Storage backend for nonces and sessions is a plan-phase decision; an in-process map is acceptable for a single-instance deployment, and a shared store is required if the backend runs multiple replicas. The specification imposes no filesystem/Postgres parity requirement because these records are ephemeral and are not part of the multisig data plane.
 
 ## Edge Cases *(mandatory)*
 
-- **Replay of a signed verify payload**: Prevented by single-use nonces; second submission of the same `{pubkey, signature}` must fail even if the signature itself remains cryptographically valid.
+- **Replay of a signed verify payload**: Prevented by single-use nonces; second submission of the same `{commitment, signature}` must fail even if the signature itself remains cryptographically valid.
 - **Cross-domain replay**: Prevented by binding the signed payload to the server's canonical domain; a signature captured against environment A must not authenticate against environment B.
 - **Stale nonce**: A signature over an expired nonce must be rejected even if the signature is otherwise valid; the operator must request a fresh challenge.
 - **Clock skew between operator and server**: The server is the sole authority on nonce and session expiry; operator-side timestamps are not trusted. Any included timestamp in the signed payload must match the server's recorded expiry for that nonce, not an operator-supplied value.
-- **Concurrent challenges for the same pubkey**: Multiple outstanding nonces for the same pubkey are allowed; each is independently single-use. An upper bound per pubkey should be enforced to prevent memory exhaustion.
+- **Concurrent challenges for the same commitment**: Multiple outstanding nonces for the same commitment are allowed; each is independently single-use. An upper bound per commitment should be enforced to prevent memory exhaustion.
 - **Signature over a mutated payload**: If the client signs a payload whose structure does not exactly match the server's reconstruction (field order, encoding, whitespace, canonicalization), verification must fail closed. The server MUST use a fixed, documented canonical encoding for the signed payload.
 - **Allowlist hot-reload during an active request**: Reload must be atomic from the middleware's perspective; a request must see either the pre- or post-reload allowlist, never a partial view.
 - **Multiple concurrent sessions for the same operator**: Allowed by default (new login does not invalidate earlier sessions), which preserves operator usability across devices. Each session is independently revocable via logout.
 - **Session cookie theft**: Mitigated — not eliminated — by `HttpOnly`, `Secure`, `SameSite=Strict`, TLS, and bounded absolute expiry. Out-of-scope mitigations include token binding and device attestation.
-- **Misconfigured operator entry** (malformed Falcon pubkey, duplicate id): MUST fail startup loudly rather than silently skipping the entry.
+- **Misconfigured operator entry** (malformed Falcon commitment, duplicate id): MUST fail startup loudly rather than silently skipping the entry.
 - **Operator removed from allowlist mid-session**: Next request is rejected even if the session has remaining lifetime.
 - **Nonce or session storage loss on restart** (if using in-memory storage): All active sessions are invalidated on restart. This is an acceptable operational behavior for v1 and MUST be explicitly documented.
 
