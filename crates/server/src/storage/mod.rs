@@ -10,16 +10,11 @@ pub mod postgres;
 pub use postgres::run_migrations;
 
 /// Storage backend type with configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum StorageType {
+    #[default]
     Filesystem,
     Postgres,
-}
-
-impl Default for StorageType {
-    fn default() -> Self {
-        Self::Filesystem
-    }
 }
 
 impl std::fmt::Display for StorageType {

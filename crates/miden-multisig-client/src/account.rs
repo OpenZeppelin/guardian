@@ -3,19 +3,19 @@
 use miden_client::Serializable;
 use miden_protocol::Word;
 use miden_protocol::account::{
-    Account, AccountId, AccountStorage, StorageMap, StorageSlot, StorageSlotName,
+    Account, AccountId, AccountStorage, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
 
-// Storage slot names for OpenZeppelin multisig/psm components
+// Storage slot names for OpenZeppelin multisig/guardian components
 const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
 const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
 const OZ_MULTISIG_PROCEDURE_THRESHOLDS: &str = "openzeppelin::multisig::procedure_thresholds";
-const OZ_PSM_SELECTOR: &str = "openzeppelin::psm::selector";
-const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
+const OZ_GUARDIAN_SELECTOR: &str = "openzeppelin::guardian::selector";
+const OZ_GUARDIAN_PUBLIC_KEY: &str = "openzeppelin::guardian::public_key";
 
 /// Wrapper around a Miden Account with multisig-specific helpers.
 ///
@@ -24,8 +24,8 @@ const OZ_PSM_PUBLIC_KEY: &str = "openzeppelin::psm::public_key";
 /// - Signer commitments map slot: `[index, 0, 0, 0] => COMMITMENT`
 /// - Executed transactions map slot (replay protection)
 /// - Procedure threshold overrides map slot: `PROC_ROOT => [threshold, 0, 0, 0]`
-/// - PSM selector slot: `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
-/// - PSM public key map slot
+/// - GUARDIAN selector slot: `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
+/// - GUARDIAN public key map slot
 #[derive(Debug, Clone)]
 pub struct MultisigAccount {
     account: Account,
@@ -44,12 +44,12 @@ impl MultisigAccount {
 
     /// Returns the account nonce.
     pub fn nonce(&self) -> u64 {
-        self.account.nonce().as_int()
+        self.account.nonce().as_canonical_u64()
     }
 
     /// Returns the account commitment (hash).
     pub fn commitment(&self) -> Word {
-        self.account.commitment()
+        self.account.to_commitment()
     }
 
     /// Returns a reference to the underlying Account.
@@ -80,7 +80,7 @@ impl MultisigAccount {
                 MultisigError::AccountStorage("threshold config slot not found".to_string())
             })?;
 
-        Ok(slot_value[0].as_int() as u32)
+        Ok(slot_value[0].as_canonical_u64() as u32)
     }
 
     /// Returns the number of signers from storage.
@@ -91,7 +91,7 @@ impl MultisigAccount {
                 MultisigError::AccountStorage("threshold config slot not found".to_string())
             })?;
 
-        Ok(slot_value[1].as_int() as u32)
+        Ok(slot_value[1].as_canonical_u64() as u32)
     }
 
     /// Returns the configured threshold override for a specific procedure, if present.
@@ -105,7 +105,7 @@ impl MultisigAccount {
             return Ok(None);
         }
 
-        let threshold = value[0].as_int() as u32;
+        let threshold = value[0].as_canonical_u64() as u32;
         if threshold == 0 {
             return Ok(None);
         }
@@ -142,7 +142,7 @@ impl MultisigAccount {
             TransactionType::UpdateProcedureThreshold { .. } => {
                 ProcedureName::UpdateProcedureThreshold
             }
-            TransactionType::SwitchPsm { .. } => ProcedureName::UpdatePsm,
+            TransactionType::SwitchGuardian { .. } => ProcedureName::UpdateGuardian,
         };
 
         self.effective_threshold_for_procedure(procedure)
@@ -190,21 +190,21 @@ impl MultisigAccount {
         self.cosigner_commitments().contains(commitment)
     }
 
-    /// Returns whether PSM verification is enabled.
-    pub fn psm_enabled(&self) -> Result<bool> {
-        let slot_value = self.get_item_by_name(OZ_PSM_SELECTOR).ok_or_else(|| {
-            MultisigError::AccountStorage("PSM selector slot not found".to_string())
+    /// Returns whether GUARDIAN verification is enabled.
+    pub fn guardian_enabled(&self) -> Result<bool> {
+        let slot_value = self.get_item_by_name(OZ_GUARDIAN_SELECTOR).ok_or_else(|| {
+            MultisigError::AccountStorage("GUARDIAN selector slot not found".to_string())
         })?;
 
-        Ok(slot_value[0].as_int() == 1)
+        Ok(slot_value[0].as_canonical_u64() == 1)
     }
 
-    /// Returns the PSM server commitment from PSM public key map slot.
-    pub fn psm_commitment(&self) -> Result<Word> {
+    /// Returns the GUARDIAN server commitment from GUARDIAN public key map slot.
+    pub fn guardian_commitment(&self) -> Result<Word> {
         let key = Word::from([0u32, 0, 0, 0]);
-        self.get_map_item_by_name(OZ_PSM_PUBLIC_KEY, key)
+        self.get_map_item_by_name(OZ_GUARDIAN_PUBLIC_KEY, key)
             .ok_or_else(|| {
-                MultisigError::AccountStorage("PSM public key slot not found".to_string())
+                MultisigError::AccountStorage("GUARDIAN public key slot not found".to_string())
             })
     }
 
@@ -222,9 +222,12 @@ impl MultisigAccount {
         let slot_name = StorageSlotName::new(OZ_MULTISIG_PROCEDURE_THRESHOLDS).map_err(|e| {
             MultisigError::AccountStorage(format!("invalid procedure threshold slot name: {}", e))
         })?;
-        let entries = overrides
-            .into_iter()
-            .map(|(procedure, threshold)| (procedure.root(), Word::from([threshold, 0, 0, 0])));
+        let entries = overrides.into_iter().map(|(procedure, threshold)| {
+            (
+                StorageMapKey::new(procedure.root()),
+                Word::from([threshold, 0, 0, 0]),
+            )
+        });
         let map = StorageMap::with_entries(entries).map_err(|e| {
             MultisigError::AccountStorage(format!("failed to build procedure threshold map: {}", e))
         })?;
@@ -248,7 +251,9 @@ impl MultisigAccount {
 
 #[cfg(test)]
 mod tests {
-    use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+    use miden_confidential_contracts::multisig_guardian::{
+        MultisigGuardianBuilder, MultisigGuardianConfig,
+    };
     use miden_protocol::account::{AccountStorage, StorageMap, StorageSlot, StorageSlotName};
     use miden_protocol::note::NoteId;
 
@@ -259,14 +264,14 @@ mod tests {
     }
 
     fn build_test_account() -> MultisigAccount {
-        let config = MultisigPsmConfig::new(2, vec![word(1), word(2), word(3)], word(99))
+        let config = MultisigGuardianConfig::new(2, vec![word(1), word(2), word(3)], word(99))
             .with_proc_threshold_overrides(vec![
                 (ProcedureName::SendAsset.root(), 1),
                 (ProcedureName::UpdateSigners.root(), 3),
-                (ProcedureName::UpdatePsm.root(), 1),
+                (ProcedureName::UpdateGuardian.root(), 1),
             ]);
 
-        let account = MultisigPsmBuilder::new(config)
+        let account = MultisigGuardianBuilder::new(config)
             .with_seed([7u8; 32])
             .build()
             .expect("account builds");
@@ -280,15 +285,16 @@ mod tests {
             let entries = commitments
                 .into_iter()
                 .enumerate()
-                .map(|(index, commitment)| (Word::from([index as u32, 0, 0, 0]), commitment));
+                .map(|(index, commitment)| (StorageMapKey::from_index(index as u32), commitment));
             let map = StorageMap::with_entries(entries).expect("valid signer map");
             StorageSlot::with_map(slot_name, map)
         }
 
-        let account = MultisigPsmBuilder::new(MultisigPsmConfig::new(1, vec![word(1)], word(99)))
-            .with_seed([9u8; 32])
-            .build_existing()
-            .expect("account builds");
+        let account =
+            MultisigGuardianBuilder::new(MultisigGuardianConfig::new(1, vec![word(1)], word(99)))
+                .with_seed([9u8; 32])
+                .build_existing()
+                .expect("account builds");
         let (id, vault, storage, code, nonce, seed) = account.into_parts();
         let storage_slots = storage
             .into_slots()
@@ -371,8 +377,8 @@ mod tests {
         );
         assert_eq!(
             account
-                .effective_threshold_for_transaction(&TransactionType::SwitchPsm {
-                    new_endpoint: "http://new-psm.example.com".to_string(),
+                .effective_threshold_for_transaction(&TransactionType::SwitchGuardian {
+                    new_endpoint: "http://new-guardian.example.com".to_string(),
                     new_commitment: word(11),
                 })
                 .expect("threshold"),

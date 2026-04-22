@@ -8,7 +8,7 @@
 //! - `offline` - Offline proposal operations
 //! - `notes` - Note filtering and listing
 //! - `io` - Export/import functionality
-//! - `helpers` - Internal PSM client helpers
+//! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
 mod helpers;
@@ -20,11 +20,11 @@ mod proposals;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miden_client::Client;
 use miden_client::rpc::Endpoint;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 
+use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
 use crate::export::ExportedProposal;
@@ -35,13 +35,13 @@ pub use notes::{ConsumableNote, NoteFilter};
 
 /// Result of a proposal creation attempt.
 ///
-/// When creating a proposal, it may either succeed online (via PSM) or
-/// fall back to offline mode if PSM is unavailable.
+/// When creating a proposal, it may either succeed online (via GUARDIAN) or
+/// fall back to offline mode if GUARDIAN is unavailable.
 #[derive(Debug)]
 pub enum ProposalResult {
-    /// Proposal successfully created on PSM and ready for cosigners to sign.
+    /// Proposal successfully created on GUARDIAN and ready for cosigners to sign.
     Online(Box<Proposal>),
-    /// Offline proposal created when PSM is unavailable (`SwitchPsm` transactions only).
+    /// Offline proposal created when GUARDIAN is unavailable (`SwitchGuardian` transactions only).
     Offline(Box<ExportedProposal>),
 }
 
@@ -58,7 +58,7 @@ pub struct StateVerificationResult {
 
 /// Main client for interacting with multisig accounts.
 ///
-/// This client manages a single multisig account connected to a PSM server,
+/// This client manages a single multisig account connected to a GUARDIAN server,
 /// providing a high-level API for creating and managing multisig accounts,
 /// proposals, and transactions.
 ///
@@ -71,7 +71,7 @@ pub struct StateVerificationResult {
 ///
 /// let mut client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-///     .psm_endpoint("http://localhost:50051")
+///     .guardian_endpoint("http://localhost:50051")
 ///     .data_dir("/tmp/multisig")
 ///     .generate_key()
 ///     .build()
@@ -81,10 +81,10 @@ pub struct StateVerificationResult {
 /// let account = client.create_account(2, vec![signer1, signer2]).await?;
 /// ```
 pub struct MultisigClient {
-    pub(crate) miden_client: Client<()>,
+    pub(crate) miden_client: MidenSdkClient,
     pub(crate) key_manager: Arc<dyn KeyManager>,
-    /// Private State Manager server endpoint.
-    pub(crate) psm_endpoint: String,
+    /// Guardian server endpoint.
+    pub(crate) guardian_endpoint: String,
     /// The multisig account managed by this client.
     pub(crate) account: Option<MultisigAccount>,
     /// Account directory for miden-client storage (for recovery).
@@ -101,25 +101,25 @@ impl MultisigClient {
 
     /// Creates a new MultisigClient (internal use, prefer builder).
     pub(crate) fn new(
-        miden_client: Client<()>,
+        miden_client: MidenSdkClient,
         key_manager: Arc<dyn KeyManager>,
-        psm_endpoint: String,
+        guardian_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
     ) -> Self {
         Self {
             miden_client,
             key_manager,
-            psm_endpoint,
+            guardian_endpoint,
             account: None,
             account_dir,
             miden_endpoint,
         }
     }
 
-    /// Returns the PSM endpoint.
-    pub fn psm_endpoint(&self) -> &str {
-        &self.psm_endpoint
+    /// Returns the GUARDIAN endpoint.
+    pub fn guardian_endpoint(&self) -> &str {
+        &self.guardian_endpoint
     }
 
     /// Returns the current account, if any.

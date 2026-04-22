@@ -5,4 +5,5 @@ export interface SignatureOptions {
   salt?: Word;
   signatureAdviceMap?: AdviceMap;
   signatureScheme?: SignatureScheme;
+  midenRpcEndpoint?: string;
 }

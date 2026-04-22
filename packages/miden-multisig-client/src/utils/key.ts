@@ -1,7 +1,11 @@
 import { Word } from '@miden-sdk/miden-sdk';
 import type { SignatureScheme } from '../types.js';
 import { bytesToHex } from './encoding.js';
-import { tryComputeCommitmentHex } from './signature.js';
+import {
+  ECDSA_AUTH_SCHEME_ID,
+  FALCON_AUTH_SCHEME_ID,
+  tryComputeCommitmentHex,
+} from './signature.js';
 
 export class PublicKeyFormat {
   static parse(publicKey: Uint8Array): {
@@ -16,12 +20,12 @@ export class PublicKeyFormat {
 
     const firstByte = publicKey[0];
 
-    if (firstByte === 0x00 && publicKey.length > 100) {
+    if (firstByte === FALCON_AUTH_SCHEME_ID && publicKey.length > 100) {
       const hex = bytesToHex(publicKey.slice(1));
       return { scheme: 'falcon', publicKeyHex: hex, commitment: tryComputeCommitmentHex(hex, 'falcon') };
     }
 
-    if (firstByte === 0x01 && publicKey.length === 34) {
+    if (firstByte === ECDSA_AUTH_SCHEME_ID && publicKey.length === 34) {
       const hex = bytesToHex(publicKey.slice(1));
       return { scheme: 'ecdsa', publicKeyHex: hex, commitment: tryComputeCommitmentHex(hex, 'ecdsa') };
     }

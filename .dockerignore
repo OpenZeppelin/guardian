@@ -2,9 +2,25 @@
 .git
 .gitignore
 
+# Terraform
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+
 # Build artifacts
 target/
 **/target/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+.next/
+**/.next/
+coverage/
+**/coverage/
 
 # IDE
 .vscode/

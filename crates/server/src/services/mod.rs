@@ -1,4 +1,4 @@
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::AccountMetadata;
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
 use crate::state::AppState;
@@ -68,9 +68,9 @@ pub async fn resolve_account(
                 error = %e,
                 "Failed to check account in resolve_account"
             );
-            PsmError::StorageError(format!("Failed to check account: {e}"))
+            GuardianError::StorageError(format!("Failed to check account: {e}"))
         })?
-        .ok_or_else(|| PsmError::AccountNotFound(account_id.to_string()))?;
+        .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
 
     let request_timestamp = creds.timestamp();
     let server_now_ms = state.clock.now().timestamp_millis();
@@ -84,7 +84,7 @@ pub async fn resolve_account(
             max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
             "Request timestamp outside allowed skew window"
         );
-        return Err(PsmError::AuthenticationFailed(format!(
+        return Err(GuardianError::AuthenticationFailed(format!(
             "Request timestamp outside allowed window: {}ms drift (max {}ms)",
             time_diff_ms, MAX_TIMESTAMP_SKEW_MS
         )));
@@ -96,7 +96,7 @@ pub async fn resolve_account(
             error = %e,
             "Authentication failed in resolve_account"
         );
-        PsmError::AuthenticationFailed(e)
+        GuardianError::AuthenticationFailed(e)
     })?;
 
     // Atomically check and update the last auth timestamp for replay protection
@@ -111,7 +111,7 @@ pub async fn resolve_account(
                 error = %e,
                 "Failed to update last auth timestamp"
             );
-            PsmError::StorageError(format!("Failed to update last auth timestamp: {e}"))
+            GuardianError::StorageError(format!("Failed to update last auth timestamp: {e}"))
         })?;
 
     if !updated {
@@ -120,7 +120,7 @@ pub async fn resolve_account(
             request_timestamp = %request_timestamp,
             "Replay attack detected: timestamp not greater than last seen (CAS failed)"
         );
-        return Err(PsmError::AuthenticationFailed(
+        return Err(GuardianError::AuthenticationFailed(
             "Replay attack detected: timestamp must be greater than previous request".to_string(),
         ));
     }
@@ -135,25 +135,24 @@ const VALID_PROPOSAL_TYPES: &[&str] = &[
     "remove_signer",
     "change_threshold",
     "update_procedure_threshold",
-    "switch_psm",
+    "switch_guardian",
     "consume_notes",
     "p2id",
 ];
 
 pub fn normalize_payload(payload: Value) -> Result<Value> {
-    let mut obj = payload
-        .as_object()
-        .cloned()
-        .ok_or_else(|| PsmError::InvalidDelta("delta_payload must be an object".to_string()))?;
+    let mut obj = payload.as_object().cloned().ok_or_else(|| {
+        GuardianError::InvalidDelta("delta_payload must be an object".to_string())
+    })?;
 
     let tx_summary = obj
         .get("tx_summary")
-        .ok_or_else(|| PsmError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
+        .ok_or_else(|| GuardianError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
     validate_tx_summary(tx_summary)?;
 
     let metadata = obj
         .remove("metadata")
-        .ok_or_else(|| PsmError::InvalidDelta("Missing 'metadata' field".to_string()))?;
+        .ok_or_else(|| GuardianError::InvalidDelta("Missing 'metadata' field".to_string()))?;
     let normalized_metadata = normalize_metadata(metadata)?;
     obj.insert("metadata".to_string(), normalized_metadata);
 
@@ -162,17 +161,18 @@ pub fn normalize_payload(payload: Value) -> Result<Value> {
 
 fn validate_tx_summary(tx_summary: &Value) -> Result<()> {
     let obj = tx_summary.as_object().ok_or_else(|| {
-        PsmError::InvalidDelta("tx_summary must be an object with 'data' field".to_string())
+        GuardianError::InvalidDelta("tx_summary must be an object with 'data' field".to_string())
     })?;
 
-    let data = obj
-        .get("data")
-        .and_then(Value::as_str)
-        .ok_or_else(|| PsmError::InvalidDelta("tx_summary.data must be a string".to_string()))?;
+    let data = obj.get("data").and_then(Value::as_str).ok_or_else(|| {
+        GuardianError::InvalidDelta("tx_summary.data must be a string".to_string())
+    })?;
 
     base64::engine::general_purpose::STANDARD
         .decode(data)
-        .map_err(|e| PsmError::InvalidDelta(format!("tx_summary.data is not valid base64: {e}")))?;
+        .map_err(|e| {
+            GuardianError::InvalidDelta(format!("tx_summary.data is not valid base64: {e}"))
+        })?;
     Ok(())
 }
 
@@ -180,14 +180,16 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
     let mut obj = metadata
         .as_object()
         .cloned()
-        .ok_or_else(|| PsmError::InvalidDelta("metadata must be a JSON object".to_string()))?;
+        .ok_or_else(|| GuardianError::InvalidDelta("metadata must be a JSON object".to_string()))?;
 
     let proposal_type = obj
         .get("proposal_type")
         .and_then(Value::as_str)
-        .ok_or_else(|| PsmError::InvalidDelta("metadata.proposal_type is required".to_string()))?;
+        .ok_or_else(|| {
+            GuardianError::InvalidDelta("metadata.proposal_type is required".to_string())
+        })?;
     if !VALID_PROPOSAL_TYPES.contains(&proposal_type) {
-        return Err(PsmError::InvalidDelta(format!(
+        return Err(GuardianError::InvalidDelta(format!(
             "Unknown proposal_type '{}'. Must be one of: {}",
             proposal_type,
             VALID_PROPOSAL_TYPES.join(", ")
@@ -214,18 +216,18 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
             num
         } else if let Some(text) = required_signatures.as_str() {
             text.parse::<u64>().map_err(|_| {
-                PsmError::InvalidDelta(
+                GuardianError::InvalidDelta(
                     "metadata.required_signatures must be a positive integer".to_string(),
                 )
             })?
         } else {
-            return Err(PsmError::InvalidDelta(
+            return Err(GuardianError::InvalidDelta(
                 "metadata.required_signatures must be a positive integer".to_string(),
             ));
         };
 
         if normalized == 0 {
-            return Err(PsmError::InvalidDelta(
+            return Err(GuardianError::InvalidDelta(
                 "metadata.required_signatures must be greater than zero".to_string(),
             ));
         }
@@ -290,7 +292,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use tokio::sync::Mutex;
 
-    fn create_test_state_with_mocks_and_clock(
+    async fn create_test_state_with_mocks_and_clock(
         metadata: MockMetadataStore,
         clock: MockClock,
     ) -> AppState {
@@ -298,9 +300,11 @@ mod tests {
         let network = MockNetworkClient::new();
 
         let keystore_dir =
-            std::env::temp_dir().join(format!("psm_test_keystore_{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
-        let ack = AckRegistry::new(keystore_dir).expect("Failed to create ack registry");
+        let ack = AckRegistry::new(keystore_dir)
+            .await
+            .expect("Failed to create ack registry");
 
         AppState {
             storage: Arc::new(storage),
@@ -339,7 +343,7 @@ mod tests {
             vec![signer_commitment],
         ))));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone());
+        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone()).await;
 
         // Create credentials with timestamp way in the past (10 minutes = 600000ms ago)
         let old_timestamp = clock.now().timestamp_millis() - 600_000;
@@ -351,7 +355,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::AuthenticationFailed(msg) => {
+            GuardianError::AuthenticationFailed(msg) => {
                 assert!(msg.contains("outside allowed window"));
             }
             e => panic!("Expected AuthenticationFailed, got: {:?}", e),
@@ -372,7 +376,7 @@ mod tests {
             vec![signer_commitment],
         ))));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone());
+        let state = create_test_state_with_mocks_and_clock(metadata, clock.clone()).await;
 
         // Create credentials with timestamp way in the future (10 minutes = 600000ms ahead)
         let future_timestamp = clock.now().timestamp_millis() + 600_000;
@@ -384,7 +388,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::AuthenticationFailed(msg) => {
+            GuardianError::AuthenticationFailed(msg) => {
                 assert!(msg.contains("outside allowed window"));
             }
             e => panic!("Expected AuthenticationFailed, got: {:?}", e),
@@ -410,7 +414,7 @@ mod tests {
             ))))
             .with_update_timestamp_cas(Ok(false));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(test_signer.pubkey_hex, signature, timestamp);
 
@@ -418,7 +422,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::AuthenticationFailed(msg) => {
+            GuardianError::AuthenticationFailed(msg) => {
                 assert!(msg.contains("Replay attack detected"));
             }
             e => panic!("Expected AuthenticationFailed with replay, got: {:?}", e),
@@ -444,7 +448,7 @@ mod tests {
             ))))
             .with_update_timestamp_cas(Err("Database connection failed".to_string()));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(test_signer.pubkey_hex, signature, timestamp);
 
@@ -452,7 +456,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::StorageError(msg) => {
+            GuardianError::StorageError(msg) => {
                 assert!(msg.contains("Failed to update last auth timestamp"));
             }
             e => panic!("Expected StorageError, got: {:?}", e),
@@ -469,7 +473,7 @@ mod tests {
         // Configure metadata mock to return None (account not found)
         let metadata = MockMetadataStore::new().with_get(Ok(None));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(signer_pubkey, signer_signature, signer_timestamp);
 
@@ -477,7 +481,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::AccountNotFound(_) => {}
+            GuardianError::AccountNotFound(_) => {}
             e => panic!("Expected AccountNotFound, got: {:?}", e),
         }
     }
@@ -492,7 +496,7 @@ mod tests {
         // Configure metadata mock to return error
         let metadata = MockMetadataStore::new().with_get(Err("Database error".to_string()));
 
-        let state = create_test_state_with_mocks_and_clock(metadata, clock);
+        let state = create_test_state_with_mocks_and_clock(metadata, clock).await;
 
         let creds = Credentials::signature(signer_pubkey, signer_signature, signer_timestamp);
 
@@ -500,7 +504,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::StorageError(msg) => {
+            GuardianError::StorageError(msg) => {
                 assert!(msg.contains("Failed to check account"));
             }
             e => panic!("Expected StorageError, got: {:?}", e),

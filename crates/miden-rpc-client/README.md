@@ -7,7 +7,7 @@ Minimal Miden RPC client with full API access using tonic-generated code from mi
 ### Via `client_mut()`
 
 ```rust
-let mut client = MidenRpcClient::connect("https://rpc.testnet.miden.io").await?;
+let mut client = MidenRpcClient::connect("https://rpc.devnet.miden.io").await?;
 
 let status = client.client_mut().status(tonic::Request::new(())).await?;
 let block = client.client_mut().get_block_by_number(request).await?;

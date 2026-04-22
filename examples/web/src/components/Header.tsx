@@ -18,9 +18,9 @@ interface HeaderProps {
   ecdsaCommitment: string | null;
   activeScheme: SignatureScheme | null;
   generatingSigner: boolean;
-  psmStatus: 'connected' | 'connecting' | 'error';
-  psmUrl: string;
-  onPsmUrlChange: (url: string) => void;
+  guardianStatus: 'connected' | 'connecting' | 'error';
+  guardianUrl: string;
+  onGuardianUrlChange: (url: string) => void;
   onReconnect: (url: string) => void;
   walletSource: WalletSource;
   onWalletSourceChange: (source: WalletSource) => void;
@@ -44,9 +44,9 @@ export function Header({
   ecdsaCommitment,
   activeScheme,
   generatingSigner,
-  psmStatus,
-  psmUrl,
-  onPsmUrlChange,
+  guardianStatus,
+  guardianUrl,
+  onGuardianUrlChange,
   onReconnect,
   walletSource,
   onWalletSourceChange,
@@ -58,15 +58,15 @@ export function Header({
   onDisconnectMidenWallet,
   onOpenParaModal,
 }: HeaderProps) {
-  const [urlInput, setUrlInput] = useState(psmUrl);
+  const [urlInput, setUrlInput] = useState(guardianUrl);
   const [popoverOpen, setPopoverOpen] = useState(false);
 
   useEffect(() => {
-    setUrlInput(psmUrl);
-  }, [psmUrl]);
+    setUrlInput(guardianUrl);
+  }, [guardianUrl]);
 
   const handleSave = () => {
-    onPsmUrlChange(urlInput);
+    onGuardianUrlChange(urlInput);
     onReconnect(urlInput);
     setPopoverOpen(false);
   };
@@ -232,40 +232,40 @@ export function Header({
           </Popover>
         ) : null}
 
-        {/* PSM Status Badge with Popover */}
+        {/* GUARDIAN Status Badge with Popover */}
         <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
           <PopoverTrigger asChild>
             <Button variant="ghost" className="p-0 h-auto">
               <Badge
-                variant={psmStatus === 'connected' ? 'default' : 'destructive'}
+                variant={guardianStatus === 'connected' ? 'default' : 'destructive'}
                 className={`cursor-pointer ${
-                  psmStatus === 'connected'
+                  guardianStatus === 'connected'
                     ? 'bg-green-600 hover:bg-green-700'
-                    : psmStatus === 'connecting'
+                    : guardianStatus === 'connecting'
                       ? 'bg-yellow-500 hover:bg-yellow-600'
                       : ''
                 }`}
               >
-                PSM {psmStatus === 'connected' ? '●' : psmStatus === 'connecting' ? '◐' : '○'}
+                GUARDIAN {guardianStatus === 'connected' ? '●' : guardianStatus === 'connecting' ? '◐' : '○'}
               </Badge>
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-80" align="end">
             <div className="space-y-4">
               <div className="space-y-2">
-                <h4 className="font-medium">PSM Configuration</h4>
+                <h4 className="font-medium">GUARDIAN Configuration</h4>
                 <p className="text-sm text-muted-foreground">
-                  {psmStatus === 'connected'
-                    ? 'Connected to PSM server'
-                    : psmStatus === 'connecting'
+                  {guardianStatus === 'connected'
+                    ? 'Connected to GUARDIAN server'
+                    : guardianStatus === 'connecting'
                       ? 'Connecting...'
-                      : 'Failed to connect to PSM server'}
+                      : 'Failed to connect to GUARDIAN server'}
                 </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="psm-url">Endpoint URL</Label>
+                <Label htmlFor="guardian-url">Endpoint URL</Label>
                 <Input
-                  id="psm-url"
+                  id="guardian-url"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
                   placeholder="http://localhost:3000"

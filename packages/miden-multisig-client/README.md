@@ -1,53 +1,52 @@
 # @openzeppelin/miden-multisig-client
 
-TypeScript SDK for private multisignature workflows on Miden. This package wraps the on-chain multisig contracts plus Private State Manager (PSM) coordination so you can:
+TypeScript SDK for private multisignature workflows on Miden. This package wraps the on-chain multisig contracts plus Guardian coordination so you can:
 
-- Create multisig accounts, register them with a PSM, and keep state off-chain
+- Create multisig accounts, register them with a GUARDIAN, and keep state off-chain
 - Propose, sign, and execute transactions with threshold enforcement
 - Export/import proposals as files for sharing using side channels
 
-## How Private Multisigs & PSM Work
+## How Private Multisigs & GUARDIAN Work
 
-Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. PSM acts as a coordination server:
+Miden multisig accounts store their authentication logic on-chain, but **their state (signers, metadata, proposals)** is kept private. GUARDIAN acts as a coordination server:
 
-1. A proposer pushes a delta (transaction plan) to Private State Manager (PSM). PSM tracks who signed and emits an ack signature once the threshold is met.
-2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to PSM.
-3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the PSM ack, executes it on-chain.
+1. A proposer pushes a delta (transaction plan) to Guardian. GUARDIAN tracks who signed and emits an ack signature once the threshold is met.
+2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to GUARDIAN.
+3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the GUARDIAN ack, executes it on-chain.
 
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @demox-labs/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```
 
 ## Setup
 
 ```typescript
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
-import { WebClient, SecretKey } from '@demox-labs/miden-sdk';
+import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 
-// Initialize Miden WebClient
-const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+const midenClient = await MidenClient.createDevnet();
 
 // Create a signer from your secret key
-const secretKey = SecretKey.rpoFalconWithRNG(seed);
+const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
 // Create MultisigClient
-const client = new MultisigClient(webClient, {
-  psmEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
 ```
 
 ## Usage
 
-### Get PSM Public Key
+### Get GUARDIAN Public Key
 
-Before creating a multisig, get the PSM server's public key commitment:
+Before creating a multisig, get the GUARDIAN server's public key commitment:
 
 ```typescript
-const psmCommitment = await client.psmClient.getPubkey();
+const guardianCommitment = await client.guardianClient.getPubkey();
 ```
 
 ### Create a Multisig Account
@@ -59,19 +58,19 @@ const config = {
     signer.commitment,      // Your commitment
     otherSigner.commitment, // Cosigner's commitment
   ],
-  psmCommitment,
+  guardianCommitment,
 };
 
 const multisig = await client.create(config, signer);
 console.log('Account ID:', multisig.accountId);
 ```
 
-### Register on PSM
+### Register on GUARDIAN
 
-After creating the account, register it on the PSM server:
+After creating the account, register it on the GUARDIAN server:
 
 ```typescript
-await multisig.registerOnPsm();
+await multisig.registerOnGuardian();
 ```
 
 ### Load an Existing Multisig
@@ -94,12 +93,10 @@ console.log('Created:', state.createdAt);
 
 ```typescript
 // Create a proposal to add a new signer
-const nonce = Math.floor(Math.random() * 1_000_000_000);
 const proposal = await multisig.createAddSignerProposal(
-  webClient,
   newSignerCommitment, // Commitment of signer to add
-  nonce,               // Optional nonce (random value)
-  3,                   // Optional new threshold
+  undefined,
+  3,
 );
 console.log('Proposal ID:', proposal.id);
 ```
@@ -113,7 +110,7 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
-Fetches proposals from the PSM server and updates local state:
+Fetches proposals from the GUARDIAN server and updates local state:
 
 ```typescript
 const proposals = await multisig.syncProposals();
@@ -143,7 +140,7 @@ When a proposal has enough signatures:
 
 ```typescript
 if (proposal.status === 'ready') {
-  await multisig.executeProposal(proposal.id, webClient);
+  await multisig.executeProposal(proposal.id);
   console.log('Transaction executed on-chain!');
 }
 ```
@@ -190,7 +187,7 @@ const bytes = hexToUint8Array('deadbeef');
 
 // Add auth scheme prefix to signature
 const sigBytes = signatureHexToBytes(signatureHex);
-// => Uint8Array with 0x00 prefix (RpoFalcon512)
+// => Uint8Array with the Falcon Poseidon2 auth prefix
 ```
 
 ## Testing

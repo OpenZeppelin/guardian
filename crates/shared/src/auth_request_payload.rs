@@ -1,5 +1,5 @@
 use miden_protocol::crypto::hash::rpo::Rpo256;
-use miden_protocol::{Felt, FieldElement, Word};
+use miden_protocol::{Felt, Word};
 use serde::Serialize;
 use serde_json::Value;
 

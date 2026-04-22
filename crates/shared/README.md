@@ -1,6 +1,6 @@
-## PSM Shared Crate
+## GUARDIAN Shared Crate
 
-This crate contains shared types and utilities for the PSM project.
+This crate contains shared types and utilities for the GUARDIAN project.
 
 ### Features
 

@@ -1,6 +1,6 @@
+use guardian_shared::FromJson;
+use guardian_shared::hex::IntoHex;
 use miden_protocol::transaction::TransactionSummary;
-use private_state_manager_shared::FromJson;
-use private_state_manager_shared::hex::IntoHex;
 
 use crate::DeltaObject;
 use crate::error::ClientError;
@@ -40,11 +40,11 @@ pub fn tx_summary_commitment_hex(tx_summary: &TransactionSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guardian_shared::ToJson;
     use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
     use miden_protocol::account::{AccountDelta, AccountId};
-    use miden_protocol::transaction::{InputNotes, OutputNotes};
-    use miden_protocol::{Felt, FieldElement, Word, ZERO};
-    use private_state_manager_shared::ToJson;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+    use miden_protocol::{Felt, Word, ZERO};
 
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a valid hex account ID from the test fixtures
@@ -62,7 +62,7 @@ mod tests {
         TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([ZERO; 4]),
         )
     }

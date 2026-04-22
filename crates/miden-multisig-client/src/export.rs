@@ -2,21 +2,21 @@
 //!
 //! This module provides types and utilities for exporting proposals to files
 //! and importing them back. This enables offline sharing of proposals via
-//! side channels (email, USB, etc.) when the PSM server is unavailable.
+//! side channels (email, USB, etc.) when the GUARDIAN server is unavailable.
 //!
 
 use std::collections::HashSet;
 
+use guardian_shared::FromJson;
+use guardian_shared::SignatureScheme;
+use guardian_shared::hex::FromHex;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature as RpoFalconSignature;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2FalconSignature;
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::utils::Deserializable;
-use private_state_manager_shared::FromJson;
-use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::hex::FromHex;
+use miden_protocol::utils::serde::Deserializable;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
@@ -88,10 +88,10 @@ pub struct ExportedMetadata {
     pub note_ids_hex: Vec<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_psm_pubkey_hex: Option<String>,
+    pub new_guardian_pubkey_hex: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_psm_endpoint: Option<String>,
+    pub new_guardian_endpoint: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
@@ -109,8 +109,8 @@ impl ExportedProposal {
             faucet_id_hex: self.metadata.faucet_id_hex.clone(),
             amount: self.metadata.amount,
             note_ids_hex: self.metadata.note_ids_hex.clone(),
-            new_psm_pubkey_hex: self.metadata.new_psm_pubkey_hex.clone(),
-            new_psm_endpoint: self.metadata.new_psm_endpoint.clone(),
+            new_guardian_pubkey_hex: self.metadata.new_guardian_pubkey_hex.clone(),
+            new_guardian_endpoint: self.metadata.new_guardian_endpoint.clone(),
             target_procedure: self.metadata.target_procedure.clone(),
             required_signatures: Some(self.signatures_required),
             signers: self
@@ -139,7 +139,7 @@ impl ExportedProposal {
             let signature_hex = ensure_hex_prefix(&signature.signature);
             match signature.scheme {
                 SignatureScheme::Falcon => {
-                    RpoFalconSignature::from_hex(&signature_hex).map_err(|e| {
+                    Poseidon2FalconSignature::from_hex(&signature_hex).map_err(|e| {
                         MultisigError::Signature(format!("invalid exported signature: {}", e))
                     })?;
                 }
@@ -259,8 +259,8 @@ impl ExportedProposal {
             faucet_id_hex: proposal.metadata.faucet_id_hex.clone(),
             amount: proposal.metadata.amount,
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
-            new_psm_pubkey_hex: proposal.metadata.new_psm_pubkey_hex.clone(),
-            new_psm_endpoint: proposal.metadata.new_psm_endpoint.clone(),
+            new_guardian_pubkey_hex: proposal.metadata.new_guardian_pubkey_hex.clone(),
+            new_guardian_endpoint: proposal.metadata.new_guardian_endpoint.clone(),
             target_procedure: proposal.metadata.target_procedure.clone(),
         };
 
@@ -422,14 +422,13 @@ impl ExportedProposal {
 
 #[cfg(test)]
 mod tests {
+    use guardian_shared::ToJson;
     use miden_client::Serializable;
-    use miden_protocol::FieldElement;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
-    use private_state_manager_shared::ToJson;
 
     use super::*;
     use crate::proposal::TransactionType;
@@ -461,8 +460,8 @@ mod tests {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: vec![],
-            new_psm_pubkey_hex: None,
-            new_psm_endpoint: None,
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
             target_procedure: None,
         };
 
@@ -679,7 +678,7 @@ mod tests {
         TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([Felt::new(7), ZERO, ZERO, ZERO]),
         )
     }

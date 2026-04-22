@@ -1,5 +1,5 @@
 /**
- * Account builder for creating multisig accounts with PSM authentication.
+ * Account builder for creating multisig accounts with GUARDIAN authentication.
  *
  * This module provides functionality to create multisig accounts.
  */
@@ -9,53 +9,67 @@ import {
   AccountComponent,
   AccountType,
   AccountStorageMode,
-  type WebClient,
+  type MidenClient,
 } from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
-import { buildMultisigStorageSlots, buildPsmStorageSlots } from './storage.js';
+import { getRawMidenClient } from '../raw-client.js';
+import { buildMultisigStorageSlots, buildGuardianStorageSlots } from './storage.js';
 import {
   MULTISIG_ECDSA_MASM,
   MULTISIG_MASM,
-  PSM_ECDSA_MASM,
-  PSM_MASM,
-} from './masm.js';
+  GUARDIAN_ECDSA_MASM,
+  GUARDIAN_MASM,
+} from './masm/auth.js';
+import {
+  MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM,
+  MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM,
+} from './masm/account-components/auth.js';
 import { normalizeSignerCommitment } from '../utils/signature.js';
 
 /**
- * Creates a multisig account with PSM authentication.
+ * Creates a multisig account with GUARDIAN authentication.
  *
- * @param webClient - Initialized Miden WebClient
+ * @param midenClient - Initialized MidenClient
  * @param config - Multisig configuration
  * @returns The created account and seed
  */
 export async function createMultisigAccount(
-  webClient: WebClient,
-  config: MultisigConfig
+  midenClient: MidenClient,
+  config: MultisigConfig,
+  midenRpcEndpoint?: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const signatureScheme = config.signatureScheme ?? 'falcon';
-  const multisigSlots = buildMultisigStorageSlots(config);
-  const psmSlots = buildPsmStorageSlots(config);
-  const psmMasm = signatureScheme === 'ecdsa' ? PSM_ECDSA_MASM : PSM_MASM;
+  const rawClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
+  const authSlots = [
+    ...buildMultisigStorageSlots(config),
+    ...buildGuardianStorageSlots(config),
+  ];
+  const guardianMasm = signatureScheme === 'ecdsa' ? GUARDIAN_ECDSA_MASM : GUARDIAN_MASM;
   const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
-  const psmLibraryPath = signatureScheme === 'ecdsa' ? 'openzeppelin::psm_ecdsa' : 'openzeppelin::psm';
+  const authComponentMasm = signatureScheme === 'ecdsa'
+    ? MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM
+    : MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM;
+  const guardianLibraryPath = signatureScheme === 'ecdsa'
+    ? 'openzeppelin::auth::guardian_ecdsa'
+    : 'openzeppelin::auth::guardian';
+  const multisigLibraryPath = signatureScheme === 'ecdsa'
+    ? 'openzeppelin::auth::multisig_ecdsa'
+    : 'openzeppelin::auth::multisig';
 
-  const psmBuilder = webClient.createCodeBuilder();
-  const psmCode = psmBuilder.compileAccountComponentCode(psmMasm);
-  const psmComponent = AccountComponent
-    .compile(psmCode, psmSlots)
-    .withSupportsAllTypes();
-  const multisigBuilder = webClient.createCodeBuilder();
-  const psmLib = multisigBuilder.buildLibrary(psmLibraryPath, psmMasm);
-  multisigBuilder.linkStaticLibrary(psmLib);
-  const multisigCode = multisigBuilder.compileAccountComponentCode(multisigMasm);
-  const multisigComponent = AccountComponent
-    .compile(multisigCode, multisigSlots)
+  const authBuilder = rawClient.createCodeBuilder();
+  authBuilder.linkModule(guardianLibraryPath, guardianMasm);
+  authBuilder.linkModule(multisigLibraryPath, multisigMasm);
+  const authComponentCode = authBuilder.compileAccountComponentCode(authComponentMasm);
+  const authComponent = AccountComponent
+    .compile(authComponentCode, authSlots)
     .withSupportsAllTypes();
 
-  // Generate random seed
-  const seed = new Uint8Array(32);
-  crypto.getRandomValues(seed);
+  let seed = config.seed;
+  // Generate random seed if not provided
+  if (!seed) {
+    seed = crypto.getRandomValues(new Uint8Array(32));
+  }
 
   const storageMode = config.storageMode === 'public'
     ? AccountStorageMode.public()
@@ -64,13 +78,12 @@ export async function createMultisigAccount(
   const accountBuilder = new AccountBuilder(seed)
     .accountType(AccountType.RegularAccountUpdatableCode)
     .storageMode(storageMode)
-    .withAuthComponent(multisigComponent)
-    .withComponent(psmComponent)
+    .withAuthComponent(authComponent)
     .withBasicWalletComponent();
 
   const result = accountBuilder.build();
 
-  await webClient.newAccount(result.account, false);
+  await midenClient.accounts.insert({ account: result.account, overwrite: false });
 
   return {
     account: result.account,
@@ -106,8 +119,8 @@ export function validateMultisigConfig(config: MultisigConfig): void {
       `threshold (${config.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`
     );
   }
-  if (!config.psmCommitment) {
-    throw new Error('PSM commitment is required');
+  if (!config.guardianCommitment) {
+    throw new Error('GUARDIAN commitment is required');
   }
 
   // Validate procedure thresholds if provided

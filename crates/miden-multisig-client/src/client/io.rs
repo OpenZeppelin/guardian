@@ -3,8 +3,8 @@
 //! This module handles exporting proposals to files/strings and
 //! importing them back for offline sharing workflows.
 
-use private_state_manager_client::delta_status::Status;
-use private_state_manager_shared::SignatureScheme;
+use guardian_client::delta_status::Status;
+use guardian_shared::SignatureScheme;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -13,7 +13,7 @@ use crate::export::{ExportedProposal, ExportedSignature};
 impl MultisigClient {
     /// Exports a proposal to a file for offline sharing.
     ///
-    /// This fetches the proposal from PSM, including all collected signatures,
+    /// This fetches the proposal from GUARDIAN, including all collected signatures,
     /// and writes it to the specified file path as JSON.
     ///
     /// # Example
@@ -46,22 +46,22 @@ impl MultisigClient {
         exported.to_json()
     }
 
-    /// Internal helper to create an ExportedProposal from PSM data.
+    /// Internal helper to create an ExportedProposal from GUARDIAN data.
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The proposal is not found in PSM
-    /// - The raw delta cannot be found in PSM response
+    /// - The proposal is not found in GUARDIAN
+    /// - The raw delta cannot be found in GUARDIAN response
     /// - The delta has no pending status with signature data
     async fn export_proposal_to_exported(&mut self, proposal_id: &str) -> Result<ExportedProposal> {
         let account = self.require_account()?.clone();
         let account_id = account.id();
-        let mut psm_client = self.create_authenticated_psm_client().await?;
-        let response = psm_client
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let response = guardian_client
             .get_delta_proposal(&account_id, proposal_id)
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposal: {}", e)))?;
+            .map_err(|e| MultisigError::GuardianServer(format!("failed to get proposal: {}", e)))?;
         let raw_proposal = response
             .proposal
             .as_ref()
@@ -72,17 +72,17 @@ impl MultisigClient {
 
         // Extract signatures - fail if status structure is missing
         let status = raw_proposal.status.as_ref().ok_or_else(|| {
-            MultisigError::PsmServer(format!("proposal {} has no status field", proposal_id))
+            MultisigError::GuardianServer(format!("proposal {} has no status field", proposal_id))
         })?;
 
         let status_oneof = status.status.as_ref().ok_or_else(|| {
-            MultisigError::PsmServer(format!("proposal {} has empty status", proposal_id))
+            MultisigError::GuardianServer(format!("proposal {} has empty status", proposal_id))
         })?;
 
         let pending = match status_oneof {
             Status::Pending(p) => p,
             _ => {
-                return Err(MultisigError::PsmServer(format!(
+                return Err(MultisigError::GuardianServer(format!(
                     "proposal {} is not in pending state",
                     proposal_id
                 )));

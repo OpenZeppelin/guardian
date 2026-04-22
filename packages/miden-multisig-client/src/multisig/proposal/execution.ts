@@ -1,7 +1,10 @@
-import { type DeltaObject, type PsmHttpClient } from '@openzeppelin/psm-client';
-import type { WebClient, TransactionRequest } from '@miden-sdk/miden-sdk';
+import { type DeltaObject, type GuardianHttpClient } from '@openzeppelin/guardian-client';
+import type {
+  MidenClient,
+  TransactionProver,
+  TransactionRequest,
+} from '@miden-sdk/miden-sdk';
 import {
-  AccountId,
   AdviceMap,
   FeltArray,
   Signature,
@@ -12,7 +15,7 @@ import type { ProposalType, TransactionProposal } from '../../types.js';
 import {
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
-  buildUpdatePsmTransactionRequest,
+  buildUpdateGuardianTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateSignersTransactionRequest,
 } from '../../transaction.js';
@@ -40,12 +43,13 @@ interface ExecuteProposalWorkflowParams {
   accountId: string;
   threshold: number;
   signerCommitments: string[];
-  psmCommitment: string;
-  psmPublicKey?: string;
+  guardianCommitment: string;
+  guardianPublicKey?: string;
   signatureScheme: 'falcon' | 'ecdsa';
   getEffectiveThreshold: (proposalType: ProposalType) => number;
-  psm: PsmHttpClient;
-  webClient: WebClient;
+  guardian: GuardianHttpClient;
+  midenClient: MidenClient;
+  transactionProver?: TransactionProver | null;
 }
 
 export async function executeProposalWorkflow(
@@ -57,12 +61,12 @@ export async function executeProposalWorkflow(
     params.getEffectiveThreshold,
   );
 
-  const isSwitchPsm = params.proposal.metadata.proposalType === 'switch_psm';
+  const isSwitchGuardian = params.proposal.metadata.proposalType === 'switch_guardian';
   const executionSource = await resolveExecutionSource(
-    params.psm,
+    params.guardian,
     params.accountId,
     params.proposal,
-    isSwitchPsm,
+    isSwitchGuardian,
   );
   const executionData = prepareExecutionData(executionSource.txSummaryBase64);
 
@@ -72,12 +76,12 @@ export async function executeProposalWorkflow(
     executionData.txCommitmentHex,
   );
 
-  if (!isSwitchPsm && executionSource.delta) {
-    await appendPsmAckAdvice(
-      params.psm,
+  if (!isSwitchGuardian && executionSource.delta) {
+    await appendGuardianAckAdvice(
+      params.guardian,
       executionSource.delta,
-      params.psmCommitment,
-      params.psmPublicKey,
+      params.guardianCommitment,
+      params.guardianPublicKey,
       params.signatureScheme,
       executionData.txCommitmentHex,
       adviceMap,
@@ -89,7 +93,11 @@ export async function executeProposalWorkflow(
     executionData.saltHex,
     adviceMap,
   );
-  await submitTransaction(params.webClient, params.accountId, finalRequest);
+  await submitTransaction(
+    params.midenClient,
+    params.accountId,
+    finalRequest,
+  );
 }
 
 
@@ -102,12 +110,12 @@ export async function createTransactionProposalRequest(
     params.getEffectiveThreshold,
   );
 
-  const isSwitchPsm = params.proposal.metadata.proposalType === 'switch_psm';
+  const isSwitchGuardian = params.proposal.metadata.proposalType === 'switch_guardian';
   const executionSource = await resolveExecutionSource(
-    params.psm,
+    params.guardian,
     params.accountId,
     params.proposal,
-    isSwitchPsm,
+    isSwitchGuardian,
   );
   const executionData = prepareExecutionData(executionSource.txSummaryBase64);
 
@@ -117,12 +125,12 @@ export async function createTransactionProposalRequest(
     executionData.txCommitmentHex,
   );
 
-  if (!isSwitchPsm && executionSource.delta) {
-    await appendPsmAckAdvice(
-      params.psm,
+  if (!isSwitchGuardian && executionSource.delta) {
+    await appendGuardianAckAdvice(
+      params.guardian,
       executionSource.delta,
-      params.psmCommitment,
-      params.psmPublicKey,
+      params.guardianCommitment,
+      params.guardianPublicKey,
       params.signatureScheme,
       executionData.txCommitmentHex,
       adviceMap,
@@ -152,16 +160,16 @@ function ensureProposalReady(
 }
 
 async function resolveExecutionSource(
-  psm: PsmHttpClient,
+  guardian: GuardianHttpClient,
   accountId: string,
   proposal: TransactionProposal,
-  isSwitchPsm: boolean,
+  isSwitchGuardian: boolean,
 ): Promise<ResolveExecutionSourceResult> {
-  if (isSwitchPsm) {
+  if (isSwitchGuardian) {
     return { txSummaryBase64: proposal.txSummary };
   }
 
-  const deltas = await psm.getDeltaProposals(accountId);
+  const deltas = await guardian.getDeltaProposals(accountId);
   const delta = deltas.find(
     (d) => computeCommitmentFromTxSummary(d.deltaPayload.txSummary.data) === proposal.commitment,
   );
@@ -234,11 +242,11 @@ function buildCosignerAdviceMap(
   return adviceMap;
 }
 
-async function appendPsmAckAdvice(
-  psm: PsmHttpClient,
+async function appendGuardianAckAdvice(
+  guardian: GuardianHttpClient,
   delta: DeltaObject,
-  psmCommitmentHex: string,
-  psmPublicKey: string | undefined,
+  guardianCommitmentHex: string,
+  guardianPublicKey: string | undefined,
   defaultAckScheme: 'falcon' | 'ecdsa',
   txCommitmentHex: string,
   adviceMap: AdviceMap,
@@ -248,31 +256,31 @@ async function appendPsmAckAdvice(
     deltaPayload: delta.deltaPayload.txSummary,
   };
 
-  const pushResult = await psm.pushDelta(executionDelta);
+  const pushResult = await guardian.pushDelta(executionDelta);
   const ackSigHex = pushResult.ackSig;
   if (!ackSigHex) {
-    throw new Error('PSM did not return acknowledgment signature');
+    throw new Error('GUARDIAN did not return acknowledgment signature');
   }
 
-  const psmAckScheme: 'ecdsa' | 'falcon' =
+  const guardianAckScheme: 'ecdsa' | 'falcon' =
     (pushResult.ackScheme as 'ecdsa' | 'falcon') || defaultAckScheme;
-  const ackPubkey = pushResult.ackPubkey || psmPublicKey;
-  const normalizedPsmCommitment = normalizeHexWord(psmCommitmentHex);
+  const ackPubkey = pushResult.ackPubkey || guardianPublicKey;
+  const normalizedGuardianCommitment = normalizeHexWord(guardianCommitmentHex);
 
-  if (psmAckScheme === 'ecdsa' && ackPubkey) {
+  if (guardianAckScheme === 'ecdsa' && ackPubkey) {
     const derived = tryComputeEcdsaCommitmentHex(ackPubkey);
-    if (derived && derived !== normalizedPsmCommitment) {
-      throw new Error('PSM public key commitment mismatch');
+    if (derived && derived !== normalizedGuardianCommitment) {
+      throw new Error('GUARDIAN public key commitment mismatch');
     }
   }
 
-  const psmCommitment = Word.fromHex(normalizedPsmCommitment);
-  const ackSigBytes = signatureHexToBytes(ackSigHex, psmAckScheme);
+  const guardianCommitment = Word.fromHex(normalizedGuardianCommitment);
+  const ackSigBytes = signatureHexToBytes(ackSigHex, guardianAckScheme);
   const ackSignature = Signature.deserialize(ackSigBytes);
   const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
-  const isAckEcdsa = psmAckScheme === 'ecdsa' && ackPubkey;
+  const isAckEcdsa = guardianAckScheme === 'ecdsa' && ackPubkey;
   const { key, values } = buildSignatureAdviceEntry(
-    psmCommitment,
+    guardianCommitment,
     txCommitment,
     ackSignature,
     isAckEcdsa ? ackPubkey : undefined,
@@ -297,21 +305,21 @@ async function buildFinalRequest(
         );
       }
       const { request } = await buildConsumeNotesTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.noteIds,
         { salt: normalizedSalt, signatureAdviceMap: adviceMap },
       );
       return request;
     }
-    case 'switch_psm': {
-      if (!metadata.newPsmPubkey) {
+    case 'switch_guardian': {
+      if (!metadata.newGuardianPubkey) {
         throw new Error(
-          'Proposal missing newPsmPubkey. Was it created with createSwitchPsmProposal?',
+          'Proposal missing newGuardianPubkey. Was it created with createSwitchGuardianProposal?',
         );
       }
-      const { request } = await buildUpdatePsmTransactionRequest(
-        params.webClient,
-        metadata.newPsmPubkey,
+      const { request } = await buildUpdateGuardianTransactionRequest(
+        params.midenClient,
+        metadata.newGuardianPubkey,
         {
           salt: normalizedSalt,
           signatureAdviceMap: adviceMap,
@@ -322,7 +330,7 @@ async function buildFinalRequest(
     }
     case 'update_procedure_threshold': {
       const { request } = await buildUpdateProcedureThresholdTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.targetProcedure,
         metadata.targetThreshold,
         {
@@ -354,7 +362,7 @@ async function buildFinalRequest(
       );
     default: {
       const { request } = await buildUpdateSignersTransactionRequest(
-        params.webClient,
+        params.midenClient,
         metadata.targetThreshold,
         metadata.targetSignerCommitments,
         {
@@ -369,13 +377,9 @@ async function buildFinalRequest(
 }
 
 async function submitTransaction(
-  webClient: WebClient,
+  midenClient: MidenClient,
   accountIdHex: string,
   request: TransactionRequest,
 ): Promise<void> {
-  const accountId = AccountId.fromHex(accountIdHex);
-  const result = await webClient.executeTransaction(accountId, request);
-  const proven = await webClient.proveTransaction(result, null);
-  const submissionHeight = await webClient.submitProvenTransaction(proven, result);
-  await webClient.applyTransaction(result, submissionHeight);
+  await midenClient.transactions.submit(accountIdHex, request);
 }

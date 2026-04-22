@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -7,7 +6,8 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use miden_protocol::{
-    account::{AccountComponent, StorageSlot},
+    CoreLibrary, ProtocolLib,
+    account::{AccountComponent, AccountComponentMetadata, AccountType, StorageSlot},
     assembly::{
         Assembler, DefaultSourceManager, Library, Module, ModuleKind, Path as LibraryPath,
         SourceManager,
@@ -24,6 +24,10 @@ fn masm_root() -> PathBuf {
 /// masm/auth folder path
 fn auth_dir() -> PathBuf {
     masm_root().join("auth")
+}
+
+fn account_components_auth_dir() -> PathBuf {
+    masm_root().join("account_components").join("auth")
 }
 
 /// Recursively collects all `.masm` files under the given root directory.
@@ -48,42 +52,68 @@ fn collect_all_masm_files(root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
+    files.sort();
     Ok(files)
 }
 
-/// Builds the OpenZeppelin library from all MASM files under `masm/`.
-///
-/// Examples:
-/// - masm/auth/multisig.masm           -> openzeppelin::multisig
-/// - masm/auth/psm.masm                -> openzeppelin::psm
-/// - masm/account/access.masm          -> openzeppelin::access
-/// - masm/account/utils/example.masm   -> openzeppelin::example
+fn openzeppelin_library_path(path: &Path, root: &Path) -> Result<String> {
+    let relative_path = path
+        .strip_prefix(root)
+        .map_err(|error| anyhow!("failed to strip MASM root prefix: {error}"))?;
+    let relative_path = relative_path.with_extension("");
+    let path_segments = relative_path
+        .iter()
+        .map(|segment| segment.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("::");
+
+    Ok(format!("openzeppelin::{path_segments}"))
+}
+
+fn compile_component(path: &Path, slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    let asm = build_component_assembler()?;
+    let code = fs::read_to_string(path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
+    let library = compile_to_library(&code, &asm)?;
+    let metadata = AccountComponentMetadata::new(
+        openzeppelin_library_path(path, &masm_root())?,
+        AccountType::all(),
+    );
+    let component = AccountComponent::new(library, slots, metadata)
+        .map_err(|e| anyhow!("failed to create component: {e}"))?;
+
+    Ok(component)
+}
+
+fn build_component_assembler() -> Result<Assembler> {
+    let oz_lib = build_openzeppelin_library()?;
+    let standards_lib: Library = StandardsLib::default().into();
+
+    let mut asm = build_library_assembler()?;
+    let _ = asm.link_static_library(oz_lib);
+    let _ = asm.link_static_library(standards_lib);
+
+    Ok(asm)
+}
+
+fn build_library_assembler() -> Result<Assembler> {
+    Assembler::default()
+        .with_dynamic_library(CoreLibrary::default())
+        .map_err(|e| anyhow!("failed to load Miden core library: {e}"))?
+        .with_dynamic_library(ProtocolLib::default())
+        .map_err(|e| anyhow!("failed to load Miden protocol library: {e}"))
+}
+
+/// Builds the reusable OpenZeppelin auth library from canonical MASM sources.
 fn build_openzeppelin_library() -> Result<Library> {
-    let root = masm_root();
+    let root = auth_dir();
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
     let masm_files = collect_all_masm_files(&root)?;
     let mut modules = Vec::new();
-    let mut seen_names = HashSet::<String>::new();
 
-    for path in masm_files {
-        let stem = path
-            .file_stem()
-            .expect("file_stem")
-            .to_string_lossy()
-            .into_owned();
-
-        // Aynı isimde iki farklı dosya (ör: auth/access.masm & account/access.masm)
-        // olursa bunu yakalayalım, çünkü ikisi de openzeppelin::access olurdu.
-        if !seen_names.insert(stem.clone()) {
-            return Err(anyhow!(
-                "duplicate MASM module name '{stem}' under masm/; \
-                 this would map to the same 'openzeppelin::{stem}' path"
-            ));
-        }
-
-        let lib_path = format!("openzeppelin::{stem}");
-        let code = fs::read_to_string(&path)?;
+    for path in &masm_files {
+        let lib_path = openzeppelin_library_path(path, &masm_root())?;
+        let code = fs::read_to_string(path)?;
 
         let module = Module::parser(ModuleKind::Library)
             .parse_str(LibraryPath::new(&lib_path), code, source_manager.clone())
@@ -93,16 +123,23 @@ fn build_openzeppelin_library() -> Result<Library> {
     }
 
     // Assemble library with miden-standards library linked (provides miden::standards::auth::*)
-    let mut assembler: Assembler = TransactionKernel::assembler();
+    let mut assembler = build_library_assembler()?;
     let standards_lib: Library = StandardsLib::default().into();
     let _ = assembler.link_dynamic_library(&standards_lib);
 
-    let library: Library = assembler
+    for (path, module) in masm_files.iter().zip(modules.iter().cloned()) {
+        assembler
+            .clone()
+            .assemble_library([module])
+            .map_err(|e| anyhow!("failed to assemble auth module {}: {e:?}", path.display()))?;
+    }
+
+    let library = assembler
         .clone()
         .assemble_library(modules)
-        .map_err(|e| anyhow!("failed to assemble openzeppelin library: {e}"))?;
+        .map_err(|e| anyhow!("failed to assemble openzeppelin library: {e:?}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }
 
 // Builds the assembler with the openzeppelin library and miden-standards library linked.
@@ -110,7 +147,7 @@ fn build_assembler() -> Result<Assembler> {
     let oz_lib = build_openzeppelin_library()?;
     let standards_lib: Library = StandardsLib::default().into();
 
-    let mut asm: Assembler = TransactionKernel::assembler();
+    let mut asm = build_library_assembler()?;
     let _ = asm.link_dynamic_library(&oz_lib);
     let _ = asm.link_dynamic_library(&standards_lib);
 
@@ -123,100 +160,62 @@ fn compile_to_library(code: &str, assembler: &Assembler) -> Result<Library> {
         .clone()
         .assemble_library([code])
         .map_err(|e| anyhow!("failed to assemble library: {e}"))?;
-    Ok(library)
+    Ok((*library).clone())
 }
 
 // ============================================================================
 // COMPONENT BUILDERS
 // ============================================================================
 
-/// Build AccountComponent from masm/auth/multisig.masm.
-/// This component provides multi-signature authentication.
-/// It requires the PSM component to be added separately if PSM verification is needed.
-/// Assembler comes with the openzeppelin library (all modules) loaded.
-///
-/// Storage layout (4 slots):
-/// - Slot 0: Threshold config [default_threshold, num_approvers, 0, 0]
-/// - Slot 1: Approver public keys map
-/// - Slot 2: Executed transactions map
-/// - Slot 3: Procedure threshold overrides map
+/// Build AccountComponent from masm/account_components/auth/multisig.masm.
 pub fn build_multisig_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    let asm = build_assembler()?;
-
-    let path = auth_dir().join("multisig.masm");
-    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    let library = compile_to_library(&code, &asm)?;
-    let component = AccountComponent::new(library, slots)
-        .map_err(|e| anyhow!("failed to create component: {e}"))?
-        .with_supports_all_types();
-
-    Ok(component)
+    compile_component(&account_components_auth_dir().join("multisig.masm"), slots)
 }
 
-/// Build AccountComponent from masm/auth/multisig_ecdsa.masm.
+/// Build AccountComponent from masm/account_components/auth/multisig_ecdsa.masm.
 pub fn build_multisig_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    let asm = build_assembler()?;
-
-    let path = auth_dir().join("multisig_ecdsa.masm");
-    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    let library = compile_to_library(&code, &asm)?;
-    let component = AccountComponent::new(library, slots)
-        .map_err(|e| anyhow!("failed to create component: {e}"))?
-        .with_supports_all_types();
-
-    Ok(component)
+    compile_component(
+        &account_components_auth_dir().join("multisig_ecdsa.masm"),
+        slots,
+    )
 }
 
-/// Build AccountComponent from masm/auth/psm.masm.
-/// This component provides PSM (Private State Manager) signature verification.
+/// Build AccountComponent from masm/account_components/auth/multisig_guardian.masm.
+pub fn build_multisig_guardian_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    compile_component(
+        &account_components_auth_dir().join("multisig_guardian.masm"),
+        slots,
+    )
+}
+
+/// Build AccountComponent from masm/account_components/auth/multisig_guardian_ecdsa.masm.
+pub fn build_multisig_guardian_ecdsa_component(
+    slots: Vec<StorageSlot>,
+) -> Result<AccountComponent> {
+    compile_component(
+        &account_components_auth_dir().join("multisig_guardian_ecdsa.masm"),
+        slots,
+    )
+}
+
+/// Build AccountComponent from masm/auth/guardian.masm.
+/// This component provides Guardian signature verification.
 ///
 /// Storage layout (2 slots):
-/// - Slot 0: PSM selector [selector, 0, 0, 0] where selector=1 means ON, 0 means OFF
-/// - Slot 1: PSM public key map
-pub fn build_psm_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    let asm = build_assembler()?;
-
-    let path = auth_dir().join("psm.masm");
-    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    let library = compile_to_library(&code, &asm)?;
-    let component = AccountComponent::new(library, slots)
-        .map_err(|e| anyhow!("failed to create component: {e}"))?
-        .with_supports_all_types();
-
-    Ok(component)
+/// - Slot 0: GUARDIAN selector [selector, 0, 0, 0] where selector=1 means ON, 0 means OFF
+/// - Slot 1: GUARDIAN public key map
+pub fn build_guardian_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    compile_component(&auth_dir().join("guardian.masm"), slots)
 }
 
-/// Build AccountComponent from masm/auth/psm_ecdsa.masm.
-pub fn build_psm_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    let asm = build_assembler()?;
-
-    let path = auth_dir().join("psm_ecdsa.masm");
-    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    let library = compile_to_library(&code, &asm)?;
-    let component = AccountComponent::new(library, slots)
-        .map_err(|e| anyhow!("failed to create component: {e}"))?
-        .with_supports_all_types();
-
-    Ok(component)
+/// Build AccountComponent from masm/auth/guardian_ecdsa.masm.
+pub fn build_guardian_ecdsa_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
+    compile_component(&auth_dir().join("guardian_ecdsa.masm"), slots)
 }
 
 /// Build Access component from masm/account/access.masm.
 pub fn build_access_component(slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    let asm = build_assembler()?;
-
-    let path = masm_root().join("account").join("access.masm");
-    let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    let library = compile_to_library(&code, &asm)?;
-    let component = AccountComponent::new(library, slots)
-        .map_err(|e| anyhow!("failed to create component: {e}"))?
-        .with_supports_all_types();
-
-    Ok(component)
+    compile_component(&masm_root().join("account").join("access.masm"), slots)
 }
 
 /// Creates a Library from the given MASM code and library path.
@@ -232,7 +231,7 @@ pub fn create_library(
         source_manager,
     )?;
     let library = assembler.clone().assemble_library([module])?;
-    Ok(library)
+    Ok((*library).clone())
 }
 
 /// Builds the OpenZeppelin library for use in transaction scripts.
@@ -247,7 +246,7 @@ pub fn get_multisig_library() -> Result<Library> {
     let path = auth_dir().join("multisig.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
-    // Build with openzeppelin library linked (for psm dependency)
+    // Build with openzeppelin library linked (for guardian dependency)
     let asm = build_assembler()?;
 
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
@@ -263,7 +262,7 @@ pub fn get_multisig_library() -> Result<Library> {
         .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig library: {e}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }
 
 /// Builds an ECDSA multisig library for use in transaction scripts.
@@ -287,13 +286,13 @@ pub fn get_multisig_ecdsa_library() -> Result<Library> {
         .assemble_library([module])
         .map_err(|e| anyhow!("failed to assemble multisig ecdsa library: {e}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }
 
-/// Builds a library for PSM procedures for use in transaction scripts.
-/// The procedures are accessible via `use oz_psm::psm` and `call.psm::procedure_name` syntax.
-pub fn get_psm_library() -> Result<Library> {
-    let path = auth_dir().join("psm.masm");
+/// Builds a library for GUARDIAN procedures for use in transaction scripts.
+/// The procedures are accessible via `use oz_guardian::guardian` and `call.guardian::procedure_name` syntax.
+pub fn get_guardian_library() -> Result<Library> {
+    let path = auth_dir().join("guardian.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
 
     // Build with openzeppelin library and miden-standards linked
@@ -301,12 +300,16 @@ pub fn get_psm_library() -> Result<Library> {
 
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
     let module = Module::parser(ModuleKind::Library)
-        .parse_str(LibraryPath::new("oz_psm::psm"), code, source_manager)
-        .map_err(|e| anyhow!("failed to parse psm module: {e}"))?;
+        .parse_str(
+            LibraryPath::new("oz_guardian::guardian"),
+            code,
+            source_manager,
+        )
+        .map_err(|e| anyhow!("failed to parse guardian module: {e}"))?;
 
     let library = asm
         .assemble_library([module])
-        .map_err(|e| anyhow!("failed to assemble PSM library: {e}"))?;
+        .map_err(|e| anyhow!("failed to assemble GUARDIAN library: {e}"))?;
 
-    Ok(library)
+    Ok((*library).clone())
 }

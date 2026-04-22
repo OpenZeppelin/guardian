@@ -4,8 +4,8 @@ store.sqlite3
 miden-client.toml
 templates/
 .env
+.env.prod
 
-.agents/
 .cursor/
 .claude/
 CLAUDE.md
@@ -15,3 +15,4 @@ CLAUDE.md
 
 crates/server/bench/results/*
 !crates/server/bench/results/.gitkeep
+benchmarks/prod-server/reports/

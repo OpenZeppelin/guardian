@@ -1,12 +1,12 @@
+use guardian_shared::SignatureScheme;
+use guardian_shared::hex::IntoHex;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use miden_protocol::utils::Serializable;
-use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::hex::IntoHex;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::utils::serde::Serializable;
 
 use super::Signer;
 
-/// In-memory Falcon signer used for PSM authentication and multisig signing.
+/// In-memory Falcon signer used for GUARDIAN authentication and multisig signing.
 ///
 /// The underlying Miden secret key zeroizes on drop. This type avoids exposing
 /// the key material through cloning or accessor APIs.
@@ -63,8 +63,8 @@ impl Signer for FalconKeyStore {
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::crypto::dsa::falcon512_rpo::{PublicKey, Signature};
-    use private_state_manager_shared::hex::FromHex;
+    use guardian_shared::hex::FromHex;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, Signature};
 
     use super::*;
 

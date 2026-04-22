@@ -457,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_and_pull_state() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -487,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_and_pull_delta() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -517,7 +517,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_deltas_after() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -551,7 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_deltas_after_empty() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -572,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_and_pull_delta_proposal() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -602,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_all_delta_proposals() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -633,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_delta_proposal() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -669,7 +669,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_delta_proposal() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -706,7 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_proposal() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -724,7 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proposal_commitment_strip_prefix() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -757,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proposal_commitment_rejects_path_traversal() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -775,7 +775,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_delta() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_delta() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
@@ -828,7 +828,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_delta_status() {
-        let temp_dir = env::temp_dir().join(format!("psm_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");

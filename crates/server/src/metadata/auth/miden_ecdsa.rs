@@ -1,8 +1,8 @@
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
-use miden_protocol::utils::{Deserializable, Serializable};
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 /// Verify an ECDSA secp256k1 signature for a request with timestamp.
 ///
@@ -200,7 +200,7 @@ mod tests {
     use super::*;
     use miden_protocol::account::AccountId;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
-    use miden_protocol::utils::Serializable;
+    use miden_protocol::utils::serde::Serializable;
 
     #[test]
     fn test_ecdsa_sign_and_verify_account_id_with_timestamp() {

@@ -1,6 +1,6 @@
 # Server Benchmarking
 
-This folder contains a runnable benchmark harness for `private-state-manager-server`.
+This folder contains a runnable benchmark harness for `guardian-server`.
 
 Scope:
 - Compare Filesystem vs Postgres backend behavior.
@@ -21,7 +21,7 @@ Scope:
   - `fs.env`: Filesystem backend paths.
   - `postgres.env`: Postgres docker/database settings.
   - `profiles.toml`: small/medium/large profile presets.
-- `loadgen/`: Rust load generator (`psm-server-bench-loadgen`).
+- `loadgen/`: Rust load generator (`guardian-server-bench-loadgen`).
 - `k6/`: HTTP checks for body-limit and rate-limit behavior.
 - `scripts/`: orchestration and metrics scripts.
 - `sql/`: Postgres stats queries.
@@ -49,7 +49,7 @@ Load generator scenarios:
 - `canonicalization`: push one delta per seeded account, then wait for terminal status.
 
 Each run seeds accounts before measured operations:
-- Accounts are multisig+PSM accounts generated locally.
+- Accounts are multisig+GUARDIAN accounts generated locally.
 - Signer count per account is configurable.
 - Seeding time is reported separately from measured run time.
 
@@ -61,7 +61,7 @@ Run Filesystem benchmark:
 ./crates/server/bench/scripts/run_fs.sh
 ```
 
-Run Postgres benchmark (Postgres via docker compose):
+Run Postgres benchmark (Postgres via the dedicated Compose file):
 
 ```bash
 ./crates/server/bench/scripts/run_postgres.sh
@@ -100,7 +100,7 @@ Current workflow note:
 Stop the Postgres container when done:
 
 ```bash
-docker compose down
+docker compose -f docker-compose.postgres.yml down
 ```
 
 Run both:
@@ -126,18 +126,18 @@ If you want benchmark scripts to drive network/canonicalization through environm
 to:
 
 ```rust
-.network(NetworkType::from_env("PSM_NETWORK_TYPE"))
+.network(NetworkType::from_env("GUARDIAN_NETWORK_TYPE"))
 .with_canonicalization({
-    let canonicalization_enabled = std::env::var("PSM_CANONICALIZATION_ENABLED")
+    let canonicalization_enabled = std::env::var("GUARDIAN_CANONICALIZATION_ENABLED")
         .ok()
         .map(|value| !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
         .unwrap_or(true);
     if canonicalization_enabled {
-        let check_interval_seconds = std::env::var("PSM_CANONICALIZATION_CHECK_INTERVAL_SECS")
+        let check_interval_seconds = std::env::var("GUARDIAN_CANONICALIZATION_CHECK_INTERVAL_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(10);
-        let max_retries = std::env::var("PSM_CANONICALIZATION_MAX_RETRIES")
+        let max_retries = std::env::var("GUARDIAN_CANONICALIZATION_MAX_RETRIES")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(24);
@@ -164,7 +164,7 @@ Main knobs are in `config/common.env`:
 - `BENCH_OPS_PER_USER`
 - `BENCH_MIXED_WRITE_PERCENT`
 - `BENCH_STATE_SYNC_READS_PER_PUSH`
-- `PSM_SERVER_START_TIMEOUT_SECS`
+- `GUARDIAN_SERVER_START_TIMEOUT_SECS`
 - `BENCH_SKIP_PREBUILD`
 - `BENCH_SERVER_LOG_LEVEL`
 - `BENCH_SCENARIOS` (comma-separated, optional override)
@@ -173,18 +173,18 @@ Main knobs are in `config/common.env`:
 - `BENCH_CANONICALIZATION_TIMEOUT_SECS`
 
 Server knobs used for all benchmark runs:
-- `PSM_NETWORK_TYPE=MidenLocal`
-- `PSM_RATE_BURST_PER_SEC`
-- `PSM_RATE_PER_MIN`
-- `PSM_MAX_REQUEST_BYTES`
-- `PSM_CANONICALIZATION_ENABLED`
-- `PSM_CANONICALIZATION_CHECK_INTERVAL_SECS`
-- `PSM_CANONICALIZATION_MAX_RETRIES`
+- `GUARDIAN_NETWORK_TYPE=MidenLocal`
+- `GUARDIAN_RATE_BURST_PER_SEC`
+- `GUARDIAN_RATE_PER_MIN`
+- `GUARDIAN_MAX_REQUEST_BYTES`
+- `GUARDIAN_CANONICALIZATION_ENABLED`
+- `GUARDIAN_CANONICALIZATION_CHECK_INTERVAL_SECS`
+- `GUARDIAN_CANONICALIZATION_MAX_RETRIES`
 
-Note: `PSM_NETWORK_TYPE` and canonicalization env knobs take effect only when the runtime code switch above is enabled.
+Note: `GUARDIAN_NETWORK_TYPE` and canonicalization env knobs take effect only when the runtime code switch above is enabled.
 
 Postgres-specific values are in `config/postgres.env`.
-On macOS, set `PSM_PQ_LIB_DIR` if `libpq` is not on the default linker path.
+On macOS, set `GUARDIAN_PQ_LIB_DIR` if `libpq` is not on the default linker path.
 
 ## Outputs
 

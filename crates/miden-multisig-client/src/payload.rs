@@ -1,7 +1,7 @@
 //! Payload types for multisig transaction proposals.
 
+use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
 use miden_protocol::transaction::TransactionSummary;
-use private_state_manager_shared::{DeltaSignature, ProposalSignature, ToJson};
 use serde::{Deserialize, Serialize};
 
 use crate::keystore::{KeyManager, proposal_public_key_hex};
@@ -40,10 +40,10 @@ pub struct ProposalMetadataPayload {
     pub note_ids: Vec<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_psm_pubkey: Option<String>,
+    pub new_guardian_pubkey: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_psm_endpoint: Option<String>,
+    pub new_guardian_endpoint: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
@@ -167,17 +167,17 @@ impl ProposalPayload {
         self
     }
 
-    /// Sets the metadata for PSM update transactions.
-    pub fn with_psm_update_metadata(
+    /// Sets the metadata for GUARDIAN update transactions.
+    pub fn with_guardian_update_metadata(
         mut self,
-        new_psm_pubkey: String,
-        new_psm_endpoint: String,
+        new_guardian_pubkey: String,
+        new_guardian_endpoint: String,
         salt: String,
     ) -> Self {
         self.metadata = Some(ProposalMetadataPayload {
-            proposal_type: "switch_psm".to_string(),
-            new_psm_pubkey: Some(new_psm_pubkey),
-            new_psm_endpoint: Some(new_psm_endpoint),
+            proposal_type: "switch_guardian".to_string(),
+            new_guardian_pubkey: Some(new_guardian_pubkey),
+            new_guardian_endpoint: Some(new_guardian_endpoint),
             salt: Some(salt),
             ..Default::default()
         });
@@ -209,7 +209,7 @@ impl ProposalPayload {
         self
     }
 
-    /// Converts to JSON value for sending to PSM.
+    /// Converts to JSON value for sending to GUARDIAN.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("ProposalPayload should always serialize")
     }
@@ -326,24 +326,24 @@ mod tests {
     }
 
     #[test]
-    fn with_psm_update_metadata_sets_fields() {
+    fn with_guardian_update_metadata_sets_fields() {
         let payload = ProposalPayload {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
         }
-        .with_psm_update_metadata(
+        .with_guardian_update_metadata(
             "0xpubkey".to_string(),
-            "http://new-psm:50051".to_string(),
+            "http://new-guardian:50051".to_string(),
             "0xsalt".to_string(),
         );
 
         let meta = payload.metadata.unwrap();
-        assert_eq!(meta.proposal_type, "switch_psm");
-        assert_eq!(meta.new_psm_pubkey, Some("0xpubkey".to_string()));
+        assert_eq!(meta.proposal_type, "switch_guardian");
+        assert_eq!(meta.new_guardian_pubkey, Some("0xpubkey".to_string()));
         assert_eq!(
-            meta.new_psm_endpoint,
-            Some("http://new-psm:50051".to_string())
+            meta.new_guardian_endpoint,
+            Some("http://new-guardian:50051".to_string())
         );
         assert_eq!(meta.salt, Some("0xsalt".to_string()));
     }

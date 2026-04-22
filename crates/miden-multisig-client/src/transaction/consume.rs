@@ -1,10 +1,10 @@
 //! Note consumption transaction utilities.
 
-use miden_client::Client;
 use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::note::{Note, NoteId};
 use miden_protocol::{Felt, Word};
 
+use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 
 /// Builds a transaction request to consume notes.
@@ -26,7 +26,7 @@ use crate::error::{MultisigError, Result};
 /// - Any note is not found in the local store
 /// - Any note cannot be converted to a full Note object (missing metadata)
 pub async fn build_consume_notes_transaction_request<I>(
-    client: &Client<()>,
+    client: &MidenSdkClient,
     note_ids: Vec<NoteId>,
     salt: Word,
     signature_advice: I,

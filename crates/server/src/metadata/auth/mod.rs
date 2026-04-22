@@ -1,11 +1,11 @@
+use guardian_shared::SignatureScheme;
+use guardian_shared::hex::FromHex;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey as EcdsaPublicKey;
-use miden_protocol::crypto::dsa::falcon512_rpo::PublicKey as FalconPublicKey;
-use miden_protocol::utils::{Deserializable, Serializable};
-use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::hex::FromHex;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::PublicKey as FalconPublicKey;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 
-use crate::api::grpc::state_manager::auth_config;
-use crate::error::PsmError;
+use crate::api::grpc::guardian::auth_config;
+use crate::error::GuardianError;
 use crate::metadata::MetadataStore;
 
 mod credentials;
@@ -128,12 +128,10 @@ impl Auth {
     }
 }
 
-impl TryFrom<crate::api::grpc::state_manager::AuthConfig> for Auth {
+impl TryFrom<crate::api::grpc::guardian::AuthConfig> for Auth {
     type Error = String;
 
-    fn try_from(
-        auth_config: crate::api::grpc::state_manager::AuthConfig,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(auth_config: crate::api::grpc::guardian::AuthConfig) -> Result<Self, Self::Error> {
         match auth_config.auth_type {
             Some(auth_config::AuthType::MidenFalconRpo(miden_auth)) => Ok(Auth::MidenFalconRpo {
                 cosigner_commitments: miden_auth.cosigner_commitments,
@@ -154,12 +152,12 @@ pub async fn update_credentials(
     account_id: &str,
     new_auth: Auth,
     now: &str,
-) -> Result<(), PsmError> {
+) -> Result<(), GuardianError> {
     let mut metadata = store
         .get(account_id)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to get metadata: {e}")))?
-        .ok_or_else(|| PsmError::AccountNotFound(account_id.to_string()))?;
+        .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
+        .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
 
     if metadata.auth == new_auth {
         return Ok(());
@@ -171,7 +169,7 @@ pub async fn update_credentials(
     store
         .set(metadata)
         .await
-        .map_err(|e| PsmError::StorageError(format!("Failed to update metadata: {e}")))?;
+        .map_err(|e| GuardianError::StorageError(format!("Failed to update metadata: {e}")))?;
 
     Ok(())
 }

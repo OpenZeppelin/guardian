@@ -11,17 +11,17 @@ description = "Miden multisig smart contract accounts"
 default-run = "miden-confidential-contracts"
 
 [dependencies]
-miden-standards = { workspace = true }
-miden-protocol = { workspace = true }
-miden-tx = { workspace = true }
-miden-testing = { workspace = true }
+miden-standards = { version = "=0.14.3" }
+miden-protocol = { version = "=0.14.3" }
+miden-tx = { version = "=0.14.3" }
+miden-testing = { version = "=0.14.3" }
 
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
-private-state-manager-shared = { version = "0.13.0", path = "../shared" }
+guardian-shared = { version = "=0.14.4", path = "../shared" }
 
 [dev-dependencies]
-miden-client = { workspace = true, features = ["testing", "tonic"] }
+miden-client = { version = "=0.14.3", features = ["testing", "tonic"] }
 
 rand = { workspace = true }
 rand_chacha = { workspace = true }

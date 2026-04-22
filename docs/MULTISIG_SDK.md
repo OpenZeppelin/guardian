@@ -30,8 +30,8 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.13.0"
-miden-client = "0.13.0"
+miden-multisig-client = "0.14.4"
+miden-client = "0.14.3"
 ```
 
 ### 5-Minute Example
@@ -41,30 +41,30 @@ Create a 1-of-3 multisig account, propose a transfer, collect signatures, and ex
 #### TypeScript
 
 ```typescript
-import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
+import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 
 // 1. Setup clients
-const midenClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+const midenClient = await MidenClient.createDevnet();
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 const client = new MultisigClient(midenClient, {
-  psmEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
 
-// 2. Get PSM server public key
-const psmCommitment = await client.psmClient.getPubkey();
+// 2. Get GUARDIAN server public key
+const guardianCommitment = await client.guardianClient.getPubkey();
 
 // 3. Create 1-of-3 multisig account
 const config = {
   threshold: 1,
   signerCommitments: [signer.commitment, cosigner1Commitment, cosigner2Commitment],
-  psmCommitment,
-  psmEnabled: true,
+  guardianCommitment,
+  guardianEnabled: true,
 };
 const multisig = await client.create(config, signer);
-await multisig.registerOnPsm();
+await multisig.registerOnGuardian();
 
 console.log('Account created:', multisig.accountId);
 
@@ -97,11 +97,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = MultisigClient::builder()
         // the Miden node RPC endpoint
         .miden_endpoint(Endpoint::new("http://localhost:57291"))
-        // the PSM server endpoint
-        .psm_endpoint("http://localhost:50051")
+        // the GUARDIAN server endpoint
+        .guardian_endpoint("http://localhost:50051")
         // the directory where the miden-client will store the account data
         .account_dir("/tmp/multisig-client") 
-        // generate a new Falcon keypair for PSM authentication
+        // generate a new Falcon keypair for GUARDIAN authentication
         .generate_key()
         .build()
         .await?;
@@ -145,15 +145,15 @@ A multisig account requires **M-of-N** signatures to authorize transactions:
 - **Signers (N)**: Total number of authorized cosigners
 - **Commitment**: Each signer's Falcon public key commitment (32 bytes, 64 hex chars)
 
-### Private State Manager (PSM)
+### Guardian
 
-PSM is a coordination server that:
+GUARDIAN is a coordination server that:
 - Stores the account state off-chain
 - Coordinates proposal signing between cosigners
 - Provides acknowledgment signatures for on-chain execution (ensures the new state is available for the rest of the cosigners)
 - Keeps multisig metadata private
 
-> **Note**: PSM server setup is covered in separate documentation. This SDK assumes a running PSM instance.
+> **Note**: GUARDIAN server setup is covered in separate documentation. This SDK assumes a running GUARDIAN instance.
 
 ### Proposal Lifecycle
 
@@ -200,7 +200,7 @@ For air-gapped or offline signing scenarios:
 ### Installation & Setup
 
 ```typescript
-import { WebClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
+import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import {
   MultisigClient,
   Multisig,
@@ -209,25 +209,25 @@ import {
   type MultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
 
-// Initialize web client (connects to Miden node)
-const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
+// Initialize Miden client (connects to Miden node)
+const midenClient = await MidenClient.createDevnet();
 
 // Create signer from secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
 // Initialize multisig client
-const client = new MultisigClient(webClient, {
-  psmEndpoint: 'http://localhost:3000',
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
 ```
 
 ### Creating Accounts
 
 ```typescript
-// Get PSM server's public key commitment
-const psmCommitment = await client.psmClient.getPubkey();
+// Get GUARDIAN server's public key commitment
+const guardianCommitment = await client.guardianClient.getPubkey();
 
 // Define multisig configuration
 const config: MultisigConfig = {
@@ -237,15 +237,15 @@ const config: MultisigConfig = {
     '0x1234...abcd',                        // Cosigner 1
     '0x5678...efgh',                        // Cosigner 2
   ],
-  psmCommitment,                            // PSM server commitment
-  psmEnabled: true,
+  guardianCommitment,                            // GUARDIAN server commitment
+  guardianEnabled: true,
 };
 
 // Create the account
 const multisig = await client.create(config, signer);
 
-// Register with PSM (stores initial state)
-await multisig.registerOnPsm();
+// Register with GUARDIAN (stores initial state)
+await multisig.registerOnGuardian();
 
 console.log('Account ID:', multisig.accountId);
 console.log('Threshold:', multisig.threshold);
@@ -258,7 +258,7 @@ console.log('Signers:', multisig.signerCommitments);
 // Load as a cosigner joining an existing multisig
 const multisig = await client.load(accountId, signer);
 
-// Fetch latest state from PSM
+// Fetch latest state from GUARDIAN
 const state = await multisig.fetchState();
 
 // Inspect account configuration
@@ -319,12 +319,12 @@ const proposal = await multisig.createChangeThresholdProposal(
 );
 ```
 
-#### Switch PSM Provider
+#### Switch GUARDIAN Provider
 
 ```typescript
-const proposal = await multisig.createSwitchPsmProposal(
-  newPsmEndpoint,        // New PSM server URL
-  newPsmCommitment       // New PSM server's public key
+const proposal = await multisig.createSwitchGuardianProposal(
+  newGuardianEndpoint,        // New GUARDIAN server URL
+  newGuardianCommitment       // New GUARDIAN server's public key
 );
 ```
 
@@ -374,8 +374,8 @@ await multisig.executeProposal(signedProposal.id);
 | Method | Description |
 |--------|-------------|
 | `create(config, signer)` | Create new multisig account |
-| `load(accountId, signer)` | Load existing account from PSM |
-| `psmClient` | Access to underlying PSM HTTP client |
+| `load(accountId, signer)` | Load existing account from GUARDIAN |
+| `guardianClient` | Access to underlying GUARDIAN HTTP client |
 
 #### Multisig
 
@@ -384,16 +384,16 @@ await multisig.executeProposal(signedProposal.id);
 | `accountId` | Get account ID (hex string) |
 | `threshold` | Get current threshold |
 | `signerCommitments` | Get list of signer commitments |
-| `fetchState()` | Fetch latest state from PSM |
-| `registerOnPsm()` | Register new account with PSM |
-| `syncProposals()` | Sync proposals from PSM |
+| `fetchState()` | Fetch latest state from GUARDIAN |
+| `registerOnGuardian()` | Register new account with GUARDIAN |
+| `syncProposals()` | Sync proposals from GUARDIAN |
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, nonce?)` | Create transfer proposal |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
 | `createAddSignerProposal(commitment, nonce?, threshold?)` | Create add signer proposal |
 | `createRemoveSignerProposal(commitment, nonce?, threshold?)` | Create remove signer proposal |
 | `createChangeThresholdProposal(threshold, nonce?)` | Create threshold change proposal |
-| `createSwitchPsmProposal(endpoint, pubkey, nonce?)` | Create PSM switch proposal |
+| `createSwitchGuardianProposal(endpoint, pubkey, nonce?)` | Create GUARDIAN switch proposal |
 | `signProposal(id)` | Sign a proposal |
 | `executeProposal(id)` | Execute ready proposal |
 | `exportProposalToJson(id)` | Export for offline signing |
@@ -421,8 +421,8 @@ Returns `DetectedMultisigConfig`:
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
-- `psmEnabled`: boolean
-- `psmCommitment`: string
+- `guardianEnabled`: boolean
+- `guardianCommitment`: string
 - `vaultBalances`: { faucetId, amount }[]
 
 ---
@@ -436,14 +436,14 @@ use miden_multisig_client::{
     MultisigClient, MultisigClientBuilder,
     MultisigAccount, TransactionType,
     Proposal, ProposalStatus,
-    KeyManager, PsmKeyStore,
+    KeyManager, GuardianKeyStore,
     Endpoint, Word, AccountId, SecretKey,
 };
 
 // Build client with fluent API
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-    .psm_endpoint("http://localhost:50051")
+    .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig-data")
     .generate_key()  // Or: .with_secret_key(key)
     .build()
@@ -463,7 +463,7 @@ let signer_commitments = vec![
 // Create 2-of-3 multisig
 let account = client.create_account(2, signer_commitments).await?;
 
-// Register with PSM
+// Register with GUARDIAN
 client.push_account().await?;
 
 println!("Created account: {}", account.id());
@@ -474,7 +474,7 @@ println!("Signers: {:?}", account.cosigner_commitments_hex());
 ### Loading Existing Accounts
 
 ```rust
-// Pull account from PSM (as a cosigner)
+// Pull account from GUARDIAN (as a cosigner)
 let account = client.pull_account(account_id).await?;
 
 // Sync with Miden network
@@ -483,7 +483,7 @@ client.sync().await?;
 // Inspect account
 println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
-println!("PSM enabled: {}", account.psm_enabled()?);
+println!("GUARDIAN enabled: {}", account.guardian_enabled()?);
 ```
 
 ### Transaction Types
@@ -504,8 +504,8 @@ let tx = TransactionType::remove_cosigner(commitment_to_remove);
 // Update Signers (change threshold and/or signer set)
 let tx = TransactionType::update_signers(new_threshold, new_signer_list);
 
-// Switch PSM Provider
-let tx = TransactionType::switch_psm(new_endpoint, new_commitment);
+// Switch GUARDIAN Provider
+let tx = TransactionType::switch_guardian(new_endpoint, new_commitment);
 ```
 
 ### Proposal Operations
@@ -518,7 +518,7 @@ println!("Proposal ID: {}", proposal.id);
 // Or with offline fallback
 match client.propose_with_fallback(tx).await? {
     ProposalResult::Online(proposal) => {
-        println!("Submitted to PSM: {}", proposal.id);
+        println!("Submitted to GUARDIAN: {}", proposal.id);
     }
     ProposalResult::Offline(exported) => {
         // Save for file-based sharing
@@ -560,7 +560,7 @@ client.execute_proposal(&proposal_id).await?;
 ### Offline Export/Import
 
 ```rust
-// Create offline proposal (when PSM unavailable)
+// Create offline proposal (when GUARDIAN unavailable)
 let exported = client.create_proposal_offline(tx).await?;
 std::fs::write("proposal.json", exported.to_json()?)?;
 
@@ -606,7 +606,7 @@ for note in notes {
 | `builder()` | Create builder for configuration |
 | `create_account(threshold, commitments)` | Create new multisig |
 | `pull_account(id)` | Join existing multisig |
-| `push_account()` | Register account with PSM |
+| `push_account()` | Register account with GUARDIAN |
 | `sync()` | Sync with Miden network |
 | `account()` | Get loaded account (Option) |
 | `account_id()` | Get account ID (Option) |
@@ -637,8 +637,8 @@ for note in notes {
 | `cosigner_commitments()` | List of commitments (Word) |
 | `cosigner_commitments_hex()` | List as hex strings |
 | `is_cosigner(commitment)` | Check if commitment is signer |
-| `psm_enabled()` | PSM integration enabled |
-| `psm_commitment()` | PSM server commitment |
+| `guardian_enabled()` | GUARDIAN integration enabled |
+| `guardian_commitment()` | GUARDIAN server commitment |
 
 #### TransactionType
 
@@ -649,7 +649,7 @@ for note in notes {
 | `AddCosigner { new_commitment }` | Add signer |
 | `RemoveCosigner { commitment }` | Remove signer |
 | `UpdateSigners { new_threshold, signer_commitments }` | Update config |
-| `SwitchPsm { new_endpoint, new_commitment }` | Switch PSM |
+| `SwitchGuardian { new_endpoint, new_commitment }` | Switch GUARDIAN |
 
 #### ProposalStatus
 
@@ -672,12 +672,12 @@ A company treasury requiring 2 of 3 executives to approve transfers.
 const config = {
   threshold: 2,
   signerCommitments: [ceoCommitment, cfoCommitment, cooCommitment],
-  psmCommitment,
-  psmEnabled: true,
+  guardianCommitment,
+  guardianEnabled: true,
 };
 
 const treasury = await client.create(config, ceoSigner);
-await treasury.registerOnPsm();
+await treasury.registerOnGuardian();
 
 // CEO proposes payment to vendor
 const payment = await treasury.createP2idProposal(
@@ -814,6 +814,7 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
+| 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
 | 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
 | 0.12.x | 0.12.5 | ^0.12.5 | Initial release |
 
@@ -833,18 +834,18 @@ Steps for publishing a new version of the SDK (Rust crates + TypeScript packages
 
 ```bash
 # Rust
-cargo test -p private-state-manager-shared
-cargo test -p private-state-manager-server --lib
+cargo test -p guardian-shared
+cargo test -p guardian-server --lib
 
 # TypeScript
-cd packages/psm-client && npm test
+cd packages/guardian-client && npm test
 cd packages/miden-multisig-client && npm test
 ```
 
 2. TypeScript packages build cleanly:
 
 ```bash
-cd packages/psm-client && npm run build
+cd packages/guardian-client && npm run build
 cd packages/miden-multisig-client && npm run build
 ```
 
@@ -857,11 +858,11 @@ Update the version in these files:
 | File | Field | Inherits |
 |------|-------|----------|
 | `Cargo.toml` (workspace root) | `[workspace.package] version` | `shared`, `client`, `contracts`, `miden-multisig-client` |
-| `crates/contracts/Cargo.toml` | `private-state-manager-shared` dep version | - |
-| `crates/client/Cargo.toml` | `private-state-manager-shared` dep version | - |
-| `crates/miden-multisig-client/Cargo.toml` | `private-state-manager-client`, `private-state-manager-shared`, `miden-confidential-contracts` dep versions | - |
-| `packages/psm-client/package.json` | `version` | - |
-| `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/psm-client` dep version | - |
+| `crates/contracts/Cargo.toml` | `guardian-shared` dep version | - |
+| `crates/client/Cargo.toml` | `guardian-shared` dep version | - |
+| `crates/miden-multisig-client/Cargo.toml` | `guardian-client`, `guardian-shared`, `miden-confidential-contracts` dep versions | - |
+| `packages/guardian-client/package.json` | `version` | - |
+| `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/guardian-client` dep version | - |
 
 The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have their own independent versions and are not published.
 
@@ -871,10 +872,10 @@ Publish in dependency order (leaves first). Each crate must be available on crat
 
 ```bash
 # 1. No internal deps
-cargo publish -p private-state-manager-shared
+cargo publish -p guardian-shared
 
 # 2. Depends on shared
-cargo publish -p private-state-manager-client
+cargo publish -p guardian-client
 cargo publish -p miden-confidential-contracts
 
 # 3. Depends on shared + client + contracts
@@ -889,13 +890,13 @@ Publish in dependency order:
 
 ```bash
 # 1. Build both packages
-cd packages/psm-client && npm run build
+cd packages/guardian-client && npm run build
 cd packages/miden-multisig-client && npm run build
 
-# 2. Publish psm-client first (no internal deps)
-cd packages/psm-client && npm publish --access public
+# 2. Publish guardian-client first (no internal deps)
+cd packages/guardian-client && npm publish --access public
 
-# 3. Publish miden-multisig-client (depends on psm-client)
+# 3. Publish miden-multisig-client (depends on guardian-client)
 cd packages/miden-multisig-client && npm publish --access public
 ```
 
@@ -904,8 +905,8 @@ cd packages/miden-multisig-client && npm publish --access public
 1. Tag the release:
 
 ```bash
-git tag v0.13.0
-git push origin v0.13.0
+git tag v0.14.0
+git push origin v0.14.0
 ```
 
 2. Create a GitHub release from the tag with release notes.
@@ -915,8 +916,8 @@ git push origin v0.13.0
 ## Additional Resources
 
 - [Miden Documentation](https://docs.miden.io/)
-- [PSM Documentation](../crates/server/README.md)
-  - [PSM Specification](../spec/index.md)
+- [GUARDIAN Documentation](../crates/server/README.md)
+  - [GUARDIAN Specification](../spec/index.md)
 - [Example Applications](../examples/)
   - [Web Example](../examples/web/)
   - [CLI Demo](../examples/demo/)

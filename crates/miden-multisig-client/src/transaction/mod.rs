@@ -3,27 +3,28 @@
 mod builder;
 mod configuration;
 mod consume;
+mod guardian;
 mod payment;
-mod psm;
 
 pub use builder::ProposalBuilder;
 pub use configuration::{
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
 };
 pub use consume::build_consume_notes_transaction_request;
+pub use guardian::build_update_guardian_transaction_request;
 pub use payment::build_p2id_transaction_request;
-pub use psm::build_update_psm_transaction_request;
 
+use miden_client::ClientError;
 use miden_client::transaction::{TransactionExecutorError, TransactionRequest, TransactionSummary};
-use miden_client::{Client, ClientError};
 use miden_protocol::account::AccountId;
-use miden_protocol::{Felt, FieldElement, Word};
+use miden_protocol::{Felt, Word};
 
+use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 
 /// Executes a transaction to get its summary (expects Unauthorized error).
 pub async fn execute_for_summary(
-    client: &mut Client<()>,
+    client: &mut MidenSdkClient,
     account_id: AccountId,
     request: TransactionRequest,
 ) -> Result<TransactionSummary> {
@@ -57,7 +58,7 @@ pub fn generate_salt() -> Word {
 pub fn word_to_hex(word: &Word) -> String {
     let bytes: Vec<u8> = word
         .iter()
-        .flat_map(|felt| felt.as_int().to_le_bytes())
+        .flat_map(|felt| felt.as_canonical_u64().to_le_bytes())
         .collect();
     format!("0x{}", hex::encode(bytes))
 }

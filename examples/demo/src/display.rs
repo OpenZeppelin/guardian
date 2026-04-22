@@ -48,7 +48,11 @@ pub fn print_account_info(account: &MultisigAccount) {
     println!("  Nonce:          {}", account.nonce());
 }
 
-pub fn print_storage_overview(account: &MultisigAccount, ecdsa_mode: bool, psm_endpoint: &str) {
+pub fn print_storage_overview(
+    account: &MultisigAccount,
+    ecdsa_mode: bool,
+    guardian_endpoint: &str,
+) {
     print_section("Storage Overview");
 
     match account.threshold() {
@@ -79,7 +83,7 @@ pub fn print_storage_overview(account: &MultisigAccount, ecdsa_mode: bool, psm_e
         _ => {}
     }
 
-    println!("  PSM Endpoint: {}", psm_endpoint);
+    println!("  GUARDIAN Endpoint: {}", guardian_endpoint);
 }
 
 pub fn print_vault(account: &MultisigAccount) {
@@ -106,9 +110,9 @@ pub fn print_vault(account: &MultisigAccount) {
             }
             Asset::NonFungible(nft) => {
                 println!(
-                    "  [{}] NFT (faucet prefix: {})",
+                    "  [{}] NFT (faucet: {})",
                     i + 1,
-                    shorten_hex(&format!("{:?}", nft.faucet_id_prefix()))
+                    shorten_hex(&nft.faucet_id().to_hex())
                 );
             }
         }

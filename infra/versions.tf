@@ -10,6 +10,10 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = ">= 4.0.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -18,7 +22,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project   = "psm"
+      Project   = "guardian"
       ManagedBy = "terraform"
     }
   }

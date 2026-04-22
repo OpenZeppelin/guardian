@@ -1,7 +1,7 @@
 # Security group for ALB
 resource "aws_security_group" "alb" {
-  name        = "psm-alb-sg"
-  description = "PSM ALB security group"
+  name        = local.alb_security_group_name
+  description = "GUARDIAN ALB security group"
   vpc_id      = local.vpc_id
 
   # HTTP ingress
@@ -33,8 +33,8 @@ resource "aws_security_group" "alb" {
 
 # Security group for server
 resource "aws_security_group" "server" {
-  name        = "psm-server-sg"
-  description = "PSM server security group"
+  name        = local.server_security_group_name
+  description = "GUARDIAN server security group"
   vpc_id      = local.vpc_id
 
   # HTTP from ALB
@@ -46,13 +46,13 @@ resource "aws_security_group" "server" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # gRPC from anywhere (public)
+  # gRPC from ALB
   ingress {
-    description = "gRPC from anywhere"
-    from_port   = 50051
-    to_port     = 50051
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "gRPC from ALB"
+    from_port       = 50051
+    to_port         = 50051
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   egress {
@@ -64,19 +64,54 @@ resource "aws_security_group" "server" {
   }
 }
 
-# Security group for Postgres
-resource "aws_security_group" "postgres" {
-  name        = "psm-postgres-sg"
-  description = "PSM Postgres security group"
+resource "aws_security_group" "rds_proxy" {
+  count = local.effective_rds_proxy_enabled ? 1 : 0
+
+  name        = local.rds_proxy_security_group_name
+  description = "GUARDIAN RDS Proxy security group"
   vpc_id      = local.vpc_id
 
-  # Postgres from server
   ingress {
-    description     = "Postgres from server"
+    description     = "Database proxy traffic from server"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.server.id]
+  }
+
+  egress {
+    description = "All outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [local.vpc_cidr]
+  }
+}
+
+# Security group for the managed database
+resource "aws_security_group" "postgres" {
+  name        = local.postgres_security_group_name
+  description = "GUARDIAN database security group"
+  vpc_id      = local.vpc_id
+
+  ingress {
+    description     = "Database from server"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.server.id]
+  }
+
+  dynamic "ingress" {
+    for_each = local.effective_rds_proxy_enabled ? [1] : []
+
+    content {
+      description     = "Database from RDS Proxy"
+      from_port       = 5432
+      to_port         = 5432
+      protocol        = "tcp"
+      security_groups = [aws_security_group.rds_proxy[0].id]
+    }
   }
 
   egress {

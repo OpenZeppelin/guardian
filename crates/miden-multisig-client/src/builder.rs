@@ -3,17 +3,31 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miden_client::crypto::RpoRandomCoin;
-use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
-use miden_client::{Client, ExecutionOptions};
+use miden_client::DebugMode;
+use miden_client::builder::ClientBuilder;
+use miden_client::keystore::FilesystemKeyStore;
+use miden_client::rpc::Endpoint;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::rand::RandomCoin;
 
+use crate::MidenSdkClient;
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
-use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
+use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
+
+fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKeyStore> {
+    if endpoint == &Endpoint::devnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_devnet()
+    } else if endpoint == &Endpoint::testnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_testnet()
+    } else if endpoint == &Endpoint::localhost() {
+        ClientBuilder::<FilesystemKeyStore>::for_localhost()
+    } else {
+        ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000))
+    }
+}
 
 /// Builder for constructing MultisigClient instances.
 ///
@@ -25,7 +39,7 @@ use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
 ///
 /// let client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-///     .psm_endpoint("http://localhost:50051")
+///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
 ///     .generate_key()
 ///     .build()
@@ -33,7 +47,7 @@ use crate::keystore::{EcdsaPsmKeyStore, KeyManager, PsmKeyStore};
 /// ```
 pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
-    psm_endpoint: Option<String>,
+    guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
 }
@@ -49,7 +63,7 @@ impl MultisigClientBuilder {
     pub fn new() -> Self {
         Self {
             miden_endpoint: None,
-            psm_endpoint: None,
+            guardian_endpoint: None,
             account_dir: None,
             key_manager: None,
         }
@@ -61,9 +75,9 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Sets the PSM server endpoint.
-    pub fn psm_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.psm_endpoint = Some(endpoint.into());
+    /// Sets the GUARDIAN server endpoint.
+    pub fn guardian_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.guardian_endpoint = Some(endpoint.into());
         self
     }
 
@@ -75,7 +89,7 @@ impl MultisigClientBuilder {
         self
     }
 
-    /// Sets a custom key manager for PSM authentication and proposal signing.
+    /// Sets a custom key manager for GUARDIAN authentication and proposal signing.
     pub fn key_manager(mut self, key_manager: Box<dyn KeyManager>) -> Self {
         self.key_manager = Some(key_manager.into());
         self
@@ -83,25 +97,25 @@ impl MultisigClientBuilder {
 
     /// Uses a FalconKeyStore with the given secret key.
     pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
-        self.key_manager = Some(Arc::new(PsmKeyStore::new(secret_key)));
+        self.key_manager = Some(Arc::new(GuardianKeyStore::new(secret_key)));
         self
     }
 
     /// Uses an ECDSA key store with the given secret key.
     pub fn with_ecdsa_secret_key(mut self, secret_key: EcdsaSecretKey) -> Self {
-        self.key_manager = Some(Arc::new(EcdsaPsmKeyStore::new(secret_key)));
+        self.key_manager = Some(Arc::new(EcdsaGuardianKeyStore::new(secret_key)));
         self
     }
 
-    /// Generates a new random key for PSM authentication.
+    /// Generates a new random key for GUARDIAN authentication.
     pub fn generate_key(mut self) -> Self {
-        self.key_manager = Some(Arc::new(PsmKeyStore::generate()));
+        self.key_manager = Some(Arc::new(GuardianKeyStore::generate()));
         self
     }
 
-    /// Generates a new random ECDSA key for PSM authentication.
+    /// Generates a new random ECDSA key for GUARDIAN authentication.
     pub fn generate_ecdsa_key(mut self) -> Self {
-        self.key_manager = Some(Arc::new(EcdsaPsmKeyStore::generate()));
+        self.key_manager = Some(Arc::new(EcdsaGuardianKeyStore::generate()));
         self
     }
 
@@ -111,9 +125,9 @@ impl MultisigClientBuilder {
             .miden_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("miden_endpoint".to_string()))?;
 
-        let psm_endpoint = self
-            .psm_endpoint
-            .ok_or_else(|| MultisigError::MissingConfig("psm_endpoint".to_string()))?;
+        let guardian_endpoint = self
+            .guardian_endpoint
+            .ok_or_else(|| MultisigError::MissingConfig("guardian_endpoint".to_string()))?;
 
         let account_dir = self
             .account_dir
@@ -131,7 +145,7 @@ impl MultisigClientBuilder {
         Ok(MultisigClient::new(
             miden_client,
             key_manager,
-            psm_endpoint,
+            guardian_endpoint,
             account_dir,
             miden_endpoint,
         ))
@@ -145,7 +159,7 @@ impl MultisigClientBuilder {
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
-) -> Result<Client<()>> {
+) -> Result<MidenSdkClient> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -161,29 +175,15 @@ pub(crate) async fn create_miden_client(
     let store = Arc::new(store);
 
     let rng_seed: [u32; 4] = rand::random();
-    let rng = Box::new(RpoRandomCoin::new(rng_seed.into()));
-    let exec_options = ExecutionOptions::new(
-        Some(MAX_TX_EXECUTION_CYCLES),
-        MIN_TX_EXECUTION_CYCLES,
-        true,
-        true,
-    )
-    .map_err(|e| MultisigError::MidenClient(format!("failed to build execution options: {}", e)))?;
+    let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
-    let grpc_client = GrpcClient::new(endpoint, 20_000);
-    let rpc_client: Arc<dyn NodeRpcClient> = Arc::new(grpc_client);
-
-    Client::new(
-        rpc_client,
-        rng,
-        store,
-        None,
-        exec_options,
-        Some(20),
-        Some(256),
-        None,
-        None,
-    )
-    .await
-    .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
+    configured_client_builder(endpoint)
+        .store(store)
+        .rng(rng)
+        .in_debug_mode(DebugMode::Enabled)
+        .tx_discard_delta(Some(20))
+        .max_block_number_delta(256)
+        .build()
+        .await
+        .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
 }

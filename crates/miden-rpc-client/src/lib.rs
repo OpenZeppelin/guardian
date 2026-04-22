@@ -1,5 +1,5 @@
 //! Minimal Miden RPC client using miden-node-proto crate
-use miden_protocol::{account::AccountId, utils::Serializable};
+use miden_protocol::{account::AccountId, utils::serde::Serializable};
 use tonic::{
     transport::{Channel, ClientTlsConfig},
     Request,
@@ -89,23 +89,26 @@ impl MidenRpcClient {
         block_num: u32,
         account_ids: Vec<Vec<u8>>,
         note_tags: Vec<u32>,
-    ) -> Result<rpc::SyncStateResponse, String> {
-        let account_ids = account_ids
-            .into_iter()
-            .map(|id| account::AccountId { id })
-            .collect();
+    ) -> Result<rpc::SyncNotesResponse, String> {
+        if !account_ids.is_empty() {
+            return Err(
+                "Account syncing moved out of the raw node RPC wrapper in Miden 0.14; use miden-client state sync APIs for account state".to_string(),
+            );
+        }
 
-        let request = rpc::SyncStateRequest {
-            block_num,
-            account_ids,
+        let request = rpc::SyncNotesRequest {
+            block_range: Some(rpc::BlockRange {
+                block_from: block_num,
+                block_to: None,
+            }),
             note_tags,
         };
 
         let response = self
             .client
-            .sync_state(Request::new(request))
+            .sync_notes(Request::new(request))
             .await
-            .map_err(|e| format!("SyncState RPC failed: {e}"))?;
+            .map_err(|e| format!("SyncNotes RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }

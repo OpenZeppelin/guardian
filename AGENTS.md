@@ -1,4 +1,4 @@
-# AGENTS.md - Private State Manager
+# AGENTS.md - Guardian
 
 This file is the operational guide for coding agents working in this repository.
 It is optimized for safe, cross-layer changes in a multi-language codebase.
@@ -8,7 +8,7 @@ It is optimized for safe, cross-layer changes in a multi-language codebase.
 Work from the bottom up:
 
 1. `crates/server` (core system of record)
-2. `crates/client` and `packages/psm-client` (base Rust/TS clients over PSM)
+2. `crates/client` and `packages/guardian-client` (base Rust/TS clients over GUARDIAN)
 3. `crates/miden-multisig-client` and `packages/miden-multisig-client` (higher-level multisig SDKs)
 4. `examples/` (verification and debugging surfaces)
    - `examples/demo` = CLI/TUI multisig flow
@@ -19,11 +19,11 @@ If a behavior changes in a lower layer, verify and propagate impact upward.
 
 ## 2) Repo Map
 
-- `crates/server`: PSM server (HTTP + gRPC), storage, metadata, auth, canonicalization jobs
+- `crates/server`: GUARDIAN server (HTTP + gRPC), storage, metadata, auth, canonicalization jobs
 - `crates/client`: Rust gRPC client SDK
-- `packages/psm-client`: TS HTTP client SDK
-- `crates/miden-multisig-client`: Rust multisig SDK on top of Miden + PSM
-- `packages/miden-multisig-client`: TS multisig SDK on top of Miden + PSM
+- `packages/guardian-client`: TS HTTP client SDK
+- `crates/miden-multisig-client`: Rust multisig SDK on top of Miden + GUARDIAN
+- `packages/miden-multisig-client`: TS multisig SDK on top of Miden + GUARDIAN
 - `crates/shared`: shared Rust primitives/utilities
 - `spec/`: system and protocol-level behavior docs
 - `examples/`: validation apps and reference flows
@@ -42,12 +42,12 @@ If a behavior changes in a lower layer, verify and propagate impact upward.
 Use this when changing endpoints, payloads, status enums, signatures, or auth behavior.
 
 1. Update server contract source first:
-   - gRPC: `crates/server/proto/state_manager.proto`
+   - gRPC: `crates/server/proto/guardian.proto`
    - HTTP shapes/serialization in server services and API modules
 2. Update Rust client compatibility:
    - `crates/client` (proto, request/response mapping, auth/signature handling)
 3. Update TS client compatibility:
-   - `packages/psm-client/src/server-types.ts`
+   - `packages/guardian-client/src/server-types.ts`
    - request/response adapters and tests
 4. Update multisig SDK layers if proposal/state shape changed:
    - `crates/miden-multisig-client`
@@ -68,17 +68,17 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 - Default local development/test backend is `filesystem` unless a task explicitly requires Postgres.
 - Keep shared server layers network-agnostic. Put Miden/EVM-specific logic in `src/network/*`, and dispatch from services/builders via account network config rather than embedding network-specific assumptions in shared modules.
 
-### Rust PSM Client (`crates/client`)
+### Rust GUARDIAN Client (`crates/client`)
 
 - Mirror proto/service changes quickly.
 - Keep signer/auth flow explicit and deterministic.
 - Verify ack-signature related behavior whenever push/sign flows are changed.
 
-### TS PSM Client (`packages/psm-client`)
+### TS GUARDIAN Client (`packages/guardian-client`)
 
 - Keep `server-types.ts` aligned with real server JSON responses.
 - Keep conversion code explicit rather than permissive.
-- Validate error-shape handling (`PsmHttpError`) when endpoint responses change.
+- Validate error-shape handling (`GuardianHttpError`) when endpoint responses change.
 
 ### Rust Multisig SDK (`crates/miden-multisig-client`)
 
@@ -104,8 +104,8 @@ Run the smallest meaningful set first, then expand:
 ### Rust
 
 ```bash
-cargo test -p private-state-manager-server
-cargo test -p private-state-manager-client
+cargo test -p guardian-server
+cargo test -p guardian-client
 cargo test -p miden-multisig-client
 cargo test --workspace
 ```
@@ -113,21 +113,21 @@ cargo test --workspace
 Feature-gated server suites when relevant:
 
 ```bash
-cargo test -p private-state-manager-server --features integration
-cargo test -p private-state-manager-server --features e2e
+cargo test -p guardian-server --features integration
+cargo test -p guardian-server --features e2e
 ```
 
 ### TypeScript
 
 ```bash
-cd packages/psm-client && npm test
+cd packages/guardian-client && npm test
 cd packages/miden-multisig-client && npm test
 ```
 
 ### Examples (smoke/integration)
 
 ```bash
-cargo run -p psm-demo
+cargo run -p guardian-demo
 cd examples/web && npm run dev
 ```
 
@@ -151,7 +151,7 @@ Before finishing, confirm all are true:
 
 1. Architecture impact assessed bottom-up (server -> clients -> multisig -> examples).
 2. Protocol/data-shape changes reflected in both Rust and TS stacks.
-   - If server contract changed, updates in `crates/client` and `packages/psm-client` must be included in the same PR.
+   - If server contract changed, updates in `crates/client` and `packages/guardian-client` must be included in the same PR.
 3. Tests updated where behavior changed.
 4. At least one upstream consumer validated for changed lower-layer behavior.
 5. README/docs touched if external behavior changed.
@@ -204,7 +204,7 @@ Apply these rules especially to:
   - Account lifecycle
   - Proposal lifecycle (create/sign/list/execute)
   - Signature/advice preparation
-  - PSM transport adapters
+  - GUARDIAN transport adapters
   - Metadata mapping/normalization
 - Group files by concept using folders when two or more files belong to the same concern.
   - TypeScript example: `multisig/proposal/parser.ts`, `multisig/proposal/execution.ts`
@@ -229,7 +229,7 @@ Apply these rules especially to:
   - Prefer patterns like:
     - `new CosignerAdviceMap(...)` instead of `buildCosignerAdviceMap(...)`
     - `proposalWorkflow.execute()` instead of `executeProposalWorkflow(...)`
-    - `ProposalMetadata.fromPsmMetadata(...)` instead of `fromPsmMetadata(...)`
+    - `ProposalMetadata.fromGuardianMetadata(...)` instead of `fromGuardianMetadata(...)`
 - Rust:
   - Apply the same principle with constructors/associated functions on domain types.
   - Prefer patterns like:
@@ -274,7 +274,7 @@ Apply these rules especially to:
 ### Error Handling
 
 - Use structured errors at boundaries; avoid losing context in generic string errors.
-- Add context at adapter edges (PSM, Miden node, serialization/parsing).
+- Add context at adapter edges (GUARDIAN, Miden node, serialization/parsing).
 - Fail fast on malformed signatures/metadata instead of silently coercing.
 
 ### Testing Expectations for Refactors

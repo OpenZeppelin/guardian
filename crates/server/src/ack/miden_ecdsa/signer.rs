@@ -1,11 +1,13 @@
 use crate::delta_object::DeltaObject;
-use crate::error::PsmError;
+use crate::error::GuardianError;
+use guardian_shared::FromJson;
 use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, ecdsa_commitment_hex};
 use miden_protocol::{
-    Word, crypto::dsa::ecdsa_k256_keccak::Signature, transaction::TransactionSummary,
-    utils::Serializable,
+    Word,
+    crypto::dsa::ecdsa_k256_keccak::{SecretKey, Signature},
+    transaction::TransactionSummary,
+    utils::serde::Serializable,
 };
-use private_state_manager_shared::FromJson;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,17 +15,33 @@ use std::sync::Arc;
 pub struct MidenEcdsaSigner {
     keystore: Arc<FilesystemEcdsaKeyStore>,
     server_pubkey_word: Word,
+    pubkey_hex: String,
+    commitment_hex: String,
 }
 
 impl MidenEcdsaSigner {
-    pub fn new(keystore_path: PathBuf) -> crate::ack::Result<Self> {
-        let keystore = FilesystemEcdsaKeyStore::new(keystore_path)?;
-        let keystore = Arc::new(keystore);
-        let server_pubkey_word = keystore.generate_ecdsa_key()?;
+    pub fn new(keystore_path: PathBuf, secret_key: Option<&SecretKey>) -> crate::ack::Result<Self> {
+        let keystore = Arc::new(FilesystemEcdsaKeyStore::new(keystore_path)?);
+        let (server_pubkey_word, public_key) = match secret_key {
+            Some(secret_key) => {
+                let server_pubkey_word = secret_key.public_key().to_commitment();
+                keystore.add_ecdsa_key(secret_key)?;
+                (server_pubkey_word, secret_key.public_key())
+            }
+            None => {
+                let server_pubkey_word = keystore.generate_ecdsa_key()?;
+                let public_key = keystore.get_ecdsa_key(server_pubkey_word)?.public_key();
+                (server_pubkey_word, public_key)
+            }
+        };
+        let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let commitment_hex = ecdsa_commitment_hex(&public_key);
 
         Ok(Self {
             keystore,
             server_pubkey_word,
+            pubkey_hex,
+            commitment_hex,
         })
     }
 }
@@ -34,25 +52,16 @@ impl MidenEcdsaSigner {
     }
 
     pub(crate) fn pubkey_hex(&self) -> String {
-        let secret_key = self
-            .keystore
-            .get_ecdsa_key(self.server_pubkey_word)
-            .expect("Server key must exist in keystore");
-        let pub_key = secret_key.public_key();
-        format!("0x{}", hex::encode(pub_key.to_bytes()))
+        self.pubkey_hex.clone()
     }
 
     pub(crate) fn commitment_hex(&self) -> String {
-        let secret_key = self
-            .keystore
-            .get_ecdsa_key(self.server_pubkey_word)
-            .expect("Server key must exist in keystore");
-        ecdsa_commitment_hex(&secret_key.public_key())
+        self.commitment_hex.clone()
     }
 
     pub(crate) fn ack_delta(&self, mut delta: DeltaObject) -> crate::ack::Result<DeltaObject> {
         let tx_summary = TransactionSummary::from_json(&delta.delta_payload).map_err(|e| {
-            PsmError::InvalidDelta(format!("Failed to deserialize TransactionSummary: {e}"))
+            GuardianError::InvalidDelta(format!("Failed to deserialize TransactionSummary: {e}"))
         })?;
 
         let tx_commitment = tx_summary.to_commitment();
@@ -68,10 +77,12 @@ mod tests {
     use miden_keystore::EcdsaKeyStore;
 
     fn create_test_signer() -> (MidenEcdsaSigner, PathBuf) {
-        let temp_dir =
-            std::env::temp_dir().join(format!("psm_test_ecdsa_signer_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "guardian_test_ecdsa_signer_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let signer = MidenEcdsaSigner::new(temp_dir.clone()).unwrap();
+        let signer = MidenEcdsaSigner::new(temp_dir.clone(), None).unwrap();
         (signer, temp_dir)
     }
 
@@ -88,10 +99,8 @@ mod tests {
         let message = Word::default();
         let sig = signer.sign_with_server_key(message).unwrap();
 
-        let sk = signer
-            .keystore
-            .get_ecdsa_key(signer.server_pubkey_word)
-            .unwrap();
+        let keystore = FilesystemEcdsaKeyStore::new(dir.clone()).unwrap();
+        let sk = keystore.get_ecdsa_key(signer.server_pubkey_word).unwrap();
         let pk = sk.public_key();
         assert!(pk.verify(message, &sig));
         std::fs::remove_dir_all(dir).ok();
@@ -119,10 +128,8 @@ mod tests {
     fn commitment_hex_matches_pubkey_commitment() {
         let (signer, dir) = create_test_signer();
         let commitment = signer.commitment_hex();
-        let sk = signer
-            .keystore
-            .get_ecdsa_key(signer.server_pubkey_word)
-            .unwrap();
+        let keystore = FilesystemEcdsaKeyStore::new(dir.clone()).unwrap();
+        let sk = keystore.get_ecdsa_key(signer.server_pubkey_word).unwrap();
         let expected = ecdsa_commitment_hex(&sk.public_key());
         assert_eq!(commitment, expected);
         std::fs::remove_dir_all(dir).ok();

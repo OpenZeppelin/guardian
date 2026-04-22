@@ -1,17 +1,17 @@
-//! Internal helper functions for PSM client interactions.
+//! Internal helper functions for GUARDIAN client interactions.
 
-use crate::psm_endpoint::verify_endpoint_commitment;
+use crate::guardian_endpoint::verify_endpoint_commitment;
+use guardian_client::GuardianClient;
+#[cfg(test)]
+use guardian_shared::FromJson;
+use guardian_shared::SignatureScheme;
+use guardian_shared::ToJson;
 use miden_client::account::Account;
 use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
 use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::utils::serde::Serializable;
-use private_state_manager_client::PsmClient;
-#[cfg(test)]
-use private_state_manager_shared::FromJson;
-use private_state_manager_shared::SignatureScheme;
-use private_state_manager_shared::ToJson;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
@@ -23,16 +23,16 @@ use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::word_to_hex;
 
 impl MultisigClient {
-    /// Creates a PSM client (unauthenticated).
-    pub(crate) async fn create_psm_client(&self) -> Result<PsmClient> {
-        PsmClient::connect(&self.psm_endpoint)
+    /// Creates a GUARDIAN client (unauthenticated).
+    pub(crate) async fn create_guardian_client(&self) -> Result<GuardianClient> {
+        GuardianClient::connect(&self.guardian_endpoint)
             .await
-            .map_err(|e| MultisigError::PsmConnection(e.to_string()))
+            .map_err(|e| MultisigError::GuardianConnection(e.to_string()))
     }
 
-    /// Creates an authenticated PSM client.
-    pub(crate) async fn create_authenticated_psm_client(&self) -> Result<PsmClient> {
-        let client = self.create_psm_client().await?;
+    /// Creates an authenticated GUARDIAN client.
+    pub(crate) async fn create_authenticated_guardian_client(&self) -> Result<GuardianClient> {
+        let client = self.create_guardian_client().await?;
         Ok(client.with_signer(self.key_manager.clone()))
     }
 
@@ -68,7 +68,7 @@ impl MultisigClient {
                     Ok(Some(commitment))
                 }
             }
-            Err(RpcError::GrpcError {
+            Err(RpcError::RequestError {
                 error_kind: GrpcError::NotFound,
                 ..
             }) => Ok(None),
@@ -100,10 +100,10 @@ impl MultisigClient {
         )))
     }
 
-    /// Gets the PSM acknowledgment signature for a transaction.
+    /// Gets the GUARDIAN acknowledgment signature for a transaction.
     ///
-    /// This pushes the delta to PSM and retrieves the server's signature.
-    pub(crate) async fn get_psm_ack_signature(
+    /// This pushes the delta to GUARDIAN and retrieves the server's signature.
+    pub(crate) async fn get_guardian_ack_signature(
         &mut self,
         account: &MultisigAccount,
         nonce: u64,
@@ -116,45 +116,49 @@ impl MultisigClient {
             hex::encode(Serializable::to_bytes(&account.commitment()))
         );
 
-        // Push delta to PSM to get acknowledgment signature
-        let mut psm_client = self.create_authenticated_psm_client().await?;
+        // Push delta to GUARDIAN to get acknowledgment signature
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let delta_payload = tx_summary.to_json();
 
-        let push_response = psm_client
+        let push_response = guardian_client
             .push_delta(&account_id, nonce, &prev_commitment, &delta_payload)
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to push delta: {}", e)))?;
+            .map_err(|e| MultisigError::GuardianServer(format!("failed to push delta: {}", e)))?;
 
-        // Get PSM ack signature
+        // Get GUARDIAN ack signature
         let ack_sig = push_response.ack_sig.ok_or_else(|| {
-            MultisigError::PsmServer("PSM did not return acknowledgment signature".to_string())
+            MultisigError::GuardianServer(
+                "GUARDIAN did not return acknowledgment signature".to_string(),
+            )
         })?;
         let ack_scheme = push_response
             .delta
             .as_ref()
             .and_then(|delta| delta.ack_scheme.as_deref())
             .ok_or_else(|| {
-                MultisigError::PsmServer("PSM did not return acknowledgment scheme".to_string())
+                MultisigError::GuardianServer(
+                    "GUARDIAN did not return acknowledgment scheme".to_string(),
+                )
             })
             .and_then(|ack_scheme| {
-                SignatureScheme::from(ack_scheme).map_err(MultisigError::PsmServer)
+                SignatureScheme::from(ack_scheme).map_err(MultisigError::GuardianServer)
             })?;
 
-        let (psm_commitment_hex, raw_pubkey) = psm_client
+        let (guardian_commitment_hex, raw_pubkey) = guardian_client
             .get_pubkey(Some(ack_scheme.as_str()))
             .await
             .map_err(|e| {
-                MultisigError::PsmServer(format!("failed to get PSM commitment: {}", e))
+                MultisigError::GuardianServer(format!("failed to get GUARDIAN commitment: {}", e))
             })?;
 
-        let psm_commitment =
-            word_from_hex(&psm_commitment_hex).map_err(MultisigError::HexDecode)?;
-        let expected_psm_commitment = account.psm_commitment()?;
-        if psm_commitment != expected_psm_commitment {
-            return Err(MultisigError::PsmServer(format!(
-                "PSM public key commitment {} does not match account commitment {}",
-                word_to_hex(&psm_commitment),
-                word_to_hex(&expected_psm_commitment)
+        let guardian_commitment =
+            word_from_hex(&guardian_commitment_hex).map_err(MultisigError::HexDecode)?;
+        let expected_guardian_commitment = account.guardian_commitment()?;
+        if guardian_commitment != expected_guardian_commitment {
+            return Err(MultisigError::GuardianServer(format!(
+                "GUARDIAN public key commitment {} does not match account commitment {}",
+                word_to_hex(&guardian_commitment),
+                word_to_hex(&expected_guardian_commitment)
             )));
         }
 
@@ -163,7 +167,7 @@ impl MultisigClient {
             .map_err(MultisigError::Signature)?;
         ack_scheme
             .build_signature_advice_entry(
-                psm_commitment,
+                guardian_commitment,
                 tx_summary_commitment,
                 &ack_signature,
                 push_response
@@ -246,7 +250,7 @@ impl MultisigClient {
         tx_request: TransactionRequest,
         transaction_type: &TransactionType,
     ) -> Result<()> {
-        if let TransactionType::SwitchPsm {
+        if let TransactionType::SwitchGuardian {
             new_endpoint,
             new_commitment,
         } = transaction_type
@@ -254,9 +258,9 @@ impl MultisigClient {
             verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
         }
 
-        // Capture the new PSM endpoint if this is a SwitchPsm transaction
-        let new_psm_endpoint =
-            if let TransactionType::SwitchPsm { new_endpoint, .. } = transaction_type {
+        // Capture the new GUARDIAN endpoint if this is a SwitchGuardian transaction
+        let new_guardian_endpoint =
+            if let TransactionType::SwitchGuardian { new_endpoint, .. } = transaction_type {
                 Some(new_endpoint.clone())
             } else {
                 None
@@ -275,7 +279,7 @@ impl MultisigClient {
 
         // Try to sync with the network to ensure consistent state.
         if let Err(_e) = self.miden_client.sync_state().await {
-            // Intentionally ignored, PSM may not have canonicalized yet.
+            // Intentionally ignored, GUARDIAN may not have canonicalized yet.
         }
 
         // Get updated account from miden-client's local state
@@ -290,22 +294,20 @@ impl MultisigClient {
                 MultisigError::MissingConfig("account not found after execution".to_string())
             })?;
 
-        let updated_account: Account = account_record.try_into().map_err(|e| {
-            MultisigError::MidenClient(format!("account record is not full: {}", e))
-        })?;
+        let updated_account: Account = account_record;
 
-        // Update PSM endpoint if this was a SwitchPsm transaction, then register on new PSM
-        if let Some(endpoint) = new_psm_endpoint {
-            self.psm_endpoint = endpoint;
+        // Update GUARDIAN endpoint if this was a SwitchGuardian transaction, then register on new GUARDIAN
+        if let Some(endpoint) = new_guardian_endpoint {
+            self.guardian_endpoint = endpoint;
 
-            // Refresh the local account after switching to the new PSM endpoint.
+            // Refresh the local account after switching to the new GUARDIAN endpoint.
             let multisig_account = MultisigAccount::new(updated_account.clone());
             self.account = Some(multisig_account);
 
-            // Register the updated account on the new PSM server
-            self.register_on_psm().await.map_err(|e| {
-                MultisigError::PsmServer(format!(
-                    "transaction executed successfully but failed to register on new PSM: {}",
+            // Register the updated account on the new GUARDIAN server
+            self.register_on_guardian().await.map_err(|e| {
+                MultisigError::GuardianServer(format!(
+                    "transaction executed successfully but failed to register on new GUARDIAN: {}",
                     e
                 ))
             })?;
@@ -357,12 +359,12 @@ impl MultisigClient {
 
 #[cfg(test)]
 mod tests {
+    use guardian_shared::FromJson;
+    use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
-    use miden_protocol::{Felt, FieldElement, Word};
-    use private_state_manager_shared::FromJson;
-    use private_state_manager_shared::ToJson;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::{Felt, Word};
 
     use super::MultisigClient;
 
@@ -378,7 +380,7 @@ mod tests {
         TransactionSummary::new(
             delta,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             Word::default(),
         )
         .to_json()

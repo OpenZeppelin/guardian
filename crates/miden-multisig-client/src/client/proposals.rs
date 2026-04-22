@@ -1,11 +1,11 @@
 //! Proposal workflow operations for MultisigClient.
 //!
 //! This module handles listing, signing, executing, and creating proposals
-//! via PSM (online mode).
+//! via GUARDIAN (online mode).
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::ProposalSignature;
+use guardian_shared::ProposalSignature;
 
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
@@ -20,11 +20,11 @@ impl MultisigClient {
         account_id: &miden_protocol::account::AccountId,
         proposal_id: &str,
     ) -> Result<Proposal> {
-        let mut psm_client = self.create_authenticated_psm_client().await?;
-        let response = psm_client
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let response = guardian_client
             .get_delta_proposal(account_id, proposal_id)
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposal: {}", e)))?;
+            .map_err(|e| MultisigError::GuardianServer(format!("failed to get proposal: {}", e)))?;
 
         let raw_proposal = response
             .proposal
@@ -39,17 +39,19 @@ impl MultisigClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if any proposal from PSM cannot be parsed. This ensures
-    /// malformed PSM payloads are surfaced rather than silently dropped.
+    /// Returns an error if any proposal from GUARDIAN cannot be parsed. This ensures
+    /// malformed GUARDIAN payloads are surfaced rather than silently dropped.
     pub async fn list_proposals(&mut self) -> Result<Vec<Proposal>> {
         let account_id = self.require_account()?.id();
 
-        let mut psm_client = self.create_authenticated_psm_client().await?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
-        let response = psm_client
+        let response = guardian_client
             .get_delta_proposals(&account_id)
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to get proposals: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to get proposals: {}", e))
+            })?;
 
         let mut proposals = Vec::with_capacity(response.proposals.len());
         for delta in &response.proposals {
@@ -91,12 +93,14 @@ impl MultisigClient {
             proposal_public_key_hex(self.key_manager.as_ref()),
         );
 
-        // Push signature to PSM
-        let mut psm_client = self.create_authenticated_psm_client().await?;
-        let sign_response = psm_client
+        // Push signature to GUARDIAN
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let sign_response = guardian_client
             .sign_delta_proposal(&account_id, proposal_id, signature)
             .await
-            .map_err(|e| MultisigError::PsmServer(format!("failed to sign proposal: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to sign proposal: {}", e))
+            })?;
 
         let updated_raw = sign_response
             .delta
@@ -112,8 +116,8 @@ impl MultisigClient {
     /// This will:
     /// 1. Sync with the Miden network to get latest chain state
     /// 2. Get the proposal and verify it has enough signatures
-    /// 3. Push delta to PSM to get acknowledgment signature
-    /// 4. Build the transaction with all cosigner signatures + PSM ack
+    /// 3. Push delta to GUARDIAN to get acknowledgment signature
+    /// 4. Build the transaction with all cosigner signatures + GUARDIAN ack
     /// 5. Execute the transaction on-chain
     /// 6. Sync and update local account state
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
@@ -162,17 +166,17 @@ impl MultisigClient {
             tx_summary_commitment,
         )?;
 
-        if proposal.transaction_type.requires_psm_ack() {
-            // Get PSM ack signature and add to advice
-            let psm_advice = self
-                .get_psm_ack_signature(
+        if proposal.transaction_type.requires_guardian_ack() {
+            // Get GUARDIAN ack signature and add to advice
+            let guardian_advice = self
+                .get_guardian_ack_signature(
                     &account,
                     proposal.nonce,
                     &proposal.tx_summary,
                     tx_summary_commitment,
                 )
                 .await?;
-            signature_advice.push(psm_advice);
+            signature_advice.push(guardian_advice);
         }
 
         // Build the final transaction request with all signatures
@@ -236,12 +240,12 @@ impl MultisigClient {
         self.sync().await?;
 
         let account = self.require_account()?.clone();
-        let mut psm_client = self.create_authenticated_psm_client().await?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         ProposalBuilder::new(transaction_type)
             .build(
                 &mut self.miden_client,
-                &mut psm_client,
+                &mut guardian_client,
                 &account,
                 self.key_manager.as_ref(),
             )
@@ -250,34 +254,34 @@ impl MultisigClient {
 
     /// Proposes a transaction with automatic fallback to offline mode.
     ///
-    /// First attempts to create the proposal via PSM. If PSM is unavailable
+    /// First attempts to create the proposal via GUARDIAN. If GUARDIAN is unavailable
     /// (connection error), falls back to offline proposal creation only when
-    /// the transaction supports PSM-less execution (`SwitchPsm`).
+    /// the transaction supports GUARDIAN-less execution (`SwitchGuardian`).
     ///
     /// This is useful when you want to attempt online coordination but have a
     /// graceful fallback path for offline sharing.
     ///
     /// # Returns
     ///
-    /// - `ProposalResult::Online(Proposal)` if PSM succeeded
-    /// - `ProposalResult::Offline(ExportedProposal)` if PSM failed and transaction is `SwitchPsm`
+    /// - `ProposalResult::Online(Proposal)` if GUARDIAN succeeded
+    /// - `ProposalResult::Offline(ExportedProposal)` if GUARDIAN failed and transaction is `SwitchGuardian`
     ///
     /// # Example
     ///
     /// ```ignore
     /// use miden_multisig_client::{TransactionType, ProposalResult};
     ///
-    /// let tx = TransactionType::switch_psm("https://new-psm.example.com", new_psm_commitment);
+    /// let tx = TransactionType::switch_guardian("https://new-guardian.example.com", new_guardian_commitment);
     /// let result = client.propose_with_fallback(
     ///     tx
     /// ).await?;
     ///
     /// match result {
     ///     ProposalResult::Online(proposal) => {
-    ///         println!("Proposal {} created on PSM", proposal.id);
+    ///         println!("Proposal {} created on GUARDIAN", proposal.id);
     ///     }
     ///     ProposalResult::Offline(exported) => {
-    ///         println!("PSM unavailable, share this file with cosigners:");
+    ///         println!("GUARDIAN unavailable, share this file with cosigners:");
     ///         std::fs::write("proposal.json", exported.to_json()?)?;
     ///     }
     /// }
@@ -289,7 +293,9 @@ impl MultisigClient {
         // Try online first
         match self.propose_transaction(transaction_type.clone()).await {
             Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
-            Err(error @ (MultisigError::PsmConnection(_) | MultisigError::PsmServer(_))) => {
+            Err(
+                error @ (MultisigError::GuardianConnection(_) | MultisigError::GuardianServer(_)),
+            ) => {
                 if transaction_type.supports_offline_execution() {
                     let exported = self.create_proposal_offline(transaction_type).await?;
                     Ok(ProposalResult::Offline(Box::new(exported)))
@@ -304,13 +310,12 @@ impl MultisigClient {
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::FieldElement;
+    use guardian_client::DeltaObject;
+    use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
-    use private_state_manager_client::DeltaObject;
-    use private_state_manager_shared::ToJson;
 
     use crate::error::{MultisigError, Result};
     use crate::proposal::Proposal;
@@ -328,7 +333,7 @@ mod tests {
         TransactionSummary::new(
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
-            OutputNotes::new(Vec::new()).expect("empty output notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([Felt::new(seed), ZERO, ZERO, ZERO]),
         )
     }
@@ -343,10 +348,10 @@ mod tests {
             "tx_summary": create_test_tx_summary(account_id, seed).to_json(),
             "signatures": [],
             "metadata": {
-                "proposal_type": "switch_psm",
+                "proposal_type": "switch_guardian",
                 "required_signatures": 1,
-                "new_psm_pubkey": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
-                "new_psm_endpoint": "http://new-psm.example.com"
+                "new_guardian_pubkey": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+                "new_guardian_endpoint": "http://new-guardian.example.com"
             }
         });
 

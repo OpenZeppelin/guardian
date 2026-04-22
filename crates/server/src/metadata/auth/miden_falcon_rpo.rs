@@ -1,8 +1,8 @@
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_rpo::Signature;
-use miden_protocol::utils::{Deserializable, Serializable};
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 /// Verify a Falcon RPO signature for a request with timestamp.
 ///
@@ -107,8 +107,8 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
 mod tests {
     use super::*;
     use miden_protocol::account::AccountId;
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-    use miden_protocol::utils::Serializable;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::utils::serde::Serializable;
 
     #[test]
     fn test_falcon_sign_and_verify_account_id_with_timestamp() {

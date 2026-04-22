@@ -1,10 +1,10 @@
 use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
-use private_state_manager_shared::DeltaSignature;
+use guardian_shared::DeltaSignature;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -41,13 +41,13 @@ pub async fn sign_delta_proposal(
         .storage
         .pull_delta_proposal(&account_id, &normalized_commitment)
         .await
-        .map_err(|_| PsmError::ProposalNotFound {
+        .map_err(|_| GuardianError::ProposalNotFound {
             account_id: account_id.clone(),
             commitment: normalized_commitment.clone(),
         })?;
 
     if !delta_proposal.account_id.eq_ignore_ascii_case(&account_id) {
-        return Err(PsmError::ProposalNotFound {
+        return Err(GuardianError::ProposalNotFound {
             account_id: account_id.clone(),
             commitment: normalized_commitment,
         });
@@ -65,7 +65,7 @@ pub async fn sign_delta_proposal(
             cosigner_sigs.clone(),
         ),
         _ => {
-            return Err(PsmError::ProposalNotFound {
+            return Err(GuardianError::ProposalNotFound {
                 account_id: account_id.clone(),
                 commitment: normalized_commitment.clone(),
             });
@@ -79,7 +79,7 @@ pub async fn sign_delta_proposal(
             .auth
             .compute_signer_commitment(pubkey)
             .map_err(|e| {
-                PsmError::AuthenticationFailed(format!(
+                GuardianError::AuthenticationFailed(format!(
                     "invalid signer public key for {}: {}",
                     account_id, e
                 ))
@@ -91,7 +91,7 @@ pub async fn sign_delta_proposal(
         .iter()
         .any(|sig| sig.signer_id.eq_ignore_ascii_case(&signer_commitment_hex))
     {
-        return Err(PsmError::ProposalAlreadySigned {
+        return Err(GuardianError::ProposalAlreadySigned {
             signer_id: signer_commitment_hex.clone(),
         });
     }
@@ -114,20 +114,20 @@ pub async fn sign_delta_proposal(
         .get_mut("signatures")
         .and_then(|v| v.as_array_mut())
     {
-        signatures.push(
-            serde_json::to_value(new_sig).map_err(|e| {
-                PsmError::InvalidDelta(format!("Failed to serialize signature: {e}"))
-            })?,
-        );
+        signatures.push(serde_json::to_value(new_sig).map_err(|e| {
+            GuardianError::InvalidDelta(format!("Failed to serialize signature: {e}"))
+        })?);
     } else {
         delta_proposal
             .delta_payload
             .as_object_mut()
-            .ok_or_else(|| PsmError::InvalidDelta("delta_payload must be an object".to_string()))?
+            .ok_or_else(|| {
+                GuardianError::InvalidDelta("delta_payload must be an object".to_string())
+            })?
             .insert(
                 "signatures".to_string(),
                 serde_json::to_value(vec![new_sig]).map_err(|e| {
-                    PsmError::InvalidDelta(format!("Failed to serialize signature: {e}"))
+                    GuardianError::InvalidDelta(format!("Failed to serialize signature: {e}"))
                 })?,
             );
     }
@@ -151,7 +151,7 @@ pub async fn sign_delta_proposal(
         .storage
         .update_delta_proposal(&normalized_commitment, &delta_proposal)
         .await
-        .map_err(PsmError::StorageError)?;
+        .map_err(GuardianError::StorageError)?;
 
     Ok(SignDeltaProposalResult {
         delta: delta_proposal.clone(),
@@ -307,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn test_sign_delta_proposal_success_for_ecdsa() {
         use crate::testing::helpers::TestEcdsaSigner;
-        use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
 
         let (state, storage, _network, metadata) = create_test_state();
 
@@ -502,7 +502,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::ProposalNotFound {
+            GuardianError::ProposalNotFound {
                 account_id: err_account_id,
                 commitment: err_commitment,
             } => {
@@ -561,7 +561,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::ProposalAlreadySigned { signer_id } => {
+            GuardianError::ProposalAlreadySigned { signer_id } => {
                 assert_eq!(signer_id, signer_commitment);
             }
             e => panic!("Expected ProposalAlreadySigned error, got: {:?}", e),
@@ -610,7 +610,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::AuthenticationFailed(_) => {}
+            GuardianError::AuthenticationFailed(_) => {}
             e => panic!("Expected AuthenticationFailed error, got: {:?}", e),
         }
     }
@@ -656,7 +656,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::StorageError(_) => {}
+            GuardianError::StorageError(_) => {}
             e => panic!("Expected StorageError, got: {:?}", e),
         }
     }
@@ -686,7 +686,7 @@ mod tests {
         };
 
         let result = sign_delta_proposal(&state, params).await;
-        assert!(matches!(result, Err(PsmError::InvalidCommitment(_))));
+        assert!(matches!(result, Err(GuardianError::InvalidCommitment(_))));
         assert!(
             storage.get_pull_delta_proposal_calls().is_empty(),
             "storage should not be queried for invalid commitment input"
@@ -732,7 +732,7 @@ mod tests {
         let result = sign_delta_proposal(&state, params).await;
         assert!(matches!(
             result,
-            Err(PsmError::ProposalNotFound {
+            Err(GuardianError::ProposalNotFound {
                 account_id: ref err_account,
                 commitment: ref err_commitment
             }) if err_account == &account_id && err_commitment == &commitment

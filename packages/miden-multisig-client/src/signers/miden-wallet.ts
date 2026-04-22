@@ -1,4 +1,4 @@
-import type { RequestAuthPayload } from '@openzeppelin/psm-client';
+import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
 import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { bytesToHex } from '../utils/encoding.js';

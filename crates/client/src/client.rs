@@ -1,7 +1,7 @@
 use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
 use crate::keystore::Signer;
-use crate::proto::state_manager_client::StateManagerClient;
+use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AuthConfig, ConfigureRequest, ConfigureResponse, GetDeltaProposalRequest,
     GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
@@ -11,36 +11,36 @@ use crate::proto::{
     SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use chrono::Utc;
+use guardian_shared::ProposalSignature as JsonProposalSignature;
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::account::AccountId;
-use private_state_manager_shared::ProposalSignature as JsonProposalSignature;
-use private_state_manager_shared::auth_request_message::AuthRequestMessage;
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
 use std::sync::Arc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
-/// A client for interacting with Private State Manager (PSM) servers.
+/// A client for interacting with Guardian servers.
 ///
-/// `PsmClient` provides methods for managing off-chain account state, including:
+/// `GuardianClient` provides methods for managing off-chain account state, including:
 /// - Account configuration
 /// - Delta (state change) management
 /// - Multi-party proposal workflows
 ///
 /// All methods that interact with account data require authentication via a configured signer.
-pub struct PsmClient {
-    client: StateManagerClient<Channel>,
+pub struct GuardianClient {
+    client: GuardianGrpcClient<Channel>,
     auth: Option<Auth>,
     signer: Option<Arc<dyn Signer>>,
 }
 
-impl PsmClient {
-    /// Creates a new client connected to the specified PSM server endpoint.
+impl GuardianClient {
+    /// Creates a new client connected to the specified GUARDIAN server endpoint.
     ///
     /// # Arguments
     /// * `endpoint` - The gRPC endpoint URL (e.g., "http://localhost:50051")
     pub async fn connect(endpoint: impl Into<String>) -> ClientResult<Self> {
         let endpoint = endpoint.into();
-        let client = StateManagerClient::connect(endpoint).await?;
+        let client = GuardianGrpcClient::connect(endpoint).await?;
         Ok(Self {
             client,
             auth: None,
@@ -48,13 +48,13 @@ impl PsmClient {
         })
     }
 
-    /// Configures scheme-aware authentication for authenticated PSM requests.
+    /// Configures scheme-aware authentication for authenticated GUARDIAN requests.
     pub fn with_auth(mut self, auth: Auth) -> Self {
         self.auth = Some(auth);
         self
     }
 
-    /// Configures the signer used for authenticated PSM requests.
+    /// Configures the signer used for authenticated GUARDIAN requests.
     pub fn with_signer(mut self, signer: Arc<dyn Signer>) -> Self {
         self.signer = Some(signer);
         self
@@ -67,7 +67,7 @@ impl PsmClient {
             .map(|auth| auth.public_key_hex())
             .or_else(|| self.signer.as_ref().map(|signer| signer.public_key_hex()))
             .ok_or_else(|| {
-                ClientError::InvalidResponse("PSM client has no signer configured".to_string())
+                ClientError::InvalidResponse("GUARDIAN client has no signer configured".to_string())
             })
     }
 
@@ -156,7 +156,7 @@ impl PsmClient {
         Ok(inner)
     }
 
-    /// Pushes a delta (state change) to the PSM server.
+    /// Pushes a delta (state change) to the GUARDIAN server.
     ///
     /// This makes the delta canonical and triggers the canonicalization workflow.
     pub async fn push_delta(
@@ -251,7 +251,7 @@ impl PsmClient {
         Ok(inner)
     }
 
-    /// Retrieves the PSM server's public key commitment (and optionally the raw public key).
+    /// Retrieves the GUARDIAN server's public key commitment (and optionally the raw public key).
     pub async fn get_pubkey(
         &mut self,
         scheme: Option<&str>,

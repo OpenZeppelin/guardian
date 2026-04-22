@@ -120,7 +120,7 @@ if [[ -z "$MEMORY_GB" ]] && [[ -f /proc/meminfo ]]; then
 fi
 
 {
-  echo "# PSM Server Benchmark Report"
+  echo "# GUARDIAN Server Benchmark Report"
   echo
   echo "- suite_id: $SUITE_ID"
   if [[ -n "$SUITE_WALL_SECONDS" ]]; then

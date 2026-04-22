@@ -1,25 +1,25 @@
 //! Offline proposal operations for MultisigClient.
 //!
 //! This module handles creating, signing, and executing proposals
-//! without PSM coordination (offline/side-channel mode).
+//! without GUARDIAN coordination (offline/side-channel mode).
 
 use std::collections::HashSet;
 
-use private_state_manager_shared::ToJson;
+use guardian_shared::ToJson;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
 use crate::export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
+use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::proposal_public_key_hex;
 use crate::proposal::TransactionType;
-use crate::psm_endpoint::verify_endpoint_commitment;
 
 impl MultisigClient {
-    /// Creates a proposal offline without pushing to PSM.
+    /// Creates a proposal offline without pushing to GUARDIAN.
     ///
-    /// Only `SwitchPsm` transactions can be executed fully offline because
-    /// all other transaction types require a PSM acknowledgment signature.
+    /// Only `SwitchGuardian` transactions can be executed fully offline because
+    /// all other transaction types require a GUARDIAN acknowledgment signature.
     ///
     /// This returns an `ExportedProposal` that can be serialized to JSON and
     /// shared with cosigners.
@@ -33,7 +33,7 @@ impl MultisigClient {
     ///
     /// // Create proposal offline
     /// let exported = client.create_proposal_offline(
-    ///     TransactionType::SwitchPsm { new_endpoint, new_commitment }
+    ///     TransactionType::SwitchGuardian { new_endpoint, new_commitment }
     /// ).await?;
     ///
     /// // Save to file for sharing
@@ -52,7 +52,7 @@ impl MultisigClient {
 
         let salt = crate::transaction::generate_salt();
         let (new_endpoint, new_commitment) = match &transaction_type {
-            TransactionType::SwitchPsm {
+            TransactionType::SwitchGuardian {
                 new_endpoint,
                 new_commitment,
             } => {
@@ -66,16 +66,16 @@ impl MultisigClient {
             }
         };
 
-        let tx_request = crate::transaction::build_update_psm_transaction_request(
+        let tx_request = crate::transaction::build_update_guardian_transaction_request(
             new_commitment,
             salt,
             std::iter::empty(),
         )?;
         let metadata = ExportedMetadata {
-            proposal_type: "switch_psm".to_string(),
+            proposal_type: "switch_guardian".to_string(),
             salt_hex: Some(crate::transaction::word_to_hex(&salt)),
-            new_psm_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
-            new_psm_endpoint: Some(new_endpoint),
+            new_guardian_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
+            new_guardian_endpoint: Some(new_endpoint),
             ..Default::default()
         };
 
@@ -86,15 +86,7 @@ impl MultisigClient {
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
 
-        let id = format!(
-            "0x{}",
-            hex::encode(
-                tx_commitment
-                    .iter()
-                    .flat_map(|f| f.as_int().to_le_bytes())
-                    .collect::<Vec<_>>()
-            )
-        );
+        let id = crate::transaction::word_to_hex(&tx_commitment);
 
         let exported = ExportedProposal {
             version: EXPORT_VERSION,
@@ -115,12 +107,12 @@ impl MultisigClient {
         Ok(exported)
     }
 
-    /// Signs an imported proposal locally (without PSM).
+    /// Signs an imported proposal locally (without GUARDIAN).
     ///
     /// The signature is added directly to the proposal. After signing,
     /// export the proposal again to share with other cosigners.
     ///
-    /// Only `SwitchPsm` proposals are supported in this mode.
+    /// Only `SwitchGuardian` proposals are supported in this mode.
     ///
     /// # Example
     ///
@@ -177,9 +169,9 @@ impl MultisigClient {
     /// Executes an imported proposal (with all signatures already collected).
     ///
     /// This builds and submits the transaction directly to the Miden network
-    /// without contacting PSM.
+    /// without contacting GUARDIAN.
     ///
-    /// Only `SwitchPsm` transactions are supported in this mode.
+    /// Only `SwitchGuardian` transactions are supported in this mode.
     ///
     /// # Example
     ///

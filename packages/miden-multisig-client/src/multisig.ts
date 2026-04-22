@@ -1,11 +1,11 @@
 /**
  * Multisig class representing a created or loaded multisig account.
  *
- * This class wraps a Miden SDK Account and provides PSM integration
+ * This class wraps a Miden SDK Account and provides GUARDIAN integration
  * for proposal management.
  */
 
-import { PsmHttpClient, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/psm-client';
+import { GuardianHttpClient, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -16,7 +16,12 @@ import type {
   ProposalType,
 } from './types.js';
 import type { ProcedureName } from './procedures.js';
-import type { WebClient, TransactionRequest } from '@miden-sdk/miden-sdk';
+import type {
+  MidenClient,
+  TransactionProver,
+  TransactionRequest,
+  WasmWebClient,
+} from '@miden-sdk/miden-sdk';
 import {
   Account,
   AccountId,
@@ -32,7 +37,7 @@ import {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
-  buildUpdatePsmTransactionRequest,
+  buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
 } from './transaction.js';
@@ -48,14 +53,15 @@ import {
   tryComputeEcdsaCommitmentHex,
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
-import { buildPsmSignatureFromSigner } from './multisig/signing.js';
+import { buildGuardianSignatureFromSigner } from './multisig/signing.js';
 import { AccountInspector } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
+import { getRawMidenClient, getTransactionProver } from './raw-client.js';
 
 /**
- * Result of fetching account state from PSM.
+ * Result of fetching account state from GUARDIAN.
  */
 export interface AccountState {
   /** Account ID */
@@ -75,19 +81,21 @@ export interface AccountStateVerificationResult {
 }
 
 /**
- * Represents a multisig account with PSM integration.
+ * Represents a multisig account with GUARDIAN integration.
  */
 export class Multisig {
   account: Account;
   threshold: number;
   signerCommitments: string[];
-  psmCommitment: string;
+  guardianCommitment: string;
   procedureThresholds: Map<ProcedureName, number>;
-  psmPublicKey?: string;
+  guardianPublicKey?: string;
 
-  private psm: PsmHttpClient;
+  private guardian: GuardianHttpClient;
   private readonly signer: Signer;
-  private readonly webClient: WebClient;
+  private readonly midenClient: MidenClient;
+  private readonly rawClientPromise: Promise<WasmWebClient>;
+  private readonly transactionProver: TransactionProver | null;
   private readonly _accountId: string;
   private readonly midenRpcEndpoint?: string;
   private proposals: Map<string, Proposal> = new Map();
@@ -95,25 +103,27 @@ export class Multisig {
   constructor(
     account: Account,
     config: MultisigConfig,
-    psm: PsmHttpClient,
+    guardian: GuardianHttpClient,
     signer: Signer,
-    webClient: WebClient,
+    midenClient: MidenClient,
     accountId?: string,
     midenRpcEndpoint?: string
   ) {
     this.account = account;
     this.threshold = config.threshold;
     this.signerCommitments = config.signerCommitments;
-    this.psmCommitment = config.psmCommitment;
-    this.psmPublicKey = config.psmPublicKey;
+    this.guardianCommitment = config.guardianCommitment;
+    this.guardianPublicKey = config.guardianPublicKey;
     this.procedureThresholds = new Map(
       (config.procedureThresholds ?? []).map((pt) => [pt.procedure, pt.threshold])
     );
-    this.psm = psm;
+    this.guardian = guardian;
     this.signer = signer;
-    this.webClient = webClient;
+    this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
     this.midenRpcEndpoint = midenRpcEndpoint;
+    this.rawClientPromise = getRawMidenClient(midenClient, midenRpcEndpoint);
+    this.transactionProver = getTransactionProver(midenClient);
   }
 
   private getMidenRpcEndpoint(): string {
@@ -121,6 +131,10 @@ export class Multisig {
       throw new Error('Missing Miden RPC endpoint in MultisigClient configuration');
     }
     return this.midenRpcEndpoint;
+  }
+
+  private async getRawClient(): Promise<WasmWebClient> {
+    return this.rawClientPromise;
   }
 
   private proposalFactory(): ProposalFactory {
@@ -131,19 +145,19 @@ export class Multisig {
     });
   }
 
-  private async verifyPsmEndpointCommitment(endpoint: string | undefined, expectedCommitment: string): Promise<void> {
+  private async verifyGuardianEndpointCommitment(endpoint: string | undefined, expectedCommitment: string): Promise<void> {
     if (!endpoint) {
-      throw new Error('Switch PSM proposal missing newPsmEndpoint');
+      throw new Error('Switch GUARDIAN proposal missing newGuardianEndpoint');
     }
 
-    const endpointClient = new PsmHttpClient(endpoint);
+    const endpointClient = new GuardianHttpClient(endpoint);
     const fetchedPubkey = await endpointClient.getPubkey(this.signer.scheme);
     const endpointCommitment = normalizeHexWord(fetchedPubkey.commitment);
     const normalizedExpected = normalizeHexWord(expectedCommitment);
 
     if (endpointCommitment !== normalizedExpected) {
       throw new Error(
-        `Refusing to use PSM endpoint ${endpoint}: endpoint pubkey commitment ${endpointCommitment} does not match expected ${normalizedExpected}`
+        `Refusing to use GUARDIAN endpoint ${endpoint}: endpoint pubkey commitment ${endpointCommitment} does not match expected ${normalizedExpected}`
       );
     }
   }
@@ -173,8 +187,8 @@ export class Multisig {
         return 'update_signers';
       case 'update_procedure_threshold':
         return 'update_procedure_threshold';
-      case 'switch_psm':
-        return 'update_psm';
+      case 'switch_guardian':
+        return 'update_guardian';
       default:
         return null;
     }
@@ -201,22 +215,22 @@ export class Multisig {
   }
 
   /**
-   * Update the PSM client used by this Multisig instance.
+   * Update the GUARDIAN client used by this Multisig instance.
    *
-   * @param psmClient - The new PSM HTTP client
+   * @param guardianClient - The new GUARDIAN HTTP client
    */
-  setPsmClient(psmClient: PsmHttpClient): void {
-    this.psm = psmClient;
-    this.psm.setSigner(this.signer);
+  setGuardianClient(guardianClient: GuardianHttpClient): void {
+    this.guardian = guardianClient;
+    this.guardian.setSigner(this.signer);
   }
 
   /**
-   * Fetch the current account state from PSM.
+   * Fetch the current account state from GUARDIAN.
    *
    * @returns The account state including commitment and serialized data
    */
   async fetchState(): Promise<AccountState> {
-    const state: StateObject = await this.psm.getState(this._accountId);
+    const state: StateObject = await this.guardian.getState(this._accountId);
 
     return {
       accountId: state.accountId,
@@ -228,27 +242,28 @@ export class Multisig {
   }
 
   /**
-   * Sync account state from PSM into the local WebClient store.
+   * Sync account state from GUARDIAN into the local Miden client store.
    *
-   * If the PSM commitment differs from the local commitment (or the account
-   * is missing locally), the local store is overwritten with the PSM state.
+   * If the GUARDIAN commitment differs from the local commitment (or the account
+   * is missing locally), the local store is overwritten with the GUARDIAN state.
    */
   async syncState(): Promise<AccountState> {
     const state = await this.fetchState();
     const accountId = AccountId.fromHex(this._accountId);
-    const localAccount = await this.webClient.getAccount(accountId);
+    const webClient = await this.getRawClient();
+    const localAccount = await webClient.getAccount(accountId);
     let accountForConfigRefresh: Account | null = localAccount ?? null;
 
-    const psmCommitment = normalizeHexWord(state.commitment);
+    const guardianCommitment = normalizeHexWord(state.commitment);
     const localCommitment = localAccount
-      ? normalizeHexWord(localAccount.commitment().toHex())
+      ? normalizeHexWord(localAccount.to_commitment().toHex())
       : null;
 
-    if (!localAccount || localCommitment !== psmCommitment) {
+    if (!localAccount || localCommitment !== guardianCommitment) {
       const accountBytes = base64ToUint8Array(state.stateDataBase64);
       const incomingAccount = Account.deserialize(accountBytes);
       await this.ensureSafeToOverwriteLocalState(incomingAccount, localAccount);
-      await this.webClient.newAccount(incomingAccount, true);
+      await webClient.newAccount(incomingAccount, true);
       accountForConfigRefresh = incomingAccount;
     }
 
@@ -259,7 +274,8 @@ export class Multisig {
 
   async verifyStateCommitment(): Promise<AccountStateVerificationResult> {
     const accountId = AccountId.fromHex(this._accountId);
-    const localAccount = await this.webClient.getAccount(accountId);
+    const webClient = await this.getRawClient();
+    const localAccount = await webClient.getAccount(accountId);
 
     if (!localAccount) {
       throw new Error(
@@ -267,7 +283,7 @@ export class Multisig {
       );
     }
 
-    const localCommitment = normalizeHexWord(localAccount.commitment().toHex());
+    const localCommitment = normalizeHexWord(localAccount.to_commitment().toHex());
     const onChainCommitment = await this.getOnChainCommitment(accountId);
 
     if (!onChainCommitment) {
@@ -308,7 +324,7 @@ export class Multisig {
       return;
     }
 
-    const incomingCommitment = normalizeHexWord(incomingAccount.commitment().toHex());
+    const incomingCommitment = normalizeHexWord(incomingAccount.to_commitment().toHex());
     if (incomingCommitment !== onChainCommitment) {
       throw new Error(
         `Refusing to overwrite local state: incoming commitment does not match on-chain commitment for account ${this._accountId}`
@@ -354,8 +370,8 @@ export class Multisig {
       this.account = account;
       this.threshold = detected.threshold;
       this.signerCommitments = detected.signerCommitments;
-      if (detected.psmCommitment) {
-        this.psmCommitment = detected.psmCommitment;
+      if (detected.guardianCommitment) {
+        this.guardianCommitment = detected.guardianCommitment;
       }
       this.procedureThresholds = new Map(detected.procedureThresholds);
     } catch (error) {
@@ -364,14 +380,14 @@ export class Multisig {
   }
 
   /**
-   * Register this multisig account on the PSM server.
+   * Register this multisig account on the GUARDIAN server.
    *
    * The initial state must be the serialized Account bytes (base64-encoded).
    * If not provided, the account's serialize() method is used.
    *
    * @param initialStateBase64 - Optional base64-encoded serialized Account.¡
    */
-  async registerOnPsm(initialStateBase64?: string): Promise<void> {
+  async registerOnGuardian(initialStateBase64?: string): Promise<void> {
     // Serialize the account to bytes and base64-encode
     const stateData =
       initialStateBase64 ?? uint8ArrayToBase64(this.account.serialize());
@@ -389,22 +405,22 @@ export class Multisig {
             },
           };
 
-    const response = await this.psm.configure({
+    const response = await this.guardian.configure({
       accountId: this._accountId,
       auth,
       initialState: { data: stateData, accountId: this._accountId },
     });
 
     if (!response.success) {
-      throw new Error(`Failed to register on PSM: ${response.message}`);
+      throw new Error(`Failed to register on GUARDIAN: ${response.message}`);
     }
   }
 
   /**
-   * Sync proposals from the PSM server.
+   * Sync proposals from the GUARDIAN server.
    */
   async syncProposals(): Promise<Proposal[]> {
-    const deltas = await this.psm.getDeltaProposals(this._accountId);
+    const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
     for (const delta of deltas) {
@@ -441,15 +457,15 @@ export class Multisig {
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
   async createProposal(nonce: number, txSummaryBase64: string, metadata: ProposalMetadata): Promise<Proposal> {
-    const psmMetadata = ProposalMetadataCodec.toPsm(metadata);
+    const guardianMetadata = ProposalMetadataCodec.toGuardian(metadata);
 
-    const response = await this.psm.pushDeltaProposal({
+    const response = await this.guardian.pushDeltaProposal({
       accountId: this._accountId,
       nonce,
       deltaPayload: {
         txSummary: { data: txSummaryBase64 },
         signatures: [],
-        metadata: psmMetadata,
+        metadata: guardianMetadata,
       },
     });
 
@@ -472,17 +488,18 @@ export class Multisig {
     nonce?: number,
     newThreshold?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     const targetThreshold = newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      this.webClient,
+      webClient,
       targetThreshold,
       targetSignerCommitments,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -510,6 +527,7 @@ export class Multisig {
     nonce?: number,
     newThreshold?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
@@ -531,13 +549,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      this.webClient,
+      webClient,
       targetThreshold,
       targetSignerCommitments,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -563,6 +581,7 @@ export class Multisig {
     newThreshold: number,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
@@ -574,13 +593,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      this.webClient,
+      webClient,
       newThreshold,
       this.signerCommitments,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -601,6 +620,7 @@ export class Multisig {
     targetThreshold: number,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${targetThreshold}. Must be between 0 and ${this.signerCommitments.length}`
@@ -619,13 +639,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateProcedureThresholdTransactionRequest(
-      this.webClient,
+      webClient,
       targetProcedure,
       targetThreshold,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
     const action = targetThreshold === 0
@@ -645,36 +665,37 @@ export class Multisig {
   }
 
   /**
-   * Create a "switch PSM" proposal to change the PSM provider.
+   * Create a "switch GUARDIAN" proposal to change the GUARDIAN provider.
    * 
-   * @param newPsmEndpoint - The new PSM server endpoint URL
-   * @param newPsmPubkey - The new PSM server's public key commitment (hex)
+   * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
+   * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
    * @param nonce - Optional proposal nonce (defaults to Date.now())
    */
-  async createSwitchPsmProposal(
-    newPsmEndpoint: string,
-    newPsmPubkey: string,
+  async createSwitchGuardianProposal(
+    newGuardianEndpoint: string,
+    newGuardianPubkey: string,
     nonce?: number,
   ): Promise<Proposal> {
-    await this.verifyPsmEndpointCommitment(newPsmEndpoint, newPsmPubkey);
+    const webClient = await this.getRawClient();
+    await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
-    const { request, salt } = await buildUpdatePsmTransactionRequest(
-      this.webClient,
-      newPsmPubkey,
+    const { request, salt } = await buildUpdateGuardianTransactionRequest(
+      webClient,
+      newGuardianPubkey,
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
-      proposalType: 'switch_psm',
+      proposalType: 'switch_guardian',
       saltHex: salt.toHex(),
-      requiredSignatures: this.getEffectiveThreshold('switch_psm'),
-      newPsmPubkey,
-      newPsmEndpoint,
-      description: `Switch PSM to ${newPsmEndpoint}`,
+      requiredSignatures: this.getEffectiveThreshold('switch_guardian'),
+      newGuardianPubkey,
+      newGuardianEndpoint,
+      description: `Switch GUARDIAN to ${newGuardianEndpoint}`,
     };
 
     const proposalId = computeCommitmentFromTxSummary(summaryBase64);
@@ -702,13 +723,14 @@ export class Multisig {
     noteIds: string[],
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
     }
 
-    const { request, salt } = await buildConsumeNotesTransactionRequest(this.webClient, noteIds);
+    const { request, salt } = await buildConsumeNotesTransactionRequest(webClient, noteIds);
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -737,6 +759,7 @@ export class Multisig {
     amount: bigint,
     nonce?: number,
   ): Promise<Proposal> {
+    const webClient = await this.getRawClient();
     if (amount <= 0n) {
       throw new Error('Amount must be greater than 0');
     }
@@ -748,7 +771,7 @@ export class Multisig {
       amount,
     );
 
-    const summary = await executeForSummary(this.webClient, this._accountId, request);
+    const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
@@ -773,9 +796,10 @@ export class Multisig {
    */
   async getConsumableNotes(): Promise<ConsumableNote[]> {
     const accountId = AccountId.fromHex(this._accountId);
+    const webClient = await this.getRawClient();
 
     // Get consumable notes for this account
-    const consumableRecords = await this.webClient.getConsumableNotes(accountId);
+    const consumableRecords = await webClient.getConsumableNotes(accountId);
 
     // Convert to our simplified ConsumableNote type
     const notes: ConsumableNote[] = [];
@@ -829,12 +853,12 @@ export class Multisig {
     const proposal = existingProposal;
 
     const commitmentToSign = await this.verifyProposalMetadataBinding(proposal);
-    const signature: ProposalSignature = await buildPsmSignatureFromSigner(
+    const signature: ProposalSignature = await buildGuardianSignatureFromSigner(
       this.signer,
       commitmentToSign,
     );
 
-    const signedDelta = await this.psm.signDeltaProposal({
+    const signedDelta = await this.guardian.signDeltaProposal({
       accountId: this._accountId,
       commitment: normalizedProposalId,
       signature,
@@ -866,24 +890,73 @@ export class Multisig {
     return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
   }
 
+  async createTransactionProposalRequest(proposalId: string): Promise<TransactionRequest> {
+    const { finalRequest } = await this.prepareProposalExecution(proposalId);
+    return finalRequest;
+  }
+
   /**
    * Execute a proposal that has enough signatures.
    *
    * @param proposalId - The proposal commitment/ID
    */
   async executeProposal(proposalId: string): Promise<void> {
-    const proposal = this.proposals.get(proposalId);
+    const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
+
+    const accountId = AccountId.fromHex(this._accountId);
+    await this.midenClient.transactions.submit(accountId, finalRequest);
+
+    if (metadata.proposalType === 'switch_guardian') {
+      if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
+        throw new Error('Switch GUARDIAN proposal metadata is incomplete after execution');
+      }
+
+      try {
+        const webClient = await this.getRawClient();
+        await webClient.syncState();
+
+        const updatedAccount = await webClient.getAccount(accountId);
+        if (!updatedAccount) {
+          throw new Error(
+            `Updated account ${this._accountId} is missing from local client`
+          );
+        }
+
+        const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
+        const nextGuardian = new GuardianHttpClient(metadata.newGuardianEndpoint);
+        this.setGuardianClient(nextGuardian);
+        this.guardianPublicKey = metadata.newGuardianPubkey;
+
+        await this.registerOnGuardian(updatedStateBase64);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Transaction executed successfully but failed to register on new GUARDIAN: ${message}`
+        );
+      }
+    }
+
+    proposal.status = 'finalized';
+  }
+
+  private getLocalProposal(proposalId: string): Proposal | undefined {
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
+  }
+
+  private async prepareProposalExecution(
+    proposalId: string,
+  ): Promise<{ finalRequest: TransactionRequest; metadata: ProposalMetadata; proposal: Proposal }> {
+    const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
 
+    this.proposalFactory().assertAccountId(proposal.accountId);
     await this.verifyProposalMetadataBinding(proposal);
 
-    const proposalType = proposal.metadata?.proposalType;
-    const effectiveThreshold = proposalType
-      ? this.getEffectiveThreshold(proposalType)
-      : this.threshold;
-
+    const metadata = proposal.metadata;
+    const effectiveThreshold = this.getEffectiveThreshold(metadata.proposalType);
     const signatureContext = `Invalid proposal signatures for ${proposalId}`;
     const signaturesForExecution = new ProposalSignatures(
       proposal.signatures,
@@ -895,15 +968,16 @@ export class Multisig {
       throw new Error('Proposal is not ready for execution. Still pending signatures.');
     }
 
-    const isSwitchPsm = proposalType === 'switch_psm';
+    const isSwitchGuardian = metadata.proposalType === 'switch_guardian';
+    const normalizedProposalId = normalizeHexWord(proposal.id);
 
     let txSummaryBase64: string;
     let delta: DeltaObject | undefined;
 
-    if (isSwitchPsm) {
+    if (isSwitchGuardian) {
       txSummaryBase64 = proposal.txSummary;
     } else {
-      delta = await this.psm.getDeltaProposal(this._accountId, proposalId);
+      delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
       txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
 
@@ -911,12 +985,13 @@ export class Multisig {
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
     const saltHex = txSummary.salt().toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
+    const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(
       this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
     );
-
     const adviceMap = new AdviceMap();
     const adviceMapKeys = new Set<string>();
+    const createTxCommitmentWord = (): Word => Word.fromHex(normalizedTxCommitmentHex);
 
     for (const cosignerSig of signaturesForExecution) {
       let signerCommitmentHex = normalizeHexWord(cosignerSig.signerId);
@@ -949,10 +1024,9 @@ export class Multisig {
         cosignerSig.signature.scheme,
       );
       const signature = Signature.deserialize(sigBytes);
-      const txCommitment = Word.fromHex(normalizeHexWord(txCommitmentHex));
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
-        txCommitment,
+        createTxCommitmentWord(),
         signature,
         ecdsaPublicKey,
         cosignerSig.signature.scheme === 'ecdsa'
@@ -967,55 +1041,51 @@ export class Multisig {
       adviceMap.insert(key, new FeltArray(values));
     }
 
-    if (!isSwitchPsm && delta) {
+    if (!isSwitchGuardian && delta) {
       const executionDelta = {
         ...delta,
         deltaPayload: delta.deltaPayload.txSummary,
       };
 
-      const pushResult = await this.psm.pushDelta(executionDelta);
+      const pushResult = await this.guardian.pushDelta(executionDelta);
       const ackSigHex = pushResult.ackSig;
       if (!ackSigHex) {
-        throw new Error('PSM did not return acknowledgment signature');
+        throw new Error('GUARDIAN did not return acknowledgment signature');
       }
 
-      const psmCommitment = Word.fromHex(normalizeHexWord(this.psmCommitment));
+      const guardianCommitment = Word.fromHex(normalizeHexWord(this.guardianCommitment));
       const ackScheme = (pushResult.ackScheme as 'ecdsa' | 'falcon') || this.signer.scheme;
-      const ackPubkey = pushResult.ackPubkey || this.psmPublicKey;
+      const ackPubkey = pushResult.ackPubkey || this.guardianPublicKey;
       if (ackScheme === 'ecdsa' && !ackPubkey) {
-        throw new Error('PSM acknowledgment is missing ECDSA public key');
+        throw new Error('GUARDIAN acknowledgment is missing ECDSA public key');
       }
       if (ackScheme === 'ecdsa' && ackPubkey) {
         const derivedCommitment = tryComputeEcdsaCommitmentHex(ackPubkey);
-        if (derivedCommitment && derivedCommitment !== normalizeHexWord(this.psmCommitment)) {
-          throw new Error('PSM public key commitment mismatch');
+        if (derivedCommitment && derivedCommitment !== normalizeHexWord(this.guardianCommitment)) {
+          throw new Error('GUARDIAN public key commitment mismatch');
         }
       }
       const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
       const ackSignature = Signature.deserialize(ackSigBytes);
-      const txCommitmentForAck = Word.fromHex(normalizeHexWord(txCommitmentHex));
       const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
-        psmCommitment,
-        txCommitmentForAck,
+        guardianCommitment,
+        createTxCommitmentWord(),
         ackSignature,
         ackScheme === 'ecdsa' ? ackPubkey : undefined,
         ackScheme === 'ecdsa' ? ackSigHex : undefined,
       );
       const ackKeyHex = normalizeHexWord(ackKey.toHex());
       if (adviceMapKeys.has(ackKeyHex)) {
-        throw new Error(`Duplicate advice-map key detected for PSM acknowledgment in proposal ${proposalId}`);
+        throw new Error(`Duplicate advice-map key detected for GUARDIAN acknowledgment in proposal ${proposalId}`);
       }
       adviceMapKeys.add(ackKeyHex);
       adviceMap.insert(ackKey, new FeltArray(ackValues));
     }
 
-    const metadata = proposal.metadata;
-    if (!metadata) {
-      throw new Error('Proposal missing metadata');
+    if (metadata.proposalType === 'switch_guardian') {
+      await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
     }
-    if (metadata.proposalType === 'switch_psm') {
-      await this.verifyPsmEndpointCommitment(metadata.newPsmEndpoint, metadata.newPsmPubkey);
-    }
+
     const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
     const finalRequest = await this.buildTransactionRequestFromMetadata(
       metadata,
@@ -1023,49 +1093,14 @@ export class Multisig {
       adviceMap,
     );
 
-    const accountId = AccountId.fromHex(this._accountId);
-    const result = await this.webClient.executeTransaction(accountId, finalRequest);
-    const proven = await this.webClient.proveTransaction(result, null);
-    const submissionHeight = await this.webClient.submitProvenTransaction(proven, result);
-    await this.webClient.applyTransaction(result, submissionHeight);
-
-    if (metadata.proposalType === 'switch_psm') {
-      if (!metadata.newPsmEndpoint || !metadata.newPsmPubkey) {
-        throw new Error('Switch PSM proposal metadata is incomplete after execution');
-      }
-
-      try {
-        await this.webClient.syncState();
-
-        const updatedAccount = await this.webClient.getAccount(accountId);
-        if (!updatedAccount) {
-          throw new Error(
-            `Updated account ${this._accountId} is missing from local client`
-          );
-        }
-
-        const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
-        const nextPsm = new PsmHttpClient(metadata.newPsmEndpoint);
-        this.setPsmClient(nextPsm);
-        this.psmPublicKey = metadata.newPsmPubkey;
-
-        await this.registerOnPsm(updatedStateBase64);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Transaction executed successfully but failed to register on new PSM: ${message}`
-        );
-      }
-    }
-
-    proposal.status = 'finalized';
+    return { finalRequest, metadata, proposal };
   }
 
   /**
    * Export a proposal for offline signing
    */
   async exportProposal(proposalId: string): Promise<ExportedProposal> {
-    const delta = await this.psm.getDeltaProposal(this._accountId, proposalId);
+    const delta = await this.guardian.getDeltaProposal(this._accountId, proposalId);
     const existingProposal = this.proposals.get(proposalId);
     const proposal = this.proposalFactory().fromDelta(
       delta,
@@ -1182,7 +1217,7 @@ export class Multisig {
     const commitmentToSign = await this.verifyProposalMetadataBinding(proposal);
 
     // Sign the commitment
-    const signature = await buildPsmSignatureFromSigner(this.signer, commitmentToSign);
+    const signature = await buildGuardianSignatureFromSigner(this.signer, commitmentToSign);
 
     // Add signature to local proposal
     const signatures = [
@@ -1236,7 +1271,8 @@ export class Multisig {
       : summary.salt();
 
     const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
-    const reconstructed = await executeForSummary(this.webClient, this._accountId, request);
+    const webClient = await this.getRawClient();
+    const reconstructed = await executeForSummary(webClient, this._accountId, request);
     const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
 
     if (reconstructedCommitment !== txSummaryCommitment) {
@@ -1251,29 +1287,31 @@ export class Multisig {
     salt: Word,
     signatureAdviceMap?: AdviceMap,
   ): Promise<TransactionRequest> {
+    const webClient = await this.getRawClient();
+
     switch (metadata.proposalType) {
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold': {
         const { request } = await buildUpdateSignersTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
           { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
         );
         return request;
       }
-      case 'switch_psm': {
-        const { request } = await buildUpdatePsmTransactionRequest(
-          this.webClient,
-          metadata.newPsmPubkey,
+      case 'switch_guardian': {
+        const { request } = await buildUpdateGuardianTransactionRequest(
+          webClient,
+          metadata.newGuardianPubkey,
           { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
         );
         return request;
       }
       case 'update_procedure_threshold': {
         const { request } = await buildUpdateProcedureThresholdTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.targetProcedure,
           metadata.targetThreshold,
           { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
@@ -1282,7 +1320,7 @@ export class Multisig {
       }
       case 'consume_notes': {
         const { request } = await buildConsumeNotesTransactionRequest(
-          this.webClient,
+          webClient,
           metadata.noteIds,
           { salt, signatureAdviceMap }
         );

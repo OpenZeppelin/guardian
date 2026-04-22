@@ -50,25 +50,23 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         }
     };
 
-    // PSM endpoint selection
-    println!("\n  Select PSM server:");
+    // GUARDIAN endpoint selection
+    println!("\n  Select GUARDIAN gRPC server:");
     println!("    [1] Local gRPC (http://localhost:50051)");
-    println!("    [2] Local HTTP (http://localhost:3000)");
-    println!("    [3] Custom URL");
+    println!("    [2] Custom gRPC URL");
     println!();
 
-    let psm_choice = prompt_input(editor, "PSM Server [1]: ")?;
-    let psm_endpoint = match psm_choice.trim() {
+    let guardian_choice = prompt_input(editor, "GUARDIAN Server [1]: ")?;
+    let guardian_endpoint = match guardian_choice.trim() {
         "" | "1" => "http://localhost:50051".to_string(),
-        "2" => "http://localhost:3000".to_string(),
-        "3" => prompt_input(editor, "Enter PSM Server URL: ")?,
+        "2" => prompt_input(editor, "Enter GUARDIAN gRPC URL: ")?,
         _ => {
             println!("  Invalid choice, using local gRPC");
             "http://localhost:50051".to_string()
         }
     };
 
-    println!("\n  PSM Server: {}", psm_endpoint);
+    println!("\n  GUARDIAN Server: {}", guardian_endpoint);
     println!(
         "  Miden Node: {}://{}{}",
         miden_endpoint.protocol(),
@@ -106,7 +104,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
 
     let mut state = SessionState::new()?;
     state
-        .initialize_client(miden_endpoint, &psm_endpoint, signature_scheme)
+        .initialize_client(miden_endpoint, &guardian_endpoint, signature_scheme)
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;

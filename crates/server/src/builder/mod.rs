@@ -1,4 +1,4 @@
-//! Server builder for configuring and running the Private State Manager server
+//! Server builder for configuring and running the Guardian server
 //!
 //! Provides a fluent API for configuring the server with different:
 //! - Network types (Miden, Ethereum, etc.)
@@ -23,7 +23,7 @@ use crate::middleware::{BodyLimitConfig, RateLimitConfig};
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
-use private_state_manager_shared::SignatureScheme;
+use guardian_shared::SignatureScheme;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -74,7 +74,7 @@ impl ServerBuilder {
     /// use server::network::NetworkType;
     ///
     /// let builder = ServerBuilder::new()
-    ///     .network(NetworkType::MidenTestnet);
+    ///     .network(NetworkType::MidenDevnet);
     /// ```
     pub fn network(mut self, network_type: NetworkType) -> Self {
         self.network_type = Some(network_type);
@@ -93,7 +93,7 @@ impl ServerBuilder {
     /// use std::sync::Arc;
     ///
     /// # async fn example() -> Result<(), String> {
-    /// let storage = FilesystemService::new(PathBuf::from("/var/psm/storage")).await?;
+    /// let storage = FilesystemService::new(PathBuf::from("/var/guardian/storage")).await?;
     ///
     /// let builder = ServerBuilder::new()
     ///     .storage(Arc::new(storage));
@@ -117,7 +117,7 @@ impl ServerBuilder {
     /// use std::path::PathBuf;
     ///
     /// # async fn example() -> Result<(), String> {
-    /// let metadata_path = PathBuf::from("/var/psm/metadata");
+    /// let metadata_path = PathBuf::from("/var/guardian/metadata");
     /// let metadata = FilesystemMetadataStore::new(metadata_path).await?;
     ///
     /// let builder = ServerBuilder::new()
@@ -142,7 +142,7 @@ impl ServerBuilder {
     /// use std::path::PathBuf;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let ack = AckRegistry::new(PathBuf::from("/var/psm/keystore"))?;
+    /// # let ack = AckRegistry::new(PathBuf::from("/var/guardian/keystore")).await?;
     ///
     /// # let builder = ServerBuilder::new()
     /// #     .ack(ack);
@@ -291,7 +291,7 @@ impl ServerBuilder {
     /// let builder = ServerBuilder::new()
     ///     .with_rate_limit(RateLimitConfig::new(10, 60));
     ///
-    /// // Load from environment (PSM_RATE_BURST_PER_SEC, PSM_RATE_PER_MIN)
+    /// // Load from environment (GUARDIAN_RATE_BURST_PER_SEC, GUARDIAN_RATE_PER_MIN)
     /// let builder = ServerBuilder::new()
     ///     .with_rate_limit(RateLimitConfig::from_env());
     ///
@@ -318,7 +318,7 @@ impl ServerBuilder {
     /// let builder = ServerBuilder::new()
     ///     .with_body_limit(BodyLimitConfig::new(5 * 1024 * 1024));
     ///
-    /// // Load from environment (PSM_MAX_REQUEST_BYTES)
+    /// // Load from environment (GUARDIAN_MAX_REQUEST_BYTES)
     /// let builder = ServerBuilder::new()
     ///     .with_body_limit(BodyLimitConfig::from_env());
     /// ```
@@ -346,11 +346,11 @@ impl ServerBuilder {
     /// use std::path::PathBuf;
     ///
     /// # async fn example() -> Result<(), String> {
-    /// let storage = FilesystemService::new(PathBuf::from("/var/psm/storage")).await?;
-    /// let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/psm/metadata")).await?;
+    /// let storage = FilesystemService::new(PathBuf::from("/var/guardian/storage")).await?;
+    /// let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/guardian/metadata")).await?;
     ///
     /// let handle = ServerBuilder::new()
-    ///     .network(NetworkType::MidenTestnet)
+    ///     .network(NetworkType::MidenDevnet)
     ///     .storage(Arc::new(storage))
     ///     .metadata(Arc::new(metadata))
     ///     .build()

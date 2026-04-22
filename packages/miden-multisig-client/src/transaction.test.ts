@@ -6,7 +6,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   AdviceMap: vi.fn(),
   Felt: vi.fn().mockImplementation((v) => ({ value: v })),
   FeltArray: vi.fn().mockImplementation((arr) => arr),
-  Rpo256: { hashElements: vi.fn() },
+  Poseidon2: { hashElements: vi.fn() },
   Signature: { deserialize: vi.fn() },
   TransactionRequestBuilder: vi.fn().mockImplementation(() => ({
     withCustomScript: vi.fn().mockReturnThis(),
@@ -110,21 +110,21 @@ describe('transaction utilities', () => {
   });
 
   describe('signatureHexToBytes', () => {
-    it('should prepend auth scheme byte (0 = RpoFalcon512)', () => {
+    it('should prepend auth scheme byte (2 = Falcon Poseidon2)', () => {
       const result = signatureHexToBytes('deadbeef');
-      expect(result[0]).toBe(0); // RpoFalcon512 scheme byte
+      expect(result[0]).toBe(2);
       expect(result.slice(1)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
     });
 
     it('should prepend auth scheme byte (1 = ECDSA)', () => {
       const result = signatureHexToBytes('deadbeef', 'ecdsa');
-      expect(result[0]).toBe(1); // ECDSA scheme byte
+      expect(result[0]).toBe(1);
       expect(result.slice(1)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
     });
 
     it('should handle 0x prefix', () => {
       const result = signatureHexToBytes('0xaabbccdd');
-      expect(result[0]).toBe(0);
+      expect(result[0]).toBe(2);
       expect(result.slice(1)).toEqual(new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]));
     });
 
@@ -136,7 +136,7 @@ describe('transaction utilities', () => {
 
     it('should handle empty signature', () => {
       const result = signatureHexToBytes('');
-      expect(result).toEqual(new Uint8Array([0])); // Just the prefix
+      expect(result).toEqual(new Uint8Array([2]));
     });
   });
 });

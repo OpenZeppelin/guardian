@@ -1,5 +1,5 @@
 use crate::delta_object::DeltaObject;
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::resolve_account;
 use crate::state::AppState;
@@ -30,7 +30,7 @@ pub async fn get_delta(state: &AppState, params: GetDeltaParams) -> Result<GetDe
         .storage
         .pull_delta(&params.account_id, params.nonce)
         .await
-        .map_err(|_e| PsmError::DeltaNotFound {
+        .map_err(|_e| GuardianError::DeltaNotFound {
             account_id: params.account_id.clone(),
             nonce: params.nonce,
         })?;

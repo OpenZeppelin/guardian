@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use miden_multisig_client::word_from_hex;
 use miden_protocol::Word;
-use miden_protocol::crypto::rand::{FeltRng, RpoRandomCoin};
+use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -31,7 +31,7 @@ fn load_vectors() -> Vec<P2idSerialVector> {
 fn word_to_hex(word: &Word) -> String {
     let bytes: Vec<u8> = word
         .iter()
-        .flat_map(|felt| felt.as_int().to_le_bytes())
+        .flat_map(|felt| felt.as_canonical_u64().to_le_bytes())
         .collect();
     format!("0x{}", hex::encode(bytes))
 }
@@ -41,7 +41,7 @@ fn draw_word_matches_shared_p2id_serial_vectors() {
     for vector in load_vectors() {
         let seed = word_from_hex(&vector.seed)
             .unwrap_or_else(|err| panic!("vector '{}' has invalid seed: {}", vector.name, err));
-        let mut rng = RpoRandomCoin::new(seed);
+        let mut rng = RandomCoin::new(seed);
         let actual = word_to_hex(&rng.draw_word());
 
         assert_eq!(actual, vector.output, "vector '{}'", vector.name);

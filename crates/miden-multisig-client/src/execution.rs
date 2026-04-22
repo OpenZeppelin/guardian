@@ -2,13 +2,13 @@
 
 use std::collections::HashSet;
 
-use miden_client::Client;
+use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::{Felt, Word};
-use private_state_manager_shared::SignatureScheme;
 
+use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
@@ -90,7 +90,7 @@ pub fn collect_signature_advice(
     reason = "execution needs transaction metadata and signature scheme to stay explicit"
 )]
 pub async fn build_final_transaction_request(
-    client: &Client<()>,
+    client: &MidenSdkClient,
     transaction_type: &TransactionType,
     account: &Account,
     salt: Word,
@@ -126,8 +126,8 @@ pub async fn build_final_transaction_request(
             )
             .await
         }
-        TransactionType::SwitchPsm { new_commitment, .. } => {
-            crate::transaction::build_update_psm_transaction_request(
+        TransactionType::SwitchGuardian { new_commitment, .. } => {
+            crate::transaction::build_update_guardian_transaction_request(
                 *new_commitment,
                 salt,
                 signature_advice,
@@ -175,7 +175,7 @@ pub async fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 
     #[test]
     fn test_collect_signature_advice_filters_by_required() {

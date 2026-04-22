@@ -1,0 +1,199 @@
+# Guardian Authentication Component
+#
+# This component provides GUARDIAN signature verification for accounts.
+# It can be used standalone or in conjunction with other auth components like multisig.
+
+use miden::protocol::active_account
+use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
+use miden::protocol::native_account
+
+# IMPORTANT SECURITY NOTES
+# --------------------------------------------------------------------------------
+# - The selector in `GUARDIAN_SELECTOR_SLOT` controls whether the extra GUARDIAN signature
+#   is enforced:
+#     * GUARDIAN_ON  => exactly one valid GUARDIAN signature is required.
+#     * GUARDIAN_OFF => GUARDIAN signature is skipped for that call.
+#
+# - `verify_guardian_signature` reads the selector from initial storage state.
+#   This means changes made during the same transaction won't affect the check.
+#
+# - `enable_guardian` / `disable_guardian` procedures allow explicit control over GUARDIAN state.
+#
+# - `update_guardian_public_key`:
+#     * Installs a new GUARDIAN public key in the map at `GUARDIAN_PUBLIC_KEY_MAP_SLOT`.
+#     * Does not itself perform any signature checks.
+#     * To update the key without requiring GUARDIAN signature, ensure selector is OFF.
+#
+# Storage Layout
+# --------------------------------------------------------------------------------
+#
+# +---------------------+---------------+
+# |     DESCRIPTION     |     SLOT      |
+# +---------------------+---------------+
+# | GUARDIAN SELECTOR (word) |       0       |
+# | GUARDIAN PUBLIC KEY MAP  |       1       |
+# | GUARDIAN SCHEME ID MAP   |       2       |
+# +---------------------+---------------+
+#
+# - GUARDIAN_SELECTOR_SLOT (0):
+#     * Stores a word that is compared against [1, 0, 0, 0] (GUARDIAN_ON).
+#     * Any value != GUARDIAN_ON is treated as GUARDIAN_OFF.
+#
+# - GUARDIAN_PUBLIC_KEY_MAP_SLOT (1):
+#     * A map from a fixed key [0, 0, 0, 0] to the single GUARDIAN public key:
+#         [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+#     * GUARDIAN_PUBLIC_KEY is a Falcon Poseidon2 public key represented as a word.
+
+# CONSTANTS
+# =================================================================================================
+
+# Slot where the GUARDIAN selector flag is stored (using word() for named slot access):
+# - GUARDIAN_ON  => GUARDIAN signature required
+# - GUARDIAN_OFF => GUARDIAN signature skipped
+const GUARDIAN_SELECTOR_SLOT=word("openzeppelin::guardian::selector")
+
+# Map slot for GUARDIAN public key
+# Uses exactly one GUARDIAN public key at index [0, 0, 0, 0]
+# [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+const GUARDIAN_PUBLIC_KEY_MAP_SLOT=word("openzeppelin::guardian::public_key")
+
+# Map slot for GUARDIAN signature scheme IDs
+# Uses exactly one scheme ID entry at index [0, 0, 0, 0]
+# [0, 0, 0, 0] => [scheme_id, 0, 0, 0]
+const GUARDIAN_SCHEME_ID_MAP_SLOT=word("openzeppelin::guardian::scheme_id")
+
+# Selector flag values
+const GUARDIAN_ON=[1, 0, 0, 0]
+const GUARDIAN_OFF=[0, 0, 0, 0]
+const FALCON_512_POSEIDON2_SCHEME_WORD=[2, 0, 0, 0]
+
+# GUARDIAN PROCEDURES
+# =================================================================================================
+
+#! Enable GUARDIAN verification by setting the selector to ON.
+#!
+#! Operand stack inputs: []
+#! Outputs: []
+#!
+#! Notes:
+#! - Sets GUARDIAN_SELECTOR_SLOT to GUARDIAN_ON (1)
+#! - After this, transactions will require GUARDIAN signature verification
+proc enable_guardian
+    push.GUARDIAN_ON
+    # => [GUARDIAN_ON]
+
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, GUARDIAN_ON]
+
+    exec.native_account::set_item
+    # => [OLD_ROOT]
+
+    dropw
+    # => []
+end
+
+#! Disable GUARDIAN verification by setting the selector to OFF.
+#!
+#! Operand stack inputs: []
+#! Outputs: []
+#!
+#! Notes:
+#! - Sets GUARDIAN_SELECTOR_SLOT to GUARDIAN_OFF (0)
+#! - After this, transactions will NOT require GUARDIAN signature verification
+proc disable_guardian
+    push.GUARDIAN_OFF
+    # => [GUARDIAN_OFF]
+
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    # => [selector_slot_prefix, selector_slot_suffix, GUARDIAN_OFF]
+
+    exec.native_account::set_item
+    # => [OLD_ROOT]
+
+    dropw
+    # => []
+end
+
+#! Update the GUARDIAN public key.
+#!
+#! Operand stack inputs: []
+#! Advice stack inputs:  [PUB_KEY]
+#!   - PUB_KEY is the new GUARDIAN RPO Falcon 512 public key
+#!
+#! Notes:
+#! - Stores PUB_KEY into GUARDIAN_PUBLIC_KEY_MAP_SLOT:
+#!      [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
+#! - To update the key without requiring GUARDIAN signature, ensure
+#!   GUARDIAN_SELECTOR_SLOT = 0 (OFF) before calling this.
+pub proc update_guardian_public_key
+    exec.disable_guardian
+    # ------ Update the GUARDIAN public key ------
+    adv_loadw
+    # => [PUB_KEY]
+
+    push.0.0.0.0
+    # => [MAP_KEY, PUB_KEY]
+    # Note that MAP_KEY is [0, 0, 0, 0] for a single GUARDIAN_KEY
+
+    push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
+    # => [pub_key_slot_prefix, pub_key_slot_suffix, MAP_KEY, PUB_KEY]
+
+    exec.native_account::set_map_item
+    # => [OLD_MAP_VALUE]
+
+    dropw
+    # => []
+
+    push.0.0.0.0
+    # => [MAP_KEY]
+
+    push.FALCON_512_POSEIDON2_SCHEME_WORD
+    # => [SCHEME_ID_WORD, MAP_KEY]
+
+    swapw
+    # => [MAP_KEY, SCHEME_ID_WORD]
+
+    push.GUARDIAN_SCHEME_ID_MAP_SLOT[0..2]
+    # => [scheme_id_slot_prefix, scheme_id_slot_suffix, MAP_KEY, SCHEME_ID_WORD]
+
+    exec.native_account::set_map_item
+    # => [OLD_MAP_VALUE]
+
+    dropw
+    # => []
+end
+
+#! Conditionally verify a "GUARDIAN" signature against a stored public key hash.
+#! The condition is controlled by the selector at GUARDIAN_SELECTOR_SLOT.
+#!
+#! Inputs:  [MSG]
+#! Outputs: [MSG]
+#!
+#! Panics if:
+#! - Selector is ON but the provided GUARDIAN signature is invalid or missing.
+#!
+#! Notes:
+#! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
+#! - If selector is OFF (0), GUARDIAN verification is skipped
+#! - Selector value is read from initial storage state
+pub proc verify_guardian_signature(msg: word)
+    push.GUARDIAN_SELECTOR_SLOT[0..2]
+    exec.active_account::get_item
+    drop drop drop
+    # => [selector, MSG]
+
+    push.1 eq
+    if.true
+        push.1
+        push.GUARDIAN_PUBLIC_KEY_MAP_SLOT[0..2]
+        push.GUARDIAN_SCHEME_ID_MAP_SLOT[0..2]
+        exec.::miden::standards::auth::signature::verify_signatures
+        push.1 neq
+        if.true
+            emit.AUTH_UNAUTHORIZED_EVENT
+            push.0 assert.err="invalid GUARDIAN signature"
+        end
+    end
+    # => [MSG]
+    exec.enable_guardian
+end

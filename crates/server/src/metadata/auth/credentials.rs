@@ -1,6 +1,6 @@
-use crate::error::PsmError;
+use crate::error::GuardianError;
 use axum::{extract::FromRequestParts, http::request::Parts};
-use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::AuthRequestPayload;
 
 /// Maximum allowed clock skew in milliseconds between client and server timestamps
 pub const MAX_TIMESTAMP_SKEW_MS: i64 = 300_000; // 5 minutes in milliseconds
@@ -82,13 +82,13 @@ impl<S> FromRequestParts<S> for AuthHeader
 where
     S: Send + Sync,
 {
-    type Rejection = PsmError;
+    type Rejection = GuardianError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let creds = parts
             .headers
             .extract_credentials()
-            .map_err(PsmError::AuthenticationFailed)?;
+            .map_err(GuardianError::AuthenticationFailed)?;
         Ok(AuthHeader(creds))
     }
 }

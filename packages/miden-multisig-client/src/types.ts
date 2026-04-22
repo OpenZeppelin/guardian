@@ -1,5 +1,5 @@
 import type { Account } from '@miden-sdk/miden-sdk';
-import type { SignatureScheme } from '@openzeppelin/psm-client';
+import type { SignatureScheme } from '@openzeppelin/guardian-client';
 import type { ProcedureName } from './procedures.js';
 import type { AccountState } from './multisig.js';
 import type { DetectedMultisigConfig } from './inspector.js';
@@ -23,7 +23,7 @@ export type {
   DeltaProposalResponse,
   ProposalsResponse,
   SignProposalRequest,
-} from '@openzeppelin/psm-client';
+} from '@openzeppelin/guardian-client';
 
 export type {
   ExportedProposal,
@@ -78,12 +78,13 @@ export interface ProcedureThreshold {
 export interface MultisigConfig {
   threshold: number;
   signerCommitments: string[];
-  psmCommitment: string;
-  psmPublicKey?: string;
-  psmEnabled?: boolean;
+  guardianCommitment: string;
+  guardianPublicKey?: string;
+  guardianEnabled?: boolean;
   storageMode?: 'private' | 'public';
   procedureThresholds?: ProcedureThreshold[];
   signatureScheme?: SignatureScheme;
+  seed?: Uint8Array
 }
 
 export interface CreateAccountResult {

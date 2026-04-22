@@ -1,4 +1,4 @@
-pub use private_state_manager_shared::{FromJson, ToJson};
+pub use guardian_shared::{FromJson, ToJson};
 
 use server::ack::AckRegistry;
 use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
@@ -14,8 +14,8 @@ use tower_http::cors::{Any, CorsLayer};
 async fn main() {
     dotenvy::dotenv().ok();
 
-    let keystore_path: PathBuf = env::var("PSM_KEYSTORE_PATH")
-        .unwrap_or_else(|_| "/var/psm/keystore".to_string())
+    let keystore_path: PathBuf = env::var("GUARDIAN_KEYSTORE_PATH")
+        .unwrap_or_else(|_| "/var/guardian/keystore".to_string())
         .into();
 
     let (storage_backend, metadata) = StorageMetadataBuilder::from_env()
@@ -24,19 +24,23 @@ async fn main() {
         .expect("Failed to initialize storage backends");
 
     // Initialize acknowledger registry (supports both Falcon and ECDSA)
-    let ack = AckRegistry::new(keystore_path).expect("Failed to initialize ack registry");
+    let ack = AckRegistry::new(keystore_path)
+        .await
+        .expect("Failed to initialize ack registry");
 
     let cors_layer = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let network_type = NetworkType::from_env_or("PSM_NETWORK_TYPE", NetworkType::MidenTestnet);
+    let network_type = NetworkType::from_env_or("GUARDIAN_NETWORK_TYPE", NetworkType::MidenDevnet);
 
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
-        .with_canonicalization(Some(CanonicalizationConfig::new(10, 24)))
+        .with_canonicalization(Some(
+            CanonicalizationConfig::new(10, 48).with_submission_grace_period_seconds(600),
+        ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())
         .storage(storage_backend)

@@ -37,12 +37,12 @@ fn is_commitment_mismatch(error: &str) -> bool {
 ///
 /// When a store error is detected, we reinitialize the entire client to get
 /// a fresh database connection, avoiding poisoned connection pools. We also
-/// re-pull the account from PSM to ensure we have the latest state.
+/// re-pull the account from GUARDIAN to ensure we have the latest state.
 pub async fn sync_with_retry(state: &mut SessionState) -> Result<(), String> {
     let mut last_error = String::new();
 
     for attempt in 1..=MAX_SYNC_RETRIES {
-        // If we had an error on the previous attempt that requires re-pulling from PSM
+        // If we had an error on the previous attempt that requires re-pulling from GUARDIAN
         let needs_repull = is_store_error(&last_error) || is_commitment_mismatch(&last_error);
 
         if attempt > 1 && needs_repull {
@@ -62,7 +62,7 @@ pub async fn sync_with_retry(state: &mut SessionState) -> Result<(), String> {
 
             if is_commitment_mismatch(&last_error) {
                 print_info("  Account was updated on-chain by another client.");
-                print_info("  Reinitializing and re-pulling latest state from PSM...");
+                print_info("  Reinitializing and re-pulling latest state from GUARDIAN...");
             } else {
                 print_info(&format!(
                     "  Reinitializing client before attempt {}...",
@@ -80,8 +80,8 @@ pub async fn sync_with_retry(state: &mut SessionState) -> Result<(), String> {
                 return Err(format!("Failed to reinitialize client: {}", e));
             }
 
-            // Re-pull the account from PSM with fresh state
-            print_info("  Re-pulling account from PSM...");
+            // Re-pull the account from GUARDIAN with fresh state
+            print_info("  Re-pulling account from GUARDIAN...");
             let client = state.get_client_mut()?;
             if let Err(e) = client.pull_account(account_id).await {
                 print_info(&format!("  Warning: Failed to re-pull account: {}", e));
@@ -109,7 +109,7 @@ pub async fn sync_with_retry(state: &mut SessionState) -> Result<(), String> {
                 if attempt < MAX_SYNC_RETRIES {
                     if is_commitment_mismatch(&last_error) {
                         print_info(&format!(
-                            "  Sync attempt {} failed (commitment mismatch), will re-pull from PSM...",
+                            "  Sync attempt {} failed (commitment mismatch), will re-pull from GUARDIAN...",
                             attempt
                         ));
                     } else if is_store_error(&last_error) {
@@ -151,10 +151,10 @@ pub async fn action_sync_account(
             .account_id()
             .ok_or_else(|| "No account loaded".to_string())?;
 
-        // Account exists locally, sync deltas from PSM first
-        print_waiting("Syncing account state from PSM");
+        // Account exists locally, sync deltas from GUARDIAN first
+        print_waiting("Syncing account state from GUARDIAN");
 
-        // Get deltas from PSM
+        // Get deltas from GUARDIAN
         let client = state.get_client_mut()?;
         if let Err(e) = client.get_deltas().await {
             let error_str = e.to_string();
@@ -172,8 +172,8 @@ pub async fn action_sync_account(
                 print_info("  Store error detected, reinitializing client...");
                 state.reinitialize_client().await?;
 
-                // Re-pull account from PSM
-                print_info("  Re-pulling account from PSM...");
+                // Re-pull account from GUARDIAN
+                print_info("  Re-pulling account from GUARDIAN...");
                 let client = state.get_client_mut()?;
                 client
                     .pull_account(account_id)
@@ -210,12 +210,12 @@ pub async fn action_sync_account(
             }
         }
     } else {
-        // No local account, pull from PSM
+        // No local account, pull from GUARDIAN
         let account_id_hex = prompt_input(editor, "Enter account ID: ")?;
         let account_id = AccountId::from_hex(&account_id_hex)
             .map_err(|e| format!("Invalid account ID: {}", e))?;
 
-        print_waiting("Fetching account from PSM");
+        print_waiting("Fetching account from GUARDIAN");
 
         let client = state.get_client_mut()?;
         let account = client

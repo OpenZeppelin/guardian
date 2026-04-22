@@ -3,12 +3,20 @@ use crate::schema::{delta_proposals, deltas, states};
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
+use diesel::ConnectionError;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::ManagerConfig;
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use futures_util::FutureExt;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use std::sync::{Arc, Once};
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -35,25 +43,131 @@ pub struct PostgresService {
 }
 
 impl PostgresService {
-    pub async fn new(database_url: &str) -> Result<Self, String> {
-        let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
-        let pool = Pool::builder(config)
-            .max_size(16)
-            .build()
-            .map_err(|e| format!("Failed to create connection pool: {e}"))?;
-
-        // Test connection
-        let _ = pool
-            .get()
-            .await
-            .map_err(|e| format!("Failed to connect to Postgres: {e}"))?;
-
+    pub async fn new(database_url: &str, pool_max_size: usize) -> Result<Self, String> {
+        let pool = build_postgres_pool(database_url, pool_max_size).await?;
         Ok(Self { pool })
     }
 
     pub async fn with_pool(pool: Pool<AsyncPgConnection>) -> Self {
         Self { pool }
     }
+}
+
+fn database_url_requires_tls(database_url: &str) -> bool {
+    database_url.contains("sslmode=require")
+}
+
+fn install_rustls_provider() {
+    static INSTALL_PROVIDER: Once = Once::new();
+
+    INSTALL_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+#[derive(Debug)]
+struct NoCertificateVerification;
+
+impl ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA1,
+            SignatureScheme::ECDSA_SHA1_Legacy,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+            SignatureScheme::ED448,
+        ]
+    }
+}
+
+fn build_rustls_config() -> Result<ClientConfig, ConnectionError> {
+    install_rustls_provider();
+
+    Ok(ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+        .with_no_client_auth())
+}
+
+async fn establish_tls_connection(
+    database_url: &str,
+) -> diesel::ConnectionResult<AsyncPgConnection> {
+    let rustls_config = build_rustls_config()?;
+    let tls = MakeRustlsConnect::new(rustls_config);
+    let (client, connection) = tokio_postgres::connect(database_url, tls)
+        .await
+        .map_err(|error| ConnectionError::BadConnection(error.to_string()))?;
+
+    AsyncPgConnection::try_from_client_and_connection(client, connection).await
+}
+
+fn postgres_connection_manager(
+    database_url: &str,
+) -> AsyncDieselConnectionManager<AsyncPgConnection> {
+    if database_url_requires_tls(database_url) {
+        let mut manager_config = ManagerConfig::default();
+        manager_config.custom_setup = Box::new(|url| establish_tls_connection(url).boxed());
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
+            database_url,
+            manager_config,
+        )
+    } else {
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url)
+    }
+}
+
+pub(crate) async fn build_postgres_pool(
+    database_url: &str,
+    pool_max_size: usize,
+) -> Result<Pool<AsyncPgConnection>, String> {
+    let pool = Pool::builder(postgres_connection_manager(database_url))
+        .max_size(pool_max_size)
+        .build()
+        .map_err(|error| format!("Failed to create connection pool: {error}"))?;
+
+    let _ = pool
+        .get()
+        .await
+        .map_err(|error| format!("Failed to connect to Postgres: {error}"))?;
+
+    Ok(pool)
 }
 
 // Queryable structs for reading from database
@@ -567,6 +681,20 @@ impl StorageBackend for PostgresService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_sslmode_require() {
+        assert!(database_url_requires_tls(
+            "postgres://guardian:password@example.com:5432/guardian?sslmode=require",
+        ));
+    }
+
+    #[test]
+    fn ignores_non_tls_database_urls() {
+        assert!(!database_url_requires_tls(
+            "postgres://guardian:password@localhost:5432/guardian",
+        ));
+    }
 
     fn create_test_delta(account_id: &str, nonce: u64) -> DeltaObject {
         DeltaObject {

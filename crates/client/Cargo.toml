@@ -1,5 +1,5 @@
 [package]
-name = "private-state-manager-client"
+name = "guardian-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Client library for Private State Manager"
+description = "Client library for Guardian"
 include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "LICENSE", "README.md"]
 
 [dependencies]
-private-state-manager-shared = { version = "0.13.0", path = "../shared" }
-miden-protocol = { workspace = true }
+guardian-shared = { version = "=0.14.4", path = "../shared" }
+miden-protocol = { version = "=0.14.3" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tonic = { workspace = true }
@@ -26,7 +26,7 @@ chrono = { workspace = true }
 [dev-dependencies]
 miden-rpc-client = { path = "../miden-rpc-client" }
 miden-keystore = { path = "../miden-keystore" }
-miden-standards = { workspace = true }
+miden-standards = { version = "=0.14.3" }
 rand_chacha = { workspace = true }
 tempfile = { workspace = true }
 tokio-stream = "0.1"

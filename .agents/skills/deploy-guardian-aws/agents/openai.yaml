@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy AWS Stack"
+  short_description: "Deploy and debug the repository AWS ECS + RDS stack"
+  default_prompt: "Use $deploy-guardian-aws to deploy or troubleshoot the AWS ECS + RDS stack in this repository."

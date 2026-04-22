@@ -1,0 +1,39 @@
+{
+  "name": "miden-multisig-smoke-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@demox-labs/miden-wallet-adapter-base": "^0.10.0",
+    "@demox-labs/miden-wallet-adapter-miden": "^0.10.0",
+    "@getpara/cosmos-wallet-connectors": "^2.15.0",
+    "@getpara/evm-wallet-connectors": "^2.15.0",
+    "@getpara/react-sdk-lite": "^2.2.0",
+    "@getpara/solana-wallet-connectors": "^2.15.0",
+    "@miden-sdk/miden-para": "0.14.0",
+    "@miden-sdk/miden-sdk": "0.14.3",
+    "@miden-sdk/use-miden-para-react": "0.14.0",
+    "@openzeppelin/guardian-client": "file:../../packages/guardian-client",
+    "@openzeppelin/miden-multisig-client": "file:../../packages/miden-multisig-client",
+    "@tanstack/react-query": "^5.0.0",
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
+    "process": "^0.11.10",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.8"
+  }
+}

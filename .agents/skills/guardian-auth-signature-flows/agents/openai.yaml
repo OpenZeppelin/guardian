@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Auth Signatures"
+  short_description: "Handle Guardian auth and Falcon/ECDSA signature flows"
+  default_prompt: "Use $guardian-auth-signature-flows to work on request signing, ack signatures, keystores, and Falcon or ECDSA behavior."

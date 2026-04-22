@@ -1,10 +1,10 @@
-import type { ProposalMetadata as PsmProposalMetadata } from '@openzeppelin/psm-client';
+import type { ProposalMetadata as GuardianProposalMetadata } from '@openzeppelin/guardian-client';
 import type { ProposalMetadata } from '../types.js';
 import { isProcedureName } from '../procedures.js';
 
 export class ProposalMetadataCodec {
-  static toPsm(metadata: ProposalMetadata): PsmProposalMetadata {
-    const base: PsmProposalMetadata = {
+  static toGuardian(metadata: ProposalMetadata): GuardianProposalMetadata {
+    const base: GuardianProposalMetadata = {
       proposalType: metadata.proposalType,
       description: metadata.description,
       salt: metadata.saltHex,
@@ -24,13 +24,13 @@ export class ProposalMetadataCodec {
           faucetId: metadata.faucetId,
           amount: metadata.amount,
         };
-      case 'switch_psm':
+      case 'switch_guardian':
         return {
           ...base,
           targetThreshold: metadata.targetThreshold,
           signerCommitments: metadata.targetSignerCommitments,
-          newPsmPubkey: metadata.newPsmPubkey,
-          newPsmEndpoint: metadata.newPsmEndpoint,
+          newGuardianPubkey: metadata.newGuardianPubkey,
+          newGuardianEndpoint: metadata.newGuardianEndpoint,
         };
       case 'update_procedure_threshold':
         return {
@@ -51,77 +51,77 @@ export class ProposalMetadataCodec {
     }
   }
 
-  static fromPsm(psm?: PsmProposalMetadata): ProposalMetadata {
-    if (!psm?.proposalType) {
+  static fromGuardian(guardian?: GuardianProposalMetadata): ProposalMetadata {
+    if (!guardian?.proposalType) {
       throw new Error('Missing proposal metadata.proposalType');
     }
 
     const base = {
-      description: psm.description ?? '',
-      saltHex: psm.salt,
-      requiredSignatures: psm.requiredSignatures,
+      description: guardian.description ?? '',
+      saltHex: guardian.salt,
+      requiredSignatures: guardian.requiredSignatures,
     };
 
-    switch (psm.proposalType) {
+    switch (guardian.proposalType) {
       case 'p2id':
-        if (!psm.recipientId || !psm.faucetId || !psm.amount) {
+        if (!guardian.recipientId || !guardian.faucetId || !guardian.amount) {
           throw new Error('p2id proposal is missing required metadata fields');
         }
         return {
           ...base,
           proposalType: 'p2id',
-          recipientId: psm.recipientId,
-          faucetId: psm.faucetId,
-          amount: psm.amount,
+          recipientId: guardian.recipientId,
+          faucetId: guardian.faucetId,
+          amount: guardian.amount,
         };
       case 'consume_notes':
-        if (!psm.noteIds || psm.noteIds.length === 0) {
+        if (!guardian.noteIds || guardian.noteIds.length === 0) {
           throw new Error('consume_notes proposal is missing noteIds');
         }
         return {
           ...base,
           proposalType: 'consume_notes',
-          noteIds: psm.noteIds,
+          noteIds: guardian.noteIds,
         };
-      case 'switch_psm':
-        if (!psm.newPsmPubkey || !psm.newPsmEndpoint) {
-          throw new Error('switch_psm proposal is missing required metadata fields');
+      case 'switch_guardian':
+        if (!guardian.newGuardianPubkey || !guardian.newGuardianEndpoint) {
+          throw new Error('switch_guardian proposal is missing required metadata fields');
         }
         return {
           ...base,
-          proposalType: 'switch_psm',
-          newPsmPubkey: psm.newPsmPubkey,
-          newPsmEndpoint: psm.newPsmEndpoint,
-          targetThreshold: psm.targetThreshold,
-          targetSignerCommitments: psm.signerCommitments,
+          proposalType: 'switch_guardian',
+          newGuardianPubkey: guardian.newGuardianPubkey,
+          newGuardianEndpoint: guardian.newGuardianEndpoint,
+          targetThreshold: guardian.targetThreshold,
+          targetSignerCommitments: guardian.signerCommitments,
         };
       case 'update_procedure_threshold':
-        if (psm.targetThreshold === undefined || !psm.targetProcedure) {
+        if (guardian.targetThreshold === undefined || !guardian.targetProcedure) {
           throw new Error('update_procedure_threshold proposal is missing required metadata fields');
         }
-        if (!isProcedureName(psm.targetProcedure)) {
-          throw new Error(`unknown target procedure: ${psm.targetProcedure}`);
+        if (!isProcedureName(guardian.targetProcedure)) {
+          throw new Error(`unknown target procedure: ${guardian.targetProcedure}`);
         }
         return {
           ...base,
           proposalType: 'update_procedure_threshold',
-          targetProcedure: psm.targetProcedure,
-          targetThreshold: psm.targetThreshold,
+          targetProcedure: guardian.targetProcedure,
+          targetThreshold: guardian.targetThreshold,
         };
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold':
-        if (psm.targetThreshold === undefined || !psm.signerCommitments || psm.signerCommitments.length === 0) {
-          throw new Error(`${psm.proposalType} proposal is missing required metadata fields`);
+        if (guardian.targetThreshold === undefined || !guardian.signerCommitments || guardian.signerCommitments.length === 0) {
+          throw new Error(`${guardian.proposalType} proposal is missing required metadata fields`);
         }
         return {
           ...base,
-          proposalType: psm.proposalType,
-          targetThreshold: psm.targetThreshold,
-          targetSignerCommitments: psm.signerCommitments,
+          proposalType: guardian.proposalType,
+          targetThreshold: guardian.targetThreshold,
+          targetSignerCommitments: guardian.signerCommitments,
         };
       default:
-        throw new Error(`Unsupported proposal type: ${psm.proposalType as string}`);
+        throw new Error(`Unsupported proposal type: ${guardian.proposalType as string}`);
     }
   }
 
@@ -138,9 +138,9 @@ export class ProposalMetadataCodec {
           throw new Error(`${metadata.proposalType} proposal metadata is incomplete`);
         }
         return metadata;
-      case 'switch_psm':
-        if (!metadata.newPsmPubkey || !metadata.newPsmEndpoint) {
-          throw new Error('switch_psm proposal metadata is incomplete');
+      case 'switch_guardian':
+        if (!metadata.newGuardianPubkey || !metadata.newGuardianEndpoint) {
+          throw new Error('switch_guardian proposal metadata is incomplete');
         }
         return metadata;
       case 'update_procedure_threshold':

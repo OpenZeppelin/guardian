@@ -1,7 +1,7 @@
 /**
  * @openzeppelin/miden-multisig-client
  *
- * TypeScript SDK for Miden multisig accounts with PSM (Private State Manager) integration.
+ * TypeScript SDK for Miden multisig accounts with Guardian integration.
  *
  * @example
  * ```typescript
@@ -9,38 +9,32 @@
  *   MultisigClient,
  *   FalconSigner,
  * } from '@openzeppelin/miden-multisig-client';
- * import { WebClient, SecretKey } from '@miden-sdk/miden-sdk';
+ * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
- * // Initialize WebClient
- * const webClient = await WebClient.createClient('https://rpc.testnet.miden.io:443');
- * await webClient.syncState();
- *
- * // Generate a key dynamically
- * const seed = new Uint8Array(32);
- * crypto.getRandomValues(seed);
- * const secretKey = SecretKey.rpoFalconWithRNG(seed);
+ * const midenClient = await MidenClient.createDevnet();
+ * const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
  *
  * // Store in miden-sdk's keystore
- * await webClient.addAccountSecretKeyToWebStore(secretKey);
+ * await midenClient.keystore.insert(secretKey.publicKey(), secretKey);
  *
  * // Create a signer
  * const signer = new FalconSigner(secretKey);
  *
  * // Create multisig client
- * const client = new MultisigClient(webClient, {
- *   psmEndpoint: 'http://localhost:3000',
- *   midenRpcEndpoint: 'https://rpc.testnet.miden.io:443',
+ * const client = new MultisigClient(midenClient, {
+ *   guardianEndpoint: 'http://localhost:3000',
+ *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
  * });
  *
- * // Get PSM pubkey for config
- * const psmCommitment = await client.psmClient.getPubkey();
+ * // Get GUARDIAN pubkey for config
+ * const guardianCommitment = await client.guardianClient.getPubkey();
  *
  * // Create multisig account
- * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], psmCommitment };
+ * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], guardianCommitment };
  * const multisig = await client.create(config, signer);
  *
- * // Register on PSM and work with proposals
- * await multisig.registerOnPsm();
+ * // Register on GUARDIAN and work with proposals
+ * await multisig.registerOnGuardian();
  * await multisig.syncProposals();
  * ```
  */
@@ -52,12 +46,12 @@ export {
   executeForSummary,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
-  buildUpdatePsmTransactionRequest,
+  buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
 } from './transaction.js';
 
-export { PsmHttpClient, PsmHttpError } from '@openzeppelin/psm-client';
+export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 
 export {
   FalconSigner,
@@ -75,7 +69,7 @@ export {
   createMultisigAccount,
   validateMultisigConfig,
   buildMultisigStorageSlots,
-  buildPsmStorageSlots,
+  buildGuardianStorageSlots,
   storageLayoutBuilder,
   StorageLayoutBuilder,
 } from './account/index.js';
@@ -120,7 +114,7 @@ export type {
   Signer,
   SignatureScheme,
 
-  // PSM API types
+  // GUARDIAN API types
   AuthConfig,
   DeltaObject,
   DeltaStatus,

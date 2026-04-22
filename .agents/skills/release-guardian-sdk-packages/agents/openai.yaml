@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release SDK Packages"
+  short_description: "Version and publish Guardian SDK crates and npm packages"
+  default_prompt: "Use $release-guardian-sdk-packages to prepare or publish the Guardian SDK Rust crates and npm packages for a coordinated release."

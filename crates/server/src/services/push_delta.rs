@@ -1,7 +1,7 @@
-use private_state_manager_shared::SignatureScheme;
+use guardian_shared::SignatureScheme;
 
 use crate::delta_object::DeltaObject;
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
 use crate::services::resolve_account;
@@ -37,7 +37,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 error = %e,
                 "Failed to fetch account state in push_delta"
             );
-            PsmError::StorageError(format!("Failed to fetch account state: {e}"))
+            GuardianError::StorageError(format!("Failed to fetch account state: {e}"))
         })?;
 
     // Check for pending candidates before accepting new delta
@@ -51,15 +51,15 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 error = %e,
                 "Failed to check deltas in push_delta"
             );
-            PsmError::StorageError(format!("Failed to check deltas: {e}"))
+            GuardianError::StorageError(format!("Failed to check deltas: {e}"))
         })?;
 
     if has_pending {
-        return Err(PsmError::ConflictPendingDelta);
+        return Err(GuardianError::ConflictPendingDelta);
     }
 
     if params.delta.prev_commitment != current_state.commitment {
-        return Err(PsmError::CommitmentMismatch {
+        return Err(GuardianError::CommitmentMismatch {
             expected: current_state.commitment.clone(),
             actual: params.delta.prev_commitment.clone(),
         });
@@ -73,10 +73,10 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 &current_state.state_json,
                 &params.delta.delta_payload,
             )
-            .map_err(PsmError::InvalidDelta)?;
+            .map_err(GuardianError::InvalidDelta)?;
         client
             .apply_delta(&current_state.state_json, &params.delta.delta_payload)
-            .map_err(PsmError::InvalidDelta)?
+            .map_err(GuardianError::InvalidDelta)?
     };
 
     let mut result_delta = params.delta.clone();

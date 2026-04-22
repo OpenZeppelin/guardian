@@ -28,8 +28,8 @@ vi.mock('./inspector.js', () => ({
       threshold: 2,
       numSigners: 2,
       signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-      psmEnabled: true,
-      psmCommitment: '0x' + 'c'.repeat(64),
+      guardianEnabled: true,
+      guardianCommitment: '0x' + 'c'.repeat(64),
       vaultBalances: [],
       procedureThresholds: new Map(),
     })),
@@ -51,7 +51,7 @@ vi.mock('./account/index.js', () => ({
   }),
 }));
 
-// Mock fetch for PSM client
+// Mock fetch for GUARDIAN client
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
@@ -63,14 +63,13 @@ describe('MultisigClient', () => {
     mockFetch.mockReset();
 
     webClient = {
-      createScriptBuilder: vi.fn(),
-      executeTransaction: vi.fn(),
-      proveTransaction: vi.fn(),
-      submitProvenTransaction: vi.fn(),
-      applyTransaction: vi.fn(),
-      syncState: vi.fn(),
-      newAccount: vi.fn(),
-      getAccount: vi.fn().mockResolvedValue(null),
+      accounts: {
+        get: vi.fn().mockResolvedValue(null),
+        insert: vi.fn().mockResolvedValue(undefined),
+      },
+      keystore: {
+        insert: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     mockSigner = {
@@ -84,21 +83,21 @@ describe('MultisigClient', () => {
   });
 
   describe('constructor', () => {
-    it('should create client with default PSM endpoint', () => {
+    it('should create client with default GUARDIAN endpoint', () => {
       const client = new MultisigClient(webClient);
       expect(client).toBeInstanceOf(MultisigClient);
     });
 
-    it('should create client with custom PSM endpoint', () => {
-      const client = new MultisigClient(webClient, { psmEndpoint: 'http://custom:8080' });
+    it('should create client with custom GUARDIAN endpoint', () => {
+      const client = new MultisigClient(webClient, { guardianEndpoint: 'http://custom:8080' });
       expect(client).toBeInstanceOf(MultisigClient);
     });
   });
 
-  describe('psmClient getter', () => {
-    it('should expose PSM client for getting pubkey', () => {
+  describe('guardianClient getter', () => {
+    it('should expose GUARDIAN client for getting pubkey', () => {
       const client = new MultisigClient(webClient);
-      expect(client.psmClient).toBeDefined();
+      expect(client.guardianClient).toBeDefined();
     });
   });
 
@@ -109,7 +108,7 @@ describe('MultisigClient', () => {
       const config = {
         threshold: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = await client.create(config, mockSigner);
@@ -117,20 +116,37 @@ describe('MultisigClient', () => {
       expect(multisig).toBeDefined();
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(config.signerCommitments);
-      expect(multisig.psmCommitment).toBe(config.psmCommitment);
+      expect(multisig.guardianCommitment).toBe(config.guardianCommitment);
     });
 
-    it('should set signer on PSM client', async () => {
+    it('should set signer on GUARDIAN client', async () => {
       const client = new MultisigClient(webClient);
 
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
-        psmCommitment: '0x' + 'c'.repeat(64),
+        guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
       const multisig = await client.create(config, mockSigner);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
+    });
+
+    it('binds the signer auth key to the created account when supported', async () => {
+      const client = new MultisigClient(webClient);
+      const bindAccountKey = vi.fn().mockResolvedValue(undefined);
+      const bindingSigner = {
+        ...mockSigner,
+        bindAccountKey,
+      };
+
+      await client.create({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      }, bindingSigner);
+
+      expect(bindAccountKey).toHaveBeenCalledWith(webClient, '0x' + 'a'.repeat(30));
     });
   });
 
@@ -158,11 +174,13 @@ describe('MultisigClient', () => {
       // Config is detected from account storage via AccountInspector
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)]);
-      expect(multisig.psmCommitment).toBe('0x' + 'c'.repeat(64));
+      expect(multisig.guardianCommitment).toBe('0x' + 'c'.repeat(64));
       expect(multisig.account).not.toBeNull();
+      expect(webClient.accounts.get).toHaveBeenCalledTimes(1);
+      expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
     });
 
-    it('should throw if account not found on PSM', async () => {
+    it('should throw if account not found on GUARDIAN', async () => {
       const client = new MultisigClient(webClient);
 
       mockFetch.mockResolvedValueOnce({
@@ -177,7 +195,7 @@ describe('MultisigClient', () => {
       ).rejects.toThrow();
     });
 
-    it('should allow registerOnPsm after load without explicit initial state', async () => {
+    it('should allow registerOnGuardian after load without explicit initial state', async () => {
       const client = new MultisigClient(webClient);
 
       mockFetch.mockResolvedValueOnce({
@@ -203,7 +221,33 @@ describe('MultisigClient', () => {
       const accountId = '0x' + 'd'.repeat(30);
       const multisig = await client.load(accountId, mockSigner);
 
-      await expect(multisig.registerOnPsm()).resolves.toBeUndefined();
+      await expect(multisig.registerOnGuardian()).resolves.toBeUndefined();
+      expect(webClient.accounts.get).toHaveBeenCalledTimes(1);
+      expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('binds the signer auth key after loading an account when supported', async () => {
+      const client = new MultisigClient(webClient);
+      const bindAccountKey = vi.fn().mockResolvedValue(undefined);
+      const bindingSigner = {
+        ...mockSigner,
+        bindAccountKey,
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await client.load('0x' + 'd'.repeat(30), bindingSigner);
+
+      expect(bindAccountKey).toHaveBeenCalledWith(webClient, '0x' + 'd'.repeat(30));
     });
   });
 });

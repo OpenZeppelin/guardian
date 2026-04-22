@@ -1,11 +1,22 @@
-import type { TransactionRequest, Word, WebClient } from '@miden-sdk/miden-sdk';
-import { NoteAndArgs, NoteAndArgsArray, TransactionRequestBuilder, Word as WordType } from '@miden-sdk/miden-sdk';
+import type {
+  MidenClient,
+  TransactionRequest,
+  WasmWebClient,
+  Word,
+} from '@miden-sdk/miden-sdk';
+import {
+  NoteAndArgs,
+  NoteAndArgsArray,
+  TransactionRequestBuilder,
+  Word as WordType,
+} from '@miden-sdk/miden-sdk';
+import { getRawMidenClient } from '../raw-client.js';
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
 
 export async function buildConsumeNotesTransactionRequest(
-  webClient: WebClient,
+  client: MidenClient | WasmWebClient,
   noteIds: string[],
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word }> {
@@ -13,10 +24,10 @@ export async function buildConsumeNotesTransactionRequest(
     throw new Error('At least one note ID is required');
   }
 
-  // Fetch full Note objects from the client store
+  const rawClient = await getRawMidenClient(client, options.midenRpcEndpoint);
   const noteAndArgsArray = new NoteAndArgsArray();
   for (const noteIdHex of noteIds) {
-    const inputNoteRecord = await webClient.getInputNote(noteIdHex);
+    const inputNoteRecord = await rawClient.getInputNote(noteIdHex);
     if (!inputNoteRecord) {
       throw new Error(`Note not found in local store: ${noteIdHex}`);
     }

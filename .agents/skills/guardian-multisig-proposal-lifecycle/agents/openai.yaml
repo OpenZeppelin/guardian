@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Multisig Lifecycle"
+  short_description: "Implement and validate multisig proposal lifecycle changes"
+  default_prompt: "Use $guardian-multisig-proposal-lifecycle to work on proposal creation, signing, execution, import/export, and sync behavior."

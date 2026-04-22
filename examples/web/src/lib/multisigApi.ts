@@ -18,7 +18,7 @@ import {
   AccountInspector,
   type DetectedMultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
-import type { WebClient } from '@miden-sdk/miden-sdk';
+import type { MidenClient } from '@miden-sdk/miden-sdk';
 import type { SignerInfo } from '@/types';
 import type { WalletSource } from '@/wallets/types';
 
@@ -171,17 +171,17 @@ async function createProposalResult(
 }
 
 /**
- * Initialize MultisigClient and get PSM pubkey.
+ * Initialize MultisigClient and get GUARDIAN pubkey.
  */
 export async function initMultisigClient(
-  webClient: WebClient,
-  psmEndpoint: string,
+  midenClient: MidenClient,
+  guardianEndpoint: string,
   midenRpcEndpoint: string,
-): Promise<{ client: MultisigClient; psmPubkey: string }> {
-  const client = new MultisigClientClass(webClient, { psmEndpoint, midenRpcEndpoint });
-  const response = await client.psmClient.getPubkey();
-  const psmPubkey = typeof response === 'string' ? response : response.commitment;
-  return { client, psmPubkey };
+): Promise<{ client: MultisigClient; guardianPubkey: string }> {
+  const client = new MultisigClientClass(midenClient, { guardianEndpoint, midenRpcEndpoint });
+  const response = await client.guardianClient.getPubkey();
+  const guardianPubkey = typeof response === 'string' ? response : response.commitment;
+  return { client, guardianPubkey };
 }
 
 /**
@@ -192,7 +192,7 @@ export async function createMultisigAccount(
   signer: ResolvedSigner,
   otherCommitments: string[],
   threshold: number,
-  psmCommitment: string,
+  guardianCommitment: string,
   procedureThresholds?: ProcedureThreshold[],
   signatureScheme: SignatureScheme = signer.signatureScheme,
 ): Promise<Multisig> {
@@ -200,8 +200,8 @@ export async function createMultisigAccount(
   const config: MultisigConfig = {
     threshold,
     signerCommitments,
-    psmCommitment,
-    psmEnabled: true,
+    guardianCommitment,
+    guardianEnabled: true,
     procedureThresholds,
     storageMode: 'private',
     signatureScheme,
@@ -210,7 +210,7 @@ export async function createMultisigAccount(
 }
 
 /**
- * Load an existing multisig account from PSM.
+ * Load an existing multisig account from GUARDIAN.
  */
 export async function loadMultisigAccount(
   multisigClient: MultisigClient,
@@ -221,37 +221,37 @@ export async function loadMultisigAccount(
 }
 
 /**
- * Register an account on PSM server.
+ * Register an account on GUARDIAN server.
  */
-export async function registerOnPsm(multisig: Multisig): Promise<void> {
-  await multisig.registerOnPsm();
+export async function registerOnGuardian(multisig: Multisig): Promise<void> {
+  await multisig.registerOnGuardian();
 }
 
 /**
- * Register an account on PSM server using existing state data.
- * Used when switching PSM endpoints with an active multisig.
+ * Register an account on GUARDIAN server using existing state data.
+ * Used when switching GUARDIAN endpoints with an active multisig.
  */
-export async function registerOnPsmWithState(
+export async function registerOnGuardianWithState(
   multisig: Multisig,
   stateDataBase64: string,
 ): Promise<void> {
-  await multisig.registerOnPsm(stateDataBase64);
+  await multisig.registerOnGuardian(stateDataBase64);
 }
 
 /**
- * Switch an existing multisig to a new PSM endpoint.
+ * Switch an existing multisig to a new GUARDIAN endpoint.
  */
-export async function switchMultisigPsm(
+export async function switchMultisigGuardian(
   multisigClient: MultisigClient,
   multisig: Multisig,
   stateDataBase64: string,
 ): Promise<void> {
-  multisig.setPsmClient(multisigClient.psmClient);
-  await multisig.registerOnPsm(stateDataBase64);
+  multisig.setGuardianClient(multisigClient.guardianClient);
+  await multisig.registerOnGuardian(stateDataBase64);
 }
 
 /**
- * Fetch account state from PSM and detect config.
+ * Fetch account state from GUARDIAN and detect config.
  */
 export async function fetchAccountState(
   multisig: Multisig,
@@ -367,20 +367,20 @@ export async function createP2idProposal(
 }
 
 /**
- * Create a "switch PSM" proposal.
- * This is stored locally only (no PSM sync) since the current PSM may be unavailable.
+ * Create a "switch GUARDIAN" proposal.
+ * This is stored locally only (no GUARDIAN sync) since the current GUARDIAN may be unavailable.
  */
-export async function createSwitchPsmProposal(
+export async function createSwitchGuardianProposal(
   multisig: Multisig,
-  newPsmEndpoint: string,
-  newPsmPubkey: string,
+  newGuardianEndpoint: string,
+  newGuardianPubkey: string,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(
     multisig,
     () =>
-      multisig.createSwitchPsmProposal(
-        newPsmEndpoint,
-        newPsmPubkey,
+      multisig.createSwitchGuardianProposal(
+        newGuardianEndpoint,
+        newGuardianPubkey,
         proposalNonce(multisig),
       ),
     async (currentMultisig) => listVisibleProposals(currentMultisig),
@@ -388,7 +388,7 @@ export async function createSwitchPsmProposal(
 }
 
 /**
- * Sign a proposal online (submits to PSM).
+ * Sign a proposal online (submits to GUARDIAN).
  */
 export async function signProposal(
   multisig: Multisig,

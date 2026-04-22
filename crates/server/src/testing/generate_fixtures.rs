@@ -1,32 +1,34 @@
 #[cfg(feature = "e2e")]
 mod fixtures {
+    use guardian_shared::{FromJson, ToJson};
     use miden_client::account::Account;
     use miden_client::{Deserializable, Serializable, Word};
-    use miden_confidential_contracts::multisig_psm::{MultisigPsmBuilder, MultisigPsmConfig};
+    use miden_confidential_contracts::multisig_guardian::{
+        MultisigGuardianBuilder, MultisigGuardianConfig,
+    };
     use miden_protocol::account::AccountDelta;
-    use miden_protocol::account::StorageSlotName;
     use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::crypto::dsa::falcon512_rpo::SecretKey;
-    use miden_protocol::transaction::{InputNotes, OutputNotes, TransactionSummary};
+    use miden_protocol::account::{StorageMapKey, StorageSlotName};
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word as MidenWord, ZERO};
-    use private_state_manager_shared::{FromJson, ToJson};
     use std::fs;
 
-    // Storage slot names (matching multisig_psm.rs)
+    // Storage slot names (matching multisig_guardian.rs)
     const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
     const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
     const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
 
-    fn create_multisig_psm_account(
+    fn create_multisig_guardian_account(
         threshold: u64,
         cosigner_commitments: &[&str],
-        psm_server_pubkey_hex: &str,
+        guardian_server_pubkey_hex: &str,
         init_seed: [u8; 32],
     ) -> Account {
-        let psm_pubkey_bytes =
-            hex::decode(&psm_server_pubkey_hex[2..]).expect("Failed to decode PSM pubkey");
-        let psm_commitment = Word::read_from_bytes(&psm_pubkey_bytes)
-            .expect("Failed to convert PSM commitment to Word");
+        let guardian_pubkey_bytes = hex::decode(&guardian_server_pubkey_hex[2..])
+            .expect("Failed to decode GUARDIAN pubkey");
+        let guardian_commitment = Word::read_from_bytes(&guardian_pubkey_bytes)
+            .expect("Failed to convert GUARDIAN commitment to Word");
 
         let signer_commitments: Vec<Word> = cosigner_commitments
             .iter()
@@ -40,18 +42,19 @@ mod fixtures {
             })
             .collect();
 
-        let config = MultisigPsmConfig::new(threshold as u32, signer_commitments, psm_commitment);
+        let config =
+            MultisigGuardianConfig::new(threshold as u32, signer_commitments, guardian_commitment);
 
-        MultisigPsmBuilder::new(config)
+        MultisigGuardianBuilder::new(config)
             .with_seed(init_seed)
             .build()
-            .expect("Failed to build MultisigPsm account")
+            .expect("Failed to build MultisigGuardian account")
     }
 
     #[tokio::test]
     #[ignore]
     async fn generate_multisig_fixtures() {
-        println!("\n🔧 Generating Multisig PSM Fixtures...\n");
+        println!("\n🔧 Generating Multisig GUARDIAN Fixtures...\n");
 
         let secret_key_1 = SecretKey::new();
         let secret_key_2 = SecretKey::new();
@@ -69,13 +72,13 @@ mod fixtures {
         let commitment_2_hex = format!("0x{}", hex::encode(commitment_2.as_bytes()));
         let commitment_3_hex = format!("0x{}", hex::encode(commitment_3.as_bytes()));
 
-        let psm_secret_key = SecretKey::new();
-        let psm_pubkey = psm_secret_key.public_key();
-        let psm_commitment = psm_pubkey.to_commitment();
-        let psm_commitment_hex = format!("0x{}", hex::encode(psm_commitment.as_bytes()));
+        let guardian_secret_key = SecretKey::new();
+        let guardian_pubkey = guardian_secret_key.public_key();
+        let guardian_commitment = guardian_pubkey.to_commitment();
+        let guardian_commitment_hex = format!("0x{}", hex::encode(guardian_commitment.as_bytes()));
 
         println!("Generated Keys:");
-        println!("  PSM:     {}", psm_commitment_hex);
+        println!("  GUARDIAN:     {}", guardian_commitment_hex);
         println!("  Signer 1: {}", commitment_1_hex);
         println!("  Signer 2: {}", commitment_2_hex);
         println!("  Signer 3: {}", commitment_3_hex);
@@ -87,12 +90,16 @@ mod fixtures {
             commitment_3_hex.as_str(),
         ];
 
-        let account =
-            create_multisig_psm_account(threshold, &cosigner_refs, &psm_commitment_hex, [0xff; 32]);
+        let account = create_multisig_guardian_account(
+            threshold,
+            &cosigner_refs,
+            &guardian_commitment_hex,
+            [0xff; 32],
+        );
 
         let account_json = account.to_json();
         let account_id = account.id();
-        let mut current_commitment = account.commitment();
+        let mut current_commitment = account.to_commitment();
 
         println!("\n📦 Generated Multisig Account:");
         println!("  Account ID: {}", account_id);
@@ -101,7 +108,7 @@ mod fixtures {
             hex::encode(current_commitment.as_bytes())
         );
         println!(
-            "  Config: {}/{} multisig + PSM",
+            "  Config: {}/{} multisig + GUARDIAN",
             threshold,
             cosigner_refs.len()
         );
@@ -143,7 +150,7 @@ mod fixtures {
         storage_delta_1
             .set_map_item(
                 signer_pubkeys_name.clone(),
-                MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO]),
+                StorageMapKey::new(MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO])),
                 commitment_4,
             )
             .expect("Failed to set signer pubkey in delta 1");
@@ -165,7 +172,7 @@ mod fixtures {
         let tx_summary_1 = TransactionSummary::new(
             delta_1,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
         );
 
@@ -176,18 +183,18 @@ mod fixtures {
             .apply_delta(tx_summary_1.account_delta())
             .expect("Failed to apply delta 1");
 
-        // Apply replay protection (matches what apply_delta does for PSM accounts)
+        // Apply replay protection (matches what apply_delta does for GUARDIAN accounts)
         let tx_commitment_1 = tx_summary_1.to_commitment();
         account_state
             .storage_mut()
             .set_map_item(
                 &executed_txs_name,
-                tx_commitment_1,
+                StorageMapKey::new(tx_commitment_1),
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
-        current_commitment = account_state.commitment();
+        current_commitment = account_state.to_commitment();
 
         println!(
             "  New commitment: 0x{}",
@@ -231,7 +238,7 @@ mod fixtures {
         storage_delta_2
             .set_map_item(
                 signer_pubkeys_name.clone(),
-                MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO]),
+                StorageMapKey::new(MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO])),
                 commitment_5,
             )
             .expect("Failed to set signer pubkey in delta 2");
@@ -253,7 +260,7 @@ mod fixtures {
         let tx_summary_2 = TransactionSummary::new(
             delta_2,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
         );
 
@@ -268,12 +275,12 @@ mod fixtures {
             .storage_mut()
             .set_map_item(
                 &executed_txs_name,
-                tx_commitment_2,
+                StorageMapKey::new(tx_commitment_2),
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
-        current_commitment = account_state.commitment();
+        current_commitment = account_state.to_commitment();
 
         println!(
             "  New commitment: 0x{}",
@@ -326,7 +333,7 @@ mod fixtures {
         let tx_summary_3 = TransactionSummary::new(
             delta_3,
             InputNotes::new(Vec::new()).unwrap(),
-            OutputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
         );
 
@@ -341,12 +348,12 @@ mod fixtures {
             .storage_mut()
             .set_map_item(
                 &executed_txs_name,
-                tx_commitment_3,
+                StorageMapKey::new(tx_commitment_3),
                 MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
-        current_commitment = account_state.commitment();
+        current_commitment = account_state.to_commitment();
 
         println!("  New threshold: 3/5");
         println!(
@@ -401,8 +408,8 @@ mod fixtures {
         println!("✅ Saved commitments.json");
 
         let keys_fixture = serde_json::json!({
-            "psm_secret_key": hex::encode(psm_secret_key.to_bytes()),
-            "psm_commitment": psm_commitment_hex,
+            "guardian_secret_key": hex::encode(guardian_secret_key.to_bytes()),
+            "guardian_commitment": guardian_commitment_hex,
             "signer_1_secret_key": hex::encode(secret_key_1.to_bytes()),
             "signer_1_commitment": commitment_1_hex,
             "signer_2_secret_key": hex::encode(secret_key_2.to_bytes()),
@@ -430,7 +437,7 @@ mod fixtures {
         println!("\n🎉 All fixtures generated successfully!");
         println!("\nGenerated files:");
         println!(
-            "  ✓ account.json (initial: {}/{} + PSM)",
+            "  ✓ account.json (initial: {}/{} + GUARDIAN)",
             threshold,
             cosigner_refs.len()
         );

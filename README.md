@@ -1,8 +1,8 @@
-# Private State Manager
+# Guardian
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![CLA Assistant](https://github.com/OpenZeppelin/private-state-manager/actions/workflows/cla.yml/badge.svg)](https://github.com/OpenZeppelin/private-state-manager/actions/workflows/cla.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/private-state-manager/badge)](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/private-state-manager)
+[![CLA Assistant](https://github.com/OpenZeppelin/guardian/actions/workflows/cla.yml/badge.svg)](https://github.com/OpenZeppelin/guardian/actions/workflows/cla.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/guardian/badge)](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/guardian)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11427/badge)](https://www.bestpractices.dev/projects/11427)
 
 Warning: This is a work in progress.
@@ -17,15 +17,15 @@ See the [Specification](spec/index.md) for an overview of the system design. It 
 
 - **[crates/server](crates/server/README.md)** - Server for managing private account states and deltas
   - Reproducible builds for binary verification and TEE deployment
-- **[crates/client](crates/client/README.md)** - Client SDK for interacting with the PSM server
+- **[crates/client](crates/client/README.md)** - Client SDK for interacting with the GUARDIAN server
 - **[crates/shared](crates/shared/README.md)** - Shared types and utilities
 - **[crates/miden-rpc-client](crates/miden-rpc-client/README.md)** - Lightweight wrapper around Miden node RPC API - inspired in `miden-client` implementation.
 - **[crates/miden-keystore](crates/miden-keystore/README.md)** - Keystore implementation for Miden cryptographic keys - inspired in `miden-client` implementation.
 
 #### TypeScript Packages
 
-- **[packages/psm-client](packages/psm-client/README.md)** - TypeScript HTTP client for PSM server
-- **[packages/miden-multisig-client](packages/miden-multisig-client/README.md)** - TypeScript SDK for Miden multisig accounts with PSM integration
+- **[packages/guardian-client](packages/guardian-client/README.md)** - TypeScript HTTP client for GUARDIAN server
+- **[packages/miden-multisig-client](packages/miden-multisig-client/README.md)** - TypeScript SDK for Miden multisig accounts with GUARDIAN integration
 
 ### Quick Start
 
@@ -40,17 +40,16 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 
 #### Environment Variables
 
-- `DATABASE_URL` - PostgreSQL connection URL (required for Postgres storage/metadata)
-- `POSTGRES_PASSWORD` - PostgreSQL password (used by docker-compose)
-- `PSM_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/psm/keystore`)
+- `DATABASE_URL` - PostgreSQL connection URL (required only for explicit Postgres-backed runs)
+- `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `RUST_LOG` - Logging level (default: `info`)
   - Supports: `trace`, `debug`, `info`, `warn`, `error`
   - Module-specific: `RUST_LOG=server::jobs::canonicalization=debug`
-- `PSM_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
-- `PSM_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
-- `PSM_TRUSTED_PROXY_IPS` - Comma-separated trusted proxy IPs allowed to provide `X-Forwarded-For`/`X-Real-IP` (default: empty)
-- `PSM_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
-- `PSM_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
+- `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
+- `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
+- `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
+- `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
 
 ### Running
 
@@ -73,24 +72,26 @@ cp .env.example .env
 3. Start the server:
 
 ```bash
-docker-compose up --build -d
+docker compose up --build -d
 ```
 
 4. View logs:
 
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
 5. Stop services:
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 The HTTP server will be available at `http://localhost:3000`
 
 The gRPC server will be available at `localhost:50051`
+
+This default Compose flow uses the filesystem backend. If you need a local Postgres container for benchmark or explicit Postgres-backed runs, use [docker-compose.postgres.yml](/Users/marcos/repos/guardian/docker-compose.postgres.yml) instead.
 
 ### Testing
 
@@ -106,20 +107,20 @@ Feature-gated test groups:
 
 ```bash
 # Run only integration tests
-cargo test -p private-state-manager-server --features integration
+cargo test -p guardian-server --features integration
 
 # Run only e2e tests
-cargo test -p private-state-manager-server --features e2e
+cargo test -p guardian-server --features e2e
 ```
 
 #### TypeScript Tests
 
 ```bash
 # Install dependencies
-cd packages/psm-client && npm install
+cd packages/guardian-client && npm install
 cd packages/miden-multisig-client && npm install
 
 # Run tests
-cd packages/psm-client && npm test
+cd packages/guardian-client && npm test
 cd packages/miden-multisig-client && npm test
 ```

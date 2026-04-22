@@ -1,4 +1,4 @@
-use crate::error::{PsmError, Result};
+use crate::error::{GuardianError, Result};
 use crate::metadata::AccountMetadata;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::state::AppState;
@@ -36,13 +36,13 @@ pub async fn configure_account(
             error = %e,
             "Failed to check existing account in configure_account"
         );
-        PsmError::StorageError(format!("Failed to check existing account: {e}"))
+        GuardianError::StorageError(format!("Failed to check existing account: {e}"))
     })?;
     let scheme = params.auth.scheme();
 
     let commitment = {
         let client = state.network_client.lock().await;
-        let expected_psm_commitment = state.ack.commitment(&scheme);
+        let expected_guardian_commitment = state.ack.commitment(&scheme);
 
         // Validates that the credential is valid for the account state.
         client
@@ -53,19 +53,21 @@ pub async fn configure_account(
                     error = %e,
                     "Failed to validate credential"
                 );
-                PsmError::NetworkError(format!("Failed to validate credential: {e}"))
+                GuardianError::NetworkError(format!("Failed to validate credential: {e}"))
             })?;
 
         client
-            .validate_psm_commitment(&params.initial_state, &expected_psm_commitment)
+            .validate_guardian_commitment(&params.initial_state, &expected_guardian_commitment)
             .map_err(|e| {
                 tracing::error!(
                     account_id = %params.account_id,
-                    expected_psm_commitment = %expected_psm_commitment,
+                    expected_guardian_commitment = %expected_guardian_commitment,
                     error = %e,
-                    "Unauthorized account configuration: invalid PSM public key binding"
+                    "Unauthorized account configuration: invalid GUARDIAN public key binding"
                 );
-                PsmError::AuthorizationFailed(format!("Unauthorized account configuration: {e}"))
+                GuardianError::AuthorizationFailed(format!(
+                    "Unauthorized account configuration: {e}"
+                ))
             })?;
 
         // Verifies the credential authorization.
@@ -78,13 +80,13 @@ pub async fn configure_account(
                     error = %e,
                     "Signature verification failed in configure_account"
                 );
-                PsmError::AuthenticationFailed(format!("Signature verification failed: {e}"))
+                GuardianError::AuthenticationFailed(format!("Signature verification failed: {e}"))
             })?;
 
         // calculates the commitment of the account state.
         client
             .get_state_commitment(&params.account_id, &params.initial_state)
-            .map_err(PsmError::NetworkError)?
+            .map_err(GuardianError::NetworkError)?
     };
 
     let now = state.clock.now_rfc3339();
@@ -111,7 +113,7 @@ pub async fn configure_account(
                 error = %e,
                 "Failed to submit initial state"
             );
-            PsmError::StorageError(format!("Failed to submit initial state: {e}"))
+            GuardianError::StorageError(format!("Failed to submit initial state: {e}"))
         })?;
 
     // Create and store metadata (preserving created_at and replay protection on reconfigure)
@@ -133,7 +135,7 @@ pub async fn configure_account(
             error = %e,
             "Failed to store metadata"
         );
-        PsmError::StorageError(format!("Failed to store metadata: {e}"))
+        GuardianError::StorageError(format!("Failed to store metadata: {e}"))
     })?;
 
     Ok(ConfigureAccountResult {
@@ -152,7 +154,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    fn create_test_app_state(
+    async fn create_test_app_state(
         network_client: MockNetworkClient,
         storage_backend: MockStorageBackend,
         metadata_store: MockMetadataStore,
@@ -163,7 +165,9 @@ mod tests {
             std::env::temp_dir().join(format!("test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
 
-        let ack = AckRegistry::new(keystore_dir).expect("Failed to create ack registry");
+        let ack = AckRegistry::new(keystore_dir)
+            .await
+            .expect("Failed to create ack registry");
 
         AppState {
             storage,
@@ -191,7 +195,7 @@ mod tests {
 
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         // Use a valid account JSON fixture
         let account_json = include_str!("../testing/fixtures/account.json");
@@ -230,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn test_configure_account_success_for_ecdsa() {
         use crate::testing::helpers::TestEcdsaSigner;
-        use private_state_manager_shared::auth_request_payload::AuthRequestPayload;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
         let signer = TestEcdsaSigner::new();
@@ -243,7 +247,7 @@ mod tests {
 
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
@@ -309,7 +313,7 @@ mod tests {
             .with_get(Ok(Some(existing_metadata)))
             .with_set(Ok(()));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
@@ -347,7 +351,7 @@ mod tests {
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));
 
-        let state = create_test_app_state(network_client, storage_backend, metadata_store);
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
 
         let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
@@ -364,13 +368,13 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::NetworkError(_) => {}
+            GuardianError::NetworkError(_) => {}
             e => panic!("Expected NetworkError, got: {:?}", e),
         }
     }
 
     #[tokio::test]
-    async fn test_configure_account_unauthorized_psm_commitment() {
+    async fn test_configure_account_unauthorized_guardian_commitment() {
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
@@ -379,14 +383,15 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_validate_psm_commitment(Err(
-                "OpenZeppelin slot 'openzeppelin::psm::public_key' mismatch".to_string(),
+            .with_validate_guardian_commitment(Err(
+                "OpenZeppelin slot 'openzeppelin::guardian::public_key' mismatch".to_string(),
             ));
 
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));
 
-        let state = create_test_app_state(network_client, storage_backend.clone(), metadata_store);
+        let state =
+            create_test_app_state(network_client, storage_backend.clone(), metadata_store).await;
 
         let credential = Credentials::signature(pubkey_hex.clone(), signature_hex, timestamp);
 
@@ -403,9 +408,9 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PsmError::AuthorizationFailed(msg) => {
+            GuardianError::AuthorizationFailed(msg) => {
                 assert!(msg.contains("Unauthorized account configuration"));
-                assert!(msg.contains("openzeppelin::psm::public_key"));
+                assert!(msg.contains("openzeppelin::guardian::public_key"));
             }
             e => panic!("Expected AuthorizationFailed, got: {:?}", e),
         }

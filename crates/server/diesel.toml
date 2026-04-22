@@ -1,4 +1,4 @@
-# Diesel configuration for Private State Manager Server
+# Diesel configuration for Guardian Server
 
 [print_schema]
 file = "src/schema.rs"

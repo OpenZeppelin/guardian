@@ -8,7 +8,7 @@ use std::env;
 const DEFAULT_MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
 /// Environment variable name for max request bytes
-const ENV_VAR_NAME: &str = "PSM_MAX_REQUEST_BYTES";
+const ENV_VAR_NAME: &str = "GUARDIAN_MAX_REQUEST_BYTES";
 
 /// Body size limit configuration
 #[derive(Debug, Clone, Copy)]
@@ -20,7 +20,7 @@ pub struct BodyLimitConfig {
 impl BodyLimitConfig {
     /// Load configuration from environment variables
     ///
-    /// Reads `PSM_MAX_REQUEST_BYTES` from environment.
+    /// Reads `GUARDIAN_MAX_REQUEST_BYTES` from environment.
     /// Defaults to 1 MB if not set or invalid.
     pub fn from_env() -> Self {
         Self::from_env_var(ENV_VAR_NAME)
@@ -69,13 +69,13 @@ mod tests {
     #[test]
     fn test_from_env_var_not_set() {
         // Use a unique env var name that won't conflict with other tests
-        let config = BodyLimitConfig::from_env_var("PSM_TEST_BODY_LIMIT_UNSET_12345");
+        let config = BodyLimitConfig::from_env_var("GUARDIAN_TEST_BODY_LIMIT_UNSET_12345");
         assert_eq!(config.max_bytes, 1024 * 1024);
     }
 
     #[test]
     fn test_from_env_var_custom() {
-        let var_name = "PSM_TEST_BODY_LIMIT_CUSTOM_67890";
+        let var_name = "GUARDIAN_TEST_BODY_LIMIT_CUSTOM_67890";
         unsafe {
             env::set_var(var_name, "2097152");
         }
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_from_env_var_invalid() {
-        let var_name = "PSM_TEST_BODY_LIMIT_INVALID_11111";
+        let var_name = "GUARDIAN_TEST_BODY_LIMIT_INVALID_11111";
         unsafe {
             env::set_var(var_name, "not_a_number");
         }
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_from_env_var_zero() {
-        let var_name = "PSM_TEST_BODY_LIMIT_ZERO_22222";
+        let var_name = "GUARDIAN_TEST_BODY_LIMIT_ZERO_22222";
         unsafe {
             env::set_var(var_name, "0");
         }
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_from_env_var_large_value() {
-        let var_name = "PSM_TEST_BODY_LIMIT_LARGE_33333";
+        let var_name = "GUARDIAN_TEST_BODY_LIMIT_LARGE_33333";
         unsafe {
             env::set_var(var_name, "104857600"); // 100 MB
         }

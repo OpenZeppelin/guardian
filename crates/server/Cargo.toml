@@ -1,5 +1,5 @@
 [package]
-name = "private-state-manager-server"
+name = "guardian-server"
 version = "0.1.0"
 edition = "2024"
 
@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1"
+aws-config = { version = "=1.5.18", default-features = false, features = ["rt-tokio", "rustls"] }
+aws-sdk-secretsmanager = { version = "=1.75.0", default-features = false, features = ["rt-tokio", "rustls"] }
 axum = "0.8.6"
 base64 = { workspace = true }
 chrono = "0.4"
@@ -32,9 +34,13 @@ dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 miden-protocol = { workspace = true, features = ["testing"] }
+futures-util = { version = "0.3", optional = true }
+rustls = { version = "0.23", optional = true }
+tokio-postgres = { version = "0.7.10", optional = true }
+tokio-postgres-rustls = { version = "0.12.0", optional = true }
 
 # internal crates
-private-state-manager-shared = { path = "../shared" }
+guardian-shared = { path = "../shared" }
 miden-keystore = { path = "../miden-keystore" }
 miden-rpc-client = { path = "../miden-rpc-client" }
 
@@ -51,11 +57,20 @@ miden-confidential-contracts = { path = "../contracts", optional = true }
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
+futures = "0.3"
 uuid = { version = "1.0", features = ["v4"] }
 miden-standards = { workspace = true }
 
 [features]
 default = []
-postgres = ["diesel", "diesel-async", "diesel_migrations"]
+postgres = [
+    "diesel",
+    "diesel-async",
+    "diesel_migrations",
+    "futures-util",
+    "rustls",
+    "tokio-postgres",
+    "tokio-postgres-rustls",
+]
 integration = []
 e2e = ["miden-client", "miden-confidential-contracts"]

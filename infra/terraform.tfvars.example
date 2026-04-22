@@ -1,22 +1,41 @@
 # Required: AWS region
 aws_region = "us-east-1"
 
-# Required: ECR image URI for psm-server
-# After pushing to ECR, set this to the full image URI
-server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:latest"
+# Optional: ECS/image architecture
+# cpu_architecture = "X86_64"
+# cpu_architecture = "ARM64"
 
-# Optional: Miden network for the deployed PSM server
+# Optional: Base stack name used to derive AWS resource names
+# stack_name = "guardian"
+# stack_name = "psm"
+
+# Required: ECR image URI for the server image
+# After pushing to ECR, set this to the full image URI
+server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
+
+# Optional: Miden network for the deployed GUARDIAN server
 # server_network_type = "MidenTestnet"
 
 # Optional: VPC and subnet configuration
 # If not specified, uses the default VPC and all its subnets
 # vpc_id     = "vpc-xxxxxxxx"
 # subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# rds_proxy_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# In us-east-1, avoid subnets in us-east-1e/use1-az3 for RDS Proxy.
 
 # Optional: Postgres credentials
-# postgres_db       = "psm"
-# postgres_user     = "psm"
-# postgres_password = "psm_dev_password"
+# Defaults derive from stack_name when omitted
+# postgres_db       = "guardian"
+# postgres_user     = "guardian"
+# postgres_password = "guardian_dev_password"
+
+# Optional: Managed RDS sizing overrides
+# Stage defaults:
+# - dev  -> db.t3.micro, 20 GiB allocated
+# - prod -> db.t3.medium, 50 GiB allocated, 200 GiB max allocated
+# rds_instance_class = "db.t3.medium"
+# rds_allocated_storage = 50
+# rds_max_allocated_storage = 200
 
 # Optional: Route 53 hosted zone ID (auto-lookup by domain name)
 # route53_zone_id = "Z1234567890ABC"
@@ -30,12 +49,24 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/psm-server:late
 # Optional: Task resource configuration
 # server_cpu    = 512
 # server_memory = 1024
-# postgres_cpu    = 512
-# postgres_memory = 1024
+
+# Optional: HTTP rate limiting and DB pool overrides
+# guardian_rate_limit_enabled = false
+# guardian_rate_burst_per_sec = 200
+# guardian_rate_per_min = 5000
+# guardian_db_pool_max_size = 32
+# guardian_metadata_db_pool_max_size = 32
 
 # Optional: Resource naming (defaults match the original bash script)
-# cluster_name          = "psm-cluster"
-# server_service_name   = "psm-server"
-# postgres_service_name = "psm-postgres"
-# alb_name              = "psm-alb"
-# sd_namespace_name     = "psm.local"
+# cluster_name                 = "guardian-cluster"
+# server_service_name          = "guardian-server"
+# alb_name                     = "guardian-alb"
+# target_group_name            = "guardian-server-tg"
+# alb_security_group_name      = "guardian-alb-sg"
+# server_security_group_name   = "guardian-server-sg"
+# postgres_security_group_name = "guardian-postgres-sg"
+# task_execution_role_name     = "guardian-ecs-task-execution"
+# task_role_name               = "guardian-ecs-task"
+# server_task_family           = "guardian-server"
+# server_container_name        = "guardian-server"
+# server_log_group_name        = "/ecs/guardian-server"

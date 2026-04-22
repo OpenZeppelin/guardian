@@ -1,4 +1,4 @@
-import type { RequestAuthPayload } from '@openzeppelin/psm-client';
+import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
 import { AccountId, Felt, FeltArray, Rpo256, Word } from '@miden-sdk/miden-sdk';
 
 export class AuthDigest {
