@@ -21,10 +21,12 @@ cargo run -p guardian-demo
 
 Default startup choices:
 
-- One GUARDIAN server tab
-- Three demo tabs running `cargo run -p guardian-demo`
-- Miden testnet
-- GUARDIAN local gRPC: `http://localhost:50051` unless the task explicitly targets HTTP
+- One GUARDIAN server tab (skip when targeting Staging or Production — see the Deployment Targets table in `SKILL.md`)
+- Three demo tabs running `cargo run -p guardian-demo` (or three runs of the scratch deployed-SDK binary when smoking the published crate)
+- GUARDIAN endpoint and Miden RPC matching the chosen Deployment Target:
+  - Local dev: `http://localhost:50051` + local node or devnet
+  - Staging (devnet): `https://guardian-stg.openzeppelin.com` + `https://rpc.devnet.miden.io`
+  - Production (testnet): `https://guardian.openzeppelin.com` + `https://rpc.testnet.miden.io`
 - Signature scheme: Falcon unless the task specifically targets ECDSA
 
 Record the signer commitment shown in each demo tab before account creation. Use one demo tab to create the account and paste the commitments from the other demo tabs into the cosigner list. Then use the remaining demo tabs to pull and sync the shared account.

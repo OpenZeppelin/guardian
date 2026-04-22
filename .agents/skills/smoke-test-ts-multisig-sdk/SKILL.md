@@ -7,6 +7,63 @@ description: Drive manual smoke testing of the TypeScript `@openzeppelin/miden-m
 
 Use `examples/smoke-web` as the primary smoke surface for `@openzeppelin/miden-multisig-client`. Treat `examples/web` as the parity target for the shared browser orchestration layer, not as the main canary surface.
 
+## Deployment Targets
+
+Pick the target before picking a workflow. All three are valid smoke targets — the choice depends on what's being verified.
+
+| Target | GUARDIAN endpoint | Miden RPC | When to use |
+| --- | --- | --- | --- |
+| **Local dev** | `http://localhost:3000` | `https://rpc.devnet.miden.io` or local `http://localhost:57291` | default for in-repo changes not yet released |
+| **Staging (devnet)** | `https://guardian-stg.openzeppelin.com` | `https://rpc.devnet.miden.io` | verify a candidate before release; mirrors prod topology on devnet |
+| **Production (testnet)** | `https://guardian.openzeppelin.com` | `https://rpc.testnet.miden.io` | smoke the published npm SDK against live prod |
+
+Sanity-check GUARDIAN before every deployed-env run:
+
+```bash
+curl https://guardian.openzeppelin.com/pubkey
+curl 'https://guardian.openzeppelin.com/pubkey?scheme=ecdsa'
+curl https://guardian-stg.openzeppelin.com/pubkey
+```
+
+If the commitment does not round-trip into `status().multisig.guardianPubkey` after `createAccount`, report the exact mismatch.
+
+## Testing Deployed SDKs
+
+`examples/smoke-web/package.json` pins `@openzeppelin/miden-multisig-client` and `@openzeppelin/guardian-client` to `file:../../packages/...`, so `npm run dev` smokes the **workspace source**, not the npm release. When the user asks to smoke "the deployed SDK" or "the released version":
+
+1. Create a scratch Vite (or equivalent) project outside the workspace (e.g. `/tmp/guardian-ts-smoke-<version>`).
+2. Declare the published packages pinned to the release under test:
+   ```json
+   {
+     "dependencies": {
+       "@openzeppelin/miden-multisig-client": "0.14.3",
+       "@openzeppelin/guardian-client": "0.14.3",
+       "@miden-sdk/miden-sdk": "0.14.3"
+     }
+   }
+   ```
+3. Port the smoke surface (`smokeHarness.ts`, `initClient.ts`, `multisigApi.ts`, the `window.smoke` shim) as-is so the workflow matrix still applies verbatim. Avoid re-implementing flows; lexical parity lets baseline timings stay comparable.
+4. Run `npm install` and record the actual resolved version from `npm ls @openzeppelin/miden-multisig-client`.
+5. Point the scratch harness at the chosen Deployment Target and run the workflow.
+
+Treat workspace-path smoke-web runs and deployed-npm scratch-project runs as different smoke targets. Never collapse them in the report.
+
+## Browser Automation
+
+The smoke harness is designed to be driven from DevTools (`window.smoke.*`), which makes it drivable by browser-automation tools when available. Prefer in this order:
+
+1. **`mcp__Claude_in_Chrome__*`** (Chrome MCP) — drives real Chrome tabs. Use `tabs_context_mcp` to get the tab group, `tabs_create_mcp` to open one tab per cosigner, `navigate` to load the smoke URL, `javascript_tool` to run `await window.smoke.createAccount(...)` etc. Supports ECDSA local-signer flows end-to-end. `browser_batch` lets you chain `navigate → evaluate → wait` in one round-trip. Does **not** bypass wallet modals — Para and Miden Wallet still need a human at the keyboard for the approval UI.
+2. **`mcp__Claude_Preview__*`** (Claude Preview) — scoped to a single dev-server preview, good for the 1-cosigner happy path or for `preview_console_logs` and `preview_network` during a handoff. Less suited to concurrent cosigner flows because it is single-tab.
+3. **Manual DevTools** — default fallback. Required for wallet-signer flows that need real user approval.
+
+Isolation rules stay identical when using browser MCPs:
+
+- Same-browser tabs in the MCP tab group do **not** give true IndexedDB isolation. For 3-cosigner runs, use Chrome MCP for one cosigner and drive the other two in a second real browser binary (Brave, Firefox) that the user controls manually. Same-browser concurrent cosigners are a known harness gap, not a supported canary path.
+- Always call `await window.smoke.status()` via `javascript_tool` after any state transition; use that as the source of truth, not DOM state.
+- When an MCP tool surfaces the opaque `[object Object]` error from `window.smoke.*`, re-query `await window.smoke.events()` and classify the failure from the newest matching event — the raw thrown value is noise.
+
+When reporting, capture the concrete tool invocation path used (Chrome MCP vs Claude Preview vs manual) alongside the browser label so another agent can reproduce the run.
+
 ## Quick Start
 
 1. Read the current browser harness before assuming command names or result shapes:
@@ -42,11 +99,11 @@ Use `examples/smoke-web` as the primary smoke surface for `@openzeppelin/miden-m
 
 Use this as the default setup unless the prompt explicitly asks for something else:
 
-- one GUARDIAN server
-- one `examples/smoke-web` dev server
+- one GUARDIAN server (skip when targeting Staging or Production — the deployed server is already up)
+- one `examples/smoke-web` dev server (or the scratch deployed-SDK project when smoking the published npm package)
 - one browser or browser profile per cosigner session
-- local GUARDIAN HTTP endpoint: `http://localhost:3000`
-- Miden devnet RPC endpoint: `https://rpc.devnet.miden.io`
+- GUARDIAN endpoint matching the chosen target from the Deployment Targets table
+- Miden RPC endpoint matching the chosen target
 - signer source: `local`
 - signature scheme: `falcon`
 

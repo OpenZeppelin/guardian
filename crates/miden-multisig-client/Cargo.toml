@@ -11,16 +11,16 @@ description = "High-level SDK for interacting with multisig accounts on Miden vi
 
 [dependencies]
 # Internal crates
-guardian-client = { version = "0.14.3", path = "../client" }
-guardian-shared = { version = "0.14.3", path = "../shared" }
-miden-confidential-contracts = { version = "0.14.3", path = "../contracts" }
+guardian-client = { version = "=0.14.4", path = "../client" }
+guardian-shared = { version = "=0.14.4", path = "../shared" }
+miden-confidential-contracts = { version = "=0.14.4", path = "../contracts" }
 
 # Miden
-miden-client = { workspace = true, features = ["tonic", "testing"] }
-miden-client-sqlite-store = { workspace = true }
-miden-protocol = { workspace = true }
-miden-tx = { workspace = true }
-miden-standards = { workspace = true }
+miden-client = { version = "=0.14.3", features = ["tonic", "testing"] }
+miden-client-sqlite-store = { version = "=0.14.3" }
+miden-protocol = { version = "=0.14.3" }
+miden-tx = { version = "=0.14.3" }
+miden-standards = { version = "=0.14.3" }
 
 # Async
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

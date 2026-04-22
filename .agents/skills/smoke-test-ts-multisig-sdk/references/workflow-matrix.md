@@ -23,10 +23,15 @@ cd examples/smoke-web && npm run dev
 
 Default startup choices:
 
-- one local GUARDIAN server at `http://localhost:3000`
-- one `examples/smoke-web` dev server at `http://localhost:3002`
-- one real browser or fully isolated browser profile per cosigner
-- Miden devnet RPC: `https://rpc.devnet.miden.io`
+- one GUARDIAN at the chosen Deployment Target (see the table in `SKILL.md`):
+  - Local dev: `http://localhost:3000`
+  - Staging (devnet): `https://guardian-stg.openzeppelin.com`
+  - Production (testnet): `https://guardian.openzeppelin.com`
+- one `examples/smoke-web` dev server at `http://localhost:3002` (or the scratch deployed-SDK project when smoking the published npm package)
+- one real browser or fully isolated browser profile per cosigner (Chrome MCP's `tabs_create_mcp` tabs count as one profile, not three — see Browser Automation in `SKILL.md`)
+- Miden RPC matching the chosen target:
+  - Local dev or Staging: `https://rpc.devnet.miden.io`
+  - Production: `https://rpc.testnet.miden.io`
 - signer source: `local`
 - signature scheme: Falcon unless the task specifically targets ECDSA, Para, or Miden Wallet
 

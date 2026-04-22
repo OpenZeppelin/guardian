@@ -7,6 +7,49 @@ description: Drive manual smoke testing of the Rust `miden-multisig-client` SDK 
 
 Use `cargo run -p guardian-demo` as the primary smoke harness for `miden-multisig-client`. Start with the smallest workflow that covers the changed codepath, then expand to adjacent workflows when a lower-layer change can affect GUARDIAN coordination, signature handling, or proposal execution.
 
+## Deployment Targets
+
+Pick the target before picking a workflow. All three are valid smoke targets — the choice depends on what's being verified.
+
+| Target | GUARDIAN endpoint | Miden RPC | When to use |
+| --- | --- | --- | --- |
+| **Local dev** | `http://localhost:50051` (gRPC) or `http://localhost:3000` (HTTP) | `http://localhost:57291` or devnet | default for in-repo changes not yet released |
+| **Staging (devnet)** | `https://guardian-stg.openzeppelin.com` | `https://rpc.devnet.miden.io` | verify a candidate before release; mirrors prod topology on devnet |
+| **Production (testnet)** | `https://guardian.openzeppelin.com` | `https://rpc.testnet.miden.io` | smoke the published SDK version against live prod |
+
+Sanity-check the GUARDIAN target before every deployed-env run — a non-200 response or commitment mismatch means the ALB or server is unhealthy and blocks the rest of the canary:
+
+```bash
+curl https://guardian.openzeppelin.com/pubkey
+curl 'https://guardian.openzeppelin.com/pubkey?scheme=ecdsa'
+# staging
+curl https://guardian-stg.openzeppelin.com/pubkey
+# gRPC over TLS (matches what the Rust SDK uses)
+grpcurl -import-path crates/server/proto -proto guardian.proto \
+  -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
+```
+
+Record the returned commitment — you'll paste it into the demo's "GUARDIAN commitment" prompt during `Switch GUARDIAN` canaries, and you'll use it to verify `s` output.
+
+## Testing Deployed SDKs
+
+`examples/demo` depends on `miden-multisig-client` via a workspace `path = "../../crates/miden-multisig-client"`, so running it smokes the **workspace source**, not the published crate. When the user asks to smoke "the deployed SDK" or "the released version":
+
+1. Create a scratch cargo project outside the workspace (e.g. `/tmp/guardian-rust-smoke-<version>`).
+2. Declare the published crates as registry dependencies pinned to the release under test:
+   ```toml
+   [dependencies]
+   miden-multisig-client = "0.14.3"
+   guardian-client       = "0.14.3"
+   miden-client          = "0.14"
+   tokio                 = { version = "1", features = ["full"] }
+   ```
+3. Port or copy the exact menu/action code from `examples/demo/src/` into that scratch project. Keep the prompts identical so the workflows in `references/workflow-matrix.md` still apply verbatim.
+4. Run `cargo build` to confirm the resolved dependency graph is the published release — not a transitive workspace override.
+5. Record the exact versions printed by `cargo tree -p miden-multisig-client --depth 0` in the result.
+
+Treat workspace-path demo runs and deployed-crate scratch-project runs as different smoke targets. Never collapse them in the report.
+
 ## Quick Start
 
 1. Read the current demo surface before assuming prompts or menu labels:
@@ -37,10 +80,10 @@ Use `cargo run -p guardian-demo` as the primary smoke harness for `miden-multisi
 
 Use this as the default setup unless the prompt explicitly asks for something else:
 
-- one tab for the GUARDIAN server
-- three tabs running `cargo run -p guardian-demo`
-- local GUARDIAN endpoint for every demo tab
-- Miden devnet for every demo tab
+- one tab for the GUARDIAN server (skip when targeting Staging or Production — the deployed server is already up)
+- three tabs running `cargo run -p guardian-demo` (or three runs of the scratch deployed-SDK binary when smoking the published crate)
+- GUARDIAN endpoint matching the chosen target from the Deployment Targets table
+- Miden RPC matching the chosen target
 - Falcon signature scheme unless the prompt explicitly asks for ECDSA
 
 Treat the three demo tabs as three cosigners of the same account. Capture the commitments shown at startup, then use one tab to create the account and the other tabs to pull it with `Sync account`. Expect initial sync to take time; allow for retries before calling it a failure.

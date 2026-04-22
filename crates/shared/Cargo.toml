@@ -10,7 +10,7 @@ homepage.workspace = true
 description = "Shared types and utilities for Guardian"
 
 [dependencies]
-miden-protocol = { workspace = true }
+miden-protocol = { version = "=0.14.3" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }
@@ -19,4 +19,4 @@ hex = { workspace = true }
 prost = { workspace = true }
 
 [dev-dependencies]
-miden-standards = { workspace = true }
+miden-standards = { version = "=0.14.3" }
