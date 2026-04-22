@@ -17,6 +17,7 @@ use crate::ack::AckRegistry;
 use crate::builder::handle::ServerHandle;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::clock::SystemClock;
+use crate::dashboard::DashboardState;
 use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
@@ -34,6 +35,7 @@ pub struct ServerBuilder {
     metadata: Option<Arc<dyn MetadataStore>>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
+    dashboard: Option<Arc<DashboardState>>,
     logging_config: Option<LoggingConfig>,
     cors_layer: Option<tower_http::cors::CorsLayer>,
     rate_limit_config: Option<RateLimitConfig>,
@@ -53,6 +55,7 @@ impl ServerBuilder {
             metadata: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
+            dashboard: None,
             logging_config: None,
             cors_layer: None,
             rate_limit_config: None,
@@ -151,6 +154,12 @@ impl ServerBuilder {
     /// ```
     pub fn ack(mut self, ack: AckRegistry) -> Self {
         self.ack = Some(ack);
+        self
+    }
+
+    /// Configure dashboard auth/session state.
+    pub fn dashboard(mut self, dashboard: Arc<DashboardState>) -> Self {
+        self.dashboard = Some(dashboard);
         self
     }
 
@@ -377,6 +386,10 @@ impl ServerBuilder {
             .ok_or("Metadata store not set. Use .metadata(...)")?;
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
+        let dashboard = match self.dashboard {
+            Some(dashboard) => dashboard,
+            None => Arc::new(DashboardState::from_env()?),
+        };
 
         let network_client = MidenNetworkClient::from_network(network_type)
             .await
@@ -395,6 +408,7 @@ impl ServerBuilder {
             ack,
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),
+            dashboard,
         };
 
         Ok(ServerHandle {

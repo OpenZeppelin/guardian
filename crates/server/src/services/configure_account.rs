@@ -176,6 +176,7 @@ mod tests {
             ack,
             canonicalization: None, // Optimistic mode for tests
             clock: Arc::new(crate::clock::test::MockClock::default()),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
         }
     }
 

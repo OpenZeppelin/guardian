@@ -37,6 +37,29 @@ let builder = ServerBuilder::new()
 
 Requests exceeding this limit receive a 413 Payload Too Large response.
 
+#### Operator Dashboard
+
+- `GUARDIAN_OPERATOR_ALLOWLIST_JSON` - JSON array of operator entries, each with `operator_id` and `commitment`
+- `GUARDIAN_DASHBOARD_DOMAIN` - Domain marker bound into operator login challenges. Set `*` to leave the domain open for now (default: `*`)
+- `GUARDIAN_DASHBOARD_ALLOW_INSECURE_HTTP` - Explicit local-only opt-in to omit the `Secure` cookie attribute (default: `false`)
+- `GUARDIAN_OPERATOR_SESSION_COOKIE_NAME` - Session cookie name for dashboard auth (default: `guardian_operator_session`)
+- `GUARDIAN_OPERATOR_NONCE_TTL_SECS` - Challenge lifetime in seconds (default: `300`)
+- `GUARDIAN_OPERATOR_SESSION_TTL_SECS` - Absolute dashboard session lifetime in seconds, capped at 24h (default: `28800`)
+- `GUARDIAN_OPERATOR_MAX_OUTSTANDING_CHALLENGES` - Maximum active challenges retained per operator commitment (default: `8`)
+- `GUARDIAN_OPERATOR_PUBKEY_RATE_BURST_PER_SEC` - Per-operator challenge/verify burst limit keyed by commitment (default: `5`)
+- `GUARDIAN_OPERATOR_PUBKEY_RATE_PER_MIN` - Per-operator challenge/verify sustained limit keyed by commitment (default: `30`)
+
+Example allowlist payload:
+
+```json
+[
+  {
+    "operator_id": "alice",
+    "commitment": "0x..."
+  }
+]
+```
+
 ### Account Configuration
 
 Each account has:
@@ -215,6 +238,11 @@ ServerBuilder::new()
 - **POST** `/delta/proposal/sign` - Add a signature to an existing delta proposal
 - **GET** `/delta/proposal?account_id=<id>` - List pending delta proposals for an account
 - **GET** `/delta/proposal/single?account_id=<id>&commitment=<c>` - Retrieve a pending proposal by commitment
+- **GET** `/auth/challenge?commitment=<commitment>` - Issue an operator dashboard login challenge
+- **POST** `/auth/verify` - Verify an operator dashboard signature and set a session cookie
+- **POST** `/auth/logout` - Clear the operator dashboard session cookie and invalidate the server-side session
+- **GET** `/dashboard/accounts` - List dashboard account summaries for an authenticated operator session
+- **GET** `/dashboard/accounts/{account_id}` - Fetch one dashboard account detail record for an authenticated operator session
 
 #### gRPC API (Port 50051)
 
