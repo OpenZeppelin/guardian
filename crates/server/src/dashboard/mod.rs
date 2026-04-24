@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
@@ -12,7 +13,7 @@ use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{GuardianError, Result};
 use crate::middleware::RateLimitConfig;
@@ -29,6 +30,7 @@ const DEFAULT_MAX_OUTSTANDING_CHALLENGES: usize = 8;
 const DEFAULT_PUBKEY_RATE_BURST_PER_SEC: u32 = 5;
 const DEFAULT_PUBKEY_RATE_PER_MIN: u32 = 30;
 const ENV_ALLOWLIST_JSON: &str = "GUARDIAN_OPERATOR_ALLOWLIST_JSON";
+const ENV_ALLOWLIST_PATH: &str = "GUARDIAN_OPERATOR_ALLOWLIST_PATH";
 const ENV_CANONICAL_DOMAIN: &str = "GUARDIAN_DASHBOARD_DOMAIN";
 const ENV_ALLOW_INSECURE_HTTP: &str = "GUARDIAN_DASHBOARD_ALLOW_INSECURE_HTTP";
 const ENV_COOKIE_NAME: &str = "GUARDIAN_OPERATOR_SESSION_COOKIE_NAME";
@@ -180,7 +182,8 @@ impl Default for DashboardConfig {
 #[derive(Clone, Debug)]
 pub struct DashboardState {
     config: DashboardConfig,
-    allowlist: Arc<OperatorAllowlist>,
+    allowlist_source: AllowlistSource,
+    allowlist: Arc<RwLock<OperatorAllowlist>>,
     challenges: Arc<Mutex<HashMap<String, Vec<PendingChallenge>>>>,
     sessions: Arc<Mutex<HashMap<String, OperatorSessionRecord>>>,
     commitment_rate_limits: RateLimitStore,
@@ -189,10 +192,9 @@ pub struct DashboardState {
 impl DashboardState {
     pub fn from_env() -> std::result::Result<Self, String> {
         let config = DashboardConfig::from_env()?;
-        let allowlist_json = env::var(ENV_ALLOWLIST_JSON).unwrap_or_else(|_| "[]".to_string());
-        let entries: Vec<OperatorAllowlistEntryInput> = serde_json::from_str(&allowlist_json)
-            .map_err(|error| format!("Failed to parse {ENV_ALLOWLIST_JSON}: {error}"))?;
-        Self::from_entries(entries, config)
+        let allowlist_source = AllowlistSource::from_env();
+        let allowlist = allowlist_source.load()?;
+        Self::from_allowlist_source(allowlist_source, allowlist, config)
     }
 
     pub fn for_tests(entries: Vec<(String, String)>) -> Self {
@@ -203,7 +205,13 @@ impl DashboardState {
                 commitment,
             })
             .collect();
-        Self::from_entries(inputs, DashboardConfig::for_tests())
+        let allowlist = OperatorAllowlist::from_entries(inputs)
+            .expect("dashboard test configuration should be valid");
+        Self::from_allowlist_source(
+            AllowlistSource::Static,
+            allowlist,
+            DashboardConfig::for_tests(),
+        )
             .expect("dashboard test configuration should be valid")
     }
 
@@ -230,6 +238,7 @@ impl DashboardState {
         commitment: &str,
         now: DateTime<Utc>,
     ) -> Result<OperatorChallenge> {
+        self.refresh_allowlist().await?;
         self.rate_limit_commitment("challenge", commitment)?;
 
         let correlation_id = correlation_id();
@@ -245,7 +254,7 @@ impl DashboardState {
             GuardianError::ConfigurationError(format!("Failed to create challenge digest: {error}"))
         })?;
 
-        if self.allowlist.lookup(&normalized_commitment).is_some() {
+        if self.lookup_allowlisted_operator(&normalized_commitment).await.is_some() {
             let expires_at = now + self.config.nonce_ttl;
             let mut challenges = self.challenges.lock().await;
             let pending = challenges.entry(normalized_commitment.clone()).or_default();
@@ -288,6 +297,7 @@ impl DashboardState {
         signature_hex: &str,
         now: DateTime<Utc>,
     ) -> Result<IssuedOperatorSession> {
+        self.refresh_allowlist().await?;
         self.rate_limit_commitment("verify", commitment)?;
 
         let correlation_id = correlation_id();
@@ -299,11 +309,8 @@ impl DashboardState {
             );
             GuardianError::AuthenticationFailed("Invalid operator credentials".to_string())
         })?;
-        let operator = self
-            .allowlist
-            .lookup(&normalized_commitment)
-            .cloned()
-            .ok_or_else(|| {
+        let operator = self.lookup_allowlisted_operator(&normalized_commitment).await.ok_or_else(
+            || {
                 tracing::warn!(
                     auth_event = "verify_failed",
                     correlation_id = %correlation_id,
@@ -311,7 +318,8 @@ impl DashboardState {
                     "Operator verify rejected because the commitment is not allowlisted"
                 );
                 GuardianError::AuthenticationFailed("Invalid operator credentials".to_string())
-            })?;
+            },
+        )?;
 
         let signature = Signature::from_hex(signature_hex).map_err(|_| {
             tracing::warn!(
@@ -404,6 +412,7 @@ impl DashboardState {
         token: &str,
         now: DateTime<Utc>,
     ) -> Result<AuthenticatedOperator> {
+        self.refresh_allowlist().await?;
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
 
@@ -417,8 +426,8 @@ impl DashboardState {
         })?;
 
         if self
-            .allowlist
-            .lookup(&session.operator.commitment)
+            .lookup_allowlisted_operator(&session.operator.commitment)
+            .await
             .is_none()
         {
             sessions.remove(token);
@@ -451,11 +460,11 @@ impl DashboardState {
         }
     }
 
-    fn from_entries(
-        entries: Vec<OperatorAllowlistEntryInput>,
+    fn from_allowlist_source(
+        allowlist_source: AllowlistSource,
+        allowlist: OperatorAllowlist,
         config: DashboardConfig,
     ) -> std::result::Result<Self, String> {
-        let allowlist = OperatorAllowlist::from_entries(entries)?;
         tracing::info!(
             auth_event = "allowlist_loaded",
             operator_count = allowlist.len(),
@@ -464,10 +473,41 @@ impl DashboardState {
         Ok(Self {
             commitment_rate_limits: RateLimitStore::new(config.commitment_rate_limit.clone()),
             config,
-            allowlist: Arc::new(allowlist),
+            allowlist_source,
+            allowlist: Arc::new(RwLock::new(allowlist)),
             challenges: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    async fn refresh_allowlist(&self) -> Result<()> {
+        let Some(updated_allowlist) = self
+            .allowlist_source
+            .load_dynamic()
+            .map_err(GuardianError::ConfigurationError)?
+        else {
+            return Ok(());
+        };
+
+        let mut allowlist = self.allowlist.write().await;
+        if *allowlist != updated_allowlist {
+            tracing::info!(
+                auth_event = "allowlist_reloaded",
+                operator_count = updated_allowlist.len(),
+                source = %self.allowlist_source.label(),
+                "Operator allowlist reloaded"
+            );
+            *allowlist = updated_allowlist;
+        }
+        Ok(())
+    }
+
+    async fn lookup_allowlisted_operator(
+        &self,
+        commitment: &str,
+    ) -> Option<AuthenticatedOperator> {
+        let allowlist = self.allowlist.read().await;
+        allowlist.lookup(commitment).cloned()
     }
 
     fn rate_limit_commitment(&self, endpoint: &str, commitment: &str) -> Result<()> {
@@ -515,6 +555,56 @@ impl Default for DashboardState {
     }
 }
 
+#[derive(Clone, Debug)]
+enum AllowlistSource {
+    Static,
+    EnvJson,
+    File(PathBuf),
+}
+
+impl AllowlistSource {
+    fn from_env() -> Self {
+        match env::var(ENV_ALLOWLIST_PATH) {
+            Ok(path) if !path.trim().is_empty() => Self::File(PathBuf::from(path.trim())),
+            _ => Self::EnvJson,
+        }
+    }
+
+    fn load(&self) -> std::result::Result<OperatorAllowlist, String> {
+        match self {
+            Self::Static => Ok(OperatorAllowlist::default()),
+            Self::EnvJson => {
+                let json = env::var(ENV_ALLOWLIST_JSON).unwrap_or_else(|_| "[]".to_string());
+                parse_allowlist_json(ENV_ALLOWLIST_JSON, &json)
+            }
+            Self::File(path) => {
+                let json = std::fs::read_to_string(path).map_err(|error| {
+                    format!(
+                        "Failed to read {ENV_ALLOWLIST_PATH} file {}: {error}",
+                        path.display()
+                    )
+                })?;
+                parse_allowlist_json(&format!("{ENV_ALLOWLIST_PATH}={}", path.display()), &json)
+            }
+        }
+    }
+
+    fn load_dynamic(&self) -> std::result::Result<Option<OperatorAllowlist>, String> {
+        match self {
+            Self::Static => Ok(None),
+            Self::EnvJson | Self::File(_) => self.load().map(Some),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Static => "static".to_string(),
+            Self::EnvJson => ENV_ALLOWLIST_JSON.to_string(),
+            Self::File(path) => format!("{ENV_ALLOWLIST_PATH}={}", path.display()),
+        }
+    }
+}
+
 pub async fn require_dashboard_session(
     State(state): State<AppState>,
     mut request: Request,
@@ -540,7 +630,7 @@ pub fn extract_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> 
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct OperatorAllowlist {
     by_commitment: HashMap<String, AuthenticatedOperator>,
 }
@@ -617,6 +707,15 @@ struct OperatorAllowlistEntryInput {
 
 fn normalize_commitment(commitment: &str) -> std::result::Result<String, String> {
     Word::from_hex(commitment).map(|parsed| parsed.into_hex())
+}
+
+fn parse_allowlist_json(
+    source_label: &str,
+    json: &str,
+) -> std::result::Result<OperatorAllowlist, String> {
+    let entries: Vec<OperatorAllowlistEntryInput> = serde_json::from_str(json)
+        .map_err(|error| format!("Failed to parse {source_label}: {error}"))?;
+    OperatorAllowlist::from_entries(entries)
 }
 
 fn random_hex<const N: usize>() -> String {
@@ -707,10 +806,70 @@ fn is_local_or_open_domain(domain: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::{LazyLock, Mutex as StdMutex};
+
+    use chrono::{Duration, Utc};
+    use guardian_shared::hex::FromHex;
+    use miden_protocol::Word;
+    use uuid::Uuid;
+
+    use crate::testing::helpers::TestSigner;
+
     use super::{
-        DEFAULT_CANONICAL_DOMAIN, DashboardConfig, OPEN_DASHBOARD_DOMAIN, is_local_domain,
-        is_local_or_open_domain, is_open_domain,
+        DEFAULT_CANONICAL_DOMAIN, DashboardConfig, DashboardState, ENV_ALLOWLIST_JSON,
+        ENV_ALLOWLIST_PATH, OPEN_DASHBOARD_DOMAIN, is_local_domain, is_local_or_open_domain,
+        is_open_domain,
     };
+
+    static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<str>) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value.as_ref()) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    fn allowlist_json(entries: &[(&str, &str)]) -> String {
+        serde_json::to_string(
+            &entries
+                .iter()
+                .map(|(operator_id, commitment)| {
+                    serde_json::json!({
+                        "operator_id": operator_id,
+                        "commitment": commitment,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("allowlist JSON should serialize")
+    }
+
+    fn write_allowlist_file(path: &std::path::Path, entries: &[(&str, &str)]) {
+        fs::write(path, allowlist_json(entries)).expect("allowlist file should be written");
+    }
 
     #[test]
     fn dashboard_config_defaults_to_open_domain() {
@@ -725,5 +884,110 @@ mod tests {
         assert!(is_open_domain("*"));
         assert!(is_local_or_open_domain("*"));
         assert!(!is_local_domain("*"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_state_reloads_allowlist_path_without_restart() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock should be acquired");
+        let path = std::env::temp_dir().join(format!(
+            "guardian_operator_allowlist_{}.json",
+            Uuid::new_v4()
+        ));
+        let operator_one = TestSigner::new();
+        let operator_two = TestSigner::new();
+
+        write_allowlist_file(&path, &[("operator-1", &operator_one.commitment_hex)]);
+        let _allowlist_path = EnvVarGuard::set(ENV_ALLOWLIST_PATH, path.display().to_string());
+        let _allowlist_json = EnvVarGuard::remove(ENV_ALLOWLIST_JSON);
+
+        let state = DashboardState::from_env().expect("dashboard state should load");
+        let now = Utc::now();
+        let challenge_one = state
+            .issue_challenge(&operator_one.commitment_hex, now)
+            .await
+            .expect("first challenge should succeed");
+        let signature_one = operator_one
+            .sign_word(Word::from_hex(&challenge_one.signing_digest).expect("digest should parse"));
+        state
+            .verify(&operator_one.commitment_hex, &signature_one, now)
+            .await
+            .expect("first verify should succeed");
+
+        let original_token = {
+            let sessions = state.sessions.lock().await;
+            sessions
+                .keys()
+                .next()
+                .expect("a session token should exist")
+                .clone()
+        };
+
+        write_allowlist_file(&path, &[("operator-2", &operator_two.commitment_hex)]);
+        let later = now + Duration::seconds(1);
+
+        let challenge_two = state
+            .issue_challenge(&operator_two.commitment_hex, later)
+            .await
+            .expect("reloaded challenge should succeed");
+        let signature_two = operator_two
+            .sign_word(Word::from_hex(&challenge_two.signing_digest).expect("digest should parse"));
+        let session_two = state
+            .verify(&operator_two.commitment_hex, &signature_two, later)
+            .await
+            .expect("reloaded verify should succeed");
+        assert_eq!(session_two.operator.operator_id, "operator-2");
+
+        assert!(
+            state.authenticate_session(&original_token, later).await.is_err(),
+            "old session should be revoked after allowlist reload"
+        );
+
+        fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn dashboard_state_rereads_allowlist_json_in_process() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock should be acquired");
+        let operator_one = TestSigner::new();
+        let operator_two = TestSigner::new();
+
+        let _allowlist_path = EnvVarGuard::remove(ENV_ALLOWLIST_PATH);
+        let _allowlist_json = EnvVarGuard::set(
+            ENV_ALLOWLIST_JSON,
+            allowlist_json(&[("operator-1", &operator_one.commitment_hex)]),
+        );
+
+        let state = DashboardState::from_env().expect("dashboard state should load");
+        let now = Utc::now();
+        let challenge_one = state
+            .issue_challenge(&operator_one.commitment_hex, now)
+            .await
+            .expect("first challenge should succeed");
+        let signature_one = operator_one
+            .sign_word(Word::from_hex(&challenge_one.signing_digest).expect("digest should parse"));
+        state
+            .verify(&operator_one.commitment_hex, &signature_one, now)
+            .await
+            .expect("first verify should succeed");
+
+        unsafe {
+            std::env::set_var(
+                ENV_ALLOWLIST_JSON,
+                allowlist_json(&[("operator-2", &operator_two.commitment_hex)]),
+            )
+        };
+
+        let later = now + Duration::seconds(1);
+        let challenge_two = state
+            .issue_challenge(&operator_two.commitment_hex, later)
+            .await
+            .expect("updated env challenge should succeed");
+        let signature_two = operator_two
+            .sign_word(Word::from_hex(&challenge_two.signing_digest).expect("digest should parse"));
+        let session_two = state
+            .verify(&operator_two.commitment_hex, &signature_two, later)
+            .await
+            .expect("updated env verify should succeed");
+        assert_eq!(session_two.operator.operator_id, "operator-2");
     }
 }

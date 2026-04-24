@@ -39,7 +39,8 @@ Requests exceeding this limit receive a 413 Payload Too Large response.
 
 #### Operator Dashboard
 
-- `GUARDIAN_OPERATOR_ALLOWLIST_JSON` - JSON array of operator entries, each with `operator_id` and `commitment`
+- `GUARDIAN_OPERATOR_ALLOWLIST_JSON` - JSON array of operator entries, each with `operator_id` and `commitment`; reread during challenge, verify, and session authentication inside the running process
+- `GUARDIAN_OPERATOR_ALLOWLIST_PATH` - Path to a JSON file containing the same allowlist payload; reread during challenge, verify, and session authentication, and preferred for no-restart local workflows
 - `GUARDIAN_DASHBOARD_DOMAIN` - Domain marker bound into operator login challenges. Set `*` to leave the domain open for now (default: `*`)
 - `GUARDIAN_DASHBOARD_ALLOW_INSECURE_HTTP` - Explicit local-only opt-in to omit the `Secure` cookie attribute (default: `false`)
 - `GUARDIAN_OPERATOR_SESSION_COOKIE_NAME` - Session cookie name for dashboard auth (default: `guardian_operator_session`)
@@ -59,6 +60,8 @@ Example allowlist payload:
   }
 ]
 ```
+
+If both `GUARDIAN_OPERATOR_ALLOWLIST_PATH` and `GUARDIAN_OPERATOR_ALLOWLIST_JSON` are set, the file path takes precedence.
 
 ### Account Configuration
 
