@@ -388,7 +388,7 @@ impl ServerBuilder {
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
-            None => Arc::new(DashboardState::from_env()?),
+            None => Arc::new(DashboardState::from_env().await?),
         };
 
         let network_client = MidenNetworkClient::from_network(network_type)
