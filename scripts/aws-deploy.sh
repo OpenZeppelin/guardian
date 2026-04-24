@@ -28,6 +28,7 @@ set -euo pipefail
 #   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
+#   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
@@ -42,6 +43,7 @@ CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
 CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
+GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${SCRIPT_DIR}/../infra"
 TF_STATE_PATH_OVERRIDE="${TF_STATE_PATH:-}"
@@ -149,6 +151,7 @@ build_tf_vars() {
   TF_VARS+=("-var" "deployment_stage=${DEPLOY_STAGE}")
   TF_VARS+=("-var" "server_image_uri=${image_uri}")
   TF_VARS+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
+  TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
 
   if [ -n "$DOMAIN_NAME" ]; then
     TF_VARS+=("-var" "domain_name=${DOMAIN_NAME}")
@@ -535,6 +538,7 @@ case "${COMMAND:-}" in
     echo "  ECR_REPO_NAME= Override the ECR/image repository name (default: <stack-name>-server)"
     echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
+    echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
