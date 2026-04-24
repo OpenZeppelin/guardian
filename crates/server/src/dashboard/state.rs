@@ -286,15 +286,15 @@ impl DashboardState {
     pub async fn logout(&self, token: Option<&str>, now: DateTime<Utc>) {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
-        if let Some(token) = token {
-            if let Some(session) = sessions.remove(token) {
-                tracing::info!(
-                    auth_event = "logout",
-                    operator_id = %session.operator.operator_id,
-                    issued_at = %session.issued_at.to_rfc3339(),
-                    "Operator session cleared"
-                );
-            }
+        if let Some(token) = token
+            && let Some(session) = sessions.remove(token)
+        {
+            tracing::info!(
+                auth_event = "logout",
+                operator_id = %session.operator.operator_id,
+                issued_at = %session.issued_at.to_rfc3339(),
+                "Operator session cleared"
+            );
         }
     }
 
@@ -387,11 +387,12 @@ impl Default for DashboardState {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::{LazyLock, Mutex as StdMutex};
+    use std::sync::LazyLock;
 
     use chrono::{Duration, Utc};
     use guardian_shared::hex::FromHex;
     use miden_protocol::Word;
+    use tokio::sync::Mutex as TokioMutex;
     use uuid::Uuid;
 
     use super::super::allowlist::{
@@ -405,7 +406,7 @@ mod tests {
     use super::{DashboardConfig, DashboardState};
     use crate::testing::helpers::TestSigner;
 
-    static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+    static ENV_LOCK: LazyLock<TokioMutex<()>> = LazyLock::new(|| TokioMutex::new(()));
 
     struct EnvVarGuard {
         key: &'static str,
@@ -473,7 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_state_loads_operator_public_keys_from_file() {
-        let _env_lock = ENV_LOCK.lock().expect("env lock should be acquired");
+        let _env_lock = ENV_LOCK.lock().await;
         let operator_one = TestSigner::new();
         let operator_two = TestSigner::new();
         let path = std::env::temp_dir().join(format!(
@@ -524,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_state_rereads_operator_public_keys_file_in_process() {
-        let _env_lock = ENV_LOCK.lock().expect("env lock should be acquired");
+        let _env_lock = ENV_LOCK.lock().await;
         let operator_one = TestSigner::new();
         let operator_two = TestSigner::new();
         let path = std::env::temp_dir().join(format!(
