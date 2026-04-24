@@ -25,6 +25,7 @@ See the [Specification](spec/index.md) for an overview of the system design. It 
 #### TypeScript Packages
 
 - **[packages/guardian-client](packages/guardian-client/README.md)** - TypeScript HTTP client for GUARDIAN server
+- **[packages/guardian-operator-client](packages/guardian-operator-client/README.md)** - Lean TypeScript HTTP client for operator dashboard auth and account APIs
 - **[packages/miden-multisig-client](packages/miden-multisig-client/README.md)** - TypeScript SDK for Miden multisig accounts with GUARDIAN integration
 
 ### Quick Start
@@ -118,9 +119,11 @@ cargo test -p guardian-server --features e2e
 ```bash
 # Install dependencies
 cd packages/guardian-client && npm install
+cd packages/guardian-operator-client && npm install
 cd packages/miden-multisig-client && npm install
 
 # Run tests
 cd packages/guardian-client && npm test
+cd packages/guardian-operator-client && npm test
 cd packages/miden-multisig-client && npm test
 ```
