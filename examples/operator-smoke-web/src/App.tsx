@@ -30,13 +30,8 @@ function normalizeError(error: unknown): string {
   return 'Unknown error';
 }
 
-function buildAllowlistJson(commitment: string): string {
-  return formatJson([
-    {
-      operator_id: 'local-ui-operator',
-      commitment,
-    },
-  ]);
+function buildOperatorPublicKeysJson(publicKey: string): string {
+  return formatJson([publicKey]);
 }
 
 function normalizeHex(value: string | null | undefined): string {
@@ -66,7 +61,9 @@ export default function App() {
   );
 
   const effectiveCommitment = operatorCommitment.trim() || session.commitment || '';
-  const allowlistJson = effectiveCommitment ? buildAllowlistJson(effectiveCommitment) : '';
+  const operatorPublicKeysJson = session.publicKey
+    ? buildOperatorPublicKeysJson(session.publicKey)
+    : '';
   const signerCommitmentMismatch =
     session.ready &&
     operatorCommitment.trim().length > 0 &&
@@ -298,13 +295,13 @@ export default function App() {
         <section className="two-column">
           <section className="panel">
             <div className="panel-header">
-              <h2>Allowlist JSON</h2>
+              <h2>Operator Public Keys JSON</h2>
             </div>
-            {allowlistJson ? (
-              <pre className="result-box">{allowlistJson}</pre>
+            {operatorPublicKeysJson ? (
+              <pre className="result-box">{operatorPublicKeysJson}</pre>
             ) : (
               <p className="hint">
-                Generate a local signer first to get the operator allowlist entry.
+                Generate a local signer first to get the operator public keys JSON.
               </p>
             )}
           </section>

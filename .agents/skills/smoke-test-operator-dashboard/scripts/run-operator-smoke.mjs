@@ -1,13 +1,9 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
-const repoRoot = process.env.GUARDIAN_REPO_ROOT ?? process.cwd();
 const smokeUrl = process.env.GUARDIAN_OPERATOR_SMOKE_URL ?? 'http://127.0.0.1:3003/';
 const guardianUrl = process.env.GUARDIAN_URL ?? 'http://127.0.0.1:3000';
-const allowlistPath =
-  process.env.GUARDIAN_OPERATOR_ALLOWLIST_PATH ??
-  '/tmp/guardian-operator-smoke/operator-allowlist.json';
 const playwrightInstallRoot =
   process.env.PLAYWRIGHT_CORE_INSTALL_ROOT ??
   '/tmp/guardian-operator-smoke-playwright';
@@ -15,6 +11,9 @@ const chromeExecutable =
   process.env.CHROME_EXECUTABLE ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const headless = process.env.HEADLESS !== 'false';
+const operatorPublicKeysFile =
+  process.env.GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE ??
+  '/tmp/guardian-operator-smoke/operator-public-keys.json';
 
 const require = createRequire(path.join(playwrightInstallRoot, 'package.json'));
 const { chromium } = require('playwright-core');
@@ -51,6 +50,12 @@ async function clickAction(page, name) {
   await waitForNoBusy(page);
 }
 
+async function localSignerReady(page) {
+  return (
+    (await section(page, 'Signer').locator('.badge').filter({ hasText: 'Ready' }).count()) > 0
+  );
+}
+
 async function uiError(page) {
   const error = page.locator('.error-box').filter({ hasText: 'Action error:' }).last();
   if ((await error.count()) === 0) return null;
@@ -66,7 +71,9 @@ const result = {
   guardianUrl,
   smokeUrl,
   operatorClientSource: 'workspace file:../../packages/guardian-operator-client',
-  allowlistedOperatorId: null,
+  operatorPublicKeysFile,
+  operatorPublicKeysJson: null,
+  publicKey: null,
   commitment: null,
   challenge: null,
   login: null,
@@ -82,17 +89,36 @@ try {
   page.setDefaultTimeout(60_000);
   await page.goto(smokeUrl, { waitUntil: 'networkidle' });
 
-  await clickAction(page, 'Generate local Falcon signer');
-  const allowlist = await sectionPreJson(page, 'Allowlist JSON');
-  const entry = allowlist[0];
-  result.allowlistedOperatorId = entry.operator_id;
-  result.commitment = entry.commitment;
-
-  await fs.mkdir(path.dirname(allowlistPath), { recursive: true });
-  await fs.writeFile(allowlistPath, `${JSON.stringify(allowlist, null, 2)}\n`);
+  if (!(await localSignerReady(page))) {
+    await clickAction(page, 'Generate local Falcon signer');
+  }
+  const operatorPublicKeysJson = await section(page, 'Operator Public Keys JSON')
+    .locator('pre')
+    .first()
+    .innerText({ timeout: 20_000 });
+  const operatorPublicKeys = JSON.parse(operatorPublicKeysJson);
+  if (!Array.isArray(operatorPublicKeys)) {
+    throw new Error('Operator public keys JSON must be an array');
+  }
+  const publicKey = typeof operatorPublicKeys[0] === 'string' ? operatorPublicKeys[0].trim() : '';
+  if (!publicKey) {
+    throw new Error('Operator public keys JSON did not contain a public key');
+  }
+  await mkdir(path.dirname(operatorPublicKeysFile), { recursive: true });
+  await writeFile(operatorPublicKeysFile, `${JSON.stringify(operatorPublicKeys, null, 2)}\n`);
+  const commitment = await section(page, 'Session')
+    .locator('label', { hasText: 'Operator commitment' })
+    .locator('input')
+    .inputValue();
+  if (!commitment) {
+    throw new Error('Operator commitment was empty');
+  }
+  result.operatorPublicKeysJson = operatorPublicKeysJson;
+  result.publicKey = publicKey;
+  result.commitment = commitment;
 
   const challengeResponse = await fetch(
-    `${guardianUrl}/auth/challenge?commitment=${encodeURIComponent(entry.commitment)}`,
+    `${guardianUrl}/auth/challenge?commitment=${encodeURIComponent(commitment)}`,
   );
   result.challenge = await challengeResponse.json();
   if (!challengeResponse.ok || result.challenge?.success !== true) {

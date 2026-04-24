@@ -34,18 +34,17 @@ Use `examples/operator-smoke-web` as the primary smoke surface for operator auth
 
 ## Local Guardian
 
-Use a file-backed allowlist so the operator commitment can be changed without restarting the server.
+Start Guardian with a local JSON file containing the Falcon public keys that are allowed to log in as operators.
 
 ```bash
 mkdir -p /tmp/guardian-operator-smoke
-printf '[]\n' > /tmp/guardian-operator-smoke/operator-allowlist.json
-GUARDIAN_OPERATOR_ALLOWLIST_PATH=/tmp/guardian-operator-smoke/operator-allowlist.json \
-GUARDIAN_DASHBOARD_ALLOW_INSECURE_HTTP=true \
-GUARDIAN_DASHBOARD_DOMAIN='*' \
+printf '[]\n' > /tmp/guardian-operator-smoke/operator-public-keys.json
+
+GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-smoke/operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```
 
-If port `3000` is already occupied, inspect the process and reuse it only if it was started with `GUARDIAN_OPERATOR_ALLOWLIST_PATH`. Otherwise stop it or use a different server port and set `VITE_GUARDIAN_TARGET`.
+If port `3000` is already occupied, inspect the process and reuse it only if it was started with the needed `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE`. Otherwise stop it or use a different server port and set `VITE_GUARDIAN_TARGET`.
 
 ## Operator UI
 
@@ -63,7 +62,9 @@ For published-client smoke, do not mutate the committed example dependency. Crea
 
 ## Automated Browser Run
 
-Use the bundled script when a real browser automation pass is requested. It drives the local signer UI, writes the generated allowlist entry, logs in, lists accounts, fetches the first account detail when present, logs out, and confirms a protected request fails afterward.
+Use the bundled script when a real browser automation pass is requested. It drives the local signer UI, logs in, lists accounts, fetches the first account detail when present, logs out, and confirms a protected request fails afterward.
+
+The Guardian process must already be started with `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` pointing at a writable JSON file. The script reads the UI's generated signer public key, writes the JSON array into that file, and then drives login. Because Guardian rereads the file during auth checks, the server does not need to restart when the JSON changes.
 
 Install the automation dependency into local runtime state:
 
@@ -77,7 +78,7 @@ Run from the repo root after Guardian and the UI are listening:
 ```bash
 GUARDIAN_URL=http://127.0.0.1:3000 \
 GUARDIAN_OPERATOR_SMOKE_URL=http://127.0.0.1:3003/ \
-GUARDIAN_OPERATOR_ALLOWLIST_PATH=/tmp/guardian-operator-smoke/operator-allowlist.json \
+GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-smoke/operator-public-keys.json \
 PLAYWRIGHT_CORE_INSTALL_ROOT=/tmp/guardian-operator-smoke-playwright \
 node .agents/skills/smoke-test-operator-dashboard/scripts/run-operator-smoke.mjs
 ```
@@ -88,21 +89,22 @@ Set `HEADLESS=false` to watch the browser. Set `CHROME_EXECUTABLE` if Chrome is 
 
 1. Open `http://127.0.0.1:3003/`.
 2. Click `Generate local Falcon signer`.
-3. Put the UI's `Allowlist JSON` into the active operator allowlist file.
-4. Confirm `GET /auth/challenge` succeeds for the displayed commitment:
+3. Copy the UI's `Operator Public Keys JSON` value into the file used by `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE`.
+4. Keep Guardian running with that file path; no restart is needed when the file content changes.
+5. Confirm `GET /auth/challenge` succeeds for the displayed commitment:
    ```bash
    curl -sS -G "$GUARDIAN_URL/auth/challenge" --data-urlencode "commitment=$COMMITMENT"
    ```
-5. Click `Login`.
-6. Click `List accounts`.
-7. If any accounts are returned, fetch one detail by pasting its account ID and clicking `Fetch account`.
-8. Click `Logout`, then verify a protected action such as `List accounts` is rejected until logging in again.
+6. Click `Login`.
+7. Click `List accounts`.
+8. If any accounts are returned, fetch one detail by pasting its account ID and clicking `Fetch account`.
+9. Click `Logout`, then verify a protected action such as `List accounts` is rejected until logging in again.
 
 Use `GUARDIAN_URL=http://127.0.0.1:3000` for local runs. For deployed runs, use the deployed Guardian URL.
 
 ## Assertions
 
-- The allowlist commitment exactly matches the active local signer commitment in the UI.
+- The configured operator public key derives to the active local signer commitment in the UI.
 - `Request challenge` returns `success: true` and a `signing_digest`.
 - `Login` returns `operatorId` and `expiresAt`, and the browser receives a session cookie.
 - `List accounts` returns `success: true`, `totalCount`, and an `accounts` array.
@@ -111,8 +113,8 @@ Use `GUARDIAN_URL=http://127.0.0.1:3000` for local runs. For deployed runs, use 
 
 ## Failure Triage
 
-- `Invalid operator credentials`: first check the server was started with the same allowlist file that was edited, then compare the UI commitment with the file.
-- Challenge succeeds but login fails: verify the UI is using the same generated signer whose commitment was allowlisted.
+- `Invalid operator credentials`: first check the server was started with `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` pointing at the JSON file updated from the UI, then compare the UI commitment with the commitment derived by the server logs or login response.
+- Challenge succeeds but login fails: verify the UI is using the same generated signer whose public key was configured in Guardian.
 - `401` on account routes after login: check same-origin proxying through `/guardian` and `credentials: include`.
 - Empty account list is not a failure by itself; fetch detail only when the list returns an account ID.
 - A server restart clears in-memory sessions; log in again after restart.
@@ -124,7 +126,7 @@ Report:
 - Guardian target and whether it was local or remote
 - operator client source: workspace path or published npm version
 - commands run
-- allowlisted operator ID and commitment
+- configured operator public key source and derived commitment
 - login result and session expiry
 - account list count
 - account detail result, or skipped because the list was empty

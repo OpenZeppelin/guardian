@@ -11,21 +11,23 @@ This example does only four things:
 
 ## Setup
 
-Run Guardian first, ideally with a same-origin-friendly proxy target:
-
-```bash
-GUARDIAN_DASHBOARD_ALLOW_INSECURE_HTTP=true \
-GUARDIAN_DASHBOARD_DOMAIN='*' \
-cargo run -p guardian-server --bin server
-```
-
-Then start the example:
+Start the example first so it can generate the local Falcon signer public key:
 
 ```bash
 cd /Users/marcos/repos/guardian/examples/operator-smoke-web
 npm install
 npm run typecheck
 npm run dev -- --host 127.0.0.1 --port 3003
+```
+
+Create a local operator public keys file and start Guardian with that path:
+
+```bash
+mkdir -p /tmp/guardian-operator-smoke
+printf '[]\n' > /tmp/guardian-operator-smoke/operator-public-keys.json
+
+GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-smoke/operator-public-keys.json \
+cargo run -p guardian-server --bin server
 ```
 
 By default the UI uses `/guardian` as the base URL and the Vite dev proxy
@@ -41,11 +43,11 @@ VITE_GUARDIAN_TARGET=https://your-guardian.example npm run dev
 
 1. Open `http://127.0.0.1:3003/`.
 2. Click `Generate local Falcon signer`.
-3. Copy the allowlist JSON from the UI and put it into Guardian's operator
-   allowlist.
-4. Click `Request challenge`.
-5. Click `Login`.
-6. Use `List accounts`, `Fetch account`, and `Logout`.
+3. Copy the `Operator Public Keys JSON` value from the UI into the configured JSON file.
+4. Keep Guardian running with `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` pointed at that file.
+5. Click `Request challenge`.
+6. Click `Login`.
+7. Use `List accounts`, `Fetch account`, and `Logout`.
 
 ## Important Note
 
