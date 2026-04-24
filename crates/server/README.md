@@ -39,29 +39,45 @@ Requests exceeding this limit receive a 413 Payload Too Large response.
 
 #### Operator Dashboard
 
-- `GUARDIAN_OPERATOR_ALLOWLIST_JSON` - JSON array of operator entries, each with `operator_id` and `commitment`; reread during challenge, verify, and session authentication inside the running process
-- `GUARDIAN_OPERATOR_ALLOWLIST_PATH` - Path to a JSON file containing the same allowlist payload; reread during challenge, verify, and session authentication, and preferred for no-restart local workflows
-- `GUARDIAN_DASHBOARD_DOMAIN` - Domain marker bound into operator login challenges. Set `*` to leave the domain open for now (default: `*`)
-- `GUARDIAN_DASHBOARD_ALLOW_INSECURE_HTTP` - Explicit local-only opt-in to omit the `Secure` cookie attribute (default: `false`)
-- `GUARDIAN_OPERATOR_SESSION_COOKIE_NAME` - Session cookie name for dashboard auth (default: `guardian_operator_session`)
-- `GUARDIAN_OPERATOR_NONCE_TTL_SECS` - Challenge lifetime in seconds (default: `300`)
-- `GUARDIAN_OPERATOR_SESSION_TTL_SECS` - Absolute dashboard session lifetime in seconds, capped at 24h (default: `28800`)
-- `GUARDIAN_OPERATOR_MAX_OUTSTANDING_CHALLENGES` - Maximum active challenges retained per operator commitment (default: `8`)
-- `GUARDIAN_OPERATOR_PUBKEY_RATE_BURST_PER_SEC` - Per-operator challenge/verify burst limit keyed by commitment (default: `5`)
-- `GUARDIAN_OPERATOR_PUBKEY_RATE_PER_MIN` - Per-operator challenge/verify sustained limit keyed by commitment (default: `30`)
+- `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` - Local JSON file containing serialized Falcon public keys allowed to authenticate as dashboard operators
+- `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` - AWS Secrets Manager secret name or ARN containing the same JSON payload for deployed environments
 
-Example allowlist payload:
+Each configured public key is parsed at the auth boundary and converted to its
+public key commitment. Operators still request challenges and verify sessions
+with the commitment derived from their key; the server derives the same
+commitment from the configured public key source when checking whether the
+operator is allowed.
+
+Because this format intentionally carries only keys, the dashboard session
+operator ID is the derived commitment.
+
+The JSON payload is a plain array of serialized Falcon public key hex strings:
 
 ```json
 [
-  {
-    "operator_id": "alice",
-    "commitment": "0x..."
-  }
+  "0x<alice-falcon-public-key>",
+  "0x<bob-falcon-public-key>"
 ]
 ```
 
-If both `GUARDIAN_OPERATOR_ALLOWLIST_PATH` and `GUARDIAN_OPERATOR_ALLOWLIST_JSON` are set, the file path takes precedence.
+Local example:
+
+```bash
+GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-public-keys.json \
+cargo run -p guardian-server --bin server
+```
+
+Deployed example:
+
+```bash
+GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID=arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators \
+cargo run -p guardian-server --bin server
+```
+
+When both source variables are set, the AWS secret takes precedence. File and
+secret sources are reread during operator auth checks, so adding or removing a
+public key takes effect without restarting the server as long as the configured
+file path or secret ID stays the same.
 
 ### Account Configuration
 
