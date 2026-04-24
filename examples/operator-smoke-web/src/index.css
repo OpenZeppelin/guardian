@@ -1,0 +1,261 @@
+:root {
+  color: #132126;
+  background:
+    radial-gradient(circle at top left, rgba(183, 219, 202, 0.45), transparent 36%),
+    linear-gradient(180deg, #f2eee2 0%, #f8f6ef 100%);
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #274a42;
+  background: #132126;
+  color: #f8f6ef;
+  padding: 0.72rem 1rem;
+  border-radius: 0.72rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1f373f;
+}
+
+input,
+textarea {
+  width: 100%;
+  border: 1px solid #c0c8bf;
+  border-radius: 0.72rem;
+  padding: 0.74rem 0.88rem;
+  background: rgba(255, 255, 255, 0.78);
+  color: inherit;
+}
+
+code,
+pre {
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+.app-shell {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  align-items: end;
+  padding: 1.5rem 0 2rem;
+}
+
+.hero h1 {
+  margin: 0.25rem 0 0;
+  font-size: clamp(2rem, 4vw, 4rem);
+  letter-spacing: -0.06em;
+}
+
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.78rem;
+  color: #5b716f;
+}
+
+.hero-copy {
+  max-width: 56rem;
+  margin: 0.75rem 0 0;
+  color: #3f5754;
+}
+
+.hero-copy code {
+  margin-left: 0.25rem;
+}
+
+.hero-callout {
+  min-width: 14rem;
+  padding: 1rem 1.1rem;
+  border-radius: 1rem;
+  background: rgba(19, 33, 38, 0.94);
+  color: #f8f6ef;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.hero-callout code {
+  font-size: 1rem;
+}
+
+.layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.two-column {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.panel {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(19, 33, 38, 0.08);
+  border-radius: 1.25rem;
+  padding: 1.1rem;
+  box-shadow: 0 18px 40px rgba(25, 38, 44, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.9rem;
+}
+
+label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.label,
+label span {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #607674;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.72rem;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid transparent;
+}
+
+.badge.success {
+  background: rgba(41, 115, 77, 0.14);
+  color: #195638;
+}
+
+.badge.warning {
+  background: rgba(180, 117, 24, 0.16);
+  color: #7d4f13;
+}
+
+.badge.neutral {
+  background: rgba(19, 33, 38, 0.08);
+  color: #465c5a;
+}
+
+.hint {
+  margin: 0.8rem 0 0;
+  color: #546a68;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem;
+}
+
+.status-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.status-grid strong {
+  display: block;
+  margin-top: 0.25rem;
+  word-break: break-word;
+}
+
+.error-box {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 0.9rem;
+  background: rgba(165, 48, 48, 0.12);
+  color: #7f1d1d;
+}
+
+.result-box {
+  background: #102529;
+  color: #f8f6ef;
+  border-radius: 0.9rem;
+  padding: 1rem;
+  overflow: auto;
+  margin: 0;
+}
+
+.account-list {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+
+.account-card {
+  border: 1px solid rgba(19, 33, 38, 0.1);
+  border-radius: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.account-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+}
+
+.account-card code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+    align-items: start;
+  }
+}
