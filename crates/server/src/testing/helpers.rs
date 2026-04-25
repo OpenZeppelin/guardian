@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::ack::AckRegistry;
 use crate::api::grpc::GuardianService;
+use crate::dashboard::DashboardState;
 use crate::metadata::auth::Auth;
 use crate::metadata::filesystem::FilesystemMetadataStore;
 use crate::network::NetworkClient;
@@ -192,6 +193,7 @@ pub async fn create_test_app_state() -> AppState {
         ack,
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
         clock: Arc::new(crate::clock::SystemClock),
+        dashboard: Arc::new(DashboardState::default()),
     }
 }
 
@@ -244,6 +246,19 @@ pub fn create_miden_falcon_rpo_auth(cosigner_commitments: Vec<String>) -> AuthCo
 
 pub fn create_router(state: AppState) -> axum::Router {
     use crate::api::http;
+    let dashboard_routes = axum::Router::new()
+        .route(
+            "/accounts",
+            axum::routing::get(crate::api::dashboard::list_operator_accounts),
+        )
+        .route(
+            "/accounts/{account_id}",
+            axum::routing::get(crate::api::dashboard::get_operator_account),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::dashboard::require_dashboard_session,
+        ));
 
     axum::Router::new()
         .route("/configure", axum::routing::post(http::configure))
@@ -267,6 +282,19 @@ pub fn create_router(state: AppState) -> axum::Router {
             "/sign_delta_proposal",
             axum::routing::post(http::sign_delta_proposal),
         )
+        .route(
+            "/auth/challenge",
+            axum::routing::get(crate::api::dashboard::challenge_operator_login),
+        )
+        .route(
+            "/auth/verify",
+            axum::routing::post(crate::api::dashboard::verify_operator_login),
+        )
+        .route(
+            "/auth/logout",
+            axum::routing::post(crate::api::dashboard::logout_operator),
+        )
+        .nest("/dashboard", dashboard_routes)
         .with_state(state)
 }
 
@@ -429,6 +457,11 @@ impl TestSigner {
         let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
 
         (signature_hex, timestamp)
+    }
+
+    pub fn sign_word(&self, message: Word) -> String {
+        let signature = self.secret_key.sign(message);
+        format!("0x{}", hex::encode(signature.to_bytes()))
     }
 }
 
@@ -597,5 +630,6 @@ pub fn create_test_app_state_with_mocks(
         ack,
         canonicalization: None, // Use optimistic mode for unit tests
         clock: Arc::new(crate::clock::SystemClock),
+        dashboard: Arc::new(DashboardState::default()),
     }
 }

@@ -37,6 +37,48 @@ let builder = ServerBuilder::new()
 
 Requests exceeding this limit receive a 413 Payload Too Large response.
 
+#### Operator Dashboard
+
+- `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` - Local JSON file containing serialized Falcon public keys allowed to authenticate as dashboard operators
+- `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` - AWS Secrets Manager secret name or ARN containing the same JSON payload for deployed environments
+
+Each configured public key is parsed at the auth boundary and converted to its
+public key commitment. Operators still request challenges and verify sessions
+with the commitment derived from their key; the server derives the same
+commitment from the configured public key source when checking whether the
+operator is allowed.
+
+Because this format intentionally carries only keys, the dashboard session
+operator ID is the derived commitment.
+
+The JSON payload is a plain array of serialized Falcon public key hex strings:
+
+```json
+[
+  "0x<alice-falcon-public-key>",
+  "0x<bob-falcon-public-key>"
+]
+```
+
+Local example:
+
+```bash
+GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-public-keys.json \
+cargo run -p guardian-server --bin server
+```
+
+Deployed example:
+
+```bash
+GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID=arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators \
+cargo run -p guardian-server --bin server
+```
+
+When both source variables are set, the AWS secret takes precedence. File and
+secret sources are reread during operator auth checks, so adding or removing a
+public key takes effect without restarting the server as long as the configured
+file path or secret ID stays the same.
+
 ### Account Configuration
 
 Each account has:
@@ -215,6 +257,11 @@ ServerBuilder::new()
 - **POST** `/delta/proposal/sign` - Add a signature to an existing delta proposal
 - **GET** `/delta/proposal?account_id=<id>` - List pending delta proposals for an account
 - **GET** `/delta/proposal/single?account_id=<id>&commitment=<c>` - Retrieve a pending proposal by commitment
+- **GET** `/auth/challenge?commitment=<commitment>` - Issue an operator dashboard login challenge
+- **POST** `/auth/verify` - Verify an operator dashboard signature and set a session cookie
+- **POST** `/auth/logout` - Clear the operator dashboard session cookie and invalidate the server-side session
+- **GET** `/dashboard/accounts` - List dashboard account summaries for an authenticated operator session
+- **GET** `/dashboard/accounts/{account_id}` - Fetch one dashboard account detail record for an authenticated operator session
 
 #### gRPC API (Port 50051)
 

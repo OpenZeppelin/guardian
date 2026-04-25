@@ -265,9 +265,7 @@ loaded, and verify that each produces the specified explicit outcome.
 
 - `002-operator-auth` is implemented first or is treated as a prerequisite for
   these endpoints.
-- V1 dashboard deployments manage a bounded number of accounts (order of
-  hundreds, not tens of thousands), so returning the full list without
-  pagination is acceptable.
+- V1 dashboard deployments manage a bounded number of accounts, so returning the full list without pagination is acceptable.
 - The dashboard needs current account summaries, not full historical state,
   proposal, or transaction timelines.
 - Existing Guardian account IDs are treated as stable identifiers for detail

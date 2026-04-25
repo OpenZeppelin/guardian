@@ -176,7 +176,7 @@ fn create_account_seed(
     guardian_commitment: Word,
     seed: [u8; 32],
 ) -> Result<AccountSeed> {
-    let signer_commitments = vec![owner_signer_commitment.to_string()];
+    let signer_commitments = [owner_signer_commitment.to_string()];
     let signer_words = signer_commitments
         .iter()
         .map(|commitment| word_from_hex(commitment))

@@ -31,6 +31,9 @@ set -a && source .env && set +a
 # Optional: pin the server to a specific Miden network
 export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
+# Optional: allow dashboard operators through a Secrets Manager JSON array
+# export GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN='arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators'
+
 # Optional: choose the deployment profile
 export DEPLOY_STAGE=dev
 # export DEPLOY_STAGE=prod
@@ -76,6 +79,9 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Miden network for the server runtime
 # server_network_type = "MidenDevnet"
 
+# Optional: dashboard operator Falcon public keys secret
+# guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
+
 # Optional: stage/runtime capacity overrides
 # deployment_stage = "prod"
 # server_desired_count = 2
@@ -120,6 +126,22 @@ The normal deploy path does not create or rotate ACK keys. It expects these prod
 
 - `guardian-prod/server/ack-falcon-secret-key`
 - `guardian-prod/server/ack-ecdsa-secret-key`
+
+Dashboard operator public keys use a separate optional secret. Create it as a
+Secrets Manager secret string with this JSON shape, then pass its ARN through
+`GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN` or
+`guardian_operator_public_keys_secret_arn`:
+
+```json
+[
+  "0x<alice-falcon-public-key>",
+  "0x<bob-falcon-public-key>"
+]
+```
+
+The ECS task role is granted read access only to the configured secret ARN. The
+server rereads that secret during operator auth checks, so adding or removing a
+key in the existing secret takes effect without an application restart.
 
 If you still have an older local state file at `infra/terraform.tfstate`, move it manually before using the split-state workflow:
 
@@ -210,6 +232,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | RDS | Managed PostgreSQL instance and subnet group |
 | RDS Proxy | Managed PostgreSQL proxy in the production profile |
 | Secrets Manager | Secret containing `DATABASE_URL` for the server task |
+| Secrets Manager | Optional operator public keys secret managed outside Terraform |
 | Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
 | CloudWatch Log Groups | Cluster execute-command logs and server logs |

@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod configure_account;
+mod dashboard_accounts;
 mod delta_commit;
 mod get_delta;
 mod get_delta_proposal;
@@ -22,6 +23,11 @@ pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
 };
 pub use configure_account::{ConfigureAccountParams, ConfigureAccountResult, configure_account};
+pub use dashboard_accounts::{
+    DashboardAccountDetail, DashboardAccountStateStatus, DashboardAccountSummary,
+    GetDashboardAccountResult, ListDashboardAccountsResult, get_dashboard_account,
+    list_dashboard_accounts,
+};
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
 pub use get_delta_proposal::{GetDeltaProposalParams, GetDeltaProposalResult, get_delta_proposal};
 pub use get_delta_proposals::{
@@ -313,6 +319,7 @@ mod tests {
             ack,
             canonicalization: None,
             clock: Arc::new(clock),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
         }
     }
 

@@ -12,8 +12,11 @@ use crate::storage::filesystem::FilesystemService;
 #[cfg(feature = "postgres")]
 use crate::storage::postgres::{self, PostgresService};
 
+#[cfg(feature = "postgres")]
 const DEFAULT_POSTGRES_POOL_MAX_SIZE: usize = 16;
+#[cfg(feature = "postgres")]
 const ENV_DB_POOL_MAX_SIZE: &str = "GUARDIAN_DB_POOL_MAX_SIZE";
+#[cfg(feature = "postgres")]
 const ENV_METADATA_DB_POOL_MAX_SIZE: &str = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE";
 
 /// Builder for creating the storage backend and metadata store.

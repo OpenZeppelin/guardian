@@ -96,6 +96,10 @@ resource "aws_ecs_task_definition" "server" {
         {
           name  = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE"
           value = tostring(local.effective_guardian_metadata_db_pool_max_size)
+        },
+        {
+          name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
+          value = var.guardian_operator_public_keys_secret_arn
         }
       ]
 
