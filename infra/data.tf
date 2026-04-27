@@ -86,6 +86,7 @@ locals {
   rds_subnet_group_name                        = "${var.stack_name}-postgres-subnets"
   database_secret_name                         = "${var.stack_name}/server/database-url"
   database_credentials_secret_name             = "${var.stack_name}/server/database-credentials"
+  operator_public_keys_secret_name             = "${var.stack_name}/server/operator-public-keys"
   ack_falcon_secret_name                       = "guardian-prod/server/ack-falcon-secret-key"
   ack_ecdsa_secret_name                        = "guardian-prod/server/ack-ecdsa-secret-key"
   rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
@@ -108,6 +109,8 @@ locals {
   effective_guardian_rate_per_min              = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
+  managed_operator_public_keys_secret_enabled  = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
+  operator_public_keys_secret_arn              = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 
   direct_database_endpoint = aws_db_instance.postgres.address
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""

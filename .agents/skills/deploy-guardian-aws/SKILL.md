@@ -73,6 +73,7 @@ Use the deploy script env vars for the normal workflow:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_PROXIED`
 - `GUARDIAN_NETWORK_TYPE`
+- `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON`
 - `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN`
 
 Use `TF_VAR_*` only for Terraform variables that the script does not map directly, such as:
@@ -102,6 +103,7 @@ Use `TF_VAR_*` only for Terraform variables that the script does not map directl
 - `TF_VAR_server_autoscaling_memory_target`
 - `TF_VAR_guardian_rate_burst_per_sec`
 - `TF_VAR_guardian_rate_per_min`
+- `TF_VAR_guardian_operator_public_keys`
 - `TF_VAR_guardian_operator_public_keys_secret_arn`
 - `TF_VAR_guardian_db_pool_max_size`
 - `TF_VAR_guardian_metadata_db_pool_max_size`
