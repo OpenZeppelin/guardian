@@ -31,7 +31,10 @@ set -a && source .env && set +a
 # Optional: pin the server to a specific Miden network
 export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
-# Optional: allow dashboard operators through a Secrets Manager JSON array
+# Optional: allow dashboard operators and let Terraform create the secret
+# export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
+
+# Optional: use an existing dashboard operator public keys secret instead
 # export GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN='arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators'
 
 # Optional: choose the deployment profile
@@ -79,7 +82,13 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Miden network for the server runtime
 # server_network_type = "MidenDevnet"
 
-# Optional: dashboard operator Falcon public keys secret
+# Optional: dashboard operator Falcon public keys managed by Terraform
+# guardian_operator_public_keys = [
+#   "0x<alice-falcon-public-key>",
+#   "0x<bob-falcon-public-key>",
+# ]
+
+# Optional: existing dashboard operator Falcon public keys secret
 # guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
 
 # Optional: stage/runtime capacity overrides
@@ -127,21 +136,32 @@ The normal deploy path does not create or rotate ACK keys. It expects these prod
 - `guardian-prod/server/ack-falcon-secret-key`
 - `guardian-prod/server/ack-ecdsa-secret-key`
 
-Dashboard operator public keys use a separate optional secret. Create it as a
-Secrets Manager secret string with this JSON shape, then pass its ARN through
-`GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN` or
-`guardian_operator_public_keys_secret_arn`:
+Dashboard operator public keys use a separate optional secret. The easiest
+deployment path is to pass the public keys to Terraform and let it create the
+stack-scoped secret:
 
-```json
-[
+```bash
+export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
+```
+
+or in `terraform.tfvars`:
+
+```hcl
+guardian_operator_public_keys = [
   "0x<alice-falcon-public-key>",
   "0x<bob-falcon-public-key>"
 ]
 ```
 
+If you already manage the secret outside this stack, pass its ARN through
+`GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN` or
+`guardian_operator_public_keys_secret_arn`. An explicit secret ARN takes
+precedence over the Terraform-managed public key list.
+
 The ECS task role is granted read access only to the configured secret ARN. The
 server rereads that secret during operator auth checks, so adding or removing a
-key in the existing secret takes effect without an application restart.
+key in the existing secret takes effect without an application restart. When
+Terraform manages the secret, update the public key list and rerun deploy.
 
 If you still have an older local state file at `infra/terraform.tfstate`, move it manually before using the split-state workflow:
 
@@ -232,7 +252,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | RDS | Managed PostgreSQL instance and subnet group |
 | RDS Proxy | Managed PostgreSQL proxy in the production profile |
 | Secrets Manager | Secret containing `DATABASE_URL` for the server task |
-| Secrets Manager | Optional operator public keys secret managed outside Terraform |
+| Secrets Manager | Optional operator public keys secret for dashboard auth |
 | Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
 | CloudWatch Log Groups | Cluster execute-command logs and server logs |
@@ -251,6 +271,8 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `rds_instance_class` | Effective RDS instance class |
 | `rds_allocated_storage` | Effective allocated RDS storage in GiB |
 | `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
+| `operator_public_keys_secret_arn` | Secrets Manager ARN used for dashboard operator public keys |
+| `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |

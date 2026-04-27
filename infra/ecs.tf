@@ -99,7 +99,7 @@ resource "aws_ecs_task_definition" "server" {
         },
         {
           name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
-          value = var.guardian_operator_public_keys_secret_arn
+          value = local.operator_public_keys_secret_arn
         }
       ]
 
@@ -128,8 +128,8 @@ resource "aws_ecs_service" "server" {
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.server.arn
   desired_count                      = local.effective_server_desired_count
-  deployment_maximum_percent         = local.effective_server_desired_count == 1 ? 100 : 200
-  deployment_minimum_healthy_percent = local.effective_server_desired_count == 1 ? 0 : 100
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 100
   launch_type                        = "FARGATE"
   platform_version                   = "LATEST"
   enable_execute_command             = true
@@ -162,6 +162,7 @@ resource "aws_ecs_service" "server" {
     aws_lb_listener.http,
     aws_lb_listener.https,
     aws_lb_listener_rule.https_grpc,
-    aws_secretsmanager_secret_version.database_url
+    aws_secretsmanager_secret_version.database_url,
+    aws_secretsmanager_secret_version.operator_public_keys
   ]
 }
