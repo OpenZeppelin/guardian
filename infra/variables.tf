@@ -261,6 +261,18 @@ variable "guardian_rate_limit_enabled" {
   default     = null
 }
 
+variable "guardian_operator_public_keys_secret_arn" {
+  description = "Secrets Manager secret ARN containing a JSON array of serialized Falcon public keys allowed to authenticate as dashboard operators"
+  type        = string
+  default     = ""
+}
+
+variable "guardian_operator_public_keys" {
+  description = "Serialized Falcon public keys allowed to authenticate as dashboard operators; when set, Terraform creates a Secrets Manager secret containing this JSON array"
+  type        = list(string)
+  default     = []
+}
+
 variable "guardian_db_pool_max_size" {
   description = "Optional override for the Guardian storage DB pool maximum size"
   type        = number

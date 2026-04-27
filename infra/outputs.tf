@@ -70,6 +70,16 @@ output "database_url_secret_arn" {
   value       = aws_secretsmanager_secret.database_url.arn
 }
 
+output "operator_public_keys_secret_arn" {
+  description = "Secrets Manager ARN used by the server for dashboard operator public keys"
+  value       = local.operator_public_keys_secret_arn
+}
+
+output "operator_public_keys_secret_name" {
+  description = "Managed Secrets Manager name for dashboard operator public keys when Terraform creates it"
+  value       = local.managed_operator_public_keys_secret_enabled ? local.operator_public_keys_secret_name : ""
+}
+
 output "ack_falcon_secret_name" {
   description = "Secrets Manager name for the Falcon ack key"
   value       = local.ack_falcon_secret_name

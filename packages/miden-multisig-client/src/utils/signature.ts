@@ -36,9 +36,8 @@ function bytesToPackedU32Felts(bytes: Uint8Array): Felt[] {
 function encodeEcdsaSignatureFelts(pubkeyBytes: Uint8Array, sigBytes: Uint8Array): Felt[] {
   const pkFelts = bytesToPackedU32Felts(pubkeyBytes);
   const sigFelts = bytesToPackedU32Felts(sigBytes);
-  const encoded = [...pkFelts, ...sigFelts];
-  encoded.reverse();
-  return encoded;
+  return [...pkFelts, ...sigFelts];
+  
 }
 
 export function buildSignatureAdviceEntry(

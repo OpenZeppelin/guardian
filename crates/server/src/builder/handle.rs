@@ -1,7 +1,14 @@
-use axum::{Router, extract::DefaultBodyLimit, routing::get, routing::post, routing::put};
+use axum::{
+    Router, extract::DefaultBodyLimit, middleware::from_fn_with_state, routing::get, routing::post,
+    routing::put,
+};
 use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
+use crate::api::dashboard::{
+    challenge_operator_login, get_operator_account, list_operator_accounts, logout_operator,
+    verify_operator_login,
+};
 use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
@@ -9,6 +16,7 @@ use crate::api::http::{
     configure, get_delta, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
     get_state, push_delta, push_delta_proposal, sign_delta_proposal,
 };
+use crate::dashboard::require_dashboard_session;
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
 use crate::services::start_canonicalization_worker;
 use crate::state::AppState;
@@ -60,6 +68,11 @@ impl ServerHandle {
             let body_limit_config = self.body_limit_config;
 
             let task = tokio::spawn(async move {
+                let dashboard_routes = Router::new()
+                    .route("/accounts", get(list_operator_accounts))
+                    .route("/accounts/{account_id}", get(get_operator_account))
+                    .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+
                 let mut app = Router::new()
                     .route("/", get(root))
                     .route("/delta", post(push_delta))
@@ -72,6 +85,10 @@ impl ServerHandle {
                     .route("/configure", post(configure))
                     .route("/state", get(get_state))
                     .route("/pubkey", get(get_pubkey))
+                    .route("/auth/challenge", get(challenge_operator_login))
+                    .route("/auth/verify", post(verify_operator_login))
+                    .route("/auth/logout", post(logout_operator))
+                    .nest("/dashboard", dashboard_routes)
                     .with_state(state);
 
                 // Apply body size limit

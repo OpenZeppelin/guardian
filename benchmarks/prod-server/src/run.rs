@@ -21,6 +21,17 @@ struct ExecutedBenchmark {
     run_output: RunOutput,
 }
 
+struct RunReportInput<'a> {
+    config: &'a RunConfig,
+    run_id: String,
+    started_at: DateTime<Utc>,
+    completed_at: DateTime<Utc>,
+    measurement_seconds: f64,
+    operations: Vec<crate::report::OperationReport>,
+    cleanup_manifest: &'a CleanupManifest,
+    artifacts: &'a crate::artifacts::ArtifactPaths,
+}
+
 pub async fn run_worker(
     profile: &Path,
     run_id: String,
@@ -103,16 +114,16 @@ pub async fn aggregate(
 
     let (cleanup_manifest, cleanup_error) =
         maybe_cleanup(&config, &artifacts.cleanup_manifest, no_cleanup).await?;
-    let report = build_run_report(
-        &config,
-        run_id.to_string(),
+    let report = build_run_report(RunReportInput {
+        config: &config,
+        run_id: run_id.to_string(),
         started_at,
         completed_at,
         measurement_seconds,
         operations,
-        &cleanup_manifest,
-        &artifacts,
-    );
+        cleanup_manifest: &cleanup_manifest,
+        artifacts: &artifacts,
+    });
 
     persist_report(&artifacts, &report)?;
     print_report_summary(&report, &artifacts);
@@ -153,16 +164,17 @@ async fn maybe_cleanup(
     }
 }
 
-fn build_run_report(
-    config: &RunConfig,
-    run_id: String,
-    started_at: DateTime<Utc>,
-    completed_at: DateTime<Utc>,
-    measurement_seconds: f64,
-    operations: Vec<crate::report::OperationReport>,
-    cleanup_manifest: &CleanupManifest,
-    artifacts: &crate::artifacts::ArtifactPaths,
-) -> BenchmarkRunReport {
+fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
+    let RunReportInput {
+        config,
+        run_id,
+        started_at,
+        completed_at,
+        measurement_seconds,
+        operations,
+        cleanup_manifest,
+        artifacts,
+    } = input;
     let push_throughput = operations
         .iter()
         .find(|operation| operation.operation == "push_delta" && operation.scope == "all")

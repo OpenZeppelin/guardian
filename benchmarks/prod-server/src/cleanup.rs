@@ -302,6 +302,8 @@ mod tests {
 
     #[test]
     fn ecs_exec_batch_size_should_be_bounded_for_large_runs() {
-        assert!(ECS_EXEC_BATCH_SIZE <= 100);
+        const {
+            assert!(ECS_EXEC_BATCH_SIZE <= 100);
+        }
     }
 }

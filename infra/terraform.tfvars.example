@@ -16,6 +16,17 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Miden network for the deployed GUARDIAN server
 # server_network_type = "MidenTestnet"
 
+# Optional: Falcon public keys allowed to log in as dashboard operators.
+# When set, Terraform creates <stack_name>/server/operator-public-keys.
+# guardian_operator_public_keys = [
+#   "0x<alice-falcon-public-key>",
+#   "0x<bob-falcon-public-key>",
+# ]
+
+# Optional: existing Secrets Manager secret ARN containing a JSON array of Falcon public keys.
+# When set, this takes precedence over guardian_operator_public_keys.
+# guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
+
 # Optional: VPC and subnet configuration
 # If not specified, uses the default VPC and all its subnets
 # vpc_id     = "vpc-xxxxxxxx"

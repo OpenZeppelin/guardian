@@ -9,6 +9,7 @@ use std::fmt;
 pub enum GuardianError {
     AccountNotFound(String),
     AccountAlreadyExists(String),
+    AccountDataUnavailable(String),
     InvalidAccountId(String),
     StateNotFound(String),
     DeltaNotFound {
@@ -45,6 +46,10 @@ pub enum GuardianError {
         required: usize,
         got: usize,
     },
+    RateLimitExceeded {
+        retry_after_secs: u32,
+        scope: String,
+    },
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -74,6 +79,7 @@ impl GuardianError {
     pub fn http_status(&self) -> StatusCode {
         match self {
             GuardianError::AccountNotFound(_) => StatusCode::NOT_FOUND,
+            GuardianError::AccountDataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::DeltaNotFound { .. } => StatusCode::NOT_FOUND,
             GuardianError::StateNotFound(_) => StatusCode::NOT_FOUND,
             GuardianError::ProposalNotFound { .. } => StatusCode::NOT_FOUND,
@@ -91,6 +97,7 @@ impl GuardianError {
             GuardianError::CommitmentMismatch { .. } => StatusCode::BAD_REQUEST,
             GuardianError::InvalidProposalSignature(_) => StatusCode::BAD_REQUEST,
             GuardianError::InsufficientSignatures { .. } => StatusCode::BAD_REQUEST,
+            GuardianError::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
             GuardianError::NetworkError(_) => StatusCode::BAD_GATEWAY,
             GuardianError::SigningError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             GuardianError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -101,6 +108,7 @@ impl GuardianError {
     pub fn grpc_status(&self) -> tonic::Code {
         match self {
             GuardianError::AccountNotFound(_) => tonic::Code::NotFound,
+            GuardianError::AccountDataUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::DeltaNotFound { .. } => tonic::Code::NotFound,
             GuardianError::StateNotFound(_) => tonic::Code::NotFound,
             GuardianError::ProposalNotFound { .. } => tonic::Code::NotFound,
@@ -118,6 +126,7 @@ impl GuardianError {
             GuardianError::CommitmentMismatch { .. } => tonic::Code::InvalidArgument,
             GuardianError::InvalidProposalSignature(_) => tonic::Code::InvalidArgument,
             GuardianError::InsufficientSignatures { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::RateLimitExceeded { .. } => tonic::Code::ResourceExhausted,
             GuardianError::NetworkError(_) => tonic::Code::Unavailable,
             GuardianError::SigningError(_) => tonic::Code::Internal,
             GuardianError::StorageError(_) => tonic::Code::Internal,
@@ -131,6 +140,9 @@ impl fmt::Display for GuardianError {
         match self {
             GuardianError::AccountNotFound(id) => write!(f, "Account '{id}' not found"),
             GuardianError::AccountAlreadyExists(id) => write!(f, "Account '{id}' already exists"),
+            GuardianError::AccountDataUnavailable(id) => {
+                write!(f, "Account data unavailable for '{id}'")
+            }
             GuardianError::InvalidAccountId(msg) => write!(f, "Invalid account ID: {msg}"),
             GuardianError::StateNotFound(id) => write!(f, "State not found for account '{id}'"),
             GuardianError::DeltaNotFound { account_id, nonce } => {
@@ -182,6 +194,13 @@ impl fmt::Display for GuardianError {
             GuardianError::InsufficientSignatures { required, got } => {
                 write!(f, "Insufficient signatures: required {required}, got {got}")
             }
+            GuardianError::RateLimitExceeded {
+                retry_after_secs,
+                scope,
+            } => write!(
+                f,
+                "Rate limit exceeded for {scope}. Retry after {retry_after_secs} seconds"
+            ),
         }
     }
 }
@@ -216,16 +235,34 @@ impl From<miden_keystore::KeyStoreError> for GuardianError {
 struct ErrorResponse {
     success: bool,
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_secs: Option<u32>,
 }
 
 impl IntoResponse for GuardianError {
     fn into_response(self) -> Response {
         let status = self.http_status();
+        let retry_after_secs = match &self {
+            GuardianError::RateLimitExceeded {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
+        };
         let body = Json(ErrorResponse {
             success: false,
             error: self.to_string(),
+            retry_after_secs,
         });
-        (status, body).into_response()
+        if let Some(retry_after_secs) = retry_after_secs {
+            (
+                status,
+                [("Retry-After", retry_after_secs.to_string())],
+                body,
+            )
+                .into_response()
+        } else {
+            (status, body).into_response()
+        }
     }
 }
 

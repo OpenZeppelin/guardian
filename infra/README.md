@@ -18,6 +18,7 @@ Resources created:
 - Application Load Balancer with HTTP and gRPC target groups
 - RDS PostgreSQL instance and subnet group
 - Secrets Manager secret for `DATABASE_URL`
+- Optional Secrets Manager secret for dashboard operator public keys
 - Secrets Manager secrets for stable Falcon and ECDSA ack keys in `prod`
 - Security groups for the ALB, server task, and database
 - CloudWatch log groups
@@ -95,6 +96,15 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_rate_per_min = 5000
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
+
+# Optional: dashboard operator Falcon public keys managed by Terraform
+# guardian_operator_public_keys = [
+#   "0x<alice-falcon-public-key>",
+#   "0x<bob-falcon-public-key>",
+# ]
+
+# Optional: existing dashboard operator Falcon public keys secret
+# guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
 
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
@@ -174,6 +184,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `stack_name` | `guardian` | Base name used to derive stack resource names |
 | `deployment_stage` | `dev` | Deployment stage profile |
 | `server_image_uri` | (required) | ECR image URI for the server, preferably pinned to a digest |
+| `guardian_operator_public_keys` | `[]` | Falcon public keys used to create a stack-scoped operator public keys secret |
+| `guardian_operator_public_keys_secret_arn` | `""` | Existing operator public keys secret ARN; takes precedence over the managed list |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `rds_proxy_subnet_ids` | filtered `subnet_ids` | Optional dedicated subnet IDs for RDS Proxy |
@@ -212,6 +224,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `rds_instance_class` | Effective RDS instance class |
 | `rds_allocated_storage` | Effective allocated RDS storage in GiB |
 | `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
+| `operator_public_keys_secret_arn` | Secrets Manager ARN used for dashboard operator public keys |
+| `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |

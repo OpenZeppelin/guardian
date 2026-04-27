@@ -82,6 +82,28 @@ resource "aws_iam_role_policy" "ecs_task_ack_secrets" {
   })
 }
 
+resource "aws_iam_role_policy" "ecs_task_operator_public_keys_secret" {
+  count = var.guardian_operator_public_keys_secret_arn != "" || local.managed_operator_public_keys_secret_enabled ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-operator-public-keys-secret"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          local.operator_public_keys_secret_arn
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "ecs_task_execute_command" {
   name = "${var.stack_name}-ecs-task-execute-command"
   role = aws_iam_role.ecs_task.id
