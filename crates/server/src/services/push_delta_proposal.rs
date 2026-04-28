@@ -245,17 +245,17 @@ async fn push_evm_delta_proposal(
 
     let commitment =
         crate::evm::compute_proposal_id(&resolved.metadata.network_config, &normalized)?;
-    if let Ok(existing) = resolved
+    let existing = resolved
         .storage
         .pull_delta_proposal(&account_id, &commitment)
-        .await
+        .await;
+    if let Ok(existing) = existing
+        && existing.status.is_pending()
     {
-        if existing.status.is_pending() {
-            return Ok(PushDeltaProposalResult {
-                delta: existing,
-                commitment,
-            });
-        }
+        return Ok(PushDeltaProposalResult {
+            delta: existing,
+            commitment,
+        });
     }
 
     let pending_proposals = resolved

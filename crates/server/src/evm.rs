@@ -178,7 +178,7 @@ pub fn compute_proposal_id(
     proposal: &NormalizedEvmProposal,
 ) -> Result<String> {
     let config = expect_evm_config(network_config)?;
-    let account = parse_address(&config.account_address)?;
+    let account = parse_address(config.account_address)?;
     let encoded = (
         U256::from(config.chain_id),
         account,
@@ -245,7 +245,7 @@ fn request_signing_hash(
     credentials: &Credentials,
 ) -> Result<B256> {
     let config = expect_evm_config(network_config)?;
-    let account = parse_address(&config.account_address)?;
+    let account = parse_address(config.account_address)?;
     let request_hash = keccak256(credentials.request_payload_bytes());
     let domain = eip712_domain! {
         name: "Guardian EVM Request",
@@ -266,7 +266,7 @@ fn proposal_signing_hash(
     proposal: &NormalizedEvmProposal,
 ) -> Result<B256> {
     let config = expect_evm_config(network_config)?;
-    let account = parse_address(&config.account_address)?;
+    let account = parse_address(config.account_address)?;
     let domain = eip712_domain! {
         name: "Guardian EVM Proposal",
         version: "1",

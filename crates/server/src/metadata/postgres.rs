@@ -61,7 +61,6 @@ impl TryFrom<MetadataRow> for AccountMetadata {
             account_id: row.account_id,
             auth,
             network_config,
-            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
             has_pending_candidate: row.has_pending_candidate,
