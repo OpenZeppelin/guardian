@@ -72,6 +72,26 @@ const signed = await client.signProposal(created.commitment, payload);
 console.log(signed.deltaPayload.signatures.length);
 ```
 
+Fetch existing pending proposals for the configured account:
+
+```typescript
+const proposals = await client.listProposals();
+
+for (const proposal of proposals) {
+  console.log(proposal.accountId, proposal.nonce, proposal.status);
+}
+```
+
+Fetch a specific proposal by Guardian proposal ID:
+
+```typescript
+const proposal = await client.getProposal(created.commitment);
+
+console.log(proposal.deltaPayload.mode);
+console.log(proposal.deltaPayload.executionCalldata);
+console.log(proposal.deltaPayload.signatures);
+```
+
 The package signs Guardian request auth and proposal payloads with
 `eth_signTypedData_v4` and manages the EVM Guardian HTTP flow directly.
 
