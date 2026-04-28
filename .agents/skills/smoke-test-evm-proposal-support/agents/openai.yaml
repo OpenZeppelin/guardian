@@ -1,0 +1,4 @@
+interface:
+  display_name: "EVM Proposal Smoke Test"
+  short_description: "Smoke local Guardian EVM proposals"
+  default_prompt: "Use $smoke-test-evm-proposal-support to run the local EVM proposal smoke test and report the result."

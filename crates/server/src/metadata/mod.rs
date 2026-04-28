@@ -3,16 +3,19 @@ use serde::{Deserialize, Serialize};
 
 pub mod auth;
 pub mod filesystem;
+pub mod network;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
 pub use auth::{Auth, AuthHeader, Credentials, ExtractCredentials};
+pub use network::{MidenNetworkType, NetworkConfig};
 
 /// Metadata for a single account
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountMetadata {
     pub account_id: String,
     pub auth: Auth,
+    pub network_config: NetworkConfig,
     pub created_at: String,
     pub updated_at: String,
     pub has_pending_candidate: bool,

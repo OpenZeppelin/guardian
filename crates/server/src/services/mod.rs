@@ -96,14 +96,30 @@ pub async fn resolve_account(
         )));
     }
 
-    metadata.auth.verify(account_id, creds).map_err(|e| {
-        tracing::warn!(
-            account_id = %account_id,
-            error = %e,
-            "Authentication failed in resolve_account"
-        );
-        GuardianError::AuthenticationFailed(e)
-    })?;
+    if metadata.network_config.is_evm() {
+        #[cfg(not(feature = "evm"))]
+        {
+            return Err(GuardianError::EvmSupportDisabled);
+        }
+
+        #[cfg(feature = "evm")]
+        {
+            crate::evm::authorize_evm_request(&metadata.network_config, account_id, creds).await?;
+        }
+    } else {
+        if matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. }) {
+            return Err(GuardianError::EvmSupportDisabled);
+        }
+
+        metadata.auth.verify(account_id, creds).map_err(|e| {
+            tracing::warn!(
+                account_id = %account_id,
+                error = %e,
+                "Authentication failed in resolve_account"
+            );
+            GuardianError::AuthenticationFailed(e)
+        })?;
+    }
 
     // Atomically check and update the last auth timestamp for replay protection
     let now_str = state.clock.now_rfc3339();
@@ -329,6 +345,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: commitments,
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,

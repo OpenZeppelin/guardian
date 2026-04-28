@@ -42,6 +42,16 @@ pub enum GuardianError {
         signer_id: String,
     },
     InvalidProposalSignature(String),
+    EvmSupportDisabled,
+    UnsupportedForNetwork {
+        network: String,
+        operation: String,
+    },
+    InvalidNetworkConfig(String),
+    RpcUnavailable(String),
+    RpcValidationFailed(String),
+    SignerNotAuthorized(String),
+    InvalidEvmProposal(String),
     InsufficientSignatures {
         required: usize,
         got: usize,
@@ -96,6 +106,13 @@ impl GuardianError {
             GuardianError::InvalidCommitment(_) => StatusCode::BAD_REQUEST,
             GuardianError::CommitmentMismatch { .. } => StatusCode::BAD_REQUEST,
             GuardianError::InvalidProposalSignature(_) => StatusCode::BAD_REQUEST,
+            GuardianError::EvmSupportDisabled => StatusCode::BAD_REQUEST,
+            GuardianError::UnsupportedForNetwork { .. } => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidNetworkConfig(_) => StatusCode::BAD_REQUEST,
+            GuardianError::RpcUnavailable(_) => StatusCode::BAD_GATEWAY,
+            GuardianError::RpcValidationFailed(_) => StatusCode::BAD_GATEWAY,
+            GuardianError::SignerNotAuthorized(_) => StatusCode::FORBIDDEN,
+            GuardianError::InvalidEvmProposal(_) => StatusCode::BAD_REQUEST,
             GuardianError::InsufficientSignatures { .. } => StatusCode::BAD_REQUEST,
             GuardianError::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
             GuardianError::NetworkError(_) => StatusCode::BAD_GATEWAY,
@@ -125,12 +142,55 @@ impl GuardianError {
             GuardianError::InvalidCommitment(_) => tonic::Code::InvalidArgument,
             GuardianError::CommitmentMismatch { .. } => tonic::Code::InvalidArgument,
             GuardianError::InvalidProposalSignature(_) => tonic::Code::InvalidArgument,
+            GuardianError::EvmSupportDisabled => tonic::Code::FailedPrecondition,
+            GuardianError::UnsupportedForNetwork { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::InvalidNetworkConfig(_) => tonic::Code::InvalidArgument,
+            GuardianError::RpcUnavailable(_) => tonic::Code::Unavailable,
+            GuardianError::RpcValidationFailed(_) => tonic::Code::Unavailable,
+            GuardianError::SignerNotAuthorized(_) => tonic::Code::PermissionDenied,
+            GuardianError::InvalidEvmProposal(_) => tonic::Code::InvalidArgument,
             GuardianError::InsufficientSignatures { .. } => tonic::Code::FailedPrecondition,
             GuardianError::RateLimitExceeded { .. } => tonic::Code::ResourceExhausted,
             GuardianError::NetworkError(_) => tonic::Code::Unavailable,
             GuardianError::SigningError(_) => tonic::Code::Internal,
             GuardianError::StorageError(_) => tonic::Code::Internal,
             GuardianError::ConfigurationError(_) => tonic::Code::Internal,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            GuardianError::AccountNotFound(_) => "account_not_found",
+            GuardianError::AccountAlreadyExists(_) => "account_already_exists",
+            GuardianError::AccountDataUnavailable(_) => "account_data_unavailable",
+            GuardianError::InvalidAccountId(_) => "invalid_account_id",
+            GuardianError::StateNotFound(_) => "state_not_found",
+            GuardianError::DeltaNotFound { .. } => "delta_not_found",
+            GuardianError::InvalidDelta(_) => "invalid_delta",
+            GuardianError::ConflictPendingDelta => "conflict_pending_delta",
+            GuardianError::ConflictPendingProposal => "conflict_pending_proposal",
+            GuardianError::PendingProposalsLimit { .. } => "pending_proposals_limit",
+            GuardianError::CommitmentMismatch { .. } => "commitment_mismatch",
+            GuardianError::InvalidCommitment(_) => "invalid_commitment",
+            GuardianError::AuthenticationFailed(_) => "authentication_failed",
+            GuardianError::AuthorizationFailed(_) => "authorization_failed",
+            GuardianError::InvalidInput(_) => "invalid_input",
+            GuardianError::StorageError(_) => "storage_error",
+            GuardianError::NetworkError(_) => "network_error",
+            GuardianError::SigningError(_) => "signing_error",
+            GuardianError::ConfigurationError(_) => "configuration_error",
+            GuardianError::ProposalNotFound { .. } => "proposal_not_found",
+            GuardianError::ProposalAlreadySigned { .. } => "proposal_already_signed",
+            GuardianError::InvalidProposalSignature(_) => "invalid_proposal_signature",
+            GuardianError::EvmSupportDisabled => "evm_support_disabled",
+            GuardianError::UnsupportedForNetwork { .. } => "unsupported_for_network",
+            GuardianError::InvalidNetworkConfig(_) => "invalid_network_config",
+            GuardianError::RpcUnavailable(_) => "rpc_unavailable",
+            GuardianError::RpcValidationFailed(_) => "rpc_validation_failed",
+            GuardianError::SignerNotAuthorized(_) => "signer_not_authorized",
+            GuardianError::InvalidEvmProposal(_) => "invalid_evm_proposal",
+            GuardianError::InsufficientSignatures { .. } => "insufficient_signatures",
+            GuardianError::RateLimitExceeded { .. } => "rate_limit_exceeded",
         }
     }
 }
@@ -191,6 +251,20 @@ impl fmt::Display for GuardianError {
             GuardianError::InvalidProposalSignature(msg) => {
                 write!(f, "Invalid proposal signature: {msg}")
             }
+            GuardianError::EvmSupportDisabled => {
+                write!(f, "EVM support is disabled")
+            }
+            GuardianError::UnsupportedForNetwork { network, operation } => {
+                write!(
+                    f,
+                    "Operation '{operation}' is unsupported for {network} accounts"
+                )
+            }
+            GuardianError::InvalidNetworkConfig(msg) => write!(f, "Invalid network config: {msg}"),
+            GuardianError::RpcUnavailable(msg) => write!(f, "RPC unavailable: {msg}"),
+            GuardianError::RpcValidationFailed(msg) => write!(f, "RPC validation failed: {msg}"),
+            GuardianError::SignerNotAuthorized(msg) => write!(f, "Signer not authorized: {msg}"),
+            GuardianError::InvalidEvmProposal(msg) => write!(f, "Invalid EVM proposal: {msg}"),
             GuardianError::InsufficientSignatures { required, got } => {
                 write!(f, "Insufficient signatures: required {required}, got {got}")
             }
@@ -234,6 +308,7 @@ impl From<miden_keystore::KeyStoreError> for GuardianError {
 #[derive(Serialize)]
 struct ErrorResponse {
     success: bool,
+    code: &'static str,
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_after_secs: Option<u32>,
@@ -250,6 +325,7 @@ impl IntoResponse for GuardianError {
         };
         let body = Json(ErrorResponse {
             success: false,
+            code: self.code(),
             error: self.to_string(),
             retry_after_secs,
         });

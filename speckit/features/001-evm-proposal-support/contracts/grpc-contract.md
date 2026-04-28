@@ -9,6 +9,22 @@ proto edits are made.
 - extend `ConfigureRequest` with account-level `network_config`
 - keep proposal create/list/get/sign available through current RPC names
 - preserve Miden behavior and make unsupported EVM delta/state flows explicit
+- keep default servers Miden-only and accept EVM account/proposal inputs only
+  when the server-side `evm` feature is enabled
+
+## Feature-Gate Semantics
+
+The proto may expose EVM-shaped messages, but EVM behavior is opt-in. A server
+without the `evm` feature enabled must reject `EvmNetworkConfig`,
+`EvmEcdsaAuth`, and EVM proposal payloads with `evm_support_disabled` before
+account or proposal storage is mutated.
+
+Enabling the `evm` feature registers the EVM account, signer-authority,
+proposal, and RPC-validation capabilities into the same network-aware service
+architecture used for Miden. It does not imply support for every EVM chain by
+default; each account still supplies explicit `chain_id`, `account_address`,
+`multisig_module_address`, and `rpc_endpoint`, and deployments may restrict
+accepted chain IDs.
 
 ## Proposed Proto Changes
 
@@ -28,8 +44,9 @@ message MidenNetworkConfig {
 
 message EvmNetworkConfig {
   uint64 chain_id = 1;
-  string contract_address = 2;
-  string rpc_endpoint = 3;
+  string account_address = 2;
+  string multisig_module_address = 3;
+  string rpc_endpoint = 4;
 }
 ```
 
@@ -45,7 +62,8 @@ message ConfigureRequest {
 ```
 
 For EVM accounts, `account_id` uses the canonical form
-`evm:<chain_id>:<normalized_contract_address>`.
+`evm:<chain_id>:<normalized_account_address>`. Requests using this form
+require the server-side `evm` feature.
 
 ### 3. Extend `AuthConfig`
 
@@ -64,7 +82,8 @@ message EvmEcdsaAuth {
 ```
 
 For EVM accounts, `signers` are normalized EOA addresses. V1 does not support
-ERC-1271 or generic ERC-7913 verifier-key signers.
+ERC-1271 or generic ERC-7913 verifier-key signers. `EvmEcdsaAuth` requires the
+server-side `evm` feature.
 
 ## Request Authentication
 
@@ -80,19 +99,19 @@ message:
 
 ```text
 Domain:
-  name = "Guardian Request"
+  name = "Guardian EVM Request"
   version = "1"
   chainId = network_config.chain_id
-  verifyingContract = network_config.contract_address
+  verifyingContract = network_config.account_address
 
-AuthRequest(
-  string accountId,
-  uint64 timestampMs,
-  bytes32 payloadHash
+GuardianRequest(
+  string account_id,
+  uint64 timestamp,
+  bytes32 request_hash
 )
 ```
 
-For gRPC, `payloadHash = keccak256(protobuf_request_bytes)`.
+For gRPC, `request_hash = keccak256(protobuf_request_bytes)`.
 
 ## Proposal RPC Direction
 
@@ -132,23 +151,23 @@ Domain:
   name = "Guardian EVM Proposal"
   version = "1"
   chainId = network_config.chain_id
-  verifyingContract = network_config.contract_address
+  verifyingContract = network_config.account_address
 
-PsmEvmProposal(
+GuardianProposal(
   bytes32 mode,
-  bytes32 executionCalldataHash
+  bytes32 execution_calldata_hash
 )
 ```
 
-Where `executionCalldataHash = keccak256(execution_calldata)`.
+Where `execution_calldata_hash = keccak256(execution_calldata)`.
 
 The signer address is recovered from the ECDSA signature and recorded as the
 normalized EOA `signer_id`.
 
 ## Unsupported EVM RPC Behavior
 
-These methods remain available for Miden but must return explicit unsupported
-behavior for EVM accounts in this feature:
+With the `evm` feature enabled, these methods remain available for Miden but
+must return explicit unsupported behavior for EVM accounts in this feature:
 
 - `PushDelta`
 - `GetDelta`
@@ -161,7 +180,7 @@ Canonicalization-related flows also remain unsupported for EVM accounts.
 
 - `PushDeltaProposalResponse.commitment` remains the outward proposal identifier.
 - For EVM v1, that identifier is
-  `keccak256(abi.encode(chain_id, contract_address, mode, keccak256(execution_calldata)))`.
+  `keccak256(abi.encode(chain_id, account_address, mode, keccak256(execution_calldata)))`.
 - HTTP and gRPC must produce the same proposal identifier for equivalent
   normalized EVM proposals.
 - The identifier excludes local proposal nonce, collected signatures, and
@@ -174,6 +193,7 @@ Canonicalization-related flows also remain unsupported for EVM accounts.
 Both transports should expose the same application-level error codes alongside
 their native HTTP or gRPC status:
 
+- `evm_support_disabled`
 - `unsupported_for_network`
 - `invalid_network_config`
 - `rpc_unavailable`

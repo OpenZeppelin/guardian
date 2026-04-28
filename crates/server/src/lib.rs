@@ -14,6 +14,8 @@ pub use builder::logging;
 pub use builder::state;
 pub mod delta_object;
 pub mod error;
+#[cfg(feature = "evm")]
+pub mod evm;
 pub mod jobs;
 pub mod metadata;
 pub mod network;

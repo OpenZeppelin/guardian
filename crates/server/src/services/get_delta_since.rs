@@ -31,6 +31,12 @@ pub async fn get_delta_since(
     );
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
+    if resolved.metadata.network_config.is_evm() {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "get_delta_since".to_string(),
+        });
+    }
 
     let all_deltas = resolved
         .storage

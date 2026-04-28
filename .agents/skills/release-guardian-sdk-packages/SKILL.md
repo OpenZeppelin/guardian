@@ -1,6 +1,6 @@
 ---
 name: release-guardian-sdk-packages
-description: Version, validate, dry-run, and publish the repository's Rust and TypeScript Guardian SDK packages to crates.io and npm. Use when Codex needs to choose the next coordinated 0.13.x release version, update release manifests and lockfiles, run targeted checks, prepare or execute publish commands in dependency order, and minimize the user's work to registry login or final irreversible publish confirmation.
+description: Version, validate, dry-run, and publish the repository's Rust and TypeScript Guardian SDK packages to crates.io and npm. Use when Codex needs to choose the next coordinated release version, update release manifests and lockfiles, run targeted checks, prepare or execute publish commands in dependency order, and minimize the user's work to registry login or final irreversible publish confirmation.
 ---
 
 # Release Guardian SDK Packages
@@ -15,6 +15,8 @@ Read the current source of truth at the start of every release task:
 - `crates/miden-multisig-client/Cargo.toml`
 - `packages/guardian-client/package.json`
 - `packages/guardian-client/package-lock.json`
+- `packages/guardian-evm-client/package.json`
+- `packages/guardian-evm-client/package-lock.json`
 - `packages/miden-multisig-client/package.json`
 - `packages/miden-multisig-client/package-lock.json`
 - `references/release-surface.md`
@@ -53,7 +55,7 @@ Unless the user explicitly asks Codex to perform the real publish and credential
 ## Version Policy
 
 - Keep the publishable SDK surface on one coordinated version
-- Stay on the active Miden `0.13.x` line unless the task is an explicit migration
+- Stay on the active Miden dependency line unless the task is an explicit migration
 - Treat the user-provided target version as the source of truth for the release
 - If the user has not decided yet, present the current version and the likely next patch version, but do not bump files until the version is confirmed
 - If the user asks for "current +1" on the active line, choose the next patch above the highest committed publishable version on that line
@@ -71,6 +73,7 @@ Rust crates:
 TypeScript packages:
 
 - `@openzeppelin/guardian-client`
+- `@openzeppelin/guardian-evm-client`
 - `@openzeppelin/miden-multisig-client`
 
 ## Version Bump Rules
@@ -82,6 +85,7 @@ For a coordinated release, update all of these:
 - `crates/contracts/Cargo.toml` internal `guardian-shared` dependency version
 - `crates/miden-multisig-client/Cargo.toml` internal `guardian-client`, `guardian-shared`, and `miden-confidential-contracts` dependency versions
 - `packages/guardian-client/package.json` `version`
+- `packages/guardian-evm-client/package.json` `version`
 - `packages/miden-multisig-client/package.json` `version`
 - `packages/miden-multisig-client/package.json` `@openzeppelin/guardian-client` dependency range
 
@@ -89,6 +93,7 @@ After editing TypeScript versions, refresh lockfiles from the package directorie
 
 ```bash
 cd packages/guardian-client && npm install --package-lock-only
+cd packages/guardian-evm-client && npm install --package-lock-only
 cd packages/miden-multisig-client && npm install --package-lock-only
 ```
 
@@ -108,6 +113,8 @@ cargo test -p miden-multisig-client
 ```bash
 cd packages/guardian-client && npm test
 cd packages/guardian-client && npm run build
+cd packages/guardian-evm-client && npm test
+cd packages/guardian-evm-client && npm run build
 cd packages/miden-multisig-client && npm test
 cd packages/miden-multisig-client && npm run build
 ```
@@ -123,6 +130,7 @@ cargo publish -p miden-multisig-client --dry-run
 
 ```bash
 cd packages/guardian-client && npm publish --access public --dry-run
+cd packages/guardian-evm-client && npm publish --access public --dry-run
 cd packages/miden-multisig-client && npm publish --access public --dry-run
 ```
 
@@ -162,7 +170,8 @@ Wait for crates.io indexing between dependent publishes.
 TypeScript packages must be published in dependency order:
 
 1. `@openzeppelin/guardian-client`
-2. `@openzeppelin/miden-multisig-client`
+2. `@openzeppelin/guardian-evm-client`
+3. `@openzeppelin/miden-multisig-client`
 
 ## Manual Boundary
 

@@ -40,6 +40,7 @@ message AuthConfig {
   oneof auth_type {
     MidenFalconRpoAuth miden_falcon_rpo = 1;
     MidenEcdsaAuth miden_ecdsa = 2;
+    EvmEcdsaAuth evm_ecdsa = 3;
   }
 }
 
@@ -53,11 +54,38 @@ message MidenEcdsaAuth {
   repeated string cosigner_commitments = 1;
 }
 
+// EVM ECDSA authentication config
+message EvmEcdsaAuth {
+  repeated string signers = 1;
+}
+
+// Per-account network configuration
+message NetworkConfig {
+  oneof network_type {
+    MidenNetworkConfig miden = 1;
+    EvmNetworkConfig evm = 2;
+  }
+}
+
+// Miden account network config
+message MidenNetworkConfig {
+  string network_type = 1; // "local", "devnet", or "testnet"
+}
+
+// EVM account network config
+message EvmNetworkConfig {
+  uint64 chain_id = 1;
+  string account_address = 2;
+  string multisig_module_address = 3;
+  string rpc_endpoint = 4;
+}
+
 // Configure request
 message ConfigureRequest {
   string account_id = 1;
   AuthConfig auth = 2;
   string initial_state = 3; // JSON string
+  NetworkConfig network_config = 4;
 }
 
 message ConfigureResponse {
@@ -65,6 +93,7 @@ message ConfigureResponse {
   string message = 2;
   string ack_pubkey = 3;
   string ack_commitment = 4;
+  string error_code = 5;
 }
 
 // Push delta request
@@ -80,6 +109,7 @@ message PushDeltaResponse {
   string message = 2;
   DeltaObject delta = 3;
   optional string ack_sig = 4;
+  string error_code = 5;
 }
 
 // Get delta request
@@ -92,6 +122,7 @@ message GetDeltaResponse {
   bool success = 1;
   string message = 2;
   DeltaObject delta = 3;
+  string error_code = 4;
 }
 
 // Get delta since request
@@ -104,6 +135,7 @@ message GetDeltaSinceResponse {
   bool success = 1;
   string message = 2;
   DeltaObject merged_delta = 3;
+  string error_code = 4;
 }
 
 // Get state request
@@ -115,6 +147,7 @@ message GetStateResponse {
   bool success = 1;
   string message = 2;
   AccountState state = 3;
+  string error_code = 4;
 }
 
 // Delta status
@@ -196,6 +229,7 @@ message PushDeltaProposalResponse {
   string message = 2;
   DeltaObject delta = 3;
   string commitment = 4;
+  string error_code = 5;
 }
 
 // Get delta proposals request
@@ -207,6 +241,7 @@ message GetDeltaProposalsResponse {
   bool success = 1;
   string message = 2;
   repeated DeltaObject proposals = 3;
+  string error_code = 4;
 }
 
 // Get a specific delta proposal request
@@ -219,6 +254,7 @@ message GetDeltaProposalResponse {
   bool success = 1;
   string message = 2;
   DeltaObject proposal = 3;
+  string error_code = 4;
 }
 
 // Sign delta proposal request
@@ -232,4 +268,5 @@ message SignDeltaProposalResponse {
   bool success = 1;
   string message = 2;
   DeltaObject delta = 3;
+  string error_code = 4;
 }

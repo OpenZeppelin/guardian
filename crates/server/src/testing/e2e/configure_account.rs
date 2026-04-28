@@ -25,6 +25,7 @@ async fn test_configure_account_with_real_miden_account() {
         auth: Auth::MidenFalconRpo {
             cosigner_commitments: vec![commitment_hex.clone()],
         },
+        network_config: crate::metadata::NetworkConfig::miden_default(),
         initial_state: account_json.clone(),
         credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
     };

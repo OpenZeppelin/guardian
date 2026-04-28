@@ -2,7 +2,20 @@
 
 This quickstart is a validation-oriented walkthrough for the planned feature.
 It focuses on the agreed v1 shape for network-aware EVM proposal sharing and
-signing.
+signing. EVM support is opt-in: a default server is expected to reject EVM
+account, auth, and proposal inputs with `evm_support_disabled`.
+
+## 0. Enable EVM support for EVM validation
+
+Run EVM-specific validation only against a server built or deployed with the
+server-side `evm` feature enabled.
+
+Expected default-server result:
+
+- Miden account configuration continues to work
+- `network_config.kind = "evm"` is rejected with `evm_support_disabled`
+- EVM proposal payloads are rejected with `evm_support_disabled`
+- no EVM account metadata or proposal record is persisted
 
 ## 1. Configure a Miden account
 
@@ -13,6 +26,8 @@ Expected result:
 - account metadata persists Miden-specific network configuration
 
 ## 2. Configure an EVM account
+
+Precondition: the server-side `evm` feature is enabled.
 
 Expected request shape:
 
@@ -27,7 +42,8 @@ Expected request shape:
   "network_config": {
     "kind": "evm",
     "chain_id": 1,
-    "contract_address": "0x0000000000000000000000000000000000000000",
+    "account_address": "0x0000000000000000000000000000000000000000",
+    "multisig_module_address": "0x0000000000000000000000000000000000000001",
     "rpc_endpoint": "https://rpc.example"
   },
   "initial_state": {}
@@ -37,14 +53,17 @@ Expected request shape:
 Expected result:
 
 - account configuration succeeds only if RPC-backed signer validation succeeds
-- `account_id` matches the canonical `chain_id + contract_address` identity
-- the server derives the EVM signer snapshot and threshold view from RPC
+- `account_id` matches the canonical `chain_id + account_address` identity
+- the server derives the EVM signer snapshot and threshold view from the
+  configured ERC-7579 multisig module via RPC
 - account metadata persists `network_config`
 - request-auth headers and replay protection still apply
 - for EVM accounts, request auth uses EIP-712 over a server-reconstructed
-  `AuthRequest(accountId, timestampMs, payloadHash)` message
+  `GuardianRequest(account_id, timestamp, request_hash)` message
 
 ## 3. Create an EVM proposal
+
+Precondition: the server-side `evm` feature is enabled.
 
 Expected request shape:
 
@@ -73,6 +92,8 @@ Expected result:
 
 ## 4. List, get, and sign an EVM proposal
 
+Precondition: the server-side `evm` feature is enabled.
+
 Expected result:
 
 - list/get/sign routes stay aligned between HTTP and gRPC
@@ -82,6 +103,8 @@ Expected result:
 - request auth remains explicit and replay-protected
 
 ## 5. Verify unsupported EVM flows
+
+Precondition: the server-side `evm` feature is enabled.
 
 Expected result:
 
@@ -97,10 +120,13 @@ Miden behavior.
 ## 6. Run validation
 
 ```bash
-cargo test -p private-state-manager-server
-cargo test -p private-state-manager-client
+cargo test -p guardian-server
+cargo test -p guardian-server --features evm
+cargo test -p guardian-client
 cd packages/guardian-client && npm test
+cd packages/guardian-evm-client && npm test && npm run build
+cd examples/evm-smoke-web && npm run typecheck && npm run build
 ```
 
-Run example smoke checks only if the base-client changes propagate into example
-surfaces.
+Run the browser smoke when changing wallet signing, proposal collection, or
+on-chain submission behavior.

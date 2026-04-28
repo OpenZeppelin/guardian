@@ -10,25 +10,29 @@
 
 Guardian currently assumes a Miden-centric account and proposal
 model. This feature introduces per-account network configuration so the system
-can support both existing Miden accounts and new EVM accounts without moving
-network selection to a server-global setting.
+can support existing Miden accounts by default and new EVM accounts only when
+EVM support is explicitly enabled, without moving network selection to a
+server-global setting.
 
 For EVM accounts, the initial scope is proposal sharing and cosigner signature
 collection only. The system must support configuring an EVM account, validating
 its signer set through the configured RPC endpoint, creating/listing/getting
-pending proposals, and appending signatures to those proposals. Existing Miden
-flows must continue to behave as they do today.
+pending proposals, and appending signatures to those proposals when the EVM
+feature flag is enabled. Existing Miden flows must continue to behave as they
+do today when EVM support is disabled.
 
-This change is expected to affect the server contract first, then the Rust and
-TypeScript base clients. Multisig SDK layers and examples may remain unchanged
-in v1 unless they surface the new EVM proposal workflow.
+This change is expected to affect the server contract first, then the Rust
+client and TypeScript client packages. EVM-specific HTTP types, browser wallet
+signing, and orchestration belong in a dedicated TypeScript EVM client package
+rather than the protocol-generic base TypeScript client. Multisig SDK layers may
+remain unchanged in v1 unless they surface the new EVM proposal workflow.
 
 ## Clarifications
 
 ### Session 2026-03-18
 
-- Q: What is the canonical identity of an EVM account in Guardian? -> A: `chain_id + contract_address`
-- Q: Which EVM account configuration fields are initially expected? -> A: start with `chain_id`, `contract_address`, and required `rpc_endpoint`
+- Q: What is the canonical identity of an EVM account in Guardian? -> A: `chain_id + account_address`
+- Q: Which EVM account configuration fields are initially expected? -> A: start with `chain_id`, `account_address`, `multisig_module_address`, and required `rpc_endpoint`
 - Q: What EVM scope is desired for v1? -> A: proposal sharing and signing only; delta/state/canonicalization support for EVM is not in v1
 - Q: How should signer authority be validated for EVM accounts? -> A: re-check signer authority on every relevant action
 - Q: Which auth/signature model should EVM v1 use? -> A: keep the auth model extensible, but implement ECDSA only for EVM in v1
@@ -39,7 +43,7 @@ in v1 unless they surface the new EVM proposal workflow.
 
 ### Session 2026-04-09
 
-- Q: What canonical API account identifier should EVM use? -> A: derive and enforce `evm:<chain_id>:<normalized_contract_address>`
+- Q: What canonical API account identifier should EVM use? -> A: derive and enforce `evm:<chain_id>:<normalized_account_address>`
 - Q: Which EVM multisig contract model should v1 target? -> A: OpenZeppelin `ERC7579Multisig` as the signer/threshold read model
 - Q: What EVM proposal shape should v1 support? -> A: only ERC-7579 `execute(mode, executionCalldata)` coordination payloads
 - Q: Which ERC-7579 modes are supported in v1? -> A: single-call and batch-call only, with default exec type and zero selector/mode payload; delegatecall, try-mode, and custom selector/payload are out of scope
@@ -51,7 +55,13 @@ in v1 unless they surface the new EVM proposal workflow.
 - Q: How should duplicate EVM proposal creation behave? -> A: same computed proposal identifier is idempotent and returns the existing pending proposal
 - Q: What do legacy delta fields mean for EVM proposals? -> A: `prev_commitment`, `new_commitment`, `ack_sig`, `ack_pubkey`, and `ack_scheme` are explicitly unused for EVM v1 proposals
 - Q: How should pending EVM proposals age out in v1? -> A: they stay pending until a future explicit cleanup/reconciliation feature, subject to the existing pending-proposal cap
-- Q: What implementation approach is preferred? -> A: one unified network-aware implementation with an optional rollout gate for EVM, not a long-lived forked feature path
+- Q: What implementation approach is preferred? -> A: one unified network-aware implementation with an explicit EVM feature gate, not a long-lived forked feature path
+
+### Session 2026-04-27
+
+- Q: Should EVM support be enabled by default? -> A: no; EVM account and proposal support is gated behind an explicit server-side `evm` feature flag and default Guardian deployments remain Miden-only.
+- Q: Does enabling the EVM feature mean Guardian supports every EVM chain by default? -> A: no; the feature enables the EVM account/proposal capability family only. Each EVM account still requires explicit `chain_id`, `account_address`, `multisig_module_address`, and `rpc_endpoint`, and deployments may further restrict accepted chain IDs.
+- Q: What should happen when EVM requests reach a server without the EVM feature enabled? -> A: reject them before storage mutation with a stable `evm_support_disabled` application error.
 
 ## Scope *(mandatory)*
 
@@ -59,8 +69,12 @@ in v1 unless they surface the new EVM proposal workflow.
 
 - Add per-account network configuration so account configuration is no longer
   modeled as server-global network selection.
+- Gate all EVM account, auth, proposal, and RPC validation behavior behind an
+  explicit EVM feature flag that is disabled by default.
 - Support EVM account configuration with network-aware metadata.
 - Support EVM proposal creation, listing, retrieval, and signature collection.
+- Provide a dedicated TypeScript EVM client package for browser wallet request
+  auth, proposal signing, and Guardian proposal orchestration.
 - Support EVM signer validation through direct RPC reads.
 - Re-validate signer authority for EVM accounts on all relevant account and
   proposal actions.
@@ -74,8 +88,10 @@ in v1 unless they surface the new EVM proposal workflow.
 - Automatic execution tracking for EVM proposals.
 - Indexer-based EVM validation in v1.
 - Non-ECDSA EVM signing schemes in v1.
-- Broad multisig SDK or example-app support unless required to validate the new
-  lower-layer behavior.
+- Enabling every EVM-compatible chain by default or treating the EVM feature as
+  a product guarantee for all chain IDs.
+- Broad multisig SDK support unless required to validate the new lower-layer
+  behavior.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -94,22 +110,27 @@ preserve the correct validation rules for that account.
 **Why this priority**: Every later EVM flow depends on account-level network
 configuration, and this is the minimum change needed to avoid interfering with
 existing Miden features.  
-**Independent Test**: Configure one Miden account and one EVM account through
-both HTTP and gRPC and verify that the persisted account configuration retains
-the correct network-specific shape and validation behavior.
+**Independent Test**: Configure one Miden account through default HTTP and gRPC
+paths, verify an EVM config is rejected while the feature is disabled, then
+configure one EVM account through both transports with the feature enabled and
+verify that persisted account configuration retains the correct
+network-specific shape and validation behavior.
 
 **Acceptance Scenarios**:
 
 1. **Given** a Miden account configuration request, **When** the account is
    created, **Then** the persisted account keeps Miden-compatible behavior and
    no EVM-specific validation is required.
-2. **Given** an EVM account configuration request with the required network
-   fields, **When** the account is created, **Then** the account is persisted
-   with EVM-specific network configuration and can later use EVM proposal
-   workflows.
-3. **Given** an EVM account configuration request missing required network
-   fields, **When** the account is created, **Then** the request fails with an
-   explicit validation error.
+2. **Given** a server without the EVM feature enabled, **When** an EVM account
+   configuration request is submitted, **Then** the request fails with
+   `evm_support_disabled` before any account metadata is persisted.
+3. **Given** an EVM-enabled server and an EVM account configuration request
+   with the required network fields, **When** the account is created, **Then**
+   the account is persisted with EVM-specific network configuration and can
+   later use EVM proposal workflows.
+4. **Given** an EVM-enabled server and an EVM account configuration request
+   missing required network fields, **When** the account is created, **Then**
+   the request fails with an explicit validation error.
 
 ---
 
@@ -121,15 +142,17 @@ tracking exists.
 
 **Why this priority**: This is the core feature requested, and it should work
 without requiring the broader EVM delta/canonicalization model in v1.  
-**Independent Test**: Create a pending EVM proposal, retrieve it through both
-transports, append signatures from authorized signers, and verify duplicate
-signatures are rejected.
+**Independent Test**: Verify EVM proposal creation is rejected while the feature
+is disabled, then create a pending EVM proposal with the feature enabled,
+retrieve it through both transports, append signatures from authorized signers,
+and verify duplicate signatures are rejected.
 
 **Acceptance Scenarios**:
 
-1. **Given** an EVM account with valid signer authority, **When** an authorized
-   caller creates a proposal, **Then** the proposal is stored as pending with a
-   deterministic hash-based Guardian proposal identifier.
+1. **Given** an EVM-enabled server and an EVM account with valid signer
+   authority, **When** an authorized caller creates a proposal, **Then** the
+   proposal is stored as pending with a deterministic hash-based Guardian
+   proposal identifier.
 2. **Given** a pending EVM proposal, **When** an authorized cosigner signs it,
    **Then** the signature is appended and the updated pending proposal is
    returned.
@@ -139,6 +162,9 @@ signatures are rejected.
 4. **Given** equivalent normalized EVM proposal contents for the same account,
    **When** those contents are submitted through either HTTP or gRPC, **Then**
    the resulting proposal identifier is the same.
+5. **Given** a server without the EVM feature enabled, **When** an EVM proposal
+   request is submitted, **Then** the request fails with
+   `evm_support_disabled` and no proposal is persisted.
 
 ---
 
@@ -150,15 +176,15 @@ to Miden assumptions or leave behavior ambiguous.
 
 **Why this priority**: The feature is intentionally partial in v1, so the
 boundaries must be explicit to avoid architectural drift and accidental misuse.  
-**Independent Test**: Call unsupported EVM delta/state/canonicalization flows
-and verify they return explicit unsupported behavior rather than partial or
-silent fallback semantics.
+**Independent Test**: With EVM support enabled, call unsupported EVM
+delta/state/canonicalization flows and verify they return explicit unsupported
+behavior rather than partial or silent fallback semantics.
 
 **Acceptance Scenarios**:
 
-1. **Given** an EVM account, **When** an unsupported delta or state workflow is
-   invoked, **Then** the system returns an explicit unsupported error for that
-   account/network combination.
+1. **Given** an EVM-enabled server and an EVM account, **When** an unsupported
+   delta or state workflow is invoked, **Then** the system returns an explicit
+   unsupported error for that account/network combination.
 2. **Given** both Miden and EVM accounts exist, **When** supported flows are
    invoked on each, **Then** each account follows only its own network rules and
    no server-global network assumption leaks across accounts.
@@ -173,13 +199,13 @@ silent fallback semantics.
 - **FR-002**: The system MUST continue to support existing Miden accounts after
   the introduction of per-account network configuration.
 - **FR-003**: The system MUST support an EVM account identity model based on
-  the canonical string `evm:<chain_id>:<normalized_contract_address>`.
+  the canonical string `evm:<chain_id>:<normalized_account_address>`.
 - **FR-003a**: For EVM accounts, `account_id` and `network_config` MUST agree
-  on the same normalized `chain_id + contract_address` identity.
+  on the same normalized `chain_id + account_address` identity.
 - **FR-004**: The system MUST persist EVM-specific account configuration through
   a `network_config`-style model rather than ad-hoc unrelated fields.
 - **FR-005**: The system MUST support EVM proposal creation, listing, retrieval,
-  and signature collection in v1.
+  and signature collection in v1 only when EVM support is enabled.
 - **FR-005a**: EVM proposal payloads in v1 MUST represent ERC-7579
   `execute(mode, executionCalldata)` requests and MUST NOT introduce a separate
   EVM proposal domain model.
@@ -207,7 +233,7 @@ silent fallback semantics.
   coordination message over the normalized proposal payload and MUST remain
   separate from any future on-chain execution signature format.
 - **FR-008**: EVM proposal identifiers MUST be deterministic hash-based values
-  derived from the normalized tuple `(chain_id, contract_address, mode,
+  derived from the normalized tuple `(chain_id, account_address, mode,
   keccak256(execution_calldata))`.
 - **FR-008a**: EVM proposal identifiers MUST exclude collected signatures,
   timestamps, and the Guardian-local proposal nonce.
@@ -226,6 +252,16 @@ silent fallback semantics.
 - **FR-014**: EVM proposal records MUST leave `prev_commitment`,
   `new_commitment`, `ack_sig`, `ack_pubkey`, and `ack_scheme` unused in v1
   rather than assigning Miden-specific semantics to them.
+- **FR-015**: EVM account and proposal support MUST be behind an explicit
+  server-side `evm` feature flag that is disabled by default.
+- **FR-015a**: When EVM support is disabled, requests containing
+  `network_config.kind = "evm"`, `EvmEcdsa` auth, or EVM proposal payloads MUST
+  fail with `evm_support_disabled` before any account or proposal state is
+  persisted.
+- **FR-015b**: Enabling EVM support MUST NOT imply support for every EVM chain
+  by default; each EVM account MUST still declare explicit `chain_id`,
+  `account_address`, `multisig_module_address`, and `rpc_endpoint`, and
+  deployments MAY restrict accepted chain IDs.
 
 ### Contract / Transport Impact
 
@@ -233,8 +269,12 @@ silent fallback semantics.
   network configuration rather than assuming only the current Miden model.
 - HTTP and gRPC proposal requests and responses must remain semantically aligned
   for EVM proposal create/list/get/sign flows.
-- Rust and TypeScript base clients will need corresponding request/response
-  support for network-aware account configuration and EVM proposal workflows.
+- HTTP and gRPC must expose identical feature-gate semantics: EVM-shaped
+  requests fail with `evm_support_disabled` when the server does not have EVM
+  support enabled.
+- The Rust base client and dedicated TypeScript EVM client will need
+  corresponding request/response support for EVM proposal workflows; the
+  protocol-generic TypeScript client remains Miden/base-only.
 - Auth headers and gRPC metadata remain explicit; EVM v1 uses ECDSA signatures
   over EIP-712 typed messages while the overall auth model remains extensible.
 - For EVM accounts, the existing transport fields `x-pubkey`, `x-signature`,
@@ -250,21 +290,26 @@ silent fallback semantics.
 - EVM signer validation depends on the configured RPC endpoint rather than an
   indexer in v1.
 - At least one upstream client surface must validate the new network-aware
-  account configuration and EVM proposal flows once the server contract changes.
+  account configuration and EVM proposal flows once the server contract changes,
+  including the dedicated TypeScript EVM client.
 - Fallback behavior remains explicit: unsupported EVM delta/state flows must not
   silently fall back to Miden or to partially supported online/offline logic.
 - Stable application error codes are required for unsupported-network,
-  RPC-validation, signer-authorization, invalid-payload, and duplicate-signature
-  failures.
+  disabled-feature, RPC-validation, signer-authorization, invalid-payload, and
+  duplicate-signature failures.
 
 ### Data / Lifecycle Impact
 
 - Account metadata will need a network-aware configuration model that can
-  represent at least Miden and EVM account settings.
+  represent Miden account settings by default and EVM account settings when the
+  EVM feature is enabled.
+- EVM account metadata, auth variants, proposal payloads, and RPC validation
+  dependencies are feature-gated; disabled servers reject them before
+  persistence.
 - The EVM account configuration is expected to include `chain_id`,
-  `contract_address`, and `rpc_endpoint`.
+  `account_address`, `multisig_module_address`, and `rpc_endpoint`.
 - EVM account configuration uses the canonical account identity
-  `evm:<chain_id>:<normalized_contract_address>`.
+  `evm:<chain_id>:<normalized_account_address>`.
 - EVM configure requests use an empty-object `initial_state` placeholder in v1;
   the server derives the signer snapshot and threshold view from RPC rather than
   requiring a Miden-style initial state payload.
@@ -297,8 +342,12 @@ silent fallback semantics.
 
 - EVM account configuration provides an invalid `chain_id`, invalid contract
   address, or malformed network config.
+- EVM account configuration or proposal creation is attempted when EVM support
+  is disabled.
+- EVM support is enabled, but the requested `chain_id` is disallowed by
+  deployment policy.
 - EVM account configuration provides a non-canonical `account_id` that does not
-  match `chain_id + contract_address`.
+  match `chain_id + account_address`.
 - Signer authority changes between account configuration and later proposal
   actions.
 - The configured RPC endpoint is unavailable or returns state that does not
@@ -321,17 +370,25 @@ silent fallback semantics.
 ### Measurable Outcomes
 
 - **SC-001**: A user can configure both Miden and EVM accounts through HTTP and
-  gRPC, and Miden account behavior remains unchanged after the contract update.
+  gRPC when EVM support is enabled, and Miden account behavior remains unchanged
+  after the contract update.
 - **SC-002**: A user can create, list, retrieve, and sign EVM proposals through
-  both transports, and duplicate signatures are rejected explicitly.
+  both transports when EVM support is enabled, and duplicate signatures are
+  rejected explicitly.
 - **SC-003**: Unsupported EVM delta/state/canonicalization flows return explicit
   unsupported behavior rather than partial success, silent fallback, or Miden
   semantics.
+- **SC-004**: A default server without EVM support enabled rejects EVM account,
+  auth, and proposal requests with `evm_support_disabled` before persistence.
 
 ## Assumptions
 
 - The first EVM target is OpenZeppelin `ERC7579Multisig` as the signer and
   threshold read model for Guardian account validation.
+- The default Guardian build/deployment remains Miden-only. EVM support is
+  enabled explicitly through a server-side `evm` feature flag.
+- The EVM feature flag enables the EVM capability family, not automatic product
+  support for every possible EVM chain.
 - EVM signer validation is re-checked on every relevant action.
 - ECDSA is the only implemented EVM signature scheme in v1, but the model is
   intentionally extensible.
@@ -340,7 +397,7 @@ silent fallback semantics.
   and proposal payloads.
 - EVM signer identities are normalized EOA addresses only in v1.
 - EVM proposal identifiers are fixed by the normalized tuple `(chain_id,
-  contract_address, mode, keccak256(execution_calldata))`.
+  account_address, mode, keccak256(execution_calldata))`.
 - A future explicit sync or reconciliation flow may be added to resolve EVM
   proposal status, but execution tracking is not part of this feature.
 - The desired architectural direction is to remove server-global network
@@ -357,7 +414,7 @@ silent fallback semantics.
   rules as the EVM signer/threshold and execution-shape reference.
 - Updates to the server contract, Rust client, and TypeScript client.
 - A network-aware configuration model that can safely support both existing
-  Miden accounts and new EVM accounts.
+  Miden accounts and feature-gated EVM accounts.
 
 ## Deferred Topics
 
@@ -369,10 +426,12 @@ silent fallback semantics.
 ## Delivery Guidance
 
 - Implement the account/network refactor as one unified network-aware
-  architecture rather than forking EVM service logic behind a deep feature flag.
-- A rollout gate may reject new EVM account configuration until the deployment
-  is ready, but the code path should still use the same shared account
-  resolution, auth, and proposal-service architecture as Miden.
+  architecture with an explicit EVM feature gate, rather than a separate fork of
+  proposal or auth services.
+- The default build/deployment must not register EVM capabilities or accept EVM
+  account configuration. Enabling the `evm` feature should register the EVM
+  network capabilities into the same account resolution, auth, and
+  proposal-service architecture used by Miden.
 
 ## Recommended Future Revisit
 

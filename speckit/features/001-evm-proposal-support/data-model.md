@@ -1,12 +1,31 @@
 # Data Model: Add generic EVM proposal sharing and signing support
 
+## 0. Feature Gate Semantics
+
+EVM support is opt-in. Default Guardian servers accept Miden network
+configuration only. The `evm` feature registers EVM account, signer-authority,
+proposal, and RPC-validation capabilities into the shared network-aware
+architecture.
+
+Validation rules:
+
+- `EvmNetworkConfig`, `EvmEcdsa`, and `EvmProposalPayload` are valid only when
+  the server-side `evm` feature is enabled.
+- When the `evm` feature is disabled, requests containing EVM account config,
+  EVM auth, or EVM proposal payloads fail with `evm_support_disabled` before
+  metadata or proposal storage is mutated.
+- Enabling the `evm` feature does not automatically support every EVM chain.
+  Each EVM account still declares `chain_id`, `account_address`,
+  `multisig_module_address`, and `rpc_endpoint`; deployments may additionally
+  restrict allowed chain IDs.
+
 ## 1. AccountMetadata
 
 Persisted per account in filesystem and Postgres metadata stores.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `account_id` | `String` | Existing account identifier; for EVM this is canonical `evm:<chain_id>:<normalized_contract_address>` |
+| `account_id` | `String` | Existing account identifier; for EVM this is canonical `evm:<chain_id>:<normalized_account_address>` |
 | `auth` | `Auth` | Persisted auth policy and signer snapshot |
 | `network_config` | `NetworkConfig` | New per-account network selection and config |
 | `created_at` | `String` | Existing RFC3339 timestamp |
@@ -20,7 +39,8 @@ Persisted per account in filesystem and Postgres metadata stores.
 - Missing `network_config` is invalid rather than implicitly mapped to a legacy
   server-global Miden setting.
 - For `network_config.kind = "evm"`, `account_id` must match the canonical
-  identity derived from `chain_id + contract_address`.
+  identity derived from `chain_id + account_address`, and EVM support must be
+  enabled.
 - Filesystem and Postgres metadata encodings must remain semantically
   equivalent.
 
@@ -37,18 +57,21 @@ Tagged per-account network configuration.
 
 ### `EvmNetworkConfig`
 
+Available only when the server-side `evm` feature is enabled.
+
 | Field | Type | Notes |
 |-------|------|-------|
 | `kind` | `"evm"` | Discriminator |
 | `chain_id` | `u64` | Part of canonical account identity |
-| `contract_address` | `String` | Normalized hex address; part of canonical account identity |
+| `account_address` | `String` | Normalized hex address; part of canonical account identity and EIP-712 verifying contract |
+| `multisig_module_address` | `String` | Normalized ERC-7579 multisig module address used for RPC signer and threshold reads |
 | `rpc_endpoint` | `String` | Required RPC authority for signer validation |
 
 ### Validation Rules
 
 - `chain_id` must be a positive integer.
-- `contract_address` must be a normalized `0x`-prefixed 20-byte lowercase hex
-  address and validated at the boundary.
+- `account_address` and `multisig_module_address` must be normalized
+  `0x`-prefixed 20-byte lowercase hex addresses and validated at the boundary.
 - `rpc_endpoint` must be a valid URL string and is treated as trusted account
   configuration in v1.
 
@@ -66,6 +89,7 @@ Persisted auth policy plus signer snapshot.
 
 - Request-signature verification must be separated from signer authorization.
 - EVM authorization uses RPC as the source of truth on every relevant action.
+- EVM authorization is available only when the `evm` feature is enabled.
 - Stored EVM `signers` may be used as a snapshot or cache, but not as the only
   authority source.
 - EVM `signers` are normalized EOA addresses only in v1.
@@ -123,7 +147,7 @@ Derived value, not an independently configured field.
 ### Validation Rules
 
 - The identifier is a `0x`-prefixed lowercase 32-byte hex value derived from
-  `keccak256(abi.encode(chain_id, contract_address, mode,
+  `keccak256(abi.encode(chain_id, account_address, mode,
   keccak256(execution_calldata)))`.
 - The identifier must be derived from normalized inputs, not raw incoming JSON.
 - HTTP and gRPC must yield the same identifier for semantically equivalent
@@ -147,7 +171,7 @@ Internal design model for network-specific behavior.
 
 - Miden implements all capabilities needed by existing flows.
 - EVM v1 implements account configuration, signer authority, and proposal
-  capabilities only.
+  capabilities only when the `evm` feature is enabled.
 - Unsupported EVM delta/state capabilities return explicit errors.
 
 ## 7. State Transitions

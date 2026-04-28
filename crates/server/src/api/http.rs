@@ -1,4 +1,5 @@
 use crate::delta_object::DeltaObject;
+use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetDeltaProposalsParams,
@@ -16,6 +17,8 @@ use serde::{Deserialize, Serialize};
 pub struct ConfigureRequest {
     pub account_id: String,
     pub auth: Auth,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_config: Option<NetworkConfig>,
     pub initial_state: serde_json::Value,
 }
 
@@ -24,6 +27,9 @@ impl From<ConfigureRequest> for ConfigureAccountParams {
         Self {
             account_id: req.account_id,
             auth: req.auth,
+            network_config: req
+                .network_config
+                .unwrap_or_else(NetworkConfig::miden_default),
             initial_state: req.initial_state,
             // Credential will be set from AuthHeader
             credential: Credentials::signature(String::new(), String::new(), 0),
@@ -74,11 +80,14 @@ pub struct ConfigureResponse {
     pub message: String,
     pub ack_pubkey: Option<String>,
     pub ack_commitment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
 }
 
 #[derive(Serialize)]
 pub struct ErrorResponse {
     pub success: bool,
+    pub code: &'static str,
     pub error: String,
 }
 
@@ -87,7 +96,7 @@ pub async fn configure(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<ConfigureRequest>,
 ) -> (StatusCode, Json<ConfigureResponse>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&payload) {
+    let request_payload = match request_payload_from_serializable(&payload) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -97,13 +106,14 @@ pub async fn configure(
                     message: e,
                     ack_pubkey: None,
                     ack_commitment: None,
+                    code: None,
                 }),
             );
         }
     };
 
     let mut params = ConfigureAccountParams::from(payload);
-    params.credential = credentials.with_request_payload(request_payload);
+    params.credential = request_payload.apply_to(credentials);
 
     match services::configure_account(&state, params).await {
         Ok(response) => (
@@ -113,15 +123,17 @@ pub async fn configure(
                 message: format!("Account '{}' configured successfully", response.account_id),
                 ack_pubkey: Some(response.ack_pubkey),
                 ack_commitment: Some(response.ack_commitment),
+                code: None,
             }),
         ),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            e.http_status(),
             Json(ConfigureResponse {
                 success: false,
                 message: e.to_string(),
                 ack_pubkey: None,
                 ack_commitment: None,
+                code: Some(e.code()),
             }),
         ),
     }
@@ -132,7 +144,7 @@ pub async fn push_delta(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<serde_json::Value>,
 ) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match AuthRequestPayload::from_json_value(&payload) {
+    let request_payload = match request_payload_from_value(&payload) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -160,7 +172,7 @@ pub async fn push_delta(
 
     let params = PushDeltaParams {
         delta,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::push_delta(&state, params).await {
@@ -180,7 +192,7 @@ pub async fn get_delta(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
 ) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+    let request_payload = match request_payload_from_serializable(&query) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -196,7 +208,7 @@ pub async fn get_delta(
     let params = GetDeltaParams {
         account_id: query.account_id,
         nonce: query.nonce,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::get_delta(&state, params).await {
@@ -216,7 +228,7 @@ pub async fn get_delta_since(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
 ) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+    let request_payload = match request_payload_from_serializable(&query) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -232,7 +244,7 @@ pub async fn get_delta_since(
     let params = GetDeltaSinceParams {
         account_id: query.account_id,
         from_nonce: query.nonce,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::get_delta_since(&state, params).await {
@@ -252,7 +264,7 @@ pub async fn get_state(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<StateQuery>,
 ) -> (StatusCode, Json<StateObject>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+    let request_payload = match request_payload_from_serializable(&query) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -267,7 +279,7 @@ pub async fn get_state(
 
     let params = GetStateParams {
         account_id: query.account_id,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::get_state(&state, params).await {
@@ -327,7 +339,7 @@ pub async fn push_delta_proposal(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<DeltaProposalRequest>,
 ) -> (StatusCode, Json<DeltaProposalResponse>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&payload) {
+    let request_payload = match request_payload_from_serializable(&payload) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -347,7 +359,7 @@ pub async fn push_delta_proposal(
         account_id: payload.account_id,
         nonce: payload.nonce,
         delta_payload: payload.delta_payload,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::push_delta_proposal(&state, params).await {
@@ -376,7 +388,7 @@ pub async fn get_delta_proposals(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<ProposalQuery>,
 ) -> (StatusCode, Json<ProposalsResponse>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+    let request_payload = match request_payload_from_serializable(&query) {
         Ok(request_payload) => request_payload,
         Err(_e) => {
             return (
@@ -390,7 +402,7 @@ pub async fn get_delta_proposals(
 
     let params = GetDeltaProposalsParams {
         account_id: query.account_id,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::get_delta_proposals(&state, params).await {
@@ -414,7 +426,7 @@ pub async fn get_delta_proposal(
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<ProposalItemQuery>,
 ) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&query) {
+    let request_payload = match request_payload_from_serializable(&query) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -430,7 +442,7 @@ pub async fn get_delta_proposal(
     let params = GetDeltaProposalParams {
         account_id: query.account_id,
         commitment: query.commitment,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::get_delta_proposal(&state, params).await {
@@ -450,7 +462,7 @@ pub async fn sign_delta_proposal(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<SignProposalRequest>,
 ) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match AuthRequestPayload::from_json_serializable(&payload) {
+    let request_payload = match request_payload_from_serializable(&payload) {
         Ok(request_payload) => request_payload,
         Err(e) => {
             return (
@@ -467,7 +479,7 @@ pub async fn sign_delta_proposal(
         account_id: payload.account_id,
         commitment: payload.commitment,
         signature: payload.signature,
-        credentials: credentials.with_request_payload(request_payload),
+        credentials: request_payload.apply_to(credentials),
     };
 
     match services::sign_delta_proposal(&state, params).await {
@@ -479,6 +491,59 @@ pub async fn sign_delta_proposal(
                 ..Default::default()
             }),
         ),
+    }
+}
+
+struct RequestPayloadParts {
+    payload: AuthRequestPayload,
+    bytes: Vec<u8>,
+}
+
+impl RequestPayloadParts {
+    fn apply_to(self, credentials: Credentials) -> Credentials {
+        credentials
+            .with_request_payload(self.payload)
+            .with_request_payload_bytes(self.bytes)
+    }
+}
+
+fn request_payload_from_serializable<T: Serialize>(
+    value: &T,
+) -> Result<RequestPayloadParts, String> {
+    let json = serde_json::to_value(value)
+        .map_err(|e| format!("Failed to convert payload to JSON value: {e}"))?;
+    request_payload_from_value(&json)
+}
+
+fn request_payload_from_value(value: &serde_json::Value) -> Result<RequestPayloadParts, String> {
+    let canonical = canonicalize_json(value);
+    let bytes =
+        serde_json::to_vec(&canonical).map_err(|e| format!("Failed to serialize JSON: {e}"))?;
+    Ok(RequestPayloadParts {
+        payload: AuthRequestPayload::from_bytes(&bytes),
+        bytes,
+    })
+}
+
+fn canonicalize_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys = map.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+
+            let mut sorted = serde_json::Map::with_capacity(map.len());
+            for key in keys {
+                let item = map
+                    .get(&key)
+                    .expect("key collected from map must always exist");
+                sorted.insert(key, canonicalize_json(item));
+            }
+            serde_json::Value::Object(sorted)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonicalize_json).collect())
+        }
+        _ => value.clone(),
     }
 }
 
@@ -522,6 +587,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments,
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
@@ -615,6 +681,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment],
             },
+            network_config: None,
             initial_state: account_json,
         };
 

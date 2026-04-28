@@ -23,6 +23,12 @@ pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetSt
     tracing::info!(account_id = %params.account_id, "Getting state");
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
+    if resolved.metadata.network_config.is_evm() {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "get_state".to_string(),
+        });
+    }
 
     let mut account_state = resolved
         .storage

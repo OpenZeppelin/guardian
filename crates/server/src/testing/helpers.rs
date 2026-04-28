@@ -244,6 +244,14 @@ pub fn create_miden_falcon_rpo_auth(cosigner_commitments: Vec<String>) -> AuthCo
     }
 }
 
+pub fn create_miden_network_config() -> NetworkConfig {
+    NetworkConfig {
+        network_type: Some(network_config::NetworkType::Miden(MidenNetworkConfig {
+            network_type: "local".to_string(),
+        })),
+    }
+}
+
 pub fn create_router(state: AppState) -> axum::Router {
     use crate::api::http;
     let dashboard_routes = axum::Router::new()

@@ -185,6 +185,7 @@ mod tests {
             auth: crate::metadata::auth::Auth::MidenFalconRpo {
                 cosigner_commitments: vec![],
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,

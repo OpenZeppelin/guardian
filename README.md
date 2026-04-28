@@ -25,6 +25,7 @@ See the [Specification](spec/index.md) for an overview of the system design. It 
 #### TypeScript Packages
 
 - **[packages/guardian-client](packages/guardian-client/README.md)** - TypeScript HTTP client for GUARDIAN server
+- **[packages/guardian-evm-client](packages/guardian-evm-client/README.md)** - TypeScript EVM client for GUARDIAN proposal workflows
 - **[packages/guardian-operator-client](packages/guardian-operator-client/README.md)** - Lean TypeScript HTTP client for operator dashboard auth and account APIs
 - **[packages/miden-multisig-client](packages/miden-multisig-client/README.md)** - TypeScript SDK for Miden multisig accounts with GUARDIAN integration
 
@@ -51,6 +52,7 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
 - `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
 - `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
+- `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` - Optional comma-separated EVM chain allowlist used when the server is built with `--features evm`
 
 ### Running
 
@@ -58,6 +60,14 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 
 ```bash
 cargo run --bin server
+```
+
+EVM proposal support is feature-gated. Default builds expose the schema but
+reject EVM config/auth/proposal requests with `evm_support_disabled`.
+
+```bash
+GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337 \
+cargo run -p guardian-server --features evm --bin server
 ```
 
 #### Running with Docker Compose
@@ -119,11 +129,13 @@ cargo test -p guardian-server --features e2e
 ```bash
 # Install dependencies
 cd packages/guardian-client && npm install
+cd packages/guardian-evm-client && npm install
 cd packages/guardian-operator-client && npm install
 cd packages/miden-multisig-client && npm install
 
 # Run tests
 cd packages/guardian-client && npm test
+cd packages/guardian-evm-client && npm test
 cd packages/guardian-operator-client && npm test
 cd packages/miden-multisig-client && npm test
 ```

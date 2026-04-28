@@ -23,6 +23,8 @@ pub enum Auth {
     MidenFalconRpo { cosigner_commitments: Vec<String> },
     /// Miden ECDSA secp256k1 signature scheme
     MidenEcdsa { cosigner_commitments: Vec<String> },
+    /// EVM ECDSA account signer snapshot
+    EvmEcdsa { signers: Vec<String> },
 }
 
 impl Auth {
@@ -30,6 +32,7 @@ impl Auth {
         match self {
             Auth::MidenFalconRpo { .. } => SignatureScheme::Falcon,
             Auth::MidenEcdsa { .. } => SignatureScheme::Ecdsa,
+            Auth::EvmEcdsa { .. } => SignatureScheme::Ecdsa,
         }
     }
 
@@ -57,6 +60,7 @@ impl Auth {
                 let commitment = public_key.to_commitment();
                 Ok(format!("0x{}", hex::encode(commitment.to_bytes())))
             }
+            Auth::EvmEcdsa { .. } => crate::metadata::network::normalize_evm_address(pubkey_hex),
         }
     }
 
@@ -67,6 +71,9 @@ impl Auth {
             },
             Auth::MidenEcdsa { .. } => Auth::MidenEcdsa {
                 cosigner_commitments,
+            },
+            Auth::EvmEcdsa { .. } => Auth::EvmEcdsa {
+                signers: cosigner_commitments,
             },
         }
     }
@@ -124,6 +131,10 @@ impl Auth {
                     credentials.request_payload(),
                 )
             }
+            Auth::EvmEcdsa { .. } => {
+                let _ = credentials;
+                Err("EVM request auth requires network-aware verification".to_string())
+            }
         }
     }
 }
@@ -138,6 +149,13 @@ impl TryFrom<crate::api::grpc::guardian::AuthConfig> for Auth {
             }),
             Some(auth_config::AuthType::MidenEcdsa(miden_auth)) => Ok(Auth::MidenEcdsa {
                 cosigner_commitments: miden_auth.cosigner_commitments,
+            }),
+            Some(auth_config::AuthType::EvmEcdsa(evm_auth)) => Ok(Auth::EvmEcdsa {
+                signers: evm_auth
+                    .signers
+                    .into_iter()
+                    .map(|signer| crate::metadata::network::normalize_evm_address(&signer))
+                    .collect::<Result<Vec<_>, _>>()?,
             }),
             None => {
                 tracing::error!("Auth type not specified in AuthConfig");
