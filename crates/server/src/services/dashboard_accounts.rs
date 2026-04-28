@@ -185,6 +185,7 @@ fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
         | Auth::MidenEcdsa {
             cosigner_commitments,
         } => cosigner_commitments.clone(),
+        Auth::EvmEcdsa { signers } => signers.clone(),
     };
     signer_ids.sort();
     signer_ids.dedup();

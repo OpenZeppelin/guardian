@@ -1,5 +1,6 @@
 use crate::error::{GuardianError, Result};
 use crate::metadata::AccountMetadata;
+use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -8,6 +9,7 @@ use crate::state_object::StateObject;
 pub struct ConfigureAccountParams {
     pub account_id: String,
     pub auth: Auth,
+    pub network_config: NetworkConfig,
     pub initial_state: serde_json::Value,
     pub credential: Credentials,
 }
@@ -29,6 +31,19 @@ pub async fn configure_account(
     params: ConfigureAccountParams,
 ) -> Result<ConfigureAccountResult> {
     tracing::info!(account_id = %params.account_id, "Configuring account");
+
+    let network_config = params
+        .network_config
+        .validate_for_account(&params.account_id)
+        .map_err(GuardianError::InvalidNetworkConfig)?;
+
+    if network_config.is_evm() {
+        return configure_evm_account(state, params, network_config).await;
+    }
+
+    if matches!(params.auth, Auth::EvmEcdsa { .. }) {
+        return Err(GuardianError::EvmSupportDisabled);
+    }
 
     let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
         tracing::error!(
@@ -120,6 +135,7 @@ pub async fn configure_account(
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
+        network_config,
         created_at,
         updated_at: now,
         has_pending_candidate: existing
@@ -142,6 +158,90 @@ pub async fn configure_account(
         account_id: params.account_id,
         ack_pubkey: state.ack.pubkey(&scheme),
         ack_commitment: state.ack.commitment(&scheme),
+    })
+}
+
+#[cfg(not(feature = "evm"))]
+async fn configure_evm_account(
+    _state: &AppState,
+    _params: ConfigureAccountParams,
+    _network_config: NetworkConfig,
+) -> Result<ConfigureAccountResult> {
+    Err(GuardianError::EvmSupportDisabled)
+}
+
+#[cfg(feature = "evm")]
+async fn configure_evm_account(
+    state: &AppState,
+    mut params: ConfigureAccountParams,
+    network_config: NetworkConfig,
+) -> Result<ConfigureAccountResult> {
+    if !matches!(params.auth, Auth::EvmEcdsa { .. }) {
+        return Err(GuardianError::InvalidNetworkConfig(
+            "EVM accounts require EvmEcdsa auth".to_string(),
+        ));
+    }
+
+    if !params
+        .initial_state
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        return Err(GuardianError::InvalidNetworkConfig(
+            "EVM initial_state must be an empty object".to_string(),
+        ));
+    }
+
+    let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
+        tracing::error!(
+            account_id = %params.account_id,
+            error = %e,
+            "Failed to check existing EVM account in configure_account"
+        );
+        GuardianError::StorageError(format!("Failed to check existing account: {e}"))
+    })?;
+
+    let signers = crate::evm::configure_evm_account(
+        &network_config,
+        &params.auth,
+        &params.account_id,
+        &params.credential,
+    )
+    .await?;
+    params.auth = Auth::EvmEcdsa { signers };
+
+    let now = state.clock.now_rfc3339();
+    let created_at = existing
+        .as_ref()
+        .map(|metadata| metadata.created_at.clone())
+        .unwrap_or_else(|| now.clone());
+
+    let metadata_entry = AccountMetadata {
+        account_id: params.account_id.clone(),
+        auth: params.auth,
+        network_config,
+        created_at,
+        updated_at: now,
+        has_pending_candidate: existing
+            .as_ref()
+            .map(|metadata| metadata.has_pending_candidate)
+            .unwrap_or(false),
+        last_auth_timestamp: existing.and_then(|metadata| metadata.last_auth_timestamp),
+    };
+
+    state.metadata.set(metadata_entry).await.map_err(|e| {
+        tracing::error!(
+            account_id = %params.account_id,
+            error = %e,
+            "Failed to store EVM metadata"
+        );
+        GuardianError::StorageError(format!("Failed to store metadata: {e}"))
+    })?;
+
+    Ok(ConfigureAccountResult {
+        account_id: params.account_id,
+        ack_pubkey: String::new(),
+        ack_commitment: String::new(),
     })
 }
 
@@ -209,6 +309,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment_hex],
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             initial_state,
             credential,
         };
@@ -258,6 +359,7 @@ mod tests {
         let request_body = serde_json::json!({
             "account_id": account_id_hex,
             "auth": auth.clone(),
+            "network_config": crate::metadata::NetworkConfig::miden_default(),
             "initial_state": initial_state.clone(),
         });
         let request_payload = AuthRequestPayload::from_json_serializable(&request_body).unwrap();
@@ -270,6 +372,7 @@ mod tests {
         let params = ConfigureAccountParams {
             account_id: account_id_hex.to_string(),
             auth,
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             initial_state,
             credential,
         };
@@ -298,6 +401,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment_hex.clone()],
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
@@ -326,6 +430,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment_hex],
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             initial_state,
             credential,
         };
@@ -361,6 +466,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment_hex],
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             initial_state: serde_json::json!({"balance": 100}),
             credential,
         };
@@ -401,6 +507,7 @@ mod tests {
             auth: Auth::MidenFalconRpo {
                 cosigner_commitments: vec![commitment_hex],
             },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             initial_state: serde_json::json!({"balance": 100}),
             credential,
         };

@@ -1,4 +1,4 @@
-use crate::metadata::{AccountMetadata, Auth, MetadataStore};
+use crate::metadata::{AccountMetadata, Auth, MetadataStore, NetworkConfig};
 use crate::schema::account_metadata;
 use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
@@ -28,6 +28,7 @@ impl PostgresMetadataStore {
 struct MetadataRow {
     account_id: String,
     auth: serde_json::Value,
+    network_config: serde_json::Value,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
@@ -40,6 +41,7 @@ struct MetadataRow {
 struct NewMetadata<'a> {
     account_id: &'a str,
     auth: serde_json::Value,
+    network_config: serde_json::Value,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
@@ -52,10 +54,14 @@ impl TryFrom<MetadataRow> for AccountMetadata {
     fn try_from(row: MetadataRow) -> Result<Self, Self::Error> {
         let auth: Auth =
             serde_json::from_value(row.auth).map_err(|e| format!("Failed to parse auth: {e}"))?;
+        let network_config: NetworkConfig = serde_json::from_value(row.network_config)
+            .map_err(|e| format!("Failed to parse network_config: {e}"))?;
 
         Ok(AccountMetadata {
             account_id: row.account_id,
             auth,
+            network_config,
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
             has_pending_candidate: row.has_pending_candidate,
@@ -105,10 +111,13 @@ impl MetadataStore for PostgresMetadataStore {
 
         let auth_json = serde_json::to_value(&metadata.auth)
             .map_err(|e| format!("Failed to serialize auth: {e}"))?;
+        let network_config_json = serde_json::to_value(&metadata.network_config)
+            .map_err(|e| format!("Failed to serialize network_config: {e}"))?;
 
         let new_metadata = NewMetadata {
             account_id: &metadata.account_id,
             auth: auth_json.clone(),
+            network_config: network_config_json.clone(),
             created_at,
             updated_at,
             has_pending_candidate: metadata.has_pending_candidate,
@@ -121,6 +130,7 @@ impl MetadataStore for PostgresMetadataStore {
             .do_update()
             .set((
                 account_metadata::auth.eq(&auth_json),
+                account_metadata::network_config.eq(&network_config_json),
                 account_metadata::updated_at.eq(updated_at),
                 account_metadata::has_pending_candidate.eq(metadata.has_pending_candidate),
                 account_metadata::last_auth_timestamp.eq(metadata.last_auth_timestamp),

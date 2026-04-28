@@ -1,6 +1,7 @@
 use crate::testing::helpers::{
-    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_signed_request_with_auth,
-    create_test_app_state, load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
+    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_miden_network_config,
+    create_signed_request_with_auth, create_test_app_state,
+    load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
 };
 use tonic::Request;
 
@@ -24,6 +25,7 @@ async fn test_grpc_push_delta_proposal_success() {
         auth: Some(create_miden_falcon_rpo_auth(vec![
             signer.commitment_hex.clone(),
         ])),
+        network_config: Some(create_miden_network_config()),
         initial_state,
     };
 
@@ -89,6 +91,7 @@ async fn test_grpc_get_delta_proposals_empty() {
         auth: Some(create_miden_falcon_rpo_auth(vec![
             signer.commitment_hex.clone(),
         ])),
+        network_config: Some(create_miden_network_config()),
         initial_state,
     };
 
@@ -129,6 +132,7 @@ async fn test_grpc_get_delta_proposals_with_proposals() {
         auth: Some(create_miden_falcon_rpo_auth(vec![
             signer.commitment_hex.clone(),
         ])),
+        network_config: Some(create_miden_network_config()),
         initial_state,
     };
 
@@ -200,6 +204,7 @@ async fn test_grpc_get_delta_proposal_by_commitment() {
         auth: Some(create_miden_falcon_rpo_auth(vec![
             signer.commitment_hex.clone(),
         ])),
+        network_config: Some(create_miden_network_config()),
         initial_state,
     };
 
@@ -265,6 +270,7 @@ async fn test_grpc_sign_delta_proposal_not_found() {
         auth: Some(create_miden_falcon_rpo_auth(vec![
             signer.commitment_hex.clone(),
         ])),
+        network_config: Some(create_miden_network_config()),
         initial_state,
     };
 
@@ -321,6 +327,7 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
         auth: Some(create_miden_falcon_rpo_auth(vec![
             authorized_signer.commitment_hex.clone(),
         ])),
+        network_config: Some(create_miden_network_config()),
         initial_state,
     };
 

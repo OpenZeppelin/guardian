@@ -25,6 +25,12 @@ pub async fn get_delta(state: &AppState, params: GetDeltaParams) -> Result<GetDe
     tracing::info!(account_id = %params.account_id, nonce = params.nonce, "Getting delta");
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
+    if resolved.metadata.network_config.is_evm() {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "get_delta".to_string(),
+        });
+    }
 
     let delta = resolved
         .storage

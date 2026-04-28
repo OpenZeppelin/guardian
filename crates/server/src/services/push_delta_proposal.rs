@@ -34,6 +34,22 @@ pub async fn push_delta_proposal(
     state: &AppState,
     params: PushDeltaProposalParams,
 ) -> Result<PushDeltaProposalResult> {
+    #[cfg(not(feature = "evm"))]
+    if crate::metadata::network::is_evm_account_id(&params.account_id)
+        || params
+            .delta_payload
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind == "evm")
+    {
+        return Err(GuardianError::EvmSupportDisabled);
+    }
+
+    #[cfg(feature = "evm")]
+    if crate::evm::is_evm_payload(&params.delta_payload) {
+        return push_evm_delta_proposal(state, params).await;
+    }
+
     let PushDeltaProposalParams {
         account_id,
         nonce,
@@ -44,6 +60,11 @@ pub async fn push_delta_proposal(
     let delta_payload = normalize_payload(delta_payload)?;
 
     let resolved = resolve_account(state, &account_id, &credentials).await?;
+    if resolved.metadata.network_config.is_evm() {
+        return Err(GuardianError::InvalidEvmProposal(
+            "EVM accounts require EVM proposal payloads".to_string(),
+        ));
+    }
 
     // Fetch current state to validate delta
     let current_state = resolved
@@ -201,6 +222,99 @@ pub async fn push_delta_proposal(
     })
 }
 
+#[cfg(feature = "evm")]
+async fn push_evm_delta_proposal(
+    state: &AppState,
+    params: PushDeltaProposalParams,
+) -> Result<PushDeltaProposalResult> {
+    let PushDeltaProposalParams {
+        account_id,
+        nonce,
+        delta_payload,
+        credentials,
+    } = params;
+
+    let normalized = crate::evm::normalize_evm_proposal_payload(delta_payload)?;
+    let resolved = resolve_account(state, &account_id, &credentials).await?;
+    if !resolved.metadata.network_config.is_evm() {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "miden".to_string(),
+            operation: "evm_proposal".to_string(),
+        });
+    }
+
+    let commitment =
+        crate::evm::compute_proposal_id(&resolved.metadata.network_config, &normalized)?;
+    if let Ok(existing) = resolved
+        .storage
+        .pull_delta_proposal(&account_id, &commitment)
+        .await
+    {
+        if existing.status.is_pending() {
+            return Ok(PushDeltaProposalResult {
+                delta: existing,
+                commitment,
+            });
+        }
+    }
+
+    let pending_proposals = resolved
+        .storage
+        .pull_pending_proposals(&account_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to load pending EVM proposals in push_delta_proposal"
+            );
+            GuardianError::StorageError(format!("Failed to load pending proposals: {e}"))
+        })?;
+
+    let max_pending_proposals = max_pending_proposals_per_account();
+    if pending_proposals.len() >= max_pending_proposals {
+        return Err(GuardianError::PendingProposalsLimit {
+            limit: max_pending_proposals,
+        });
+    }
+
+    let proposer_id = match &credentials {
+        Credentials::Signature { pubkey, .. } => resolved
+            .metadata
+            .auth
+            .compute_signer_commitment(pubkey)
+            .map_err(GuardianError::AuthenticationFailed)?,
+    };
+
+    let timestamp = state.clock.now_rfc3339();
+    let delta_proposal = DeltaObject {
+        account_id: account_id.clone(),
+        nonce,
+        prev_commitment: String::new(),
+        new_commitment: None,
+        delta_payload: normalized.payload,
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: DeltaStatus::Pending {
+            timestamp,
+            proposer_id,
+            cosigner_sigs: Vec::new(),
+        },
+    };
+
+    resolved
+        .storage
+        .submit_delta_proposal(&commitment, &delta_proposal)
+        .await
+        .map_err(GuardianError::StorageError)?;
+
+    Ok(PushDeltaProposalResult {
+        delta: delta_proposal,
+        commitment,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +352,7 @@ mod tests {
         AccountMetadata {
             account_id,
             auth,
+            network_config: crate::metadata::NetworkConfig::miden_default(),
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,

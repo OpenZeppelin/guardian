@@ -24,6 +24,7 @@ pub enum Credentials {
         signature: String,
         timestamp: i64,
         request_payload: AuthRequestPayload,
+        request_payload_bytes: Vec<u8>,
     },
 }
 
@@ -34,6 +35,7 @@ impl Credentials {
             signature,
             timestamp,
             request_payload: AuthRequestPayload::empty(),
+            request_payload_bytes: Vec::new(),
         }
     }
 
@@ -66,11 +68,32 @@ impl Credentials {
         self
     }
 
+    pub fn with_request_payload_bytes(mut self, request_payload_bytes: Vec<u8>) -> Self {
+        match &mut self {
+            Self::Signature {
+                request_payload_bytes: payload,
+                ..
+            } => {
+                *payload = request_payload_bytes;
+            }
+        }
+        self
+    }
+
     pub fn request_payload(&self) -> &AuthRequestPayload {
         match self {
             Self::Signature {
                 request_payload, ..
             } => request_payload,
+        }
+    }
+
+    pub fn request_payload_bytes(&self) -> &[u8] {
+        match self {
+            Self::Signature {
+                request_payload_bytes,
+                ..
+            } => request_payload_bytes,
         }
     }
 }
@@ -171,11 +194,13 @@ mod tests {
                 signature,
                 timestamp,
                 request_payload,
+                request_payload_bytes,
             } => {
                 assert_eq!(pubkey, "pubkey123");
                 assert_eq!(signature, "sig456");
                 assert_eq!(timestamp, 1700000000000);
                 assert_eq!(request_payload, AuthRequestPayload::empty());
+                assert!(request_payload_bytes.is_empty());
             }
         }
     }

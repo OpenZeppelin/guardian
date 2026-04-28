@@ -26,6 +26,12 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
+    if resolved.metadata.network_config.is_evm() {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "push_delta".to_string(),
+        });
+    }
 
     let current_state = resolved
         .storage
