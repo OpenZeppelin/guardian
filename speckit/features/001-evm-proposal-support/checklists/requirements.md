@@ -3,7 +3,7 @@
 **Purpose**: Validate that the feature requirements are complete, clear, and
 ready for planning and implementation  
 **Created**: 2026-03-18  
-**Feature**: [spec.md](/Users/marcos/repos/private-state-manager/speckit/features/001-evm-proposal-support/spec.md)
+**Feature**: [spec.md](/Users/marcos/repos/guardian/speckit/features/001-evm-proposal-support/spec.md)
 
 ## Requirement Completeness
 
@@ -24,6 +24,7 @@ ready for planning and implementation
 - [x] CHK009 Is fallback behavior defined explicitly when online/offline or alternate-path execution exists? [Clarity] [Contract / Transport Impact] [Functional Requirements]
 - [x] CHK010 Are replay protection, signer handling, or duplicate-signature edge cases addressed when relevant? [Edge Case] [User Story 2] [Functional Requirements] [Edge Cases]
 - [x] CHK011 Are append-only or namespace invariants preserved or intentionally changed with justification? [Consistency] [Data / Lifecycle Impact]
+- [x] CHK015 Are EVM feature-gate semantics documented for default and enabled servers? [Clarity] [Functional Requirements] [Contract / Transport Impact]
 
 ## Validation & Documentation Readiness
 

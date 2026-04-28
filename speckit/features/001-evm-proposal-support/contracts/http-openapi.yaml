@@ -5,7 +5,8 @@ info:
   description: >
     Draft HTTP contract changes for account-level network configuration and EVM
     proposal support based on OpenZeppelin ERC7579Multisig as the signer and
-    threshold read model.
+    threshold read model. EVM support is feature-gated; default servers reject
+    EVM-shaped requests with evm_support_disabled before persistence.
 paths:
   /configure:
     post:
@@ -146,7 +147,7 @@ components:
           type: string
           description: >
             Canonical account identifier. For EVM this is
-            `evm:<chain_id>:<normalized_contract_address>`.
+            `evm:<chain_id>:<normalized_account_address>`.
         auth:
           $ref: '#/components/schemas/AuthConfig'
         network_config:
@@ -187,7 +188,7 @@ components:
           type: string
           description: >
             Stable application error code. Expected EVM-related values include
-            `unsupported_for_network`, `invalid_network_config`,
+            `evm_support_disabled`, `unsupported_for_network`, `invalid_network_config`,
             `rpc_unavailable`, `rpc_validation_failed`,
             `signer_not_authorized`, `invalid_evm_proposal`,
             `invalid_proposal_signature`, and `proposal_already_signed`.
@@ -211,10 +212,14 @@ components:
           enum: [local, devnet, testnet]
     EvmNetworkConfig:
       type: object
+      description: >
+        Accepted only when the server-side evm feature is enabled. Default
+        servers reject this config with evm_support_disabled before persistence.
       required:
         - kind
         - chain_id
-        - contract_address
+        - account_address
+        - multisig_module_address
         - rpc_endpoint
       properties:
         kind:
@@ -223,9 +228,16 @@ components:
         chain_id:
           type: integer
           minimum: 1
-        contract_address:
+        account_address:
           type: string
-          description: Normalized `0x`-prefixed lowercase 20-byte hex address.
+          description: >
+            Normalized `0x`-prefixed lowercase 20-byte account address used for
+            Guardian identity and EIP-712 verifyingContract.
+        multisig_module_address:
+          type: string
+          description: >
+            Normalized `0x`-prefixed lowercase 20-byte ERC-7579 multisig module
+            address used for RPC signer and threshold reads.
         rpc_endpoint:
           type: string
           format: uri
@@ -260,6 +272,8 @@ components:
                 type: string
     EvmEcdsaAuth:
       type: object
+      description: >
+        Accepted only when the server-side evm feature is enabled.
       required: [EvmEcdsa]
       properties:
         EvmEcdsa:
@@ -285,7 +299,7 @@ components:
           type: string
           description: >
             Canonical account identifier. For EVM this is
-            `evm:<chain_id>:<normalized_contract_address>`.
+            `evm:<chain_id>:<normalized_account_address>`.
         nonce:
           type: integer
           minimum: 0
@@ -314,6 +328,8 @@ components:
           $ref: '#/components/schemas/ProposalMetadata'
     EvmProposalPayload:
       type: object
+      description: >
+        Accepted only when the server-side evm feature is enabled.
       required:
         - kind
         - mode
@@ -392,7 +408,7 @@ components:
           type: string
           description: >
             Deterministic hash-based proposal identifier derived from
-            `(chain_id, contract_address, mode, keccak256(execution_calldata))`.
+            `(chain_id, account_address, mode, keccak256(execution_calldata))`.
     ProposalsResponse:
       type: object
       required: [proposals]
@@ -412,7 +428,7 @@ components:
           type: string
           description: >
             Canonical account identifier. For EVM this is
-            `evm:<chain_id>:<normalized_contract_address>`.
+            `evm:<chain_id>:<normalized_account_address>`.
         commitment:
           type: string
         signature:
