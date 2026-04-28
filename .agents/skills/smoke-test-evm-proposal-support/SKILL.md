@@ -15,7 +15,7 @@ Read current source before assuming labels, endpoints, or response shapes:
 - `examples/evm-smoke-web/src/App.tsx`
 - `crates/server/src/evm.rs`
 - `crates/server/src/services/configure_account.rs`
-- `crates/server/src/services/create_delta_proposal.rs`
+- `crates/server/src/services/push_delta_proposal.rs`
 - `crates/server/src/services/sign_delta_proposal.rs`
 
 Run the focused checks before manual browser work:
@@ -38,7 +38,7 @@ anvil --host 127.0.0.1 --port 8545
 cast chain-id --rpc-url http://127.0.0.1:8545
 ```
 
-Start Guardian with the EVM feature and isolated runtime state. Prefer `GUARDIAN_NETWORK_TYPE=MidenTestnet` when no local Miden node is running; `MidenLocal` requires a node at `http://localhost:57291`.
+Start Guardian with the EVM feature and isolated runtime state. Set `GUARDIAN_NETWORK_TYPE=MidenTestnet` when no local Miden node is running; the EVM smoke still targets `EVM_CHAIN_ID`, but Guardian initializes its default Miden client at startup and `MidenLocal` requires a node at `http://localhost:57291`.
 
 ```bash
 SMOKE_DIR=$(mktemp -d /tmp/guardian-evm-smoke.XXXXXX)

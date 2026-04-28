@@ -839,6 +839,7 @@ cargo test -p guardian-server --lib
 
 # TypeScript
 cd packages/guardian-client && npm test
+cd packages/guardian-evm-client && npm test
 cd packages/miden-multisig-client && npm test
 ```
 
@@ -846,6 +847,7 @@ cd packages/miden-multisig-client && npm test
 
 ```bash
 cd packages/guardian-client && npm run build
+cd packages/guardian-evm-client && npm run build
 cd packages/miden-multisig-client && npm run build
 ```
 
@@ -862,6 +864,7 @@ Update the version in these files:
 | `crates/client/Cargo.toml` | `guardian-shared` dep version | - |
 | `crates/miden-multisig-client/Cargo.toml` | `guardian-client`, `guardian-shared`, `miden-confidential-contracts` dep versions | - |
 | `packages/guardian-client/package.json` | `version` | - |
+| `packages/guardian-evm-client/package.json` | `version` | - |
 | `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/guardian-client` dep version | - |
 
 The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have their own independent versions and are not published.
@@ -889,12 +892,14 @@ Wait for each step to finish before proceeding to the next (crates.io index need
 Publish in dependency order:
 
 ```bash
-# 1. Build both packages
+# 1. Build TypeScript packages
 cd packages/guardian-client && npm run build
+cd packages/guardian-evm-client && npm run build
 cd packages/miden-multisig-client && npm run build
 
-# 2. Publish guardian-client first (no internal deps)
+# 2. Publish base clients first (no internal deps)
 cd packages/guardian-client && npm publish --access public
+cd packages/guardian-evm-client && npm publish --access public
 
 # 3. Publish miden-multisig-client (depends on guardian-client)
 cd packages/miden-multisig-client && npm publish --access public

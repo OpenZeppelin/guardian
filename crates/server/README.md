@@ -37,6 +37,10 @@ let builder = ServerBuilder::new()
 
 Requests exceeding this limit receive a 413 Payload Too Large response.
 
+#### Feature-Gated EVM Support
+
+- `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` - Optional comma-separated EVM chain allowlist used when the server is built with `--features evm`
+
 #### Operator Dashboard
 
 - `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` - Local JSON file containing serialized Falcon public keys allowed to authenticate as dashboard operators
@@ -84,6 +88,17 @@ file path or secret ID stays the same.
 Each account has:
 - `account_id` - Network-specific identifier
 - `auth` - Auth type with authorization data (e.g., cosigner public keys)
+- `network_config` - Network-specific runtime configuration. Miden is the default when omitted. EVM accounts use `evm:<chain_id>:<account_address>` account IDs and split identity `account_address` from `multisig_module_address`.
+
+EVM support is feature-gated. Default builds expose EVM-shaped schema variants
+but reject EVM config/auth/proposal requests with stable code
+`evm_support_disabled` before storage mutation. Run with the `evm` feature for
+local EVM proposal coordination:
+
+```bash
+GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337 \
+cargo run -p guardian-server --features evm --bin server
+```
 
 ### Storage Backends
 
@@ -248,15 +263,15 @@ ServerBuilder::new()
 #### HTTP REST API (Port 3000)
 
 - **POST** `/configure` - Configure a new account with initial state
-- **POST** `/delta` - Submit a new delta for an account
+- **POST** `/delta` - Submit a new Miden delta for an account
 - **GET** `/delta?account_id=<id>&nonce=<n>` - Retrieve a specific delta by account ID and nonce
-- **GET** `/head?account_id=<id>` - Get the latest delta (highest nonce) for an account
 - **GET** `/state?account_id=<id>` - Retrieve the current state of an account
 - **GET** `/delta/since?account_id=<id>&nonce=<n>` - Retrieve the delta since a given nonce
 - **POST** `/delta/proposal` - Create a delta proposal for multi-party signing
-- **POST** `/delta/proposal/sign` - Add a signature to an existing delta proposal
+- **PUT** `/delta/proposal` - Add a signature to an existing delta proposal
 - **GET** `/delta/proposal?account_id=<id>` - List pending delta proposals for an account
 - **GET** `/delta/proposal/single?account_id=<id>&commitment=<c>` - Retrieve a pending proposal by commitment
+- **GET** `/pubkey?scheme=<falcon|ecdsa>` - Get the acknowledgement key commitment and optional raw public key
 - **GET** `/auth/challenge?commitment=<commitment>` - Issue an operator dashboard login challenge
 - **POST** `/auth/verify` - Verify an operator dashboard signature and set a session cookie
 - **POST** `/auth/logout` - Clear the operator dashboard session cookie and invalidate the server-side session
@@ -269,9 +284,9 @@ All methods are available through the `guardian.Guardian` service:
 - `Configure(ConfigureRequest) -> ConfigureResponse`
 - `PushDelta(PushDeltaRequest) -> PushDeltaResponse`
 - `GetDelta(GetDeltaRequest) -> GetDeltaResponse`
-- `GetDeltaHead(GetDeltaHeadRequest) -> GetDeltaHeadResponse`
 - `GetState(GetStateRequest) -> GetStateResponse`
 - `GetDeltaSince(GetDeltaSinceRequest) -> GetDeltaSinceResponse`
+- `GetPubkey(GetPubkeyRequest) -> GetPubkeyResponse`
 - `PushDeltaProposal(PushDeltaProposalRequest) -> PushDeltaProposalResponse`
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`
