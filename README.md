@@ -52,7 +52,8 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
 - `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
 - `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` - Maximum pending delta proposals per account (default: `20`)
-- `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` - Optional comma-separated EVM chain allowlist used when the server is built with `--features evm`
+- `GUARDIAN_EVM_RPC_URLS` - Comma-separated `chain_id=rpc_url` map for EVM proposal support
+- `GUARDIAN_EVM_ENTRYPOINTS` - Comma-separated `chain_id=entrypoint_address` map for EVM proposal finality checks
 
 ### Running
 
@@ -62,11 +63,13 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 cargo run --bin server
 ```
 
-EVM proposal support is feature-gated. Default builds expose the schema but
-reject EVM config/auth/proposal requests with `evm_support_disabled`.
+EVM proposal support is feature-gated. Default builds do not register EVM
+routes. EVM-enabled servers use the domain-separated `/evm/auth/*`,
+`/evm/accounts`, and `/evm/proposals*` routes.
 
 ```bash
-GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337 \
+GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
+GUARDIAN_EVM_ENTRYPOINTS=31337=0x... \
 cargo run -p guardian-server --features evm --bin server
 ```
 

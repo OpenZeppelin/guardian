@@ -31,7 +31,7 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```toml
 [dependencies]
 miden-multisig-client = "0.14.4"
-miden-client = "0.14.3"
+miden-client = "0.14.5"
 ```
 
 ### 5-Minute Example

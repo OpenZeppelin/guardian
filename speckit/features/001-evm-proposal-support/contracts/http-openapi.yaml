@@ -1,59 +1,124 @@
 openapi: 3.1.0
 info:
-  title: Guardian EVM Proposal Support Draft
-  version: 0.1.0-draft
+  title: Guardian Domain-Separated EVM Proposal Support
+  version: 0.2.0-draft
   description: >
-    Draft HTTP contract changes for account-level network configuration and EVM
-    proposal support based on OpenZeppelin ERC7579Multisig as the signer and
-    threshold read model. EVM support is feature-gated; default servers reject
-    EVM-shaped requests with evm_support_disabled before persistence.
+    Draft HTTP contract for feature-gated EVM account registration, wallet
+    sessions, and proposal coordination. Miden keeps the existing /configure,
+    /delta, /delta/proposal, and /state contract. EVM behavior is exposed only
+    under /evm/*. Default builds do not register this EVM HTTP surface.
 paths:
-  /configure:
-    post:
-      summary: Configure an account with per-account network settings
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ConfigureRequest'
+  /evm/auth/challenge:
+    get:
+      summary: Create an EIP-712 wallet login challenge
+      parameters:
+        - in: query
+          name: address
+          required: true
+          schema:
+            type: string
       responses:
         '200':
-          description: Account configured
+          description: Challenge created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConfigureResponse'
+                $ref: '#/components/schemas/EvmChallenge'
         '400':
-          description: Validation or authorization failure
+          description: EVM feature disabled or malformed address
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-  /delta/proposal:
+  /evm/auth/verify:
     post:
-      summary: Create a pending proposal for the configured account network
+      summary: Verify an EIP-712 challenge and set the EVM session cookie
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DeltaProposalRequest'
+              $ref: '#/components/schemas/EvmVerifyRequest'
       responses:
         '200':
-          description: Proposal stored
+          description: Session established
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: guardian_evm_session cookie
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeltaProposalResponse'
+                $ref: '#/components/schemas/EvmSession'
         '400':
-          description: Validation, authorization, or unsupported-operation failure
+          description: Feature disabled, challenge expired, challenge replayed, or invalid signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /evm/auth/logout:
+    post:
+      summary: Clear the EVM session cookie
+      responses:
+        '200':
+          description: Session cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: EVM feature disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /evm/accounts:
+    post:
+      summary: Register an EVM smart account for Guardian proposal coordination
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterEvmAccountRequest'
+      responses:
+        '200':
+          description: Account registered or refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterEvmAccountResponse'
+        '400':
+          description: Feature disabled, unsupported chain, missing chain config, or validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /evm/proposals:
+    post:
+      summary: Create an EVM proposal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEvmProposalRequest'
+      responses:
+        '200':
+          description: Proposal created or existing proposal returned idempotently
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvmProposal'
+        '400':
+          description: Feature disabled, unauthorized signer, duplicate signature, or invalid proposal
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      summary: List pending proposals for an account
+      summary: List pending EVM proposals for an account
       parameters:
         - in: query
           name: account_id
@@ -62,49 +127,28 @@ paths:
             type: string
       responses:
         '200':
-          description: Pending proposals
+          description: Pending proposals visible to the session signer
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProposalsResponse'
+                $ref: '#/components/schemas/ListEvmProposalsResponse'
         '400':
-          description: Authorization or unsupported-operation failure
+          description: Feature disabled, missing session, or unsupported account
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-    put:
-      summary: Append a signer signature to a pending proposal
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SignProposalRequest'
-      responses:
-        '200':
-          description: Proposal updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeltaObject'
-        '400':
-          description: Authorization, duplicate-signature, or unsupported-operation failure
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /delta/proposal/single:
+  /evm/proposals/{proposal_id}:
     get:
-      summary: Get a specific pending proposal
+      summary: Get one pending EVM proposal
       parameters:
-        - in: query
-          name: account_id
+        - in: path
+          name: proposal_id
           required: true
           schema:
             type: string
         - in: query
-          name: commitment
+          name: account_id
           required: true
           schema:
             type: string
@@ -114,387 +158,315 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeltaObject'
+                $ref: '#/components/schemas/EvmProposal'
         '404':
-          description: Proposal not found
+          description: Proposal not found or lazily removed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-  /delta:
+  /evm/proposals/{proposal_id}/approve:
     post:
-      summary: Push a canonicalizing delta
-      description: Unsupported for EVM accounts in this feature.
-  /delta/since:
+      summary: Add the session signer's ECDSA signature to an EVM proposal
+      parameters:
+        - in: path
+          name: proposal_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveEvmProposalRequest'
+      responses:
+        '200':
+          description: Proposal updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvmProposal'
+        '400':
+          description: Feature disabled, unauthorized signer, duplicate signature, or invalid signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /evm/proposals/{proposal_id}/executable:
     get:
-      summary: Get merged deltas since a nonce
-      description: Unsupported for EVM accounts in this feature.
-  /state:
+      summary: Export an executable EVM proposal once threshold is reached
+      parameters:
+        - in: path
+          name: proposal_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: account_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Executable proposal export
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutableEvmProposal'
+        '400':
+          description: Feature disabled or threshold not reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /evm/proposals/{proposal_id}/cancel:
+    post:
+      summary: Remove a pending EVM proposal
+      parameters:
+        - in: path
+          name: proposal_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelEvmProposalRequest'
+      responses:
+        '200':
+          description: Proposal removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Feature disabled, missing session, or unauthorized signer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /configure:
+    post:
+      summary: Miden account configuration
+      description: EVM accounts are registered through /evm/accounts.
+  /delta/proposal:
+    post:
+      summary: Miden proposal creation
+      description: EVM proposals are created through /evm/proposals.
     get:
-      summary: Get current state
-      description: Unsupported for EVM accounts in this feature.
+      summary: Miden proposal listing
+      description: EVM proposals are listed through /evm/proposals.
+    put:
+      summary: Miden proposal signing
+      description: EVM proposals are approved through /evm/proposals/{proposal_id}/approve.
+  /delta/proposal/single:
+    get:
+      summary: Miden proposal lookup
+      description: EVM proposals are fetched through /evm/proposals/{proposal_id}.
 components:
   schemas:
-    ConfigureRequest:
-      type: object
-      required:
-        - account_id
-        - auth
-        - network_config
-        - initial_state
-      properties:
-        account_id:
-          type: string
-          description: >
-            Canonical account identifier. For EVM this is
-            `evm:<chain_id>:<normalized_account_address>`.
-        auth:
-          $ref: '#/components/schemas/AuthConfig'
-        network_config:
-          $ref: '#/components/schemas/NetworkConfig'
-        initial_state:
-          description: >
-            Existing network-specific account initialization payload. Miden keeps
-            its current shape; EVM uses an empty object placeholder in v1 and
-            the server derives signer snapshot and threshold from RPC.
-          oneOf:
-            - type: object
-            - type: string
-    ConfigureResponse:
-      type: object
-      required:
-        - success
-        - message
-      properties:
-        success:
-          type: boolean
-        message:
-          type: string
-        ack_pubkey:
-          type: string
-        ack_commitment:
-          type: string
     ErrorResponse:
       type: object
-      required:
-        - success
-        - code
-        - error
+      required: [success, code, error]
       properties:
         success:
           type: boolean
           enum: [false]
         code:
           type: string
-          description: >
-            Stable application error code. Expected EVM-related values include
-            `evm_support_disabled`, `unsupported_for_network`, `invalid_network_config`,
-            `rpc_unavailable`, `rpc_validation_failed`,
-            `signer_not_authorized`, `invalid_evm_proposal`,
-            `invalid_proposal_signature`, and `proposal_already_signed`.
+          description: Stable application error code.
         error:
           type: string
-    NetworkConfig:
-      oneOf:
-        - $ref: '#/components/schemas/MidenNetworkConfig'
-        - $ref: '#/components/schemas/EvmNetworkConfig'
-    MidenNetworkConfig:
+    SuccessResponse:
       type: object
-      required:
-        - kind
-        - network_type
+      required: [success]
       properties:
-        kind:
-          type: string
-          enum: [miden]
-        network_type:
-          type: string
-          enum: [local, devnet, testnet]
-    EvmNetworkConfig:
+        success:
+          type: boolean
+          enum: [true]
+    EvmChallenge:
       type: object
-      description: >
-        Accepted only when the server-side evm feature is enabled. Default
-        servers reject this config with evm_support_disabled before persistence.
-      required:
-        - kind
-        - chain_id
-        - account_address
-        - multisig_module_address
-        - rpc_endpoint
+      required: [address, nonce, expires_at, typed_data]
       properties:
-        kind:
+        address:
           type: string
-          enum: [evm]
+        nonce:
+          type: string
+        expires_at:
+          type: integer
+        typed_data:
+          type: object
+    EvmVerifyRequest:
+      type: object
+      required: [address, nonce, signature]
+      properties:
+        address:
+          type: string
+        nonce:
+          type: string
+        signature:
+          type: string
+    EvmSession:
+      type: object
+      required: [address, expires_at]
+      properties:
+        address:
+          type: string
+        expires_at:
+          type: integer
+    RegisterEvmAccountRequest:
+      type: object
+      required: [chain_id, account_address, multisig_validator_address]
+      properties:
         chain_id:
           type: integer
           minimum: 1
         account_address:
           type: string
-          description: >
-            Normalized `0x`-prefixed lowercase 20-byte account address used for
-            Guardian identity and EIP-712 verifyingContract.
-        multisig_module_address:
+        multisig_validator_address:
           type: string
-          description: >
-            Normalized `0x`-prefixed lowercase 20-byte ERC-7579 multisig module
-            address used for RPC signer and threshold reads.
-        rpc_endpoint:
-          type: string
-          format: uri
-    AuthConfig:
-      oneOf:
-        - $ref: '#/components/schemas/MidenFalconRpoAuth'
-        - $ref: '#/components/schemas/MidenEcdsaAuth'
-        - $ref: '#/components/schemas/EvmEcdsaAuth'
-    MidenFalconRpoAuth:
-      type: object
-      required: [MidenFalconRpo]
-      properties:
-        MidenFalconRpo:
-          type: object
-          required: [cosigner_commitments]
-          properties:
-            cosigner_commitments:
-              type: array
-              items:
-                type: string
-    MidenEcdsaAuth:
-      type: object
-      required: [MidenEcdsa]
-      properties:
-        MidenEcdsa:
-          type: object
-          required: [cosigner_commitments]
-          properties:
-            cosigner_commitments:
-              type: array
-              items:
-                type: string
-    EvmEcdsaAuth:
-      type: object
-      description: >
-        Accepted only when the server-side evm feature is enabled.
-      required: [EvmEcdsa]
-      properties:
-        EvmEcdsa:
-          type: object
-          required: [signers]
-          properties:
-            signers:
-              type: array
-              items:
-                type: string
-              description: >
-                Persisted signer snapshot as normalized EOA addresses. RPC
-                remains the source of truth for authorization on each relevant
-                action.
-    DeltaProposalRequest:
+    RegisterEvmAccountResponse:
       type: object
       required:
         - account_id
-        - nonce
-        - delta_payload
+        - chain_id
+        - account_address
+        - multisig_validator_address
+        - signers
+        - threshold
       properties:
         account_id:
           type: string
-          description: >
-            Canonical account identifier. For EVM this is
-            `evm:<chain_id>:<normalized_account_address>`.
-        nonce:
+        chain_id:
           type: integer
-          minimum: 0
-          description: Guardian-local ordering field. For EVM it is not part of proposal identity.
-        delta_payload:
-          oneOf:
-            - $ref: '#/components/schemas/MidenProposalPayload'
-            - $ref: '#/components/schemas/EvmProposalPayload'
-    MidenProposalPayload:
-      type: object
-      required:
-        - tx_summary
-        - signatures
-      properties:
-        tx_summary:
-          type: object
-          required: [data]
-          properties:
-            data:
-              type: string
-        signatures:
+        account_address:
+          type: string
+        multisig_validator_address:
+          type: string
+        signers:
           type: array
           items:
-            $ref: '#/components/schemas/SubmittedSignature'
-        metadata:
-          $ref: '#/components/schemas/ProposalMetadata'
-    EvmProposalPayload:
+            type: string
+        threshold:
+          type: integer
+    CreateEvmProposalRequest:
       type: object
-      description: >
-        Accepted only when the server-side evm feature is enabled.
-      required:
-        - kind
-        - mode
-        - execution_calldata
-        - signatures
+      required: [account_id, user_op_hash, payload, nonce, signature]
       properties:
-        kind:
+        account_id:
           type: string
-          enum: [evm]
-        mode:
+        user_op_hash:
           type: string
-          description: >
-            `0x`-prefixed 32-byte ERC-7579 mode. V1 supports only single-call
-            and batch-call execution with default exec type and zero
-            selector/mode payload.
-        execution_calldata:
+          description: 0x-prefixed bytes32 UserOperation hash supplied by the client.
+        payload:
+          description: Opaque client payload. Guardian stores and returns it without decoding.
+        nonce:
           type: string
-          description: >
-            `0x`-prefixed ERC-7579 execution calldata bytes corresponding to the
-            selected `mode`.
-        signatures:
-          type: array
-          items:
-            $ref: '#/components/schemas/SubmittedSignature'
-          description: Must be empty on proposal create; the server appends signatures later.
-    ProposalMetadata:
-      type: object
-      additionalProperties: true
-    SubmittedSignature:
-      type: object
-      required:
-        - signer_id
-        - signature
-      properties:
-        signer_id:
-          type: string
-          description: >
-            Signer identity. For EVM this is the normalized EOA address derived
-            from the signature.
+          description: Full uint256 EntryPoint nonce as a decimal string.
+        ttl_seconds:
+          type: integer
         signature:
-          $ref: '#/components/schemas/ProposalSignature'
-    ProposalSignature:
-      oneOf:
-        - type: object
-          required: [scheme, signature]
-          properties:
-            scheme:
-              type: string
-              enum: [falcon]
-            signature:
-              type: string
-        - type: object
-          required: [scheme, signature]
-          properties:
-            scheme:
-              type: string
-              enum: [ecdsa]
-            signature:
-              type: string
-              description: >
-                ECDSA signature. For EVM proposal signing, the signer address is
-                recovered from this signature against the EIP-712 proposal
-                message.
-            public_key:
-              type: string
-              description: Optional legacy field; not required for EVM proposal signing.
-    DeltaProposalResponse:
+          type: string
+          description: Raw ECDSA signature over user_op_hash.
+    ApproveEvmProposalRequest:
+      type: object
+      required: [account_id, signature]
+      properties:
+        account_id:
+          type: string
+        signature:
+          type: string
+    CancelEvmProposalRequest:
+      type: object
+      required: [account_id]
+      properties:
+        account_id:
+          type: string
+    EvmProposal:
       type: object
       required:
-        - delta
-        - commitment
+        - proposal_id
+        - account_id
+        - chain_id
+        - smart_account_address
+        - validator_address
+        - user_op_hash
+        - payload
+        - nonce
+        - nonce_key
+        - proposer
+        - signer_snapshot
+        - threshold
+        - signatures
+        - created_at
+        - expires_at
       properties:
-        delta:
-          $ref: '#/components/schemas/DeltaObject'
-        commitment:
+        proposal_id:
           type: string
-          description: >
-            Deterministic hash-based proposal identifier derived from
-            `(chain_id, account_address, mode, keccak256(execution_calldata))`.
-    ProposalsResponse:
+        account_id:
+          type: string
+        chain_id:
+          type: integer
+        smart_account_address:
+          type: string
+        validator_address:
+          type: string
+        user_op_hash:
+          type: string
+        payload: {}
+        nonce:
+          type: string
+        nonce_key:
+          type: string
+        proposer:
+          type: string
+        signer_snapshot:
+          type: array
+          items:
+            type: string
+        threshold:
+          type: integer
+        signatures:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvmProposalSignature'
+        created_at:
+          type: string
+        expires_at:
+          type: string
+    EvmProposalSignature:
+      type: object
+      required: [signer, signature, signed_at]
+      properties:
+        signer:
+          type: string
+        signature:
+          type: string
+        signed_at:
+          type: string
+    ListEvmProposalsResponse:
       type: object
       required: [proposals]
       properties:
         proposals:
           type: array
           items:
-            $ref: '#/components/schemas/DeltaObject'
-    SignProposalRequest:
+            $ref: '#/components/schemas/EvmProposal'
+    ExecutableEvmProposal:
       type: object
-      required:
-        - account_id
-        - commitment
-        - signature
+      required: [hash, payload, signatures, signers]
       properties:
-        account_id:
+        hash:
           type: string
-          description: >
-            Canonical account identifier. For EVM this is
-            `evm:<chain_id>:<normalized_account_address>`.
-        commitment:
-          type: string
-        signature:
-          $ref: '#/components/schemas/ProposalSignature'
-    DeltaObject:
-      type: object
-      required:
-        - account_id
-        - nonce
-        - prev_commitment
-        - delta_payload
-        - status
-      properties:
-        account_id:
-          type: string
-        nonce:
-          type: integer
-        prev_commitment:
-          type: string
-          description: Unused for EVM proposal records in v1.
-        new_commitment:
-          type: string
-          description: Unused for EVM proposal records in v1.
-        delta_payload:
-          type: object
-          additionalProperties: true
-        ack_sig:
-          type: string
-          description: Unused for EVM proposal records in v1.
-        ack_pubkey:
-          type: string
-          description: Unused for EVM proposal records in v1.
-        ack_scheme:
-          type: string
-          description: Unused for EVM proposal records in v1.
-        status:
-          $ref: '#/components/schemas/DeltaStatus'
-    DeltaStatus:
-      oneOf:
-        - type: object
-          required: [status, timestamp, proposer_id, cosigner_sigs]
-          properties:
-            status:
-              type: string
-              enum: [pending]
-            timestamp:
-              type: string
-            proposer_id:
-              type: string
-            cosigner_sigs:
-              type: array
-              items:
-                type: object
-                required: [signer_id, signature, timestamp]
-                properties:
-                  signer_id:
-                    type: string
-                  signature:
-                    $ref: '#/components/schemas/ProposalSignature'
-                  timestamp:
-                    type: string
-        - type: object
-          required: [status, timestamp]
-          properties:
-            status:
-              type: string
-              enum: [candidate, canonical, discarded]
-            timestamp:
-              type: string
+        payload: {}
+        signatures:
+          type: array
+          items:
+            type: string
+        signers:
+          type: array
+          items:
+            type: string

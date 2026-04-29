@@ -1,132 +1,90 @@
-# Research: Add generic EVM proposal sharing and signing support
+# Research: Domain-separated EVM proposal support
 
-## Decision 1: Move network selection from server-global configuration to persisted account metadata
+## Decision 1: Keep Miden and EVM HTTP domains separate
 
-- Decision: network selection becomes per-account `network_config` stored in
-  account metadata.
-- Rationale: the current `AppState.network_client` and `NetworkType` setup only
-  supports one network behavior per server process, which prevents Miden and
-  feature-enabled EVM accounts from coexisting safely.
+- Decision: Miden continues to own `/configure`, `/delta`, `/delta/proposal`,
+  `/state`, canonicalization, and gRPC. EVM v1 uses `/evm/auth/*`,
+  `/evm/accounts`, and `/evm/proposals*`.
+- Rationale: EVM account registration, cookie wallet sessions, UserOperation
+  hashes, expiry, and cancel/export semantics differ enough from Miden deltas
+  that forcing them through the delta proposal API creates misleading coupling.
 - Alternatives considered:
-  - Keep a server-global network type and switch behavior from request payloads.
-    Rejected because it leaks global assumptions into per-account workflows.
-  - Keep separate servers per network. Rejected because the feature explicitly
-    requires mixed-account support in one system.
-  - Add a backward-compatibility fallback for missing `network_config`.
-    Rejected because the project decision for this feature is to require
-    explicit account-level network configuration.
+  - Reuse `/configure` and `/delta/proposal` for EVM. Rejected because the API
+    would expose EVM-only fields through Miden-shaped routes and make future
+    networks harder to add cleanly.
+  - Create a fully independent service stack. Rejected because storage,
+    metadata, errors, clocks, routing infrastructure, and validation conventions
+    can still be shared.
 
-## Decision 2: Introduce account-level network dispatch through focused capabilities
+## Decision 2: Keep EVM behind a server feature flag
 
-- Decision: replace the single network client abstraction with account-aware
-  dispatch and smaller network capabilities.
-- Rationale: the current `NetworkClient` trait is dominated by Miden
-  delta/state/canonicalization concerns. EVM v1 only needs account validation,
-  signer authorization, and proposal support.
+- Decision: EVM behavior is enabled only with the server-side `evm` feature.
+  Default builds do not register `/evm/*` routes and do not initialize EVM
+  state, sessions, contract readers, or proposal services.
+- Rationale: EVM support adds a new wallet-session model, chain RPC reads, and
+  optional dependencies. The feature flag keeps default deployments Miden-only.
 - Alternatives considered:
-  - Extend the existing `NetworkClient` trait with EVM methods. Rejected because
-    it would turn unsupported EVM behavior into a large trait full of dead or
-    dummy methods.
-  - Add EVM branches directly inside services. Rejected because it would embed
-    network-specific business logic back into transport-oriented service code.
+  - Enable EVM by default. Rejected because it implies broader chain support and
+    operational readiness than v1 provides.
+  - Split feature flags by chain. Rejected because chain support is deployment
+    configuration, not code architecture.
 
-## Decision 3: Separate cryptographic request verification from signer authorization
+## Decision 3: Resolve EVM chain endpoints server-side
 
-- Decision: split request-signature verification from signer authorization source
-  lookup, especially for EVM.
-- Rationale: current `Auth::verify` depends on stored cosigner commitments, but
-  EVM v1 requires signer authority to be re-validated from RPC on every relevant
-  action. Those are different responsibilities and need different data sources.
+- Decision: EVM account registration carries `chain_id`, `account_address`, and
+  `multisig_validator_address`. RPC URLs and EntryPoint addresses come from
+  server environment maps.
+- Rationale: clients should not choose Guardian's chain authority. Keeping RPC
+  and EntryPoint configuration server-owned avoids per-request trust drift.
 - Alternatives considered:
-  - Treat stored auth commitments as the EVM source of truth. Rejected because
-    signer changes on-chain would drift silently.
-  - Refresh auth only during account configuration. Rejected because it does not
-    satisfy the requirement to re-check signer authority on each relevant action.
+  - Accept RPC URLs from clients. Rejected because it lets untrusted callers
+    define the source of signer and nonce truth.
+  - Store one global EVM RPC URL. Rejected because configured accounts may live
+    on different chains.
 
-## Decision 4: Keep proposal endpoints stable in v1 and move network-specific proposal logic behind strategies
+## Decision 4: Use cookie-backed EVM sessions
 
-- Decision: keep the current proposal endpoints and client method names in v1,
-  while moving proposal normalization and proposal-id generation behind
-  network-specific strategy interfaces.
-- Rationale: this preserves the current surface area and lets the refactor focus
-  on account/network behavior instead of replacing the full proposal API.
+- Decision: EVM auth uses EIP-712 challenge verification and an expiring
+  `guardian_evm_session` cookie. The server derives the session address from
+  signature recovery and uses that address for authorization.
+- Rationale: this matches Guardian operator-session conventions while meeting
+  the requirement that identity is cryptographically derived from the wallet
+  signature, challenges are single-use, and sessions expire.
 - Alternatives considered:
-  - Introduce a brand-new proposal domain and endpoints now. Rejected because it
-    expands blast radius before the EVM proposal contract shape is fully known.
+  - JWT sessions. Rejected because cookies already fit the server session model.
+  - Reuse Miden `x-pubkey` request signing. Rejected because EVM wallet auth is
+    naturally session-based and route-scoped for this feature.
 
-## Decision 5: Use RPC-only signer validation in v1 and treat the RPC endpoint as part of account trust configuration
+## Decision 5: Validate EVM authority from the smart account validator
 
-- Decision: EVM signer validation in v1 depends only on the configured RPC
-  endpoint. No indexer is used in this feature.
-- Rationale: this matches the current product decision and avoids a second
-  external dependency while the contract/read model is still forming.
+- Decision: `/evm/accounts` verifies ERC-7579 validator installation and reads
+  signer/threshold snapshots through Alloy. Proposal actions authorize the
+  session signer against the stored proposal signer snapshot.
+- Rationale: account registration must prove the smart account uses the target
+  multisig validator, while proposals need deterministic membership for the
+  lifetime of the coordination record.
 - Alternatives considered:
-  - Use an indexer as the primary or fallback authority. Rejected because the
-    product direction for v1 moved away from indexers.
-  - Allow silent fallback from RPC to another authority. Rejected by the
-    constitution's no-silent-fallback rule.
+  - Trust client-provided signer lists. Rejected because the server would not
+    independently know proposal authority.
+  - Re-read signer lists for every proposal approval. Deferred because proposal
+    snapshot semantics are simpler and predictable for v1.
 
-## Decision 6: Make unsupported EVM delta/state/canonicalization flows fail explicitly
+## Decision 6: Store EVM proposals separately at the API boundary
 
-- Decision: `push_delta`, `get_delta`, `get_delta_since`, `get_state`, and
-  canonicalization-related behavior remain unsupported for EVM accounts in v1
-  and must return explicit errors.
-- Rationale: the feature scope is intentionally limited to account configuration
-  plus proposal sharing/signing, and silent degradation would create ambiguous
-  semantics.
+- Decision: public EVM responses are EVM proposal records, not `DeltaObject`.
+  The implementation may reuse existing proposal storage infrastructure where
+  that stays simple, but it must not leak Miden delta fields into `/evm/*`.
+- Rationale: this preserves a clean EVM client API while avoiding a larger
+  storage migration for v1.
 - Alternatives considered:
-  - Reuse Miden state/delta flows for EVM accounts. Rejected because EVM does
-    not share Miden state or canonicalization semantics.
-  - Return empty values or no-ops. Rejected because it hides unsupported
-    behavior instead of surfacing it.
-
-## Decision 7: Use a hash-based proposal identifier and defer only the normalized input set
-
-- Decision: the EVM proposal identifier is a deterministic hash-based Guardian value.
-- Rationale: this gives cross-language determinism and avoids collisions that
-  raw concatenation could allow once the executable payload becomes richer than
-  `chain_id + address + nonce`.
-- Alternatives considered:
-  - Concatenate `chain_id + account_address + nonce`. Rejected because it is
-    too weak once multiple draft payload shapes or resubmissions exist.
-
-## Decision 8: Plan around pending-only EVM proposals until lifecycle reconciliation is explicitly designed
-
-- Decision: the refactor plan treats EVM proposals as pending-only in v1 and
-  reserves sync or execution tracking for a follow-up once the contract team
-  defines the readable on-chain state.
-- Rationale: execution-state reconciliation is a separate design problem and is
-  not needed to start the account/network refactor.
-- Alternatives considered:
-  - Force a sync operation into v1 now. Rejected because the contract-readable
-    state needed for correct reconciliation is not agreed yet.
-
-## Decision 9: Gate EVM support behind an explicit server-side feature flag
-
-- Decision: EVM account configuration, EVM auth, EVM proposal payloads, and EVM
-  RPC validation are available only when the server-side `evm` feature is
-  enabled. Default Guardian builds and deployments remain Miden-only and reject
-  EVM-shaped requests with `evm_support_disabled` before storage mutation.
-- Rationale: enabling EVM by default would broaden dependency, validation, and
-  operational risk and could be misread as support for every EVM-compatible
-  chain. The feature flag keeps the architecture network-aware while making EVM
-  rollout explicit.
-- Alternatives considered:
-  - Enable EVM for all deployments by default. Rejected because it creates an
-    implicit all-chains support posture and increases the default attack and
-    dependency surface.
-  - Use separate feature flags per EVM chain. Rejected for v1 because chain
-    support is account-configured through `chain_id`, `account_address`,
-    `multisig_module_address`, and `rpc_endpoint`; deployments may add a chain
-    allowlist without fragmenting the code architecture.
-  - Fork EVM services behind the flag. Rejected because the feature should share
-    the same account resolution, auth, and proposal service architecture as
-    Miden once enabled.
+  - Add a dedicated EVM proposal table immediately. Rejected as unnecessary for
+    the first implementation.
+  - Return `DeltaObject` from EVM endpoints. Rejected because most fields are
+    Miden-specific and semantically unused for EVM.
 
 ## Deferred Topics
 
-- RPC endpoint replacement or rotation policy remains deferred in v1.
-- On-chain execution reuse and explicit proposal reconciliation remain deferred
-  follow-up features.
-- Deployment-specific EVM chain allowlists remain optional policy on top of the
-  `evm` feature gate.
+- EVM gRPC support.
+- On-chain submission and bundler integration.
+- ERC-1271, weighted multisig, generic ERC-7913 signer bytes, and execution
+  tracking beyond lazy EntryPoint nonce cleanup.

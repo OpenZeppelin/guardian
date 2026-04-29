@@ -1,100 +1,245 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  EvmInjectedWalletSigner,
   GuardianEvmClient,
-  RequestAuthPayload,
-  buildEvmProposalTypedData,
-  buildEvmRequestTypedData,
+  GuardianEvmHttpError,
+  buildEvmSessionTypedData,
   evmAccountId,
   normalizeEvmAddress,
+  signProposalHash,
   type Eip1193Provider,
-  type EvmNetworkConfig,
-  type EvmProposalPayload,
 } from './index.js';
 
-const config: EvmNetworkConfig = {
-  kind: 'evm',
-  chainId: 31337,
-  accountAddress: '0xE7f1725E7734CE288F8367e1Bb143E90bb3F0512',
-  multisigModuleAddress: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
-  rpcEndpoint: 'http://localhost:8545',
-};
-
-const payload: EvmProposalPayload = {
-  kind: 'evm',
-  mode: `0x${'0'.repeat(64)}`,
-  executionCalldata: '0x',
-  signatures: [],
-};
+const address = '0xE7f1725E7734CE288F8367e1Bb143E90bb3F0512';
+const normalizedAddress = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
+const validator = '0x1111111111111111111111111111111111111111';
+const accountId = `evm:31337:${normalizedAddress}`;
+const hash = `0x${'12'.repeat(32)}` as const;
+const signature = `0x${'11'.repeat(65)}` as const;
+const secondSigner = '0x2222222222222222222222222222222222222222';
 
 describe('guardian-evm-client', () => {
-  it('builds canonical EVM account IDs', () => {
-    expect(normalizeEvmAddress(config.accountAddress)).toBe('0xe7f1725e7734ce288f8367e1bb143e90bb3f0512');
-    expect(evmAccountId(config.chainId, config.accountAddress)).toBe(
-      'evm:31337:0xe7f1725e7734ce288f8367e1bb143e90bb3f0512'
-    );
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it('builds Guardian request typed data', () => {
-    const typedData = buildEvmRequestTypedData(
-      config,
-      evmAccountId(config.chainId, config.accountAddress),
-      42,
-      RequestAuthPayload.fromRequest({ account_id: 'example' })
-    );
+  it('normalizes EVM addresses and account ids', () => {
+    expect(normalizeEvmAddress(address)).toBe(normalizedAddress);
+    expect(evmAccountId(31337, address)).toBe(accountId);
+  });
 
-    expect(typedData.domain).toMatchObject({
-      name: 'Guardian EVM Request',
-      version: '1',
-      chainId: 31337,
-      verifyingContract: '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512',
+  it('builds Guardian EVM session typed data', () => {
+    const typedData = buildEvmSessionTypedData({
+      address,
+      nonce: `0x${'ab'.repeat(32)}`,
+      issuedAt: 1,
+      expiresAt: 2,
     });
-    expect(typedData.primaryType).toBe('GuardianRequest');
-    expect(typedData.message.timestamp).toBe(42);
+
+    expect(typedData.domain).toEqual({ name: 'Guardian EVM Session', version: '1' });
+    expect(typedData.primaryType).toBe('GuardianEvmSession');
+    expect(typedData.message.wallet).toBe(normalizedAddress);
   });
 
-  it('builds Guardian proposal typed data', () => {
-    const typedData = buildEvmProposalTypedData(config, payload);
-
-    expect(typedData.domain.name).toBe('Guardian EVM Proposal');
-    expect(typedData.primaryType).toBe('GuardianProposal');
-    expect(typedData.message.mode).toBe(payload.mode);
-    expect(typedData.message.execution_calldata_hash).toMatch(/^0x[0-9a-f]{64}$/);
-  });
-
-  it('uses injected wallets for EIP-712 signatures', async () => {
-    let request: { method: string; params?: unknown[] } | undefined;
-    const provider: Eip1193Provider = {
-      async request(args) {
-        request = args;
-        return `0x${'11'.repeat(65)}`;
+  it('logs in with an EIP-712 challenge and cookie fetch mode', async () => {
+    const provider = providerReturning(signature);
+    const fetchMock = mockFetch([
+      {
+        address: normalizedAddress,
+        nonce: `0x${'aa'.repeat(32)}`,
+        issued_at: 10,
+        expires_at: 20,
       },
-    };
-
-    const signer = new EvmInjectedWalletSigner(provider, config, config.accountAddress);
-    const signature = await signer.signEvmProposal(payload);
-
-    expect(signature).toEqual({ scheme: 'ecdsa', signature: `0x${'11'.repeat(65)}` });
-    expect(request?.method).toBe('eth_signTypedData_v4');
-    expect(request?.params?.[0]).toBe('0xe7f1725e7734ce288f8367e1bb143e90bb3f0512');
-  });
-
-  it('wraps Guardian EVM account context', () => {
-    const provider: Eip1193Provider = {
-      async request() {
-        return `0x${'11'.repeat(65)}`;
+      {
+        address: normalizedAddress,
+        expires_at: 1234,
       },
-    };
-
+    ]);
     const client = new GuardianEvmClient({
-      guardianUrl: 'http://localhost:3000',
+      guardianUrl: 'http://guardian.test',
       provider,
-      networkConfig: config,
-      signerAddress: config.accountAddress,
+      signerAddress: address,
     });
 
-    expect(client.accountId).toBe('evm:31337:0xe7f1725e7734ce288f8367e1bb143e90bb3f0512');
-    expect(client.networkConfig.accountAddress).toBe('0xe7f1725e7734ce288f8367e1bb143e90bb3f0512');
-    expect(client.signer.publicKey).toBe('0xe7f1725e7734ce288f8367e1bb143e90bb3f0512');
+    const session = await client.login();
+
+    expect(session.address).toBe(normalizedAddress);
+    expect(provider.request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'eth_signTypedData_v4' })
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toContain('/evm/auth/challenge');
+    expect(fetchMock.mock.calls[1]?.[0]).toContain('/evm/auth/verify');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ credentials: 'include' });
+  });
+
+  it('registers an EVM account through /evm/accounts', async () => {
+    const fetchMock = mockFetch([
+      {
+        account_id: accountId,
+        chain_id: 31337,
+        account_address: normalizedAddress,
+        multisig_validator_address: validator,
+        signers: [normalizedAddress, secondSigner],
+        threshold: 2,
+      },
+    ]);
+    const client = new GuardianEvmClient({ guardianUrl: 'http://guardian.test' });
+
+    const response = await client.configure({
+      chainId: 31337,
+      smartAccountAddress: address,
+      multisigValidatorAddress: validator,
+    });
+
+    expect(response.accountId).toBe(accountId);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://guardian.test/evm/accounts');
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      chain_id: 31337,
+      account_address: normalizedAddress,
+      multisig_validator_address: validator,
+    });
+  });
+
+  it('creates proposals through /evm/proposals', async () => {
+    const fetchMock = mockFetch([proposal({ signatureCount: 1 })]);
+    const client = new GuardianEvmClient({ guardianUrl: 'http://guardian.test' });
+
+    const response = await client.createProposal({
+      chainId: 31337,
+      smartAccountAddress: address,
+      userOpHash: hash,
+      payload: '{"kind":"userOp"}',
+      nonce: '0x01',
+      signature,
+      ttlSeconds: 300,
+    });
+
+    expect(response.proposalId).toBe(hash);
+    expect(response.signatures).toHaveLength(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://guardian.test/evm/proposals');
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      account_id: accountId,
+      user_op_hash: hash,
+      payload: '{"kind":"userOp"}',
+      nonce: '0x01',
+      ttl_seconds: 300,
+      signature,
+    });
+  });
+
+  it('fetches and converts proposals from /evm/proposals', async () => {
+    mockFetch([{ proposals: [proposal({ signatureCount: 1 })] }]);
+    const client = new GuardianEvmClient({ guardianUrl: 'http://guardian.test' });
+
+    const proposals = await client.listProposals(accountId);
+
+    expect(proposals[0]?.proposalId).toBe(hash);
+    expect(proposals[0]?.signatures[0]?.signedAt).toBe(42);
+  });
+
+  it('approves proposals with raw ECDSA signatures', async () => {
+    const fetchMock = mockFetch([proposal({ signatureCount: 2 })]);
+    const client = new GuardianEvmClient({ guardianUrl: 'http://guardian.test' });
+
+    const updated = await client.approveProposal(accountId, hash, { signature });
+
+    expect(updated.signatures).toHaveLength(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `http://guardian.test/evm/proposals/${hash}/approve`
+    );
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({ account_id: accountId, signature });
+  });
+
+  it('fetches executable proposal data and cancels proposals', async () => {
+    const fetchMock = mockFetch([
+      {
+        hash,
+        payload: '{}',
+        signatures: [signature],
+        signers: [normalizedAddress],
+      },
+      { success: true },
+    ]);
+    const client = new GuardianEvmClient({ guardianUrl: 'http://guardian.test' });
+
+    const executable = await client.getExecutableProposal(accountId, hash);
+    await client.cancelProposal(accountId, hash);
+
+    expect(executable.hash).toBe(hash);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `http://guardian.test/evm/proposals/${hash}/executable?account_id=${encodeURIComponent(accountId)}`
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `http://guardian.test/evm/proposals/${hash}/cancel`
+    );
+  });
+
+  it('parses stable error codes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ code: 'unsupported_for_network' }), { status: 400 }))
+    );
+    const client = new GuardianEvmClient({ guardianUrl: 'http://guardian.test' });
+
+    await expect(client.challenge(address)).rejects.toMatchObject<Partial<GuardianEvmHttpError>>({
+      code: 'unsupported_for_network',
+    });
+  });
+
+  it('can request hash signatures from injected wallets', async () => {
+    const provider = providerReturning(signature);
+
+    const result = await signProposalHash(provider, address, hash);
+
+    expect(result).toBe(signature);
+    expect(provider.request).toHaveBeenCalledWith({
+      method: 'eth_sign',
+      params: [normalizedAddress, hash],
+    });
   });
 });
+
+function providerReturning(result: string): Eip1193Provider {
+  return {
+    request: vi.fn(async () => result),
+  };
+}
+
+function mockFetch(jsonResponses: unknown[]) {
+  const fetchMock = vi.fn(async () => {
+    const response = jsonResponses.shift();
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function proposal({ signatureCount }: { signatureCount: number }) {
+  const signatures = Array.from({ length: signatureCount }, (_, index) => ({
+    signer: index === 0 ? normalizedAddress : secondSigner,
+    signature,
+    signed_at: 42 + index,
+  }));
+  return {
+    proposal_id: hash,
+    account_id: accountId,
+    chain_id: 31337,
+    smart_account_address: normalizedAddress,
+    validator_address: validator,
+    user_op_hash: hash,
+    payload: '{}',
+    nonce: '1',
+    nonce_key: '0',
+    proposer: normalizedAddress,
+    signer_snapshot: [normalizedAddress, secondSigner],
+    threshold: 2,
+    signatures,
+    created_at: 1,
+    expires_at: 2,
+  };
+}

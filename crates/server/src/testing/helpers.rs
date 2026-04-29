@@ -194,6 +194,8 @@ pub async fn create_test_app_state() -> AppState {
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
+        #[cfg(feature = "evm")]
+        evm: Arc::new(crate::evm::EvmAppState::for_tests()),
     }
 }
 
@@ -268,7 +270,7 @@ pub fn create_router(state: AppState) -> axum::Router {
             crate::dashboard::require_dashboard_session,
         ));
 
-    axum::Router::new()
+    let router = axum::Router::new()
         .route("/configure", axum::routing::post(http::configure))
         .route("/push_delta", axum::routing::post(http::push_delta))
         .route("/get_delta", axum::routing::get(http::get_delta))
@@ -301,7 +303,49 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route(
             "/auth/logout",
             axum::routing::post(crate::api::dashboard::logout_operator),
+        );
+
+    #[cfg(feature = "evm")]
+    let router = router
+        .route(
+            "/evm/auth/challenge",
+            axum::routing::get(crate::api::evm::challenge_evm_session),
         )
+        .route(
+            "/evm/auth/verify",
+            axum::routing::post(crate::api::evm::verify_evm_session),
+        )
+        .route(
+            "/evm/auth/logout",
+            axum::routing::post(crate::api::evm::logout_evm_session),
+        )
+        .route(
+            "/evm/accounts",
+            axum::routing::post(crate::api::evm::register_evm_account),
+        )
+        .route(
+            "/evm/proposals",
+            axum::routing::post(crate::api::evm::create_evm_proposal)
+                .get(crate::api::evm::list_evm_proposals),
+        )
+        .route(
+            "/evm/proposals/{proposal_id}",
+            axum::routing::get(crate::api::evm::get_evm_proposal),
+        )
+        .route(
+            "/evm/proposals/{proposal_id}/approve",
+            axum::routing::post(crate::api::evm::approve_evm_proposal),
+        )
+        .route(
+            "/evm/proposals/{proposal_id}/executable",
+            axum::routing::get(crate::api::evm::get_executable_evm_proposal),
+        )
+        .route(
+            "/evm/proposals/{proposal_id}/cancel",
+            axum::routing::post(crate::api::evm::cancel_evm_proposal),
+        );
+
+    router
         .nest("/dashboard", dashboard_routes)
         .with_state(state)
 }
@@ -639,5 +683,7 @@ pub fn create_test_app_state_with_mocks(
         canonicalization: None, // Use optimistic mode for unit tests
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
+        #[cfg(feature = "evm")]
+        evm: Arc::new(crate::evm::EvmAppState::for_tests()),
     }
 }

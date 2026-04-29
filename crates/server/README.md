@@ -39,7 +39,8 @@ Requests exceeding this limit receive a 413 Payload Too Large response.
 
 #### Feature-Gated EVM Support
 
-- `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` - Optional comma-separated EVM chain allowlist used when the server is built with `--features evm`
+- `GUARDIAN_EVM_RPC_URLS` - Optional comma-separated EVM RPC map, formatted as `chain_id=url` entries, used when the server is built with `--features evm`
+- `GUARDIAN_EVM_ENTRYPOINTS` - Optional comma-separated EVM EntryPoint map, formatted as `chain_id=0x...` entries, used when the server is built with `--features evm`
 
 #### Operator Dashboard
 
@@ -88,15 +89,16 @@ file path or secret ID stays the same.
 Each account has:
 - `account_id` - Network-specific identifier
 - `auth` - Auth type with authorization data (e.g., cosigner public keys)
-- `network_config` - Network-specific runtime configuration. Miden is the default when omitted. EVM accounts use `evm:<chain_id>:<account_address>` account IDs and split identity `account_address` from `multisig_module_address`.
+- `network_config` - Network-specific runtime configuration. Miden is the default when omitted. EVM accounts use `evm:<chain_id>:<account_address>` account IDs and split identity `account_address` from `multisig_validator_address`.
 
-EVM support is feature-gated. Default builds expose EVM-shaped schema variants
-but reject EVM config/auth/proposal requests with stable code
-`evm_support_disabled` before storage mutation. Run with the `evm` feature for
-local EVM proposal coordination:
+EVM support is feature-gated. Default builds do not register EVM routes or
+initialize EVM state, sessions, contract readers, or proposal handlers. Run
+with the `evm` feature for local EVM proposal coordination through
+`/evm/auth/*`, `/evm/accounts`, and `/evm/proposals*`:
 
 ```bash
-GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337 \
+GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
+GUARDIAN_EVM_ENTRYPOINTS=31337=0x0000000000000000000000000000000000000001 \
 cargo run -p guardian-server --features evm --bin server
 ```
 

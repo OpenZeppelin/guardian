@@ -37,12 +37,11 @@ pub async fn configure_account(
         .validate_for_account(&params.account_id)
         .map_err(GuardianError::InvalidNetworkConfig)?;
 
-    if network_config.is_evm() {
-        return configure_evm_account(state, params, network_config).await;
-    }
-
-    if matches!(params.auth, Auth::EvmEcdsa { .. }) {
-        return Err(GuardianError::EvmSupportDisabled);
+    if network_config.is_evm() || matches!(params.auth, Auth::EvmEcdsa { .. }) {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "configure".to_string(),
+        });
     }
 
     let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
@@ -161,90 +160,6 @@ pub async fn configure_account(
     })
 }
 
-#[cfg(not(feature = "evm"))]
-async fn configure_evm_account(
-    _state: &AppState,
-    _params: ConfigureAccountParams,
-    _network_config: NetworkConfig,
-) -> Result<ConfigureAccountResult> {
-    Err(GuardianError::EvmSupportDisabled)
-}
-
-#[cfg(feature = "evm")]
-async fn configure_evm_account(
-    state: &AppState,
-    mut params: ConfigureAccountParams,
-    network_config: NetworkConfig,
-) -> Result<ConfigureAccountResult> {
-    if !matches!(params.auth, Auth::EvmEcdsa { .. }) {
-        return Err(GuardianError::InvalidNetworkConfig(
-            "EVM accounts require EvmEcdsa auth".to_string(),
-        ));
-    }
-
-    if !params
-        .initial_state
-        .as_object()
-        .is_some_and(serde_json::Map::is_empty)
-    {
-        return Err(GuardianError::InvalidNetworkConfig(
-            "EVM initial_state must be an empty object".to_string(),
-        ));
-    }
-
-    let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
-        tracing::error!(
-            account_id = %params.account_id,
-            error = %e,
-            "Failed to check existing EVM account in configure_account"
-        );
-        GuardianError::StorageError(format!("Failed to check existing account: {e}"))
-    })?;
-
-    let signers = crate::evm::configure_evm_account(
-        &network_config,
-        &params.auth,
-        &params.account_id,
-        &params.credential,
-    )
-    .await?;
-    params.auth = Auth::EvmEcdsa { signers };
-
-    let now = state.clock.now_rfc3339();
-    let created_at = existing
-        .as_ref()
-        .map(|metadata| metadata.created_at.clone())
-        .unwrap_or_else(|| now.clone());
-
-    let metadata_entry = AccountMetadata {
-        account_id: params.account_id.clone(),
-        auth: params.auth,
-        network_config,
-        created_at,
-        updated_at: now,
-        has_pending_candidate: existing
-            .as_ref()
-            .map(|metadata| metadata.has_pending_candidate)
-            .unwrap_or(false),
-        last_auth_timestamp: existing.and_then(|metadata| metadata.last_auth_timestamp),
-    };
-
-    state.metadata.set(metadata_entry).await.map_err(|e| {
-        tracing::error!(
-            account_id = %params.account_id,
-            error = %e,
-            "Failed to store EVM metadata"
-        );
-        GuardianError::StorageError(format!("Failed to store metadata: {e}"))
-    })?;
-
-    Ok(ConfigureAccountResult {
-        account_id: params.account_id,
-        ack_pubkey: String::new(),
-        ack_commitment: String::new(),
-    })
-}
-
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
@@ -277,6 +192,8 @@ mod tests {
             canonicalization: None, // Optimistic mode for tests
             clock: Arc::new(crate::clock::test::MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         }
     }
 
@@ -319,16 +236,15 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert_eq!(result.account_id, account_id_hex);
+        let ack_pubkey = result.ack_pubkey;
+        let ack_commitment = result.ack_commitment;
+        assert!(!ack_pubkey.is_empty(), "ack_pubkey should not be empty");
         assert!(
-            !result.ack_pubkey.is_empty(),
-            "ack_pubkey should not be empty"
-        );
-        assert!(
-            result.ack_pubkey.starts_with("0x"),
+            ack_pubkey.starts_with("0x"),
             "ack_pubkey should be hex format"
         );
         assert!(
-            result.ack_commitment.starts_with("0x"),
+            ack_commitment.starts_with("0x"),
             "ack_commitment should be hex format"
         );
     }
@@ -382,10 +298,12 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert_eq!(result.account_id, account_id_hex);
-        assert!(result.ack_pubkey.starts_with("0x"));
-        assert!(result.ack_commitment.starts_with("0x"));
-        assert_eq!(result.ack_commitment.len(), 66);
-        assert!(result.ack_pubkey.len() > 66);
+        let ack_pubkey = result.ack_pubkey;
+        let ack_commitment = result.ack_commitment;
+        assert!(ack_pubkey.starts_with("0x"));
+        assert!(ack_commitment.starts_with("0x"));
+        assert_eq!(ack_commitment.len(), 66);
+        assert!(ack_pubkey.len() > 66);
     }
 
     #[tokio::test]

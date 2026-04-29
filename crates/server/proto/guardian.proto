@@ -76,8 +76,8 @@ message MidenNetworkConfig {
 message EvmNetworkConfig {
   uint64 chain_id = 1;
   string account_address = 2;
-  string multisig_module_address = 3;
-  string rpc_endpoint = 4;
+  string multisig_validator_address = 3;
+  reserved 4;
 }
 
 // Configure request

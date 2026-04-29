@@ -9,6 +9,12 @@ use crate::api::dashboard::{
     challenge_operator_login, get_operator_account, list_operator_accounts, logout_operator,
     verify_operator_login,
 };
+#[cfg(feature = "evm")]
+use crate::api::evm::{
+    approve_evm_proposal, cancel_evm_proposal, challenge_evm_session, create_evm_proposal,
+    get_evm_proposal, get_executable_evm_proposal, list_evm_proposals, logout_evm_session,
+    register_evm_account, verify_evm_session,
+};
 use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
@@ -73,7 +79,7 @@ impl ServerHandle {
                     .route("/accounts/{account_id}", get(get_operator_account))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
 
-                let mut app = Router::new()
+                let app = Router::new()
                     .route("/", get(root))
                     .route("/delta", post(push_delta))
                     .route("/delta", get(get_delta))
@@ -87,9 +93,33 @@ impl ServerHandle {
                     .route("/pubkey", get(get_pubkey))
                     .route("/auth/challenge", get(challenge_operator_login))
                     .route("/auth/verify", post(verify_operator_login))
-                    .route("/auth/logout", post(logout_operator))
-                    .nest("/dashboard", dashboard_routes)
-                    .with_state(state);
+                    .route("/auth/logout", post(logout_operator));
+
+                #[cfg(feature = "evm")]
+                let app = app
+                    .route("/evm/auth/challenge", get(challenge_evm_session))
+                    .route("/evm/auth/verify", post(verify_evm_session))
+                    .route("/evm/auth/logout", post(logout_evm_session))
+                    .route("/evm/accounts", post(register_evm_account))
+                    .route(
+                        "/evm/proposals",
+                        post(create_evm_proposal).get(list_evm_proposals),
+                    )
+                    .route("/evm/proposals/{proposal_id}", get(get_evm_proposal))
+                    .route(
+                        "/evm/proposals/{proposal_id}/approve",
+                        post(approve_evm_proposal),
+                    )
+                    .route(
+                        "/evm/proposals/{proposal_id}/executable",
+                        get(get_executable_evm_proposal),
+                    )
+                    .route(
+                        "/evm/proposals/{proposal_id}/cancel",
+                        post(cancel_evm_proposal),
+                    );
+
+                let mut app = app.nest("/dashboard", dashboard_routes).with_state(state);
 
                 // Apply body size limit
                 let body_limit = body_limit_config.unwrap_or_else(BodyLimitConfig::from_env);

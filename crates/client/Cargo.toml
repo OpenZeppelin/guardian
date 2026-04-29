@@ -12,7 +12,7 @@ include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "LICENSE", "READM
 
 [dependencies]
 guardian-shared = { version = "=0.14.4", path = "../shared" }
-miden-protocol = { version = "=0.14.3" }
+miden-protocol = { version = "=0.14.5" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tonic = { workspace = true }
@@ -26,7 +26,7 @@ chrono = { workspace = true }
 [dev-dependencies]
 miden-rpc-client = { path = "../miden-rpc-client" }
 miden-keystore = { path = "../miden-keystore" }
-miden-standards = { version = "=0.14.3" }
+miden-standards = { version = "=0.14.5" }
 rand_chacha = { workspace = true }
 tempfile = { workspace = true }
 tokio-stream = "0.1"

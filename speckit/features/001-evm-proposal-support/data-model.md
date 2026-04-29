@@ -1,193 +1,81 @@
-# Data Model: Add generic EVM proposal sharing and signing support
+# Data Model: Domain-separated EVM proposal support
 
-## 0. Feature Gate Semantics
+## Feature Gate
 
-EVM support is opt-in. Default Guardian servers accept Miden network
-configuration only. The `evm` feature registers EVM account, signer-authority,
-proposal, and RPC-validation capabilities into the shared network-aware
-architecture.
+EVM support is opt-in. Default Guardian builds do not register `/evm/*` routes
+or initialize EVM session state, contract readers, metadata writes, or proposal
+handlers. Miden routes remain available in default builds.
 
-Validation rules:
+## Account Metadata
 
-- `EvmNetworkConfig`, `EvmEcdsa`, and `EvmProposalPayload` are valid only when
-  the server-side `evm` feature is enabled.
-- When the `evm` feature is disabled, requests containing EVM account config,
-  EVM auth, or EVM proposal payloads fail with `evm_support_disabled` before
-  metadata or proposal storage is mutated.
-- Enabling the `evm` feature does not automatically support every EVM chain.
-  Each EVM account still declares `chain_id`, `account_address`,
-  `multisig_module_address`, and `rpc_endpoint`; deployments may additionally
-  restrict allowed chain IDs.
+Miden account metadata is created through `/configure` and keeps the existing
+state, auth, replay, and acknowledgement behavior.
 
-## 1. AccountMetadata
-
-Persisted per account in filesystem and Postgres metadata stores.
+EVM account metadata is created through `/evm/accounts`.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `account_id` | `String` | Existing account identifier; for EVM this is canonical `evm:<chain_id>:<normalized_account_address>` |
-| `auth` | `Auth` | Persisted auth policy and signer snapshot |
-| `network_config` | `NetworkConfig` | New per-account network selection and config |
-| `created_at` | `String` | Existing RFC3339 timestamp |
-| `updated_at` | `String` | Existing RFC3339 timestamp |
-| `has_pending_candidate` | `bool` | Existing canonicalization flag |
-| `last_auth_timestamp` | `Option<i64>` | Existing replay-protection CAS field |
+| `account_id` | `String` | Canonical `evm:<chain_id>:<smart_account_address>` |
+| `auth` | `EvmEcdsa` | Snapshot of normalized EOA signers from the validator |
+| `network_config` | `Evm` | Chain ID, smart account address, multisig validator address |
+| `created_at` / `updated_at` | `String` | Existing metadata timestamps |
+| `last_auth_timestamp` | `Option<i64>` | Not used by EVM cookie sessions |
 
-### Validation Rules
+RPC URLs and EntryPoint addresses are deployment configuration keyed by chain
+ID. They are not trusted client request fields.
 
-- `network_config` is required.
-- Missing `network_config` is invalid rather than implicitly mapped to a legacy
-  server-global Miden setting.
-- For `network_config.kind = "evm"`, `account_id` must match the canonical
-  identity derived from `chain_id + account_address`, and EVM support must be
-  enabled.
-- Filesystem and Postgres metadata encodings must remain semantically
-  equivalent.
-
-## 2. NetworkConfig
-
-Tagged per-account network configuration.
-
-### `MidenNetworkConfig`
+## EVM Session
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `kind` | `"miden"` | Discriminator |
-| `network_type` | `MidenNetworkType` | `local`, `devnet`, or `testnet` |
+| `address` | `String` | Normalized EOA recovered from challenge signature |
+| `nonce` | `bytes32` | Single-use challenge nonce |
+| `issued_at` / `expires_at` | timestamp | Challenge/session lifetime bounds |
+| `guardian_evm_session` | cookie | Opaque server session token |
 
-### `EvmNetworkConfig`
+Challenge nonces are time-limited and single-use. Sessions expire and are the
+only EVM route authentication mechanism in v1.
 
-Available only when the server-side `evm` feature is enabled.
+## EVM Proposal
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `kind` | `"evm"` | Discriminator |
-| `chain_id` | `u64` | Part of canonical account identity |
-| `account_address` | `String` | Normalized hex address; part of canonical account identity and EIP-712 verifying contract |
-| `multisig_module_address` | `String` | Normalized ERC-7579 multisig module address used for RPC signer and threshold reads |
-| `rpc_endpoint` | `String` | Required RPC authority for signer validation |
-
-### Validation Rules
-
-- `chain_id` must be a positive integer.
-- `account_address` and `multisig_module_address` must be normalized
-  `0x`-prefixed 20-byte lowercase hex addresses and validated at the boundary.
-- `rpc_endpoint` must be a valid URL string and is treated as trusted account
-  configuration in v1.
-
-## 3. Auth
-
-Persisted auth policy plus signer snapshot.
-
-| Variant | Fields | Notes |
-|---------|--------|-------|
-| `MidenFalconRpo` | `cosigner_commitments: Vec<String>` | Existing Miden Falcon path |
-| `MidenEcdsa` | `cosigner_commitments: Vec<String>` | Existing Miden ECDSA path |
-| `EvmEcdsa` | `signers: Vec<String>` | New EVM ECDSA path; normalized EOA address snapshot refreshed from RPC |
-
-### Validation Rules
-
-- Request-signature verification must be separated from signer authorization.
-- EVM authorization uses RPC as the source of truth on every relevant action.
-- EVM authorization is available only when the `evm` feature is enabled.
-- Stored EVM `signers` may be used as a snapshot or cache, but not as the only
-  authority source.
-- EVM `signers` are normalized EOA addresses only in v1.
-
-## 4. Proposal Record
-
-V1 keeps the current proposal transport/storage envelope to constrain blast
-radius, but proposal semantics become network-aware.
+EVM proposals are domain records exposed through `/evm/proposals*`. They are
+not public `DeltaObject` records.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `account_id` | `String` | Existing account namespace |
-| `nonce` | `u64` | Ordering field; for EVM this is Guardian-local ordering only |
-| `commitment` | `String` | Deterministic proposal identifier; currently carried as response `commitment` |
-| `delta_payload` | `serde_json::Value` / JSON object | Network-specific proposal payload plus signatures/metadata |
-| `status` | `DeltaStatus` | Pending proposal state remains shared |
-| `proposer_id` | `String` | Stored inside pending status |
-| `cosigner_sigs` | `Vec<CosignerSignature>` | Stored inside pending status |
+| `proposal_id` | `String` | Deterministic hash for the active proposal |
+| `account_id` | `String` | Canonical EVM account ID |
+| `chain_id` | `u64` | EVM chain |
+| `smart_account_address` | `String` | ERC-7579 smart account |
+| `validator_address` | `String` | Multisig validator module |
+| `user_op_hash` | `bytes32` | Client-supplied hash signed by EOAs |
+| `payload` | `String` | Opaque application payload |
+| `nonce` | `String` | Full uint256 EntryPoint nonce |
+| `nonce_key` | `String` | EntryPoint nonce key derived from the full nonce |
+| `proposer` | `String` | Session EOA that created the proposal |
+| `signer_snapshot` | `Vec<String>` | Validator EOA signer snapshot |
+| `threshold` | `usize` | Validator threshold snapshot |
+| `signatures` | `Vec<EvmProposalSignature>` | Collected EOA signatures |
+| `created_at` / `expires_at` | timestamp | Proposal lifetime |
 
-### Interpretation Rules
+`proposal_id` is derived from `(account_id, validator_address, user_op_hash,
+full_nonce)`. Duplicate active creates with the same identifier are idempotent.
 
-- For Miden proposals, current `tx_summary`-driven semantics remain unchanged.
-- For EVM proposals, the inner payload is the normalized ERC-7579 execution
-  shape described below and is normalized before hashing or persistence.
-- For EVM proposals, `prev_commitment`, `new_commitment`, `ack_sig`,
-  `ack_pubkey`, and `ack_scheme` remain unused in v1.
-
-### `EvmProposalPayload`
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `kind` | `"evm"` | Discriminator |
-| `mode` | `String` | `0x`-prefixed 32-byte hex ERC-7579 mode |
-| `execution_calldata` | `String` | `0x`-prefixed hex bytes for ERC-7579 execution calldata |
-| `signatures` | `Vec<SubmittedSignature>` | Empty on create; appended by sign flow |
-
-### EVM Proposal Validation Rules
-
-- EVM proposal payloads model ERC-7579 `execute(mode, executionCalldata)` only.
-- Supported v1 modes are single-call and batch-call with default exec type and
-  zero selector/mode payload.
-- Delegatecall, try-mode, and custom selector/payload modes are unsupported in
-  v1.
-- `signatures` must be empty when the proposal is first created.
-- EVM submitted signatures carry `signer_id` as a normalized EOA address.
-
-## 5. Proposal Identifier
-
-Derived value, not an independently configured field.
+## EVM Signature
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `proposal_id` | `String` | Deterministic hash-based identifier |
+| `signer` | `String` | Normalized recovered EOA |
+| `signature` | `String` | 65-byte ECDSA signature |
+| `signed_at` | timestamp | Server timestamp |
 
-### Validation Rules
+Signatures are verified against the stored `user_op_hash`. Signer authorization
+is checked against the proposal signer snapshot.
 
-- The identifier is a `0x`-prefixed lowercase 32-byte hex value derived from
-  `keccak256(abi.encode(chain_id, account_address, mode,
-  keccak256(execution_calldata)))`.
-- The identifier must be derived from normalized inputs, not raw incoming JSON.
-- HTTP and gRPC must yield the same identifier for semantically equivalent
-  proposal payloads.
-- Rust and TypeScript must model the same identifier semantics.
-- The identifier excludes the local proposal nonce, collected signatures, and
-  timestamps.
+## Lifecycle
 
-## 6. Network Capabilities
-
-Internal design model for network-specific behavior.
-
-| Capability | Purpose |
-|------------|---------|
-| `AccountConfigCapability` | Validate account configuration and initial signer state |
-| `SignerAuthorityCapability` | Resolve or verify authorized signers for an account |
-| `ProposalCapability` | Normalize proposal payloads, compute proposal identifiers, and validate proposal-specific operations |
-| `DeltaStateCapability` | Handle state, delta, and canonicalization operations where supported |
-
-### Capability Rules
-
-- Miden implements all capabilities needed by existing flows.
-- EVM v1 implements account configuration, signer authority, and proposal
-  capabilities only when the `evm` feature is enabled.
-- Unsupported EVM delta/state capabilities return explicit errors.
-
-## 7. State Transitions
-
-### Miden
-
-- Existing pending -> candidate -> canonical/discarded lifecycle remains intact.
-
-### EVM v1
-
-- `pending` is the only supported proposal state.
-- Candidate, canonical, discarded, or auto-reconciled proposal transitions are
-  out of scope for this feature.
-- Unsupported lifecycle requests must fail explicitly.
-- Re-submitting the same normalized EVM proposal is idempotent and returns the
-  existing pending proposal.
-- Pending EVM proposals stay pending until a future explicit cleanup or
-  reconciliation feature is added, subject to the per-account pending-proposal
-  cap.
+- EVM proposals are active until cancelled, expired, or finalized by EntryPoint
+  nonce advancement.
+- Executable export is available only when collected signatures meet threshold.
+- Miden canonicalization does not process EVM proposals.
+- Filesystem and Postgres backends must expose the same observable EVM behavior.

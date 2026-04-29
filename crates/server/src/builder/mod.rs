@@ -18,6 +18,8 @@ use crate::builder::handle::ServerHandle;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::clock::SystemClock;
 use crate::dashboard::DashboardState;
+#[cfg(feature = "evm")]
+use crate::evm::EvmAppState;
 use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
@@ -390,6 +392,8 @@ impl ServerBuilder {
             Some(dashboard) => dashboard,
             None => Arc::new(DashboardState::from_env().await?),
         };
+        #[cfg(feature = "evm")]
+        let evm = Arc::new(EvmAppState::from_env().await?);
 
         let network_client = MidenNetworkClient::from_network(network_type)
             .await
@@ -409,6 +413,8 @@ impl ServerBuilder {
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),
             dashboard,
+            #[cfg(feature = "evm")]
+            evm,
         };
 
         Ok(ServerHandle {

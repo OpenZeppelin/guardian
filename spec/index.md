@@ -59,7 +59,7 @@ Is the unique identifier of an account holding a state, the Guardian can host mu
 
 ### Delta Proposal
 
-Multi-party accounts use delta proposals to coordinate signatures before taking a network-specific action. A proposal bundles a network-validated payload plus optional cosigner signatures. Miden proposals stay in `pending` status until enough cosigners have signed and someone promotes the payload via `push_delta`; once the corresponding delta becomes canonical, the proposal is deleted. EVM proposals are feature-gated and pending-only in v1; Guardian stores signatures for an on-chain ERC-7579-style module submission, while execution tracking and reconciliation stay outside the Guardian state/delta lifecycle.
+Multi-party accounts use proposals to coordinate signatures before taking a network-specific action. Miden delta proposals stay in `pending` status until enough cosigners have signed and someone promotes the payload via `push_delta`; once the corresponding delta becomes canonical, the proposal is deleted. EVM proposals are feature-gated and domain-separated under `/evm/*`: accounts are registered through `/evm/accounts`, proposals use `/evm/proposals`, opaque payloads and signatures over a client-supplied UserOperation hash are stored in an EVM proposal record, and inactive proposals are lazily deleted after expiry or EntryPoint nonce finality.
 
 ### Commitment
 

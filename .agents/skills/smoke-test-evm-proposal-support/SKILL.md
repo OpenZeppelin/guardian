@@ -1,6 +1,6 @@
 ---
 name: smoke-test-evm-proposal-support
-description: Run or guide smoke testing of Guardian feature-gated EVM proposal support with Anvil, an EVM-enabled guardian-server, `@openzeppelin/guardian-evm-client`, and `examples/evm-smoke-web`. Use when Codex needs to verify EVM account configuration, EIP-712 request auth, proposal create/list/get/sign, collecting multiple signatures, or on-chain submit against an ERC-7579-style module.
+description: Run or guide smoke testing of Guardian feature-gated EVM proposal support with Anvil, an EVM-enabled guardian-server, `@openzeppelin/guardian-evm-client`, and `examples/evm-smoke-web`. Use when Codex needs to verify EVM session auth, proposal create/list/get/approve/executable, collecting multiple signatures, or lazy expiry/finality behavior.
 ---
 
 # Smoke Test EVM Proposal Support
@@ -11,12 +11,10 @@ Use this skill for local EVM proposal smoke tests. Keep EVM client checks isolat
 
 Read current source before assuming labels, endpoints, or response shapes:
 
-- `packages/guardian-evm-client/src/index.ts`
+- `packages/guardian-evm-client/src/`
 - `examples/evm-smoke-web/src/App.tsx`
-- `crates/server/src/evm.rs`
-- `crates/server/src/services/configure_account.rs`
-- `crates/server/src/services/push_delta_proposal.rs`
-- `crates/server/src/services/sign_delta_proposal.rs`
+- `crates/server/src/api/evm.rs`
+- `crates/server/src/evm/`
 
 Run the focused checks before manual browser work:
 
@@ -48,7 +46,8 @@ GUARDIAN_STORAGE_PATH="$SMOKE_DIR/storage" \
 GUARDIAN_METADATA_PATH="$SMOKE_DIR/metadata" \
 GUARDIAN_KEYSTORE_PATH="$SMOKE_DIR/keystore" \
 GUARDIAN_NETWORK_TYPE=MidenTestnet \
-GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337 \
+GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
+GUARDIAN_EVM_ENTRYPOINTS=31337=<entrypoint-address> \
 RUST_LOG=info \
 cargo run -p guardian-server --features evm --bin server
 ```
@@ -59,31 +58,29 @@ If port `3000` or `50051` is occupied, inspect the owner first:
 lsof -nP -iTCP:3000 -iTCP:50051 -sTCP:LISTEN
 ```
 
-Reuse the process only if it was started from the current EVM-enabled build with the intended storage and chain allowlist. Otherwise stop it or use a clean process.
+Reuse the process only if it was started from the current EVM-enabled build with the intended storage, RPC map, and EntryPoint map. Otherwise stop it or use a clean process.
 
-## Mock Module
+## Smoke Contracts
 
-The smoke needs an ERC-7579-style module that exposes:
+The smoke needs:
 
+- a smart account exposing `isModuleInstalled(uint256,address,bytes)`
+- an ERC-7579-style validator exposing:
 - `getSigners(address,uint256,uint256) returns (bytes[])`
 - `getSignerCount(address) returns (uint256)`
-- `isSigner(address,bytes) returns (bool)`
 - `threshold(address) returns (uint64)`
-- `submitProposal(address,bytes32,bytes,bytes[])`
-- `submitted(bytes32) returns (bool)`
-- `submittedSignatureCounts(bytes32) returns (uint256)`
+- an EntryPoint exposing `getNonce(address,uint192) returns (uint256)`
 
 Deploy the bundled local mock to Anvil:
 
 ```bash
 EVM_RPC_URL=http://127.0.0.1:8545 \
-EVM_ACCOUNT_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC \
 EVM_SIGNER_ONE=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
 EVM_SIGNER_TWO=0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
 bash .agents/skills/smoke-test-evm-proposal-support/scripts/deploy-smoke-module.sh
 ```
 
-Record the printed `EVM_MODULE_ADDRESS`. The default account and signer addresses are Anvil's standard first three accounts.
+Record the printed `EVM_ACCOUNT_ADDRESS`, `EVM_VALIDATOR_ADDRESS`, and `EVM_ENTRYPOINT_ADDRESS`. The default signer keys are Anvil's standard first two accounts.
 
 ## Client Smoke
 
@@ -93,10 +90,9 @@ After Guardian, Anvil, and a module are live, run the bundled client smoke from 
 GUARDIAN_URL=http://127.0.0.1:3000 \
 EVM_RPC_URL=http://127.0.0.1:8545 \
 EVM_CHAIN_ID=31337 \
-EVM_ACCOUNT_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC \
-EVM_MODULE_ADDRESS=<module-address> \
-EVM_SIGNER_ONE=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
-EVM_SIGNER_TWO=0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
+EVM_ACCOUNT_ADDRESS=<smart-account-address> \
+EVM_VALIDATOR_ADDRESS=<validator-address> \
+EVM_ENTRYPOINT_ADDRESS=<entrypoint-address> \
 node .agents/skills/smoke-test-evm-proposal-support/scripts/run-evm-client-smoke.mjs
 ```
 
@@ -111,7 +107,7 @@ cd examples/evm-smoke-web
 npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-Open `http://127.0.0.1:5173/` in a browser with an injected EVM wallet connected to Anvil. Fill in Guardian URL, chain ID, account address, module address, RPC endpoint, mode, and execution calldata. Use different signer accounts to collect more than one signature over the same proposal, then submit the fetched proposal on-chain.
+Open `http://127.0.0.1:5173/` in a browser with an injected EVM wallet connected to Anvil. Leave Guardian URL blank to use the Vite proxy for `/evm`, then fill in chain ID, smart account, validator, UserOp hash, nonce, TTL, and opaque payload. Use different signer accounts to approve the same proposal, then fetch the executable payload/signature bundle.
 
 For browser wallet prompts, always let the human complete passwords or confirmations when needed. After the user says a prompt is confirmed, continue with the next action and confirm future wallet prompts without asking only when the user explicitly told Codex to do so for that run.
 
@@ -120,36 +116,37 @@ For browser wallet prompts, always let the human complete passwords or confirmat
 Mark the smoke passed only when all relevant assertions hold:
 
 - Guardian was started with `--features evm`.
-- The default non-EVM server path still rejects EVM requests with stable code `evm_support_disabled` when that negative gate is part of the task.
-- `configure` succeeds for `evm:<chain_id>:<account_address>`.
-- The module signer set and threshold match the intended signers.
-- Proposal creation returns a deterministic commitment/proposal ID for `(chain_id, account_address, mode, keccak256(execution_calldata))`.
+- The default non-EVM server does not register the `/evm/*` routes when that negative gate is part of the task.
+- EVM login creates a cookie-backed session derived from an EIP-712 wallet signature.
+- EVM account registration stores account metadata through `/evm/accounts`.
+- The validator is installed on the smoke smart account.
+- The validator signer set and threshold match the intended signers.
+- Proposal creation stores the opaque payload and initial signature.
 - `listProposals` or `getProposal` sees the created proposal.
-- Two distinct signer addresses sign the same proposal.
+- Two distinct signer addresses approve the same proposal.
 - The fetched proposal contains two stored ECDSA signatures.
-- On-chain `submitProposal` succeeds.
-- `submitted(proposal_id)` is true and `submittedSignatureCounts(proposal_id)` is at least 2.
+- `getExecutableProposal` returns the original hash, payload, signatures, and signers once threshold is met.
 
 ## Failure Triage
 
-- `evm_support_disabled`: Guardian is running without the `evm` feature or the stale server process is still bound to port `3000`.
-- `chain_id ... is not allowed`: set `GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337` or include the target chain ID.
+- `404` on `/evm/*`: Guardian is running without the `evm` feature or the stale server process is still bound to port `3000`.
+- `unsupported_evm_chain`: set both `GUARDIAN_EVM_RPC_URLS` and `GUARDIAN_EVM_ENTRYPOINTS` for the target chain ID.
 - `Failed to connect to http://localhost:57291`: the server was started with `GUARDIAN_NETWORK_TYPE=MidenLocal` without a local Miden node. Use `MidenTestnet` for the EVM smoke unless the local node is intentionally part of the run.
-- `SignerNotAuthorized`: compare the signer addresses in Guardian auth, wallet, and the module constructor; normalize all EVM addresses.
-- RPC validation failures during configure usually mean the module address is wrong, the ABI does not match the expected reader functions, or `getSigners` is not returning 20-byte EOA signer bytes.
-- EIP-712 signature recovery failures usually mean the wallet is on the wrong chain, the account address in the EIP-712 domain differs from the canonical `account_address`, or the proposal payload changed between create and sign.
-- Duplicate submit failures are expected if the same execution calldata is reused after a successful on-chain submit. Generate fresh calldata for another pass.
+- `SignerNotAuthorized`: compare the session wallet, proposal signer, and validator signer snapshot; normalize all EVM addresses.
+- RPC validation failures during create usually mean the smart account, validator, or EntryPoint address is wrong, the validator is not installed, the ABI does not match, or `getSigners` is not returning 20-byte EOA signer bytes.
+- EIP-712 session recovery failures usually mean the wallet rejected or altered the challenge typed data.
+- Proposal signature recovery failures usually mean the app signed a different hash from the one sent to Guardian.
 
 ## Report
 
 Report:
 
 - commands run and whether each passed
-- Guardian URL, RPC URL, chain ID, account address, module address
-- signer addresses and module threshold
-- proposal commitment/proposal ID
+- Guardian URL, RPC URL, chain ID, smart account, validator, EntryPoint
+- signer addresses and validator threshold
+- proposal ID
 - number of signatures collected and the signer IDs
-- submit transaction hash and on-chain `submitted`/signature-count values
+- executable payload/signature result
 - browser and wallet used when running the Vite app
 - every setup or smoke error observed, including recovered errors
 - checks skipped with reason

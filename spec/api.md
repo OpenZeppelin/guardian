@@ -2,13 +2,12 @@
 
 ## Authentication
 
-- Per-account authentication: requests MUST include credentials authorised by the account's policy.
-- Credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` and the same keys in gRPC metadata.
-- `x-pubkey` is interpreted by the account auth policy:
+- Per-account Miden requests MUST include credentials authorised by the account's policy.
+- Miden credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` and the same keys in gRPC metadata.
+- Miden `x-pubkey` is interpreted by the account auth policy:
   - Miden Falcon/ECDSA accounts use the serialized public key or its commitment.
-  - EVM accounts use the normalized EOA signer address.
-- The authenticated signer is checked against the account's allowlist or network-owned signer set.
-- Replay protection applies to every authenticated request.
+- EVM HTTP requests under `/evm/*` use a `guardian_evm_session` cookie. The session EOA is recovered from a wallet signature and is checked against the configured account signer set or proposal signer snapshot.
+- Replay protection applies to every Miden signed request. EVM challenge nonces are single-use and time-limited, and EVM sessions expire.
 
 ### Replay Protection
 
@@ -23,23 +22,23 @@
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
 
-### EVM Request Signing
+### EVM Session Authentication
 
-- EVM support is behavior-gated by the server `evm` feature. Schema variants are visible in all builds, but default builds reject EVM configuration, auth, and proposal requests with `evm_support_disabled` before storage mutation.
-- EVM request auth uses `eth_signTypedData_v4` over EIP-712 typed data:
-  - Domain: `{ name: "Guardian EVM Request", version: "1", chainId, verifyingContract: account_address }`.
-  - Message: `{ account_id, timestamp, request_hash }`.
-  - `request_hash` is `keccak256` of the transport's canonical request payload bytes.
-- The recovered address MUST match `x-pubkey`.
+- EVM support is behavior-gated by the server `evm` feature. Default builds do not register `/evm/*` routes or initialize EVM session state, Alloy readers, or proposal handlers.
+- EVM clients authenticate through `/evm/auth/challenge` and `/evm/auth/verify`, and clear the session through `/evm/auth/logout`.
+- Challenge signatures use `eth_signTypedData_v4` over EIP-712 typed data:
+  - Domain: `{ name: "Guardian EVM Session", version: "1" }`.
+  - Message: `{ wallet, nonce, issued_at, expires_at }`.
+- Guardian derives the authenticated EOA with `ecrecover`, consumes the challenge nonce once, and stores the recovered address in a secure cookie-backed session.
+- EVM sessions expire; challenge nonces are time-limited and single-use.
 
 ## Data Shapes
 
 ### Account Identifiers
 
 - Miden account IDs use the existing Miden account identifier format.
-- EVM account IDs are canonical strings: `evm:<chain_id>:<normalized_account_address>`.
-- `account_address` is the identity and EIP-712 verifying contract address.
-- `multisig_module_address` is the ERC-7579-style module address used for signer and threshold reads.
+- EVM account IDs are canonical strings: `evm:<chain_id>:<normalized_smart_account_address>`.
+- EVM accounts are registered through `/evm/accounts` and use `/evm/proposals*` for proposal coordination.
 
 ### AuthConfig
 
@@ -57,7 +56,9 @@ HTTP JSON uses externally tagged variants:
 { "EvmEcdsa": { "signers": ["0x..."] } }
 ```
 
-gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa}`.
+The contract may expose EVM-shaped auth metadata, but `/configure` and the Miden delta routes only accept Miden auth variants. EVM account registration derives signer metadata from the validator module through `/evm/accounts`.
+
+gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa}` for schema compatibility, while EVM behavior remains HTTP-only under `/evm/*`.
 
 ### NetworkConfig
 
@@ -72,16 +73,15 @@ HTTP JSON uses a `kind` discriminator:
   "kind": "evm",
   "chain_id": 31337,
   "account_address": "0x...",
-  "multisig_module_address": "0x...",
-  "rpc_endpoint": "http://127.0.0.1:8545"
+  "multisig_validator_address": "0x..."
 }
 ```
 
-- `network_config` is optional for legacy Miden requests and defaults to `{ "kind": "miden", "network_type": "local" }`.
-- EVM `chain_id` MUST be greater than zero.
-- EVM addresses are normalized to lowercase `0x`-prefixed 20-byte addresses.
-- EVM `rpc_endpoint` MUST be `http://` or `https://`.
-- When `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` is set, the EVM chain ID MUST be included in that comma-separated allowlist.
+- `network_config` is optional for legacy Miden `/configure` requests and defaults to `{ "kind": "miden", "network_type": "local" }`.
+- Miden state/delta routes only accept `kind: "miden"` accounts. EVM account metadata is created through `/evm/accounts`.
+- EVM `account_address` is the smart account address and must match `account_id`.
+- EVM `multisig_validator_address` is the ERC-7579 multisig validator module address.
+- Guardian does not trust client-provided RPC endpoints. RPC and EntryPoint addresses are resolved server-side from `GUARDIAN_EVM_RPC_URLS` and `GUARDIAN_EVM_ENTRYPOINTS`.
 
 gRPC uses `NetworkConfig::{miden, evm}`.
 
@@ -135,21 +135,51 @@ Miden delta proposals use:
 }
 ```
 
-EVM delta proposals use:
+EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
+
+EVM proposal creation request:
 
 ```json
 {
-  "kind": "evm",
-  "mode": "0x0000000000000000000000000000000000000000000000000000000000000000",
-  "execution_calldata": "0x",
-  "signatures": []
+  "account_id": "evm:31337:0x...",
+  "user_op_hash": "0x...",
+  "payload": "{\"packedUserOperation\":{}}",
+  "nonce": "0",
+  "ttl_seconds": 900,
+  "signature": "0x..."
 }
 ```
 
-- EVM create requests MUST include an empty `signatures` array.
-- EVM `mode` MUST be a 32-byte hex value.
-- EVM v1 supports single-call or batch-call ERC-7579 modes with default exec type and zero selector/payload.
-- `execution_calldata` MUST be `0x`-prefixed hex.
+EVM proposal response:
+
+```json
+{
+  "proposal_id": "0x...",
+  "account_id": "evm:31337:0x...",
+  "chain_id": 31337,
+  "smart_account_address": "0x...",
+  "validator_address": "0x...",
+  "user_op_hash": "0x...",
+  "payload": "{\"packedUserOperation\":{}}",
+  "nonce": "0",
+  "nonce_key": "0",
+  "proposer": "0x...",
+  "signer_snapshot": ["0x..."],
+  "threshold": 2,
+  "signatures": [
+    { "signer": "0x...", "signature": "0x...", "signed_at": 1700000000000 }
+  ],
+  "created_at": 1700000000000,
+  "expires_at": 1700000900000
+}
+```
+
+- The payload is opaque application data supplied by the client.
+- `user_op_hash` is the 32-byte hash that EVM signers sign.
+- `nonce` is the full uint256 EntryPoint nonce as a decimal string or `0x`-prefixed hex string.
+- Guardian snapshots signer EOAs and threshold through Alloy, verifies signatures against `user_op_hash`, and stores an EVM proposal record in a domain-specific proposal store.
+- EVM signatures are verified against the client-supplied 32-byte hash.
+- Guardian does not build UserOperations, decode payloads, or submit transactions on-chain.
 
 ### Proposal Signatures
 
@@ -169,10 +199,10 @@ EVM delta proposals use:
 
 - Miden Falcon signer IDs are signer commitments.
 - Miden ECDSA signer IDs are signer commitments.
-- EVM signer IDs are normalized EOA addresses.
-- EVM proposal signatures are EIP-712 signatures over:
-  - Domain: `{ name: "Guardian EVM Proposal", version: "1", chainId, verifyingContract: account_address }`.
-  - Message: `{ mode, execution_calldata_hash }`.
+- EVM proposal signatures use `EvmProposalSignature` records: `{ signer, signature, signed_at }`.
+- EVM create/approve request bodies carry raw ECDSA signatures. Signer identity is derived from `guardian_evm_session`.
+- Stored EVM signers are normalized EOA addresses.
+- EVM proposal signatures are verified with `ecrecover(hash, signature)`.
 
 ### DeltaProposalEnvelope
 
@@ -181,8 +211,6 @@ EVM delta proposals use:
 ```
 
 - Miden proposal IDs are derived by the configured Miden network client from `(account_id, nonce, tx_summary)`.
-- EVM proposal IDs are `keccak256(abi.encode(chain_id, account_address, mode, keccak256(execution_calldata)))`.
-- EVM duplicate create is idempotent when the existing proposal is still pending.
 
 ## HTTP Endpoints
 
@@ -204,10 +232,8 @@ EVM delta proposals use:
 - Headers: `x-pubkey`, `x-signature`, `x-timestamp`.
 - Body: `{ account_id: string, auth: AuthConfig, network_config?: NetworkConfig, initial_state: object }`.
 - Miden behavior: validates initial state and Guardian acknowledgement binding, stores account state, and stores metadata.
-- EVM behavior with `evm` feature: requires canonical `evm:<chain_id>:<account_address>` account ID, `EvmEcdsa` auth, and empty `initial_state`; reads signers and threshold from the configured module; verifies the request signer is authorized; stores normalized EVM metadata only.
-- EVM behavior without `evm` feature: rejects before persistence with `evm_support_disabled`.
+- EVM behavior: unsupported. EVM accounts are registered through `/evm/accounts`.
 - 200: `{ success: true, message: string, ack_pubkey: string, ack_commitment: string }`.
-- EVM configure responses return empty acknowledgement fields because EVM proposal coordination does not use Guardian delta acknowledgements in v1.
 - Error: `{ success: false, message: string, ack_pubkey: null, ack_commitment: null, code?: string }`.
 
 ### POST /delta
@@ -242,18 +268,18 @@ EVM delta proposals use:
 ### POST /delta/proposal
 
 - Headers: `x-pubkey`, `x-signature`, `x-timestamp`.
-- Body: `{ account_id: string, nonce: u64, delta_payload: MidenProposalPayload | EvmProposalPayload }`.
+- Body: `{ account_id: string, nonce: u64, delta_payload: MidenProposalPayload }`.
 - Miden behavior: validates proposer credentials, validates `tx_summary` against the latest persisted state, derives a proposal ID via the network client, and persists a pending proposal.
-- EVM behavior with `evm` feature: validates EVM payload shape, verifies the caller is an authorized module signer, computes the deterministic EVM proposal ID, and stores a pending proposal with empty `prev_commitment`, `new_commitment`, `ack_sig`, `ack_pubkey`, and `ack_scheme`.
-- EVM behavior without `evm` feature: rejects before persistence with `evm_support_disabled`.
+- EVM behavior: unsupported. EVM proposals use `/evm/proposals`.
 - 200: `DeltaProposalEnvelope`.
-- Common errors: `invalid_delta`, `invalid_evm_proposal`, `account_not_found`, `authentication_failed`, `conflict_pending_delta`, `pending_proposals_limit`, `evm_support_disabled`.
+- Common errors: `invalid_delta`, `account_not_found`, `authentication_failed`, `conflict_pending_delta`, `pending_proposals_limit`, `unsupported_for_network`.
 
 ### GET /delta/proposal
 
 - Headers: `x-pubkey`, `x-signature`, `x-timestamp`.
 - Query: `account_id`.
 - Returns only pending proposals, ordered by nonce.
+- EVM behavior: unsupported. EVM proposals use `/evm/proposals`.
 - 200: `{ proposals: DeltaObject[] }`.
 - Missing accounts or storage errors return an empty list to avoid leaking account existence.
 
@@ -269,9 +295,84 @@ EVM delta proposals use:
 - Headers: `x-pubkey`, `x-signature`, `x-timestamp`.
 - Body: `{ account_id: string, commitment: string, signature: ProposalSignature }`.
 - Miden behavior: loads the pending proposal, derives the signer commitment from the caller's public key, rejects duplicate signatures, and appends the signature to both `status.pending.cosigner_sigs` and `delta_payload.signatures`.
-- EVM behavior with `evm` feature: loads the pending proposal, verifies the EIP-712 proposal signature, checks the recovered signer matches the authenticated request signer, rejects duplicates, and appends the ECDSA signature.
+- EVM behavior: unsupported. EVM proposal approvals use `/evm/proposals/{proposal_id}/approve`.
 - 200: `DeltaObject`.
-- Common errors: `proposal_not_found`, `proposal_already_signed`, `invalid_proposal_signature`, `signer_not_authorized`, `evm_support_disabled`.
+- Common errors: `proposal_not_found`, `proposal_already_signed`, `invalid_proposal_signature`, `signer_not_authorized`, `unsupported_for_network`.
+
+### GET /evm/auth/challenge
+
+- Query: `address`.
+- Issues a time-limited EIP-712 session challenge for the normalized EOA address.
+- 200: `{ address, nonce, issued_at, expires_at, typed_data }`.
+- Available only when the server is built with the `evm` feature.
+
+### POST /evm/auth/verify
+
+- Body: `{ address, nonce, signature }`.
+- Recovers the signer from the challenge typed-data hash, consumes the challenge once, and sets `guardian_evm_session`.
+- 200: `{ address, expires_at }`.
+- Common errors: `authentication_failed`, `invalid_input`.
+
+### POST /evm/auth/logout
+
+- Requires `guardian_evm_session`.
+- Clears the cookie-backed EVM session.
+- 200: `{ success: true }`.
+
+### POST /evm/accounts
+
+- Requires `guardian_evm_session`.
+- Body: `{ chain_id: number, account_address: string, multisig_validator_address: string }`.
+- Guardian derives the canonical `account_id`, resolves RPC and EntryPoint by `chain_id`, verifies the session EOA is a current validator signer, verifies `isModuleInstalled(1, validator, 0x)`, snapshots validator signer EOAs and threshold, and stores account metadata. No Miden state snapshot or Guardian acknowledgement key is created.
+- 200: `{ account_id, chain_id, account_address, multisig_validator_address, signers, threshold }`.
+- Common errors: `unsupported_evm_chain`, `rpc_unavailable`, `rpc_validation_failed`, `signer_not_authorized`, `invalid_network_config`.
+
+### POST /evm/proposals
+
+- Requires `guardian_evm_session`.
+- Body: `{ account_id, user_op_hash, payload, nonce, ttl_seconds, signature }`.
+- Guardian loads the registered EVM account, verifies the session EOA is a configured signer, refreshes validator installation and signer/threshold data through Alloy, verifies `signature` over `user_op_hash`, derives a deterministic proposal ID from `(account_id, validator_address, user_op_hash, nonce)`, and stores an active EVM proposal.
+- Duplicate active creates with the same deterministic proposal ID are idempotent.
+- 200: `EvmProposal`.
+- Common errors: `account_not_found`, `unsupported_evm_chain`, `rpc_unavailable`, `rpc_validation_failed`, `signer_not_authorized`, `invalid_proposal_signature`, `invalid_evm_proposal`.
+
+### GET /evm/proposals
+
+- Requires `guardian_evm_session`.
+- Query: `account_id`.
+- Returns active EVM proposals for the account where the session EOA is in the stored signer snapshot.
+- Lazily deletes expired proposals and proposals whose EntryPoint nonce has advanced past the stored nonce.
+- 200: `{ proposals: EvmProposal[] }`.
+
+### GET /evm/proposals/{proposal_id}
+
+- Requires `guardian_evm_session`.
+- Query: `account_id`.
+- Returns an active proposal when the session EOA is in the stored signer snapshot.
+- 200: `EvmProposal`.
+- Common errors: `proposal_not_found`, `signer_not_authorized`.
+
+### POST /evm/proposals/{proposal_id}/approve
+
+- Requires `guardian_evm_session`.
+- Body: `{ account_id, signature }`.
+- Guardian derives signer identity from the session EOA, verifies the signer is in the stored snapshot, verifies `signature` over the stored `user_op_hash`, and rejects duplicate signer approvals.
+- 200: `EvmProposal`.
+- Common errors: `proposal_not_found`, `proposal_already_signed`, `invalid_proposal_signature`, `signer_not_authorized`.
+
+### GET /evm/proposals/{proposal_id}/executable
+
+- Requires `guardian_evm_session`.
+- Query: `account_id`.
+- Returns `{ hash, payload, signatures, signers }` once stored signatures meet the snapshot threshold.
+- Before threshold, returns `insufficient_signatures`.
+
+### POST /evm/proposals/{proposal_id}/cancel
+
+- Requires `guardian_evm_session`.
+- Body: `{ account_id }`.
+- Proposer-only. Deletes the active EVM proposal.
+- 200: `{ success: true }`.
 
 ### GET /pubkey
 
@@ -306,8 +407,8 @@ Stable error codes include:
 - `proposal_not_found`
 - `proposal_already_signed`
 - `invalid_proposal_signature`
-- `evm_support_disabled`
 - `unsupported_for_network`
+- `unsupported_evm_chain`
 - `invalid_network_config`
 - `rpc_unavailable`
 - `rpc_validation_failed`
@@ -320,7 +421,7 @@ HTTP endpoints that return structured error envelopes include `code` when availa
 
 ## gRPC
 
-The gRPC surface mirrors HTTP methods and data shapes. Credentials are provided via metadata headers.
+The gRPC surface mirrors the Miden state/delta methods. EVM account registration, session auth, and proposal coordination are HTTP-only under `/evm/*`; gRPC proposal methods remain Miden-oriented and reject EVM inputs with `unsupported_for_network`.
 
 - `Configure(ConfigureRequest) -> ConfigureResponse`
 - `PushDelta(PushDeltaRequest) -> PushDeltaResponse`
@@ -337,8 +438,8 @@ The gRPC surface mirrors HTTP methods and data shapes. Credentials are provided 
 
 - `push_delta` MAY be retried by clients; identical Miden deltas SHOULD be treated as idempotent when possible.
 - Miden `push_delta` enforces `prev_commitment` match.
-- EVM proposal create is idempotent for duplicate pending proposals with the same `(chain_id, account_address, mode, keccak256(execution_calldata))`.
-- EVM proposals are pending-only in v1; execution tracking and reconciliation are outside this contract.
+- EVM proposal create is idempotent for duplicate active proposals with the same deterministic proposal ID.
+- EVM proposals remain active/pending-only in the EVM proposal store; expired or finalized proposals are lazily deleted.
 
 ## Examples
 
@@ -377,44 +478,33 @@ curl -X POST http://localhost:3000/delta/proposal \
   }'
 ```
 
-### EVM Configure
+### EVM Account Registration And Proposal Create
 
 ```bash
-curl -X POST http://localhost:3000/configure \
+curl 'http://localhost:3000/evm/auth/challenge?address=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+```
+
+```bash
+curl -X POST http://localhost:3000/evm/accounts \
   -H 'content-type: application/json' \
-  -H 'x-pubkey: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266' \
-  -H 'x-signature: 0x...' \
-  -H 'x-timestamp: 1700000000000' \
+  -H 'cookie: guardian_evm_session=...' \
   -d '{
-    "account_id": "evm:31337:0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-    "auth": { "EvmEcdsa": { "signers": ["0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"] } },
-    "network_config": {
-      "kind": "evm",
-      "chain_id": 31337,
-      "account_address": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-      "multisig_module_address": "0x...",
-      "rpc_endpoint": "http://127.0.0.1:8545"
-    },
-    "initial_state": {}
+    "chain_id": 31337,
+    "account_address": "0x1111111111111111111111111111111111111111",
+    "multisig_validator_address": "0x2222222222222222222222222222222222222222"
   }'
 ```
 
-### EVM Proposal Create
-
 ```bash
-curl -X POST http://localhost:3000/delta/proposal \
+curl -X POST http://localhost:3000/evm/proposals \
   -H 'content-type: application/json' \
-  -H 'x-pubkey: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266' \
-  -H 'x-signature: 0x...' \
-  -H 'x-timestamp: 1700000000000' \
+  -H 'cookie: guardian_evm_session=...' \
   -d '{
-    "account_id": "evm:31337:0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-    "nonce": 1,
-    "delta_payload": {
-      "kind": "evm",
-      "mode": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "execution_calldata": "0x",
-      "signatures": []
-    }
+    "account_id": "evm:31337:0x1111111111111111111111111111111111111111",
+    "user_op_hash": "0x...",
+    "payload": "{\"packedUserOperation\":{}}",
+    "nonce": "0",
+    "ttl_seconds": 900,
+    "signature": "0x..."
   }'
 ```

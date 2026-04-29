@@ -8,186 +8,190 @@ const repoRoot = path.resolve(skillDir, '../../..');
 const evmClientPackage = path.join(repoRoot, 'packages/guardian-evm-client');
 const clientDist = path.join(evmClientPackage, 'dist/index.js');
 const viemEntry = path.join(evmClientPackage, 'node_modules/viem/_esm/index.js');
+const viemAccountsEntry = path.join(evmClientPackage, 'node_modules/viem/_esm/accounts/index.js');
 
 const {
   GuardianEvmClient,
   normalizeEvmAddress,
+  signProposalHash,
 } = await import(pathToFileURL(clientDist).href);
 const {
   createPublicClient,
-  encodeAbiParameters,
-  encodeFunctionData,
   http,
   keccak256,
   parseAbi,
+  stringToHex,
 } = await import(pathToFileURL(viemEntry).href);
+const { privateKeyToAccount } = await import(pathToFileURL(viemAccountsEntry).href);
 
-const moduleAbi = parseAbi([
+const validatorAbi = parseAbi([
   'function getSignerCount(address account) view returns (uint256)',
   'function threshold(address account) view returns (uint64)',
-  'function submitProposal(address account, bytes32 mode, bytes executionCalldata, bytes[] signatures) returns (bytes32)',
-  'function submitted(bytes32 proposalId) view returns (bool)',
-  'function submittedSignatureCounts(bytes32 proposalId) view returns (uint256)',
+]);
+const accountAbi = parseAbi([
+  'function isModuleInstalled(uint256 moduleTypeId, address module, bytes additionalContext) view returns (bool)',
+]);
+const entrypointAbi = parseAbi([
+  'function getNonce(address sender, uint192 key) view returns (uint256)',
 ]);
 
 const guardianUrl = envValue('GUARDIAN_URL', 'http://127.0.0.1:3000');
 const rpcUrl = envValue('EVM_RPC_URL', 'http://127.0.0.1:8545');
 const chainId = envNumber('EVM_CHAIN_ID', 31337);
-const accountAddress = normalizeEvmAddress(
-  envValue('EVM_ACCOUNT_ADDRESS', '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC')
+const smartAccountAddress = normalizeEvmAddress(requiredEnv('EVM_ACCOUNT_ADDRESS'));
+const validatorAddress = normalizeEvmAddress(requiredEnv('EVM_VALIDATOR_ADDRESS'));
+const entrypointAddress = normalizeEvmAddress(requiredEnv('EVM_ENTRYPOINT_ADDRESS'));
+const signerOneKey = envValue(
+  'EVM_SIGNER_ONE_PRIVATE_KEY',
+  '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 );
-const moduleAddress = normalizeEvmAddress(requiredEnv('EVM_MODULE_ADDRESS'));
-const signerOne = normalizeEvmAddress(
-  envValue('EVM_SIGNER_ONE', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266')
+const signerTwoKey = envValue(
+  'EVM_SIGNER_TWO_PRIVATE_KEY',
+  '0x59c6995e998f97a5a0044966f094538d6f72b1d7c9d767f50fe9dc23c64fe4'
 );
-const signerTwo = normalizeEvmAddress(
-  envValue('EVM_SIGNER_TWO', '0x70997970C51812dc3A010C7d01b50e0d17dc79C8')
+const signerOneAccount = privateKeyToAccount(signerOneKey);
+const signerTwoAccount = privateKeyToAccount(signerTwoKey);
+const signerOne = normalizeEvmAddress(signerOneAccount.address);
+const signerTwo = normalizeEvmAddress(signerTwoAccount.address);
+const userOpHash = envValue(
+  'EVM_USER_OP_HASH',
+  keccak256(stringToHex(`guardian-evm-smoke:${Date.now()}`))
 );
-const mode = envValue('EVM_MODE', `0x${'0'.repeat(64)}`);
-const executionCalldata = envValue(
-  'EVM_EXECUTION_CALLDATA',
-  `0x${Buffer.from(`guardian-evm-smoke:${Date.now()}`).toString('hex')}`
+const payload = envValue(
+  'EVM_OPAQUE_PAYLOAD',
+  JSON.stringify({ kind: 'userOperation', smoke: true, userOpHash })
 );
+const nonce = envValue('EVM_NONCE', '0');
 
-const provider = jsonRpcProvider(rpcUrl);
 const publicClient = createPublicClient({ transport: http(rpcUrl) });
-const networkConfig = {
-  kind: 'evm',
-  chainId,
-  accountAddress,
-  multisigModuleAddress: moduleAddress,
-  rpcEndpoint: rpcUrl,
-};
+const rpcProvider = jsonRpcProvider(rpcUrl);
 
-const chainIdFromRpc = await provider.request({ method: 'eth_chainId' });
+const chainIdFromRpc = await rpcProvider.request({ method: 'eth_chainId' });
 const rpcChainId = Number.parseInt(String(chainIdFromRpc), 16);
 assert(rpcChainId === chainId, `RPC chain ID ${rpcChainId} does not match EVM_CHAIN_ID ${chainId}`);
 
+const installed = await publicClient.readContract({
+  address: smartAccountAddress,
+  abi: accountAbi,
+  functionName: 'isModuleInstalled',
+  args: [1n, validatorAddress, '0x'],
+});
+assert(installed === true, 'validator is not installed on the smoke smart account');
+
 const signerCount = await publicClient.readContract({
-  address: moduleAddress,
-  abi: moduleAbi,
+  address: validatorAddress,
+  abi: validatorAbi,
   functionName: 'getSignerCount',
-  args: [accountAddress],
+  args: [smartAccountAddress],
 });
 const threshold = await publicClient.readContract({
-  address: moduleAddress,
-  abi: moduleAbi,
+  address: validatorAddress,
+  abi: validatorAbi,
   functionName: 'threshold',
-  args: [accountAddress],
+  args: [smartAccountAddress],
 });
-assert(Number(signerCount) >= 2, `module signer count is ${signerCount}`);
-assert(Number(threshold) <= Number(signerCount), `module threshold ${threshold} exceeds signer count ${signerCount}`);
+const entrypointNonce = await publicClient.readContract({
+  address: entrypointAddress,
+  abi: entrypointAbi,
+  functionName: 'getNonce',
+  args: [smartAccountAddress, 0n],
+});
+assert(Number(signerCount) >= 2, `validator signer count is ${signerCount}`);
+assert(Number(threshold) <= Number(signerCount), `threshold ${threshold} exceeds signer count ${signerCount}`);
+assert(entrypointNonce === 0n, `entrypoint nonce is ${entrypointNonce}`);
 
 const clientOne = new GuardianEvmClient({
   guardianUrl,
-  provider,
-  networkConfig,
+  provider: localWalletProvider(rpcProvider, signerOneAccount),
   signerAddress: signerOne,
 });
 const clientTwo = new GuardianEvmClient({
   guardianUrl,
-  provider,
-  networkConfig,
+  provider: localWalletProvider(rpcProvider, signerTwoAccount),
   signerAddress: signerTwo,
 });
 
-const configure = await clientOne.configure([signerOne, signerTwo]);
-assert(configure.success === true, `configure failed: ${configure.message}`);
+await clientOne.login();
+await clientTwo.login();
+await clientOne.configure({
+  chainId,
+  smartAccountAddress,
+  multisigValidatorAddress: validatorAddress,
+});
+const accountId = clientOne.accountId(chainId, smartAccountAddress);
 
-const payload = {
-  kind: 'evm',
-  mode,
-  executionCalldata,
-  signatures: [],
-};
-const created = await clientOne.createProposal(payload, Date.now());
-const proposals = await clientOne.listProposals();
-const createdIsListed = proposals.some((proposal) =>
-  proposal.deltaPayload.executionCalldata === executionCalldata ||
-  proposal.newCommitment === created.commitment
-);
-assert(createdIsListed, 'created proposal was not returned by listProposals');
+const initialSignature = await signProposalHash(clientOne.provider, signerOne, userOpHash);
+const created = await clientOne.createProposal({
+  accountId,
+  chainId,
+  smartAccountAddress,
+  userOpHash,
+  payload,
+  nonce,
+  signature: initialSignature,
+  ttlSeconds: 900,
+});
 
-await clientOne.signProposal(created.commitment, payload);
-await clientTwo.signProposal(created.commitment, payload);
-const fetched = await clientOne.getProposal(created.commitment);
+const listed = await clientOne.listProposals(accountId);
 assert(
-  fetched.deltaPayload.signatures.length >= 2,
-  `expected at least 2 signatures, got ${fetched.deltaPayload.signatures.length}`
+  listed.some((proposal) => proposal.proposalId === created.proposalId),
+  'created proposal was not returned by listProposals'
 );
 
-const submitData = encodeFunctionData({
-  abi: moduleAbi,
-  functionName: 'submitProposal',
-  args: [
-    accountAddress,
-    mode,
-    executionCalldata,
-    fetched.deltaPayload.signatures.map((signature) => signature.signature.signature),
-  ],
+const secondSignature = await signProposalHash(clientTwo.provider, signerTwo, userOpHash);
+await clientTwo.approveProposal(accountId, created.proposalId, {
+  signature: secondSignature,
 });
-const txHash = await provider.request({
-  method: 'eth_sendTransaction',
-  params: [
-    {
-      from: signerOne,
-      to: moduleAddress,
-      data: submitData,
-    },
-  ],
-});
-assert(typeof txHash === 'string', 'eth_sendTransaction returned a non-string transaction hash');
-const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-assert(receipt.status === 'success', `submit transaction failed with status ${receipt.status}`);
 
-const proposalId = keccak256(
-  encodeAbiParameters(
-    [
-      { type: 'uint256' },
-      { type: 'address' },
-      { type: 'bytes32' },
-      { type: 'bytes32' },
-    ],
-    [BigInt(chainId), accountAddress, mode, keccak256(executionCalldata)]
-  )
-);
-const submitted = await publicClient.readContract({
-  address: moduleAddress,
-  abi: moduleAbi,
-  functionName: 'submitted',
-  args: [proposalId],
-});
-const submittedSignatureCount = await publicClient.readContract({
-  address: moduleAddress,
-  abi: moduleAbi,
-  functionName: 'submittedSignatureCounts',
-  args: [proposalId],
-});
-assert(submitted === true, 'submitted(proposalId) is false');
+const fetched = await clientOne.getProposal(accountId, created.proposalId);
 assert(
-  Number(submittedSignatureCount) >= 2,
-  `submitted signature count is ${submittedSignatureCount}`
+  fetched.signatures.length >= 2,
+  `expected at least 2 signatures, got ${fetched.signatures.length}`
 );
+
+const executable = await clientOne.getExecutableProposal(accountId, created.proposalId);
+assert(executable.hash === userOpHash, 'executable hash mismatch');
+assert(executable.payload === payload, 'executable payload mismatch');
 
 writeSummary({
   guardianUrl,
   rpcUrl,
   chainId,
-  accountId: clientOne.accountId,
-  accountAddress,
-  moduleAddress,
+  smartAccountAddress,
+  validatorAddress,
+  entrypointAddress,
   signerOne,
   signerTwo,
   signerCount: signerCount.toString(),
   threshold: threshold.toString(),
-  proposalCommitment: created.commitment,
-  proposalId,
-  signatureCount: fetched.deltaPayload.signatures.length,
-  signerIds: fetched.deltaPayload.signatures.map((signature) => signature.signerId),
-  submitTxHash: txHash,
-  submitted,
-  submittedSignatureCount: submittedSignatureCount.toString(),
+  accountId,
+  proposalId: created.proposalId,
+  signatureCount: fetched.signatures.length,
+  executableSigners: executable.signers,
 });
+
+function localWalletProvider(rpcProvider, account) {
+  return {
+    async request({ method, params = [] }) {
+      if (method === 'eth_requestAccounts') {
+        return [account.address];
+      }
+      if (method === 'eth_signTypedData_v4') {
+        const typedData = JSON.parse(String(params[1]));
+        return account.signTypedData({
+          domain: typedData.domain,
+          types: { GuardianEvmSession: typedData.types.GuardianEvmSession },
+          primaryType: typedData.primaryType,
+          message: typedData.message,
+        });
+      }
+      if (method === 'eth_sign') {
+        return account.sign({ hash: String(params[1]) });
+      }
+      return rpcProvider.request({ method, params });
+    },
+  };
+}
 
 function jsonRpcProvider(url) {
   let id = 0;
