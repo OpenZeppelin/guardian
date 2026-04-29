@@ -1,60 +1,45 @@
 import { useMemo, useState } from 'react';
 import {
   GuardianEvmClient,
-  evmAccountId,
+  normalizeBytes32,
   normalizeEvmAddress,
-  type DeltaObject,
-  type EvmNetworkConfig,
-  type EvmProposalPayload,
+  signProposalHash,
   type Eip1193Provider,
+  type Proposal,
 } from '@openzeppelin/guardian-evm-client';
-
-const defaultMode = `0x${'0'.repeat(64)}`;
-const submitProposalSelector = 'c4f668c2';
 
 type StepLog = {
   label: string;
   value: string;
 };
 
+const defaultPayload = JSON.stringify({ kind: 'userOperation', callData: '0x' }, null, 2);
+const defaultHash = `0x${'12'.repeat(32)}`;
+
 export default function App() {
-  const [guardianUrl, setGuardianUrl] = useState('http://localhost:3000');
+  const [guardianUrl, setGuardianUrl] = useState('');
   const [chainId, setChainId] = useState(31337);
   const [accountAddress, setAccountAddress] = useState('');
-  const [moduleAddress, setModuleAddress] = useState('');
-  const [rpcEndpoint, setRpcEndpoint] = useState('http://localhost:8545');
-  const [mode, setMode] = useState(defaultMode);
-  const [executionCalldata, setExecutionCalldata] = useState('0x');
+  const [validatorAddress, setValidatorAddress] = useState('');
+  const [userOpHash, setUserOpHash] = useState(defaultHash);
+  const [payload, setPayload] = useState(defaultPayload);
+  const [nonce, setNonce] = useState('0');
+  const [ttlSeconds, setTtlSeconds] = useState(900);
   const [walletAddress, setWalletAddress] = useState('');
-  const [proposalCommitment, setProposalCommitment] = useState('');
-  const [proposalDelta, setProposalDelta] = useState<DeltaObject | null>(null);
+  const [proposalId, setProposalId] = useState('');
+  const [proposal, setProposal] = useState<Proposal | null>(null);
   const [logs, setLogs] = useState<StepLog[]>([]);
   const [busy, setBusy] = useState(false);
 
-  const networkConfig = useMemo<EvmNetworkConfig | null>(() => {
-    try {
-      if (!accountAddress || !moduleAddress || !rpcEndpoint) {
-        return null;
-      }
-      return {
-        kind: 'evm',
-        chainId,
-        accountAddress: normalizeEvmAddress(accountAddress),
-        multisigModuleAddress: normalizeEvmAddress(moduleAddress),
-        rpcEndpoint,
-      };
-    } catch {
-      return null;
-    }
-  }, [accountAddress, chainId, moduleAddress, rpcEndpoint]);
-
-  const accountId = networkConfig ? evmAccountId(networkConfig.chainId, networkConfig.accountAddress) : '';
-  const proposalPayload: EvmProposalPayload = {
-    kind: 'evm',
-    mode,
-    executionCalldata,
-    signatures: [],
-  };
+  const client = useMemo(
+    () =>
+      new GuardianEvmClient({
+        guardianUrl,
+        provider: window.ethereum,
+        signerAddress: walletAddress || undefined,
+      }),
+    [guardianUrl, walletAddress]
+  );
 
   async function connectWallet() {
     setBusy(true);
@@ -64,8 +49,9 @@ export default function App() {
       if (!Array.isArray(accounts) || typeof accounts[0] !== 'string') {
         throw new Error('Wallet did not return an account');
       }
-      setWalletAddress(normalizeEvmAddress(accounts[0]));
-      appendLog('wallet', accounts[0]);
+      const address = normalizeEvmAddress(accounts[0]);
+      setWalletAddress(address);
+      appendLog('wallet', address);
     } catch (error) {
       appendLog('error', formatError(error));
     } finally {
@@ -73,14 +59,13 @@ export default function App() {
     }
   }
 
-  async function configureAccount() {
-    const config = requireNetworkConfig();
+  async function login() {
     setBusy(true);
     try {
-      await ensureWalletChain(config);
-      const client = createClient(config);
-      const response = await client.configure([walletAddress]);
-      appendLog('configure', response.message);
+      const address = requireWalletAddress();
+      await ensureWalletChain(chainId);
+      const session = await client.login(address);
+      appendLog('session', `${session.address} until ${new Date(session.expiresAt).toLocaleTimeString()}`);
     } catch (error) {
       appendLog('error', formatError(error));
     } finally {
@@ -89,74 +74,30 @@ export default function App() {
   }
 
   async function createProposal() {
-    const config = requireNetworkConfig();
     setBusy(true);
     try {
-      await ensureWalletChain(config);
-      const client = createClient(config);
-      const response = await client.createProposal(proposalPayload, Date.now());
-      setProposalCommitment(response.commitment);
-      setProposalDelta(response.delta);
-      appendLog('proposal', response.commitment);
-    } catch (error) {
-      appendLog('error', formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function signProposal() {
-    const config = requireNetworkConfig();
-    setBusy(true);
-    try {
-      await ensureWalletChain(config);
-      const client = createClient(config);
-      const delta = await client.signProposal(proposalCommitment, proposalPayload);
-      setProposalDelta(delta);
-      appendLog('signatures', summarizeSignatures(delta));
-    } catch (error) {
-      appendLog('error', formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshProposal() {
-    const config = requireNetworkConfig();
-    setBusy(true);
-    try {
-      await ensureWalletChain(config);
-      const client = createClient(config);
-      const delta = await client.getProposal(proposalCommitment);
-      setProposalDelta(delta);
-      appendLog('signatures', summarizeSignatures(delta));
-    } catch (error) {
-      appendLog('error', formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitOnChain() {
-    const config = requireNetworkConfig();
-    setBusy(true);
-    try {
-      await ensureWalletChain(config);
-      const payload = requireStoredEvmPayload(proposalDelta);
-      const txHash = await requireWallet().request({
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from: walletAddress,
-            to: config.multisigModuleAddress,
-            data: encodeSubmitProposal(config.accountAddress, payload),
-          },
-        ],
+      const signer = requireWalletAddress();
+      const normalizedHash = normalizeBytes32(userOpHash, 'hash');
+      await ensureWalletChain(chainId);
+      const account = await client.configure({
+        chainId,
+        smartAccountAddress: accountAddress,
+        multisigValidatorAddress: validatorAddress,
       });
-      if (typeof txHash !== 'string') {
-        throw new Error('Wallet returned a non-string transaction hash');
-      }
-      appendLog('submitted', txHash);
+      appendLog('configured', `${account.accountId} (${account.threshold} threshold)`);
+      const signature = await signProposalHash(requireWallet(), signer, normalizedHash);
+      const response = await client.createProposal({
+        chainId,
+        smartAccountAddress: accountAddress,
+        userOpHash: normalizedHash,
+        payload,
+        nonce,
+        signature,
+        ttlSeconds,
+      });
+      setProposalId(response.proposalId);
+      appendLog('proposal', `${response.proposalId} (${response.signatures.length} signature)`);
+      await refreshProposal(response.proposalId);
     } catch (error) {
       appendLog('error', formatError(error));
     } finally {
@@ -164,23 +105,97 @@ export default function App() {
     }
   }
 
-  function createClient(config: EvmNetworkConfig): GuardianEvmClient {
+  async function approveProposal() {
+    setBusy(true);
+    try {
+      const signer = requireWalletAddress();
+      const id = requireProposalId();
+      await ensureWalletChain(chainId);
+      const signature = await signProposalHash(requireWallet(), signer, normalizeBytes32(userOpHash, 'hash'));
+      const proposal = await client.approveProposal(accountId(), id, {
+        signature,
+      });
+      appendLog('approved', `${proposal.signatures.length} signature(s)`);
+      await refreshProposal(id);
+    } catch (error) {
+      appendLog('error', formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function listProposals() {
+    setBusy(true);
+    try {
+      const proposals = await client.listProposals(accountId());
+      appendLog('list', `${proposals.length} proposal(s)`);
+      if (proposals[0]) {
+        setProposalId(proposals[0].proposalId);
+        setProposal(proposals[0]);
+      }
+    } catch (error) {
+      appendLog('error', formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshProposal(id = proposalId) {
+    setBusy(true);
+    try {
+      const proposal = await client.getProposal(accountId(), id || requireProposalId());
+      setProposalId(proposal.proposalId);
+      setProposal(proposal);
+      appendLog('signatures', `${proposal.signatures.length} stored`);
+    } catch (error) {
+      appendLog('error', formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function getExecutable() {
+    setBusy(true);
+    try {
+      const executable = await client.getExecutableProposal(accountId(), requireProposalId());
+      appendLog('executable', `${executable.signatures.length} signature(s), payload ${executable.payload.length} chars`);
+    } catch (error) {
+      appendLog('error', formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelProposal() {
+    setBusy(true);
+    try {
+      await client.cancelProposal(accountId(), requireProposalId());
+      setProposal(null);
+      setProposalId('');
+      appendLog('cancel', 'proposal removed');
+    } catch (error) {
+      appendLog('error', formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function requireWalletAddress(): `0x${string}` {
     if (!walletAddress) {
       throw new Error('Connect a wallet first');
     }
-    return new GuardianEvmClient({
-      guardianUrl,
-      provider: requireWallet(),
-      networkConfig: config,
-      signerAddress: walletAddress,
-    });
+    return normalizeEvmAddress(walletAddress);
   }
 
-  function requireNetworkConfig(): EvmNetworkConfig {
-    if (!networkConfig) {
-      throw new Error('Complete the EVM account configuration');
+  function requireProposalId(): string {
+    if (!proposalId) {
+      throw new Error('Create or select a proposal first');
     }
-    return networkConfig;
+    return proposalId;
+  }
+
+  function accountId(): string {
+    return client.accountId(chainId, accountAddress);
   }
 
   function requireWallet(): Eip1193Provider {
@@ -191,7 +206,7 @@ export default function App() {
   }
 
   function appendLog(label: string, value: string) {
-    setLogs((current) => [{ label, value }, ...current].slice(0, 8));
+    setLogs((current) => [{ label, value }, ...current].slice(0, 10));
   }
 
   return (
@@ -200,7 +215,7 @@ export default function App() {
         <div className="toolbar">
           <div>
             <h1>EVM Proposal Smoke</h1>
-            <p>{accountId || 'evm:<chain_id>:<account_address>'}</p>
+            <p>{proposalId || 'No proposal selected'}</p>
           </div>
           <button disabled={busy} onClick={connectWallet}>
             {walletAddress ? shortAddress(walletAddress) : 'Connect'}
@@ -210,7 +225,7 @@ export default function App() {
         <div className="grid">
           <label>
             Guardian URL
-            <input value={guardianUrl} onChange={(event) => setGuardianUrl(event.target.value)} />
+            <input placeholder="blank uses Vite proxy" value={guardianUrl} onChange={(event) => setGuardianUrl(event.target.value)} />
           </label>
           <label>
             Chain ID
@@ -222,45 +237,77 @@ export default function App() {
             />
           </label>
           <label>
-            Account address
+            Smart account
             <input value={accountAddress} onChange={(event) => setAccountAddress(event.target.value)} />
           </label>
           <label>
-            Multisig module
-            <input value={moduleAddress} onChange={(event) => setModuleAddress(event.target.value)} />
+            Multisig validator
+            <input value={validatorAddress} onChange={(event) => setValidatorAddress(event.target.value)} />
           </label>
           <label>
-            RPC endpoint
-            <input value={rpcEndpoint} onChange={(event) => setRpcEndpoint(event.target.value)} />
+            UserOp hash
+            <input value={userOpHash} onChange={(event) => setUserOpHash(event.target.value)} />
           </label>
           <label>
-            Mode
-            <input value={mode} onChange={(event) => setMode(event.target.value)} />
+            Nonce
+            <input value={nonce} onChange={(event) => setNonce(event.target.value)} />
+          </label>
+          <label>
+            TTL seconds
+            <input
+              type="number"
+              min={1}
+              value={ttlSeconds}
+              onChange={(event) => setTtlSeconds(Number(event.target.value))}
+            />
           </label>
           <label className="wide">
-            Execution calldata
-            <textarea value={executionCalldata} onChange={(event) => setExecutionCalldata(event.target.value)} />
+            Opaque payload
+            <textarea value={payload} onChange={(event) => setPayload(event.target.value)} />
           </label>
         </div>
 
         <div className="actions">
-          <button disabled={busy || !networkConfig || !walletAddress} onClick={configureAccount}>
-            Configure
+          <button disabled={busy || !walletAddress} onClick={login}>
+            Login
           </button>
-          <button disabled={busy || !networkConfig || !walletAddress} onClick={createProposal}>
-            Create proposal
+          <button disabled={busy || !walletAddress || !accountAddress || !validatorAddress} onClick={createProposal}>
+            Create
           </button>
-          <button disabled={busy || !networkConfig || !walletAddress || !proposalCommitment} onClick={signProposal}>
-            Sign proposal
+          <button disabled={busy || !walletAddress || !proposalId} onClick={approveProposal}>
+            Approve
           </button>
-          <button disabled={busy || !networkConfig || !walletAddress || !proposalCommitment} onClick={refreshProposal}>
-            Refresh proposal
+          <button disabled={busy} onClick={listProposals}>
+            List
           </button>
-          <button disabled={busy || !networkConfig || !walletAddress || !proposalDelta} onClick={submitOnChain}>
-            Submit on-chain
+          <button disabled={busy || !proposalId} onClick={() => refreshProposal()}>
+            Refresh
+          </button>
+          <button disabled={busy || !proposalId} onClick={getExecutable}>
+            Executable
+          </button>
+          <button disabled={busy || !proposalId} onClick={cancelProposal}>
+            Cancel
           </button>
         </div>
       </section>
+
+      {proposal ? (
+        <section className="log-panel">
+          <div className="log-row">
+            <strong>proposal</strong>
+            <span>{proposal.proposalId}</span>
+          </div>
+          <div className="log-row">
+            <strong>hash</strong>
+            <span>{proposal.userOpHash}</span>
+          </div>
+          <div className="log-row">
+            <strong>signatures</strong>
+            <span>{proposal.signatures.map((entry) => shortAddress(entry.signer)).join(', ') || 'none'}</span>
+          </div>
+        </section>
+      ) : null}
 
       <section className="log-panel">
         {logs.map((entry, index) => (
@@ -274,116 +321,18 @@ export default function App() {
   );
 }
 
-function summarizeSignatures(delta: DeltaObject): string {
-  return `${delta.deltaPayload.signatures.length} stored`;
-}
-
-function requireStoredEvmPayload(delta: DeltaObject | null): EvmProposalPayload {
-  if (!delta) {
-    throw new Error('Refresh or create a proposal first');
-  }
-  return delta.deltaPayload;
-}
-
-function encodeSubmitProposal(accountAddress: string, payload: EvmProposalPayload): `0x${string}` {
-  const account = encodeAddress(accountAddress);
-  const mode = normalizeBytes32(payload.mode, 'mode');
-  const executionCalldata = encodeBytes(payload.executionCalldata, 'execution calldata');
-  const signatures = encodeBytesArray(
-    payload.signatures.map((entry) => {
-      if (entry.signature.scheme !== 'ecdsa') {
-        throw new Error('EVM on-chain submit requires ECDSA signatures');
-      }
-      return entry.signature.signature;
-    })
-  );
-  const executionOffset = encodeUint256(32 * 4);
-  const signaturesOffset = encodeUint256(32 * 4 + hexByteLength(executionCalldata));
-  return `0x${submitProposalSelector}${account}${mode}${executionOffset}${signaturesOffset}${executionCalldata}${signatures}`;
-}
-
-function encodeAddress(value: string): string {
-  const address = strip0x(normalizeEvmAddress(value));
-  return `${'0'.repeat(24)}${address}`;
-}
-
-function encodeBytesArray(values: string[]): string {
-  const encodedValues = values.map((value) => encodeBytes(value, 'signature'));
-  let offset = values.length * 32;
-  const offsets = encodedValues.map((value) => {
-    const current = offset;
-    offset += hexByteLength(value);
-    return encodeUint256(current);
-  });
-  return `${encodeUint256(values.length)}${offsets.join('')}${encodedValues.join('')}`;
-}
-
-function encodeBytes(value: string, field: string): string {
-  const hex = strip0x(value);
-  if (hex.length % 2 !== 0) {
-    throw new Error(`${field} must contain an even number of hex characters`);
-  }
-  return `${encodeUint256(hex.length / 2)}${padRightWord(hex)}`;
-}
-
-function normalizeBytes32(value: string, field: string): string {
-  const hex = strip0x(value).toLowerCase();
-  if (hex.length !== 64) {
-    throw new Error(`${field} must be 32 bytes`);
-  }
-  return hex;
-}
-
-function encodeUint256(value: number): string {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('ABI integer value must be a non-negative safe integer');
-  }
-  return value.toString(16).padStart(64, '0');
-}
-
-function padRightWord(hex: string): string {
-  const remainder = hex.length % 64;
-  return remainder === 0 ? hex : `${hex}${'0'.repeat(64 - remainder)}`;
-}
-
-function hexByteLength(hex: string): number {
-  return hex.length / 2;
-}
-
-function strip0x(value: string): string {
-  if (!value.startsWith('0x')) {
-    throw new Error('Expected 0x-prefixed hex');
-  }
-  return value.slice(2);
-}
-
-function shortAddress(address: string): string {
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
-async function ensureWalletChain(config: EvmNetworkConfig): Promise<void> {
+async function ensureWalletChain(chainId: number): Promise<void> {
   const provider = requireWindowEthereum();
-  const chainId = toRpcChainId(config.chainId);
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',
-      params: [{ chainId }],
+      params: [{ chainId: toRpcChainId(chainId) }],
     });
   } catch (error) {
     if (!isUnknownChainError(error)) {
       throw error;
     }
-    await provider.request({
-      method: 'wallet_addEthereumChain',
-      params: [
-        {
-          chainId,
-          chainName: `Guardian EVM ${config.chainId}`,
-          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-          rpcUrls: [config.rpcEndpoint],
-        },
-      ],
-    });
+    throw new Error(`Wallet does not know chain ${chainId}; add it manually before continuing`);
   }
 }
 
@@ -406,6 +355,10 @@ function isUnknownChainError(error: unknown): boolean {
     return false;
   }
   return error.code === 4902 || error.code === -32603;
+}
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function formatError(error: unknown): string {

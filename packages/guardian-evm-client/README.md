@@ -1,100 +1,105 @@
 # @openzeppelin/guardian-evm-client
 
-TypeScript EVM client for Guardian server proposal workflows.
+TypeScript EVM client for Guardian Accounts-compatible proposal coordination.
 
 This package is intentionally isolated from `@openzeppelin/guardian-client`.
-It talks to Guardian over HTTP and signs EVM request/proposal payloads with an
-injected EIP-1193 wallet.
+It talks to Guardian's EVM-enabled HTTP routes, uses a wallet-derived cookie
+session, registers EVM accounts through `/evm/accounts`, and treats proposal
+payloads as opaque application data.
 
 Guardian servers must be built and run with the Rust `evm` feature enabled.
-Default server builds expose the schema but reject EVM config/auth/proposal
-requests with stable code `evm_support_disabled`.
-
-## Installation
-
-```bash
-npm install @openzeppelin/guardian-evm-client
-```
+Default server builds do not register the `/evm/*` routes.
 
 ## Setup
 
-Run Guardian with EVM support and an allowed chain ID:
+Run Guardian with server-owned RPC and EntryPoint mappings:
 
 ```bash
-GUARDIAN_EVM_ALLOWED_CHAIN_IDS=31337 \
+GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
+GUARDIAN_EVM_ENTRYPOINTS=31337=0x... \
 cargo run -p guardian-server --features evm --bin server
 ```
 
 ```typescript
-import { GuardianEvmClient, evmAccountId } from '@openzeppelin/guardian-evm-client';
-
-const networkConfig = {
-  kind: 'evm',
-  chainId: 31337,
-  accountAddress: '0x...',
-  multisigModuleAddress: '0x...',
-  rpcEndpoint: 'http://localhost:8545',
-} as const;
+import { GuardianEvmClient, signProposalHash } from '@openzeppelin/guardian-evm-client';
 
 const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-const signerAddress = accounts[0] as string;
+const signerAddress = accounts[0] as `0x${string}`;
 
 const client = new GuardianEvmClient({
   guardianUrl: 'http://localhost:3000',
   provider: window.ethereum,
-  networkConfig,
   signerAddress,
 });
 
-console.log(evmAccountId(networkConfig.chainId, networkConfig.accountAddress));
+await client.login();
 ```
 
-The canonical Guardian account ID is
-`evm:<chainId>:<normalizedAccountAddress>`. `accountAddress` is used for
-identity and EIP-712 typed-data domains; `multisigModuleAddress` is the
-ERC-7579-style module Guardian reads for signer and threshold checks.
+## Configure
 
-## Usage
+Configure the smart account once before creating proposals. Guardian resolves
+RPC and EntryPoint addresses from server environment maps; clients only provide
+the chain, smart account, and validator addresses.
 
 ```typescript
-await client.configure([signerAddress]);
+await client.configure({
+  chainId: 31337,
+  smartAccountAddress: '0x...',
+  multisigValidatorAddress: '0x...',
+});
 
-const payload = {
-  kind: 'evm',
-  mode: `0x${'0'.repeat(64)}`,
-  executionCalldata: '0x',
-  signatures: [],
-} as const;
-
-const created = await client.createProposal(payload, Date.now());
-const signed = await client.signProposal(created.commitment, payload);
-
-console.log(signed.deltaPayload.signatures.length);
+const accountId = client.accountId(31337, '0x...');
 ```
 
-Fetch existing pending proposals for the configured account:
+## Proposals
+
+The integrating app builds the UserOperation, computes the hash to be signed,
+collects wallet signatures, and sends the opaque payload to Guardian.
 
 ```typescript
-const proposals = await client.listProposals();
+const hash = '0x...' as const;
+const signature = await signProposalHash(window.ethereum, signerAddress, hash);
 
-for (const proposal of proposals) {
-  console.log(proposal.accountId, proposal.nonce, proposal.status);
-}
+const created = await client.createProposal({
+  chainId: 31337,
+  smartAccountAddress: '0x...',
+  userOpHash: hash,
+  payload: JSON.stringify({ packedUserOperation }),
+  nonce: '0',
+  signature,
+  ttlSeconds: 900,
+});
+
+const proposals = await client.listProposals(accountId);
+const proposal = await client.getProposal(accountId, created.proposalId);
 ```
 
-Fetch a specific proposal by Guardian proposal ID:
+Approve with another signer session:
 
 ```typescript
-const proposal = await client.getProposal(created.commitment);
+const approval = await signProposalHash(window.ethereum, otherSigner, proposal.userOpHash);
 
-console.log(proposal.deltaPayload.mode);
-console.log(proposal.deltaPayload.executionCalldata);
-console.log(proposal.deltaPayload.signatures);
+await client.approveProposal(accountId, proposal.proposalId, {
+  signature: approval,
+});
 ```
 
-The package signs Guardian request auth and proposal payloads with
-`eth_signTypedData_v4` and manages the EVM Guardian HTTP flow directly.
+When the signature threshold is met, fetch the payload and ordered signatures
+for the app's own submission flow:
 
-EVM v1 supports EOA signers, pending proposal coordination, and client-side
-on-chain submission. ERC-1271, weighted multisig, execution tracking, and EVM
-reconciliation are out of scope.
+```typescript
+const executable = await client.getExecutableProposal(accountId, proposal.proposalId);
+
+console.log(executable.payload, executable.signatures, executable.signers);
+```
+
+Cancel a pending proposal as its creator:
+
+```typescript
+await client.cancelProposal(accountId, proposal.proposalId);
+```
+
+Guardian verifies the validator is installed, snapshots EOA signers from the
+validator, verifies signatures over the supplied hash, and lazily removes
+expired or finalized proposals. Guardian does not build UserOperations, decode
+payloads, or submit transactions on-chain.
