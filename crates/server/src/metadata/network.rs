@@ -10,8 +10,7 @@ pub enum NetworkConfig {
     Evm {
         chain_id: u64,
         account_address: String,
-        multisig_module_address: String,
-        rpc_endpoint: String,
+        multisig_validator_address: String,
     },
 }
 
@@ -46,18 +45,14 @@ impl NetworkConfig {
             Self::Evm {
                 chain_id,
                 account_address,
-                multisig_module_address,
-                rpc_endpoint,
+                multisig_validator_address,
             } => {
                 if *chain_id == 0 {
                     return Err("chain_id must be greater than zero".to_string());
                 }
 
                 let account_address = normalize_evm_address(account_address)?;
-                let multisig_module_address = normalize_evm_address(multisig_module_address)?;
-                if !is_http_url(rpc_endpoint) {
-                    return Err("rpc_endpoint must be an http or https URL".to_string());
-                }
+                let multisig_validator_address = normalize_evm_address(multisig_validator_address)?;
 
                 let expected = evm_account_id(*chain_id, &account_address);
                 if account_id != expected {
@@ -70,8 +65,7 @@ impl NetworkConfig {
                 Ok(Self::Evm {
                     chain_id: *chain_id,
                     account_address,
-                    multisig_module_address,
-                    rpc_endpoint: rpc_endpoint.clone(),
+                    multisig_validator_address,
                 })
             }
         }
@@ -125,8 +119,7 @@ impl TryFrom<guardian::NetworkConfig> for NetworkConfig {
             Some(network_config::NetworkType::Evm(evm)) => Ok(Self::Evm {
                 chain_id: evm.chain_id,
                 account_address: evm.account_address,
-                multisig_module_address: evm.multisig_module_address,
-                rpc_endpoint: evm.rpc_endpoint,
+                multisig_validator_address: evm.multisig_validator_address,
             }),
             None => Err("Network type not specified".to_string()),
         }
@@ -155,10 +148,6 @@ pub fn normalize_evm_address(address: &str) -> Result<String, String> {
     Ok(format!("0x{}", clean.to_ascii_lowercase()))
 }
 
-fn is_http_url(value: &str) -> bool {
-    value.starts_with("http://") || value.starts_with("https://")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,8 +165,7 @@ mod tests {
         let config = NetworkConfig::Evm {
             chain_id: 1,
             account_address: "0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD".to_string(),
-            multisig_module_address: "0x1111111111111111111111111111111111111111".to_string(),
-            rpc_endpoint: "http://localhost:8545".to_string(),
+            multisig_validator_address: "0x1111111111111111111111111111111111111111".to_string(),
         };
 
         let normalized = config

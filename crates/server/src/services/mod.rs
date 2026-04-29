@@ -97,18 +97,16 @@ pub async fn resolve_account(
     }
 
     if metadata.network_config.is_evm() {
-        #[cfg(not(feature = "evm"))]
-        {
-            return Err(GuardianError::EvmSupportDisabled);
-        }
-
-        #[cfg(feature = "evm")]
-        {
-            crate::evm::authorize_evm_request(&metadata.network_config, account_id, creds).await?;
-        }
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "delta_api".to_string(),
+        });
     } else {
         if matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. }) {
-            return Err(GuardianError::EvmSupportDisabled);
+            return Err(GuardianError::UnsupportedForNetwork {
+                network: "evm".to_string(),
+                operation: "delta_api".to_string(),
+            });
         }
 
         metadata.auth.verify(account_id, creds).map_err(|e| {
@@ -336,6 +334,8 @@ mod tests {
             canonicalization: None,
             clock: Arc::new(clock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         }
     }
 

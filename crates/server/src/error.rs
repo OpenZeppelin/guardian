@@ -42,10 +42,12 @@ pub enum GuardianError {
         signer_id: String,
     },
     InvalidProposalSignature(String),
-    EvmSupportDisabled,
     UnsupportedForNetwork {
         network: String,
         operation: String,
+    },
+    UnsupportedEvmChain {
+        chain_id: u64,
     },
     InvalidNetworkConfig(String),
     RpcUnavailable(String),
@@ -106,8 +108,8 @@ impl GuardianError {
             GuardianError::InvalidCommitment(_) => StatusCode::BAD_REQUEST,
             GuardianError::CommitmentMismatch { .. } => StatusCode::BAD_REQUEST,
             GuardianError::InvalidProposalSignature(_) => StatusCode::BAD_REQUEST,
-            GuardianError::EvmSupportDisabled => StatusCode::BAD_REQUEST,
             GuardianError::UnsupportedForNetwork { .. } => StatusCode::BAD_REQUEST,
+            GuardianError::UnsupportedEvmChain { .. } => StatusCode::BAD_REQUEST,
             GuardianError::InvalidNetworkConfig(_) => StatusCode::BAD_REQUEST,
             GuardianError::RpcUnavailable(_) => StatusCode::BAD_GATEWAY,
             GuardianError::RpcValidationFailed(_) => StatusCode::BAD_GATEWAY,
@@ -142,8 +144,8 @@ impl GuardianError {
             GuardianError::InvalidCommitment(_) => tonic::Code::InvalidArgument,
             GuardianError::CommitmentMismatch { .. } => tonic::Code::InvalidArgument,
             GuardianError::InvalidProposalSignature(_) => tonic::Code::InvalidArgument,
-            GuardianError::EvmSupportDisabled => tonic::Code::FailedPrecondition,
             GuardianError::UnsupportedForNetwork { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::UnsupportedEvmChain { .. } => tonic::Code::FailedPrecondition,
             GuardianError::InvalidNetworkConfig(_) => tonic::Code::InvalidArgument,
             GuardianError::RpcUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::RpcValidationFailed(_) => tonic::Code::Unavailable,
@@ -182,8 +184,8 @@ impl GuardianError {
             GuardianError::ProposalNotFound { .. } => "proposal_not_found",
             GuardianError::ProposalAlreadySigned { .. } => "proposal_already_signed",
             GuardianError::InvalidProposalSignature(_) => "invalid_proposal_signature",
-            GuardianError::EvmSupportDisabled => "evm_support_disabled",
             GuardianError::UnsupportedForNetwork { .. } => "unsupported_for_network",
+            GuardianError::UnsupportedEvmChain { .. } => "unsupported_evm_chain",
             GuardianError::InvalidNetworkConfig(_) => "invalid_network_config",
             GuardianError::RpcUnavailable(_) => "rpc_unavailable",
             GuardianError::RpcValidationFailed(_) => "rpc_validation_failed",
@@ -251,14 +253,14 @@ impl fmt::Display for GuardianError {
             GuardianError::InvalidProposalSignature(msg) => {
                 write!(f, "Invalid proposal signature: {msg}")
             }
-            GuardianError::EvmSupportDisabled => {
-                write!(f, "EVM support is disabled")
-            }
             GuardianError::UnsupportedForNetwork { network, operation } => {
                 write!(
                     f,
                     "Operation '{operation}' is unsupported for {network} accounts"
                 )
+            }
+            GuardianError::UnsupportedEvmChain { chain_id } => {
+                write!(f, "Unsupported EVM chain '{chain_id}'")
             }
             GuardianError::InvalidNetworkConfig(msg) => write!(f, "Invalid network config: {msg}"),
             GuardianError::RpcUnavailable(msg) => write!(f, "RPC unavailable: {msg}"),

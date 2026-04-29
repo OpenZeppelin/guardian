@@ -2,6 +2,8 @@ use crate::ack::AckRegistry;
 use crate::builder::clock::Clock;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::dashboard::DashboardState;
+#[cfg(feature = "evm")]
+use crate::evm::EvmAppState;
 use crate::metadata::MetadataStore;
 use crate::network::NetworkClient;
 use crate::storage::StorageBackend;
@@ -17,4 +19,6 @@ pub struct AppState {
     pub canonicalization: Option<CanonicalizationConfig>,
     pub clock: Arc<dyn Clock>,
     pub dashboard: Arc<DashboardState>,
+    #[cfg(feature = "evm")]
+    pub evm: Arc<EvmAppState>,
 }

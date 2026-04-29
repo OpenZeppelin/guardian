@@ -2,7 +2,7 @@ use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::{ResolvedAccount, resolve_account};
+use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
 use guardian_shared::DeltaSignature;
 use tracing::info;
@@ -36,15 +36,10 @@ pub async fn sign_delta_proposal(
     // Resolve account and verify authentication
     let resolved = resolve_account(state, &account_id, &credentials).await?;
     if resolved.metadata.network_config.is_evm() {
-        return sign_evm_delta_proposal(
-            state,
-            account_id,
-            normalized_commitment,
-            signature,
-            credentials,
-            resolved,
-        )
-        .await;
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "delta_proposal".to_string(),
+        });
     }
 
     // Fetch the proposal by commitment
@@ -167,130 +162,6 @@ pub async fn sign_delta_proposal(
     Ok(SignDeltaProposalResult {
         delta: delta_proposal.clone(),
     })
-}
-
-#[cfg(feature = "evm")]
-async fn sign_evm_delta_proposal(
-    state: &AppState,
-    account_id: String,
-    normalized_commitment: String,
-    signature: ProposalSignature,
-    credentials: Credentials,
-    resolved: ResolvedAccount,
-) -> Result<SignDeltaProposalResult> {
-    let mut delta_proposal = resolved
-        .storage
-        .pull_delta_proposal(&account_id, &normalized_commitment)
-        .await
-        .map_err(|_| GuardianError::ProposalNotFound {
-            account_id: account_id.clone(),
-            commitment: normalized_commitment.clone(),
-        })?;
-
-    if !delta_proposal.account_id.eq_ignore_ascii_case(&account_id) {
-        return Err(GuardianError::ProposalNotFound {
-            account_id: account_id.clone(),
-            commitment: normalized_commitment,
-        });
-    }
-
-    let (timestamp, proposer_id, mut cosigner_sigs) = match &delta_proposal.status {
-        DeltaStatus::Pending {
-            timestamp,
-            proposer_id,
-            cosigner_sigs,
-        } => (
-            timestamp.clone(),
-            proposer_id.clone(),
-            cosigner_sigs.clone(),
-        ),
-        _ => {
-            return Err(GuardianError::ProposalNotFound {
-                account_id,
-                commitment: normalized_commitment,
-            });
-        }
-    };
-
-    let normalized_payload =
-        crate::evm::normalize_stored_evm_proposal_payload(delta_proposal.delta_payload.clone())?;
-    let recovered_signer = crate::evm::verify_proposal_signature(
-        &resolved.metadata.network_config,
-        &normalized_payload,
-        &signature,
-    )?;
-    let authenticated_signer = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(GuardianError::AuthenticationFailed)?,
-    };
-    if recovered_signer != authenticated_signer {
-        return Err(GuardianError::InvalidProposalSignature(
-            "proposal signature signer does not match request signer".to_string(),
-        ));
-    }
-
-    if cosigner_sigs
-        .iter()
-        .any(|sig| sig.signer_id.eq_ignore_ascii_case(&recovered_signer))
-    {
-        return Err(GuardianError::ProposalAlreadySigned {
-            signer_id: recovered_signer,
-        });
-    }
-
-    let new_signature = CosignerSignature {
-        signature,
-        timestamp: state.clock.now_rfc3339(),
-        signer_id: recovered_signer.clone(),
-    };
-    cosigner_sigs.push(new_signature);
-
-    let new_sig = DeltaSignature {
-        signer_id: recovered_signer.clone(),
-        signature: cosigner_sigs.last().expect("just pushed").signature.clone(),
-    };
-    delta_proposal
-        .delta_payload
-        .as_object_mut()
-        .ok_or_else(|| GuardianError::InvalidDelta("delta_payload must be an object".to_string()))?
-        .entry("signatures".to_string())
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
-        .as_array_mut()
-        .ok_or_else(|| GuardianError::InvalidDelta("signatures must be an array".to_string()))?
-        .push(serde_json::to_value(new_sig).map_err(|e| {
-            GuardianError::InvalidDelta(format!("Failed to serialize signature: {e}"))
-        })?);
-
-    delta_proposal.status = DeltaStatus::Pending {
-        timestamp,
-        proposer_id,
-        cosigner_sigs,
-    };
-
-    resolved
-        .storage
-        .update_delta_proposal(&normalized_commitment, &delta_proposal)
-        .await
-        .map_err(GuardianError::StorageError)?;
-
-    Ok(SignDeltaProposalResult {
-        delta: delta_proposal,
-    })
-}
-
-#[cfg(not(feature = "evm"))]
-async fn sign_evm_delta_proposal(
-    _state: &AppState,
-    _account_id: String,
-    _normalized_commitment: String,
-    _signature: ProposalSignature,
-    _credentials: Credentials,
-    _resolved: ResolvedAccount,
-) -> Result<SignDeltaProposalResult> {
-    Err(GuardianError::EvmSupportDisabled)
 }
 
 #[cfg(test)]
