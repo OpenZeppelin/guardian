@@ -51,7 +51,25 @@ await client.configure({
 const accountId = client.accountId(31337, '0x...');
 ```
 
-## Proposals
+Fetch existing pending proposals for the configured account:
+
+```typescript
+const proposals = await client.listProposals();
+
+for (const proposal of proposals) {
+  console.log(proposal.accountId, proposal.nonce, proposal.status);
+}
+```
+
+Fetch a specific proposal by Guardian proposal ID:
+
+```typescript
+const proposal = await client.getProposal(created.commitment);
+
+console.log(proposal.deltaPayload.mode);
+console.log(proposal.deltaPayload.executionCalldata);
+console.log(proposal.deltaPayload.signatures);
+```
 
 The integrating app builds the UserOperation, computes the hash to be signed,
 collects wallet signatures, and sends the opaque payload to Guardian.
