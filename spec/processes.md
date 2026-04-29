@@ -2,13 +2,16 @@
 
 ## Services overview
 
-- **configure_account**: creates a new account by validating the provided network configuration and auth policy, then storing account metadata. Miden accounts also validate and persist the initial state. EVM accounts are feature-gated, require empty `initial_state`, and store normalized signer/module metadata after ERC-7579-style module checks.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the current state, computes the new commitment, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
-- **push_delta_proposal**: creates a pending proposal. Miden proposals validate `tx_summary` against state and derive IDs through the Miden network client. EVM proposals are feature-gated, validate EVM payload shape, enforce signer authority, and derive IDs from `(chain_id, account_address, mode, keccak256(execution_calldata))`.
-- **sign_delta_proposal**: appends one signer signature to a pending proposal. EVM signatures are EIP-712 proposal signatures recovered to signer EOA addresses.
+- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against state and deriving IDs through the Miden network client.
+- **sign_delta_proposal**: appends one signer signature to a pending Miden proposal.
+- **evm_session**: issues an EIP-712 wallet challenge, recovers the EOA with `ecrecover`, consumes the nonce once, and creates a cookie-backed session.
+- **evm_accounts**: registers EVM smart accounts under `/evm/accounts` by validating the cookie session signer, server-owned chain config, ERC-7579 validator installation, and signer snapshot before storing account metadata without state or acknowledgement data.
+- **evm_proposals**: creates, lists, approves, fetches executable data for, and cancels EVM proposals with opaque payloads, UserOperation hashes, signer snapshots, TTL, and lazy EntryPoint nonce cleanup.
 
 ### Diagrams
 
@@ -24,22 +27,12 @@ sequenceDiagram
   C->>S: POST /configure {account_id, auth, network_config?, initial_state} + credentials
   S->>S: verify timestamp (within 300s skew window)
   S->>S: validate network_config for account_id
-  alt EVM config and evm feature disabled
-    S-->>C: error evm_support_disabled
-  else Miden account
-    S->>N: validate_credential(initial_state, credential)
-    S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
-    S->>N: get_state_commitment(account_id, initial_state)
-    S->>ST: submit_state(state_json, commitment)
-    S->>M: set(account_id, auth, network_config, timestamps, last_auth_timestamp)
-    S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
-  else EVM account with evm feature
-    S->>S: verify EIP-712 request auth
-    S->>N: read ERC-7579 module signers and threshold
-    S->>S: require request signer and configured signers are authorized
-    S->>M: set(account_id, EvmEcdsa(signers), network_config, timestamps, last_auth_timestamp)
-    S-->>C: 200 {account_id}
-  end
+  S->>N: validate_credential(initial_state, credential)
+  S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
+  S->>N: get_state_commitment(account_id, initial_state)
+  S->>ST: submit_state(state_json, commitment)
+  S->>M: set(account_id, auth, network_config, timestamps, last_auth_timestamp)
+  S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
 
 #### push_delta
@@ -142,25 +135,11 @@ sequenceDiagram
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
-  alt EVM payload and evm feature disabled
-    S-->>C: error evm_support_disabled
-  else Miden proposal
-    S->>ST: pull_state(account_id)
-    S->>N: verify_delta(prev_commitment, state_json, tx_summary)
-    S->>N: delta_proposal_id(account_id, nonce, tx_summary)
-    S->>ST: submit_delta_proposal(id, pending_delta)
-    S-->>C: 200 {delta, commitment:id}
-  else EVM proposal
-    S->>S: validate kind, mode, execution_calldata, empty signatures
-    S->>N: ensure authenticated signer is module signer
-    S->>S: proposal_id = keccak256(chain_id, account_address, mode, calldata_hash)
-    alt pending proposal already exists
-      S-->>C: 200 {existing_delta, commitment:proposal_id}
-    else new proposal
-      S->>ST: submit_delta_proposal(proposal_id, pending_delta)
-      S-->>C: 200 {delta, commitment:proposal_id}
-    end
-  end
+  S->>ST: pull_state(account_id)
+  S->>N: verify_delta(prev_commitment, state_json, tx_summary)
+  S->>N: delta_proposal_id(account_id, nonce, tx_summary)
+  S->>ST: submit_delta_proposal(id, pending_delta)
+  S-->>C: 200 {delta, commitment:id}
 ```
 
 #### sign_delta_proposal
@@ -171,20 +150,52 @@ sequenceDiagram
   participant S as Server
   participant M as Metadata
   participant ST as Storage
-  C->>S: PUT /delta/proposal {account_id, commitment, signature,...}
+  C->>S: PUT /delta/proposal {account_id, commitment, signature}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
   S->>S: check timestamp > last_auth_timestamp
   S->>M: update last_auth_timestamp
   S->>ST: pull_delta_proposal(account_id, commitment)
   S->>S: ensure status.pending & signer not recorded
-  alt EVM account
-    S->>S: recover EIP-712 proposal signer
-    S->>S: require recovered signer == authenticated signer
-  else Miden account
-    S->>S: derive signer commitment from x-pubkey
-  end
-  S->>ST: update_delta_proposal(commitment, append_signature)
+  S->>S: derive signer commitment from x-pubkey
+  S->>ST: update_delta_proposal(commitment, append signature)
   S-->>C: 200 {delta_with_signatures}
+```
+
+#### evm_accounts_and_proposals
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server
+  participant A as SmartAccount
+  participant V as Validator
+  participant E as EntryPoint
+  participant ST as Storage
+  participant M as Metadata
+  C->>S: GET /evm/auth/challenge?address=...
+  S-->>C: EIP-712 challenge
+  C->>S: POST /evm/auth/verify {address, nonce, signature}
+  S->>S: ecrecover challenge signer & consume nonce
+  S-->>C: Set-Cookie guardian_evm_session
+  C->>S: POST /evm/accounts {chain, account, validator}
+  S->>A: isModuleInstalled(1, validator, 0x)
+  S->>V: getSignerCount/getSigners/threshold
+  S->>S: verify session EOA is a validator signer
+  S->>M: store account metadata
+  C->>S: POST /evm/proposals {account_id, user_op_hash, payload, nonce, signature}
+  S->>M: load EVM account metadata
+  S->>A: isModuleInstalled(1, validator, 0x)
+  S->>V: getSignerCount/getSigners/threshold
+  S->>S: verify proposer and initial signature against signer snapshot
+  S->>ST: store active EVM proposal
+  C->>S: POST /evm/proposals/{id}/approve {account_id, signature}
+  S->>ST: load EVM proposal
+  S->>E: getNonce(account, nonce_key)
+  S->>S: delete if expired or finalized
+  S->>S: verify signer is in stored snapshot and signature is unique
+  S->>ST: append signature
+  C->>S: GET /evm/proposals/{id}/executable?account_id=...
+  S-->>C: {hash, payload, signatures, signers} once threshold is met
 ```
 
 #### get_delta_proposals
@@ -226,7 +237,7 @@ sequenceDiagram
     - Delete matching Miden delta proposal identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
   - Else set delta status to `discarded`.
 
-EVM proposals are not processed by canonicalization in v1. They remain pending records used to collect signatures for on-chain submission, and on-chain execution tracking/reconciliation is out of scope.
+EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 
 #### Canonicalization worker (diagram)
 ```mermaid

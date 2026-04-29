@@ -1,439 +1,435 @@
-# Feature Specification: Add generic EVM proposal sharing and signing support
+# Feature Specification: Domain-separated EVM proposal support
 
 **Feature Key**: `001-evm-proposal-support`  
 **Suggested Branch**: `001-evm-proposal-support` (manual creation optional)  
 **Created**: 2026-03-18  
+**Updated**: 2026-04-29
 **Status**: Draft  
-**Input**: User description: "Add generic EVM proposal sharing and signing support"
+**Input**: User description: "Add feature-gated EVM account and proposal support as a domain-separated extension of Guardian"
 
 ## Context
 
-Guardian currently assumes a Miden-centric account and proposal
-model. This feature introduces per-account network configuration so the system
-can support existing Miden accounts by default and new EVM accounts only when
-EVM support is explicitly enabled, without moving network selection to a
-server-global setting.
+Guardian's current production model is Miden-centered: account configuration,
+state sync, delta submission, delta proposals, and canonicalization are built
+around Miden account state. EVM smart accounts need a different coordination
+flow. They do not submit Guardian deltas, do not use Guardian acknowledgement
+signatures, and do not need Guardian to build or submit on-chain transactions.
 
-For EVM accounts, the initial scope is proposal sharing and cosigner signature
-collection only. The system must support configuring an EVM account, validating
-its signer set through the configured RPC endpoint, creating/listing/getting
-pending proposals, and appending signatures to those proposals when the EVM
-feature flag is enabled. Existing Miden flows must continue to behave as they
-do today when EVM support is disabled.
+This feature introduces EVM proposal coordination as a feature-gated Guardian
+domain under `/evm/*`. Miden keeps the existing `/configure`, `/delta`,
+`/delta/proposal`, `/state`, and gRPC flows. EVM uses wallet-session
+authentication, EVM smart account registration, and EVM proposal routes that are
+separate from the Miden delta proposal envelope.
 
-This change is expected to affect the server contract first, then the Rust
-client and TypeScript client packages. EVM-specific HTTP types, browser wallet
-signing, and orchestration belong in a dedicated TypeScript EVM client package
-rather than the protocol-generic base TypeScript client. Multisig SDK layers may
-remain unchanged in v1 unless they surface the new EVM proposal workflow.
+For EVM accounts, Guardian coordinates cosigner approvals over a client-supplied
+UserOperation hash and opaque payload. Guardian validates that the authenticated
+wallet is authorized by the configured ERC-7579 multisig validator, snapshots
+the signer set and threshold for each proposal, verifies ECDSA signatures, and
+returns executable proposal data once enough signatures are collected. Guardian
+does not build UserOperations, decode opaque payloads, submit transactions
+on-chain, or track execution beyond lazy cleanup when expiry or EntryPoint nonce
+state makes a proposal inactive.
+
+The default Guardian build remains Miden-only. EVM behavior is enabled only by
+an explicit server-side `evm` feature flag. Default builds do not register
+`/evm/*` routes and do not initialize EVM sessions, contract readers, storage
+flows, or proposal handlers.
 
 ## Clarifications
 
 ### Session 2026-03-18
 
 - Q: What is the canonical identity of an EVM account in Guardian? -> A: `chain_id + account_address`
-- Q: Which EVM account configuration fields are initially expected? -> A: start with `chain_id`, `account_address`, `multisig_module_address`, and required `rpc_endpoint`
 - Q: What EVM scope is desired for v1? -> A: proposal sharing and signing only; delta/state/canonicalization support for EVM is not in v1
-- Q: How should signer authority be validated for EVM accounts? -> A: re-check signer authority on every relevant action
 - Q: Which auth/signature model should EVM v1 use? -> A: keep the auth model extensible, but implement ECDSA only for EVM in v1
-- Q: How should per-account network configuration be represented? -> A: prefer a `network_config` model rather than unrelated top-level fields
-- Q: Should v1 use an indexer for EVM signer validation? -> A: no; use direct RPC reads only in v1 and require `rpc_endpoint`
+- Q: Should v1 use an indexer for EVM signer validation? -> A: no; use direct contract reads in v1
 - Q: How should the EVM proposal identifier be represented? -> A: use a deterministic hash-based Guardian proposal identifier rather than raw concatenation
-- Q: Should this feature preserve backward compatibility for accounts missing `network_config`? -> A: no; missing `network_config` is invalid and new account configuration must be explicit
 
 ### Session 2026-04-09
 
-- Q: What canonical API account identifier should EVM use? -> A: derive and enforce `evm:<chain_id>:<normalized_account_address>`
-- Q: Which EVM multisig contract model should v1 target? -> A: OpenZeppelin `ERC7579Multisig` as the signer/threshold read model
-- Q: What EVM proposal shape should v1 support? -> A: only ERC-7579 `execute(mode, executionCalldata)` coordination payloads
-- Q: Which ERC-7579 modes are supported in v1? -> A: single-call and batch-call only, with default exec type and zero selector/mode payload; delegatecall, try-mode, and custom selector/payload are out of scope
+- Q: What canonical API account identifier should EVM use? -> A: derive and enforce `evm:<chain_id>:<normalized_smart_account_address>`
+- Q: Which EVM multisig contract model should v1 target? -> A: OpenZeppelin ERC-7579 multisig validator as the signer/threshold read model
 - Q: What signer types should EVM v1 support? -> A: normalized EOA addresses only
-- Q: What transport auth shape should EVM v1 use? -> A: keep `x-pubkey`, `x-signature`, and `x-timestamp`, but verify EVM requests using EIP-712 over a server-reconstructed payload; `x-pubkey` remains the legacy header name and carries the normalized signer address for EVM
-- Q: What exact bytes should EVM proposal cosigners sign? -> A: a Guardian-defined EIP-712 coordination message over `(mode, keccak256(execution_calldata))`; execution is out of scope and the signature is not required to be directly reusable on-chain in v1
-- Q: Is the proposal create path allowed to include already-collected EVM signatures? -> A: no; create rejects non-empty signature arrays and signatures are appended only through `sign_delta_proposal`
-- Q: What does the EVM proposal `nonce` mean? -> A: it is Guardian-local ordering only, not an on-chain multisig nonce and not part of the proposal identifier
-- Q: How should duplicate EVM proposal creation behave? -> A: same computed proposal identifier is idempotent and returns the existing pending proposal
-- Q: What do legacy delta fields mean for EVM proposals? -> A: `prev_commitment`, `new_commitment`, `ack_sig`, `ack_pubkey`, and `ack_scheme` are explicitly unused for EVM v1 proposals
-- Q: How should pending EVM proposals age out in v1? -> A: they stay pending until a future explicit cleanup/reconciliation feature, subject to the existing pending-proposal cap
-- Q: What implementation approach is preferred? -> A: one unified network-aware implementation with an explicit EVM feature gate, not a long-lived forked feature path
 
 ### Session 2026-04-27
 
 - Q: Should EVM support be enabled by default? -> A: no; EVM account and proposal support is gated behind an explicit server-side `evm` feature flag and default Guardian deployments remain Miden-only.
-- Q: Does enabling the EVM feature mean Guardian supports every EVM chain by default? -> A: no; the feature enables the EVM account/proposal capability family only. Each EVM account still requires explicit `chain_id`, `account_address`, `multisig_module_address`, and `rpc_endpoint`, and deployments may further restrict accepted chain IDs.
-- Q: What should happen when EVM requests reach a server without the EVM feature enabled? -> A: reject them before storage mutation with a stable `evm_support_disabled` application error.
+- Q: Does enabling the EVM feature mean Guardian supports every EVM chain by default? -> A: no; the feature enables the EVM account/proposal capability family only. Deployments must explicitly configure supported chain RPC and EntryPoint addresses.
+- Q: What should happen when EVM requests reach a server without the EVM feature enabled? -> A: the `/evm/*` routes are absent, and no EVM session, contract, or persistence code is initialized.
+
+### Session 2026-04-29
+
+- Q: Should EVM reuse `/configure` and `/delta/proposal`? -> A: no. EVM has a different account and proposal lifecycle, so v1 uses a domain-separated `/evm/*` HTTP surface.
+- Q: What should the EVM auth endpoints be? -> A: `/evm/auth/challenge`, `/evm/auth/verify`, and `/evm/auth/logout`.
+- Q: Are cookie-backed sessions acceptable instead of JWTs? -> A: yes, if the authenticated identity is cryptographically derived from the wallet signature, sessions expire, and challenge nonces are single-use and time-limited.
+- Q: Does Guardian submit EVM proposals on-chain? -> A: no. Guardian stores approvals and returns executable data; integrators choose their own submission mechanism.
+- Q: Should EVM proposals expose Miden `DeltaObject` semantics? -> A: no. EVM proposals use EVM-specific request and response shapes, while implementations may reuse shared lower-level storage infrastructure where appropriate.
 
 ## Scope *(mandatory)*
 
 ### In Scope
 
-- Add per-account network configuration so account configuration is no longer
-  modeled as server-global network selection.
-- Gate all EVM account, auth, proposal, and RPC validation behavior behind an
-  explicit EVM feature flag that is disabled by default.
-- Support EVM account configuration with network-aware metadata.
-- Support EVM proposal creation, listing, retrieval, and signature collection.
-- Provide a dedicated TypeScript EVM client package for browser wallet request
-  auth, proposal signing, and Guardian proposal orchestration.
-- Support EVM signer validation through direct RPC reads.
-- Re-validate signer authority for EVM accounts on all relevant account and
-  proposal actions.
-- Preserve existing Miden account and proposal behavior.
-- Return explicit unsupported behavior for EVM flows that remain out of scope in
-  v1.
+- Add an EVM HTTP domain under `/evm/*` for wallet sessions, smart account
+  registration, proposal creation, listing, retrieval, approval, executable-data
+  export, and cancellation.
+- Gate all EVM auth, account, proposal, contract-read, and cleanup behavior
+  behind an explicit server-side `evm` feature flag that is disabled by default.
+- Preserve existing Miden `/configure`, `/delta`, `/delta/proposal`, `/state`,
+  canonicalization, and gRPC behavior.
+- Register EVM accounts with the canonical account ID
+  `evm:<chain_id>:<normalized_smart_account_address>`.
+- Resolve EVM RPC and EntryPoint addresses from server-owned configuration
+  rather than trusting client-provided endpoints.
+- Validate ERC-7579 multisig validator installation and signer/threshold data
+  through direct chain reads.
+- Authenticate EVM users with EIP-712 wallet challenges and a secure,
+  expiring `guardian_evm_session` cookie.
+- Support EVM proposal coordination over a client-supplied 32-byte
+  `user_op_hash`, opaque payload, full uint256 nonce, TTL, and ECDSA
+  signatures.
+- Snapshot proposal signer EOAs and threshold at proposal creation time.
+- Verify EVM proposal signatures by recovering the EOA from the stored
+  `user_op_hash`.
+- Lazily remove expired EVM proposals and proposals that are inactive because
+  the configured EntryPoint nonce has advanced.
+- Provide a dedicated TypeScript EVM client package and smoke app for the EVM
+  HTTP domain.
 
 ### Out of Scope
 
-- EVM delta push, state retrieval, merged delta retrieval, and canonicalization.
-- Automatic execution tracking for EVM proposals.
-- Indexer-based EVM validation in v1.
-- Non-ECDSA EVM signing schemes in v1.
-- Enabling every EVM-compatible chain by default or treating the EVM feature as
-  a product guarantee for all chain IDs.
-- Broad multisig SDK support unless required to validate the new lower-layer
-  behavior.
+- EVM support through `/configure`, `/delta/proposal`, `/delta`,
+  `/delta/since`, `/state`, or gRPC in v1.
+- Miden delta semantics for EVM proposal records.
+- Guardian-built UserOperations, payload decoding, bundler submission,
+  on-chain transaction submission, or generalized execution tracking.
+- ERC-1271 contract signers, weighted multisig, generic ERC-7913 verifier-key
+  signers, and non-EOA signer bytes.
+- Indexer-based signer validation.
+- Enabling every EVM-compatible chain by default.
+- Changes to the base TypeScript Guardian client or Rust Guardian client beyond
+  non-behavioral compatibility work required by shared contract types.
+- Introducing a separate PSM package or service name; PSM refers to Guardian in
+  this feature context.
 
 ## User Scenarios & Testing *(mandatory)*
 
-- Prioritize stories (P1, P2, P3). Each story must be independently testable and
-  deliver user value.
-- Include transport expectations (HTTP/gRPC) and auth behavior when relevant.
-- Because the server contract changes, at least one upstream client surface must
-  be validated.
+### User Story 1 - Authenticate EVM Wallet Sessions (Priority: P1)
 
-### User Story 1 - Configure Network-Aware Accounts (Priority: P1)
+As an EVM cosigner, I can sign a Guardian challenge with my wallet and receive a
+short-lived session so Guardian can authorize my later EVM account and proposal
+actions without requiring per-request headers or JWTs.
 
-As an operator, I can configure an account with explicit per-account network
-settings so Guardian knows whether the account follows Miden or EVM behavior and can
-preserve the correct validation rules for that account.
-
-**Why this priority**: Every later EVM flow depends on account-level network
-configuration, and this is the minimum change needed to avoid interfering with
-existing Miden features.  
-**Independent Test**: Configure one Miden account through default HTTP and gRPC
-paths, verify an EVM config is rejected while the feature is disabled, then
-configure one EVM account through both transports with the feature enabled and
-verify that persisted account configuration retains the correct
-network-specific shape and validation behavior.
+**Why this priority**: Every EVM account and proposal action depends on a
+verified wallet identity.
+**Independent Test**: Request a challenge, sign it with a wallet, verify it,
+confirm the session cookie is set, then verify challenge replay, expired
+challenge, and disabled-feature cases fail explicitly.
 
 **Acceptance Scenarios**:
 
-1. **Given** a Miden account configuration request, **When** the account is
-   created, **Then** the persisted account keeps Miden-compatible behavior and
-   no EVM-specific validation is required.
-2. **Given** a server without the EVM feature enabled, **When** an EVM account
-   configuration request is submitted, **Then** the request fails with
-   `evm_support_disabled` before any account metadata is persisted.
-3. **Given** an EVM-enabled server and an EVM account configuration request
-   with the required network fields, **When** the account is created, **Then**
-   the account is persisted with EVM-specific network configuration and can
-   later use EVM proposal workflows.
-4. **Given** an EVM-enabled server and an EVM account configuration request
-   missing required network fields, **When** the account is created, **Then**
-   the request fails with an explicit validation error.
+1. **Given** an EVM-enabled server, **When** a wallet requests and signs a valid
+   challenge, **Then** Guardian derives the session EOA from the signature and
+   creates an expiring cookie-backed session.
+2. **Given** a challenge nonce has already been consumed, **When** the same
+   challenge is submitted again, **Then** verification fails.
+3. **Given** a server without EVM support enabled, **When** any `/evm/auth/*`
+   route is called, **Then** the route is absent from the default router.
 
 ---
 
-### User Story 2 - Share And Sign EVM Proposals (Priority: P2)
+### User Story 2 - Register EVM Smart Accounts (Priority: P1)
 
-As an authorized cosigner for an EVM account, I can create, list, retrieve, and
-sign pending proposals so proposal coordination works before any execution
-tracking exists.
+As an authorized signer for an EVM smart account, I can register that account in
+Guardian so proposals can later be shared and approved by the account's
+validator signer set.
 
-**Why this priority**: This is the core feature requested, and it should work
-without requiring the broader EVM delta/canonicalization model in v1.  
-**Independent Test**: Verify EVM proposal creation is rejected while the feature
-is disabled, then create a pending EVM proposal with the feature enabled,
-retrieve it through both transports, append signatures from authorized signers,
-and verify duplicate signatures are rejected.
+**Why this priority**: Proposal coordination needs a durable account identity,
+validator address, and chain configuration before proposals can be accepted.
+**Independent Test**: With a valid wallet session, register a smart account and
+validator on a configured chain, then verify unauthorized signer, unsupported
+chain, missing RPC/EntryPoint config, and validator-not-installed cases fail.
 
 **Acceptance Scenarios**:
 
-1. **Given** an EVM-enabled server and an EVM account with valid signer
-   authority, **When** an authorized caller creates a proposal, **Then** the
-   proposal is stored as pending with a deterministic hash-based Guardian
-   proposal identifier.
-2. **Given** a pending EVM proposal, **When** an authorized cosigner signs it,
-   **Then** the signature is appended and the updated pending proposal is
-   returned.
-3. **Given** a pending EVM proposal already signed by a signer, **When** the
-   same signer signs again, **Then** the request fails with an explicit
-   duplicate-signature error.
-4. **Given** equivalent normalized EVM proposal contents for the same account,
-   **When** those contents are submitted through either HTTP or gRPC, **Then**
-   the resulting proposal identifier is the same.
-5. **Given** a server without the EVM feature enabled, **When** an EVM proposal
-   request is submitted, **Then** the request fails with
-   `evm_support_disabled` and no proposal is persisted.
+1. **Given** an EVM-enabled server with configured chain RPC and EntryPoint
+   addresses, **When** a current validator signer registers a smart account,
+   **Then** Guardian stores account metadata for the canonical EVM account ID.
+2. **Given** the session EOA is not a current validator signer, **When** account
+   registration is attempted, **Then** the request fails with
+   `signer_not_authorized`.
+3. **Given** the validator module is not installed on the smart account,
+   **When** account registration is attempted, **Then** the request fails with
+   an explicit contract-validation error.
 
 ---
 
-### User Story 3 - Fail Explicitly For Unsupported EVM Flows (Priority: P3)
+### User Story 3 - Coordinate EVM Proposal Approvals (Priority: P2)
 
-As an integrator, I can distinguish supported EVM proposal workflows from
-unsupported EVM delta/state workflows so the system does not silently fall back
-to Miden assumptions or leave behavior ambiguous.
+As an authorized EVM cosigner, I can create, list, retrieve, approve, cancel,
+and export executable proposal data so a smart-account transaction can collect
+the required approvals before another tool submits it on-chain.
 
-**Why this priority**: The feature is intentionally partial in v1, so the
-boundaries must be explicit to avoid architectural drift and accidental misuse.  
-**Independent Test**: With EVM support enabled, call unsupported EVM
-delta/state/canonicalization flows and verify they return explicit unsupported
-behavior rather than partial or silent fallback semantics.
+**Why this priority**: This is the core EVM value: Guardian coordinates
+off-chain approval collection while leaving UserOperation construction and
+submission to the integrating application.
+**Independent Test**: Create a proposal with an initial signature, list and
+retrieve it from another authorized session, add approvals from multiple
+signers, verify duplicate and unauthorized approvals fail, verify executable
+data is withheld before threshold and returned after threshold, then cancel as
+the proposer.
 
 **Acceptance Scenarios**:
 
-1. **Given** an EVM-enabled server and an EVM account, **When** an unsupported
-   delta or state workflow is invoked, **Then** the system returns an explicit
-   unsupported error for that account/network combination.
-2. **Given** both Miden and EVM accounts exist, **When** supported flows are
-   invoked on each, **Then** each account follows only its own network rules and
-   no server-global network assumption leaks across accounts.
+1. **Given** a registered EVM account and authorized proposer, **When** a valid
+   proposal is created, **Then** Guardian stores it with deterministic
+   `proposal_id`, signer snapshot, threshold, TTL, and the proposer's
+   signature.
+2. **Given** a pending EVM proposal and an authorized signer in the stored
+   snapshot, **When** the signer submits a valid approval, **Then** the
+   signature is appended and the updated proposal is returned.
+3. **Given** stored signatures do not meet threshold, **When** executable data
+   is requested, **Then** Guardian returns `insufficient_signatures`.
+4. **Given** stored signatures meet threshold, **When** executable data is
+   requested, **Then** Guardian returns the proposal hash, opaque payload,
+   collected signatures, and signer addresses.
+5. **Given** a proposal has expired or the EntryPoint nonce indicates finality,
+   **When** it is listed, fetched, approved, or exported, **Then** Guardian
+   lazily deletes it and returns no active proposal.
+
+---
+
+### User Story 4 - Preserve Miden Behavior And Network Boundaries (Priority: P1)
+
+As an existing Guardian integrator, I can keep using Miden state, delta, and
+proposal flows without behavioral drift, while EVM requests use their own
+domain-specific routes and errors.
+
+**Why this priority**: EVM support must not destabilize existing Guardian
+behavior or overload Miden abstractions with incompatible semantics.
+**Independent Test**: Run existing Miden account, delta, and proposal tests on
+default and EVM-enabled builds, then verify EVM requests to Miden routes return
+explicit unsupported behavior.
+
+**Acceptance Scenarios**:
+
+1. **Given** a Miden account, **When** existing `/configure`, `/delta`,
+   `/delta/proposal`, `/state`, and gRPC flows are used, **Then** behavior
+   remains unchanged.
+2. **Given** an EVM account, **When** Miden state/delta/proposal routes are
+   called, **Then** Guardian returns `unsupported_for_network` instead of
+   coercing EVM data into Miden semantics.
+3. **Given** a default server build, **When** any `/evm/*` route is called,
+   **Then** the route is absent before any EVM persistence or contract read can
+   run.
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST support per-account network configuration so each
-  configured account declares its network behavior independently of any
-  server-global network selection.
-- **FR-002**: The system MUST continue to support existing Miden accounts after
-  the introduction of per-account network configuration.
-- **FR-003**: The system MUST support an EVM account identity model based on
-  the canonical string `evm:<chain_id>:<normalized_account_address>`.
-- **FR-003a**: For EVM accounts, `account_id` and `network_config` MUST agree
-  on the same normalized `chain_id + account_address` identity.
-- **FR-004**: The system MUST persist EVM-specific account configuration through
-  a `network_config`-style model rather than ad-hoc unrelated fields.
-- **FR-005**: The system MUST support EVM proposal creation, listing, retrieval,
-  and signature collection in v1 only when EVM support is enabled.
-- **FR-005a**: EVM proposal payloads in v1 MUST represent ERC-7579
-  `execute(mode, executionCalldata)` requests and MUST NOT introduce a separate
-  EVM proposal domain model.
-- **FR-005b**: EVM proposal payloads in v1 MUST support only single-call and
-  batch-call execution with default exec type and zero selector/mode payload;
-  delegatecall, try-mode, and custom selector/payload combinations MUST fail
-  explicitly.
-- **FR-005c**: EVM proposal creation MUST reject non-empty submitted signature
-  arrays; signatures are collected only through the sign-proposal flow.
-- **FR-006**: The system MUST re-validate signer authority for EVM accounts on
-  all relevant account and proposal actions.
-- **FR-006a**: EVM signer validation in v1 MUST use direct RPC reads against the
-  configured RPC endpoint and MUST fail explicitly when signer validation cannot
-  be completed.
-- **FR-006b**: EVM signer identities in v1 MUST be normalized EOA addresses;
-  ERC-1271 contract signers and generic ERC-7913 verifier-key signers are out
-  of scope for this feature.
-- **FR-007**: The system MUST keep the auth/signature model extensible across
-  networks while implementing ECDSA-only signing for EVM in v1.
-- **FR-007a**: Authenticated EVM API requests MUST use EIP-712 signatures over
-  a server-reconstructed request message derived from the canonical account ID,
-  request timestamp, and request payload hash, while preserving the existing
-  `x-pubkey`, `x-signature`, and `x-timestamp` transport fields.
-- **FR-007b**: EVM proposal cosigning MUST use a Guardian-defined EIP-712
-  coordination message over the normalized proposal payload and MUST remain
-  separate from any future on-chain execution signature format.
-- **FR-008**: EVM proposal identifiers MUST be deterministic hash-based values
-  derived from the normalized tuple `(chain_id, account_address, mode,
-  keccak256(execution_calldata))`.
-- **FR-008a**: EVM proposal identifiers MUST exclude collected signatures,
-  timestamps, and the Guardian-local proposal nonce.
-- **FR-009**: Unsupported EVM flows, including `push_delta`, `get_delta`,
-  `get_delta_since`, `get_state`, and canonicalization-related behavior, MUST
-  fail explicitly rather than reusing Miden semantics or silently degrading.
-- **FR-010**: Existing Miden proposal behavior MUST remain unaffected by EVM
-  support.
-- **FR-011**: The EVM proposal `nonce` field MUST remain a Guardian-local ordering
-  field and MUST NOT be interpreted as an on-chain multisig nonce.
-- **FR-012**: Re-submitting an EVM proposal whose normalized identity matches an
-  existing pending proposal MUST be idempotent and return the existing proposal.
-- **FR-013**: HTTP and gRPC error surfaces MUST expose stable application error
-  codes for EVM-specific failures in addition to transport-native status
-  information.
-- **FR-014**: EVM proposal records MUST leave `prev_commitment`,
-  `new_commitment`, `ack_sig`, `ack_pubkey`, and `ack_scheme` unused in v1
-  rather than assigning Miden-specific semantics to them.
-- **FR-015**: EVM account and proposal support MUST be behind an explicit
-  server-side `evm` feature flag that is disabled by default.
-- **FR-015a**: When EVM support is disabled, requests containing
-  `network_config.kind = "evm"`, `EvmEcdsa` auth, or EVM proposal payloads MUST
-  fail with `evm_support_disabled` before any account or proposal state is
-  persisted.
-- **FR-015b**: Enabling EVM support MUST NOT imply support for every EVM chain
-  by default; each EVM account MUST still declare explicit `chain_id`,
-  `account_address`, `multisig_module_address`, and `rpc_endpoint`, and
-  deployments MAY restrict accepted chain IDs.
+- **FR-001**: The system MUST keep Miden account configuration, state, delta,
+  delta proposal, canonicalization, and gRPC behavior unchanged unless a request
+  targets an EVM account, in which case unsupported Miden routes MUST fail with
+  `unsupported_for_network`.
+- **FR-002**: The system MUST expose EVM v1 behavior only through `/evm/*`
+  HTTP routes.
+- **FR-003**: The system MUST not register `/evm/*` routes when the server-side
+  `evm` feature is not enabled, preventing session creation, contract reads,
+  metadata writes, and proposal writes in default builds.
+- **FR-004**: The system MUST support `/evm/auth/challenge`,
+  `/evm/auth/verify`, and `/evm/auth/logout` for EVM wallet sessions.
+- **FR-005**: EVM challenge verification MUST recover the authenticated EOA
+  from a wallet signature, consume challenge nonces exactly once, reject expired
+  challenges, and create an expiring `guardian_evm_session` cookie.
+- **FR-006**: The system MUST register EVM accounts through `/evm/accounts`,
+  not through `/configure`.
+- **FR-007**: EVM account IDs MUST be canonical strings of the form
+  `evm:<chain_id>:<normalized_smart_account_address>`.
+- **FR-008**: EVM account registration MUST accept client-provided
+  `chain_id`, `account_address`, and `multisig_validator_address`, and MUST
+  resolve RPC and EntryPoint addresses from server-owned chain configuration.
+- **FR-009**: EVM account registration MUST verify that the multisig validator
+  is installed on the smart account before metadata is persisted.
+- **FR-010**: EVM account registration MUST verify that the session EOA is a
+  current signer of the configured validator before metadata is persisted.
+- **FR-011**: EVM v1 signer identities MUST be normalized EOA addresses.
+- **FR-012**: EVM proposals MUST be created through `/evm/proposals`, not
+  through `/delta/proposal`.
+- **FR-013**: EVM proposal creation MUST require `account_id`,
+  `user_op_hash`, opaque `payload`, full uint256 `nonce`, `ttl_seconds`, and an
+  initial ECDSA signature from the session EOA.
+- **FR-014**: Guardian MUST verify EVM proposal signatures against the
+  client-supplied 32-byte `user_op_hash`.
+- **FR-015**: Guardian MUST snapshot signer EOAs and threshold for each EVM
+  proposal at creation time and use that snapshot for proposal authorization,
+  duplicate detection, and threshold checks.
+- **FR-016**: EVM proposal IDs MUST be deterministic hash-based values derived
+  from `(account_id, multisig_validator_address, user_op_hash, full_nonce)`.
+- **FR-017**: Re-submitting an active EVM proposal with the same deterministic
+  proposal ID MUST be idempotent.
+- **FR-018**: EVM proposal approval MUST be performed through
+  `/evm/proposals/{proposal_id}/approve`, derive signer identity from the
+  session EOA, reject unauthorized signers, reject duplicate signatures, and
+  append valid signatures to the active proposal.
+- **FR-019**: EVM proposal listing and retrieval MUST return only active
+  proposals visible to the session EOA according to the stored signer snapshot.
+- **FR-020**: EVM executable-data export MUST return executable proposal data
+  only after stored signatures meet the proposal threshold; before threshold it
+  MUST return `insufficient_signatures`.
+- **FR-021**: EVM proposal cancellation MUST be proposer-only and MUST delete
+  the active proposal.
+- **FR-022**: Guardian MUST lazily delete EVM proposals that are expired or
+  inactive because EntryPoint nonce state indicates finality.
+- **FR-023**: EVM proposal records MUST use EVM-specific request and response
+  shapes and MUST NOT expose Miden `DeltaObject` fields as part of the public
+  EVM API.
+- **FR-024**: The system MAY reuse shared storage backend infrastructure for
+  EVM persistence, but observable EVM behavior MUST be independent of Miden
+  delta proposal semantics.
+- **FR-025**: EVM routes MUST expose stable error codes for disabled-feature,
+  unsupported-chain, missing-chain-config, contract-validation,
+  signer-authorization, malformed-proposal, invalid-signature, duplicate
+  signature, insufficient-signature, expired-proposal, and missing-proposal
+  failures.
+- **FR-026**: The dedicated TypeScript EVM client MUST use the `/evm/*`
+  endpoints, browser wallet challenge signing, cookie credentials, proposal
+  creation, approval, executable export, and cancellation helpers.
+- **FR-027**: The base TypeScript Guardian client and Rust Guardian client MUST
+  remain Miden-focused unless shared contract compatibility requires a
+  non-behavioral update.
 
 ### Contract / Transport Impact
 
-- HTTP and gRPC account configuration requests will need to carry per-account
-  network configuration rather than assuming only the current Miden model.
-- HTTP and gRPC proposal requests and responses must remain semantically aligned
-  for EVM proposal create/list/get/sign flows.
-- HTTP and gRPC must expose identical feature-gate semantics: EVM-shaped
-  requests fail with `evm_support_disabled` when the server does not have EVM
-  support enabled.
-- The Rust base client and dedicated TypeScript EVM client will need
-  corresponding request/response support for EVM proposal workflows; the
-  protocol-generic TypeScript client remains Miden/base-only.
-- Auth headers and gRPC metadata remain explicit; EVM v1 uses ECDSA signatures
-  over EIP-712 typed messages while the overall auth model remains extensible.
-- For EVM accounts, the existing transport fields `x-pubkey`, `x-signature`,
-  and `x-timestamp` remain in place; `x-pubkey` keeps its legacy name and
-  carries the normalized signer address.
-- EVM request-auth payload binding is transport-specific but semantically
-  aligned:
-  - HTTP uses `keccak256` of canonical JSON request bytes.
-  - gRPC uses `keccak256` of protobuf-encoded request bytes.
-- The supported HTTP route shape remains the current `/delta`, `/delta/since`,
-  `/delta/proposal`, `/delta/proposal/single`, `/state`, and `/configure`
-  surface rather than introducing a second parallel HTTP contract for EVM.
-- EVM signer validation depends on the configured RPC endpoint rather than an
-  indexer in v1.
-- At least one upstream client surface must validate the new network-aware
-  account configuration and EVM proposal flows once the server contract changes,
-  including the dedicated TypeScript EVM client.
-- Fallback behavior remains explicit: unsupported EVM delta/state flows must not
-  silently fall back to Miden or to partially supported online/offline logic.
-- Stable application error codes are required for unsupported-network,
-  disabled-feature, RPC-validation, signer-authorization, invalid-payload, and
-  duplicate-signature failures.
+- EVM v1 is HTTP-only under `/evm/*`.
+- Miden HTTP routes remain `/configure`, `/delta`, `/delta/since`,
+  `/delta/proposal`, `/delta/proposal/single`, `/state`, and `/pubkey`.
+- Miden gRPC methods remain Miden-oriented. EVM account registration, sessions,
+  proposals, executable export, and cancellation are not added to gRPC in v1.
+- EVM authentication uses `guardian_evm_session` rather than `x-pubkey`,
+  `x-signature`, and `x-timestamp`.
+- Cookie-backed EVM sessions are valid only when the session address is derived
+  from the wallet signature; sessions expire; challenge nonces are single-use
+  and time-limited.
+- EVM proposal create and approve requests carry raw ECDSA signatures; signer
+  identity is derived from the session EOA and verified against recovered
+  signature identity.
+- The public EVM proposal response is an EVM-specific record containing
+  proposal ID, account ID, chain ID, smart account address, validator address,
+  UserOperation hash, opaque payload, full nonce, nonce key, proposer, signer
+  snapshot, threshold, signatures, creation time, and expiry time.
+- Stable application error codes are required across HTTP responses.
+- The EVM smoke app and dedicated EVM client must exercise the same public route
+  shape defined by this specification.
 
 ### Data / Lifecycle Impact
 
-- Account metadata will need a network-aware configuration model that can
-  represent Miden account settings by default and EVM account settings when the
-  EVM feature is enabled.
-- EVM account metadata, auth variants, proposal payloads, and RPC validation
-  dependencies are feature-gated; disabled servers reject them before
-  persistence.
-- The EVM account configuration is expected to include `chain_id`,
-  `account_address`, `multisig_module_address`, and `rpc_endpoint`.
-- EVM account configuration uses the canonical account identity
-  `evm:<chain_id>:<normalized_account_address>`.
-- EVM configure requests use an empty-object `initial_state` placeholder in v1;
-  the server derives the signer snapshot and threshold view from RPC rather than
-  requiring a Miden-style initial state payload.
-- The EVM signer/threshold read model is based on OpenZeppelin
-  `ERC7579Multisig`, using RPC reads for the signer slice and current threshold.
-- EVM proposals are pending-only proposals in v1 and model ERC-7579
-  `execute(mode, executionCalldata)` requests rather than Miden `tx_summary`
-  payloads.
-- EVM proposal records use a deterministic Guardian-defined hash identifier derived
-  from normalized proposal contents rather than raw field concatenation.
-- EVM proposal signatures append to pending proposal records within the
-  account/network namespace; v1 does not redefine append-only proposal storage
-  semantics.
-- EVM proposal identifiers exclude local ordering nonce, collected signatures,
-  and timestamps.
-- EVM proposal `nonce` remains local ordering only and may differ between
-  otherwise identical create attempts without changing proposal identity.
-- Repeated create attempts for the same normalized EVM proposal are idempotent.
-- EVM proposal records leave Miden-specific delta fields unset/unused in v1.
-- Pending EVM proposals stay pending until a future explicit cleanup or
-  reconciliation feature is defined, subject to the existing per-account
-  pending-proposal limit.
-- Backend parity applies because the same network-aware account metadata and
-  proposal semantics must persist consistently across filesystem and Postgres.
-- If the new EVM workflow is surfaced through higher-level SDKs or example
-  applications, the corresponding docs and examples must be updated in the same
-  change; otherwise the current Miden-facing examples remain unchanged in v1.
+- Account metadata remains the durable account registry. Miden metadata is
+  created by `/configure`; EVM metadata is created by `/evm/accounts`.
+- EVM account metadata includes canonical account ID, chain ID, smart account
+  address, multisig validator address, signer snapshot metadata, and timestamps.
+- RPC URLs and EntryPoint addresses are deployment configuration, not trusted
+  client request fields.
+- EVM proposals are pending-only coordination records, not Miden deltas.
+- EVM proposal storage contains opaque payload, UserOperation hash, full uint256
+  nonce, nonce key, signer snapshot, threshold, collected signatures, proposer,
+  creation timestamp, and expiry timestamp.
+- EVM proposals are removed explicitly by proposer cancellation or lazily when
+  expiry or EntryPoint nonce finality makes the proposal inactive.
+- Backend parity applies: filesystem and Postgres backends must expose the same
+  EVM account/proposal behavior when the EVM feature is enabled.
+- Miden canonicalization workers do not process EVM proposals.
 
 ## Edge Cases *(mandatory)*
 
-- EVM account configuration provides an invalid `chain_id`, invalid contract
-  address, or malformed network config.
-- EVM account configuration or proposal creation is attempted when EVM support
-  is disabled.
-- EVM support is enabled, but the requested `chain_id` is disallowed by
-  deployment policy.
-- EVM account configuration provides a non-canonical `account_id` that does not
-  match `chain_id + account_address`.
-- Signer authority changes between account configuration and later proposal
-  actions.
-- The configured RPC endpoint is unavailable or returns state that does not
-  match the expected signer set.
-- Duplicate proposal signatures are submitted by the same signer.
-- A create request submits a non-empty EVM signature list.
-- A create request uses an unsupported ERC-7579 mode such as delegatecall,
-  try-mode, or non-zero selector/mode payload.
-- Equivalent EVM proposals are re-submitted with different local ordering
-  nonces.
-- Deterministic proposal identity diverges across transports or languages unless
-  proposal inputs are normalized identically before hashing.
-- Miden and EVM accounts coexist on the same server and must not leak network
-  behavior into one another.
-- Backend-specific persistence differences must not change observable EVM
-  account or proposal behavior.
+- Any `/evm/*` request reaches a server without EVM routes registered.
+- Challenge verification is attempted with an expired, malformed, wrong-address,
+  or already-consumed nonce.
+- EVM session cookies are missing, expired, malformed, or no longer associated
+  with a known session.
+- Chain ID is unsupported or lacks configured RPC or EntryPoint addresses.
+- Smart account address, validator address, UserOperation hash, signature, or
+  nonce encoding is malformed.
+- Validator installation check fails or cannot be completed.
+- Session EOA is not a current validator signer at account registration.
+- Signer authority changes after account registration but before proposal
+  creation.
+- Proposal create signature does not recover the session EOA.
+- Proposal create is repeated for an already-active deterministic proposal ID.
+- Proposal approval is attempted by an EOA outside the stored signer snapshot.
+- Proposal approval uses a duplicate signer or invalid signature.
+- Executable data is requested before threshold is met.
+- Proposal cancellation is attempted by a non-proposer.
+- Proposal is expired or finalized by EntryPoint nonce advancement when it is
+  listed, fetched, approved, exported, or cancelled.
+- Miden and EVM accounts coexist on the same server and must not leak behavior
+  across network boundaries.
+- Filesystem and Postgres persistence must not produce different observable EVM
+  proposal lifecycle behavior.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: A user can configure both Miden and EVM accounts through HTTP and
-  gRPC when EVM support is enabled, and Miden account behavior remains unchanged
-  after the contract update.
-- **SC-002**: A user can create, list, retrieve, and sign EVM proposals through
-  both transports when EVM support is enabled, and duplicate signatures are
-  rejected explicitly.
-- **SC-003**: Unsupported EVM delta/state/canonicalization flows return explicit
-  unsupported behavior rather than partial success, silent fallback, or Miden
-  semantics.
-- **SC-004**: A default server without EVM support enabled rejects EVM account,
-  auth, and proposal requests with `evm_support_disabled` before persistence.
+- **SC-001**: A default Guardian server registers no `/evm/*` routes, while
+  existing Miden tests continue to pass.
+- **SC-002**: On an EVM-enabled server with valid chain configuration, an
+  authorized EVM signer can complete wallet login and account registration in a
+  single browser session.
+- **SC-003**: On an EVM-enabled server, authorized signers can create, list,
+  retrieve, approve, and export an EVM proposal, and executable data is returned
+  only after the configured threshold is met.
+- **SC-004**: Duplicate approvals, unauthorized approvals, malformed proposal
+  inputs, unsupported chains, expired proposals, and finalized proposals return
+  stable explicit errors.
+- **SC-005**: Existing Miden account, delta, proposal, and canonicalization
+  flows remain behaviorally unchanged in default and EVM-enabled builds.
 
 ## Assumptions
 
-- The first EVM target is OpenZeppelin `ERC7579Multisig` as the signer and
-  threshold read model for Guardian account validation.
-- The default Guardian build/deployment remains Miden-only. EVM support is
-  enabled explicitly through a server-side `evm` feature flag.
-- The EVM feature flag enables the EVM capability family, not automatic product
-  support for every possible EVM chain.
-- EVM signer validation is re-checked on every relevant action.
-- ECDSA is the only implemented EVM signature scheme in v1, but the model is
-  intentionally extensible.
-- EVM request authentication and EVM proposal cosigning both use Guardian-defined
-  EIP-712 typed messages reconstructed by the server from the received request
-  and proposal payloads.
-- EVM signer identities are normalized EOA addresses only in v1.
-- EVM proposal identifiers are fixed by the normalized tuple `(chain_id,
-  account_address, mode, keccak256(execution_calldata))`.
-- A future explicit sync or reconciliation flow may be added to resolve EVM
-  proposal status, but execution tracking is not part of this feature.
-- The desired architectural direction is to remove server-global network
-  selection, persist account-specific network configuration in metadata, and
-  keep network-specific validation logic behind network-specific implementations.
-- No backward-compatibility fallback is required for accounts missing
-  `network_config`; explicit configuration is required in this feature.
-- `rpc_endpoint` is trusted per-account configuration in v1; endpoint
-  replacement policy is deferred.
+- PSM means Guardian; no separate PSM service or package name is introduced.
+- EVM v1 targets OpenZeppelin ERC-7579 multisig validator behavior for signer
+  and threshold reads.
+- EVM signer validation uses direct chain reads in v1.
+- EVM sessions are cookie-backed and expire.
+- Challenge nonces are single-use and time-limited.
+- ECDSA EOA signers are the only EVM signer type in v1.
+- Guardian verifies signatures over a client-supplied UserOperation hash and
+  does not define the on-chain submission mechanism.
+- Guardian does not build, decode, or submit UserOperations.
+- Server operators configure supported chain RPC and EntryPoint addresses.
+- The dedicated EVM TypeScript client owns EVM browser-wallet orchestration.
+- Base Guardian clients remain Miden-focused unless shared compatibility work is
+  required.
 
 ## Dependencies
 
-- OpenZeppelin `ERC7579Multisig` and its corresponding ERC-7579 mode encoding
-  rules as the EVM signer/threshold and execution-shape reference.
-- Updates to the server contract, Rust client, and TypeScript client.
-- A network-aware configuration model that can safely support both existing
-  Miden accounts and feature-gated EVM accounts.
+- An ERC-7579-compatible smart account that exposes validator installation
+  checks.
+- An OpenZeppelin ERC-7579 multisig validator module that exposes signer and
+  threshold reads for Guardian validation.
+- Server-side chain configuration for supported EVM chain IDs, RPC URLs, and
+  EntryPoint addresses.
+- A browser wallet capable of signing EIP-712 typed data for EVM session
+  challenges.
+- Filesystem and Postgres persistence parity for EVM account and proposal data.
 
 ## Deferred Topics
 
-- RPC endpoint replacement or rotation policy is deferred; v1 treats
-  `rpc_endpoint` as trusted immutable account configuration.
-- Proposal execution reuse and explicit reconciliation against on-chain state
-  are deferred follow-up features.
+- On-chain submission, bundler integration, and transaction execution UX.
+- Full execution reconciliation beyond lazy EntryPoint nonce cleanup.
+- ERC-1271, weighted multisig, generic ERC-7913 verifier-key signers, and
+  contract signer authorization.
+- Indexer-based validation and event-driven proposal cleanup.
+- EVM gRPC support.
+- Adding other network domains beyond Miden and EVM.
 
 ## Delivery Guidance
 
-- Implement the account/network refactor as one unified network-aware
-  architecture with an explicit EVM feature gate, rather than a separate fork of
-  proposal or auth services.
-- The default build/deployment must not register EVM capabilities or accept EVM
-  account configuration. Enabling the `evm` feature should register the EVM
-  network capabilities into the same account resolution, auth, and
-  proposal-service architecture used by Miden.
-
-## Recommended Future Revisit
-
-- Revisit whether EVM proposals should gain explicit sync or execution-tracking
-  support once the team settles the contract and validation-source design.
+- Keep Miden and EVM implementation concerns separated wherever practical:
+  shared layers should cover infrastructure such as errors, HTTP envelopes,
+  clocks, account metadata access, and storage backend plumbing, while Miden and
+  EVM domain rules should live behind network-specific modules and routes.
+- Do not force EVM proposal behavior into Miden `DeltaObject` semantics.
+- The default build must not initialize EVM contract readers, session state, or
+  proposal handlers.
+- Keep Speckit plan and contract artifacts aligned with the domain-separated
+  `/evm/*` flow before implementation changes are finalized.
