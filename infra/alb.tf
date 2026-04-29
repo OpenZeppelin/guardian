@@ -4,9 +4,16 @@ resource "aws_lb" "main" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = local.subnet_ids
+  subnets            = local.load_balancer_subnet_ids
 
   enable_deletion_protection = false
+
+  lifecycle {
+    precondition {
+      condition     = length(local.load_balancer_subnet_ids) >= 2
+      error_message = "Application Load Balancer requires at least two subnets in distinct Availability Zones. Configure subnet_ids with subnets from at least two AZs."
+    }
+  }
 }
 
 # Target group for server

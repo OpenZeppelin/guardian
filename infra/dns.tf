@@ -8,15 +8,19 @@ data "cloudflare_zone" "domain" {
   zone_id = var.cloudflare_zone_id
 }
 
-# Route 53 CNAME -> Cloudflare CDN (optional)
-resource "aws_route53_record" "cloudflare_cname" {
+# Route 53 alias -> ALB (optional)
+resource "aws_route53_record" "service_alias" {
   count = local.domain_enabled && local.route53_zone_id != "" ? 1 : 0
 
   zone_id = local.route53_zone_id
   name    = local.service_fqdn
-  type    = "CNAME"
-  ttl     = 300
-  records = ["${local.service_fqdn}.cdn.cloudflare.net"]
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
+  }
 }
 
 # Cloudflare CNAME -> ALB (optional)

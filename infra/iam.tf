@@ -33,9 +33,14 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
-        Resource = [
-          aws_secretsmanager_secret.database_url.arn
-        ]
+        Resource = concat(
+          [
+            aws_secretsmanager_secret.database_url.arn
+          ],
+          local.evm_allowed_chain_ids_secret_arn != "" ? [
+            local.evm_allowed_chain_ids_secret_arn
+          ] : []
+        )
       }
     ]
   })

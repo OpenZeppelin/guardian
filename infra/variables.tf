@@ -267,6 +267,24 @@ variable "guardian_operator_public_keys_secret_arn" {
   default     = ""
 }
 
+variable "guardian_evm_allowed_chain_ids_secret_arn" {
+  description = "Secrets Manager secret ARN containing comma-separated EVM chain IDs allowed by the server"
+  type        = string
+  default     = ""
+}
+
+variable "guardian_evm_allowed_chain_ids" {
+  description = "Comma-separated EVM chain IDs allowed by the server; when set, Terraform creates a Secrets Manager secret containing this value"
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.guardian_evm_allowed_chain_ids == "" || can(regex("^\\s*[0-9]+(\\s*,\\s*[0-9]+)*\\s*$", var.guardian_evm_allowed_chain_ids))
+    error_message = "guardian_evm_allowed_chain_ids must be a comma-separated list of numeric chain IDs."
+  }
+}
+
 variable "guardian_operator_public_keys" {
   description = "Serialized Falcon public keys allowed to authenticate as dashboard operators; when set, Terraform creates a Secrets Manager secret containing this JSON array"
   type        = list(string)

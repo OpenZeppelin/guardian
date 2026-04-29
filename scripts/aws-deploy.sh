@@ -28,6 +28,9 @@ set -euo pipefail
 #   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
+#   GUARDIAN_SERVER_FEATURES   - Cargo features for guardian-server Docker build (default: postgres)
+#   GUARDIAN_EVM_ALLOWED_CHAIN_IDS - Comma-separated EVM chain IDs allowed by the server; creates a stack Secrets Manager secret (optional)
+#   GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM chain IDs (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON - JSON array of Falcon operator public keys; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
 
@@ -44,6 +47,9 @@ CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
 CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
+GUARDIAN_SERVER_FEATURES="${GUARDIAN_SERVER_FEATURES:-postgres}"
+GUARDIAN_EVM_ALLOWED_CHAIN_IDS="${GUARDIAN_EVM_ALLOWED_CHAIN_IDS:-${TF_VAR_guardian_evm_allowed_chain_ids:-}}"
+GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN="${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN:-${TF_VAR_guardian_evm_allowed_chain_ids_secret_arn:-}}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON="${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON:-}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,8 +71,21 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 validate_deploy_config() {
   local cloudflare_api_token="${CLOUDFLARE_API_TOKEN:-${TF_VAR_cloudflare_api_token:-}}"
+  local normalized_features="${GUARDIAN_SERVER_FEATURES//[[:space:]]/}"
   if [ -n "$CLOUDFLARE_ZONE_ID" ] && [ -z "$cloudflare_api_token" ]; then
     log_error "CLOUDFLARE_ZONE_ID is set but CLOUDFLARE_API_TOKEN is empty"
+    return 1
+  fi
+
+  if [[ ",${normalized_features}," != *",postgres,"* ]]; then
+    log_error "GUARDIAN_SERVER_FEATURES must include postgres for AWS deployments"
+    return 1
+  fi
+
+  if [[ ",${normalized_features}," == *",evm,"* ]] && \
+    [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ] && \
+    [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN" ]; then
+    log_error "GUARDIAN_SERVER_FEATURES includes evm, so set GUARDIAN_EVM_ALLOWED_CHAIN_IDS or GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN"
     return 1
   fi
 
@@ -153,7 +172,11 @@ build_tf_vars() {
   TF_VARS+=("-var" "deployment_stage=${DEPLOY_STAGE}")
   TF_VARS+=("-var" "server_image_uri=${image_uri}")
   TF_VARS+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
+  TF_VARS+=("-var" "guardian_evm_allowed_chain_ids_secret_arn=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
+  if [ -n "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ]; then
+    TF_VARS+=("-var" "guardian_evm_allowed_chain_ids=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS}")
+  fi
   if [ -n "$GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON" ]; then
     TF_VARS+=("-var" "guardian_operator_public_keys=${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON}")
   fi
@@ -281,7 +304,7 @@ cmd_build_and_push() {
     docker login --username AWS --password-stdin "${ecr_repo_uri%/*}"
 
   log_info "Building Docker image..."
-  docker build --platform "$docker_platform" --build-arg GUARDIAN_SERVER_FEATURES=postgres --no-cache -t "${ECR_REPO_NAME}:latest" .
+  docker build --platform "$docker_platform" --build-arg "GUARDIAN_SERVER_FEATURES=${GUARDIAN_SERVER_FEATURES}" --no-cache -t "${ECR_REPO_NAME}:latest" .
 
   log_info "Tagging and pushing to ECR..."
   docker tag "${ECR_REPO_NAME}:latest" "${ecr_repo_uri}:latest"
@@ -332,6 +355,7 @@ cmd_deploy() {
   local DB_POOL_MAX
   local METADATA_DB_POOL_MAX
   local DATABASE_URL_SECRET_ARN
+  local EVM_ALLOWED_CHAIN_IDS_SECRET_ARN
   ALB_URL=$(terraform_output_raw alb_url)
   ALB_DNS=$(terraform_output_raw alb_dns_name)
   CUSTOM_DOMAIN_URL=$(terraform_output_raw custom_domain_url)
@@ -352,6 +376,7 @@ cmd_deploy() {
   DB_POOL_MAX=$(terraform_output_raw guardian_db_pool_max_size)
   METADATA_DB_POOL_MAX=$(terraform_output_raw guardian_metadata_db_pool_max_size)
   DATABASE_URL_SECRET_ARN=$(terraform_output_raw database_url_secret_arn)
+  EVM_ALLOWED_CHAIN_IDS_SECRET_ARN=$(terraform_output_raw guardian_evm_allowed_chain_ids_secret_arn)
   if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
     HTTPS_URL="https://${ALB_DNS}"
   fi
@@ -405,6 +430,9 @@ cmd_deploy() {
     fi
     if [ -n "$DATABASE_URL_SECRET_ARN" ]; then
       echo "  Database URL secret: ${DATABASE_URL_SECRET_ARN}"
+    fi
+    if [ -n "$EVM_ALLOWED_CHAIN_IDS_SECRET_ARN" ]; then
+      echo "  EVM chain IDs secret: ${EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}"
     fi
     echo ""
     echo "  Health check: curl ${ALB_URL}/"
@@ -543,6 +571,9 @@ case "${COMMAND:-}" in
     echo "  ECR_REPO_NAME= Override the ECR/image repository name (default: <stack-name>-server)"
     echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
+    echo "  GUARDIAN_SERVER_FEATURES= Cargo features for guardian-server Docker build (default: postgres)"
+    echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS= Comma-separated EVM chain IDs; creates a stack Secrets Manager secret"
+    echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM chain IDs"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON= JSON array of Falcon operator public keys; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"
     echo ""
