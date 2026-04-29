@@ -80,6 +80,16 @@ output "operator_public_keys_secret_name" {
   value       = local.managed_operator_public_keys_secret_enabled ? local.operator_public_keys_secret_name : ""
 }
 
+output "guardian_evm_allowed_chain_ids_secret_arn" {
+  description = "Secrets Manager ARN used by the server for EVM allowed chain IDs"
+  value       = local.evm_allowed_chain_ids_secret_arn
+}
+
+output "guardian_evm_allowed_chain_ids_secret_name" {
+  description = "Managed Secrets Manager name for EVM allowed chain IDs when Terraform creates it"
+  value       = local.managed_evm_allowed_chain_ids_secret_enabled ? local.evm_allowed_chain_ids_secret_name : ""
+}
+
 output "ack_falcon_secret_name" {
   description = "Secrets Manager name for the Falcon ack key"
   value       = local.ack_falcon_secret_name

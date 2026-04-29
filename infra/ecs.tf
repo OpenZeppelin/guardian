@@ -103,12 +103,19 @@ resource "aws_ecs_task_definition" "server" {
         }
       ]
 
-      secrets = [
+      secrets = concat([
         {
           name      = "DATABASE_URL"
           valueFrom = aws_secretsmanager_secret.database_url.arn
         }
-      ]
+        ],
+        local.evm_allowed_chain_ids_secret_arn != "" ? [
+          {
+            name      = "GUARDIAN_EVM_ALLOWED_CHAIN_IDS"
+            valueFrom = local.evm_allowed_chain_ids_secret_arn
+          }
+        ] : []
+      )
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -163,6 +170,7 @@ resource "aws_ecs_service" "server" {
     aws_lb_listener.https,
     aws_lb_listener_rule.https_grpc,
     aws_secretsmanager_secret_version.database_url,
+    aws_secretsmanager_secret_version.evm_allowed_chain_ids,
     aws_secretsmanager_secret_version.operator_public_keys
   ]
 }

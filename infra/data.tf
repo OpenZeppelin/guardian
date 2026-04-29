@@ -27,6 +27,12 @@ data "aws_subnets" "default" {
   }
 }
 
+data "aws_subnet" "selected" {
+  for_each = toset(length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.default[0].ids)
+
+  id = each.value
+}
+
 data "aws_vpc" "selected" {
   id = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
 }
@@ -47,6 +53,12 @@ locals {
   vpc_cidr   = data.aws_vpc.selected.cidr_block
   is_prod    = var.deployment_stage == "prod"
   stage_name = var.deployment_stage
+  subnet_ids_by_zone_id = {
+    for subnet_id in local.subnet_ids : data.aws_subnet.selected[subnet_id].availability_zone_id => subnet_id...
+  }
+  load_balancer_subnet_ids = sort([
+    for zone_id, subnet_ids in local.subnet_ids_by_zone_id : sort(subnet_ids)[0]
+  ])
   unsupported_rds_proxy_zone_ids_by_region = {
     us-east-1 = ["use1-az3"]
     us-west-1 = ["usw1-az2"]
@@ -87,6 +99,7 @@ locals {
   database_secret_name                         = "${var.stack_name}/server/database-url"
   database_credentials_secret_name             = "${var.stack_name}/server/database-credentials"
   operator_public_keys_secret_name             = "${var.stack_name}/server/operator-public-keys"
+  evm_allowed_chain_ids_secret_name            = "${var.stack_name}/server/evm-allowed-chain-ids"
   ack_falcon_secret_name                       = "guardian-prod/server/ack-falcon-secret-key"
   ack_ecdsa_secret_name                        = "guardian-prod/server/ack-ecdsa-secret-key"
   rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
@@ -109,6 +122,8 @@ locals {
   effective_guardian_rate_per_min              = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
+  managed_evm_allowed_chain_ids_secret_enabled = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
+  evm_allowed_chain_ids_secret_arn             = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
   managed_operator_public_keys_secret_enabled  = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
   operator_public_keys_secret_arn              = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 
