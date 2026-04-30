@@ -34,13 +34,16 @@ const accountAbi = parseAbi([
 const entrypointAbi = parseAbi([
   'function getNonce(address sender, uint192 key) view returns (uint256)',
 ]);
+const defaultEntryPointAddress = '0x433709009b8330fda32311df1c2afa402ed8d009';
 
 const guardianUrl = envValue('GUARDIAN_URL', 'http://127.0.0.1:3000');
 const rpcUrl = envValue('EVM_RPC_URL', 'http://127.0.0.1:8545');
 const chainId = envNumber('EVM_CHAIN_ID', 31337);
 const smartAccountAddress = normalizeEvmAddress(requiredEnv('EVM_ACCOUNT_ADDRESS'));
 const validatorAddress = normalizeEvmAddress(requiredEnv('EVM_VALIDATOR_ADDRESS'));
-const entrypointAddress = normalizeEvmAddress(requiredEnv('EVM_ENTRYPOINT_ADDRESS'));
+const entrypointAddress = normalizeEvmAddress(
+  envValue('EVM_ENTRYPOINT_ADDRESS', defaultEntryPointAddress)
+);
 const signerOneKey = envValue(
   'EVM_SIGNER_ONE_PRIVATE_KEY',
   '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'

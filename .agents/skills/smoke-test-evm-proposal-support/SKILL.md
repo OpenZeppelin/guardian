@@ -47,7 +47,7 @@ GUARDIAN_METADATA_PATH="$SMOKE_DIR/metadata" \
 GUARDIAN_KEYSTORE_PATH="$SMOKE_DIR/keystore" \
 GUARDIAN_NETWORK_TYPE=MidenTestnet \
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
-GUARDIAN_EVM_ENTRYPOINTS=31337=<entrypoint-address> \
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 RUST_LOG=info \
 cargo run -p guardian-server --features evm --bin server
 ```
@@ -58,7 +58,7 @@ If port `3000` or `50051` is occupied, inspect the owner first:
 lsof -nP -iTCP:3000 -iTCP:50051 -sTCP:LISTEN
 ```
 
-Reuse the process only if it was started from the current EVM-enabled build with the intended storage, RPC map, and EntryPoint map. Otherwise stop it or use a clean process.
+Reuse the process only if it was started from the current EVM-enabled build with the intended storage, RPC map, and EntryPoint address. Otherwise stop it or use a clean process.
 
 ## Smoke Contracts
 
@@ -80,7 +80,7 @@ EVM_SIGNER_TWO=0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
 bash .agents/skills/smoke-test-evm-proposal-support/scripts/deploy-smoke-module.sh
 ```
 
-Record the printed `EVM_ACCOUNT_ADDRESS`, `EVM_VALIDATOR_ADDRESS`, and `EVM_ENTRYPOINT_ADDRESS`. The default signer keys are Anvil's standard first two accounts.
+Record the printed `EVM_ACCOUNT_ADDRESS`, `EVM_VALIDATOR_ADDRESS`, and `EVM_ENTRYPOINT_ADDRESS`. The default signer keys are Anvil's standard first two accounts. On Anvil, the helper installs mock EntryPoint code at the EntryPoint v0.9 address `0x433709009b8330fda32311df1c2afa402ed8d009`; on public chains, it uses the existing code at that address.
 
 ## Sepolia Deployed Smoke
 
@@ -110,7 +110,7 @@ EVM_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 EVM_CHAIN_ID=11155111 \
 EVM_ACCOUNT_ADDRESS=<printed-smoke-account> \
 EVM_VALIDATOR_ADDRESS=<printed-smoke-validator> \
-EVM_ENTRYPOINT_ADDRESS=0x0000000071727De22E5E9d8BAf0edAc6f37da032 \
+EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 EVM_SIGNER_ONE_PRIVATE_KEY="$EVM_SEPOLIA_DEPLOYER_PRIVATE_KEY" \
 EVM_SIGNER_TWO_PRIVATE_KEY="$EVM_SEPOLIA_SIGNER_TWO_PRIVATE_KEY" \
 node .agents/skills/smoke-test-evm-proposal-support/scripts/run-evm-client-smoke.mjs
@@ -128,7 +128,7 @@ EVM_RPC_URL=http://127.0.0.1:8545 \
 EVM_CHAIN_ID=31337 \
 EVM_ACCOUNT_ADDRESS=<smart-account-address> \
 EVM_VALIDATOR_ADDRESS=<validator-address> \
-EVM_ENTRYPOINT_ADDRESS=<entrypoint-address> \
+EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 node .agents/skills/smoke-test-evm-proposal-support/scripts/run-evm-client-smoke.mjs
 ```
 
@@ -166,7 +166,7 @@ Mark the smoke passed only when all relevant assertions hold:
 ## Failure Triage
 
 - `404` on `/evm/*`: Guardian is running without the `evm` feature or the stale server process is still bound to port `3000`.
-- `unsupported_evm_chain`: set both `GUARDIAN_EVM_RPC_URLS` and `GUARDIAN_EVM_ENTRYPOINTS` for the target chain ID.
+- `unsupported_evm_chain`: set `GUARDIAN_EVM_RPC_URLS` for the target chain ID and `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` to the EntryPoint v0.9 address.
 - `Failed to connect to http://localhost:57291`: the server was started with `GUARDIAN_NETWORK_TYPE=MidenLocal` without a local Miden node. Use `MidenTestnet` for the EVM smoke unless the local node is intentionally part of the run.
 - `SignerNotAuthorized`: compare the session wallet, proposal signer, and validator signer snapshot; normalize all EVM addresses.
 - RPC validation failures during create usually mean the smart account, validator, or EntryPoint address is wrong, the validator is not installed, the ABI does not match, or `getSigners` is not returning 20-byte EOA signer bytes.

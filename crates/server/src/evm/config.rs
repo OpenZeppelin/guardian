@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use crate::metadata::network::normalize_evm_address;
 
 const RPC_URLS_ENV: &str = "GUARDIAN_EVM_RPC_URLS";
-const ENTRYPOINTS_ENV: &str = "GUARDIAN_EVM_ENTRYPOINTS";
+const ENTRYPOINT_ADDRESS_ENV: &str = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS";
+const DEFAULT_ENTRYPOINT_ADDRESS: &str = "0x433709009b8330fda32311df1c2afa402ed8d009";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmChainConfig {
@@ -20,13 +21,21 @@ pub struct EvmChainRegistry {
 impl EvmChainRegistry {
     pub fn from_env() -> Result<Self, String> {
         let rpc_urls = parse_map(RPC_URLS_ENV)?;
-        let entrypoints = parse_map(ENTRYPOINTS_ENV)?;
+        let entrypoint_address = std::env::var(ENTRYPOINT_ADDRESS_ENV)
+            .unwrap_or_else(|_| DEFAULT_ENTRYPOINT_ADDRESS.to_string());
+
+        Self::from_rpc_urls(rpc_urls, &entrypoint_address)
+    }
+
+    fn from_rpc_urls(
+        rpc_urls: BTreeMap<u64, String>,
+        entrypoint_address: &str,
+    ) -> Result<Self, String> {
+        let entrypoint_address = normalize_evm_address(entrypoint_address)
+            .map_err(|error| format!("{ENTRYPOINT_ADDRESS_ENV}: {error}"))?;
         let mut chains = BTreeMap::new();
 
         for (chain_id, rpc_url) in rpc_urls {
-            let Some(entrypoint_address) = entrypoints.get(&chain_id) else {
-                continue;
-            };
             if !is_http_url(&rpc_url) {
                 return Err(format!(
                     "{RPC_URLS_ENV} entry for chain {chain_id} must be an http or https URL"
@@ -38,7 +47,7 @@ impl EvmChainRegistry {
                 EvmChainConfig {
                     chain_id,
                     rpc_url,
-                    entrypoint_address: normalize_evm_address(entrypoint_address)?,
+                    entrypoint_address: entrypoint_address.clone(),
                 },
             );
         }
@@ -100,14 +109,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_keeps_only_chains_with_rpc_and_entrypoint() {
+    fn registry_indexes_configured_rpc_chains() {
         let registry = EvmChainRegistry::new(vec![EvmChainConfig {
             chain_id: 31337,
             rpc_url: "http://127.0.0.1:8545".to_string(),
-            entrypoint_address: "0x1111111111111111111111111111111111111111".to_string(),
+            entrypoint_address: DEFAULT_ENTRYPOINT_ADDRESS.to_string(),
         }]);
 
         assert_eq!(registry.supported_chains(), vec![31337]);
         assert!(registry.get(31337).is_some());
+    }
+
+    #[test]
+    fn registry_uses_one_entrypoint_address_for_all_rpc_chains() {
+        let registry = EvmChainRegistry::from_rpc_urls(
+            BTreeMap::from([
+                (1, "https://ethereum-rpc.publicnode.com".to_string()),
+                (
+                    11155111,
+                    "https://ethereum-sepolia-rpc.publicnode.com".to_string(),
+                ),
+            ]),
+            DEFAULT_ENTRYPOINT_ADDRESS,
+        )
+        .expect("valid EVM chain registry");
+
+        assert_eq!(registry.supported_chains(), vec![1, 11155111]);
+        assert_eq!(
+            registry.get(1).expect("mainnet").entrypoint_address,
+            DEFAULT_ENTRYPOINT_ADDRESS
+        );
+        assert_eq!(
+            registry.get(11155111).expect("sepolia").entrypoint_address,
+            DEFAULT_ENTRYPOINT_ADDRESS
+        );
+    }
+
+    #[test]
+    fn registry_rejects_invalid_entrypoint_address() {
+        let error = EvmChainRegistry::from_rpc_urls(
+            BTreeMap::from([(31337, "http://127.0.0.1:8545".to_string())]),
+            "0x1234",
+        )
+        .expect_err("invalid EntryPoint address should fail");
+
+        assert!(error.contains(ENTRYPOINT_ADDRESS_ENV));
+    }
+
+    #[test]
+    fn registry_rejects_non_http_rpc_url() {
+        let error = EvmChainRegistry::from_rpc_urls(
+            BTreeMap::from([(31337, "ws://127.0.0.1:8545".to_string())]),
+            DEFAULT_ENTRYPOINT_ADDRESS,
+        )
+        .expect_err("non-http RPC URL should fail");
+
+        assert!(error.contains(RPC_URLS_ENV));
     }
 }

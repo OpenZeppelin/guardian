@@ -12,11 +12,11 @@ Default server builds do not register the `/evm/*` routes.
 
 ## Setup
 
-Run Guardian with server-owned RPC and EntryPoint mappings:
+Run Guardian with server-owned RPC URLs and the shared EntryPoint v0.9 address:
 
 ```bash
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
-GUARDIAN_EVM_ENTRYPOINTS=31337=0x... \
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 cargo run -p guardian-server --features evm --bin server
 ```
 
@@ -38,8 +38,8 @@ await client.login();
 ## Configure
 
 Configure the smart account once before creating proposals. Guardian resolves
-RPC and EntryPoint addresses from server environment maps; clients only provide
-the chain, smart account, and validator addresses.
+RPC URLs from the server chain map and uses one server-owned EntryPoint address;
+clients only provide the chain, smart account, and validator addresses.
 
 ```typescript
 await client.configure({

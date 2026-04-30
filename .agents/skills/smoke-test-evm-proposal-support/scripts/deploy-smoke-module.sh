@@ -7,6 +7,7 @@ SIGNER_TWO="${EVM_SIGNER_TWO:-0x70997970C51812dc3A010C7d01b50e0d17dc79C8}"
 THRESHOLD="${EVM_THRESHOLD:-2}"
 DEPLOYER="${EVM_DEPLOYER_ADDRESS:-$SIGNER_ONE}"
 PRIVATE_KEY="${EVM_PRIVATE_KEY:-}"
+ENTRYPOINT_ADDRESS="${EVM_ENTRYPOINT_ADDRESS:-0x433709009b8330fda32311df1c2afa402ed8d009}"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/guardian-evm-module.XXXXXX")"
 
 cleanup() {
@@ -124,14 +125,36 @@ extract_address() {
   fi
 }
 
+install_entrypoint_code() {
+  local runtime_bytecode
+  local existing_code
+  runtime_bytecode="$(forge inspect "src/GuardianEvmSmoke.sol:GuardianEvmSmokeEntryPoint" deployedBytecode | tr -d '\n')"
+  if [ -z "$runtime_bytecode" ] || [ "$runtime_bytecode" = "0x" ]; then
+    printf 'Failed to read mock EntryPoint deployed bytecode\n' >&2
+    return 1
+  fi
+
+  if cast rpc anvil_setCode "$ENTRYPOINT_ADDRESS" "$runtime_bytecode" --rpc-url "$RPC_URL" >/dev/null 2>&1; then
+    printf 'Installed local mock EntryPoint code at %s\n' "$ENTRYPOINT_ADDRESS"
+    return 0
+  fi
+
+  existing_code="$(cast code "$ENTRYPOINT_ADDRESS" --rpc-url "$RPC_URL" 2>/dev/null || true)"
+  if [ -z "$existing_code" ] || [ "$existing_code" = "0x" ]; then
+    printf 'EntryPoint address %s has no code and RPC did not accept anvil_setCode\n' "$ENTRYPOINT_ADDRESS" >&2
+    return 1
+  fi
+
+  printf 'Using existing EntryPoint code at %s\n' "$ENTRYPOINT_ADDRESS"
+}
+
 VALIDATOR_OUTPUT="$(deploy_contract GuardianEvmSmokeValidator)"
 VALIDATOR_ADDRESS="$(printf '%s\n' "$VALIDATOR_OUTPUT" | extract_address)"
 
 ACCOUNT_OUTPUT="$(deploy_contract GuardianEvmSmokeAccount --constructor-args "$VALIDATOR_ADDRESS")"
 ACCOUNT_ADDRESS="$(printf '%s\n' "$ACCOUNT_OUTPUT" | extract_address)"
 
-ENTRYPOINT_OUTPUT="$(deploy_contract GuardianEvmSmokeEntryPoint)"
-ENTRYPOINT_ADDRESS="$(printf '%s\n' "$ENTRYPOINT_OUTPUT" | extract_address)"
+install_entrypoint_code
 
 send_args=()
 if [ -n "$PRIVATE_KEY" ]; then
@@ -148,7 +171,6 @@ cast send "$VALIDATOR_ADDRESS" \
 
 printf '%s\n' "$VALIDATOR_OUTPUT"
 printf '%s\n' "$ACCOUNT_OUTPUT"
-printf '%s\n' "$ENTRYPOINT_OUTPUT"
 printf 'EVM_ACCOUNT_ADDRESS=%s\n' "$ACCOUNT_ADDRESS"
 printf 'EVM_VALIDATOR_ADDRESS=%s\n' "$VALIDATOR_ADDRESS"
 printf 'EVM_ENTRYPOINT_ADDRESS=%s\n' "$ENTRYPOINT_ADDRESS"

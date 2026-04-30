@@ -40,7 +40,7 @@ Requests exceeding this limit receive a 413 Payload Too Large response.
 #### Feature-Gated EVM Support
 
 - `GUARDIAN_EVM_RPC_URLS` - Optional comma-separated EVM RPC map, formatted as `chain_id=url` entries, used when the server is built with `--features evm`
-- `GUARDIAN_EVM_ENTRYPOINTS` - Optional comma-separated EVM EntryPoint map, formatted as `chain_id=0x...` entries, used when the server is built with `--features evm`
+- `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` - Optional shared EVM EntryPoint address used for every configured EVM chain; defaults to the EntryPoint v0.9 address `0x433709009b8330fda32311df1c2afa402ed8d009`
 
 #### Operator Dashboard
 
@@ -98,7 +98,7 @@ with the `evm` feature for local EVM proposal coordination through
 
 ```bash
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
-GUARDIAN_EVM_ENTRYPOINTS=31337=0x0000000000000000000000000000000000000001 \
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 cargo run -p guardian-server --features evm --bin server
 ```
 

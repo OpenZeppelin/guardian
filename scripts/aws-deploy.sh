@@ -29,8 +29,12 @@ set -euo pipefail
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   GUARDIAN_SERVER_FEATURES   - Cargo features for guardian-server Docker build (default: postgres)
+#   GUARDIAN_EVM_CHAIN_CONFIG_FILE - JSON file used to derive EVM chain IDs, RPC URLs, and EntryPoint address (default: config/evm/chains.json)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS - Comma-separated EVM chain IDs allowed by the server; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM chain IDs (optional)
+#   GUARDIAN_EVM_RPC_URLS - Comma-separated chain_id=url EVM RPC map; creates a stack Secrets Manager secret (optional)
+#   GUARDIAN_EVM_RPC_URLS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM RPC map (optional)
+#   GUARDIAN_EVM_ENTRYPOINT_ADDRESS - Shared EVM EntryPoint address (default: EntryPoint v0.9)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON - JSON array of Falcon operator public keys; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
 
@@ -48,11 +52,17 @@ CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 GUARDIAN_SERVER_FEATURES="${GUARDIAN_SERVER_FEATURES:-postgres}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_GUARDIAN_EVM_CHAIN_CONFIG_FILE="${SCRIPT_DIR}/../config/evm/chains.json"
+DEFAULT_GUARDIAN_EVM_ENTRYPOINT_ADDRESS="0x433709009b8330fda32311df1c2afa402ed8d009"
+GUARDIAN_EVM_CHAIN_CONFIG_FILE="${GUARDIAN_EVM_CHAIN_CONFIG_FILE:-$DEFAULT_GUARDIAN_EVM_CHAIN_CONFIG_FILE}"
 GUARDIAN_EVM_ALLOWED_CHAIN_IDS="${GUARDIAN_EVM_ALLOWED_CHAIN_IDS:-${TF_VAR_guardian_evm_allowed_chain_ids:-}}"
 GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN="${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN:-${TF_VAR_guardian_evm_allowed_chain_ids_secret_arn:-}}"
+GUARDIAN_EVM_RPC_URLS="${GUARDIAN_EVM_RPC_URLS:-${TF_VAR_guardian_evm_rpc_urls:-}}"
+GUARDIAN_EVM_RPC_URLS_SECRET_ARN="${GUARDIAN_EVM_RPC_URLS_SECRET_ARN:-${TF_VAR_guardian_evm_rpc_urls_secret_arn:-}}"
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS="${GUARDIAN_EVM_ENTRYPOINT_ADDRESS:-${TF_VAR_guardian_evm_entrypoint_address:-}}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON="${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON:-}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${SCRIPT_DIR}/../infra"
 TF_STATE_PATH_OVERRIDE="${TF_STATE_PATH:-}"
 TF_STATE_BACKUP_PATH_OVERRIDE="${TF_STATE_BACKUP_PATH:-}"
@@ -69,9 +79,84 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+evm_feature_enabled() {
+  local normalized_features="${GUARDIAN_SERVER_FEATURES//[[:space:]]/}"
+  [[ ",${normalized_features}," == *",evm,"* ]]
+}
+
+load_evm_chain_config_file() {
+  if ! evm_feature_enabled; then
+    return 0
+  fi
+
+  local needs_allowed_chain_ids=false
+  local needs_rpc_urls=false
+  local needs_entrypoint_address=false
+
+  if [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ] && [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN" ]; then
+    needs_allowed_chain_ids=true
+  fi
+  if [ -z "$GUARDIAN_EVM_RPC_URLS" ] && [ -z "$GUARDIAN_EVM_RPC_URLS_SECRET_ARN" ]; then
+    needs_rpc_urls=true
+  fi
+  if [ -z "$GUARDIAN_EVM_ENTRYPOINT_ADDRESS" ]; then
+    needs_entrypoint_address=true
+  fi
+
+  if [ "$needs_allowed_chain_ids" = false ] && \
+    [ "$needs_rpc_urls" = false ] && \
+    [ "$needs_entrypoint_address" = false ]; then
+    return 0
+  fi
+
+  if [ ! -f "$GUARDIAN_EVM_CHAIN_CONFIG_FILE" ]; then
+    log_error "EVM chain config file not found: ${GUARDIAN_EVM_CHAIN_CONFIG_FILE}"
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    log_error "jq is required to read GUARDIAN_EVM_CHAIN_CONFIG_FILE"
+    return 1
+  fi
+
+  if ! jq -e '
+    (.entrypointAddress | type == "string")
+    and (.chains | type == "array" and length > 0)
+    and all(.chains[]; (.chainId | type == "number") and (.chainId > 0) and (.rpcUrl | type == "string") and (.rpcUrl | test("^https?://")))
+  ' "$GUARDIAN_EVM_CHAIN_CONFIG_FILE" >/dev/null; then
+    log_error "Invalid EVM chain config file: ${GUARDIAN_EVM_CHAIN_CONFIG_FILE}"
+    return 1
+  fi
+
+  local chain_count
+  local unique_chain_count
+  chain_count=$(jq '.chains | length' "$GUARDIAN_EVM_CHAIN_CONFIG_FILE")
+  unique_chain_count=$(jq '[.chains[].chainId] | unique | length' "$GUARDIAN_EVM_CHAIN_CONFIG_FILE")
+  if [ "$chain_count" != "$unique_chain_count" ]; then
+    log_error "EVM chain config file has duplicate chainId values: ${GUARDIAN_EVM_CHAIN_CONFIG_FILE}"
+    return 1
+  fi
+
+  if [ "$needs_allowed_chain_ids" = true ]; then
+    GUARDIAN_EVM_ALLOWED_CHAIN_IDS="$(jq -r '[.chains[].chainId] | join(",")' "$GUARDIAN_EVM_CHAIN_CONFIG_FILE")"
+  fi
+  if [ "$needs_rpc_urls" = true ]; then
+    GUARDIAN_EVM_RPC_URLS="$(jq -r '[.chains[] | "\(.chainId)=\(.rpcUrl)"] | join(",")' "$GUARDIAN_EVM_CHAIN_CONFIG_FILE")"
+  fi
+  if [ "$needs_entrypoint_address" = true ]; then
+    GUARDIAN_EVM_ENTRYPOINT_ADDRESS="$(jq -r '.entrypointAddress // empty' "$GUARDIAN_EVM_CHAIN_CONFIG_FILE")"
+  fi
+  if [ -z "$GUARDIAN_EVM_ENTRYPOINT_ADDRESS" ]; then
+    GUARDIAN_EVM_ENTRYPOINT_ADDRESS="$DEFAULT_GUARDIAN_EVM_ENTRYPOINT_ADDRESS"
+  fi
+}
+
 validate_deploy_config() {
   local cloudflare_api_token="${CLOUDFLARE_API_TOKEN:-${TF_VAR_cloudflare_api_token:-}}"
   local normalized_features="${GUARDIAN_SERVER_FEATURES//[[:space:]]/}"
+
+  load_evm_chain_config_file || return 1
+
   if [ -n "$CLOUDFLARE_ZONE_ID" ] && [ -z "$cloudflare_api_token" ]; then
     log_error "CLOUDFLARE_ZONE_ID is set but CLOUDFLARE_API_TOKEN is empty"
     return 1
@@ -82,11 +167,21 @@ validate_deploy_config() {
     return 1
   fi
 
-  if [[ ",${normalized_features}," == *",evm,"* ]] && \
-    [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ] && \
-    [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN" ]; then
-    log_error "GUARDIAN_SERVER_FEATURES includes evm, so set GUARDIAN_EVM_ALLOWED_CHAIN_IDS or GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN"
-    return 1
+  if [[ ",${normalized_features}," == *",evm,"* ]]; then
+    if [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ] && \
+      [ -z "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN" ]; then
+      log_error "GUARDIAN_SERVER_FEATURES includes evm, so set GUARDIAN_EVM_ALLOWED_CHAIN_IDS or GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN"
+      return 1
+    fi
+    if [ -z "$GUARDIAN_EVM_RPC_URLS" ] && \
+      [ -z "$GUARDIAN_EVM_RPC_URLS_SECRET_ARN" ]; then
+      log_error "GUARDIAN_SERVER_FEATURES includes evm, so set GUARDIAN_EVM_RPC_URLS or GUARDIAN_EVM_RPC_URLS_SECRET_ARN"
+      return 1
+    fi
+    if [[ ! "$GUARDIAN_EVM_ENTRYPOINT_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+      log_error "GUARDIAN_EVM_ENTRYPOINT_ADDRESS must be a 20-byte 0x-prefixed hex address"
+      return 1
+    fi
   fi
 
   case "$CPU_ARCHITECTURE" in
@@ -173,9 +268,16 @@ build_tf_vars() {
   TF_VARS+=("-var" "server_image_uri=${image_uri}")
   TF_VARS+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
   TF_VARS+=("-var" "guardian_evm_allowed_chain_ids_secret_arn=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}")
+  TF_VARS+=("-var" "guardian_evm_rpc_urls_secret_arn=${GUARDIAN_EVM_RPC_URLS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
   if [ -n "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ]; then
     TF_VARS+=("-var" "guardian_evm_allowed_chain_ids=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS}")
+  fi
+  if [ -n "$GUARDIAN_EVM_RPC_URLS" ]; then
+    TF_VARS+=("-var" "guardian_evm_rpc_urls=${GUARDIAN_EVM_RPC_URLS}")
+  fi
+  if evm_feature_enabled; then
+    TF_VARS+=("-var" "guardian_evm_entrypoint_address=${GUARDIAN_EVM_ENTRYPOINT_ADDRESS}")
   fi
   if [ -n "$GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON" ]; then
     TF_VARS+=("-var" "guardian_operator_public_keys=${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON}")
@@ -356,6 +458,8 @@ cmd_deploy() {
   local METADATA_DB_POOL_MAX
   local DATABASE_URL_SECRET_ARN
   local EVM_ALLOWED_CHAIN_IDS_SECRET_ARN
+  local EVM_RPC_URLS_SECRET_ARN
+  local EVM_ENTRYPOINT_ADDRESS
   ALB_URL=$(terraform_output_raw alb_url)
   ALB_DNS=$(terraform_output_raw alb_dns_name)
   CUSTOM_DOMAIN_URL=$(terraform_output_raw custom_domain_url)
@@ -377,6 +481,8 @@ cmd_deploy() {
   METADATA_DB_POOL_MAX=$(terraform_output_raw guardian_metadata_db_pool_max_size)
   DATABASE_URL_SECRET_ARN=$(terraform_output_raw database_url_secret_arn)
   EVM_ALLOWED_CHAIN_IDS_SECRET_ARN=$(terraform_output_raw guardian_evm_allowed_chain_ids_secret_arn)
+  EVM_RPC_URLS_SECRET_ARN=$(terraform_output_raw guardian_evm_rpc_urls_secret_arn)
+  EVM_ENTRYPOINT_ADDRESS=$(terraform_output_raw guardian_evm_entrypoint_address)
   if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
     HTTPS_URL="https://${ALB_DNS}"
   fi
@@ -433,6 +539,12 @@ cmd_deploy() {
     fi
     if [ -n "$EVM_ALLOWED_CHAIN_IDS_SECRET_ARN" ]; then
       echo "  EVM chain IDs secret: ${EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}"
+    fi
+    if [ -n "$EVM_RPC_URLS_SECRET_ARN" ]; then
+      echo "  EVM RPC URLs secret: ${EVM_RPC_URLS_SECRET_ARN}"
+    fi
+    if [ -n "$EVM_ENTRYPOINT_ADDRESS" ]; then
+      echo "  EVM EntryPoint address: ${EVM_ENTRYPOINT_ADDRESS}"
     fi
     echo ""
     echo "  Health check: curl ${ALB_URL}/"
@@ -572,8 +684,12 @@ case "${COMMAND:-}" in
     echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
     echo "  GUARDIAN_SERVER_FEATURES= Cargo features for guardian-server Docker build (default: postgres)"
+    echo "  GUARDIAN_EVM_CHAIN_CONFIG_FILE= JSON file for EVM chain IDs, RPC URLs, and EntryPoint address"
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS= Comma-separated EVM chain IDs; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM chain IDs"
+    echo "  GUARDIAN_EVM_RPC_URLS= Comma-separated chain_id=url EVM RPC map; creates a stack Secrets Manager secret"
+    echo "  GUARDIAN_EVM_RPC_URLS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM RPC map"
+    echo "  GUARDIAN_EVM_ENTRYPOINT_ADDRESS= Shared EVM EntryPoint address (default: v0.9)"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON= JSON array of Falcon operator public keys; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"
     echo ""
