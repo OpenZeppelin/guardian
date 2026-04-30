@@ -1,0 +1,131 @@
+{
+  "entrypointAddress": "0x433709009b8330fda32311df1c2afa402ed8d009",
+  "chains": [
+    {
+      "chainId": 1,
+      "name": "Ethereum",
+      "network": "mainnet",
+      "rpcUrl": "https://ethereum-rpc.publicnode.com"
+    },
+    {
+      "chainId": 42161,
+      "name": "Arbitrum One",
+      "network": "mainnet",
+      "rpcUrl": "https://arb1.arbitrum.io/rpc"
+    },
+    {
+      "chainId": 8453,
+      "name": "Base",
+      "network": "mainnet",
+      "rpcUrl": "https://mainnet.base.org"
+    },
+    {
+      "chainId": 137,
+      "name": "Polygon",
+      "network": "mainnet",
+      "rpcUrl": "https://polygon.drpc.org"
+    },
+    {
+      "chainId": 1101,
+      "name": "Polygon zkEVM",
+      "network": "mainnet",
+      "rpcUrl": "https://zkevm-rpc.com"
+    },
+    {
+      "chainId": 56,
+      "name": "BNB Smart Chain",
+      "network": "mainnet",
+      "rpcUrl": "https://bsc-dataseed.bnbchain.org"
+    },
+    {
+      "chainId": 10,
+      "name": "OP Mainnet",
+      "network": "mainnet",
+      "rpcUrl": "https://mainnet.optimism.io"
+    },
+    {
+      "chainId": 43114,
+      "name": "Avalanche C-Chain",
+      "network": "mainnet",
+      "rpcUrl": "https://api.avax.network/ext/bc/C/rpc"
+    },
+    {
+      "chainId": 59144,
+      "name": "Linea",
+      "network": "mainnet",
+      "rpcUrl": "https://rpc.linea.build"
+    },
+    {
+      "chainId": 534352,
+      "name": "Scroll",
+      "network": "mainnet",
+      "rpcUrl": "https://rpc.scroll.io"
+    },
+    {
+      "chainId": 11155111,
+      "name": "Ethereum Sepolia",
+      "network": "testnet",
+      "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com"
+    },
+    {
+      "chainId": 421614,
+      "name": "Arbitrum Sepolia",
+      "network": "testnet",
+      "rpcUrl": "https://sepolia-rollup.arbitrum.io/rpc"
+    },
+    {
+      "chainId": 84532,
+      "name": "Base Sepolia",
+      "network": "testnet",
+      "rpcUrl": "https://sepolia.base.org"
+    },
+    {
+      "chainId": 80002,
+      "name": "Polygon Amoy",
+      "network": "testnet",
+      "rpcUrl": "https://polygon-amoy.drpc.org"
+    },
+    {
+      "chainId": 2442,
+      "name": "Polygon zkEVM Cardona",
+      "network": "testnet",
+      "rpcUrl": "https://rpc.cardona.zkevm-rpc.com"
+    },
+    {
+      "chainId": 97,
+      "name": "BSC Testnet",
+      "network": "testnet",
+      "rpcUrl": "https://data-seed-prebsc-1-s1.bnbchain.org:8545"
+    },
+    {
+      "chainId": 11155420,
+      "name": "OP Sepolia",
+      "network": "testnet",
+      "rpcUrl": "https://sepolia.optimism.io"
+    },
+    {
+      "chainId": 43113,
+      "name": "Avalanche Fuji",
+      "network": "testnet",
+      "rpcUrl": "https://api.avax-test.network/ext/bc/C/rpc"
+    },
+    {
+      "chainId": 59141,
+      "name": "Linea Sepolia",
+      "network": "testnet",
+      "rpcUrl": "https://rpc.sepolia.linea.build"
+    },
+    {
+      "chainId": 534351,
+      "name": "Scroll Sepolia",
+      "network": "testnet",
+      "rpcUrl": "https://sepolia-rpc.scroll.io"
+    },
+    {
+      "chainId": 10143,
+      "name": "Monad Testnet",
+      "network": "testnet",
+      "rpcUrl": "https://testnet-rpc.monad.xyz"
+    }
+  ]
+}

@@ -25,3 +25,17 @@ resource "aws_secretsmanager_secret_version" "evm_allowed_chain_ids" {
   secret_id     = aws_secretsmanager_secret.evm_allowed_chain_ids[0].id
   secret_string = var.guardian_evm_allowed_chain_ids
 }
+
+resource "aws_secretsmanager_secret" "evm_rpc_urls" {
+  count = local.managed_evm_rpc_urls_secret_enabled ? 1 : 0
+
+  name                    = local.evm_rpc_urls_secret_name
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "evm_rpc_urls" {
+  count = local.managed_evm_rpc_urls_secret_enabled ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.evm_rpc_urls[0].id
+  secret_string = var.guardian_evm_rpc_urls
+}

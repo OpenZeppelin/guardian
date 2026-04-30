@@ -100,6 +100,7 @@ locals {
   database_credentials_secret_name             = "${var.stack_name}/server/database-credentials"
   operator_public_keys_secret_name             = "${var.stack_name}/server/operator-public-keys"
   evm_allowed_chain_ids_secret_name            = "${var.stack_name}/server/evm-allowed-chain-ids"
+  evm_rpc_urls_secret_name                     = "${var.stack_name}/server/evm-rpc-urls"
   ack_falcon_secret_name                       = "guardian-prod/server/ack-falcon-secret-key"
   ack_ecdsa_secret_name                        = "guardian-prod/server/ack-ecdsa-secret-key"
   rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
@@ -124,6 +125,8 @@ locals {
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
   managed_evm_allowed_chain_ids_secret_enabled = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
   evm_allowed_chain_ids_secret_arn             = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
+  managed_evm_rpc_urls_secret_enabled          = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
+  evm_rpc_urls_secret_arn                      = var.guardian_evm_rpc_urls_secret_arn != "" ? var.guardian_evm_rpc_urls_secret_arn : (local.managed_evm_rpc_urls_secret_enabled ? aws_secretsmanager_secret.evm_rpc_urls[0].arn : "")
   managed_operator_public_keys_secret_enabled  = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
   operator_public_keys_secret_arn              = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 

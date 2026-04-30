@@ -11,6 +11,7 @@ The deployment surface supports two stage profiles:
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
 - AWS CLI configured with permissions for ECS, ECR, ELB, EC2, IAM, CloudWatch, RDS, and Secrets Manager
 - Docker installed locally
+- `jq` installed locally when deploying with `GUARDIAN_SERVER_FEATURES=postgres,evm`
 
 ```bash
 aws sts get-caller-identity
@@ -36,6 +37,10 @@ export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
 # Optional: use an existing dashboard operator public keys secret instead
 # export GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN='arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators'
+
+# Optional: enable EVM support from config/evm/chains.json
+# export GUARDIAN_SERVER_FEATURES=postgres,evm
+# export GUARDIAN_EVM_CHAIN_CONFIG_FILE=config/evm/chains.json
 
 # Optional: choose the deployment profile
 export DEPLOY_STAGE=dev
@@ -90,6 +95,11 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 # Optional: existing dashboard operator Falcon public keys secret
 # guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
+
+# Optional: EVM runtime configuration
+# guardian_evm_allowed_chain_ids = "1,11155111"
+# guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
+# guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
 
 # Optional: stage/runtime capacity overrides
 # deployment_stage = "prod"
@@ -162,6 +172,19 @@ The ECS task role is granted read access only to the configured secret ARN. The
 server rereads that secret during operator auth checks, so adding or removing a
 key in the existing secret takes effect without an application restart. When
 Terraform manages the secret, update the public key list and rerun deploy.
+
+EVM deployments need the `evm` server feature plus server-owned chain config.
+By default, `scripts/aws-deploy.sh` derives allowed chain IDs, RPC URLs, and the
+shared EntryPoint address from `config/evm/chains.json`. It passes RPC URLs to
+Terraform as a stack-scoped Secrets Manager secret and the EntryPoint address as
+a normal ECS environment variable. To use an alternate JSON file, set
+`GUARDIAN_EVM_CHAIN_CONFIG_FILE`.
+
+You can still override the derived values by setting
+`GUARDIAN_EVM_ALLOWED_CHAIN_IDS`, `GUARDIAN_EVM_RPC_URLS`, or
+`GUARDIAN_EVM_ENTRYPOINT_ADDRESS` directly, or by passing existing secret ARNs
+through `GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN` and
+`GUARDIAN_EVM_RPC_URLS_SECRET_ARN`.
 
 If you still have an older local state file at `infra/terraform.tfstate`, move it manually before using the split-state workflow:
 
@@ -253,6 +276,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | RDS Proxy | Managed PostgreSQL proxy in the production profile |
 | Secrets Manager | Secret containing `DATABASE_URL` for the server task |
 | Secrets Manager | Optional operator public keys secret for dashboard auth |
+| Secrets Manager | Optional EVM allowed chain IDs and RPC URLs secrets |
 | Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
 | CloudWatch Log Groups | Cluster execute-command logs and server logs |
@@ -273,6 +297,9 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
 | `operator_public_keys_secret_arn` | Secrets Manager ARN used for dashboard operator public keys |
 | `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
+| `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
+| `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
+| `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |

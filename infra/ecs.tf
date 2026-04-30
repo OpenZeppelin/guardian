@@ -60,7 +60,7 @@ resource "aws_ecs_task_definition" "server" {
         }
       ]
 
-      environment = [
+      environment = concat([
         {
           name  = "RUST_LOG"
           value = "info"
@@ -101,7 +101,14 @@ resource "aws_ecs_task_definition" "server" {
           name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
           value = local.operator_public_keys_secret_arn
         }
-      ]
+        ],
+        var.guardian_evm_entrypoint_address != "" ? [
+          {
+            name  = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS"
+            value = var.guardian_evm_entrypoint_address
+          }
+        ] : []
+      )
 
       secrets = concat([
         {
@@ -113,6 +120,12 @@ resource "aws_ecs_task_definition" "server" {
           {
             name      = "GUARDIAN_EVM_ALLOWED_CHAIN_IDS"
             valueFrom = local.evm_allowed_chain_ids_secret_arn
+          }
+        ] : [],
+        local.evm_rpc_urls_secret_arn != "" ? [
+          {
+            name      = "GUARDIAN_EVM_RPC_URLS"
+            valueFrom = local.evm_rpc_urls_secret_arn
           }
         ] : []
       )
@@ -171,6 +184,7 @@ resource "aws_ecs_service" "server" {
     aws_lb_listener_rule.https_grpc,
     aws_secretsmanager_secret_version.database_url,
     aws_secretsmanager_secret_version.evm_allowed_chain_ids,
+    aws_secretsmanager_secret_version.evm_rpc_urls,
     aws_secretsmanager_secret_version.operator_public_keys
   ]
 }

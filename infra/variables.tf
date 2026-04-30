@@ -285,6 +285,30 @@ variable "guardian_evm_allowed_chain_ids" {
   }
 }
 
+variable "guardian_evm_rpc_urls_secret_arn" {
+  description = "Secrets Manager secret ARN containing comma-separated chain_id=url EVM RPC entries"
+  type        = string
+  default     = ""
+}
+
+variable "guardian_evm_rpc_urls" {
+  description = "Comma-separated chain_id=url EVM RPC entries; when set, Terraform creates a Secrets Manager secret containing this value"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "guardian_evm_entrypoint_address" {
+  description = "Shared EVM EntryPoint address used for every configured EVM chain"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.guardian_evm_entrypoint_address == "" || can(regex("^0x[0-9a-fA-F]{40}$", var.guardian_evm_entrypoint_address))
+    error_message = "guardian_evm_entrypoint_address must be a 20-byte 0x-prefixed hex address."
+  }
+}
+
 variable "guardian_operator_public_keys" {
   description = "Serialized Falcon public keys allowed to authenticate as dashboard operators; when set, Terraform creates a Secrets Manager secret containing this JSON array"
   type        = list(string)

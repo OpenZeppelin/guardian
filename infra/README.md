@@ -19,6 +19,7 @@ Resources created:
 - RDS PostgreSQL instance and subnet group
 - Secrets Manager secret for `DATABASE_URL`
 - Optional Secrets Manager secret for dashboard operator public keys
+- Optional Secrets Manager secrets for EVM allowed chain IDs and RPC URLs
 - Secrets Manager secrets for stable Falcon and ECDSA ack keys in `prod`
 - Security groups for the ALB, server task, and database
 - CloudWatch log groups
@@ -106,6 +107,12 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: existing dashboard operator Falcon public keys secret
 # guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
 
+# Optional: EVM runtime configuration when using Terraform directly.
+# scripts/aws-deploy.sh derives these from config/evm/chains.json by default.
+# guardian_evm_allowed_chain_ids = "1,11155111"
+# guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
+# guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
+
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
 ```
@@ -186,6 +193,11 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_image_uri` | (required) | ECR image URI for the server, preferably pinned to a digest |
 | `guardian_operator_public_keys` | `[]` | Falcon public keys used to create a stack-scoped operator public keys secret |
 | `guardian_operator_public_keys_secret_arn` | `""` | Existing operator public keys secret ARN; takes precedence over the managed list |
+| `guardian_evm_allowed_chain_ids` | `""` | EVM chain IDs used to create a stack-scoped allowed chain IDs secret |
+| `guardian_evm_allowed_chain_ids_secret_arn` | `""` | Existing EVM allowed chain IDs secret ARN; takes precedence over the managed value |
+| `guardian_evm_rpc_urls` | `""` | EVM `chain_id=url` entries used to create a stack-scoped RPC URLs secret |
+| `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
+| `guardian_evm_entrypoint_address` | `""` | Shared EVM EntryPoint address injected into the server task |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `rds_proxy_subnet_ids` | filtered `subnet_ids` | Optional dedicated subnet IDs for RDS Proxy |
@@ -226,6 +238,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `database_url_secret_arn` | Secrets Manager ARN for the server `DATABASE_URL` |
 | `operator_public_keys_secret_arn` | Secrets Manager ARN used for dashboard operator public keys |
 | `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
+| `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
+| `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
+| `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |
