@@ -10,7 +10,7 @@ The API exposes a simple interface for operating states, deltas, and proposal co
 - Records: `account_id`, authentication policy, `network_config`, storage backend type, timestamps, and `last_auth_timestamp` for replay protection.
 - `network_config` is the durable source for account network identity.
 - Miden account metadata is created by `/configure` with initial state and acknowledgement binding.
-- EVM account metadata is created by `/evm/accounts` with the canonical smart account address, chain ID, multisig validator address, and signer snapshot auth policy. Chain RPC and EntryPoint addresses remain server-owned configuration.
+- EVM account metadata is created by `/evm/accounts` with the canonical smart account address, chain ID, multisig validator address, and signer snapshot auth policy. Chain RPC URLs and the shared EntryPoint address remain server-owned configuration.
 - Offers CRUD operations for metadata and a simple list operation to iterate accounts.
 
 ## Auth

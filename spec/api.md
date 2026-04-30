@@ -81,7 +81,7 @@ HTTP JSON uses a `kind` discriminator:
 - Miden state/delta routes only accept `kind: "miden"` accounts. EVM account metadata is created through `/evm/accounts`.
 - EVM `account_address` is the smart account address and must match `account_id`.
 - EVM `multisig_validator_address` is the ERC-7579 multisig validator module address.
-- Guardian does not trust client-provided RPC endpoints. RPC and EntryPoint addresses are resolved server-side from `GUARDIAN_EVM_RPC_URLS` and `GUARDIAN_EVM_ENTRYPOINTS`.
+- Guardian does not trust client-provided RPC endpoints. RPC URLs are resolved server-side from `GUARDIAN_EVM_RPC_URLS`; the EntryPoint address is resolved server-side from `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` and defaults to the EntryPoint v0.9 address.
 
 gRPC uses `NetworkConfig::{miden, evm}`.
 
@@ -323,7 +323,7 @@ EVM proposal response:
 
 - Requires `guardian_evm_session`.
 - Body: `{ chain_id: number, account_address: string, multisig_validator_address: string }`.
-- Guardian derives the canonical `account_id`, resolves RPC and EntryPoint by `chain_id`, verifies the session EOA is a current validator signer, verifies `isModuleInstalled(1, validator, 0x)`, snapshots validator signer EOAs and threshold, and stores account metadata. No Miden state snapshot or Guardian acknowledgement key is created.
+- Guardian derives the canonical `account_id`, resolves RPC by `chain_id`, uses the configured shared EntryPoint address, verifies the session EOA is a current validator signer, verifies `isModuleInstalled(1, validator, 0x)`, snapshots validator signer EOAs and threshold, and stores account metadata. No Miden state snapshot or Guardian acknowledgement key is created.
 - 200: `{ account_id, chain_id, account_address, multisig_validator_address, signers, threshold }`.
 - Common errors: `unsupported_evm_chain`, `rpc_unavailable`, `rpc_validation_failed`, `signer_not_authorized`, `invalid_network_config`.
 

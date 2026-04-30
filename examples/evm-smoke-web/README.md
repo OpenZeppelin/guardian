@@ -4,7 +4,7 @@ Private browser smoke app for Guardian's domain-separated EVM proposal flow.
 
 Use this app with an injected EVM wallet connected to Anvil. The Guardian
 server must be running with the Rust `evm` feature enabled and server-owned RPC
-and EntryPoint mappings for the smoke chain.
+URLs plus the shared EntryPoint address for the smoke chain.
 
 ## Start Guardian
 
@@ -13,7 +13,7 @@ After deploying the smoke contracts, start Guardian with the printed addresses:
 ```bash
 GUARDIAN_NETWORK_TYPE=MidenTestnet \
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
-GUARDIAN_EVM_ENTRYPOINTS=31337=$EVM_ENTRYPOINT_ADDRESS \
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS=$EVM_ENTRYPOINT_ADDRESS \
 cargo run -p guardian-server --features evm --bin server
 ```
 
@@ -36,7 +36,8 @@ bash .agents/skills/smoke-test-evm-proposal-support/scripts/deploy-smoke-module.
 ```
 
 Record the printed `EVM_ACCOUNT_ADDRESS`, `EVM_VALIDATOR_ADDRESS`, and
-`EVM_ENTRYPOINT_ADDRESS`.
+`EVM_ENTRYPOINT_ADDRESS`. On Anvil, the helper installs local mock EntryPoint
+code at the EntryPoint v0.9 address `0x433709009b8330fda32311df1c2afa402ed8d009`.
 
 ## Run The App
 
