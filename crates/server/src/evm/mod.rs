@@ -22,7 +22,7 @@ pub struct EvmAppState {
 impl EvmAppState {
     pub async fn from_env() -> Result<Self, String> {
         let chains = Arc::new(EvmChainRegistry::from_env()?);
-        let sessions = Arc::new(EvmSessionState::from_env()?);
+        let sessions = Arc::new(EvmSessionState::default());
 
         Ok(Self { chains, sessions })
     }

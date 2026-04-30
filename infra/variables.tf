@@ -49,12 +49,6 @@ variable "guardian_cors_allowed_origins" {
   default     = ""
 }
 
-variable "guardian_cors_allow_credentials" {
-  description = "Whether Guardian CORS responses include Access-Control-Allow-Credentials"
-  type        = bool
-  default     = false
-}
-
 variable "vpc_id" {
   description = "VPC ID. If not specified, uses the default VPC"
   type        = string
@@ -319,29 +313,6 @@ variable "guardian_evm_entrypoint_address" {
     condition     = var.guardian_evm_entrypoint_address == "" || can(regex("^0x[0-9a-fA-F]{40}$", var.guardian_evm_entrypoint_address))
     error_message = "guardian_evm_entrypoint_address must be a 20-byte 0x-prefixed hex address."
   }
-}
-
-variable "guardian_evm_session_cookie_domain" {
-  description = "Optional Domain attribute for the Guardian EVM session cookie"
-  type        = string
-  default     = ""
-}
-
-variable "guardian_evm_session_cookie_same_site" {
-  description = "Optional SameSite attribute for the Guardian EVM session cookie (Strict, Lax, or None)"
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = contains(["", "strict", "lax", "none"], lower(var.guardian_evm_session_cookie_same_site))
-    error_message = "guardian_evm_session_cookie_same_site must be Strict, Lax, or None."
-  }
-}
-
-variable "guardian_evm_session_cookie_secure" {
-  description = "Whether the Guardian EVM session cookie includes the Secure attribute"
-  type        = bool
-  default     = false
 }
 
 variable "guardian_operator_public_keys" {

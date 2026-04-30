@@ -29,17 +29,13 @@ set -euo pipefail
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   GUARDIAN_SERVER_FEATURES   - Cargo features for guardian-server Docker build (default: postgres)
-#   GUARDIAN_CORS_ALLOWED_ORIGINS - Comma-separated explicit HTTP origins allowed by CORS (optional)
-#   GUARDIAN_CORS_ALLOW_CREDENTIALS - Whether CORS includes Access-Control-Allow-Credentials (default: false)
+#   GUARDIAN_CORS_ALLOWED_ORIGINS - Comma-separated explicit HTTP origins allowed by credentialed CORS (optional)
 #   GUARDIAN_EVM_CHAIN_CONFIG_FILE - JSON file used to derive EVM chain IDs, RPC URLs, and EntryPoint address (default: config/evm/chains.json)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS - Comma-separated EVM chain IDs allowed by the server; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM chain IDs (optional)
 #   GUARDIAN_EVM_RPC_URLS - Comma-separated chain_id=url EVM RPC map; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_EVM_RPC_URLS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM RPC map (optional)
 #   GUARDIAN_EVM_ENTRYPOINT_ADDRESS - Shared EVM EntryPoint address (default: EntryPoint v0.9)
-#   GUARDIAN_EVM_SESSION_COOKIE_DOMAIN - Optional Domain attribute for the EVM session cookie
-#   GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE - Optional SameSite attribute for the EVM session cookie (Strict, Lax, None)
-#   GUARDIAN_EVM_SESSION_COOKIE_SECURE - Whether the EVM session cookie includes Secure (default: false)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON - JSON array of Falcon operator public keys; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
 
@@ -58,7 +54,6 @@ ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 GUARDIAN_SERVER_FEATURES="${GUARDIAN_SERVER_FEATURES:-postgres}"
 GUARDIAN_CORS_ALLOWED_ORIGINS="${GUARDIAN_CORS_ALLOWED_ORIGINS:-${TF_VAR_guardian_cors_allowed_origins:-}}"
-GUARDIAN_CORS_ALLOW_CREDENTIALS="${GUARDIAN_CORS_ALLOW_CREDENTIALS:-${TF_VAR_guardian_cors_allow_credentials:-false}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_GUARDIAN_EVM_CHAIN_CONFIG_FILE="${SCRIPT_DIR}/../config/evm/chains.json"
 DEFAULT_GUARDIAN_EVM_ENTRYPOINT_ADDRESS="0x433709009b8330fda32311df1c2afa402ed8d009"
@@ -68,9 +63,6 @@ GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN="${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECR
 GUARDIAN_EVM_RPC_URLS="${GUARDIAN_EVM_RPC_URLS:-${TF_VAR_guardian_evm_rpc_urls:-}}"
 GUARDIAN_EVM_RPC_URLS_SECRET_ARN="${GUARDIAN_EVM_RPC_URLS_SECRET_ARN:-${TF_VAR_guardian_evm_rpc_urls_secret_arn:-}}"
 GUARDIAN_EVM_ENTRYPOINT_ADDRESS="${GUARDIAN_EVM_ENTRYPOINT_ADDRESS:-${TF_VAR_guardian_evm_entrypoint_address:-}}"
-GUARDIAN_EVM_SESSION_COOKIE_DOMAIN="${GUARDIAN_EVM_SESSION_COOKIE_DOMAIN:-${TF_VAR_guardian_evm_session_cookie_domain:-}}"
-GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE="${GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE:-${TF_VAR_guardian_evm_session_cookie_same_site:-}}"
-GUARDIAN_EVM_SESSION_COOKIE_SECURE="${GUARDIAN_EVM_SESSION_COOKIE_SECURE:-${TF_VAR_guardian_evm_session_cookie_secure:-false}}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON="${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON:-}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
 TF_DIR="${SCRIPT_DIR}/../infra"
@@ -92,28 +84,6 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 evm_feature_enabled() {
   local normalized_features="${GUARDIAN_SERVER_FEATURES//[[:space:]]/}"
   [[ ",${normalized_features}," == *",evm,"* ]]
-}
-
-is_bool() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    true|false|1|0|yes|no)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-is_true() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    true|1|yes)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
 }
 
 load_evm_chain_config_file() {
@@ -214,34 +184,8 @@ validate_deploy_config() {
       log_error "GUARDIAN_EVM_ENTRYPOINT_ADDRESS must be a 20-byte 0x-prefixed hex address"
       return 1
     fi
-    if [ -n "$GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE" ] && \
-      [[ ! "$GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE" =~ ^(Strict|strict|Lax|lax|None|none)$ ]]; then
-      log_error "GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE must be Strict, Lax, or None"
-      return 1
-    fi
-    if ! is_bool "$GUARDIAN_EVM_SESSION_COOKIE_SECURE"; then
-      log_error "GUARDIAN_EVM_SESSION_COOKIE_SECURE must be true or false"
-      return 1
-    fi
-    if [[ "${GUARDIAN_EVM_SESSION_COOKIE_DOMAIN}" =~ [\;\,\ ] ]]; then
-      log_error "GUARDIAN_EVM_SESSION_COOKIE_DOMAIN must not contain spaces, commas, or semicolons"
-      return 1
-    fi
-    if [ "$(printf '%s' "$GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE" | tr '[:upper:]' '[:lower:]')" = "none" ] && \
-      ! is_true "$GUARDIAN_EVM_SESSION_COOKIE_SECURE"; then
-      log_error "GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE=None requires GUARDIAN_EVM_SESSION_COOKIE_SECURE=true"
-      return 1
-    fi
   fi
 
-  if ! is_bool "$GUARDIAN_CORS_ALLOW_CREDENTIALS"; then
-    log_error "GUARDIAN_CORS_ALLOW_CREDENTIALS must be true or false"
-    return 1
-  fi
-  if is_true "$GUARDIAN_CORS_ALLOW_CREDENTIALS" && [ -z "$GUARDIAN_CORS_ALLOWED_ORIGINS" ]; then
-    log_error "GUARDIAN_CORS_ALLOW_CREDENTIALS=true requires GUARDIAN_CORS_ALLOWED_ORIGINS"
-    return 1
-  fi
   if [[ "$GUARDIAN_CORS_ALLOWED_ORIGINS" =~ (^|,)[[:space:]]*\*[[:space:]]*(,|$) ]]; then
     log_error "GUARDIAN_CORS_ALLOWED_ORIGINS must use explicit origins, not wildcard"
     return 1
@@ -330,8 +274,6 @@ build_tf_vars() {
   TF_VARS+=("-var" "deployment_stage=${DEPLOY_STAGE}")
   TF_VARS+=("-var" "server_image_uri=${image_uri}")
   TF_VARS+=("-var" "server_network_type=${GUARDIAN_NETWORK_TYPE}")
-  TF_VARS+=("-var" "guardian_cors_allow_credentials=${GUARDIAN_CORS_ALLOW_CREDENTIALS}")
-  TF_VARS+=("-var" "guardian_evm_session_cookie_secure=${GUARDIAN_EVM_SESSION_COOKIE_SECURE}")
   TF_VARS+=("-var" "guardian_evm_allowed_chain_ids_secret_arn=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_evm_rpc_urls_secret_arn=${GUARDIAN_EVM_RPC_URLS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
@@ -346,12 +288,6 @@ build_tf_vars() {
   fi
   if evm_feature_enabled; then
     TF_VARS+=("-var" "guardian_evm_entrypoint_address=${GUARDIAN_EVM_ENTRYPOINT_ADDRESS}")
-  fi
-  if [ -n "$GUARDIAN_EVM_SESSION_COOKIE_DOMAIN" ]; then
-    TF_VARS+=("-var" "guardian_evm_session_cookie_domain=${GUARDIAN_EVM_SESSION_COOKIE_DOMAIN}")
-  fi
-  if [ -n "$GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE" ]; then
-    TF_VARS+=("-var" "guardian_evm_session_cookie_same_site=${GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE}")
   fi
   if [ -n "$GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON" ]; then
     TF_VARS+=("-var" "guardian_operator_public_keys=${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON}")
@@ -535,10 +471,6 @@ cmd_deploy() {
   local EVM_RPC_URLS_SECRET_ARN
   local EVM_ENTRYPOINT_ADDRESS
   local CORS_ALLOWED_ORIGINS
-  local CORS_ALLOW_CREDENTIALS
-  local EVM_SESSION_COOKIE_DOMAIN
-  local EVM_SESSION_COOKIE_SAME_SITE
-  local EVM_SESSION_COOKIE_SECURE
   ALB_URL=$(terraform_output_raw alb_url)
   ALB_DNS=$(terraform_output_raw alb_dns_name)
   CUSTOM_DOMAIN_URL=$(terraform_output_raw custom_domain_url)
@@ -563,10 +495,6 @@ cmd_deploy() {
   EVM_RPC_URLS_SECRET_ARN=$(terraform_output_raw guardian_evm_rpc_urls_secret_arn)
   EVM_ENTRYPOINT_ADDRESS=$(terraform_output_raw guardian_evm_entrypoint_address)
   CORS_ALLOWED_ORIGINS=$(terraform_output_raw guardian_cors_allowed_origins)
-  CORS_ALLOW_CREDENTIALS=$(terraform_output_raw guardian_cors_allow_credentials)
-  EVM_SESSION_COOKIE_DOMAIN=$(terraform_output_raw guardian_evm_session_cookie_domain)
-  EVM_SESSION_COOKIE_SAME_SITE=$(terraform_output_raw guardian_evm_session_cookie_same_site)
-  EVM_SESSION_COOKIE_SECURE=$(terraform_output_raw guardian_evm_session_cookie_secure)
   if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
     HTTPS_URL="https://${ALB_DNS}"
   fi
@@ -632,18 +560,6 @@ cmd_deploy() {
     fi
     if [ -n "$CORS_ALLOWED_ORIGINS" ]; then
       echo "  CORS allowed origins: ${CORS_ALLOWED_ORIGINS}"
-    fi
-    if [ -n "$CORS_ALLOW_CREDENTIALS" ]; then
-      echo "  CORS allow credentials: ${CORS_ALLOW_CREDENTIALS}"
-    fi
-    if [ -n "$EVM_SESSION_COOKIE_DOMAIN" ]; then
-      echo "  EVM session cookie domain: ${EVM_SESSION_COOKIE_DOMAIN}"
-    fi
-    if [ -n "$EVM_SESSION_COOKIE_SAME_SITE" ]; then
-      echo "  EVM session cookie SameSite: ${EVM_SESSION_COOKIE_SAME_SITE}"
-    fi
-    if [ -n "$EVM_SESSION_COOKIE_SECURE" ]; then
-      echo "  EVM session cookie Secure: ${EVM_SESSION_COOKIE_SECURE}"
     fi
     echo ""
     echo "  Health check: curl ${ALB_URL}/"
@@ -783,17 +699,13 @@ case "${COMMAND:-}" in
     echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
     echo "  GUARDIAN_SERVER_FEATURES= Cargo features for guardian-server Docker build (default: postgres)"
-    echo "  GUARDIAN_CORS_ALLOWED_ORIGINS= Comma-separated explicit HTTP origins allowed by CORS"
-    echo "  GUARDIAN_CORS_ALLOW_CREDENTIALS= Whether CORS includes Access-Control-Allow-Credentials"
+    echo "  GUARDIAN_CORS_ALLOWED_ORIGINS= Comma-separated explicit HTTP origins allowed by credentialed CORS"
     echo "  GUARDIAN_EVM_CHAIN_CONFIG_FILE= JSON file for EVM chain IDs, RPC URLs, and EntryPoint address"
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS= Comma-separated EVM chain IDs; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM chain IDs"
     echo "  GUARDIAN_EVM_RPC_URLS= Comma-separated chain_id=url EVM RPC map; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_EVM_RPC_URLS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM RPC map"
     echo "  GUARDIAN_EVM_ENTRYPOINT_ADDRESS= Shared EVM EntryPoint address (default: v0.9)"
-    echo "  GUARDIAN_EVM_SESSION_COOKIE_DOMAIN= Optional Domain attribute for the EVM session cookie"
-    echo "  GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE= Optional SameSite attribute for the EVM session cookie"
-    echo "  GUARDIAN_EVM_SESSION_COOKIE_SECURE= Whether the EVM session cookie includes Secure"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON= JSON array of Falcon operator public keys; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"
     echo ""

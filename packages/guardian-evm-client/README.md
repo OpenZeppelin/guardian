@@ -25,10 +25,6 @@ CORS origins and credentialed requests:
 
 ```bash
 GUARDIAN_CORS_ALLOWED_ORIGINS=https://accounts.openzeppelin.com \
-GUARDIAN_CORS_ALLOW_CREDENTIALS=true \
-GUARDIAN_EVM_SESSION_COOKIE_DOMAIN=.openzeppelin.com \
-GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE=None \
-GUARDIAN_EVM_SESSION_COOKIE_SECURE=true \
 cargo run -p guardian-server --features evm --bin server
 ```
 

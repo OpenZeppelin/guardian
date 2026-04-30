@@ -108,34 +108,10 @@ resource "aws_ecs_task_definition" "server" {
             value = var.guardian_cors_allowed_origins
           }
         ] : [],
-        var.guardian_cors_allow_credentials ? [
-          {
-            name  = "GUARDIAN_CORS_ALLOW_CREDENTIALS"
-            value = tostring(var.guardian_cors_allow_credentials)
-          }
-        ] : [],
         var.guardian_evm_entrypoint_address != "" ? [
           {
             name  = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS"
             value = var.guardian_evm_entrypoint_address
-          }
-        ] : [],
-        var.guardian_evm_session_cookie_domain != "" ? [
-          {
-            name  = "GUARDIAN_EVM_SESSION_COOKIE_DOMAIN"
-            value = var.guardian_evm_session_cookie_domain
-          }
-        ] : [],
-        var.guardian_evm_session_cookie_same_site != "" ? [
-          {
-            name  = "GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE"
-            value = var.guardian_evm_session_cookie_same_site
-          }
-        ] : [],
-        var.guardian_evm_session_cookie_secure ? [
-          {
-            name  = "GUARDIAN_EVM_SESSION_COOKIE_SECURE"
-            value = tostring(var.guardian_evm_session_cookie_secure)
           }
         ] : []
       )
