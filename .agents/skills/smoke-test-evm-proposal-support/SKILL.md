@@ -82,6 +82,42 @@ bash .agents/skills/smoke-test-evm-proposal-support/scripts/deploy-smoke-module.
 
 Record the printed `EVM_ACCOUNT_ADDRESS`, `EVM_VALIDATOR_ADDRESS`, and `EVM_ENTRYPOINT_ADDRESS`. The default signer keys are Anvil's standard first two accounts.
 
+## Sepolia Deployed Smoke
+
+For a deployed Guardian target, use Sepolia instead of local Anvil when you need a public-chain canary. Generate a fresh deployer key, fund only that address with Sepolia ETH, and keep the private key in an ignored local file or shell session. Do not fund Anvil's well-known default keys on public testnets.
+
+The deploy script supports either Anvil unlocked accounts or a funded private key. For Sepolia, set `EVM_PRIVATE_KEY` and use signer one as the deployer address; signer two can be a fresh unfunded key because it only signs proposals off-chain:
+
+```bash
+source /tmp/guardian-evm-sepolia-deployer.env
+
+EVM_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+EVM_PRIVATE_KEY="$EVM_SEPOLIA_DEPLOYER_PRIVATE_KEY" \
+EVM_DEPLOYER_ADDRESS="$EVM_SEPOLIA_DEPLOYER_ADDRESS" \
+EVM_SIGNER_ONE="$EVM_SEPOLIA_DEPLOYER_ADDRESS" \
+EVM_SIGNER_TWO="$EVM_SEPOLIA_SIGNER_TWO_ADDRESS" \
+EVM_THRESHOLD=2 \
+bash .agents/skills/smoke-test-evm-proposal-support/scripts/deploy-smoke-module.sh
+```
+
+Then run the client smoke against the deployed Guardian endpoint and Sepolia:
+
+```bash
+source /tmp/guardian-evm-sepolia-deployer.env
+
+GUARDIAN_URL=https://guardian-evm.openzeppelin.com \
+EVM_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+EVM_CHAIN_ID=11155111 \
+EVM_ACCOUNT_ADDRESS=<printed-smoke-account> \
+EVM_VALIDATOR_ADDRESS=<printed-smoke-validator> \
+EVM_ENTRYPOINT_ADDRESS=0x0000000071727De22E5E9d8BAf0edAc6f37da032 \
+EVM_SIGNER_ONE_PRIVATE_KEY="$EVM_SEPOLIA_DEPLOYER_PRIVATE_KEY" \
+EVM_SIGNER_TWO_PRIVATE_KEY="$EVM_SEPOLIA_SIGNER_TWO_PRIVATE_KEY" \
+node .agents/skills/smoke-test-evm-proposal-support/scripts/run-evm-client-smoke.mjs
+```
+
+If Guardian is still using in-memory EVM sessions, keep the deployed ECS service at one running task or enable sticky/shared sessions before running the smoke. With two or more tasks, challenge verification can fail because the challenge and verify requests land on different tasks.
+
 ## Client Smoke
 
 After Guardian, Anvil, and a module are live, run the bundled client smoke from the repo root:
