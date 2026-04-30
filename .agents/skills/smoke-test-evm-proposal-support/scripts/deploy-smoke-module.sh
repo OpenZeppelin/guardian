@@ -6,6 +6,7 @@ SIGNER_ONE="${EVM_SIGNER_ONE:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
 SIGNER_TWO="${EVM_SIGNER_TWO:-0x70997970C51812dc3A010C7d01b50e0d17dc79C8}"
 THRESHOLD="${EVM_THRESHOLD:-2}"
 DEPLOYER="${EVM_DEPLOYER_ADDRESS:-$SIGNER_ONE}"
+PRIVATE_KEY="${EVM_PRIVATE_KEY:-}"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/guardian-evm-module.XXXXXX")"
 
 cleanup() {
@@ -97,11 +98,17 @@ forge build >/dev/null
 deploy_contract() {
   local contract="$1"
   shift
+  local auth_args=()
+  if [ -n "$PRIVATE_KEY" ]; then
+    auth_args=(--private-key "$PRIVATE_KEY")
+  else
+    auth_args=(--unlocked --from "$DEPLOYER")
+  fi
+
   forge create "src/GuardianEvmSmoke.sol:$contract" \
     --rpc-url "$RPC_URL" \
-    --unlocked \
     --broadcast \
-    --from "$DEPLOYER" \
+    "${auth_args[@]}" \
     --json \
     "$@"
 }
@@ -126,12 +133,18 @@ ACCOUNT_ADDRESS="$(printf '%s\n' "$ACCOUNT_OUTPUT" | extract_address)"
 ENTRYPOINT_OUTPUT="$(deploy_contract GuardianEvmSmokeEntryPoint)"
 ENTRYPOINT_ADDRESS="$(printf '%s\n' "$ENTRYPOINT_OUTPUT" | extract_address)"
 
+send_args=()
+if [ -n "$PRIVATE_KEY" ]; then
+  send_args=(--private-key "$PRIVATE_KEY")
+else
+  send_args=(--unlocked --from "$DEPLOYER")
+fi
+
 cast send "$VALIDATOR_ADDRESS" \
   "configure(address,address,address,uint64)" \
   "$ACCOUNT_ADDRESS" "$SIGNER_ONE" "$SIGNER_TWO" "$THRESHOLD" \
   --rpc-url "$RPC_URL" \
-  --unlocked \
-  --from "$DEPLOYER" >/dev/null
+  "${send_args[@]}" >/dev/null
 
 printf '%s\n' "$VALIDATOR_OUTPUT"
 printf '%s\n' "$ACCOUNT_OUTPUT"
