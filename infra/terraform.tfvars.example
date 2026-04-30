@@ -32,6 +32,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_evm_allowed_chain_ids = "1,11155111"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
+# guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
 
 # Optional: VPC and subnet configuration
 # If not specified, uses the default VPC and all its subnets

@@ -20,6 +20,14 @@ GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 cargo run -p guardian-server --features evm --bin server
 ```
 
+For a browser UI hosted on a different origin, configure Guardian with explicit
+CORS origins and credentialed requests:
+
+```bash
+GUARDIAN_CORS_ALLOWED_ORIGINS=https://accounts.openzeppelin.com \
+cargo run -p guardian-server --features evm --bin server
+```
+
 ```typescript
 import { GuardianEvmClient, signProposalHash } from '@openzeppelin/guardian-evm-client';
 

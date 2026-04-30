@@ -112,6 +112,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_evm_allowed_chain_ids = "1,11155111"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
+# guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
 
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
@@ -198,6 +199,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_rpc_urls` | `""` | EVM `chain_id=url` entries used to create a stack-scoped RPC URLs secret |
 | `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
 | `guardian_evm_entrypoint_address` | `""` | Shared EVM EntryPoint address injected into the server task |
+| `guardian_cors_allowed_origins` | `""` | Comma-separated explicit HTTP origins allowed by credentialed CORS |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `rds_proxy_subnet_ids` | filtered `subnet_ids` | Optional dedicated subnet IDs for RDS Proxy |
@@ -241,6 +243,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
+| `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |

@@ -41,6 +41,7 @@ Requests exceeding this limit receive a 413 Payload Too Large response.
 
 - `GUARDIAN_EVM_RPC_URLS` - Optional comma-separated EVM RPC map, formatted as `chain_id=url` entries, used when the server is built with `--features evm`
 - `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` - Optional shared EVM EntryPoint address used for every configured EVM chain; defaults to the EntryPoint v0.9 address `0x433709009b8330fda32311df1c2afa402ed8d009`
+- `GUARDIAN_CORS_ALLOWED_ORIGINS` - Optional comma-separated explicit CORS origin allowlist; when set, CORS allows credentials for those origins
 
 #### Operator Dashboard
 

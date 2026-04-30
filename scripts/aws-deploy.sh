@@ -29,6 +29,7 @@ set -euo pipefail
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   GUARDIAN_SERVER_FEATURES   - Cargo features for guardian-server Docker build (default: postgres)
+#   GUARDIAN_CORS_ALLOWED_ORIGINS - Comma-separated explicit HTTP origins allowed by credentialed CORS (optional)
 #   GUARDIAN_EVM_CHAIN_CONFIG_FILE - JSON file used to derive EVM chain IDs, RPC URLs, and EntryPoint address (default: config/evm/chains.json)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS - Comma-separated EVM chain IDs allowed by the server; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM chain IDs (optional)
@@ -52,6 +53,7 @@ CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 GUARDIAN_SERVER_FEATURES="${GUARDIAN_SERVER_FEATURES:-postgres}"
+GUARDIAN_CORS_ALLOWED_ORIGINS="${GUARDIAN_CORS_ALLOWED_ORIGINS:-${TF_VAR_guardian_cors_allowed_origins:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_GUARDIAN_EVM_CHAIN_CONFIG_FILE="${SCRIPT_DIR}/../config/evm/chains.json"
 DEFAULT_GUARDIAN_EVM_ENTRYPOINT_ADDRESS="0x433709009b8330fda32311df1c2afa402ed8d009"
@@ -184,6 +186,11 @@ validate_deploy_config() {
     fi
   fi
 
+  if [[ "$GUARDIAN_CORS_ALLOWED_ORIGINS" =~ (^|,)[[:space:]]*\*[[:space:]]*(,|$) ]]; then
+    log_error "GUARDIAN_CORS_ALLOWED_ORIGINS must use explicit origins, not wildcard"
+    return 1
+  fi
+
   case "$CPU_ARCHITECTURE" in
     X86_64|ARM64)
       ;;
@@ -270,6 +277,9 @@ build_tf_vars() {
   TF_VARS+=("-var" "guardian_evm_allowed_chain_ids_secret_arn=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_evm_rpc_urls_secret_arn=${GUARDIAN_EVM_RPC_URLS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
+  if [ -n "$GUARDIAN_CORS_ALLOWED_ORIGINS" ]; then
+    TF_VARS+=("-var" "guardian_cors_allowed_origins=${GUARDIAN_CORS_ALLOWED_ORIGINS}")
+  fi
   if [ -n "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ]; then
     TF_VARS+=("-var" "guardian_evm_allowed_chain_ids=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS}")
   fi
@@ -460,6 +470,7 @@ cmd_deploy() {
   local EVM_ALLOWED_CHAIN_IDS_SECRET_ARN
   local EVM_RPC_URLS_SECRET_ARN
   local EVM_ENTRYPOINT_ADDRESS
+  local CORS_ALLOWED_ORIGINS
   ALB_URL=$(terraform_output_raw alb_url)
   ALB_DNS=$(terraform_output_raw alb_dns_name)
   CUSTOM_DOMAIN_URL=$(terraform_output_raw custom_domain_url)
@@ -483,6 +494,7 @@ cmd_deploy() {
   EVM_ALLOWED_CHAIN_IDS_SECRET_ARN=$(terraform_output_raw guardian_evm_allowed_chain_ids_secret_arn)
   EVM_RPC_URLS_SECRET_ARN=$(terraform_output_raw guardian_evm_rpc_urls_secret_arn)
   EVM_ENTRYPOINT_ADDRESS=$(terraform_output_raw guardian_evm_entrypoint_address)
+  CORS_ALLOWED_ORIGINS=$(terraform_output_raw guardian_cors_allowed_origins)
   if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
     HTTPS_URL="https://${ALB_DNS}"
   fi
@@ -545,6 +557,9 @@ cmd_deploy() {
     fi
     if [ -n "$EVM_ENTRYPOINT_ADDRESS" ]; then
       echo "  EVM EntryPoint address: ${EVM_ENTRYPOINT_ADDRESS}"
+    fi
+    if [ -n "$CORS_ALLOWED_ORIGINS" ]; then
+      echo "  CORS allowed origins: ${CORS_ALLOWED_ORIGINS}"
     fi
     echo ""
     echo "  Health check: curl ${ALB_URL}/"
@@ -684,6 +699,7 @@ case "${COMMAND:-}" in
     echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
     echo "  GUARDIAN_SERVER_FEATURES= Cargo features for guardian-server Docker build (default: postgres)"
+    echo "  GUARDIAN_CORS_ALLOWED_ORIGINS= Comma-separated explicit HTTP origins allowed by credentialed CORS"
     echo "  GUARDIAN_EVM_CHAIN_CONFIG_FILE= JSON file for EVM chain IDs, RPC URLs, and EntryPoint address"
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS= Comma-separated EVM chain IDs; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM chain IDs"

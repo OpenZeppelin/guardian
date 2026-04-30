@@ -43,6 +43,12 @@ variable "server_network_type" {
   default     = "MidenTestnet"
 }
 
+variable "guardian_cors_allowed_origins" {
+  description = "Comma-separated explicit HTTP origins allowed by Guardian CORS"
+  type        = string
+  default     = ""
+}
+
 variable "vpc_id" {
   description = "VPC ID. If not specified, uses the default VPC"
   type        = string

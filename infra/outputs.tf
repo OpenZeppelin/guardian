@@ -105,6 +105,11 @@ output "guardian_evm_entrypoint_address" {
   value       = var.guardian_evm_entrypoint_address
 }
 
+output "guardian_cors_allowed_origins" {
+  description = "Explicit CORS origins configured for the server"
+  value       = var.guardian_cors_allowed_origins
+}
+
 output "ack_falcon_secret_name" {
   description = "Secrets Manager name for the Falcon ack key"
   value       = local.ack_falcon_secret_name

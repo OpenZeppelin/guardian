@@ -213,4 +213,19 @@ mod tests {
         pending.remove(0);
         assert!(pending.is_empty());
     }
+
+    #[test]
+    fn default_cookie_header_preserves_strict_host_only_cookie() {
+        let state = EvmSessionState::default();
+        let expires_at = Utc::now() + Duration::seconds(SESSION_TTL_SECS);
+
+        let cookie = state.session_cookie_header("token", expires_at);
+
+        assert!(cookie.contains("guardian_evm_session=token"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Path=/"));
+        assert!(!cookie.contains("Domain="));
+        assert!(!cookie.contains("Secure"));
+    }
 }
