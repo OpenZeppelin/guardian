@@ -30,6 +30,7 @@
   - Domain: `{ name: "Guardian EVM Session", version: "1" }`.
   - Message: `{ wallet, nonce, issued_at, expires_at }`.
 - Guardian derives the authenticated EOA with `ecrecover`, consumes the challenge nonce once, and stores the recovered address in a secure cookie-backed session.
+- Cross-origin browser clients use credentialed CORS. Production deployments can configure the EVM session cookie with `Domain=.openzeppelin.com`, `SameSite=None`, and `Secure`; the cookie remains `HttpOnly`.
 - EVM sessions expire; challenge nonces are time-limited and single-use.
 
 ## Data Shapes

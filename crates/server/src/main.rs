@@ -4,11 +4,10 @@ use server::ack::AckRegistry;
 use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
 use server::canonicalization::CanonicalizationConfig;
 use server::logging::LoggingConfig;
-use server::middleware::{BodyLimitConfig, RateLimitConfig};
+use server::middleware::{BodyLimitConfig, CorsConfig, RateLimitConfig};
 use server::network::NetworkType;
 use std::env;
 use std::path::PathBuf;
-use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
 async fn main() {
@@ -28,10 +27,9 @@ async fn main() {
         .await
         .expect("Failed to initialize ack registry");
 
-    let cors_layer = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors_layer = CorsConfig::from_env()
+        .expect("Failed to initialize CORS config")
+        .layer();
 
     let network_type = NetworkType::from_env_or("GUARDIAN_NETWORK_TYPE", NetworkType::MidenDevnet);
 

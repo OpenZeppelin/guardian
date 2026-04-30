@@ -105,6 +105,31 @@ output "guardian_evm_entrypoint_address" {
   value       = var.guardian_evm_entrypoint_address
 }
 
+output "guardian_cors_allowed_origins" {
+  description = "Explicit CORS origins configured for the server"
+  value       = var.guardian_cors_allowed_origins
+}
+
+output "guardian_cors_allow_credentials" {
+  description = "Whether CORS credentials are enabled for the server"
+  value       = var.guardian_cors_allow_credentials
+}
+
+output "guardian_evm_session_cookie_domain" {
+  description = "Domain attribute configured for the EVM session cookie"
+  value       = var.guardian_evm_session_cookie_domain
+}
+
+output "guardian_evm_session_cookie_same_site" {
+  description = "SameSite attribute configured for the EVM session cookie"
+  value       = var.guardian_evm_session_cookie_same_site
+}
+
+output "guardian_evm_session_cookie_secure" {
+  description = "Whether the Secure attribute is configured for the EVM session cookie"
+  value       = var.guardian_evm_session_cookie_secure
+}
+
 output "ack_falcon_secret_name" {
   description = "Secrets Manager name for the Falcon ack key"
   value       = local.ack_falcon_secret_name

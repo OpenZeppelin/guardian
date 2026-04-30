@@ -41,6 +41,11 @@ export GUARDIAN_NETWORK_TYPE=MidenDevnet
 # Optional: enable EVM support from config/evm/chains.json
 # export GUARDIAN_SERVER_FEATURES=postgres,evm
 # export GUARDIAN_EVM_CHAIN_CONFIG_FILE=config/evm/chains.json
+# export GUARDIAN_EVM_SESSION_COOKIE_DOMAIN=.openzeppelin.com
+# export GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE=None
+# export GUARDIAN_EVM_SESSION_COOKIE_SECURE=true
+# export GUARDIAN_CORS_ALLOWED_ORIGINS=https://accounts.openzeppelin.com
+# export GUARDIAN_CORS_ALLOW_CREDENTIALS=true
 
 # Optional: choose the deployment profile
 export DEPLOY_STAGE=dev
@@ -100,6 +105,11 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_evm_allowed_chain_ids = "1,11155111"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
+# guardian_evm_session_cookie_domain = ".openzeppelin.com"
+# guardian_evm_session_cookie_same_site = "None"
+# guardian_evm_session_cookie_secure = true
+# guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
+# guardian_cors_allow_credentials = true
 
 # Optional: stage/runtime capacity overrides
 # deployment_stage = "prod"
@@ -185,6 +195,16 @@ You can still override the derived values by setting
 `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` directly, or by passing existing secret ARNs
 through `GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN` and
 `GUARDIAN_EVM_RPC_URLS_SECRET_ARN`.
+
+When an EVM UI runs on a different origin, configure credentialed CORS and the
+EVM session cookie explicitly. `GUARDIAN_CORS_ALLOWED_ORIGINS` must be a
+comma-separated list of exact origins; wildcard origins are rejected. Set
+`GUARDIAN_CORS_ALLOW_CREDENTIALS=true` so browsers can include the
+`guardian_evm_session` cookie. For a shared OpenZeppelin cookie, set
+`GUARDIAN_EVM_SESSION_COOKIE_DOMAIN=.openzeppelin.com`,
+`GUARDIAN_EVM_SESSION_COOKIE_SAME_SITE=None`, and
+`GUARDIAN_EVM_SESSION_COOKIE_SECURE=true`. `HttpOnly` is always set by the
+server.
 
 If you still have an older local state file at `infra/terraform.tfstate`, move it manually before using the split-state workflow:
 
@@ -300,6 +320,11 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
+| `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
+| `guardian_cors_allow_credentials` | Whether CORS credentials are enabled |
+| `guardian_evm_session_cookie_domain` | Domain attribute configured for the EVM session cookie |
+| `guardian_evm_session_cookie_same_site` | SameSite attribute configured for the EVM session cookie |
+| `guardian_evm_session_cookie_secure` | Whether Secure is configured for the EVM session cookie |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `ecs_cluster_arn` | ECS cluster ARN |
