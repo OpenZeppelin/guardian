@@ -19,7 +19,7 @@ sol! {
 
     #[sol(rpc)]
     interface IERC7579MultisigValidator {
-        function getSigners(address account, uint256 start, uint256 end) external view returns (bytes[]);
+        function getSigners(address account, uint64 start, uint64 end) external view returns (bytes[]);
         function getSignerCount(address account) external view returns (uint256);
         function threshold(address account) external view returns (uint64);
     }
@@ -94,8 +94,10 @@ impl EvmContractReader {
                 "signer count {signer_count} exceeds safety limit"
             )));
         }
+        // bounded above, so fits in u64
+        let signer_count_u64 = signer_count.to::<u64>();
         let raw_signers = validator
-            .getSigners(account, U256::ZERO, signer_count)
+            .getSigners(account, 0u64, signer_count_u64)
             .call()
             .await
             .map_err(|e| GuardianError::RpcUnavailable(e.to_string()))?;
