@@ -39,8 +39,8 @@ Record the returned commitment — you'll paste it into the demo's "GUARDIAN com
 2. Declare the published crates as registry dependencies pinned to the release under test:
    ```toml
    [dependencies]
-   miden-multisig-client = "0.14.3"
-   guardian-client       = "0.14.3"
+   miden-multisig-client = "0.14.5"
+   guardian-client       = "0.14.5"
    miden-client          = "0.14"
    tokio                 = { version = "1", features = ["full"] }
    ```
