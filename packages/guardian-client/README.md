@@ -101,6 +101,17 @@ if (result.accounts.length === 0) {
 For a higher-level helper that composes lookup + state fetch, see
 `recoverByKey` in `@openzeppelin/miden-multisig-client`.
 
+#### Auth shape
+
+The lookup endpoint accepts the same `x-pubkey` / `x-signature` /
+`x-timestamp` headers as per-account requests for wire-format consistency,
+but identity is derived from the signature itself: Falcon signatures embed
+the public key, ECDSA signatures recover it via the recovery byte. The
+server then requires the derived key to commit to the queried
+`key_commitment`. This means the lookup endpoint works with wallet signers
+that only expose a 32-byte commitment as `publicKey` (e.g., the Miden
+browser wallet) — the signature is what proves possession.
+
 ### Work with Delta Proposals
 
 ```typescript

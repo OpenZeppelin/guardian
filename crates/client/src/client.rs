@@ -109,9 +109,9 @@ impl GuardianClient {
     /// the account ID, and signs the dedicated `LookupAuthMessage` digest —
     /// domain-separated from `AuthRequestMessage` by construction.
     ///
-    /// Local validation rejects 32-byte raw commitments configured as
-    /// pubkeys; the server enforces the same property, but failing locally
-    /// gives a clearer error for misconfigured clients.
+    /// The server derives the public key from the signature itself (Falcon
+    /// embeds it; ECDSA recovers it). The `x-pubkey` header is sent for
+    /// API consistency but ignored by the lookup verification path.
     fn add_lookup_auth_metadata<T: prost::Message + std::fmt::Debug>(
         &self,
         request: &mut tonic::Request<T>,
@@ -121,13 +121,9 @@ impl GuardianClient {
         let digest = LookupAuthMessage::new(timestamp, key_commitment).to_word();
 
         let (pubkey_hex, signature_hex) = if let Some(auth) = &self.auth {
-            let pubkey_hex = auth.public_key_hex();
-            ensure_full_pubkey_encoding(&pubkey_hex)?;
-            (pubkey_hex, auth.sign_word_hex(digest))
+            (auth.public_key_hex(), auth.sign_word_hex(digest))
         } else if let Some(signer) = &self.signer {
-            let pubkey_hex = signer.public_key_hex();
-            ensure_full_pubkey_encoding(&pubkey_hex)?;
-            (pubkey_hex, signer.sign_word_hex(digest))
+            (signer.public_key_hex(), signer.sign_word_hex(digest))
         } else {
             return Err(ClientError::InvalidResponse(
                 "GUARDIAN client has no signer configured".to_string(),
@@ -401,21 +397,6 @@ impl GuardianClient {
 
         Ok(inner)
     }
-}
-
-/// Reject signers whose `public_key_hex` is exactly 32 bytes (the
-/// commitment-as-pubkey alias accepted by the server's per-account commitment
-/// helper). The lookup endpoint requires a real Falcon or ECDSA encoding;
-/// failing locally produces a clearer error than the server's 400 response.
-fn ensure_full_pubkey_encoding(pubkey_hex: &str) -> ClientResult<()> {
-    let trimmed = pubkey_hex.trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() == 64 {
-        return Err(ClientError::InvalidResponse(
-            "Lookup signing requires a full Falcon or ECDSA public key, not a 32-byte commitment"
-                .to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn attach_auth_headers<T: prost::Message>(

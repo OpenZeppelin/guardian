@@ -148,6 +148,32 @@ describe('ParaSigner', () => {
     });
   });
 
+  describe('signLookupMessage', () => {
+    it('hashes the LookupAuthMessage digest word bytes before signing', async () => {
+      const signer = new ParaSigner(mockPara, 'wallet-1', '0xcommitment', validCompressedKey);
+      await signer.signLookupMessage('0x' + 'cc'.repeat(32), 1700000000);
+
+      const expectedDigestBytes = keccak_256(
+        wordToBytes({
+          toFelts: () => [
+            { asInt: () => 10n },
+            { asInt: () => 20n },
+            { asInt: () => 30n },
+            { asInt: () => 40n },
+          ],
+        }),
+      );
+      const expectedBase64 = uint8ArrayToBase64(expectedDigestBytes);
+
+      expect(mockPara.signMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          walletId: 'wallet-1',
+          messageBase64: expectedBase64,
+        }),
+      );
+    });
+  });
+
   describe('signing denial', () => {
     it('should throw when para returns no signature', async () => {
       (mockPara.signMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ signature: undefined });

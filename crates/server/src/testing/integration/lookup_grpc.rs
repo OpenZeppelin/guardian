@@ -3,6 +3,10 @@
 //! Mirrors the coverage in `lookup_http.rs` against the gRPC method to enforce
 //! transport parity (constitution principle II): same validation order, same
 //! status mapping, same security properties.
+//!
+//! Note: tests send `x-pubkey` via `create_request_with_auth` for wire-format
+//! parity with per-account requests, but the lookup verification path ignores
+//! it — identity is sourced from the signature.
 
 use crate::api::grpc::guardian::guardian_server::Guardian;
 use crate::api::grpc::guardian::{AccountRef, GetAccountByKeyCommitmentRequest};
@@ -210,42 +214,22 @@ async fn grpc_lookup_rejects_malformed_key_commitment_hex() {
 }
 
 #[tokio::test]
-async fn grpc_lookup_rejects_32_byte_commitment_as_pubkey() {
-    // Load-bearing security: a 32-byte raw value as `x-pubkey` MUST be
-    // rejected as InvalidArgument, even with a syntactically perfect
-    // signature attempt. Mirrors HTTP coverage.
-    let state = create_test_app_state().await;
-    let signer = TestSigner::new();
-    let service = create_grpc_service(state);
-
-    let timestamp = now_ms();
-    let signature = sign_lookup(&signer, &signer.commitment_hex, timestamp);
-    let req = GetAccountByKeyCommitmentRequest {
-        key_commitment: signer.commitment_hex.clone(),
-    };
-    let request = create_request_with_auth(req, &signer.commitment_hex, &signature, timestamp);
-
-    let err = service
-        .get_account_by_key_commitment(request)
-        .await
-        .expect_err("32-byte alias must be rejected");
-    assert_eq!(err.code(), Code::InvalidArgument);
-}
-
-#[tokio::test]
-async fn grpc_lookup_rejects_pubkey_commitment_mismatch() {
+async fn grpc_lookup_rejects_signature_for_different_commitment() {
+    // Proof-of-possession: signing under one key but querying for another
+    // commitment must fail authentication. Mirrors HTTP coverage.
     let state = create_test_app_state().await;
     let signer = TestSigner::new();
     let other_signer = TestSigner::new();
     let service = create_grpc_service(state);
 
-    let timestamp = now_ms();
-    let signature = sign_lookup(&signer, &signer.commitment_hex, timestamp);
     assert_ne!(signer.commitment_hex, other_signer.commitment_hex);
+
+    let timestamp = now_ms();
+    let signature = sign_lookup(&signer, &other_signer.commitment_hex, timestamp);
     let req = GetAccountByKeyCommitmentRequest {
-        key_commitment: signer.commitment_hex.clone(),
+        key_commitment: other_signer.commitment_hex.clone(),
     };
-    let request = create_request_with_auth(req, &other_signer.pubkey_hex, &signature, timestamp);
+    let request = create_request_with_auth(req, &signer.pubkey_hex, &signature, timestamp);
 
     let err = service
         .get_account_by_key_commitment(request)

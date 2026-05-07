@@ -2,10 +2,15 @@
 //!
 //! Resolves a Miden public-key commitment to the set of account IDs whose
 //! authorization set contains that commitment. Authentication is by
-//! proof-of-possession: the caller submits a public key and a signature over
-//! a `LookupAuthMessage` digest; the service re-derives the commitment from
-//! the public key, requires equality with the queried commitment, and
-//! verifies the signature under the resolved scheme.
+//! proof-of-possession: the caller submits a signature over a
+//! `LookupAuthMessage` digest; the service derives the public key from the
+//! signature itself (Falcon embeds it; ECDSA recovers it), verifies the
+//! signature, and requires the derived commitment to equal the queried
+//! commitment.
+//!
+//! The `x-pubkey` header is part of the wire format for consistency with
+//! per-account requests but is not consulted on this path — identity is
+//! sourced from the signature.
 //!
 //! The service is intentionally account-less. It does NOT call
 //! `services::resolve_account` because that path requires an `account_id`
@@ -14,7 +19,7 @@
 //! `last_auth_timestamp` to compare against.
 
 use crate::error::{GuardianError, Result};
-use crate::metadata::auth::lookup::{commitment_of, parse_lookup_pubkey, verify_lookup_signature};
+use crate::metadata::auth::lookup::{commitment_of, derive_pubkey_from_lookup_signature};
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
 use crate::state::AppState;
 use guardian_shared::hex::FromHex;
@@ -27,6 +32,10 @@ const COMMITMENT_HEX_CHARS: usize = 64;
 #[derive(Debug, Clone)]
 pub struct LookupAccountParams {
     pub key_commitment: String,
+    /// Standard request credentials. The `pubkey` field is not consulted on
+    /// the lookup path — the public key is derived from the signature itself
+    /// (Falcon embeds it; ECDSA recovers it). The field is part of the wire
+    /// format only for API consistency with per-account requests.
     pub credentials: Credentials,
 }
 
@@ -73,37 +82,32 @@ pub async fn lookup_account(
         )));
     }
 
-    let (pubkey_hex, signature_hex, _) = params.credentials.as_signature().ok_or_else(|| {
+    let (_pubkey_hex, signature_hex, _) = params.credentials.as_signature().ok_or_else(|| {
         GuardianError::AuthenticationFailed("missing signature credentials".into())
     })?;
 
-    // CRITICAL: parse_lookup_pubkey rejects the 32-byte commitment-as-pubkey
-    // alias accepted on per-account paths. Without this, an off-chain
-    // commitment leak would pass the equality check below without holding
-    // the matching private key, collapsing proof-of-possession.
-    let parsed_pubkey = parse_lookup_pubkey(pubkey_hex).map_err(GuardianError::InvalidInput)?;
+    // Derive the pubkey from the signature itself (Falcon embeds it; ECDSA
+    // recovers it). LookupAuthMessage is domain-separated from
+    // AuthRequestMessage by construction (see lookup_auth_message.rs).
+    let parsed_pubkey =
+        derive_pubkey_from_lookup_signature(signature_hex, request_timestamp, key_commitment_word)
+            .map_err(GuardianError::AuthenticationFailed)?;
 
+    // Bind the recovered key to the queried commitment: this is the
+    // proof-of-possession check. Knowing only the queried commitment is not
+    // enough to forge a signature whose embedded/recovered pubkey hashes to
+    // that same commitment.
     let derived_commitment = commitment_of(&parsed_pubkey);
     if derived_commitment != normalized_commitment {
         tracing::warn!(
             queried_commitment = %normalized_commitment,
             derived_commitment = %derived_commitment,
-            "Lookup pubkey-commitment mismatch"
+            "Lookup signature key does not match queried commitment"
         );
         return Err(GuardianError::AuthenticationFailed(
-            "submitted public key does not derive to the queried key_commitment".into(),
+            "signature key does not derive to the queried key_commitment".into(),
         ));
     }
-
-    // LookupAuthMessage is domain-separated from AuthRequestMessage by
-    // construction (see crates/shared/src/lookup_auth_message.rs).
-    verify_lookup_signature(
-        &parsed_pubkey,
-        request_timestamp,
-        key_commitment_word,
-        signature_hex,
-    )
-    .map_err(GuardianError::AuthenticationFailed)?;
 
     let accounts = state
         .metadata

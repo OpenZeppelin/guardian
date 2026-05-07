@@ -1,8 +1,13 @@
 //! Integration tests for `GET /state/lookup`.
 //!
 //! Covers the live route end-to-end against the test harness in `helpers.rs`,
-//! including the load-bearing security properties: 32-byte commitment-as-pubkey
-//! rejection, pubkey-commitment binding, and cross-domain replay isolation.
+//! including the load-bearing security properties: signature-derived identity,
+//! commitment binding (signed key must hash to the queried commitment), and
+//! cross-domain replay isolation.
+//!
+//! Note: requests include `x-pubkey` for wire-format parity with per-account
+//! requests, but the lookup verification path ignores it — identity is
+//! sourced from the signature.
 
 use crate::api::http::LookupResponse;
 use crate::testing::helpers::{TestEcdsaSigner, TestSigner, create_router, create_test_app_state};
@@ -293,51 +298,24 @@ async fn lookup_rejects_malformed_key_commitment_hex() {
 }
 
 #[tokio::test]
-async fn lookup_rejects_32_byte_commitment_as_pubkey() {
-    // Load-bearing security check: even with a syntactically perfect request
-    // body and a successful signature attempt, submitting a 32-byte raw
-    // commitment as `x-pubkey` (the alias accepted by
-    // Auth::compute_signer_commitment elsewhere) MUST be rejected as
-    // invalid_input by the lookup path.
-    let state = create_test_app_state().await;
-    let signer = TestSigner::new();
-    let app = create_router(state);
-
-    let timestamp = now_ms();
-    let signature = sign_lookup(&signer, &signer.commitment_hex, timestamp);
-
-    // 32-byte raw value posing as an x-pubkey.
-    let request = build_lookup_request(
-        &signer.commitment_hex,
-        &signer.commitment_hex,
-        &signature,
-        timestamp,
-    );
-
-    let (status, body) = send(&app, request).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
-    assert_eq!(
-        body.get("code").and_then(Value::as_str),
-        Some("invalid_input"),
-        "body: {body}"
-    );
-}
-
-#[tokio::test]
-async fn lookup_rejects_pubkey_commitment_mismatch() {
+async fn lookup_rejects_signature_for_different_commitment() {
+    // Proof-of-possession check: the signature key (derived from the
+    // signature itself) must hash to the queried key_commitment. Signing the
+    // lookup digest under one key and querying for a different commitment
+    // must be rejected as authentication failure.
     let state = create_test_app_state().await;
     let signer = TestSigner::new();
     let other_signer = TestSigner::new();
     let app = create_router(state);
 
-    let timestamp = now_ms();
-    // Sign over the queried commitment with our REAL key…
-    let signature = sign_lookup(&signer, &signer.commitment_hex, timestamp);
-    // …but submit a different pubkey whose commitment does NOT match.
     assert_ne!(signer.commitment_hex, other_signer.commitment_hex);
+
+    let timestamp = now_ms();
+    // Sign over OUR commitment, but query for someone else's.
+    let signature = sign_lookup(&signer, &other_signer.commitment_hex, timestamp);
     let request = build_lookup_request(
-        &signer.commitment_hex,
-        &other_signer.pubkey_hex,
+        &other_signer.commitment_hex,
+        &signer.pubkey_hex,
         &signature,
         timestamp,
     );

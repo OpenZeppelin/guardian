@@ -61,6 +61,18 @@ export class GuardianHttpClient {
     this.baseUrl = baseUrl;
   }
 
+  /**
+   * Monotonic timestamp for auth headers. Strictly increasing across calls
+   * within a single client instance so concurrent or rapid-fire requests
+   * never produce duplicate `x-timestamp` values.
+   */
+  private nextTimestamp(): number {
+    const now = Date.now();
+    const ts = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
+    this.lastTimestamp = ts;
+    return ts;
+  }
+
   setSigner(signer: Signer): void {
     this.signer = signer;
   }
@@ -246,15 +258,16 @@ export class GuardianHttpClient {
       );
     }
 
-    const now = Date.now();
-    const timestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
-    this.lastTimestamp = timestamp;
+    const timestamp = this.nextTimestamp();
     const signature = await this.signer.signLookupMessage(keyCommitmentHex, timestamp);
 
     return this.fetch(path, {
       ...init,
       headers: {
         ...init.headers,
+        // Sent for API consistency with per-account requests; the server's
+        // lookup path derives the pubkey from the signature itself and
+        // ignores this header for verification.
         'x-pubkey': this.signer.publicKey,
         'x-signature': signature,
         'x-timestamp': timestamp.toString(),
@@ -273,9 +286,7 @@ export class GuardianHttpClient {
       throw new Error('No signer configured. Call setSigner() first.');
     }
 
-    const now = Date.now();
-    const timestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
-    this.lastTimestamp = timestamp;
+    const timestamp = this.nextTimestamp();
     const authPayload = RequestAuthPayload.fromRequest(requestPayload);
     const signature = this.signer.signRequest
       ? await this.signer.signRequest(accountId, timestamp, authPayload)
