@@ -28,7 +28,7 @@ The `GET /state/lookup` endpoint and the matching `GetAccountByKeyCommitment` gR
 
 - Domain tag: `DOMAIN_TAG = RPO256(felts(b"guardian.lookup.v1"))` — a fixed 4-felt word, computed once and embedded in the binary. Future incompatible changes MUST bump the version segment.
 - Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
-- Authentication: proof-of-possession of the queried commitment. The caller submits `x-pubkey` (a full Falcon or ECDSA public-key encoding — **never** the 32-byte commitment alias), and the server re-derives the commitment from the public key and requires equality with `key_commitment`.
+- Authentication: proof-of-possession of the queried commitment. Identity is derived from the signature itself — Falcon signatures embed the public key, ECDSA signatures recover it via the recovery byte. The server then requires `commitment_of(derived_pk) == key_commitment` after cryptographic signature verification. `x-pubkey` is sent on the wire for parity with per-account requests but is not consulted on this path; signers that only expose the 32-byte commitment (e.g., browser Miden wallet) work because the signature is what proves possession.
 - Replay protection: `MAX_TIMESTAMP_SKEW_MS` skew window only. No per-commitment last-seen tracking; a replayed valid request returns the same `account_id` to a key holder who already obtained it.
 
 ### EVM Session Authentication
@@ -279,10 +279,10 @@ EVM proposal response:
 
 - Headers: `x-pubkey`, `x-signature`, `x-timestamp` — signed via the **Lookup Request Signing** format above (NOT the per-account format).
 - Query: `key_commitment` (`0x`-prefixed lowercase hex, 32 bytes).
-- Authentication: proof-of-possession of the queried commitment. `x-pubkey` MUST be a full Falcon or ECDSA public-key encoding; the server rejects 32-byte raw commitments as `invalid_input`.
+- Authentication: proof-of-possession of the queried commitment. Identity is derived from the signature itself (Falcon embeds the pubkey, ECDSA recovers it); the server then requires the derived key's commitment to equal `key_commitment`. `x-pubkey` is part of the wire format for parity with other endpoints but is not consulted here.
 - Errors propagate via the structured `GuardianError` envelope (no legacy per-endpoint body shape).
 - 200: `{ accounts: [ { account_id: string } ] }`. The list may be empty when no account authorizes the queried commitment — empty list is a successful response, NOT a not-found error. Distinguishing "no account" from "wrong key" would leak account presence to non-key-holders.
-- Common errors: `invalid_input` (malformed `key_commitment`, malformed pubkey, 32-byte commitment used as pubkey), `authentication_failed` (pubkey-commitment mismatch, signature verification failure, timestamp outside skew window), `storage_error`.
+- Common errors: `invalid_input` (malformed `key_commitment`), `authentication_failed` (signature verification failure, derived-key commitment mismatch, timestamp outside skew window, signature did not parse as Falcon or ECDSA), `storage_error`.
 - EVM accounts are excluded from results regardless of commitment value (their authorization shape uses `signers`, not `cosigner_commitments`).
 
 ### POST /delta/proposal
