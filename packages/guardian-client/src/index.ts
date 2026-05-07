@@ -22,4 +22,6 @@ export type {
   DeltaProposalResponse,
   ProposalsResponse,
   SignProposalRequest,
+  LookupAccount,
+  LookupResponse,
 } from './types.js';

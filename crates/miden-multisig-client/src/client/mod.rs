@@ -20,6 +20,7 @@ mod proposals;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use guardian_client::GetStateResponse;
 use miden_client::rpc::Endpoint;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -27,6 +28,7 @@ use miden_protocol::account::AccountId;
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
 use crate::builder::MultisigClientBuilder;
+use crate::error::{MultisigError, Result};
 use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
@@ -151,4 +153,50 @@ impl MultisigClient {
     pub fn key_manager(&self) -> &dyn KeyManager {
         self.key_manager.as_ref()
     }
+
+    /// Recover the set of accounts the configured signer authorizes by
+    /// querying GUARDIAN's `/state/lookup` endpoint and fetching state for
+    /// each match. Mirrors `MultisigClient.recoverByKey` in the TS SDK.
+    /// Returns an empty list when no account on the configured GUARDIAN
+    /// authorizes this commitment (distinct from "wrong key", which fails
+    /// authentication first).
+    pub async fn recover_by_key(&self) -> Result<Vec<RecoveredAccount>> {
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let commitment_hex = self.user_commitment_hex();
+
+        let lookup = guardian_client
+            .lookup_account_by_key_commitment(&commitment_hex)
+            .await
+            .map_err(|e| MultisigError::GuardianServer(format!("lookup failed: {}", e)))?;
+
+        let mut recovered = Vec::with_capacity(lookup.accounts.len());
+        for entry in lookup.accounts {
+            let account_id = AccountId::from_hex(&entry.account_id).map_err(|e| {
+                MultisigError::InvalidConfig(format!(
+                    "GUARDIAN returned non-AccountId hex '{}': {}",
+                    entry.account_id, e
+                ))
+            })?;
+            let state = guardian_client.get_state(&account_id).await.map_err(|e| {
+                MultisigError::GuardianServer(format!(
+                    "get_state failed for {}: {}",
+                    entry.account_id, e
+                ))
+            })?;
+            recovered.push(RecoveredAccount {
+                account_id: entry.account_id,
+                state,
+            });
+        }
+        Ok(recovered)
+    }
+}
+
+/// One match returned by [`MultisigClient::recover_by_key`]. Pairs the
+/// discovered `account_id` with the current state response so callers do not
+/// need to do a second round-trip per account.
+#[derive(Debug, Clone)]
+pub struct RecoveredAccount {
+    pub account_id: String,
+    pub state: GetStateResponse,
 }

@@ -22,6 +22,15 @@
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
 
+### Lookup Request Signing
+
+The `GET /state/lookup` endpoint and the matching `GetAccountByKeyCommitment` gRPC method use a dedicated, account-less signed-message format because the account ID is the very value the caller is trying to discover. The format is **domain-separated by construction** from `Miden Request Signing` above so a signature crafted for one shape cannot validate against the other in either direction.
+
+- Domain tag: `DOMAIN_TAG = RPO256(felts(b"guardian.lookup.v1"))` — a fixed 4-felt word, computed once and embedded in the binary. Future incompatible changes MUST bump the version segment.
+- Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
+- Authentication: proof-of-possession of the queried commitment. The caller submits `x-pubkey` (a full Falcon or ECDSA public-key encoding — **never** the 32-byte commitment alias), and the server re-derives the commitment from the public key and requires equality with `key_commitment`.
+- Replay protection: `MAX_TIMESTAMP_SKEW_MS` skew window only. No per-commitment last-seen tracking; a replayed valid request returns the same `account_id` to a key holder who already obtained it.
+
 ### EVM Session Authentication
 
 - EVM support is behavior-gated by the server `evm` feature. Default builds do not register `/evm/*` routes or initialize EVM session state, Alloy readers, or proposal handlers.
@@ -266,6 +275,16 @@ EVM proposal response:
 - 200: `StateObject`.
 - 404: not found.
 
+### GET /state/lookup
+
+- Headers: `x-pubkey`, `x-signature`, `x-timestamp` — signed via the **Lookup Request Signing** format above (NOT the per-account format).
+- Query: `key_commitment` (`0x`-prefixed lowercase hex, 32 bytes).
+- Authentication: proof-of-possession of the queried commitment. `x-pubkey` MUST be a full Falcon or ECDSA public-key encoding; the server rejects 32-byte raw commitments as `invalid_input`.
+- Errors propagate via the structured `GuardianError` envelope (no legacy per-endpoint body shape).
+- 200: `{ accounts: [ { account_id: string } ] }`. The list may be empty when no account authorizes the queried commitment — empty list is a successful response, NOT a not-found error. Distinguishing "no account" from "wrong key" would leak account presence to non-key-holders.
+- Common errors: `invalid_input` (malformed `key_commitment`, malformed pubkey, 32-byte commitment used as pubkey), `authentication_failed` (pubkey-commitment mismatch, signature verification failure, timestamp outside skew window), `storage_error`.
+- EVM accounts are excluded from results regardless of commitment value (their authorization shape uses `signers`, not `cosigner_commitments`).
+
 ### POST /delta/proposal
 
 - Headers: `x-pubkey`, `x-signature`, `x-timestamp`.
@@ -434,6 +453,9 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`
 - `GetDeltaProposal(GetDeltaProposalRequest) -> GetDeltaProposalResponse`
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
+- `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
+
+`GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
 ## Idempotency and Ordering
 

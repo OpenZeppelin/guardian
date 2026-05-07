@@ -5,6 +5,7 @@ import type {
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
+  LookupResponse,
   PubkeyResponse,
   PushDeltaResponse,
   SignProposalRequest,
@@ -16,6 +17,7 @@ import { RequestAuthPayload } from './auth-request.js';
 import type {
   ServerDeltaObject,
   ServerDeltaProposalResponse,
+  ServerLookupResponse,
   ServerProposalsResponse,
   ServerPubkeyResponse,
   ServerStateObject,
@@ -25,6 +27,7 @@ import type {
 import {
   fromServerConfigureResponse,
   fromServerDeltaObject,
+  fromServerLookupResponse,
   fromServerStateObject,
   toServerConfigureRequest,
   toServerDeltaProposalRequest,
@@ -90,6 +93,23 @@ export class GuardianHttpClient {
     }, accountId, requestQuery);
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
+  }
+
+  /**
+   * Resolve a public-key commitment to the set of account IDs whose
+   * authorization set contains it. Authentication is by proof-of-possession:
+   * the configured signer MUST hold the private key behind `keyCommitmentHex`
+   * and implement `signLookupMessage`. Returns an empty list when the
+   * commitment is not authorized for any account.
+   */
+  async lookupAccountByKeyCommitment(keyCommitmentHex: string): Promise<LookupResponse> {
+    const params = new URLSearchParams({ key_commitment: keyCommitmentHex });
+    const response = await this.fetchLookupAuthenticated(
+      `/state/lookup?${params}`,
+      { method: 'GET' },
+      keyCommitmentHex
+    );
+    return fromServerLookupResponse((await response.json()) as ServerLookupResponse);
   }
 
   async getDeltaProposals(accountId: string): Promise<DeltaObject[]> {
@@ -202,6 +222,44 @@ export class GuardianHttpClient {
     }
 
     return response;
+  }
+
+  /**
+   * Authenticated fetch for the lookup endpoint. Cannot reuse
+   * `fetchAuthenticated`, which builds an `AuthRequestPayload` bound to an
+   * `accountId` (the value lookup is trying to discover). Digest construction
+   * is delegated to the signer's `signLookupMessage`.
+   */
+  private async fetchLookupAuthenticated(
+    path: string,
+    init: RequestInit,
+    keyCommitmentHex: string
+  ): Promise<Response> {
+    if (!this.signer) {
+      throw new Error('No signer configured. Call setSigner() first.');
+    }
+    if (!this.signer.signLookupMessage) {
+      throw new Error(
+        'Signer does not implement signLookupMessage. Account recovery by key requires a ' +
+          'signer that produces signatures over LookupAuthMessage::to_word; the canonical ' +
+          'helper lives in @openzeppelin/miden-multisig-client.'
+      );
+    }
+
+    const now = Date.now();
+    const timestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1;
+    this.lastTimestamp = timestamp;
+    const signature = await this.signer.signLookupMessage(keyCommitmentHex, timestamp);
+
+    return this.fetch(path, {
+      ...init,
+      headers: {
+        ...init.headers,
+        'x-pubkey': this.signer.publicKey,
+        'x-signature': signature,
+        'x-timestamp': timestamp.toString(),
+      },
+    });
   }
 
   private async fetchAuthenticated(

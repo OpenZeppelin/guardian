@@ -101,6 +101,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
 - Run `online-proposal-lifecycle` when proposal parsing, proposal metadata, thresholds, signing, execution, or post-execution sync changes.
 - Run `offline-switch-guardian` when export/import, offline signing, offline execution, `SwitchGuardian`, or fallback behavior changes.
 - Run `state-verification` when commitment comparison or sync-after-execute behavior changes.
+- Run `recover-by-key-canary` when key-commitment lookup, `recover_by_key`, `lookup_account_by_key_commitment`, or any related code path changes.
 - Run at least one Falcon pass and one ECDSA pass when key management, commitment parsing, signature encoding, or scheme selection changes.
 
 ## Execution Rules
@@ -124,6 +125,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
   - proposal execution
   - post-execution sync
   - note visibility after faucet mint or self-P2ID
+  - account recovery by key (`Recover by key` menu action: lookup + per-match `get_state`)
   - offline fallback prompt after GUARDIAN failure
   - offline proposal import, sign, and execute
 - Start timing when the final input for that step is submitted and the demo begins blocking work.
@@ -159,6 +161,7 @@ When the first canary is `add cosigner`, reserve one tab as the signer to add la
 - Verify at least one relaunched or newly-started demo tab can sync the account from the replacement GUARDIAN.
 - Verify offline execution only for `SwitchGuardian`; reject broader offline claims unless code changed to support them.
 - Verify Falcon and ECDSA behavior separately whenever signature-scheme code changes.
+- Verify `Recover by key` returns the just-created `account_id` when called from the same demo tab that created the account (each `cargo run` regenerates the keypair; the canary asserts the SDK round-trip, not seed-derivation). Verify the recovered account loads + syncs to the same `state_commitment`.
 
 ## Canary Failure Policy
 

@@ -379,6 +379,12 @@ export default function App() {
             <button disabled={!sessionReady} onClick={handleLoadAccount}>
               Load account
             </button>
+            <button
+              disabled={!sessionReady}
+              onClick={() => runAction(async () => api.recoverByKey())}
+            >
+              Recover by key
+            </button>
             <button disabled={!sessionReady || !accountLoaded} onClick={handleRegisterOnGuardian}>
               Register on Guardian
             </button>
@@ -572,7 +578,10 @@ await window.smoke.createProposal({
   type: 'add_signer',
   commitment: '0x...',
   increaseThreshold: false,
-});`}
+});
+
+const matches = await window.smoke.recoverByKey();
+// matches: [{ accountId: '0x...', state: { ... } }, ...]`}
           </pre>
         </section>
       </main>

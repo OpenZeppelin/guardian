@@ -140,3 +140,11 @@ export interface ServerPubkeyResponse {
   commitment: string;
   pubkey?: string;
 }
+
+export interface ServerLookupAccount {
+  account_id: string;
+}
+
+export interface ServerLookupResponse {
+  accounts: ServerLookupAccount[];
+}

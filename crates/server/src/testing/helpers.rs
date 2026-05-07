@@ -275,6 +275,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/push_delta", axum::routing::post(http::push_delta))
         .route("/get_delta", axum::routing::get(http::get_delta))
         .route("/get_state", axum::routing::get(http::get_state))
+        .route("/state/lookup", axum::routing::get(http::lookup))
         .route("/pubkey", axum::routing::get(http::get_pubkey))
         .route(
             "/push_delta_proposal",
@@ -593,6 +594,14 @@ impl TestEcdsaSigner {
         let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
 
         (signature_hex, timestamp)
+    }
+
+    /// Sign an arbitrary `Word`. Used by lookup-endpoint tests where the
+    /// digest is a `LookupAuthMessage::to_word`, not an
+    /// `AuthRequestMessage::to_word`.
+    pub fn sign_word(&self, message: Word) -> String {
+        let signature = self.secret_key.sign(message);
+        format!("0x{}", hex::encode(signature.to_bytes()))
     }
 }
 

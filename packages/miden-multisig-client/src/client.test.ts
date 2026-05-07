@@ -250,4 +250,101 @@ describe('MultisigClient', () => {
       expect(bindAccountKey).toHaveBeenCalledWith(webClient, '0x' + 'd'.repeat(30));
     });
   });
+
+  // --- recoverByKey -------------------
+
+  describe('recoverByKey', () => {
+    function makeLookupCapableSigner() {
+      return {
+        commitment: '0x' + 'a'.repeat(64),
+        publicKey: '0x' + 'p'.repeat(897),
+        scheme: 'falcon' as const,
+        signAccountIdWithTimestamp: vi.fn().mockResolvedValue('0x' + 'a'.repeat(128)),
+        signRequest: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
+        signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
+        signLookupMessage: vi.fn().mockResolvedValue('0x' + 'c'.repeat(762)),
+      };
+    }
+
+    function mockServerLookupResponse(accountIds: string[]) {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          accounts: accountIds.map((id) => ({ account_id: id })),
+        }),
+      });
+    }
+
+    function mockServerStateResponse(accountId: string) {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: accountId,
+          commitment: '0x' + 'f'.repeat(64),
+          state_json: { data: 'base64data' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        }),
+      });
+    }
+
+    it('returns one (accountId, state) pair when lookup matches a single account', async () => {
+      const client = new MultisigClient(webClient);
+      const signer = makeLookupCapableSigner();
+      const accountId = '0x7bfb0f38b0fafa103f86a805594170';
+
+      mockServerLookupResponse([accountId]);
+      mockServerStateResponse(accountId);
+
+      const recovered = await client.recoverByKey(signer);
+
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0].accountId).toBe(accountId);
+      expect(recovered[0].state.commitment).toBe('0x' + 'f'.repeat(64));
+      expect(signer.signLookupMessage).toHaveBeenCalledTimes(1);
+      expect(signer.signLookupMessage).toHaveBeenCalledWith(
+        signer.commitment,
+        expect.any(Number)
+      );
+      // Lookup + getState = exactly two HTTP requests.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns multiple (accountId, state) pairs when one commitment authorizes several accounts', async () => {
+      const client = new MultisigClient(webClient);
+      const signer = makeLookupCapableSigner();
+      const accountA = '0xaaa1';
+      const accountB = '0xbbb2';
+
+      mockServerLookupResponse([accountA, accountB]);
+      mockServerStateResponse(accountA);
+      mockServerStateResponse(accountB);
+
+      const recovered = await client.recoverByKey(signer);
+
+      expect(recovered.map((r) => r.accountId)).toEqual([accountA, accountB]);
+      // 1 lookup + 2 state fetches.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns empty array when no account authorizes the commitment', async () => {
+      const client = new MultisigClient(webClient);
+      const signer = makeLookupCapableSigner();
+
+      mockServerLookupResponse([]);
+
+      const recovered = await client.recoverByKey(signer);
+
+      expect(recovered).toEqual([]);
+      // Only the lookup HTTP call — no per-account state fetches.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws a clear error when the signer does not implement signLookupMessage', async () => {
+      const client = new MultisigClient(webClient);
+      // mockSigner from the outer beforeEach lacks signLookupMessage.
+      await expect(client.recoverByKey(mockSigner)).rejects.toThrow(/signLookupMessage/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
 });

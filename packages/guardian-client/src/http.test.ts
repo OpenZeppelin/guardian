@@ -579,6 +579,144 @@ describe('GuardianHttpClient', () => {
       );
     });
   });
+
+  // --- lookupAccountByKeyCommitment -----
+
+  describe('lookupAccountByKeyCommitment', () => {
+    const keyCommitmentHex = '0x' + 'aa'.repeat(32);
+
+    function makeLookupSigner() {
+      return {
+        commitment: keyCommitmentHex,
+        publicKey: '0x' + 'bb'.repeat(897),
+        scheme: 'falcon' as const,
+        signAccountIdWithTimestamp: vi.fn(),
+        signRequest: vi.fn(),
+        signCommitment: vi.fn(),
+        signLookupMessage: vi.fn().mockResolvedValue('0x' + 'cc'.repeat(762)),
+      };
+    }
+
+    it('returns the parsed accounts list on a happy path', async () => {
+      const signer = makeLookupSigner();
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          accounts: [{ account_id: '0x7bfb0f38b0fafa103f86a805594170' }],
+        }),
+      });
+
+      const result = await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+
+      expect(result.accounts).toHaveLength(1);
+      expect(result.accounts[0].accountId).toBe('0x7bfb0f38b0fafa103f86a805594170');
+      expect(signer.signLookupMessage).toHaveBeenCalledTimes(1);
+      expect(signer.signLookupMessage).toHaveBeenCalledWith(
+        keyCommitmentHex,
+        expect.any(Number)
+      );
+    });
+
+    it('treats an empty list as a successful response, not an error', async () => {
+      const signer = makeLookupSigner();
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ accounts: [] }),
+      });
+
+      const result = await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+      expect(result.accounts).toEqual([]);
+    });
+
+    it('returns multi-match results in order', async () => {
+      const signer = makeLookupSigner();
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          accounts: [
+            { account_id: '0xaaa1' },
+            { account_id: '0xbbb2' },
+          ],
+        }),
+      });
+
+      const result = await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+      expect(result.accounts.map((a) => a.accountId)).toEqual(['0xaaa1', '0xbbb2']);
+    });
+
+    it('attaches x-pubkey, x-signature, x-timestamp headers and uses /state/lookup with the query string', async () => {
+      const signer = makeLookupSigner();
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ accounts: [] }),
+      });
+
+      await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe(
+        `http://localhost:3000/state/lookup?key_commitment=${encodeURIComponent(keyCommitmentHex)}`
+      );
+      expect(init.method).toBe('GET');
+      expect(init.headers['x-pubkey']).toBe(signer.publicKey);
+      expect(init.headers['x-signature']).toMatch(/^0x/);
+      expect(init.headers['x-timestamp']).toMatch(/^\d+$/);
+    });
+
+    it('throws a clear error when no signer is configured', async () => {
+      // No setSigner() call.
+      await expect(
+        client.lookupAccountByKeyCommitment(keyCommitmentHex)
+      ).rejects.toThrow(/No signer configured/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('throws a clear error when the signer does not implement signLookupMessage', async () => {
+      // Default mockSigner from the outer describe does NOT implement
+      // signLookupMessage — the HTTP client must reject up front rather than
+      // sending a request the server will reject.
+      client.setSigner(mockSigner);
+      await expect(
+        client.lookupAccountByKeyCommitment(keyCommitmentHex)
+      ).rejects.toThrow(/signLookupMessage/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('propagates HTTP errors from the server through GuardianHttpError', async () => {
+      const signer = makeLookupSigner();
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => '{"code":"authentication_failed","error":"..."}',
+      });
+
+      const err = await client
+        .lookupAccountByKeyCommitment(keyCommitmentHex)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(GuardianHttpError);
+      expect(err.status).toBe(401);
+    });
+
+    it('rejects malformed server responses (missing accounts array)', async () => {
+      const signer = makeLookupSigner();
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      });
+
+      await expect(
+        client.lookupAccountByKeyCommitment(keyCommitmentHex)
+      ).rejects.toThrow(/Malformed/);
+    });
+  });
 });
 
 describe('GuardianHttpError', () => {

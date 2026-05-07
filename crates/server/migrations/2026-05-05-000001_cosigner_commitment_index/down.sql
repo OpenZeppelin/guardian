@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_account_metadata_cosigner_commitments;

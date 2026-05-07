@@ -39,7 +39,12 @@
  * ```
  */
 
-export { MultisigClient, type MultisigClientConfig } from './client.js';
+export {
+  MultisigClient,
+  type MultisigClientConfig,
+  type RecoveredAccount,
+} from './client.js';
+export { lookupAuthDigest } from './lookupAuth.js';
 export { Multisig, type AccountState } from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {

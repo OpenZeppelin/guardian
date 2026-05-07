@@ -47,6 +47,13 @@ impl FalconRpoSigner {
         let message = AuthRequestMessage::new(*account_id, timestamp, payload).to_word();
         self.secret_key.sign(message).into_hex()
     }
+
+    /// Signs a precomputed digest. Used by the lookup endpoint via
+    /// `Auth::sign_word_hex` — callers should prefer that entry point so the
+    /// scheme dispatch lives in one place.
+    pub fn sign_word_hex(&self, digest: Word) -> String {
+        self.secret_key.sign(digest).into_hex()
+    }
 }
 
 /// Converts an account ID and timestamp to a Word for signing.

@@ -1,10 +1,11 @@
 use crate::delta_object::DeltaObject;
+use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetDeltaProposalsParams,
-    GetDeltaSinceParams, GetStateParams, PushDeltaParams, PushDeltaProposalParams,
-    SignDeltaProposalParams,
+    GetDeltaSinceParams, GetStateParams, LookupAccountParams, PushDeltaParams,
+    PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -46,6 +47,24 @@ pub struct DeltaQuery {
 #[derive(Deserialize, Serialize)]
 pub struct StateQuery {
     pub account_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct LookupQuery {
+    pub key_commitment: String,
+}
+
+/// Single match in a lookup response. Wraps `account_id` so the response shape
+/// can be extended in a forward-compatible way (e.g. adding role tags or
+/// per-account metadata) without breaking existing clients.
+#[derive(Serialize, Deserialize)]
+pub struct LookupAccount {
+    pub account_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LookupResponse {
+    pub accounts: Vec<LookupAccount>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -292,6 +311,28 @@ pub async fn get_state(
             }),
         ),
     }
+}
+
+/// `GET /state/lookup?key_commitment=<hex>` — resolves a Miden public-key
+/// commitment to the set of account IDs whose authorization set contains it.
+/// Authentication is by proof-of-possession against the queried commitment.
+pub async fn lookup(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<LookupQuery>,
+) -> Result<Json<LookupResponse>, GuardianError> {
+    let params = LookupAccountParams {
+        key_commitment: query.key_commitment,
+        credentials,
+    };
+    let result = services::lookup_account(&state, params).await?;
+    Ok(Json(LookupResponse {
+        accounts: result
+            .accounts
+            .into_iter()
+            .map(|account_id| LookupAccount { account_id })
+            .collect(),
+    }))
 }
 
 #[derive(Serialize)]

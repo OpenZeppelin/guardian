@@ -12,6 +12,7 @@ import {
   type ProcedureName,
   type ProcedureThreshold,
   type Proposal,
+  type RecoveredAccount,
   type SignatureScheme,
 } from '@openzeppelin/miden-multisig-client';
 import {
@@ -142,6 +143,7 @@ export interface SmokeApi {
     proposal: ReturnType<typeof serializeProposal>;
     proposals: Array<ReturnType<typeof serializeProposal>>;
   }>;
+  recoverByKey(): Promise<RecoveredAccount[]>;
   clearLocalState(): Promise<BrowserSessionSnapshot>;
   events(): Promise<SmokeEventEntry[]>;
 }
@@ -1201,6 +1203,17 @@ export function useSmokeHarness(): {
     [multisigRef, withCommand],
   );
 
+  const recoverByKey = useCallback(
+    async (): Promise<RecoveredAccount[]> =>
+      withCommand('recoverByKey', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        const signerContext = resolveSignerContext();
+        return currentMultisigClient.recoverByKey(signerContext.signerInstance);
+      }),
+    [multisigClientRef, resolveSignerContext, withCommand],
+  );
+
   const clearLocalState = useCallback(
     async (): Promise<BrowserSessionSnapshot> =>
       withCommand('clearLocalState', async () => {
@@ -1253,6 +1266,7 @@ export function useSmokeHarness(): {
     exportProposal,
     signProposalOffline,
     importProposal,
+    recoverByKey,
     clearLocalState,
     events: listEvents,
   };

@@ -9,6 +9,7 @@ use crate::error::GuardianError;
 use crate::metadata::MetadataStore;
 
 mod credentials;
+pub mod lookup;
 mod miden_ecdsa;
 mod miden_falcon_rpo;
 

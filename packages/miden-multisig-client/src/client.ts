@@ -7,6 +7,7 @@
 
 import { type MidenClient, Account, AccountId } from '@miden-sdk/miden-sdk';
 import { GuardianHttpClient } from '@openzeppelin/guardian-client';
+import type { StateObject } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
 import { AccountInspector } from './inspector.js';
@@ -36,6 +37,16 @@ export interface MultisigClientConfig {
   guardianEndpoint?: string;
   /** Miden node RPC endpoint used for state commitment verification */
   midenRpcEndpoint?: string;
+}
+
+/**
+ * One match returned by `MultisigClient.recoverByKey`. Pairs the discovered
+ * `accountId` with the current `state` snapshot so callers do not need to do a
+ * second round-trip per account.
+ */
+export interface RecoveredAccount {
+  accountId: string;
+  state: StateObject;
 }
 
 /**
@@ -90,6 +101,31 @@ export class MultisigClient {
    */
   get guardianClient(): GuardianHttpClient {
     return this._guardianClient;
+  }
+
+  /**
+   * Recover the set of accounts a given signer authorizes by querying
+   * Guardian's `/state/lookup` endpoint and fetching state for each match.
+   * Returns `(accountId, state)` pairs; an empty array means no account on
+   * this operator authorizes the commitment (distinct from "wrong key",
+   * which would fail authentication first).
+   *
+   * @throws if `signer` does not implement `signLookupMessage`. The bundled
+   *   `FalconSigner` and `EcdsaSigner` both do.
+   */
+  async recoverByKey(signer: Signer): Promise<RecoveredAccount[]> {
+    this._guardianClient.setSigner(signer);
+
+    const lookup = await this._guardianClient.lookupAccountByKeyCommitment(signer.commitment);
+
+    // Per-account replay protection is scoped to each account's
+    // last_auth_timestamp, so concurrent getState calls do not race.
+    return Promise.all(
+      lookup.accounts.map(async ({ accountId }) => ({
+        accountId,
+        state: await this._guardianClient.getState(accountId),
+      })),
+    );
   }
 
   /**

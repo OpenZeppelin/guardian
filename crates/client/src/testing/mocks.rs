@@ -1,11 +1,11 @@
 use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AccountState, ConfigureRequest, ConfigureResponse, DeltaObject as ProtoDeltaObject,
-    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
-    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse, GetDeltaProposalRequest,
+    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
+    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
+    GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
+    PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -24,6 +24,8 @@ pub struct MockGuardianService {
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
     get_state_response: Arc<StdMutex<Option<Result<GetStateResponse, Status>>>>,
+    get_account_by_key_commitment_response:
+        Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
 }
 
 impl MockGuardianService {
@@ -86,6 +88,14 @@ impl MockGuardianService {
 
     pub fn with_get_state(self, response: Result<GetStateResponse, Status>) -> Self {
         *self.get_state_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    pub fn with_get_account_by_key_commitment(
+        self,
+        response: Result<GetAccountByKeyCommitmentResponse, Status>,
+    ) -> Self {
+        *self.get_account_by_key_commitment_response.lock().unwrap() = Some(response);
         self
     }
 }
@@ -290,6 +300,20 @@ impl Guardian for MockGuardianService {
                     state: Some(create_mock_account_state()),
                 })
             });
+
+        response.map(Response::new)
+    }
+
+    async fn get_account_by_key_commitment(
+        &self,
+        _request: Request<GetAccountByKeyCommitmentRequest>,
+    ) -> Result<Response<GetAccountByKeyCommitmentResponse>, Status> {
+        let response = self
+            .get_account_by_key_commitment_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Ok(GetAccountByKeyCommitmentResponse { accounts: vec![] }));
 
         response.map(Response::new)
     }

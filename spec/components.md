@@ -12,6 +12,7 @@ The API exposes a simple interface for operating states, deltas, and proposal co
 - Miden account metadata is created by `/configure` with initial state and acknowledgement binding.
 - EVM account metadata is created by `/evm/accounts` with the canonical smart account address, chain ID, multisig validator address, and signer snapshot auth policy. Chain RPC URLs and the shared EntryPoint address remain server-owned configuration.
 - Offers CRUD operations for metadata and a simple list operation to iterate accounts.
+- Supports reverse lookup by Miden cosigner commitment (`find_by_cosigner_commitment`) so a recovering wallet holding only a signing key can resolve the account ID(s) it authorizes — see the `GET /state/lookup` endpoint. The Postgres backend serves this via a GIN index over `auth -> '<scheme>' -> 'cosigner_commitments'` (`jsonb_path_ops`); the filesystem backend serves it as a scan. EVM rows store `signers` rather than `cosigner_commitments` and never match.
 
 ## Auth
 
@@ -24,6 +25,7 @@ The API exposes a simple interface for operating states, deltas, and proposal co
 - EVM verification uses `/evm/auth/*`: the server recovers the EOA from an EIP-712 session challenge and stores that address in a secure cookie-backed session.
 - Replay protection: the signed timestamp is validated against a 300-second skew window and must be strictly greater than the account's `last_auth_timestamp`.
 - Default server builds do not register EVM routes or initialize EVM state, sessions, contract readers, or proposal handlers.
+- The account-less lookup endpoint (`GET /state/lookup`, gRPC `GetAccountByKeyCommitment`) uses a dedicated signing primitive `LookupAuthMessage` whose digest is **domain-separated by construction** from the per-account `AuthRequestMessage` (a fixed RPO domain tag is prepended to the lookup digest input, and the array shapes differ in length and leading felts). A signature crafted under one shape cannot validate against the other in either direction. Lookup auth additionally requires a full Falcon or ECDSA public-key encoding for `x-pubkey` — the 32-byte commitment alias accepted elsewhere by `Auth::compute_signer_commitment` is explicitly rejected on the lookup path so an off-chain commitment leak cannot be turned into a fake proof-of-possession. New endpoints (including this one) emit failures via the structured `GuardianError` → `IntoResponse` envelope, NOT the legacy `get_state`-style 404-shaped body.
 
 ## Acknowledger
 
