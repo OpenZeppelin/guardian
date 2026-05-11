@@ -1,4 +1,4 @@
-use crate::metadata::{AccountListCursor, AccountMetadata, MetadataStore};
+use crate::metadata::{AccountListCursor, AccountMetadata, Auth, MetadataStore};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -188,5 +188,27 @@ impl MetadataStore for FilesystemMetadataStore {
 
         self.persist(&cache).await?;
         Ok(true)
+    }
+
+    async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
+        let cache = self.cache.read().await;
+        let mut matches = Vec::new();
+        for (account_id, metadata) in cache.iter() {
+            let commitments = match &metadata.auth {
+                Auth::MidenFalconRpo {
+                    cosigner_commitments,
+                }
+                | Auth::MidenEcdsa {
+                    cosigner_commitments,
+                } => cosigner_commitments.as_slice(),
+                // EVM accounts use a different authorization model and must
+                // never appear in lookup results.
+                Auth::EvmEcdsa { .. } => continue,
+            };
+            if commitments.iter().any(|c| c == commitment) {
+                matches.push(account_id.clone());
+            }
+        }
+        Ok(matches)
     }
 }

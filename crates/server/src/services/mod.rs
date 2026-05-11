@@ -22,6 +22,7 @@ mod get_delta_proposal;
 mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
+mod lookup_account;
 mod push_delta;
 mod push_delta_proposal;
 mod sign_delta_proposal;
@@ -58,6 +59,7 @@ pub use get_delta_proposals::{
 };
 pub use get_delta_since::{GetDeltaSinceParams, GetDeltaSinceResult, get_delta_since};
 pub use get_state::{GetStateParams, GetStateResult, get_state};
+pub use lookup_account::{LookupAccountParams, LookupAccountResult, lookup_account};
 pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use push_delta_proposal::{
     PushDeltaProposalParams, PushDeltaProposalResult, push_delta_proposal,

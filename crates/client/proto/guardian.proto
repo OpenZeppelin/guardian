@@ -33,6 +33,12 @@ service Guardian {
 
   // Sign a delta proposal
   rpc SignDeltaProposal(SignDeltaProposalRequest) returns (SignDeltaProposalResponse);
+
+  // Resolve a public-key commitment to the set of account IDs whose
+  // authorization set contains it. Authentication is by proof-of-possession
+  // against the queried commitment, using the lookup-bound signing primitive
+  // (LookupAuthMessage) — distinct from the per-account request-signing format.
+  rpc GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) returns (GetAccountByKeyCommitmentResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -231,4 +237,26 @@ message SignDeltaProposalResponse {
   bool success = 1;
   string message = 2;
   DeltaObject delta = 3;
+}
+
+// Lookup request: a 0x-prefixed lowercase hex public-key commitment.
+// Authentication is carried in gRPC metadata (x-pubkey, x-signature,
+// x-timestamp), where the signature is over a LookupAuthMessage digest —
+// NOT the per-account AuthRequestMessage digest used by other RPCs.
+message GetAccountByKeyCommitmentRequest {
+  string key_commitment = 1;
+}
+
+// Lookup response: zero, one, or many matching accounts. An empty list is a
+// successful response, NOT an error — distinguishing "no account exists" from
+// "caller does not hold the key" would leak account presence to non-key-holders.
+message GetAccountByKeyCommitmentResponse {
+  repeated AccountRef accounts = 1;
+}
+
+// One account match in a lookup response. Wrapped in its own message so the
+// response shape can be extended (e.g. role tags or per-account metadata)
+// in a forward-compatible way.
+message AccountRef {
+  string account_id = 1;
 }

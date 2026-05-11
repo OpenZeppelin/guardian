@@ -3,7 +3,7 @@ use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
     self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetStateParams,
-    PushDeltaParams,
+    LookupAccountParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
@@ -365,6 +365,33 @@ impl Guardian for GuardianService {
                 error_code: e.code().to_string(),
             })),
         }
+    }
+
+    /// Resolve a public-key commitment to the set of account IDs that
+    /// authorize it. Mirror of HTTP `GET /state/lookup`.
+    async fn get_account_by_key_commitment(
+        &self,
+        request: Request<GetAccountByKeyCommitmentRequest>,
+    ) -> Result<Response<GetAccountByKeyCommitmentResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let req = request.into_inner();
+
+        let params = LookupAccountParams {
+            key_commitment: req.key_commitment,
+            credentials,
+        };
+
+        let result = services::lookup_account(&self.app_state, params)
+            .await
+            .map_err(Status::from)?;
+
+        Ok(Response::new(GetAccountByKeyCommitmentResponse {
+            accounts: result
+                .accounts
+                .into_iter()
+                .map(|account_id| AccountRef { account_id })
+                .collect(),
+        }))
     }
 }
 

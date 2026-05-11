@@ -3,6 +3,7 @@ import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
 import { hexToBytes, uint8ArrayToBase64 } from '../utils/encoding.js';
+import { lookupAuthDigest } from '../lookupAuth.js';
 import { wordToBytes } from '../utils/word.js';
 
 export interface ParaSigningContext {
@@ -57,6 +58,15 @@ export class ParaSigner implements Signer {
   async signCommitment(commitmentHex: string): Promise<string> {
     const word = AuthDigest.fromCommitmentHex(commitmentHex);
     return this.signWord(word);
+  }
+
+  /**
+   * Sign a `LookupAuthMessage` digest for the `/state/lookup` endpoint.
+   * Account-less; used directly by `recoverByKey`.
+   */
+  async signLookupMessage(keyCommitmentHex: string, timestampMs: number): Promise<string> {
+    const digest = lookupAuthDigest(timestampMs, keyCommitmentHex);
+    return this.signWord(digest);
   }
 
   private async signWord(word: { toHex: () => string; toFelts: () => Array<{ asInt: () => bigint }> }): Promise<string> {

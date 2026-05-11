@@ -3,6 +3,7 @@ use crate::schema::account_metadata;
 use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
 use diesel::prelude::*;
+use diesel::sql_types::Text;
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
@@ -19,6 +20,15 @@ impl PostgresMetadataStore {
     pub async fn with_pool(pool: Pool<AsyncPgConnection>) -> Self {
         Self { pool }
     }
+}
+
+/// Row shape for the cosigner-commitment lookup query. Uses `QueryableByName`
+/// because the lookup is expressed as raw SQL (`@> to_jsonb($1::text)`) rather
+/// than the diesel DSL.
+#[derive(diesel::QueryableByName)]
+struct LookupAccountIdRow {
+    #[diesel(sql_type = Text)]
+    account_id: String,
 }
 
 // Queryable struct for reading from database
@@ -247,5 +257,34 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
 
         Ok(rows_updated > 0)
+    }
+
+    async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        // The COALESCE expression must match the GIN index (see migration
+        // 2026-05-05-000001_cosigner_commitment_index/up.sql) exactly so the
+        // planner uses the index for `@>` containment lookups. EVM rows store
+        // signers under `auth.EvmEcdsa.signers` (not `cosigner_commitments`)
+        // and so coalesce to `'[]'::jsonb` — they contribute zero index entries
+        // and never match.
+        let rows: Vec<LookupAccountIdRow> = diesel::sql_query(
+            "SELECT account_id FROM account_metadata \
+             WHERE COALESCE( \
+                 auth -> 'MidenFalconRpo' -> 'cosigner_commitments', \
+                 auth -> 'MidenEcdsa'     -> 'cosigner_commitments', \
+                 '[]'::jsonb \
+             ) @> to_jsonb($1::text)",
+        )
+        .bind::<Text, _>(commitment)
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("Failed to find by cosigner commitment: {e}"))?;
+
+        Ok(rows.into_iter().map(|r| r.account_id).collect())
     }
 }

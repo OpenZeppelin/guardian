@@ -11,6 +11,21 @@ export interface Signer {
     requestPayload: RequestAuthPayload
   ): Promise<string> | string;
   signCommitment(commitmentHex: string): Promise<string> | string;
+
+  /**
+   * Sign the lookup-bound digest for `/state/lookup`. The implementation
+   * MUST sign `LookupAuthMessage::to_word(timestamp_ms, key_commitment)` —
+   * domain-separated from `AuthRequestMessage`. The canonical implementation
+   * lives in `@openzeppelin/miden-multisig-client/lookupAuth.ts`; this
+   * zero-dependency package does not pull in the Miden SDK to compute it.
+   *
+   * Optional: signers that do not implement it cause the HTTP client to
+   * throw a clear error rather than send a signature the server will reject.
+   */
+  signLookupMessage?(
+    keyCommitmentHex: string,
+    timestampMs: number
+  ): Promise<string> | string;
 }
 
 export interface FalconSignature {
@@ -164,4 +179,18 @@ export interface PushDeltaResponse {
   ackSig?: string;
   ackPubkey?: string;
   ackScheme?: string;
+}
+
+/**
+ * Single match in a `/state/lookup` response. Wrapped in its own type so the
+ * shape can be extended (role tags, per-account metadata) in a forward-
+ * compatible way — additive server fields will not break existing clients.
+ */
+export interface LookupAccount {
+  accountId: string;
+}
+
+/** Response shape for `lookupAccountByKeyCommitment`. */
+export interface LookupResponse {
+  accounts: LookupAccount[];
 }

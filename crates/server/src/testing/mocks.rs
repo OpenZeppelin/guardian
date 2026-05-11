@@ -680,6 +680,8 @@ pub struct MockMetadataStore {
         Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
     pub list_with_pending_candidates_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
+    pub find_by_cosigner_commitment_responses: Arc<StdMutex<Vec<ListResult>>>,
+    pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
 }
 
 impl MockMetadataStore {
@@ -730,6 +732,24 @@ impl MockMetadataStore {
             .unwrap()
             .push(response);
         self
+    }
+
+    pub fn with_find_by_cosigner_commitment(
+        self,
+        response: StdResult<Vec<String>, String>,
+    ) -> Self {
+        self.find_by_cosigner_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_find_by_cosigner_commitment_calls(&self) -> Vec<String> {
+        self.find_by_cosigner_commitment_calls
+            .lock()
+            .unwrap()
+            .clone()
     }
 
     pub fn get_get_calls(&self) -> Vec<String> {
@@ -803,5 +823,20 @@ impl MetadataStore for MockMetadataStore {
             .unwrap()
             .pop()
             .unwrap_or(Ok(true)) // Default to success
+    }
+
+    async fn find_by_cosigner_commitment(
+        &self,
+        commitment: &str,
+    ) -> StdResult<Vec<String>, String> {
+        self.find_by_cosigner_commitment_calls
+            .lock()
+            .unwrap()
+            .push(commitment.to_string());
+        self.find_by_cosigner_commitment_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
     }
 }

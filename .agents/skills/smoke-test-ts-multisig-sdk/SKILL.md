@@ -120,6 +120,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Run `para-connectivity` when signer resolution, Para integration, or ECDSA wallet flow changed.
 - Run `miden-wallet-connectivity` when Miden Wallet connection, signing, or extension behavior changed.
 - Run `state-verification` when commitment comparison, sync-after-execute, or account-state inspection changed.
+- Run `recover-by-key-canary` when key-commitment lookup, `recoverByKey`, `lookupAccountByKeyCommitment`, or any related code path changed.
 - Run at least one Falcon pass and one ECDSA pass when key management, commitment parsing, signature encoding, or signer-source selection changed.
 
 ## Execution Rules
@@ -157,6 +158,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
   - `exportProposal`
   - `signProposalOffline`
   - `importProposal`
+  - `recoverByKey`
 - Time non-command steps manually:
   - browser/profile startup
   - wallet approval modal latency
@@ -184,6 +186,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Verify Para and Miden Wallet sessions expose commitment, public key, and connected state after connect.
 - Verify `Switch GUARDIAN` proves real post-switch behavior, not just local proposal mutation.
 - For a 2-of-2 offline `Switch GUARDIAN` run, verify both cosigners have offline-signed before execute. The proven sequence is: A exports, B imports and offline-signs, A imports B's signed JSON, A offline-signs, A imports the fully-signed JSON, then A executes.
+- Verify `recoverByKey` returns the just-created `accountId` when called from the same browser session that created the account, **after `registerOnGuardian` succeeded** — `createAccount` in the browser harness only builds the account and submits to Miden RPC; GUARDIAN registration is a separate explicit step (see the canary in `references/workflow-matrix.md`). The harness regenerates local signers per page load, so the canary asserts the SDK round-trip, not seed-derivation. Verify the recovered account loads + syncs to the same `state_commitment`.
 
 ## Canary Failure Policy
 

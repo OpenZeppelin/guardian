@@ -432,6 +432,36 @@ Expect:
 - no Falcon-only assumptions break the flow
 - signing and execution semantics match the tested Falcon workflow
 
+## `recover-by-key-canary`
+
+Use when:
+
+- `recover_by_key`, `lookup_account_by_key_commitment`, `lookup_grpc.rs`, or any related code path changed in the Rust SDK or server.
+- The standalone `examples/rust/src/bin/recover_by_key.rs` changed and the demo menu action should reflect parity.
+
+Note: `examples/demo/src/state.rs` regenerates the keypair on every `cargo run` (`builder.generate_key()` / `builder.generate_ecdsa_key()`). A device-loss simulation via a fresh demo tab would lose the signer that authorizes the just-created account. The canary therefore asserts the SDK round-trip (key → lookup → state) inside the same demo tab. A future change that persists the keypair across runs would unlock the broader simulation.
+
+Steps:
+
+1. Start GUARDIAN.
+2. Tab A: `cargo run -p guardian-demo`. Capture displayed Falcon commitment as `coldCommitment`.
+3. Tab B: `cargo run -p guardian-demo`. Capture commitment.
+4. Tab A: create the account using Tab B's commitment as cosigner (threshold 2). Capture printed `account_id` as `originalAccountId`.
+5. Tab A (same process — keys still in memory): select `Recover by key` (`r`). Assert: prints at least one match; one printed `Account` line equals `originalAccountId`. Record the elapsed time from menu selection to "Found N account(s)" output.
+6. Tab A: `Sync account` for `originalAccountId`, then `Verify state commitment`. Assert: local and on-chain state commitments match.
+
+Pass criteria:
+
+- recovery returns the originally-created account
+- post-recovery `Verify state commitment` passes
+- elapsed time within `references/timing-baseline.md` thresholds (or appended as new baseline if first run)
+
+Failure indicators:
+
+- "No accounts on this GUARDIAN authorize this signer commitment" when the account was just created in the same tab (server-side lookup regression)
+- thrown auth error (proof-of-possession metadata regression)
+- recovered `account_id` differs from `originalAccountId` (lookup index regression)
+
 ## Result Template
 
 - Commands:

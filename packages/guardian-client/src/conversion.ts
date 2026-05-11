@@ -6,6 +6,7 @@ import type {
   DeltaProposalRequest,
   DeltaStatus,
   ExecutionDelta,
+  LookupResponse,
   ProposalSignature,
   ProposalMetadata,
   SignProposalRequest,
@@ -19,6 +20,7 @@ import type {
   ServerDeltaProposalRequest,
   ServerDeltaStatus,
   ServerExecutionDelta,
+  ServerLookupResponse,
   ServerProposalSignature,
   ServerProposalMetadata,
   ServerSignProposalRequest,
@@ -145,6 +147,15 @@ export function fromServerConfigureResponse(server: ServerConfigureResponse): Co
     message: server.message,
     ackPubkey: server.ack_pubkey,
     ackCommitment: server.ack_commitment,
+  };
+}
+
+export function fromServerLookupResponse(server: ServerLookupResponse): LookupResponse {
+  if (!server || !Array.isArray(server.accounts)) {
+    throw new Error('Malformed /state/lookup response: expected { accounts: [...] }');
+  }
+  return {
+    accounts: server.accounts.map((entry) => ({ accountId: entry.account_id })),
   };
 }
 

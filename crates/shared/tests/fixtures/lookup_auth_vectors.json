@@ -1,0 +1,55 @@
+{
+  "schema": "guardian.lookup_auth_message.v1",
+  "domain_tag_bytes": "guardian.lookup.v1",
+  "domain_tag_hex": "0x49fff42cc23216b1413f657555d4f52613bcd9694f25d0b13d10ee9189c96438",
+  "vectors": [
+    {
+      "name": "zero_timestamp",
+      "timestamp_ms": 0,
+      "key_commitment_hex": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_digest_hex": "0x26b87c4b75216fcd234ecabd00b772056c2bc68ceff9e336255a6a8ffe20d399"
+    },
+    {
+      "name": "zero_timestamp_nonzero_commitment",
+      "timestamp_ms": 0,
+      "key_commitment_hex": "0x0100000000000000020000000000000003000000000000000400000000000000",
+      "expected_digest_hex": "0x88180266ae48df17749057555aec517f3f0600362f5eca1fe444c224f2d8a8d5"
+    },
+    {
+      "name": "epoch_2026_min",
+      "timestamp_ms": 1704067200000,
+      "key_commitment_hex": "0xefbeadde00000000bebafeca0000000078563412000000002143658700000000",
+      "expected_digest_hex": "0x57a93452e1ee3643df228287adf179dd87f07b8b7244e2f5eb94c48abf3cab98"
+    },
+    {
+      "name": "epoch_2026_typical",
+      "timestamp_ms": 1714939200000,
+      "key_commitment_hex": "0xaa00000000000000bb00000000000000cc00000000000000dd00000000000000",
+      "expected_digest_hex": "0x32a70e7a151cab7f63966b2ec45c684a43bb5f001f6664aed73b720cc8df81ee"
+    },
+    {
+      "name": "max_i64_timestamp",
+      "timestamp_ms": 9223372036854775807,
+      "key_commitment_hex": "0xffffffff00000000ffffffff00000000ffffffff00000000ffffffff00000000",
+      "expected_digest_hex": "0xe1bebf8217d3c2703c7cd467408fbfa5df272fa4353d74274120937314d98c2c"
+    },
+    {
+      "name": "negative_timestamp",
+      "timestamp_ms": -1,
+      "key_commitment_hex": "0x1100000000000000220000000000000033000000000000004400000000000000",
+      "expected_digest_hex": "0x6e0f43c00616ac7ae242bc99441a15049ad12b28f8719555cdd2e3f159937dca"
+    },
+    {
+      "name": "commitment_with_high_bits",
+      "timestamp_ms": 1700000000000,
+      "key_commitment_hex": "0x0000008000000000000000800000000000000080000000000000008000000000",
+      "expected_digest_hex": "0x88e952bf96e05c64a2093012c97699e739d2858058a9d39021ca9b14c9a658ff"
+    },
+    {
+      "name": "sequential_commitment",
+      "timestamp_ms": 1700000000000,
+      "key_commitment_hex": "0x0100000000000000010000000000000001000000000000000100000000000000",
+      "expected_digest_hex": "0xf539ada1cc222489211a97c329b29f45db7699d42448c43601ba01f8f5281cbe"
+    }
+  ]
+}

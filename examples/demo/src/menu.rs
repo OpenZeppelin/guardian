@@ -10,6 +10,7 @@ pub enum MenuAction {
     VerifyStateCommitment,
     ListNotes,
     ProposalManagement,
+    RecoverByKey,
     ShowAccount,
     ShowStatus,
     Quit,
@@ -24,6 +25,7 @@ pub fn print_menu(state: &SessionState) {
     print_menu_option("4", "Proposal management", state.has_account());
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
+    print_menu_option("r", "Recover by key", true);
     print_menu_option("q", "Quit", true);
 
     println!();
@@ -47,6 +49,7 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
         "4" if state.has_account() => Some(MenuAction::ProposalManagement),
         "s" if state.has_account() => Some(MenuAction::ShowAccount),
         "c" => Some(MenuAction::ShowStatus),
+        "r" => Some(MenuAction::RecoverByKey),
         "q" => Some(MenuAction::Quit),
         _ => None,
     }

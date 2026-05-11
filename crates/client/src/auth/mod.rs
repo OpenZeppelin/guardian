@@ -59,6 +59,17 @@ impl Auth {
             }
         }
     }
+
+    /// Signs a precomputed digest under this provider's scheme. Used by the
+    /// lookup endpoint, where the digest
+    /// is `LookupAuthMessage::to_word` rather than the per-account
+    /// `AuthRequestMessage::to_word`.
+    pub fn sign_word_hex(&self, digest: miden_protocol::Word) -> String {
+        match self {
+            Auth::FalconRpoSigner(signer) => signer.sign_word_hex(digest),
+            Auth::EcdsaSigner(signer) => signer.sign_word_hex(digest),
+        }
+    }
 }
 
 #[cfg(test)]

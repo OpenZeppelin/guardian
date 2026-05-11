@@ -3,6 +3,7 @@ import { AccountId, AuthSecretKey, type MidenClient, type Word } from '@miden-sd
 import type { Signer, SignatureScheme } from '../types.js';
 import { bytesToHex, normalizeHexWord } from '../utils/encoding.js';
 import { AuthDigest } from '../utils/digest.js';
+import { lookupAuthDigest } from '../lookupAuth.js';
 
 export class EcdsaSigner implements Signer {
   readonly commitment: string;
@@ -37,6 +38,15 @@ export class EcdsaSigner implements Signer {
   async signCommitment(commitmentHex: string): Promise<string> {
     const word = AuthDigest.fromCommitmentHex(commitmentHex);
     return this.signWord(word);
+  }
+
+  /**
+   * Sign a `LookupAuthMessage` digest for the `/state/lookup` endpoint.
+   * Account-less; used directly by `recoverByKey`.
+   */
+  async signLookupMessage(keyCommitmentHex: string, timestampMs: number): Promise<string> {
+    const digest = lookupAuthDigest(timestampMs, keyCommitmentHex);
+    return this.signWord(digest);
   }
 
   async bindAccountKey(midenClient: MidenClient, accountId: string): Promise<void> {

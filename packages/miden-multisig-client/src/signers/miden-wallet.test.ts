@@ -153,6 +153,54 @@ describe('MidenWalletSigner', () => {
     });
   });
 
+  describe('signLookupMessage', () => {
+    it('delegates to localAuthSigner when present', async () => {
+      const localSigner: Signer = {
+        commitment: '0xlocal',
+        publicKey: '0xlocalpubkey',
+        scheme: 'ecdsa',
+        signAccountIdWithTimestamp: vi.fn(),
+        signCommitment: vi.fn(),
+        signLookupMessage: vi.fn().mockResolvedValue('0xlocallookupsig'),
+      };
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa', localSigner);
+
+      const result = await signer.signLookupMessage('0x' + 'cc'.repeat(32), 1700000000);
+
+      expect(result).toBe('0xlocallookupsig');
+      expect(localSigner.signLookupMessage).toHaveBeenCalledWith(
+        '0x' + 'cc'.repeat(32),
+        1700000000,
+      );
+      expect(mockWallet.signBytes).not.toHaveBeenCalled();
+    });
+
+    it('uses wallet signing over the LookupAuthMessage digest when no localAuthSigner', async () => {
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'falcon');
+
+      const result = await signer.signLookupMessage('0x' + 'cc'.repeat(32), 1700000000);
+
+      expect(mockWallet.signBytes).toHaveBeenCalledTimes(1);
+      expect(mockWallet.signBytes).toHaveBeenCalledWith(expect.any(Uint8Array), 'word');
+      expect(result).toMatch(/^0x/);
+    });
+
+    it('falls back to wallet signing when localAuthSigner does not implement signLookupMessage', async () => {
+      const localSigner: Signer = {
+        commitment: '0xlocal',
+        publicKey: '0xlocalpubkey',
+        scheme: 'ecdsa',
+        signAccountIdWithTimestamp: vi.fn(),
+        signCommitment: vi.fn(),
+      };
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa', localSigner);
+
+      await signer.signLookupMessage('0x' + 'cc'.repeat(32), 1700000000);
+
+      expect(mockWallet.signBytes).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('signature byte stripping', () => {
     it('should strip the first byte from wallet signature response', async () => {
       (mockWallet.signBytes as ReturnType<typeof vi.fn>).mockResolvedValue(
