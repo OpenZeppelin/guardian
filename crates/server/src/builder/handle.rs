@@ -6,8 +6,12 @@ use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
 use crate::api::dashboard::{
-    challenge_operator_login, get_operator_account, list_operator_accounts, logout_operator,
-    verify_operator_login,
+    challenge_operator_login, get_dashboard_info_handler, get_operator_account,
+    list_operator_accounts, logout_operator, verify_operator_login,
+};
+use crate::api::dashboard_history::{
+    list_account_deltas_handler, list_account_proposals_handler, list_global_deltas_handler,
+    list_global_proposals_handler,
 };
 #[cfg(feature = "evm")]
 use crate::api::evm::{
@@ -77,6 +81,17 @@ impl ServerHandle {
                 let dashboard_routes = Router::new()
                     .route("/accounts", get(list_operator_accounts))
                     .route("/accounts/{account_id}", get(get_operator_account))
+                    .route(
+                        "/accounts/{account_id}/deltas",
+                        get(list_account_deltas_handler),
+                    )
+                    .route(
+                        "/accounts/{account_id}/proposals",
+                        get(list_account_proposals_handler),
+                    )
+                    .route("/info", get(get_dashboard_info_handler))
+                    .route("/deltas", get(list_global_deltas_handler))
+                    .route("/proposals", get(list_global_proposals_handler))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
 
                 let app = Router::new()

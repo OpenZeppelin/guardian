@@ -10,6 +10,7 @@ use super::allowlist::{
     AllowlistSource, OperatorAllowlist, OperatorAllowlistEntryInput, normalize_commitment,
 };
 use super::config::DashboardConfig;
+use super::cursor::CursorSecret;
 use super::types::{
     AuthenticatedOperator, IssuedOperatorSession, OperatorChallenge, OperatorChallengePayload,
     OperatorSessionRecord, PendingChallenge,
@@ -26,6 +27,7 @@ pub struct DashboardState {
     challenges: Arc<Mutex<HashMap<String, Vec<PendingChallenge>>>>,
     sessions: Arc<Mutex<HashMap<String, OperatorSessionRecord>>>,
     commitment_rate_limits: RateLimitStore,
+    cursor_secret: CursorSecret,
 }
 
 impl DashboardState {
@@ -308,6 +310,23 @@ impl DashboardState {
             operator_count = allowlist.len(),
             "Operator allowlist loaded"
         );
+        let cursor_secret = match config.cursor_secret_hex() {
+            Some(hex) => CursorSecret::from_hex(hex).map_err(|e| {
+                format!(
+                    "GUARDIAN_DASHBOARD_CURSOR_SECRET must be 32 hex-encoded bytes (64 chars): {e}"
+                )
+            })?,
+            None => {
+                if !cfg!(test) {
+                    tracing::warn!(
+                        "dashboard cursor secret not configured; generating ephemeral per-process \
+                         secret. Multi-replica deployments must set \
+                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 32-byte hex value."
+                    );
+                }
+                CursorSecret::generate()
+            }
+        };
         Ok(Self {
             commitment_rate_limits: RateLimitStore::new(config.commitment_rate_limit.clone()),
             config,
@@ -315,7 +334,27 @@ impl DashboardState {
             allowlist: Arc::new(RwLock::new(allowlist)),
             challenges: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            cursor_secret,
         })
+    }
+
+    /// Server-side signing secret for opaque pagination cursors. See
+    /// `crate::dashboard::cursor`. Generated once per server startup.
+    pub fn cursor_secret(&self) -> &CursorSecret {
+        &self.cursor_secret
+    }
+
+    /// Filesystem-backed cross-account aggregate threshold from
+    /// [`DashboardConfig`]. Used by feature `005-operator-dashboard-metrics`
+    /// per FR-029.
+    pub fn filesystem_aggregate_threshold(&self) -> usize {
+        self.config.filesystem_aggregate_threshold()
+    }
+
+    /// Deployment environment identifier surfaced on
+    /// `GET /dashboard/info` (e.g. `mainnet`, `testnet`).
+    pub fn environment(&self) -> &str {
+        self.config.environment()
     }
 
     async fn refresh_allowlist(&self) -> Result<()> {

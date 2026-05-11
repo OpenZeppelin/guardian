@@ -1,10 +1,10 @@
-use std::cmp::Ordering;
-
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
+use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::error::{GuardianError, Result};
-use crate::metadata::{AccountMetadata, auth::Auth};
+use crate::metadata::{AccountListCursor, AccountMetadata, auth::Auth};
+use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
 use crate::state_object::StateObject;
 
@@ -43,50 +43,95 @@ pub struct DashboardAccountDetail {
 }
 
 #[derive(Debug, Clone)]
-pub struct ListDashboardAccountsResult {
-    pub accounts: Vec<DashboardAccountSummary>,
-    pub total_count: usize,
-}
-
-#[derive(Debug, Clone)]
 pub struct GetDashboardAccountResult {
     pub account: DashboardAccountDetail,
 }
 
-pub async fn list_dashboard_accounts(state: &AppState) -> Result<ListDashboardAccountsResult> {
-    let mut accounts = Vec::new();
-
-    for metadata in load_account_metadata(state).await? {
-        let (current_commitment, state_status) =
-            match state.storage.pull_state(&metadata.account_id).await {
-                Ok(account_state) => (
-                    Some(account_state.commitment),
-                    DashboardAccountStateStatus::Available,
-                ),
-                Err(error) => {
-                    tracing::warn!(
-                        account_id = %metadata.account_id,
-                        error = %error,
-                        "Dashboard account list could not load state"
-                    );
-                    (None, DashboardAccountStateStatus::Unavailable)
-                }
-            };
-
-        accounts.push(DashboardAccountSummary::from_parts(
-            &metadata,
-            current_commitment,
-            state_status,
+/// Paginated account list per feature `005-operator-dashboard-metrics`
+/// US1 / FR-001..FR-008. Returns at most `limit` accounts ordered by
+/// `(updated_at DESC, account_id ASC)` starting after `cursor`. The
+/// returned `next_cursor` is `None` at end of list.
+///
+/// This is the v1 contract for `GET /dashboard/accounts`. The
+/// unparameterized full-inventory mode and `total_count` field from
+/// `003-operator-account-apis` are removed (breaking change). Aggregate
+/// counts are exposed via `GET /dashboard/info` instead.
+pub async fn list_dashboard_accounts_paged(
+    state: &AppState,
+    limit: u32,
+    cursor: Option<Cursor>,
+) -> Result<PagedResult<DashboardAccountSummary>> {
+    if let Some(c) = cursor.as_ref()
+        && c.kind != CursorKind::AccountList
+    {
+        return Err(GuardianError::InvalidCursor(
+            "expected AccountList cursor kind".to_string(),
         ));
     }
 
-    accounts.sort_by(compare_summaries);
-    let total_count = accounts.len();
+    let storage_cursor =
+        cursor
+            .as_ref()
+            .and_then(|c| match (c.last_updated_at, &c.last_account_id) {
+                (Some(last_updated_at), Some(last_account_id)) => Some(AccountListCursor {
+                    last_updated_at,
+                    last_account_id: last_account_id.clone(),
+                }),
+                _ => None,
+            });
+    // Page-plus-one pattern: storage returns up to limit+1 rows so we
+    // can detect end-of-list and emit a `next_cursor` only when more
+    // rows exist. Postgres pushes the sort and the composite cursor
+    // predicate into SQL via `idx_account_metadata_updated_at_account_id`;
+    // filesystem fans out + sorts in memory.
+    let page_size = limit.saturating_add(1);
+    let metadatas = state
+        .metadata
+        .list_paged(page_size, storage_cursor)
+        .await
+        .map_err(|e| GuardianError::StorageError(format!("Failed to list metadata: {e}")))?;
 
-    Ok(ListDashboardAccountsResult {
-        accounts,
-        total_count,
-    })
+    let mut metadatas = metadatas;
+    let limit_us = limit as usize;
+    let has_more = metadatas.len() > limit_us;
+    metadatas.truncate(limit_us);
+
+    // Single batched state read instead of N round trips.
+    let id_refs: Vec<&str> = metadatas.iter().map(|m| m.account_id.as_str()).collect();
+    let states = state
+        .storage
+        .pull_states_batch(&id_refs)
+        .await
+        .map_err(|e| GuardianError::StorageError(format!("Failed to batch-pull states: {e}")))?;
+
+    let summaries: Vec<DashboardAccountSummary> = metadatas
+        .iter()
+        .map(|metadata| {
+            let (current_commitment, state_status) = match states.get(&metadata.account_id) {
+                Some(s) => (
+                    Some(s.commitment.clone()),
+                    DashboardAccountStateStatus::Available,
+                ),
+                None => (None, DashboardAccountStateStatus::Unavailable),
+            };
+            DashboardAccountSummary::from_parts(metadata, current_commitment, state_status)
+        })
+        .collect();
+
+    let next_cursor = if has_more {
+        summaries.last().and_then(|last| {
+            let parsed = parse_timestamp(&last.updated_at).map(|dt| dt.with_timezone(&chrono::Utc));
+            parsed.map(|updated_at| {
+                let cursor = Cursor::account_list(updated_at, last.account_id.clone());
+                cursor::encode(&cursor, state.dashboard.cursor_secret())
+            })
+        })
+    } else {
+        None
+    }
+    .transpose()?;
+
+    Ok(PagedResult::new(summaries, next_cursor))
 }
 
 pub async fn get_dashboard_account(
@@ -157,26 +202,6 @@ impl DashboardAccountDetail {
     }
 }
 
-async fn load_account_metadata(state: &AppState) -> Result<Vec<AccountMetadata>> {
-    let account_ids = state.metadata.list().await.map_err(|error| {
-        GuardianError::StorageError(format!("Failed to list metadata: {error}"))
-    })?;
-
-    let mut metadata = Vec::with_capacity(account_ids.len());
-    for account_id in account_ids {
-        let maybe_metadata = state.metadata.get(&account_id).await.map_err(|error| {
-            GuardianError::StorageError(format!(
-                "Failed to load metadata for account '{}': {}",
-                account_id, error
-            ))
-        })?;
-        if let Some(metadata_entry) = maybe_metadata {
-            metadata.push(metadata_entry);
-        }
-    }
-    Ok(metadata)
-}
-
 fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
     let mut signer_ids = match auth {
         Auth::MidenFalconRpo {
@@ -192,18 +217,127 @@ fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
     signer_ids
 }
 
-fn compare_summaries(left: &DashboardAccountSummary, right: &DashboardAccountSummary) -> Ordering {
-    compare_timestamps_desc(&left.updated_at, &right.updated_at)
-        .then_with(|| left.account_id.cmp(&right.account_id))
-}
-
-fn compare_timestamps_desc(left: &str, right: &str) -> Ordering {
-    match (parse_timestamp(left), parse_timestamp(right)) {
-        (Some(left_ts), Some(right_ts)) => right_ts.cmp(&left_ts),
-        _ => right.cmp(left),
-    }
-}
-
 fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
     DateTime::parse_from_rfc3339(value).ok()
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+    use crate::ack::AckRegistry;
+    use crate::builder::clock::test::MockClock;
+    use crate::metadata::NetworkConfig;
+    use crate::storage::filesystem::FilesystemService;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    fn miden_meta(account_id: &str, updated_at: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xc1".into()],
+            },
+            network_config: NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: updated_at.to_string(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+        }
+    }
+
+    /// Bug #6 regression: walk multi-page cursor traversal end-to-end
+    /// against the SQL-pushed pagination path. Asserts the service
+    /// pulls metadata via `list_paged` (composite cursor predicate)
+    /// and batches state reads via `pull_states_batch`. Pre-fix the
+    /// service called `metadata.list()` + N `metadata.get()` + N
+    /// `pull_state()` per page.
+    #[tokio::test]
+    async fn cursor_walks_every_page_no_skip_no_repeat() {
+        let dir = TempDir::new().expect("tempdir");
+        let svc = FilesystemService::new(dir.path().to_path_buf())
+            .await
+            .expect("svc");
+        // Seed 11 accounts with strictly different updated_at so the
+        // composite (updated_at DESC, account_id ASC) sort is
+        // unambiguous.
+        let total: u64 = 11;
+        let mut metas: Vec<AccountMetadata> = (0..total)
+            .map(|i| {
+                miden_meta(
+                    &format!("acc-{i:02}"),
+                    &format!("2026-05-08T12:{:02}:00Z", i),
+                )
+            })
+            .collect();
+        // newest-first
+        metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+        // Mock list_paged: hand out one queued response per page.
+        // limit = 4 → pages [4, 4, 3] = 11 entries; page-plus-one
+        // means the service requests 5 rows on pages 1/2 and gets 5
+        // back, then on page 3 it asks for 5 and gets the remaining
+        // 3 (no more rows → next_cursor = None).
+        let mut metadata = MockMetadataStore::new();
+        // Mock LIFO: queue page 3 first, page 2 next, page 1 last.
+        metadata = metadata.with_list_paged(Ok(metas[8..].to_vec()));
+        metadata = metadata.with_list_paged(Ok(metas[4..9].to_vec()));
+        metadata = metadata.with_list_paged(Ok(metas[0..5].to_vec()));
+
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+        let state = AppState {
+            storage: Arc::new(svc),
+            metadata: Arc::new(metadata),
+            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::default()),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        };
+
+        let limit = 4;
+        let mut all: Vec<String> = Vec::new();
+        let mut next_cursor: Option<Cursor> = None;
+        let mut pages = 0;
+        for _ in 0..10 {
+            let page = list_dashboard_accounts_paged(&state, limit, next_cursor)
+                .await
+                .expect("list");
+            for entry in &page.items {
+                all.push(entry.account_id.clone());
+            }
+            pages += 1;
+            match page.next_cursor {
+                Some(encoded) => {
+                    let decoded = cursor::decode(
+                        &encoded,
+                        state.dashboard.cursor_secret(),
+                        CursorKind::AccountList,
+                    )
+                    .expect("decode cursor");
+                    next_cursor = Some(decoded);
+                }
+                None => break,
+            }
+        }
+        assert_eq!(
+            all.len(),
+            total as usize,
+            "every account returned exactly once"
+        );
+        assert_eq!(pages, 3, "ceil(11/4)");
+
+        // Dedup-and-coverage check: every seeded id appears exactly
+        // once.
+        let mut seen = std::collections::HashSet::new();
+        for id in &all {
+            assert!(seen.insert(id.clone()), "duplicate account: {id}");
+        }
+    }
 }

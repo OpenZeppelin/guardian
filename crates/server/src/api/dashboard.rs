@@ -6,10 +6,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::dashboard::cursor::CursorKind;
 use crate::dashboard::{AuthenticatedOperator, extract_cookie};
 use crate::error::Result;
 use crate::services::{
-    DashboardAccountDetail, DashboardAccountSummary, get_dashboard_account, list_dashboard_accounts,
+    DashboardAccountDetail, DashboardAccountSummary, DashboardInfoResponse, PagedResult,
+    get_dashboard_account, get_dashboard_info, list_dashboard_accounts_paged, parse_cursor,
+    parse_limit,
 };
 use crate::state::AppState;
 
@@ -51,7 +54,15 @@ pub struct LogoutOperatorResponse {
     pub success: bool,
 }
 
+/// **Deprecated** as of feature `005-operator-dashboard-metrics`. The
+/// account list endpoint now returns the [`PagedResult`] envelope and
+/// no longer carries `total_count`. Aggregate inventory totals are
+/// available via `GET /dashboard/info`. Kept here only to support
+/// pre-existing test fixtures during the migration; new callers MUST
+/// use [`PagedResult<DashboardAccountSummary>`].
 #[derive(Debug, Serialize, Deserialize)]
+#[deprecated(note = "use PagedResult<DashboardAccountSummary> per FR-001")]
+#[allow(deprecated)]
 pub struct DashboardAccountsResponse {
     pub success: bool,
     pub total_count: usize,
@@ -62,6 +73,15 @@ pub struct DashboardAccountsResponse {
 pub struct DashboardAccountResponse {
     pub success: bool,
     pub account: DashboardAccountDetail,
+}
+
+/// `?limit=&cursor=` query parameters for the paginated account list.
+#[derive(Debug, Deserialize)]
+pub struct AccountsQuery {
+    #[serde(default)]
+    pub limit: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 pub async fn challenge_operator_login(
@@ -125,14 +145,26 @@ pub async fn logout_operator(
 pub async fn list_operator_accounts(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
-) -> Result<Json<DashboardAccountsResponse>> {
-    let response = list_dashboard_accounts(&state).await?;
+    Query(query): Query<AccountsQuery>,
+) -> Result<Json<PagedResult<DashboardAccountSummary>>> {
+    let limit = parse_limit(query.limit.as_deref())?;
+    let cursor = parse_cursor(
+        query.cursor.as_deref(),
+        state.dashboard.cursor_secret(),
+        CursorKind::AccountList,
+    )?;
+    let result = list_dashboard_accounts_paged(&state, limit, cursor).await?;
+    Ok(Json(result))
+}
 
-    Ok(Json(DashboardAccountsResponse {
-        success: true,
-        total_count: response.total_count,
-        accounts: response.accounts,
-    }))
+/// `GET /dashboard/info` — point-in-time inventory and lifecycle
+/// summary per feature `005-operator-dashboard-metrics` US2.
+pub async fn get_dashboard_info_handler(
+    State(state): State<AppState>,
+    Extension(_operator): Extension<AuthenticatedOperator>,
+) -> Result<Json<DashboardInfoResponse>> {
+    let info = get_dashboard_info(&state).await?;
+    Ok(Json(info))
 }
 
 pub async fn get_operator_account(
@@ -217,14 +249,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list_response.status(), StatusCode::OK);
-        let list_body: DashboardAccountsResponse = read_json(list_response).await;
-        assert_eq!(list_body.total_count, 2);
-        assert_eq!(list_body.accounts[0].account_id, account_id_hex);
+        // Breaking change per feature `005-operator-dashboard-metrics`
+        // FR-001/FR-007: the list endpoint now returns the
+        // PagedResult envelope and no longer carries `total_count`.
+        // Aggregate inventory totals are exposed via /dashboard/info.
+        let list_body: PagedResult<DashboardAccountSummary> = read_json(list_response).await;
+        assert_eq!(list_body.items.len(), 2);
+        assert_eq!(list_body.items[0].account_id, account_id_hex);
         assert_eq!(
-            list_body.accounts[1].state_status,
+            list_body.items[1].state_status,
             crate::services::DashboardAccountStateStatus::Unavailable
         );
-        assert_eq!(list_body.accounts[1].current_commitment, None);
+        assert_eq!(list_body.items[1].current_commitment, None);
+        assert!(list_body.next_cursor.is_none());
 
         let detail_response = app
             .clone()
@@ -242,7 +279,7 @@ mod tests {
         assert_eq!(detail_body.account.account_id, account_id_hex);
         assert_eq!(
             detail_body.account.current_commitment,
-            list_body.accounts[0].current_commitment
+            list_body.items[0].current_commitment
         );
         assert_eq!(detail_body.account.auth_scheme, "falcon");
         assert_eq!(detail_body.account.authorized_signer_count, 1);
@@ -392,6 +429,223 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected_response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ----------------------------------------------------------------------
+    // Feature `005-operator-dashboard-metrics` integration tests for
+    // the breaking-change account list (US1) and the new info
+    // endpoint (US2).
+    // ----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_accounts_paginates_and_emits_cursor_for_resume() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        // Seed five accounts with strictly different updated_at so
+        // the cursor predicate is unambiguous.
+        for i in 0..5 {
+            seed_account(
+                &state,
+                create_metadata(&format!("acc-{i}"), &format!("2026-05-09T12:0{i}:00Z")),
+                None,
+            )
+            .await;
+        }
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        // Page 1: limit=2 → expect 2 items + a next_cursor.
+        let page1_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/accounts?limit=2")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page1_response.status(), StatusCode::OK);
+        let page1: PagedResult<DashboardAccountSummary> = read_json(page1_response).await;
+        assert_eq!(page1.items.len(), 2);
+        let cursor_token = page1.next_cursor.clone().expect("cursor for next page");
+        // Newest-first by updated_at.
+        assert_eq!(page1.items[0].account_id, "acc-4");
+        assert_eq!(page1.items[1].account_id, "acc-3");
+
+        // Page 2: resume with the cursor.
+        let page2_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/dashboard/accounts?limit=2&cursor={}",
+                        cursor_token
+                    ))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page2_response.status(), StatusCode::OK);
+        let page2: PagedResult<DashboardAccountSummary> = read_json(page2_response).await;
+        assert_eq!(page2.items.len(), 2);
+        assert_eq!(page2.items[0].account_id, "acc-2");
+        assert_eq!(page2.items[1].account_id, "acc-1");
+    }
+
+    #[tokio::test]
+    async fn list_accounts_rejects_out_of_range_limit_with_invalid_limit_code() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/accounts?limit=9999")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "invalid_limit");
+    }
+
+    #[tokio::test]
+    async fn list_accounts_rejects_tampered_cursor_with_invalid_cursor_code() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/accounts?cursor=garbage")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "invalid_cursor");
+    }
+
+    #[tokio::test]
+    async fn dashboard_info_returns_inventory_snapshot() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        for i in 0..3 {
+            seed_account(
+                &state,
+                create_metadata(&format!("acc-{i}"), &format!("2026-05-09T10:0{i}:00Z")),
+                None,
+            )
+            .await;
+        }
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/info")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["service_status"], "healthy");
+        assert_eq!(body["environment"], "testnet");
+        assert_eq!(body["total_account_count"], 3);
+        assert_eq!(body["delta_status_counts"]["candidate"], 0);
+        assert_eq!(body["delta_status_counts"]["canonical"], 0);
+        assert_eq!(body["delta_status_counts"]["discarded"], 0);
+        assert_eq!(body["in_flight_proposal_count"], 0);
+        assert!(body["latest_activity"].is_null());
+        assert_eq!(body["degraded_aggregates"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn dashboard_info_requires_operator_session() {
+        let state = create_test_app_state().await;
+        let app = create_router(state);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn dashboard_info_response_does_not_leak_per_network_field() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/info")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // FR-009: no per-network counts and no singular `network` field.
+        let object = body.as_object().unwrap();
+        assert!(!object.contains_key("per_network_account_counts"));
+        assert!(!object.contains_key("network"));
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub mod auth;
@@ -23,6 +24,17 @@ pub struct AccountMetadata {
     pub last_auth_timestamp: Option<i64>,
 }
 
+/// Cursor parameters for the paginated account list read. Sort key is
+/// `(updated_at DESC, account_id ASC)`. The mutable `updated_at` field
+/// carries the FR-005 caveat: a concurrent write that bumps an
+/// account's `updated_at` mid-traversal MAY cause that entry to be
+/// skipped or repeated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountListCursor {
+    pub last_updated_at: DateTime<Utc>,
+    pub last_account_id: String,
+}
+
 /// Metadata store trait for managing account metadata
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
@@ -34,6 +46,19 @@ pub trait MetadataStore: Send + Sync {
 
     /// List all account IDs
     async fn list(&self) -> Result<Vec<String>, String>;
+
+    /// Paginated list of account metadata sorted newest-first by
+    /// `(updated_at DESC, account_id ASC)`. Returns up to `limit`
+    /// rows starting strictly after `cursor` (or from the beginning
+    /// when `cursor` is `None`). Postgres pushes this into SQL via
+    /// the composite index added in migration
+    /// `2026-05-10-000002_account_metadata_pagination_index`;
+    /// filesystem fans out and sorts in memory.
+    async fn list_paged(
+        &self,
+        limit: u32,
+        cursor: Option<AccountListCursor>,
+    ) -> Result<Vec<AccountMetadata>, String>;
 
     /// Update the authentication configuration for an account
     async fn update_auth(&self, account_id: &str, new_auth: Auth, now: &str) -> Result<(), String> {

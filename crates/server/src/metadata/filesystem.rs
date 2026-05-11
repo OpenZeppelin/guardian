@@ -1,4 +1,4 @@
-use crate::metadata::{AccountMetadata, MetadataStore};
+use crate::metadata::{AccountListCursor, AccountMetadata, MetadataStore};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -115,6 +115,45 @@ impl MetadataStore for FilesystemMetadataStore {
     async fn list(&self) -> Result<Vec<String>, String> {
         let cache = self.cache.read().await;
         Ok(cache.keys().cloned().collect())
+    }
+
+    async fn list_paged(
+        &self,
+        limit: u32,
+        cursor: Option<AccountListCursor>,
+    ) -> Result<Vec<AccountMetadata>, String> {
+        let cache = self.cache.read().await;
+        let cutoff = cursor.map(|c| (c.last_updated_at, c.last_account_id));
+        let mut rows: Vec<AccountMetadata> = cache
+            .values()
+            .filter(|m| match &cutoff {
+                None => true,
+                Some((cutoff_ts, cutoff_id)) => {
+                    let parsed = chrono::DateTime::parse_from_rfc3339(&m.updated_at)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                    match parsed {
+                        Some(ts) => {
+                            ts < *cutoff_ts || (ts == *cutoff_ts && m.account_id > *cutoff_id)
+                        }
+                        // If updated_at can't be parsed, drop the row
+                        // from the cursor walk rather than risk
+                        // misordering (matches the spec's stable
+                        // contract for well-formed timestamps).
+                        None => false,
+                    }
+                }
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| {
+            // Newest-first by updated_at, then account_id ASC.
+            let ats = chrono::DateTime::parse_from_rfc3339(&a.updated_at).ok();
+            let bts = chrono::DateTime::parse_from_rfc3339(&b.updated_at).ok();
+            bts.cmp(&ats).then_with(|| a.account_id.cmp(&b.account_id))
+        });
+        rows.truncate(limit as usize);
+        Ok(rows)
     }
 
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String> {

@@ -382,6 +382,107 @@ EVM proposal response:
 - Default Falcon response: `{ "commitment": "0x..." }`.
 - ECDSA response: `{ "commitment": "0x...", "pubkey": "0x..." }`.
 
+### GET /dashboard/accounts
+
+- Requires `guardian_operator_session`.
+- **Breaking change vs. `003-operator-account-apis`** (feature
+  `005-operator-dashboard-metrics` US1 / FR-001..FR-008): the endpoint
+  is now always paginated. The previous unparameterized full-inventory
+  mode and the `total_count` field are removed. Aggregate inventory
+  totals are now exposed only via `GET /dashboard/info`.
+- Query: optional `limit` (default 50, max 500), optional `cursor`
+  (opaque token, from a prior page's `next_cursor`).
+- Ordered by `(updated_at DESC, account_id ASC)`. Cursor is stable
+  under concurrent inserts; concurrent updates to `updated_at` MAY
+  cause an account to be skipped or repeated across a traversal
+  (FR-005 caveat — applies to this endpoint only because the sort key
+  is mutable).
+- 200 envelope: `{ items: DashboardAccountSummary[], next_cursor: string | null }`.
+- Each entry shape unchanged from `003-operator-account-apis` per
+  FR-006 (superset compatibility): `account_id`, `auth_scheme`,
+  `authorized_signer_count`, `has_pending_candidate`,
+  `current_commitment`, `state_status`, `created_at`, `updated_at`.
+- 400: `invalid_limit` for `limit ∉ [1, 500]`; `invalid_cursor` for
+  tampered, malformed, or stale cursor.
+- 401: `authentication_failed` for missing or invalid operator session.
+
+### GET /dashboard/info
+
+- Requires `guardian_operator_session`.
+- Returns a single point-in-time inventory and lifecycle health
+  snapshot for the Guardian instance per feature
+  `005-operator-dashboard-metrics` US2 / FR-008..FR-012.
+- Response shape:
+  - `service_status`: `"healthy" | "degraded"`.
+  - `environment`: deployment environment identifier (e.g.
+    `mainnet`, `testnet`). Set via `GUARDIAN_ENVIRONMENT`.
+  - `total_account_count`: total configured accounts.
+  - `latest_activity`: greater of the most recent delta status
+    timestamp and the most recent in-flight proposal originating
+    timestamp across all accounts; `null` when the inventory has
+    produced no activity OR when this aggregate is degraded.
+  - `delta_status_counts`: `{ candidate, canonical, discarded }`
+    counts of persisted deltas grouped by lifecycle status.
+  - `in_flight_proposal_count`: count of `Pending` rows in
+    `delta_proposals` across all accounts.
+  - `degraded_aggregates`: stable string identifiers of any
+    cross-account aggregates that returned a degraded marker on this
+    response. Possible values: `delta_status_counts`,
+    `in_flight_proposal_count`, `latest_activity`.
+- Per FR-009 the response intentionally **does not** carry per-network
+  account counts or a singular "the network" field. v1 is
+  Miden-oriented (Guardian default build); the dashboard knows its
+  own deployment context.
+- Per FR-029, on the filesystem backend above the configured
+  `filesystem_aggregate_threshold` (default 1,000 accounts) the
+  cross-account aggregates may be marked degraded rather than
+  full-scanning the on-disk inventory; `total_account_count` is
+  always returned.
+- 401: `authentication_failed`.
+
+### GET /dashboard/accounts/{account_id}/deltas
+
+- Requires `guardian_operator_session` (operator dashboard auth).
+- Query: optional `limit` (default 50, max 500), optional `cursor` (opaque, from a prior page's `next_cursor`).
+- Returns the per-account delta history, paginated newest-first by Postgres-assigned `nonce DESC` (immutable, fully stable cursors per FR-005).
+- Surfaces only the lifecycle statuses persisted in `deltas`: `candidate`, `canonical`, `discarded`. `pending` proposals are exposed via `/dashboard/accounts/{id}/proposals`.
+- 200 envelope: `{ items: DashboardDeltaEntry[], next_cursor: string | null }`.
+- Each entry: `{ nonce, status, status_timestamp, prev_commitment, new_commitment | null, retry_count? }`. `retry_count` is present (default `0`) on `candidate` entries only.
+- 400: `invalid_limit` for `limit ∉ [1, 500]`; `invalid_cursor` for tampered, malformed, or stale cursor.
+- 404: `account_not_found`.
+- 503: `data_unavailable` when metadata exists but delta records cannot be loaded.
+
+### GET /dashboard/accounts/{account_id}/proposals
+
+- Requires `guardian_operator_session`.
+- Query: optional `limit` (default 50, max 500), optional `cursor`.
+- Returns the in-flight multisig proposal queue for one account (i.e. `DeltaStatus::Pending` rows in `delta_proposals`), paginated newest-first by `(nonce DESC, commitment DESC)` — both fields immutable, fully stable cursors.
+- Single-key Miden accounts and EVM accounts (`Auth::EvmEcdsa`) always return an empty page; EVM proposals do not flow through `delta_proposals` in v1 (see feature `005-operator-dashboard-metrics` FR-017).
+- 200 envelope: `{ items: DashboardProposalEntry[], next_cursor: string | null }`.
+- Each entry: `{ commitment, nonce, proposer_id, originating_timestamp, signatures_collected, signatures_required, prev_commitment, new_commitment | null }`. `signatures_required` is derived from the account's auth policy (`cosigner_commitments.len()` for `MidenFalconRpo` / `MidenEcdsa`).
+- No raw signature bytes and no per-cosigner identity list are exposed (FR-021).
+- Errors mirror the deltas endpoint: 400 `invalid_limit` / `invalid_cursor`, 404 `account_not_found`, 503 `data_unavailable`.
+
+### GET /dashboard/deltas
+
+- Requires `guardian_operator_session`.
+- Query: optional `limit` (default 50, max 500), optional `cursor`, optional `status` (comma-separated subset of `{candidate, canonical, discarded}`, e.g. `status=candidate,canonical`).
+- Cross-account delta feed paginated newest-first by `status_timestamp DESC` with `(account_id ASC, nonce ASC)` as the stable tie-breaker. Per FR-005, cursor traversal is stable under concurrent inserts but a delta whose `status_timestamp` is bumped mid-traversal (e.g. `candidate → canonical`) MAY be skipped or repeated.
+- 200 envelope: `{ items: DashboardGlobalDeltaEntry[], next_cursor: string | null }`. Each entry has every field of a per-account delta entry (per US3) plus `account_id`. `pending` entries are not surfaced here — they live on the global proposal feed.
+- 400: `invalid_limit`, `invalid_cursor`, `invalid_status_filter` for unknown values in the `?status=` filter or empty CSV tokens.
+- 503: `data_unavailable` above the configured `filesystem_aggregate_threshold` (default 1,000 accounts) per FR-029, OR when a per-account delta read fails.
+- Smallest priority slice of feature `005-operator-dashboard-metrics` (US6 / FR-031..FR-035, FR-040).
+
+### GET /dashboard/proposals
+
+- Requires `guardian_operator_session`.
+- Query: optional `limit` (default 50, max 500), optional `cursor`. **No** `status` filter — every entry is in-flight by definition (FR-035).
+- Cross-account in-flight proposal feed paginated newest-first by `originating_timestamp DESC` with `(account_id ASC, commitment ASC)` as the stable tie-breaker. Originating timestamp is immutable while the proposal remains in the queue, so cursor traversal is fully stable for the lifetime of a queued proposal.
+- 200 envelope: `{ items: DashboardGlobalProposalEntry[], next_cursor: string | null }`. Each entry has every field of a per-account proposal entry (per US4) plus `account_id`.
+- EVM accounts (`Auth::EvmEcdsa`) do not appear in the feed in v1 (FR-017).
+- 400: `invalid_limit`, `invalid_cursor`. 503: `data_unavailable` above the threshold per FR-029.
+- Smallest priority slice of feature `005-operator-dashboard-metrics` (US7 / FR-035..FR-037, FR-040).
+
 ## Errors
 
 Stable error codes include:
@@ -417,6 +518,10 @@ Stable error codes include:
 - `invalid_evm_proposal`
 - `insufficient_signatures`
 - `rate_limit_exceeded`
+- `invalid_cursor` (dashboard pagination, see feature `005-operator-dashboard-metrics`)
+- `invalid_limit`
+- `invalid_status_filter`
+- `data_unavailable`
 
 HTTP endpoints that return structured error envelopes include `code` when available. gRPC responses include `error_code` in response messages and use matching gRPC status codes for transport errors.
 

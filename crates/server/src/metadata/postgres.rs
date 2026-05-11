@@ -1,4 +1,4 @@
-use crate::metadata::{AccountMetadata, Auth, MetadataStore, NetworkConfig};
+use crate::metadata::{AccountListCursor, AccountMetadata, Auth, MetadataStore, NetworkConfig};
 use crate::schema::account_metadata;
 use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
@@ -155,6 +155,45 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to list accounts: {e}"))?;
 
         Ok(rows)
+    }
+
+    async fn list_paged(
+        &self,
+        limit: u32,
+        cursor: Option<AccountListCursor>,
+    ) -> Result<Vec<AccountMetadata>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let mut query = account_metadata::table.into_boxed();
+        if let Some(c) = cursor {
+            // Composite predicate over `(updated_at DESC, account_id ASC)`:
+            //   updated_at < c.ts
+            //   OR (updated_at == c.ts AND account_id > c.id)
+            query = query.filter(
+                account_metadata::updated_at
+                    .lt(c.last_updated_at)
+                    .or(account_metadata::updated_at
+                        .eq(c.last_updated_at)
+                        .and(account_metadata::account_id.gt(c.last_account_id))),
+            );
+        }
+
+        let rows: Vec<MetadataRow> = query
+            .order((
+                account_metadata::updated_at.desc(),
+                account_metadata::account_id.asc(),
+            ))
+            .limit(limit as i64)
+            .select(MetadataRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list account metadata: {e}"))?;
+
+        rows.into_iter().map(AccountMetadata::try_from).collect()
     }
 
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String> {

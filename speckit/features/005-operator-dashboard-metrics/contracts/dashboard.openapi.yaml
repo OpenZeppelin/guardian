@@ -1,0 +1,509 @@
+openapi: 3.0.3
+info:
+  title: Guardian Operator Dashboard — Metrics, Pagination, and Activity
+  version: 0.1.0
+  description: |
+    Read-only operator dashboard endpoints introduced by feature
+    005-operator-dashboard-metrics. All endpoints require a valid operator
+    session cookie established by 002-operator-auth. All endpoints are
+    read-only and derived from existing persisted records.
+
+    Breaking change vs. 003-operator-account-apis: GET /dashboard/accounts
+    is now always paginated and no longer returns total_count.
+
+servers:
+  - url: https://guardian.example.com
+    description: Operator dashboard surface (HTTP only; no gRPC parity in v1).
+
+security:
+  - operatorSession: []
+
+paths:
+  /dashboard/accounts:
+    get:
+      summary: Paginated account list
+      description: |
+        Always-paginated list of configured accounts ordered by
+        most-recently-updated first with account_id as the stable
+        tie-breaker. Replaces the unparameterized 003 list endpoint.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of account summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedAccountSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /dashboard/info:
+    get:
+      summary: Inventory and lifecycle health summary
+      responses:
+        "200":
+          description: Point-in-time inventory and health snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardInfoResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/DataUnavailable"
+
+  /dashboard/accounts/{account_id}/deltas:
+    get:
+      summary: Per-account delta history (paginated)
+      description: |
+        Returns delta records for one account in lifecycle status
+        candidate, canonical, or discarded. Pending state-changes live
+        on the proposal queue endpoint and are not surfaced here.
+      parameters:
+        - $ref: "#/components/parameters/AccountIdPath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of delta entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedDeltaEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "503":
+          $ref: "#/components/responses/DataUnavailable"
+
+  /dashboard/accounts/{account_id}/proposals:
+    get:
+      summary: Per-account in-flight proposal queue (paginated)
+      description: |
+        Returns multisig proposals still collecting cosigner signatures
+        (DeltaStatus::Pending rows in delta_proposals storage). Single-key
+        Miden accounts and EVM accounts always return an empty page in v1.
+      parameters:
+        - $ref: "#/components/parameters/AccountIdPath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of in-flight proposal entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedProposalEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "503":
+          $ref: "#/components/responses/DataUnavailable"
+
+  /dashboard/deltas:
+    get:
+      summary: Global cross-account delta feed (paginated, smallest priority)
+      description: |
+        Cross-account feed of delta records. Each entry carries
+        account_id. Ordered by status timestamp most-recent-first with
+        a stable tie-breaker. Cursor stability follows FR-005 — see
+        spec.md.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: |
+            Optional comma-separated lifecycle status filter, e.g.
+            `status=candidate` or `status=candidate,canonical`. Allowed
+            values: candidate, canonical, discarded. Unknown values →
+            400 InvalidStatusFilter.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of delta entries with account_id tagging.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedGlobalDeltaEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/DataUnavailable"
+
+  /dashboard/proposals:
+    get:
+      summary: Global cross-account in-flight proposal feed (smallest priority)
+      description: |
+        Cross-account feed of in-flight multisig proposals. No status
+        filter — every entry is in-flight by definition. Each entry
+        carries account_id. EVM accounts do not appear in v1.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of in-flight proposal entries with account_id tagging.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedGlobalProposalEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/DataUnavailable"
+
+components:
+  securitySchemes:
+    operatorSession:
+      type: apiKey
+      in: cookie
+      name: guardian_operator_session
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Page size. Default 50, max 500. Bare `?limit=` is treated as
+        omitted. Out-of-range values → 400 InvalidLimit.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        Opaque cursor token from a prior page's next_cursor. Tampered
+        or stale cursors → 400 InvalidCursor. May be supplied without
+        limit; default page size applies.
+      schema:
+        type: string
+    AccountIdPath:
+      name: account_id
+      in: path
+      required: true
+      description: Canonical Guardian account identifier.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed input. The body's `error.code` distinguishes
+        InvalidCursor / InvalidLimit / InvalidStatusFilter.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Unauthorized:
+      description: Missing, tampered, or expired operator session.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    AccountNotFound:
+      description: Path-addressed account does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    DataUnavailable:
+      description: |
+        Metadata exists but the underlying records cannot be read, or a
+        cross-account aggregate is degraded above the filesystem
+        threshold.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+
+  schemas:
+    PagedResultBase:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page; null at end of list.
+
+    PagedAccountSummary:
+      allOf:
+        - $ref: "#/components/schemas/PagedResultBase"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DashboardAccountSummary"
+
+    PagedDeltaEntry:
+      allOf:
+        - $ref: "#/components/schemas/PagedResultBase"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DashboardDeltaEntry"
+
+    PagedProposalEntry:
+      allOf:
+        - $ref: "#/components/schemas/PagedResultBase"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DashboardProposalEntry"
+
+    PagedGlobalDeltaEntry:
+      allOf:
+        - $ref: "#/components/schemas/PagedResultBase"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DashboardGlobalDeltaEntry"
+
+    PagedGlobalProposalEntry:
+      allOf:
+        - $ref: "#/components/schemas/PagedResultBase"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DashboardGlobalProposalEntry"
+
+    DashboardAccountSummary:
+      type: object
+      description: |
+        Same fields as 003-operator-account-apis. New fields MAY be
+        added in this feature without renaming or removing existing
+        fields (FR-006).
+      required:
+        - account_id
+        - auth_scheme
+        - authorized_signer_count
+        - has_pending_candidate
+        - state_status
+        - created_at
+        - updated_at
+      properties:
+        account_id: { type: string }
+        auth_scheme: { type: string }
+        authorized_signer_count: { type: integer }
+        has_pending_candidate: { type: boolean }
+        current_commitment: { type: string, nullable: true }
+        state_status:
+          type: string
+          enum: [available, unavailable]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    DashboardInfoResponse:
+      type: object
+      description: |
+        Inventory and health summary. The response intentionally omits
+        per-network account counts and any singular "the network" field
+        — an instance is gated to one network family in practice (Miden
+        default; EVM behind a server feature flag) and the dashboard
+        knows its own deployment context.
+      required:
+        - service_status
+        - environment
+        - total_account_count
+        - latest_activity
+        - delta_status_counts
+        - in_flight_proposal_count
+        - degraded_aggregates
+      properties:
+        service_status:
+          type: string
+          enum: [healthy, degraded]
+        environment:
+          type: string
+          description: Deployment environment identifier (e.g. mainnet/testnet).
+        total_account_count: { type: integer }
+        latest_activity:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Greater of MAX(status_timestamp) across deltas and
+            MAX(status_timestamp) across delta_proposals. Both columns
+            are typed timestamptz promoted by the Phase A migration.
+            Null when no activity exists.
+        delta_status_counts:
+          type: object
+          required: [candidate, canonical, discarded]
+          properties:
+            candidate: { type: integer }
+            canonical: { type: integer }
+            discarded: { type: integer }
+        in_flight_proposal_count: { type: integer }
+        degraded_aggregates:
+          type: array
+          items: { type: string }
+          description: |
+            Names of aggregates that returned a degraded marker on this
+            response (filesystem backend above threshold per FR-029).
+
+    DashboardDeltaEntry:
+      type: object
+      required:
+        - nonce
+        - status
+        - status_timestamp
+        - prev_commitment
+      properties:
+        nonce:
+          type: integer
+          minimum: 0
+          description: |
+            Per-account integer sequence number; the human-readable
+            identifier used in dashboard tables.
+        status:
+          type: string
+          enum: [candidate, canonical, discarded]
+        status_timestamp:
+          type: string
+          format: date-time
+          description: |
+            Wall-clock timestamp when the record entered its current
+            status; sourced from the typed status_timestamp column
+            promoted by the Phase A migration.
+        prev_commitment:
+          type: string
+          description: |
+            Hex-string state commitment the delta was applied against.
+        new_commitment:
+          type: string
+          nullable: true
+          description: |
+            Resulting state commitment, hex string. Nullable for
+            entries that did not produce one (e.g. a discarded delta).
+        retry_count:
+          type: integer
+          minimum: 0
+          description: |
+            Always present on candidate entries (default 0). Omitted on
+            canonical and discarded entries.
+
+    DashboardGlobalDeltaEntry:
+      allOf:
+        - $ref: "#/components/schemas/DashboardDeltaEntry"
+        - type: object
+          required: [account_id]
+          properties:
+            account_id: { type: string }
+
+    DashboardProposalEntry:
+      type: object
+      required:
+        - commitment
+        - nonce
+        - proposer_id
+        - originating_timestamp
+        - signatures_collected
+        - signatures_required
+        - prev_commitment
+      properties:
+        commitment:
+          type: string
+          description: |
+            Hex-string proposal identifier — the cryptographic value
+            cosigners are signing. Per-account stable identifier.
+        nonce:
+          type: integer
+          minimum: 0
+          description: |
+            Per-account integer sequence number for the proposed
+            state change.
+        proposer_id: { type: string }
+        originating_timestamp: { type: string, format: date-time }
+        signatures_collected: { type: integer, minimum: 0 }
+        signatures_required: { type: integer, minimum: 0 }
+        prev_commitment:
+          type: string
+          description: |
+            Hex-string state commitment the proposal applies against.
+        new_commitment:
+          type: string
+          nullable: true
+          description: |
+            Resulting state commitment if the proposal lands; hex
+            string, nullable.
+
+    DashboardGlobalProposalEntry:
+      allOf:
+        - $ref: "#/components/schemas/DashboardProposalEntry"
+        - type: object
+          required: [account_id]
+          properties:
+            account_id: { type: string }
+
+    ErrorBody:
+      type: object
+      required: [success, code, error]
+      description: |
+        Stable error envelope emitted by every Guardian HTTP handler.
+        Constitution §IV: machine-readable `code` is canonical;
+        `error` is a human-readable message that MAY change. Clients
+        MUST branch on `code`, not on the message text or HTTP status
+        alone.
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+          description: Always `false` on error responses.
+        code:
+          type: string
+          description: |
+            Stable snake_case identifier. The dashboard endpoints
+            documented here can emit any of the values listed below;
+            other Guardian routes may emit additional codes.
+          enum:
+            - authentication_failed
+            - account_not_found
+            - invalid_cursor
+            - invalid_limit
+            - invalid_status_filter
+            - data_unavailable
+        error:
+          type: string
+          description: Human-readable message. May change without notice.
+        retry_after_secs:
+          type: integer
+          minimum: 0
+          description: |
+            Present only on rate-limit responses (`code:
+            "rate_limit_exceeded"`). Mirrors the `Retry-After` header.
