@@ -241,6 +241,7 @@ try {
       itemCount: proposals.items.length,
       nextCursor: proposals.nextCursor,
       firstCommitment: proposals.items[0]?.commitment ?? null,
+      firstProposalType: proposals.items[0]?.proposalType ?? null,
     };
   } else {
     result.accountDeltas = { skipped: true, reason: 'account list was empty' };
@@ -273,6 +274,7 @@ try {
     firstHasAccountId:
       globalProposals.items.length === 0 ||
       typeof globalProposals.items[0]?.accountId === 'string',
+    firstProposalType: globalProposals.items[0]?.proposalType ?? null,
   };
 
   await clickAction(page, 'Paginate accounts');

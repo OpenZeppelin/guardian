@@ -54,6 +54,10 @@ pub struct DashboardGlobalProposalEntry {
     pub signatures_required: u32,
     pub prev_commitment: String,
     pub new_commitment: Option<String>,
+    /// See `DashboardProposalEntry::proposal_type` — in practice always
+    /// populated for in-flight multisig proposals on this endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
 }
 
 fn entry_from(
@@ -80,6 +84,7 @@ fn entry_from(
         signatures_required: signatures_required(auth),
         prev_commitment: proposal.prev_commitment.clone(),
         new_commitment: proposal.new_commitment.clone(),
+        proposal_type: proposal.proposal_type().map(str::to_string),
     })
 }
 

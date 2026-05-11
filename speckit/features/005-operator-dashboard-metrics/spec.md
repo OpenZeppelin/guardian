@@ -596,6 +596,17 @@ count, and signatures-required count.
   present on candidate entries (never null), defaulting to `0` for legacy
   records that pre-date retry tracking. Canonical and discarded entries
   carry only the base fields from FR-014.
+- **FR-015a**: Each delta entry MAY include an optional `proposal_type`
+  string identifying the multisig operation that produced the delta
+  (e.g. `add_signer`, `remove_signer`, `change_threshold`,
+  `update_procedure_threshold`, `p2id`, `consume_notes`,
+  `switch_guardian`). The field is sourced from
+  `delta_payload.metadata.proposal_type`, validated on push. It MUST
+  be present on every delta that was committed from a multisig
+  proposal and MUST be omitted on direct `push_delta` single-key
+  Miden writes and on EVM deltas, which carry no metadata blob. The
+  field is informational; operators MUST NOT use its absence to infer
+  delta status.
 - **FR-016**: The delta history endpoint is **always paginated** and
   ordered newest-first by Postgres-assigned record identifier
   (`delta.id DESC`). It uses the same envelope shape and the same
@@ -629,6 +640,11 @@ count, and signatures-required count.
   (`prev_commitment`, hex string) the proposal applies against, and
   the resulting state commitment (`new_commitment`, hex string;
   nullable) so operators can see what state change is being voted on.
+  Each entry SHOULD additionally include the `proposal_type` string
+  (e.g. `add_signer`, `p2id`, `change_threshold`) sourced from
+  `delta_payload.metadata.proposal_type`. The field is omitted only
+  for legacy records that pre-date metadata validation; all proposals
+  pushed against current servers carry it.
 - **FR-019**: The signatures-required count MUST be derived from the
   account's auth policy: for `MidenFalconRpo` and `MidenEcdsa`, the count
   equals the number of `cosigner_commitments` declared on the account
@@ -725,8 +741,9 @@ count, and signatures-required count.
   is immutable, so concurrent status updates do not move an entry's
   position in the ordering.
 - **FR-034**: Each entry in the global delta feed MUST include the same
-  base fields as a per-account delta entry from FR-014/FR-015 plus the
-  `account_id` to which the delta belongs.
+  base fields as a per-account delta entry from FR-014/FR-015/FR-015a
+  (including the optional `proposal_type`) plus the `account_id` to
+  which the delta belongs.
 - **FR-035**: The server MUST expose a new authenticated dashboard
   endpoint that returns a cross-account feed of in-flight multisig
   proposals (those defined as in-flight by FR-017) across all configured
@@ -739,8 +756,9 @@ count, and signatures-required count.
   an empty paginated result rather than `404` when no in-flight
   proposals exist on any account.
 - **FR-037**: Each entry in the global proposal feed MUST include the
-  same base fields as a per-account proposal entry from FR-018/FR-019/FR-020
-  plus the `account_id` to which the proposal belongs.
+  same base fields as a per-account proposal entry from
+  FR-018/FR-019/FR-020 (including `proposal_type`) plus the
+  `account_id` to which the proposal belongs.
 - **FR-038**: Both global feed endpoints are **always paginated** with
   the same envelope shape and the same default/maximum `limit` policy
   (default 50, max 500) as the other new endpoints, and MUST honor the

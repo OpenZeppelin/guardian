@@ -40,6 +40,13 @@ pub struct DashboardProposalEntry {
     /// Hex string when present; `null` for proposals that did not
     /// declare a target commitment.
     pub new_commitment: Option<String>,
+    /// Multisig proposal type tag from
+    /// `delta_payload.metadata.proposal_type`. In practice this is
+    /// always populated for in-flight proposals on this endpoint
+    /// (validated on push); the field is `Option` to remain defensive
+    /// against legacy or malformed records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
 }
 
 impl DashboardProposalEntry {
@@ -71,6 +78,7 @@ impl DashboardProposalEntry {
             signatures_required: signatures_required(auth),
             prev_commitment: proposal.prev_commitment.clone(),
             new_commitment: proposal.new_commitment.clone(),
+            proposal_type: proposal.proposal_type().map(str::to_string),
         })
     }
 }

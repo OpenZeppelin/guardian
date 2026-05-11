@@ -430,6 +430,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             prev_commitment: '0x7e8f',
             new_commitment: '0xa3b4',
             retry_count: 2,
+            proposal_type: 'add_signer',
           },
           {
             nonce: 46,
@@ -462,8 +463,10 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       prevCommitment: '0x7e8f',
       newCommitment: '0xa3b4',
       retryCount: 2,
+      proposalType: 'add_signer',
     });
     expect(page.items[1].retryCount).toBeUndefined();
+    expect(page.items[1].proposalType).toBeUndefined();
     expect(page.items[2].newCommitment).toBeNull();
 
     expect(mockFetch).toHaveBeenCalledWith(

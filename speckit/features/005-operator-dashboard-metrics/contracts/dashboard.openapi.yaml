@@ -492,6 +492,17 @@ components:
           description: |
             Always present on candidate entries (default 0). Omitted on
             canonical and discarded entries.
+        proposal_type:
+          type: string
+          description: |
+            Multisig proposal type tag sourced from
+            `delta_payload.metadata.proposal_type` (e.g. `add_signer`,
+            `remove_signer`, `change_threshold`,
+            `update_procedure_threshold`, `p2id`, `consume_notes`,
+            `switch_guardian`). Present when the delta was committed
+            from a multisig proposal; omitted on direct `push_delta`
+            single-key Miden writes and on EVM deltas, which carry no
+            metadata blob.
 
     DashboardGlobalDeltaEntry:
       allOf:
@@ -537,6 +548,14 @@ components:
           description: |
             Resulting state commitment if the proposal lands; hex
             string, nullable.
+        proposal_type:
+          type: string
+          description: |
+            Multisig proposal type tag sourced from
+            `delta_payload.metadata.proposal_type`. Validated on push;
+            in practice always populated for in-flight proposals on
+            this endpoint. May be absent for legacy records that
+            pre-date metadata validation.
 
     DashboardGlobalProposalEntry:
       allOf:

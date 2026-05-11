@@ -971,6 +971,15 @@ function parseDeltaEntry(
     }
     entry.accountId = record.account_id;
   }
+  if (record.proposal_type !== undefined) {
+    if (typeof record.proposal_type !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'proposal_type must be a string when present',
+      );
+    }
+    entry.proposalType = record.proposal_type;
+  }
   return entry;
 }
 
@@ -1009,6 +1018,15 @@ function parseProposalEntry(
       );
     }
     entry.accountId = record.account_id;
+  }
+  if (record.proposal_type !== undefined) {
+    if (typeof record.proposal_type !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'proposal_type must be a string when present',
+      );
+    }
+    entry.proposalType = record.proposal_type;
   }
   return entry;
 }

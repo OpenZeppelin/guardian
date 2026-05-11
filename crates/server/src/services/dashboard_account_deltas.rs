@@ -50,6 +50,13 @@ pub struct DashboardDeltaEntry {
     /// `None` and skipped on `canonical` / `discarded`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// Multisig proposal type tag carried in
+    /// `delta_payload.metadata.proposal_type`. Present when the delta
+    /// was committed from a multisig proposal; absent for direct
+    /// `push_delta` single-key Miden writes and for EVM deltas, which
+    /// carry no metadata blob.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
 }
 
 /// Decode a [`DeltaStatus`] into the dashboard wire triple
@@ -90,6 +97,7 @@ impl DashboardDeltaEntry {
             prev_commitment: delta.prev_commitment.clone(),
             new_commitment: delta.new_commitment.clone(),
             retry_count,
+            proposal_type: delta.proposal_type().map(str::to_string),
         })
     }
 }
@@ -225,6 +233,23 @@ mod tests {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
             },
         )
+    }
+
+    #[test]
+    fn from_delta_extracts_proposal_type_when_metadata_present() {
+        let mut d = canonical(1);
+        d.delta_payload = serde_json::json!({
+            "metadata": { "proposal_type": "add_signer" }
+        });
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert_eq!(entry.proposal_type.as_deref(), Some("add_signer"));
+    }
+
+    #[test]
+    fn from_delta_omits_proposal_type_when_metadata_absent() {
+        let d = canonical(1); // delta_payload is `{}`
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert!(entry.proposal_type.is_none());
     }
 
     async fn state_with_n_calls(

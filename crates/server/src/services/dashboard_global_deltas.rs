@@ -52,6 +52,10 @@ pub struct DashboardGlobalDeltaEntry {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// See `DashboardDeltaEntry::proposal_type` — `None` for single-key
+    /// Miden `push_delta` writes and EVM deltas.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
 }
 
 /// Parse a comma-separated `?status=` filter into a typed allow-list
@@ -106,6 +110,7 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone(),
         retry_count,
+        proposal_type: delta.proposal_type().map(str::to_string),
     })
 }
 

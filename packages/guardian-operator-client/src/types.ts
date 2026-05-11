@@ -136,6 +136,14 @@ export interface DashboardDeltaEntry {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
+  /**
+   * Multisig proposal type tag carried in
+   * `delta_payload.metadata.proposal_type` on the underlying record
+   * (e.g. `"add_signer"`, `"p2id"`, `"change_threshold"`, ...). Absent
+   * for direct `push_delta` single-key Miden writes and for EVM
+   * deltas, which carry no metadata blob.
+   */
+  proposalType?: string;
 }
 
 export interface DashboardProposalEntry {
@@ -148,6 +156,9 @@ export interface DashboardProposalEntry {
   signaturesRequired: number;
   prevCommitment: string;
   newCommitment: string | null;
+  /** See {@link DashboardDeltaEntry.proposalType}. In practice always
+   * populated for in-flight multisig proposals on this endpoint. */
+  proposalType?: string;
 }
 
 /**
