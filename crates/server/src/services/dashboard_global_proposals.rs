@@ -14,7 +14,9 @@
 //! ## Cursor stability
 //!
 //! Sort key is `(originating_timestamp DESC, account_id ASC,
-//! commitment ASC)`. The originating timestamp is set when the
+//! nonce ASC, commitment ASC)` — the [`GlobalProposalCursor`] (in
+//! `storage/mod.rs`) and [`Cursor::global_proposals`] both encode
+//! all four fields. The originating timestamp is set when the
 //! proposal enters the `Pending` state and is immutable while it
 //! remains in the proposal queue (a transition to candidate /
 //! canonical / discarded moves it out of the queue and out of this
@@ -23,10 +25,13 @@
 //!
 //! ## Filesystem-backend degradation (FR-029)
 //!
-//! Above the configured `filesystem_aggregate_threshold` (default
-//! 1,000 accounts), this endpoint short-circuits to
-//! [`GuardianError::DataUnavailable`] rather than fan out across
-//! every account directory.
+//! On the **filesystem backend**, above the configured
+//! `filesystem_aggregate_threshold` (default 1,000 accounts) this
+//! endpoint short-circuits to [`GuardianError::DataUnavailable`]
+//! rather than fan out across every account directory. The
+//! **Postgres backend** is not bounded by the threshold —
+//! `enforce_aggregate_threshold` returns early when
+//! `storage.kind() != Filesystem`.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;

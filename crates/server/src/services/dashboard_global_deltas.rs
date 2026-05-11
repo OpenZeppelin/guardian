@@ -19,11 +19,14 @@
 //!
 //! ## Filesystem-backend degradation (FR-029)
 //!
-//! Above the configured `filesystem_aggregate_threshold` (default 1,000
-//! accounts), this endpoint short-circuits to
-//! `GuardianError::DataUnavailable` rather than fan out across every
-//! account directory. Postgres deployments above the threshold are
-//! affected too — the threshold is per-deployment config.
+//! On the **filesystem backend**, above the configured
+//! `filesystem_aggregate_threshold` (default 1,000 accounts) this
+//! endpoint short-circuits to `GuardianError::DataUnavailable` rather
+//! than fan out across every account directory. The **Postgres
+//! backend** serves this feed from indexed columns and is NOT bounded
+//! by the threshold — `enforce_aggregate_threshold` returns early
+//! when `storage.kind() != Filesystem`. Operators on Postgres should
+//! not expect a threshold-induced 503 from this endpoint.
 
 use std::collections::HashSet;
 

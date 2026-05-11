@@ -338,8 +338,7 @@ mod tests {
         // to decode and the condition is permanent for this surface.
         let account_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let chain_id: u64 = 11155111;
-        let evm_account_id =
-            crate::metadata::network::evm_account_id(chain_id, account_address);
+        let evm_account_id = crate::metadata::network::evm_account_id(chain_id, account_address);
         let evm_metadata = AccountMetadata {
             account_id: evm_account_id.clone(),
             auth: Auth::EvmEcdsa {
@@ -348,8 +347,8 @@ mod tests {
             network_config: crate::metadata::NetworkConfig::Evm {
                 chain_id,
                 account_address: account_address.to_string(),
-                multisig_validator_address:
-                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                multisig_validator_address: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
             },
             created_at: "2026-05-11T00:00:00Z".to_string(),
             updated_at: "2026-05-11T00:00:00Z".to_string(),

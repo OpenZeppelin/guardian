@@ -5,10 +5,13 @@
 --   1. Adds `status_kind text not null` and `status_timestamp timestamptz
 --      not null` to `deltas` and `delta_proposals`.
 --   2. Backfills the new columns from the existing `status` Jsonb column,
---      with safe fallbacks for malformed historical data.
+--      with safe fallbacks for malformed historical data. Malformed
+--      timestamps (non-empty but unparseable) are also caught by a regex
+--      guard before the cast so the migration does not abort on bad data.
 --   3. Adds composite indexes optimized for the global-feed sort key
---      `(status_kind, status_timestamp DESC, account_id, id)` and the
---      per-account sort key `(account_id, status_timestamp DESC, id)`.
+--      `(status_kind, status_timestamp DESC, account_id, nonce[, commitment])`
+--      and the per-account sort key `(account_id, nonce DESC[, commitment DESC])`
+--      so cursor traversal lands on covering indexes.
 --
 -- The `status` Jsonb column is retained. Writes dual-populate both during
 -- the transition; a future migration can drop the Jsonb column once
@@ -23,11 +26,20 @@ ALTER TABLE deltas
     ADD COLUMN status_kind text,
     ADD COLUMN status_timestamp timestamptz;
 
+-- The status_timestamp cast is guarded by a regex that matches the
+-- ISO-8601 prefix every well-formed write emits (`YYYY-MM-DDTHH:MM:SS`).
+-- Strings that fail the guard fall through to `now()` instead of
+-- aborting the migration, matching the "safe fallback for malformed
+-- historical data" intent in the header comment.
 UPDATE deltas
 SET
     status_kind = COALESCE(NULLIF(status->>'status', ''), 'candidate'),
     status_timestamp = COALESCE(
-        NULLIF(status->>'timestamp', '')::timestamptz,
+        CASE
+            WHEN status->>'timestamp' ~ '^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}'
+                THEN (status->>'timestamp')::timestamptz
+            ELSE NULL
+        END,
         now()
     );
 
@@ -55,11 +67,16 @@ ALTER TABLE delta_proposals
     ADD COLUMN status_kind text,
     ADD COLUMN status_timestamp timestamptz;
 
+-- Same regex guard as on `deltas` above — see the comment there.
 UPDATE delta_proposals
 SET
     status_kind = COALESCE(NULLIF(status->>'status', ''), 'pending'),
     status_timestamp = COALESCE(
-        NULLIF(status->>'timestamp', '')::timestamptz,
+        CASE
+            WHEN status->>'timestamp' ~ '^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}'
+                THEN (status->>'timestamp')::timestamptz
+            ELSE NULL
+        END,
         now()
     );
 

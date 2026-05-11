@@ -116,8 +116,8 @@ pub async fn get_account_snapshot(
         GuardianError::AccountDataUnavailable(account_id.to_string())
     })?;
 
-    let account = miden_protocol::account::Account::from_json(&account_state.state_json)
-        .map_err(|e| {
+    let account =
+        miden_protocol::account::Account::from_json(&account_state.state_json).map_err(|e| {
             tracing::warn!(
                 account_id = %account_id,
                 error = %e,

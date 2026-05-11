@@ -13,23 +13,30 @@
 //! - The payload is opaque to the client.
 //! - The HMAC tag (32 bytes) prevents tampering and prevents clients from
 //!   forging cursors.
-//! - The signing secret is held by [`CursorSecret`], created once per
-//!   server startup. Cursors do not survive a process restart in v1; this
-//!   is acceptable for the operator dashboard (operators just request the
-//!   first page again). A future feature can introduce a stable
-//!   shared-secret rotation strategy if multi-instance deployments need
-//!   it (research.md Decision 4).
+//! - The signing secret is held by [`CursorSecret`], created from the
+//!   `GUARDIAN_DASHBOARD_CURSOR_SECRET` environment variable when set,
+//!   or generated ephemerally per process if unset. With a stable
+//!   configured secret, cursors survive a process restart and remain
+//!   valid across replicas. With the ephemeral fallback (the v1
+//!   single-process default), cursors are invalidated on restart and
+//!   operators just re-request the first page — acceptable because
+//!   the operator dashboard is interactive. Multi-replica deployments
+//!   MUST set `GUARDIAN_DASHBOARD_CURSOR_SECRET` to a shared 32-byte
+//!   hex value so cursors round-trip between replicas
+//!   (research.md Decision 4).
 //!
 //! ## Cursor stability
 //!
-//! For all kinds except [`CursorKind::AccountList`], the cursor encodes
-//! the immutable Postgres-assigned `id` of the last entry returned, so
-//! traversal is fully stable under both concurrent inserts and concurrent
-//! status updates. For [`CursorKind::AccountList`], the cursor encodes
-//! the `(updated_at, account_id)` composite key; because `updated_at` is
-//! mutable, an account whose `updated_at` is bumped mid-traversal MAY be
-//! skipped or repeated — this caveat is documented expected behavior per
-//! FR-005.
+//! Per-account and global delta/proposal cursors encode the last
+//! row's sort key fields: `last_nonce` for per-account deltas/
+//! proposals, and `(status_timestamp, account_id, nonce[, commitment])`
+//! for the global feeds. Those columns are immutable once written
+//! (deltas), so traversal is fully stable under both concurrent
+//! inserts and concurrent status updates. For [`CursorKind::AccountList`],
+//! the cursor encodes the `(updated_at, account_id)` composite key;
+//! because `updated_at` is mutable, an account whose `updated_at` is
+//! bumped mid-traversal MAY be skipped or repeated — this caveat is
+//! documented expected behavior per FR-005.
 
 use base64::Engine;
 use chrono::{DateTime, Utc};

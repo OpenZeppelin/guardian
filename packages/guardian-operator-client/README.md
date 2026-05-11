@@ -173,8 +173,9 @@ try {
         case 'data_unavailable':
           // Metadata exists but storage cannot be read; retry later.
           break;
-        case 'unauthorized':
-          // Refresh the operator session.
+        case 'authentication_failed':
+          // Operator session is missing, tampered, or expired —
+          // re-issue the challenge / verify flow.
           break;
       }
     }
@@ -191,7 +192,7 @@ FR-028) is:
 
 | HTTP | Body `code` | When |
 |------|-------------|------|
-| 401 | `unauthorized` / `authentication_failed` | missing / tampered / expired operator session |
+| 401 | `authentication_failed` | missing / tampered / expired operator session |
 | 404 | `account_not_found` | path-addressed account does not exist |
 | 400 | `invalid_cursor` | tampered, malformed, or stale cursor |
 | 400 | `invalid_limit` | `limit` outside `[1, 500]` |
