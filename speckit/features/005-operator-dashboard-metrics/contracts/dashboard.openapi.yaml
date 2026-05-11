@@ -340,7 +340,10 @@ components:
       required:
         - service_status
         - environment
+        - build
+        - backend
         - total_account_count
+        - accounts_by_auth_method
         - latest_activity
         - delta_status_counts
         - in_flight_proposal_count
@@ -352,7 +355,78 @@ components:
         environment:
           type: string
           description: Deployment environment identifier (e.g. mainnet/testnet).
+        build:
+          type: object
+          description: |
+            Compile-time identity for the responding `guardian-server`
+            binary. Stable for the lifetime of the process. Operators
+            use this to confirm which version and SHA is serving
+            requests without reading server logs.
+          required: [version, git_commit, profile, started_at]
+          properties:
+            version:
+              type: string
+              description: '`CARGO_PKG_VERSION` of `guardian-server`.'
+            git_commit:
+              type: string
+              description: |
+                Short git SHA at build time. `"unknown"` when neither
+                `GUARDIAN_GIT_SHA` nor a working tree git repo were
+                available at build time.
+            profile:
+              type: string
+              enum: [debug, release]
+            started_at:
+              type: string
+              format: date-time
+              description: RFC3339 time the dashboard state initialized.
+        backend:
+          type: object
+          description: Backend configuration snapshot. Stable for the lifetime of the process.
+          required: [storage, supported_ack_schemes, canonicalization]
+          properties:
+            storage:
+              type: string
+              enum: [filesystem, postgres]
+              description: |
+                Storage backend selected at compile time via the
+                `postgres` cargo feature.
+            supported_ack_schemes:
+              type: array
+              items: { type: string }
+              description: |
+                Acknowledgement signature schemes wired into the
+                server's AckRegistry (e.g. `falcon`, `ecdsa`). Stable
+                order.
+            canonicalization:
+              nullable: true
+              description: |
+                Canonicalization-worker config when the server runs in
+                candidate-commit mode. `null` indicates optimistic mode
+                where deltas are written directly as canonical.
+              type: object
+              required:
+                - check_interval_seconds
+                - max_retries
+                - submission_grace_period_seconds
+              properties:
+                check_interval_seconds: { type: integer, minimum: 1 }
+                max_retries: { type: integer, minimum: 0 }
+                submission_grace_period_seconds:
+                  type: integer
+                  minimum: 0
         total_account_count: { type: integer }
+        accounts_by_auth_method:
+          type: object
+          description: |
+            Counts of accounts grouped by stable auth-method label
+            (`miden_falcon`, `miden_ecdsa`, `evm`). Empty when this
+            aggregate is marked degraded; check `degraded_aggregates`
+            for the `accounts_by_auth_method` marker. New auth variants
+            MUST add a new key rather than reuse an existing one.
+          additionalProperties:
+            type: integer
+            minimum: 0
         latest_activity:
           type: string
           format: date-time
@@ -375,7 +449,8 @@ components:
           items: { type: string }
           description: |
             Names of aggregates that returned a degraded marker on this
-            response (filesystem backend above threshold per FR-029).
+            response (filesystem backend above threshold per FR-029, or
+            per-aggregate read failure).
 
     DashboardDeltaEntry:
       type: object

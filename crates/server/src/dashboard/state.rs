@@ -28,6 +28,7 @@ pub struct DashboardState {
     sessions: Arc<Mutex<HashMap<String, OperatorSessionRecord>>>,
     commitment_rate_limits: RateLimitStore,
     cursor_secret: CursorSecret,
+    started_at: DateTime<Utc>,
 }
 
 impl DashboardState {
@@ -335,6 +336,7 @@ impl DashboardState {
             challenges: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cursor_secret,
+            started_at: Utc::now(),
         })
     }
 
@@ -355,6 +357,13 @@ impl DashboardState {
     /// `GET /dashboard/info` (e.g. `mainnet`, `testnet`).
     pub fn environment(&self) -> &str {
         self.config.environment()
+    }
+
+    /// Wall-clock time the dashboard state (and effectively the process)
+    /// was initialized. Surfaced on `GET /dashboard/info` to identify
+    /// the running binary instance.
+    pub fn started_at(&self) -> DateTime<Utc> {
+        self.started_at
     }
 
     async fn refresh_allowlist(&self) -> Result<()> {

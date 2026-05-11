@@ -76,10 +76,18 @@ export interface DashboardAccountDetail extends DashboardAccountSummary {
  */
 export type DashboardAccountsResponse = never;
 
-export interface DashboardAccountResponse {
-  success: true;
-  account: DashboardAccountDetail;
-}
+/**
+ * `GET /dashboard/accounts/{id}` returns the account detail directly
+ * (no `success`, no `account` wrapper). The endpoint relies on the
+ * HTTP status code for success/failure and on the `DashboardErrorCode`
+ * body for typed errors.
+ *
+ * Kept as a named alias so callers and library code can still reference
+ * "the response shape" without having to spell out the detail type at
+ * each site. New shapes added to this endpoint MUST keep the bare
+ * payload form.
+ */
+export type DashboardAccountResponse = DashboardAccountDetail;
 
 // ---------------------------------------------------------------------------
 // Pagination, info, and history types introduced by feature
@@ -174,10 +182,49 @@ export interface GlobalDeltasOptions {
   status?: DashboardGlobalDeltaStatusFilter;
 }
 
+/** Build identity for the running `guardian-server` binary. */
+export interface DashboardBuildInfo {
+  /** `guardian-server` package version (`CARGO_PKG_VERSION`). */
+  version: string;
+  /** Short git SHA at build time, or `"unknown"` when unavailable. */
+  gitCommit: string;
+  /** Cargo build profile: `"debug"` or `"release"`. */
+  profile: 'debug' | 'release';
+  /** RFC3339 wall-clock time the server initialized dashboard state. */
+  startedAt: string;
+}
+
+/** Canonicalization worker config when the server runs in
+ * candidate-commit mode. `null` indicates optimistic-commit mode. */
+export interface DashboardCanonicalizationConfig {
+  checkIntervalSeconds: number;
+  maxRetries: number;
+  submissionGracePeriodSeconds: number;
+}
+
+/** Backend configuration snapshot. */
+export interface DashboardBackendInfo {
+  /** `"filesystem"` or `"postgres"` based on the server's compiled
+   * feature flag. */
+  storage: 'filesystem' | 'postgres';
+  /** Acknowledgement signature schemes wired into the server's
+   * `AckRegistry`. */
+  supportedAckSchemes: string[];
+  /** `null` in optimistic-commit mode. */
+  canonicalization: DashboardCanonicalizationConfig | null;
+}
+
 export interface DashboardInfoResponse {
   serviceStatus: 'healthy' | 'degraded';
   environment: string;
+  build: DashboardBuildInfo;
+  backend: DashboardBackendInfo;
   totalAccountCount: number;
+  /** Counts of accounts grouped by stable auth-method label
+   * (`"miden_falcon"`, `"miden_ecdsa"`, `"evm"`). Empty when marked
+   * degraded — check `degradedAggregates` for
+   * `"accounts_by_auth_method"`. */
+  accountsByAuthMethod: Record<string, number>;
   latestActivity: string | null;
   deltaStatusCounts: {
     candidate: number;

@@ -50,6 +50,15 @@ export default function App() {
   const [lastResult, setLastResult] = useState('');
   const [uiError, setUiError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [pagedLimit, setPagedLimit] = useState('2');
+  const [pagedAccounts, setPagedAccounts] = useState<DashboardAccountSummary[]>([]);
+  const [pagedCursor, setPagedCursor] = useState<string | null>(null);
+  const [pagedPageCount, setPagedPageCount] = useState(0);
+  const [globalDeltaStatusFilter, setGlobalDeltaStatusFilter] = useState<{
+    candidate: boolean;
+    canonical: boolean;
+    discarded: boolean;
+  }>({ candidate: false, canonical: false, discarded: false });
 
   const client = useMemo(
     () =>
@@ -85,6 +94,7 @@ export default function App() {
       setVerifyResponse(null);
       setAccounts([]);
       setAccount(null);
+      resetPagination();
       return nextSession;
     });
   }
@@ -97,6 +107,7 @@ export default function App() {
       setVerifyResponse(null);
       setAccounts([]);
       setAccount(null);
+      resetPagination();
       return nextSession;
     });
   }
@@ -152,7 +163,7 @@ export default function App() {
   async function listAccounts() {
     await runAction('listAccounts', async () => {
       const response = await client.listAccounts();
-      setAccounts(response.accounts);
+      setAccounts(response.items);
       return response;
     });
   }
@@ -162,10 +173,94 @@ export default function App() {
       if (!accountId.trim()) {
         throw new Error('Account ID is required');
       }
-      const response = await client.getAccount(accountId.trim());
-      setAccount(response.account);
-      return response;
+      const detail = await client.getAccount(accountId.trim());
+      setAccount(detail);
+      return detail;
     });
+  }
+
+  async function dashboardInfo() {
+    await runAction('dashboardInfo', () => client.getDashboardInfo());
+  }
+
+  async function listAccountDeltas() {
+    await runAction('listAccountDeltas', () => {
+      const id = accountId.trim();
+      if (!id) throw new Error('Account ID is required');
+      return client.listAccountDeltas(id);
+    });
+  }
+
+  async function listAccountProposals() {
+    await runAction('listAccountProposals', () => {
+      const id = accountId.trim();
+      if (!id) throw new Error('Account ID is required');
+      return client.listAccountProposals(id);
+    });
+  }
+
+  async function listGlobalDeltas() {
+    await runAction('listGlobalDeltas', () => {
+      const selected = (
+        ['candidate', 'canonical', 'discarded'] as const
+      ).filter((s) => globalDeltaStatusFilter[s]);
+      return client.listGlobalDeltas(
+        selected.length > 0 ? { status: selected } : {},
+      );
+    });
+  }
+
+  async function listGlobalProposals() {
+    await runAction('listGlobalProposals', () => client.listGlobalProposals());
+  }
+
+  async function paginateAccounts() {
+    await runAction('paginateAccounts', async () => {
+      const firstPage = await client.listAccounts({ limit: 1 });
+      const secondPage = firstPage.nextCursor
+        ? await client.listAccounts({ limit: 1, cursor: firstPage.nextCursor })
+        : null;
+      return { firstPage, secondPage };
+    });
+  }
+
+  function parsePagedLimit(): number {
+    const parsed = Number.parseInt(pagedLimit, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      throw new Error('Limit must be a positive integer');
+    }
+    return parsed;
+  }
+
+  async function loadFirstPage() {
+    await runAction('loadFirstPage', async () => {
+      const limit = parsePagedLimit();
+      const page = await client.listAccounts({ limit });
+      setPagedAccounts(page.items);
+      setPagedCursor(page.nextCursor);
+      setPagedPageCount(1);
+      return page;
+    });
+  }
+
+  async function loadMore() {
+    await runAction('loadMore', async () => {
+      if (!pagedCursor) {
+        throw new Error('No more pages — nextCursor is null');
+      }
+      const limit = parsePagedLimit();
+      const page = await client.listAccounts({ limit, cursor: pagedCursor });
+      setPagedAccounts((prev) => [...prev, ...page.items]);
+      setPagedCursor(page.nextCursor);
+      setPagedPageCount((prev) => prev + 1);
+      return page;
+    });
+  }
+
+  function resetPagination() {
+    setPagedAccounts([]);
+    setPagedCursor(null);
+    setPagedPageCount(0);
   }
 
   async function logout() {
@@ -174,6 +269,7 @@ export default function App() {
       setVerifyResponse(null);
       setAccounts([]);
       setAccount(null);
+      resetPagination();
       setChallenge(null);
       return response;
     });
@@ -229,6 +325,37 @@ export default function App() {
             <button onClick={() => void requestChallenge()}>Request challenge</button>
             <button onClick={() => void login()}>Login</button>
             <button onClick={() => void listAccounts()}>List accounts</button>
+            <button onClick={() => void paginateAccounts()}>Paginate accounts</button>
+            <button onClick={() => void dashboardInfo()}>Dashboard info</button>
+            <button onClick={() => void listGlobalDeltas()}>List global deltas</button>
+            <button onClick={() => void listGlobalProposals()}>List global proposals</button>
+          </div>
+
+          <fieldset className="status-filter">
+            <legend>Global delta status filter</legend>
+            {(['candidate', 'canonical', 'discarded'] as const).map((status) => (
+              <label key={status} className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={globalDeltaStatusFilter[status]}
+                  onChange={(event) =>
+                    setGlobalDeltaStatusFilter((prev) => ({
+                      ...prev,
+                      [status]: event.target.checked,
+                    }))
+                  }
+                />{' '}
+                {status}
+              </label>
+            ))}
+            <p className="hint">
+              No checkboxes = no filter (server default). One or more = comma-separated{' '}
+              <code>status</code> param. Garbage values surface as <code>invalid_status_filter</code>{' '}
+              from the server — try toggling via the URL to exercise that path.
+            </p>
+          </fieldset>
+
+          <div className="actions">
             <button onClick={() => void logout()}>Logout</button>
           </div>
 
@@ -336,6 +463,8 @@ export default function App() {
           </label>
           <div className="actions">
             <button onClick={() => void fetchAccount()}>Fetch account</button>
+            <button onClick={() => void listAccountDeltas()}>List account deltas</button>
+            <button onClick={() => void listAccountProposals()}>List account proposals</button>
           </div>
 
           {accounts.length ? (
@@ -373,6 +502,71 @@ export default function App() {
             </div>
           ) : (
             <p className="hint">No account list loaded yet.</p>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Paged Accounts (Load More)</h2>
+            <span className={`badge ${pagedCursor ? 'warning' : pagedPageCount > 0 ? 'success' : 'neutral'}`}>
+              {pagedPageCount === 0
+                ? 'not started'
+                : pagedCursor
+                  ? `${pagedAccounts.length} loaded · more available`
+                  : `${pagedAccounts.length} loaded · end`}
+            </span>
+          </div>
+
+          <label>
+            <span>Page size (limit)</span>
+            <input
+              value={pagedLimit}
+              onChange={(event) => setPagedLimit(event.target.value)}
+              placeholder="2"
+            />
+          </label>
+          <div className="actions">
+            <button onClick={() => void loadFirstPage()}>Load first page</button>
+            <button onClick={() => void loadMore()} disabled={!pagedCursor}>
+              Load more
+            </button>
+            <button onClick={() => resetPagination()}>Reset</button>
+          </div>
+
+          <p className="hint">
+            Pages loaded: <code>{pagedPageCount}</code>; nextCursor:{' '}
+            <code>{pagedCursor ?? 'null'}</code>
+          </p>
+
+          {pagedAccounts.length ? (
+            <div className="account-list">
+              {pagedAccounts.map((entry, index) => (
+                <article className="account-card" key={`${entry.accountId}-${index}`}>
+                  <div className="account-card-header">
+                    <code>
+                      #{index + 1} · {entry.accountId}
+                    </code>
+                    <span
+                      className={`badge ${entry.stateStatus === 'available' ? 'success' : 'warning'}`}
+                    >
+                      {entry.stateStatus}
+                    </span>
+                  </div>
+                  <div className="status-grid compact">
+                    <div>
+                      <span className="label">Scheme</span>
+                      <strong>{entry.authScheme}</strong>
+                    </div>
+                    <div>
+                      <span className="label">Authorized signers</span>
+                      <strong>{entry.authorizedSignerCount}</strong>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="hint">Click <strong>Load first page</strong> to start paginating.</p>
           )}
         </section>
 

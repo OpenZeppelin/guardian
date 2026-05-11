@@ -25,8 +25,11 @@
 //! aggregates if profiling under real load shows pain (research.md
 //! Decision 1).
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
+use crate::build_info;
 use crate::error::{GuardianError, Result};
 use crate::state::AppState;
 
@@ -37,6 +40,7 @@ use crate::state::AppState;
 pub const AGG_DELTA_STATUS_COUNTS: &str = "delta_status_counts";
 pub const AGG_IN_FLIGHT_PROPOSAL_COUNT: &str = "in_flight_proposal_count";
 pub const AGG_LATEST_ACTIVITY: &str = "latest_activity";
+pub const AGG_ACCOUNTS_BY_AUTH_METHOD: &str = "accounts_by_auth_method";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,11 +56,60 @@ pub struct DashboardDeltaStatusCounts {
     pub discarded: u64,
 }
 
+/// Build identity for the running `guardian-server` binary. Values are
+/// stable for the lifetime of the process; surfaced so operators can
+/// confirm which version/SHA is responding without reading logs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DashboardBuildInfo {
+    /// `CARGO_PKG_VERSION` from `guardian-server`.
+    pub version: &'static str,
+    /// Short git SHA at build time. `"unknown"` when neither
+    /// `GUARDIAN_GIT_SHA` nor a working tree git repo were available
+    /// to `build.rs`.
+    pub git_commit: &'static str,
+    /// `"debug"` or `"release"` based on `cfg!(debug_assertions)`.
+    pub profile: &'static str,
+    /// Wall-clock time the server initialized its dashboard state.
+    pub started_at: String,
+}
+
+/// Per-account-method canonicalization fan-in configuration. `None`
+/// means the server is running in optimistic mode (deltas are written
+/// directly as canonical and never enter the candidate state).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DashboardCanonicalizationConfig {
+    pub check_interval_seconds: u64,
+    pub max_retries: u32,
+    pub submission_grace_period_seconds: u64,
+}
+
+/// Backend configuration snapshot. Stable for the lifetime of the
+/// process; lets operators distinguish a filesystem dev box from a
+/// postgres-backed prod replica without inspecting environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DashboardBackendInfo {
+    /// `"filesystem"` or `"postgres"` from the cargo feature flag.
+    pub storage: &'static str,
+    /// Acknowledgement signature schemes wired into the server's
+    /// `AckRegistry`. Stable order (alphabetic) so clients can rely on
+    /// the listing.
+    pub supported_ack_schemes: Vec<&'static str>,
+    /// `None` when running in optimistic-commit mode; `Some(_)` when
+    /// the canonicalization worker is active.
+    pub canonicalization: Option<DashboardCanonicalizationConfig>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DashboardInfoResponse {
     pub service_status: DashboardServiceStatus,
     pub environment: String,
+    pub build: DashboardBuildInfo,
+    pub backend: DashboardBackendInfo,
     pub total_account_count: u64,
+    /// Counts of accounts grouped by stable `Auth::method_label()`.
+    /// Keys never collide with internal enum names. Absent when the
+    /// aggregate is marked degraded (see `degraded_aggregates`).
+    pub accounts_by_auth_method: BTreeMap<String, u64>,
     /// Greater of the most recent delta status timestamp and the most
     /// recent proposal originating timestamp across all accounts;
     /// `None` (serialized as `null`) when the inventory has produced
@@ -83,10 +136,32 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
     })?;
     let total_account_count = account_ids.len() as u64;
 
+    let backend = DashboardBackendInfo {
+        storage: build_info::storage_backend(),
+        supported_ack_schemes: vec!["ecdsa", "falcon"],
+        canonicalization: state.canonicalization.as_ref().map(|c| {
+            DashboardCanonicalizationConfig {
+                check_interval_seconds: c.check_interval_seconds,
+                max_retries: c.max_retries,
+                submission_grace_period_seconds: c.submission_grace_period_seconds,
+            }
+        }),
+    };
+
+    let build = DashboardBuildInfo {
+        version: build_info::VERSION,
+        git_commit: build_info::GIT_SHA,
+        profile: build_info::build_profile(),
+        started_at: state.dashboard.started_at().to_rfc3339(),
+    };
+
     let mut response = DashboardInfoResponse {
         service_status: DashboardServiceStatus::Healthy,
         environment: state.dashboard.environment().to_string(),
+        build,
+        backend,
         total_account_count,
+        accounts_by_auth_method: BTreeMap::new(),
         latest_activity: None,
         delta_status_counts: DashboardDeltaStatusCounts::default(),
         in_flight_proposal_count: 0,
@@ -106,9 +181,51 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 AGG_DELTA_STATUS_COUNTS.to_string(),
                 AGG_IN_FLIGHT_PROPOSAL_COUNT.to_string(),
                 AGG_LATEST_ACTIVITY.to_string(),
+                AGG_ACCOUNTS_BY_AUTH_METHOD.to_string(),
             ]);
             return Ok(response);
         }
+    }
+
+    // accounts_by_auth_method: fan out over metadata to bucket each
+    // account by its stable `Auth::method_label()`. For filesystem
+    // backends the FR-029 threshold above already guards the inventory
+    // size; for Postgres this is N point reads — acceptable for the
+    // info endpoint's snapshot cadence. A future SQL `GROUP BY` over
+    // a typed `auth_method` column would replace this if real
+    // production volume profiles show pain.
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut counts_degraded = false;
+    for id in &account_ids {
+        match state.metadata.get(id).await {
+            Ok(Some(meta)) => {
+                *counts
+                    .entry(meta.auth.method_label().to_string())
+                    .or_insert(0) += 1;
+            }
+            Ok(None) => {
+                // Account ID was listed but metadata is missing — race
+                // against deletion. Skip rather than fail; the row
+                // simply won't be counted in this snapshot.
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    account_id = %id,
+                    "dashboard info: metadata.get failed during auth-method aggregation"
+                );
+                counts_degraded = true;
+                break;
+            }
+        }
+    }
+    if counts_degraded {
+        response.service_status = DashboardServiceStatus::Degraded;
+        response
+            .degraded_aggregates
+            .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
+    } else {
+        response.accounts_by_auth_method = counts;
     }
 
     // Push aggregates down to the storage layer. Postgres serves them
@@ -207,6 +324,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accounts_by_auth_method_buckets_each_metadata_entry() {
+        use crate::ack::AckRegistry;
+        use crate::builder::clock::test::MockClock;
+        use crate::metadata::auth::Auth;
+        use crate::metadata::{AccountMetadata, NetworkConfig};
+        use crate::testing::mocks::MockNetworkClient;
+        use tokio::sync::Mutex;
+
+        let account_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        let make = |id: &str, auth: Auth| AccountMetadata {
+            account_id: id.to_string(),
+            auth,
+            network_config: NetworkConfig::miden_default(),
+            created_at: "2026-05-11T00:00:00Z".to_string(),
+            updated_at: "2026-05-11T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+        };
+        let metadata = MockMetadataStore::new()
+            .with_list(Ok(account_ids))
+            .with_get(Ok(Some(make(
+                "a",
+                Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![],
+                },
+            ))))
+            .with_get(Ok(Some(make(
+                "b",
+                Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![],
+                },
+            ))))
+            .with_get(Ok(Some(make(
+                "c",
+                Auth::MidenEcdsa {
+                    cosigner_commitments: vec![],
+                },
+            ))));
+
+        let storage = MockStorageBackend::new()
+            .with_count_deltas_by_status(Ok(Default::default()))
+            .with_count_in_flight_proposals(Ok(0))
+            .with_latest_activity_timestamp(Ok(None));
+
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+
+        let state = AppState {
+            storage: Arc::new(storage),
+            metadata: Arc::new(metadata),
+            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::default()),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        };
+
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.total_account_count, 3);
+        assert_eq!(info.accounts_by_auth_method.get("miden_falcon"), Some(&2));
+        assert_eq!(info.accounts_by_auth_method.get("miden_ecdsa"), Some(&1));
+        // The aggregate is not degraded on the happy path.
+        assert!(
+            !info
+                .degraded_aggregates
+                .iter()
+                .any(|s| s == AGG_ACCOUNTS_BY_AUTH_METHOD)
+        );
+    }
+
+    #[tokio::test]
     async fn empty_inventory_returns_explicit_zeros_and_no_activity() {
         let state = build_state(
             Vec::new(),
@@ -252,6 +445,77 @@ mod tests {
             info.latest_activity.as_deref(),
             Some("2026-05-09T11:00:00+00:00")
         );
+    }
+
+    #[tokio::test]
+    async fn build_info_fields_are_populated_from_compile_time_constants() {
+        let state = build_state(
+            Vec::new(),
+            crate::storage::DeltaStatusCounts::default(),
+            0,
+            None,
+        )
+        .await;
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.build.version, env!("CARGO_PKG_VERSION"));
+        assert!(!info.build.git_commit.is_empty());
+        assert!(info.build.profile == "debug" || info.build.profile == "release");
+        assert!(chrono::DateTime::parse_from_rfc3339(&info.build.started_at).is_ok());
+    }
+
+    #[tokio::test]
+    async fn backend_storage_label_matches_compiled_feature_flag() {
+        let state = build_state(
+            Vec::new(),
+            crate::storage::DeltaStatusCounts::default(),
+            0,
+            None,
+        )
+        .await;
+        let info = get_dashboard_info(&state).await.unwrap();
+        let expected = if cfg!(feature = "postgres") {
+            "postgres"
+        } else {
+            "filesystem"
+        };
+        assert_eq!(info.backend.storage, expected);
+        assert!(info.backend.supported_ack_schemes.contains(&"falcon"));
+        assert!(info.backend.supported_ack_schemes.contains(&"ecdsa"));
+    }
+
+    #[tokio::test]
+    async fn canonicalization_is_none_when_disabled_in_state() {
+        let state = build_state(
+            Vec::new(),
+            crate::storage::DeltaStatusCounts::default(),
+            0,
+            None,
+        )
+        .await;
+        // build_state leaves canonicalization = None.
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert!(info.backend.canonicalization.is_none());
+    }
+
+    #[tokio::test]
+    async fn canonicalization_is_populated_from_app_state_config() {
+        let mut state = build_state(
+            Vec::new(),
+            crate::storage::DeltaStatusCounts::default(),
+            0,
+            None,
+        )
+        .await;
+        state.canonicalization = Some(crate::canonicalization::CanonicalizationConfig {
+            check_interval_seconds: 7,
+            max_retries: 13,
+            submission_grace_period_seconds: 42,
+        });
+        let info = get_dashboard_info(&state).await.unwrap();
+        let cfg = info.backend.canonicalization.expect("config present");
+        assert_eq!(cfg.check_interval_seconds, 7);
+        assert_eq!(cfg.max_retries, 13);
+        assert_eq!(cfg.submission_grace_period_seconds, 42);
     }
 
     #[tokio::test]

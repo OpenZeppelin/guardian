@@ -79,9 +79,23 @@ const result = {
   login: null,
   accountList: null,
   accountDetail: null,
+  dashboardInfo: null,
+  accountDeltas: null,
+  accountProposals: null,
+  globalDeltas: null,
+  globalProposals: null,
+  pagination: null,
   logout: null,
   postLogoutProtectedRequest: null,
 };
+
+function isPagedResult(value) {
+  return (
+    value &&
+    Array.isArray(value.items) &&
+    (value.nextCursor === null || typeof value.nextCursor === 'string')
+  );
+}
 
 try {
   const context = await browser.newContext();
@@ -135,16 +149,16 @@ try {
   await clickAction(page, 'List accounts');
   const accountList = await waitLastResult(
     page,
-    (value) => value?.success === true && Array.isArray(value.accounts),
+    (value) => Array.isArray(value?.items) && (value.nextCursor === null || typeof value.nextCursor === 'string'),
     'account list result',
   );
   result.accountList = {
-    success: accountList.success,
-    totalCount: accountList.totalCount,
-    firstAccountId: accountList.accounts[0]?.accountId ?? null,
+    itemCount: accountList.items.length,
+    nextCursor: accountList.nextCursor,
+    firstAccountId: accountList.items[0]?.accountId ?? null,
   };
 
-  const firstAccountId = accountList.accounts[0]?.accountId;
+  const firstAccountId = accountList.items[0]?.accountId;
   if (firstAccountId) {
     await section(page, 'Accounts')
       .locator('label', { hasText: 'Account ID' })
@@ -153,20 +167,144 @@ try {
     await clickAction(page, 'Fetch account');
     const detail = await waitLastResult(
       page,
-      (value) => value?.success === true && value.account?.accountId === firstAccountId,
+      (value) => value?.accountId === firstAccountId,
       'account detail result',
     );
     result.accountDetail = {
-      success: detail.success,
-      accountId: detail.account.accountId,
-      stateStatus: detail.account.stateStatus,
-      authorizedSignerCount: detail.account.authorizedSignerCount,
+      accountId: detail.accountId,
+      stateStatus: detail.stateStatus,
+      authorizedSignerCount: detail.authorizedSignerCount,
     };
   } else {
     result.accountDetail = {
       skipped: true,
       reason: 'account list was empty',
     };
+  }
+
+  await clickAction(page, 'Dashboard info');
+  const info = await waitLastResult(
+    page,
+    (value) =>
+      (value?.serviceStatus === 'healthy' || value?.serviceStatus === 'degraded') &&
+      typeof value.environment === 'string' &&
+      typeof value.totalAccountCount === 'number' &&
+      value.deltaStatusCounts &&
+      typeof value.deltaStatusCounts.candidate === 'number' &&
+      value.build &&
+      typeof value.build.version === 'string' &&
+      typeof value.build.gitCommit === 'string' &&
+      (value.build.profile === 'debug' || value.build.profile === 'release') &&
+      typeof value.build.startedAt === 'string' &&
+      value.backend &&
+      (value.backend.storage === 'filesystem' || value.backend.storage === 'postgres') &&
+      Array.isArray(value.backend.supportedAckSchemes) &&
+      (value.backend.canonicalization === null ||
+        (value.backend.canonicalization &&
+          typeof value.backend.canonicalization.checkIntervalSeconds === 'number')) &&
+      value.accountsByAuthMethod &&
+      typeof value.accountsByAuthMethod === 'object',
+    'dashboard info result',
+  );
+  result.dashboardInfo = {
+    serviceStatus: info.serviceStatus,
+    environment: info.environment,
+    build: info.build,
+    backend: info.backend,
+    totalAccountCount: info.totalAccountCount,
+    accountsByAuthMethod: info.accountsByAuthMethod,
+    inFlightProposalCount: info.inFlightProposalCount,
+    deltaStatusCounts: info.deltaStatusCounts,
+    degradedAggregates: info.degradedAggregates,
+  };
+
+  if (firstAccountId) {
+    await clickAction(page, 'List account deltas');
+    const deltas = await waitLastResult(
+      page,
+      isPagedResult,
+      'account deltas result',
+    );
+    result.accountDeltas = {
+      itemCount: deltas.items.length,
+      nextCursor: deltas.nextCursor,
+      firstNonce: deltas.items[0]?.nonce ?? null,
+    };
+
+    await clickAction(page, 'List account proposals');
+    const proposals = await waitLastResult(
+      page,
+      isPagedResult,
+      'account proposals result',
+    );
+    result.accountProposals = {
+      itemCount: proposals.items.length,
+      nextCursor: proposals.nextCursor,
+      firstCommitment: proposals.items[0]?.commitment ?? null,
+    };
+  } else {
+    result.accountDeltas = { skipped: true, reason: 'account list was empty' };
+    result.accountProposals = { skipped: true, reason: 'account list was empty' };
+  }
+
+  await clickAction(page, 'List global deltas');
+  const globalDeltas = await waitLastResult(
+    page,
+    isPagedResult,
+    'global deltas result',
+  );
+  result.globalDeltas = {
+    itemCount: globalDeltas.items.length,
+    nextCursor: globalDeltas.nextCursor,
+    firstHasAccountId:
+      globalDeltas.items.length === 0 ||
+      typeof globalDeltas.items[0]?.accountId === 'string',
+  };
+
+  await clickAction(page, 'List global proposals');
+  const globalProposals = await waitLastResult(
+    page,
+    isPagedResult,
+    'global proposals result',
+  );
+  result.globalProposals = {
+    itemCount: globalProposals.items.length,
+    nextCursor: globalProposals.nextCursor,
+    firstHasAccountId:
+      globalProposals.items.length === 0 ||
+      typeof globalProposals.items[0]?.accountId === 'string',
+  };
+
+  await clickAction(page, 'Paginate accounts');
+  const pagination = await waitLastResult(
+    page,
+    (value) =>
+      isPagedResult(value?.firstPage) &&
+      (value.secondPage === null || isPagedResult(value.secondPage)),
+    'pagination result',
+  );
+  const firstPageId = pagination.firstPage.items[0]?.accountId ?? null;
+  const secondPageId = pagination.secondPage?.items[0]?.accountId ?? null;
+  result.pagination = {
+    firstPageItemCount: pagination.firstPage.items.length,
+    firstPageNextCursor: pagination.firstPage.nextCursor,
+    firstPageFirstAccountId: firstPageId,
+    secondPageFirstAccountId: secondPageId,
+    cursorAdvanced:
+      pagination.secondPage === null
+        ? null
+        : firstPageId !== null &&
+          secondPageId !== null &&
+          firstPageId !== secondPageId,
+  };
+  if (
+    pagination.firstPage.items.length > 0 &&
+    pagination.secondPage !== null &&
+    result.pagination.cursorAdvanced !== true
+  ) {
+    throw new Error(
+      `Pagination cursor did not advance: first=${firstPageId} second=${secondPageId}`,
+    );
   }
 
   await clickAction(page, 'Logout');

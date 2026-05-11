@@ -36,6 +36,18 @@ impl Auth {
         }
     }
 
+    /// Stable, dashboard-facing identifier for the auth method.
+    /// Surfaced on `GET /dashboard/info` under `accounts_by_auth_method`.
+    /// New variants MUST add a new label rather than reuse an existing
+    /// one so clients can keep historical counts comparable.
+    pub fn method_label(&self) -> &'static str {
+        match self {
+            Auth::MidenFalconRpo { .. } => "miden_falcon",
+            Auth::MidenEcdsa { .. } => "miden_ecdsa",
+            Auth::EvmEcdsa { .. } => "evm",
+        }
+    }
+
     pub fn compute_signer_commitment(&self, pubkey_hex: &str) -> Result<String, String> {
         match self {
             Auth::MidenFalconRpo { .. } => {

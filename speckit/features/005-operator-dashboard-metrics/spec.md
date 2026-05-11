@@ -230,9 +230,13 @@ time of the call.
    indicator, the deployment environment identifier (e.g.
    `mainnet`/`testnet`), the total configured account count, a
    latest-activity timestamp (or an explicit "no activity" marker if the
-   inventory has produced none), and per-status counts of recorded deltas
+   inventory has produced none), per-status counts of recorded deltas
    (`candidate`, `canonical`, `discarded`) plus the count of in-flight
-   proposals.
+   proposals, build identity (`version`, `git_commit`, `profile`,
+   `started_at`) for the responding binary, backend configuration
+   (`storage`, `supported_ack_schemes`, and the canonicalization-worker
+   config which is `null` in optimistic-commit mode), and a per-auth-method
+   account breakdown (`accounts_by_auth_method`).
 2. **Given** a valid operator session and a Guardian with no configured
    accounts and no recorded deltas or proposals, **When** the operator
    requests the info endpoint, **Then** the response returns explicit zero
@@ -516,6 +520,16 @@ count, and signatures-required count.
   this feature's breaking change. Aggregate inventory totals are
   available only via the dashboard info endpoint (FR-009), which is the
   one canonical place for cross-account counts.
+- **FR-007a**: The single-account detail endpoint
+  (`GET /dashboard/accounts/{account_id}`) MUST return the bare
+  account-detail object as the response body — no `success` wrapper
+  and no `account` outer key. This normalizes the read surface across
+  feature 005 (the paged endpoints, the global feeds, and the info
+  endpoint all return the payload directly). The `success: true,
+  account: { ... }` envelope inherited from `003-operator-account-apis`
+  is removed in the same breaking-change window introduced by FR-001
+  and FR-007. Read-side success/failure is signaled solely by the HTTP
+  status code and the typed error body (FR-028).
 
 #### Dashboard info endpoint
 
@@ -527,14 +541,25 @@ count, and signatures-required count.
   `mainnet`/`testnet`), the total configured account count, a
   latest-activity timestamp (with explicit "no activity" handling),
   counts of persisted deltas grouped by lifecycle status (`candidate`,
-  `canonical`, `discarded`), and the count of in-flight proposals. The
-  response MUST NOT include per-network account counts or a singular
-  "the network" field — the dashboard knows its own deployment context
-  and per-account network type can be derived from the account list if
-  needed.
+  `canonical`, `discarded`), the count of in-flight proposals, build
+  identity (`version`, `git_commit`, `profile`, `started_at`), backend
+  configuration (`storage` ∈ {`filesystem`, `postgres`},
+  `supported_ack_schemes`, and the optional canonicalization-worker
+  config — `check_interval_seconds`, `max_retries`,
+  `submission_grace_period_seconds` — which is `null` in
+  optimistic-commit mode), and a per-auth-method account breakdown
+  (`accounts_by_auth_method`, keyed by stable labels such as
+  `miden_falcon`, `miden_ecdsa`, `evm`). The response MUST NOT include
+  per-network account counts or a singular "the network" field — the
+  dashboard knows its own deployment context and per-account network
+  type can be derived from the account list if needed.
 - **FR-010**: The info response MUST NOT expose secrets, raw session data,
-  per-account private auth material, implementation-internal cursors, or
-  any asset/balance/token-amount data.
+  per-account private auth material, implementation-internal cursors,
+  rate-limit knobs, database URLs, or any asset/balance/token-amount
+  data. The build-identity, backend-config, and
+  `accounts_by_auth_method` fields are explicitly non-secret operational
+  metadata and are permitted (the endpoint remains operator-session
+  gated).
 - **FR-011**: When one underlying source for an info aggregate cannot be
   loaded, the response MUST either explicitly mark that aggregate as
   unavailable/degraded or return `503 DataUnavailable`. The endpoint MUST

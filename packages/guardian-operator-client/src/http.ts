@@ -493,14 +493,95 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
     'dashboard info.delta_status_counts',
   );
 
+  const buildRecord = asRecord(
+    requireField(record, 'build', 'dashboard info'),
+    'dashboard info.build',
+  );
+  const profileRaw = requireString(buildRecord, 'profile', 'dashboard info.build');
+  if (profileRaw !== 'debug' && profileRaw !== 'release') {
+    throw new GuardianOperatorContractError(
+      'dashboard info.build',
+      `expected profile to be "debug" or "release", got ${JSON.stringify(profileRaw)}`,
+    );
+  }
+  const build: DashboardInfoResponse['build'] = {
+    version: requireString(buildRecord, 'version', 'dashboard info.build'),
+    gitCommit: requireString(buildRecord, 'git_commit', 'dashboard info.build'),
+    profile: profileRaw,
+    startedAt: requireString(buildRecord, 'started_at', 'dashboard info.build'),
+  };
+
+  const backendRecord = asRecord(
+    requireField(record, 'backend', 'dashboard info'),
+    'dashboard info.backend',
+  );
+  const storageRaw = requireString(backendRecord, 'storage', 'dashboard info.backend');
+  if (storageRaw !== 'filesystem' && storageRaw !== 'postgres') {
+    throw new GuardianOperatorContractError(
+      'dashboard info.backend',
+      `expected storage to be "filesystem" or "postgres", got ${JSON.stringify(storageRaw)}`,
+    );
+  }
+  const canonicalizationField = backendRecord['canonicalization'];
+  let canonicalization: DashboardInfoResponse['backend']['canonicalization'];
+  if (canonicalizationField === null || canonicalizationField === undefined) {
+    canonicalization = null;
+  } else {
+    const c = asRecord(canonicalizationField, 'dashboard info.backend.canonicalization');
+    canonicalization = {
+      checkIntervalSeconds: requireInteger(
+        c,
+        'check_interval_seconds',
+        'dashboard info.backend.canonicalization',
+      ),
+      maxRetries: requireInteger(
+        c,
+        'max_retries',
+        'dashboard info.backend.canonicalization',
+      ),
+      submissionGracePeriodSeconds: requireInteger(
+        c,
+        'submission_grace_period_seconds',
+        'dashboard info.backend.canonicalization',
+      ),
+    };
+  }
+  const backend: DashboardInfoResponse['backend'] = {
+    storage: storageRaw,
+    supportedAckSchemes: requireStringArray(
+      backendRecord,
+      'supported_ack_schemes',
+      'dashboard info.backend',
+    ),
+    canonicalization,
+  };
+
+  const authMethodsRecord = asRecord(
+    requireField(record, 'accounts_by_auth_method', 'dashboard info'),
+    'dashboard info.accounts_by_auth_method',
+  );
+  const accountsByAuthMethod: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(authMethodsRecord)) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+      throw new GuardianOperatorContractError(
+        'dashboard info.accounts_by_auth_method',
+        `expected non-negative integer count for "${key}", got ${JSON.stringify(raw)}`,
+      );
+    }
+    accountsByAuthMethod[key] = raw;
+  }
+
   return {
     serviceStatus,
     environment: requireString(record, 'environment', 'dashboard info'),
+    build,
+    backend,
     totalAccountCount: requireInteger(
       record,
       'total_account_count',
       'dashboard info',
     ),
+    accountsByAuthMethod,
     latestActivity: requireNullableString(
       record,
       'latest_activity',
@@ -537,11 +618,7 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
 }
 
 function parseAccountResponse(value: unknown): DashboardAccountResponse {
-  const record = asRecord(value, 'account response');
-  return {
-    success: requireSuccess(record, 'account response'),
-    account: parseAccountDetail(requireField(record, 'account', 'account response'), 'account'),
-  };
+  return parseAccountDetail(value, 'account response');
 }
 
 function parseAccountSummary(

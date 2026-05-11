@@ -176,7 +176,23 @@ describe('GuardianOperatorHttpClient', () => {
       okJson({
         service_status: 'degraded',
         environment: 'mainnet',
+        build: {
+          version: '0.14.6',
+          git_commit: 'abcdef123456',
+          profile: 'release',
+          started_at: '2026-05-11T10:00:00Z',
+        },
+        backend: {
+          storage: 'postgres',
+          supported_ack_schemes: ['ecdsa', 'falcon'],
+          canonicalization: {
+            check_interval_seconds: 10,
+            max_retries: 48,
+            submission_grace_period_seconds: 600,
+          },
+        },
         total_account_count: 1234,
+        accounts_by_auth_method: { miden_falcon: 1200, miden_ecdsa: 34 },
         latest_activity: '2026-05-09T14:00:00Z',
         delta_status_counts: {
           candidate: 7,
@@ -193,7 +209,23 @@ describe('GuardianOperatorHttpClient', () => {
     expect(info).toEqual({
       serviceStatus: 'degraded',
       environment: 'mainnet',
+      build: {
+        version: '0.14.6',
+        gitCommit: 'abcdef123456',
+        profile: 'release',
+        startedAt: '2026-05-11T10:00:00Z',
+      },
+      backend: {
+        storage: 'postgres',
+        supportedAckSchemes: ['ecdsa', 'falcon'],
+        canonicalization: {
+          checkIntervalSeconds: 10,
+          maxRetries: 48,
+          submissionGracePeriodSeconds: 600,
+        },
+      },
       totalAccountCount: 1234,
+      accountsByAuthMethod: { miden_falcon: 1200, miden_ecdsa: 34 },
       latestActivity: '2026-05-09T14:00:00Z',
       deltaStatusCounts: {
         candidate: 7,
@@ -214,7 +246,19 @@ describe('GuardianOperatorHttpClient', () => {
       okJson({
         service_status: 'healthy',
         environment: 'testnet',
+        build: {
+          version: '0.0.1',
+          git_commit: 'unknown',
+          profile: 'debug',
+          started_at: '2026-05-11T10:00:00Z',
+        },
+        backend: {
+          storage: 'filesystem',
+          supported_ack_schemes: ['ecdsa', 'falcon'],
+          canonicalization: null,
+        },
         total_account_count: 0,
+        accounts_by_auth_method: {},
         latest_activity: null,
         delta_status_counts: { candidate: 0, canonical: 0, discarded: 0 },
         in_flight_proposal_count: 0,
@@ -226,31 +270,31 @@ describe('GuardianOperatorHttpClient', () => {
     expect(info.latestActivity).toBeNull();
     expect(info.serviceStatus).toBe('healthy');
     expect(info.degradedAggregates).toEqual([]);
+    expect(info.backend.storage).toBe('filesystem');
+    expect(info.backend.canonicalization).toBeNull();
+    expect(info.accountsByAuthMethod).toEqual({});
   });
 
   it('encodes opaque account ids when fetching one account', async () => {
     mockFetch.mockResolvedValueOnce(okJson({
-      success: true,
-      account: {
-        account_id: 'acct/with space',
-        auth_scheme: 'falcon',
-        authorized_signer_count: 1,
-        authorized_signer_ids: ['0xaaa'],
-        has_pending_candidate: true,
-        current_commitment: null,
-        state_status: 'unavailable',
-        created_at: '2026-04-22T10:00:00Z',
-        updated_at: '2026-04-22T11:00:00Z',
-        state_created_at: null,
-        state_updated_at: null,
-      },
+      account_id: 'acct/with space',
+      auth_scheme: 'falcon',
+      authorized_signer_count: 1,
+      authorized_signer_ids: ['0xaaa'],
+      has_pending_candidate: true,
+      current_commitment: null,
+      state_status: 'unavailable',
+      created_at: '2026-04-22T10:00:00Z',
+      updated_at: '2026-04-22T11:00:00Z',
+      state_created_at: null,
+      state_updated_at: null,
     }));
 
     const client = new GuardianOperatorHttpClient('https://guardian.example/api');
     const response = await client.getAccount('acct/with space');
 
-    expect(response.account.accountId).toBe('acct/with space');
-    expect(response.account.authorizedSignerIds).toEqual(['0xaaa']);
+    expect(response.accountId).toBe('acct/with space');
+    expect(response.authorizedSignerIds).toEqual(['0xaaa']);
     expect(mockFetch).toHaveBeenCalledWith(
       'https://guardian.example/api/dashboard/accounts/acct%2Fwith%20space',
       expect.objectContaining({ method: 'GET' }),

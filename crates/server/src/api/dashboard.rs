@@ -69,12 +69,6 @@ pub struct DashboardAccountsResponse {
     pub accounts: Vec<DashboardAccountSummary>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DashboardAccountResponse {
-    pub success: bool,
-    pub account: DashboardAccountDetail,
-}
-
 /// `?limit=&cursor=` query parameters for the paginated account list.
 #[derive(Debug, Deserialize)]
 pub struct AccountsQuery {
@@ -171,13 +165,9 @@ pub async fn get_operator_account(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
     Path(account_id): Path<String>,
-) -> Result<Json<DashboardAccountResponse>> {
+) -> Result<Json<DashboardAccountDetail>> {
     let response = get_dashboard_account(&state, &account_id).await?;
-
-    Ok(Json(DashboardAccountResponse {
-        success: true,
-        account: response.account,
-    }))
+    Ok(Json(response.account))
 }
 
 #[cfg(test)]
@@ -275,14 +265,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail_response.status(), StatusCode::OK);
-        let detail_body: DashboardAccountResponse = read_json(detail_response).await;
-        assert_eq!(detail_body.account.account_id, account_id_hex);
+        let detail_body: DashboardAccountDetail = read_json(detail_response).await;
+        assert_eq!(detail_body.account_id, account_id_hex);
         assert_eq!(
-            detail_body.account.current_commitment,
+            detail_body.current_commitment,
             list_body.items[0].current_commitment
         );
-        assert_eq!(detail_body.account.auth_scheme, "falcon");
-        assert_eq!(detail_body.account.authorized_signer_count, 1);
+        assert_eq!(detail_body.auth_scheme, "falcon");
+        assert_eq!(detail_body.authorized_signer_count, 1);
     }
 
     #[tokio::test]
@@ -598,6 +588,44 @@ mod tests {
         assert_eq!(body["in_flight_proposal_count"], 0);
         assert!(body["latest_activity"].is_null());
         assert_eq!(body["degraded_aggregates"].as_array().unwrap().len(), 0);
+
+        let build = &body["build"];
+        assert!(
+            build["version"].as_str().is_some_and(|v| !v.is_empty()),
+            "build.version must be a non-empty string"
+        );
+        assert!(
+            build["git_commit"].as_str().is_some_and(|v| !v.is_empty()),
+            "build.git_commit must be a non-empty string"
+        );
+        let profile = build["profile"].as_str().unwrap();
+        assert!(profile == "debug" || profile == "release");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(build["started_at"].as_str().unwrap()).is_ok(),
+            "build.started_at must be RFC3339"
+        );
+
+        let backend = &body["backend"];
+        let storage = backend["storage"].as_str().unwrap();
+        assert!(storage == "filesystem" || storage == "postgres");
+        let schemes: Vec<&str> = backend["supported_ack_schemes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(schemes.contains(&"falcon"));
+        assert!(schemes.contains(&"ecdsa"));
+        // canonicalization may be null (optimistic) or an object — we
+        // don't assert which here because test fixtures vary; both
+        // shapes are spec-valid.
+        assert!(backend["canonicalization"].is_object() || backend["canonicalization"].is_null());
+
+        // accounts_by_auth_method present and consistent with total
+        // account count (sum of values == total).
+        let by_method = body["accounts_by_auth_method"].as_object().unwrap();
+        let summed: u64 = by_method.values().map(|v| v.as_u64().unwrap()).sum();
+        assert_eq!(summed, 3);
     }
 
     #[tokio::test]
