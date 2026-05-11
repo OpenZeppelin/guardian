@@ -58,6 +58,13 @@ pub struct DashboardAccountSnapshot {
     /// `DashboardAccountDetail::state_updated_at` for the same account
     /// at the same point in time.
     pub updated_at: String,
+    /// True when the account has a candidate delta in flight that has
+    /// not yet been canonicalized. The snapshot decodes the *current
+    /// canonical state*, not the candidate's projected state — when
+    /// this flag is `true` the vault content here may already be
+    /// stale relative to the chain. Clients SHOULD surface this in
+    /// the UI rather than silently displaying stale data.
+    pub has_pending_candidate: bool,
     pub vault: DashboardVaultSnapshot,
 }
 
@@ -140,6 +147,7 @@ pub async fn get_account_snapshot(
     Ok(DashboardAccountSnapshot {
         commitment: account_state.commitment.clone(),
         updated_at: account_state.updated_at.clone(),
+        has_pending_candidate: metadata.has_pending_candidate,
         vault: DashboardVaultSnapshot {
             fungible,
             non_fungible,
@@ -284,6 +292,8 @@ mod tests {
         let snapshot = get_account_snapshot(&state, "0xacc").await.unwrap();
         assert_eq!(snapshot.commitment, expected_commitment);
         assert_eq!(snapshot.updated_at, expected_updated_at);
+        // Default falcon_metadata builder sets has_pending_candidate=false.
+        assert!(!snapshot.has_pending_candidate);
 
         // Vault is an array (may be empty for the fixture); every
         // produced entry must have a non-empty hex faucet_id and the

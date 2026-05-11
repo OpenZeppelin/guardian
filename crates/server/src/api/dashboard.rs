@@ -315,6 +315,7 @@ mod tests {
                 .expect("detail commitment present for fixture account"),
         );
         assert!(snapshot_body["updated_at"].is_string());
+        assert!(snapshot_body["has_pending_candidate"].is_boolean());
         assert!(snapshot_body["vault"]["fungible"].is_array());
         assert!(snapshot_body["vault"]["non_fungible"].is_array());
     }

@@ -643,7 +643,7 @@ components:
 
     DashboardAccountSnapshot:
       type: object
-      required: [commitment, updated_at, vault]
+      required: [commitment, updated_at, has_pending_candidate, vault]
       description: |
         Decoded snapshot of one account's stored state at the
         commitment Guardian last canonicalized. v1 surface exposes the
@@ -667,6 +667,16 @@ components:
             state this snapshot was decoded from. Equals
             `DashboardAccountDetail.state_updated_at` for the same
             account at the same point in time.
+        has_pending_candidate:
+          type: boolean
+          description: |
+            True when the account has a candidate delta in flight that
+            has not yet been canonicalized. The snapshot decodes the
+            current canonical state only — when this flag is `true`,
+            the vault content may already be stale relative to the
+            chain (a delta has been pushed but not yet canonicalized).
+            UIs SHOULD surface this rather than silently displaying
+            stale data.
         vault:
           $ref: "#/components/schemas/DashboardVaultSnapshot"
 

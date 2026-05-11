@@ -188,44 +188,56 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
     }
 
     // accounts_by_auth_method: fan out over metadata to bucket each
-    // account by its stable `Auth::method_label()`. For filesystem
-    // backends the FR-029 threshold above already guards the inventory
-    // size; for Postgres this is N point reads — acceptable for the
-    // info endpoint's snapshot cadence. A future SQL `GROUP BY` over
-    // a typed `auth_method` column would replace this if real
-    // production volume profiles show pain.
-    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-    let mut counts_degraded = false;
-    for id in &account_ids {
-        match state.metadata.get(id).await {
-            Ok(Some(meta)) => {
-                *counts
-                    .entry(meta.auth.method_label().to_string())
-                    .or_insert(0) += 1;
-            }
-            Ok(None) => {
-                // Account ID was listed but metadata is missing — race
-                // against deletion. Skip rather than fail; the row
-                // simply won't be counted in this snapshot.
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    account_id = %id,
-                    "dashboard info: metadata.get failed during auth-method aggregation"
-                );
-                counts_degraded = true;
-                break;
-            }
-        }
-    }
-    if counts_degraded {
+    // account by its stable `Auth::method_label()`. Unlike the
+    // delta/proposal aggregates above, this fan-out is N point reads
+    // on *both* backends today (Postgres serves it from per-row JSONB
+    // metadata; no SQL `GROUP BY` over a typed column exists yet), so
+    // the FR-029 inventory threshold is applied to *both* backends
+    // here rather than filesystem-only. Above the threshold we mark
+    // the aggregate degraded and skip the scan. A future migration
+    // that promotes `Auth::method_label()` to a typed indexed column
+    // would let us push this down to SQL and lift the cap.
+    let aggregate_threshold = state.dashboard.filesystem_aggregate_threshold();
+    if account_ids.len() > aggregate_threshold {
         response.service_status = DashboardServiceStatus::Degraded;
         response
             .degraded_aggregates
             .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
     } else {
-        response.accounts_by_auth_method = counts;
+        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        let mut counts_degraded = false;
+        for id in &account_ids {
+            match state.metadata.get(id).await {
+                Ok(Some(meta)) => {
+                    *counts
+                        .entry(meta.auth.method_label().to_string())
+                        .or_insert(0) += 1;
+                }
+                Ok(None) => {
+                    // Account ID was listed but metadata is missing —
+                    // race against deletion. Skip rather than fail;
+                    // the row simply won't be counted in this
+                    // snapshot.
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        account_id = %id,
+                        "dashboard info: metadata.get failed during auth-method aggregation"
+                    );
+                    counts_degraded = true;
+                    break;
+                }
+            }
+        }
+        if counts_degraded {
+            response.service_status = DashboardServiceStatus::Degraded;
+            response
+                .degraded_aggregates
+                .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
+        } else {
+            response.accounts_by_auth_method = counts;
+        }
     }
 
     // Push aggregates down to the storage layer. Postgres serves them
@@ -397,6 +409,52 @@ mod tests {
                 .iter()
                 .any(|s| s == AGG_ACCOUNTS_BY_AUTH_METHOD)
         );
+    }
+
+    #[tokio::test]
+    async fn accounts_by_auth_method_marks_degraded_when_metadata_get_fails() {
+        use crate::ack::AckRegistry;
+        use crate::builder::clock::test::MockClock;
+        use crate::testing::mocks::MockNetworkClient;
+        use tokio::sync::Mutex;
+
+        // List has two accounts; the first metadata.get returns Err.
+        // The aggregator should bail and mark the aggregate degraded
+        // without failing the overall response.
+        let metadata = MockMetadataStore::new()
+            .with_list(Ok(vec!["a".to_string(), "b".to_string()]))
+            .with_get(Err("synthetic metadata read failure".to_string()));
+        let storage = MockStorageBackend::new()
+            .with_count_deltas_by_status(Ok(Default::default()))
+            .with_count_in_flight_proposals(Ok(0))
+            .with_latest_activity_timestamp(Ok(None));
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+
+        let state = AppState {
+            storage: Arc::new(storage),
+            metadata: Arc::new(metadata),
+            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::default()),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        };
+
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.total_account_count, 2);
+        assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
+        assert!(
+            info.degraded_aggregates
+                .iter()
+                .any(|s| s == AGG_ACCOUNTS_BY_AUTH_METHOD)
+        );
+        // Counts map left empty when the aggregate is marked degraded.
+        assert!(info.accounts_by_auth_method.is_empty());
     }
 
     #[tokio::test]

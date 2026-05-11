@@ -679,6 +679,11 @@ function parseAccountSnapshot(value: unknown): DashboardAccountSnapshot {
   return {
     commitment: requireString(record, 'commitment', 'account snapshot'),
     updatedAt: requireString(record, 'updated_at', 'account snapshot'),
+    hasPendingCandidate: requireBoolean(
+      record,
+      'has_pending_candidate',
+      'account snapshot',
+    ),
     vault,
   };
 }

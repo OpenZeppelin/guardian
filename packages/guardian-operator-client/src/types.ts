@@ -217,6 +217,12 @@ export interface DashboardAccountSnapshot {
    * `DashboardAccountDetail.stateUpdatedAt` for the same account at
    * the same point in time. */
   updatedAt: string;
+  /** True when the account has a candidate delta in flight that has
+   * not yet been canonicalized. The snapshot reflects the current
+   * canonical state only — when this is `true`, the vault content
+   * may already be stale relative to the chain. UIs SHOULD warn
+   * rather than silently display stale data. */
+  hasPendingCandidate: boolean;
   vault: DashboardVaultSnapshot;
 }
 

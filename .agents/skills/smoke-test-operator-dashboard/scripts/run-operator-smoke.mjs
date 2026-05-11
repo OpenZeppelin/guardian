@@ -190,6 +190,7 @@ try {
       (value) =>
         typeof value?.commitment === 'string' &&
         typeof value?.updatedAt === 'string' &&
+        typeof value?.hasPendingCandidate === 'boolean' &&
         value?.vault &&
         Array.isArray(value.vault.fungible) &&
         Array.isArray(value.vault.nonFungible),
@@ -198,6 +199,7 @@ try {
     result.accountSnapshot = {
       commitment: snapshot.commitment,
       updatedAt: snapshot.updatedAt,
+      hasPendingCandidate: snapshot.hasPendingCandidate,
       fungibleCount: snapshot.vault.fungible.length,
       nonFungibleCount: snapshot.vault.nonFungible.length,
       firstFungible: snapshot.vault.fungible[0] ?? null,

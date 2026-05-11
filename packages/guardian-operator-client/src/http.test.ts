@@ -305,6 +305,7 @@ describe('GuardianOperatorHttpClient', () => {
     mockFetch.mockResolvedValueOnce(okJson({
       commitment: '0xc0ffee',
       updated_at: '2026-05-11T10:00:00Z',
+      has_pending_candidate: true,
       vault: {
         fungible: [
           { faucet_id: '0xfa1', amount: '1000000' },
@@ -321,6 +322,7 @@ describe('GuardianOperatorHttpClient', () => {
 
     expect(snapshot.commitment).toBe('0xc0ffee');
     expect(snapshot.updatedAt).toBe('2026-05-11T10:00:00Z');
+    expect(snapshot.hasPendingCandidate).toBe(true);
     expect(snapshot.vault.fungible).toEqual([
       { faucetId: '0xfa1', amount: '1000000' },
       { faucetId: '0xfa2', amount: '42' },
@@ -338,6 +340,7 @@ describe('GuardianOperatorHttpClient', () => {
     mockFetch.mockResolvedValueOnce(okJson({
       commitment: '0xc',
       updated_at: '2026-05-11T10:00:00Z',
+      has_pending_candidate: false,
       vault: { fungible: [], non_fungible: [] },
     }));
 
@@ -354,6 +357,7 @@ describe('GuardianOperatorHttpClient', () => {
     mockFetch.mockResolvedValueOnce(okJson({
       commitment: '0xc',
       updated_at: '2026-05-11T10:00:00Z',
+      has_pending_candidate: false,
       vault: {
         // First entry is well-formed; second is missing `amount` —
         // the parser is strict (requireString) so it must throw.
@@ -375,6 +379,7 @@ describe('GuardianOperatorHttpClient', () => {
     mockFetch.mockResolvedValueOnce(okJson({
       commitment: '0xc',
       updated_at: '2026-05-11T10:00:00Z',
+      has_pending_candidate: false,
       vault: {
         fungible: [],
         non_fungible: [

@@ -595,12 +595,16 @@ count, and signatures-required count.
   (e.g. `add_signer`, `remove_signer`, `change_threshold`,
   `update_procedure_threshold`, `p2id`, `consume_notes`,
   `switch_guardian`). The field is sourced from
-  `delta_payload.metadata.proposal_type`, validated on push. It MUST
-  be present on every delta that was committed from a multisig
-  proposal and MUST be omitted on direct `push_delta` single-key
-  Miden writes and on EVM deltas, which carry no metadata blob. The
-  field is informational; operators MUST NOT use its absence to infer
-  delta status.
+  `delta_payload.metadata.proposal_type` and is informational only.
+  It SHOULD be present when the delta was committed from a multisig
+  proposal that wrote metadata into the executed transaction payload,
+  but it MAY be absent — multisig SDK versions vary in whether they
+  carry the proposal metadata through to the executed delta payload,
+  and single-key Miden `push_delta` writes and EVM deltas never
+  populate it. Operators MUST NOT use absence to infer delta status
+  or to filter the history. The proposal-side field on
+  `DashboardProposalEntry` (FR-018) is the authoritative source for
+  proposal type while a proposal is in flight.
 - **FR-016**: The delta history endpoint is **always paginated** and
   ordered newest-first by Postgres-assigned record identifier
   (`delta.id DESC`). It uses the same envelope shape and the same
@@ -777,8 +781,11 @@ count, and signatures-required count.
   equals `DashboardAccountDetail.current_commitment` for the same
   account at the same point in time), `updated_at` (RFC3339, the
   state row's `updated_at` — equals
-  `DashboardAccountDetail.state_updated_at`), and a `vault` object
-  containing two arrays:
+  `DashboardAccountDetail.state_updated_at`),
+  `has_pending_candidate` (boolean; `true` when a candidate delta is
+  in flight so clients can flag that the snapshot may be stale
+  relative to the chain), and a `vault` object containing two
+  arrays:
     - `fungible`: `{ faucet_id, amount }` where `amount` is a string
       to preserve `u64` precision across JS clients
     - `non_fungible`: `{ faucet_id, vault_key }`
