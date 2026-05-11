@@ -27,16 +27,36 @@
 //!
 //! ## Cursor stability
 //!
-//! Per-account and global delta/proposal cursors encode the last
-//! row's sort key fields: `last_nonce` for per-account deltas/
-//! proposals, and `(status_timestamp, account_id, nonce[, commitment])`
-//! for the global feeds. Those columns are immutable once written
-//! (deltas), so traversal is fully stable under both concurrent
-//! inserts and concurrent status updates. For [`CursorKind::AccountList`],
-//! the cursor encodes the `(updated_at, account_id)` composite key;
-//! because `updated_at` is mutable, an account whose `updated_at` is
-//! bumped mid-traversal MAY be skipped or repeated — this caveat is
-//! documented expected behavior per FR-005.
+//! The stability guarantee depends on which columns the sort key
+//! references — only sort keys composed entirely of immutable
+//! columns are fully stable per FR-005.
+//!
+//! - [`CursorKind::AccountDeltas`] / [`CursorKind::AccountProposals`]:
+//!   sort key is `nonce DESC` (and `commitment DESC` as a
+//!   tie-breaker for proposals). The per-account `nonce` is set at
+//!   insert and never mutated, so traversal is **fully stable**
+//!   under both concurrent inserts and concurrent status updates.
+//! - [`CursorKind::GlobalProposals`]: sort key is
+//!   `(originating_timestamp DESC, account_id ASC, nonce ASC,
+//!   commitment ASC)`. The originating timestamp is set when the
+//!   proposal enters `Pending` and is immutable for the lifetime of
+//!   the row in `delta_proposals` — a transition to
+//!   `candidate`/`canonical`/`discarded` moves the row out of the
+//!   in-flight feed. Traversal is **fully stable** while a proposal
+//!   remains in the queue.
+//! - [`CursorKind::GlobalDeltas`]: sort key is
+//!   `(status_timestamp DESC, account_id ASC, nonce ASC)`.
+//!   `status_timestamp` IS bumped on each lifecycle transition
+//!   (`candidate` → `canonical` / `discarded`), so the same
+//!   skip/repeat caveat as [`CursorKind::AccountList`] applies — an
+//!   entry whose `status_timestamp` is updated mid-traversal MAY be
+//!   skipped or repeated. This is documented expected behavior per
+//!   FR-005; clients SHOULD treat the global delta feed as
+//!   eventually-consistent under concurrent canonicalization.
+//! - [`CursorKind::AccountList`]: sort key is
+//!   `(updated_at DESC, account_id ASC)`; `updated_at` is mutable, so
+//!   an account whose `updated_at` is bumped mid-traversal MAY be
+//!   skipped or repeated (FR-005).
 
 use base64::Engine;
 use chrono::{DateTime, Utc};

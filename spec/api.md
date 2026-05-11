@@ -463,7 +463,7 @@ EVM proposal response:
 
 - Requires `guardian_operator_session` (operator dashboard auth).
 - Query: optional `limit` (default 50, max 500), optional `cursor` (opaque, from a prior page's `next_cursor`).
-- Returns the per-account delta history, paginated newest-first by Postgres-assigned `nonce DESC` (immutable, fully stable cursors per FR-005).
+- Returns the per-account delta feed, paginated newest-first by `nonce DESC`. The per-account `nonce` is a domain sequence number set at insert and never mutated (it is distinct from the table's `id` bigserial), so cursors are fully stable per FR-005.
 - Surfaces only the lifecycle statuses persisted in `deltas`: `candidate`, `canonical`, `discarded`. `pending` proposals are exposed via `/dashboard/accounts/{id}/proposals`.
 - 200 envelope: `{ items: DashboardDeltaEntry[], next_cursor: string | null }`.
 - Each entry: `{ nonce, status, status_timestamp, prev_commitment, new_commitment | null, retry_count? }`. `retry_count` is present (default `0`) on `candidate` entries only.
@@ -481,6 +481,22 @@ EVM proposal response:
 - Each entry: `{ commitment, nonce, proposer_id, originating_timestamp, signatures_collected, signatures_required, prev_commitment, new_commitment | null }`. `signatures_required` is derived from the account's auth policy (`cosigner_commitments.len()` for `MidenFalconRpo` / `MidenEcdsa`).
 - No raw signature bytes and no per-cosigner identity list are exposed (FR-021).
 - Errors mirror the deltas endpoint: 400 `invalid_limit` / `invalid_cursor`, 404 `account_not_found`, 503 `data_unavailable`.
+
+### GET /dashboard/accounts/{account_id}/snapshot
+
+- Requires `guardian_operator_session`.
+- Returns a **decoded snapshot** of Guardian's stored state for one account at the commitment Guardian last canonicalized. v1 surface exposes the Miden `AssetVault` (fungible + non-fungible entries). Spec reference: feature `005-operator-dashboard-metrics` FR-043..FR-046.
+- The endpoint does **not** make live Miden RPC calls, perform cross-account aggregations, or join with delta history — the response is derived purely from `states.state_json` for the given account. New fields land on this response as additive top-level keys derivable from the same stored blob (FR-046).
+- 200 shape:
+  - `commitment`: hex state commitment the snapshot was decoded from. Equals the detail endpoint's `current_commitment` for the same account at the same point in time.
+  - `updated_at`: RFC3339; equals the detail endpoint's `state_updated_at`.
+  - `has_pending_candidate`: boolean. `true` means a candidate delta is in flight and has not yet been canonicalized — the vault below may already be stale relative to the chain.
+  - `vault`:
+    - `fungible`: array of `{ faucet_id: string, amount: string }`. Amounts are strings to preserve `u64` precision across JS clients (`Number.MAX_SAFE_INTEGER` is 2^53 − 1). Decimal handling and value/USD derivation are dashboard-client concerns.
+    - `non_fungible`: array of `{ faucet_id: string, vault_key: string }`. `vault_key` is the canonical Word hex form for the asset entry.
+- 400: `unsupported_for_network` when the account's `network_config` is EVM. EVM accounts have no Miden `AssetVault` to decode and the condition is permanent for this surface, so it is reported separately from `data_unavailable` (which implies "retry later"). Detection uses `metadata.network_config.is_evm()` per AGENTS.md §5.
+- 404: `account_not_found`.
+- 503: `data_unavailable` when metadata exists but the state row cannot be loaded, or when the stored blob fails to deserialize as a Miden `Account`. Both are transient/recoverable conditions.
 
 ### GET /dashboard/deltas
 

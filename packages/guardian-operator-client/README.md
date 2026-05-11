@@ -61,9 +61,13 @@ if (page.nextCursor !== null) {
 
 ### Fetch One Account
 
+`getAccount()` returns the bare `DashboardAccountDetail` — there is no
+`{ success, account }` wrapper. Read fields directly on the response.
+
 ```typescript
-const response = await client.getAccount('0x...');
-console.log(response.account.authorizedSignerIds);
+const detail = await client.getAccount('0x...');
+console.log(detail.authorizedSignerIds);
+console.log(detail.currentCommitment, detail.stateUpdatedAt);
 ```
 
 ### Inventory And Health Snapshot

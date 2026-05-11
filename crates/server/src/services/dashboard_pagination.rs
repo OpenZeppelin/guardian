@@ -87,7 +87,7 @@ pub fn parse_limit(raw: Option<&str>) -> Result<u32> {
         Some(s) => {
             let value: i64 = s.parse().map_err(|_| {
                 GuardianError::InvalidLimit(format!(
-                    "limit must be a non-negative integer, got '{s}'"
+                    "limit must be a positive integer in [1, {MAX_LIMIT}], got '{s}'"
                 ))
             })?;
             if value < 1 {
