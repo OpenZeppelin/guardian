@@ -9,7 +9,7 @@ use crate::api::dashboard::{
     challenge_operator_login, get_dashboard_info_handler, get_operator_account,
     get_operator_account_snapshot, list_operator_accounts, logout_operator, verify_operator_login,
 };
-use crate::api::dashboard_history::{
+use crate::api::dashboard_feeds::{
     list_account_deltas_handler, list_account_proposals_handler, list_global_deltas_handler,
     list_global_proposals_handler,
 };

@@ -4,7 +4,7 @@
 //! addition. The snapshot endpoint surfaces views derived from the
 //! account's *stored* state at the commitment Guardian last
 //! canonicalized — no live Miden RPC calls, no aggregations across
-//! accounts, no joins with delta history. The endpoint stays cheap and
+//! accounts, no joins with delta feed. The endpoint stays cheap and
 //! snapshot-true.
 //!
 //! v1 surface:
@@ -50,7 +50,7 @@ pub struct DashboardAccountSnapshot {
     /// Commitment of the state the snapshot was decoded from. Equals
     /// `DashboardAccountDetail::current_commitment` for the same
     /// account at the same point in time; callers can correlate the
-    /// snapshot with a delta history entry by matching on this hex.
+    /// snapshot with a delta feed entry by matching on this hex.
     pub commitment: String,
     /// RFC3339 wall-clock time of the underlying state row's
     /// `updated_at` column — i.e. when Guardian last persisted the

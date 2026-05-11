@@ -1,8 +1,8 @@
-//! Per-account delta history dashboard endpoint service.
+//! Per-account delta feed dashboard endpoint service.
 //!
 //! Spec reference: `005-operator-dashboard-metrics` FR-013..FR-016, US3.
 //!
-//! Returns the persisted delta history for one account with newest-first
+//! Returns the persisted delta feed for one account with newest-first
 //! ordering by `nonce DESC`. Surfaces only the lifecycle statuses that
 //! live in the `deltas` table (`candidate`, `canonical`, `discarded`).
 //! `pending` entries live in `delta_proposals` and are exposed via
@@ -21,7 +21,7 @@ use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
 use crate::storage::AccountDeltaCursor;
 
-/// Lifecycle status surfaced on the per-account delta history endpoint.
+/// Lifecycle status surfaced on the per-account delta feed endpoint.
 /// `pending`-status records live in `delta_proposals` and are
 /// surfaced via the proposal queue endpoint instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,7 +32,7 @@ pub enum DashboardDeltaStatus {
     Discarded,
 }
 
-/// One entry in the delta history wire shape per `data-model.md`.
+/// One entry in the delta feed wire shape per `data-model.md`.
 /// `account_id` is omitted on per-account responses (the path scopes
 /// it). The global delta feed (Phase 8) wraps this struct with
 /// `account_id` so a single shape is shared.
@@ -102,7 +102,7 @@ impl DashboardDeltaEntry {
     }
 }
 
-/// List the persisted delta history for `account_id`, paginated
+/// List the persisted delta feed for `account_id`, paginated
 /// newest-first by `nonce DESC`.
 ///
 /// Errors:
@@ -157,10 +157,10 @@ pub async fn list_account_deltas(
             tracing::warn!(
                 account_id = %account_id,
                 error = %e,
-                "dashboard delta history could not load deltas"
+                "dashboard delta feed could not load deltas"
             );
             GuardianError::DataUnavailable(format!(
-                "Failed to load delta history for '{account_id}': {e}"
+                "Failed to load delta feed for '{account_id}': {e}"
             ))
         })?;
 
@@ -330,7 +330,7 @@ mod tests {
     // Sort/filter behavior moved to the storage layer in feature
     // `005-operator-dashboard-metrics` Decision 1 (revised). Those
     // are exercised by the storage-layer impls and the integration
-    // tests in `crates/server/src/api/dashboard_history.rs`. The
+    // tests in `crates/server/src/api/dashboard_feeds.rs`. The
     // service-layer tests below focus on what the service still
     // owns: error mapping, cursor-kind validation, and wire-shape
     // serialization.

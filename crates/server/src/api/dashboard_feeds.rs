@@ -1,4 +1,4 @@
-//! Dashboard HTTP handlers for per-account history (deltas,
+//! Dashboard HTTP handlers for per-account feed (deltas,
 //! proposals) and (Phase 8/9) the global cross-account feeds.
 //!
 //! Spec reference: `005-operator-dashboard-metrics`.
@@ -22,10 +22,13 @@ use crate::services::{
 };
 use crate::state::AppState;
 
-/// Common `?limit=&cursor=` query parameters for the per-account
-/// history endpoints.
+/// Common `?limit=&cursor=` query parameters for the dashboard feed
+/// endpoints that take no extra filter — per-account deltas,
+/// per-account proposals, and global proposals. The global deltas
+/// feed adds a `status` filter and uses its own
+/// [`GlobalDeltasQuery`] below.
 #[derive(Debug, Deserialize)]
-pub struct HistoryQuery {
+pub struct FeedQuery {
     #[serde(default)]
     pub limit: Option<String>,
     #[serde(default)]
@@ -46,13 +49,13 @@ pub struct GlobalDeltasQuery {
 }
 
 /// `GET /dashboard/accounts/{account_id}/deltas`. Returns the
-/// per-account delta history paginated newest-first by `nonce DESC`,
+/// per-account delta feed paginated newest-first by `nonce DESC`,
 /// surfacing only `candidate` / `canonical` / `discarded` statuses
 /// (pending lives on the proposal queue endpoint).
 pub async fn list_account_deltas_handler(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
-    Query(query): Query<HistoryQuery>,
+    Query(query): Query<FeedQuery>,
 ) -> Result<Json<PagedResult<DashboardDeltaEntry>>> {
     let limit = parse_limit(query.limit.as_deref())?;
     let cursor = parse_cursor(
@@ -71,7 +74,7 @@ pub async fn list_account_deltas_handler(
 pub async fn list_account_proposals_handler(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
-    Query(query): Query<HistoryQuery>,
+    Query(query): Query<FeedQuery>,
 ) -> Result<Json<PagedResult<DashboardProposalEntry>>> {
     let limit = parse_limit(query.limit.as_deref())?;
     let cursor = parse_cursor(
@@ -112,7 +115,7 @@ pub async fn list_global_deltas_handler(
 /// Spec reference: `005-operator-dashboard-metrics` US7, FR-035..FR-037.
 pub async fn list_global_proposals_handler(
     State(state): State<AppState>,
-    Query(query): Query<HistoryQuery>,
+    Query(query): Query<FeedQuery>,
 ) -> Result<Json<PagedResult<DashboardGlobalProposalEntry>>> {
     let limit = parse_limit(query.limit.as_deref())?;
     let cursor = parse_cursor(

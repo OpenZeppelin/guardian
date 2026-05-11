@@ -308,7 +308,7 @@ mod tests {
     // Sort/filter/pagination behavior moved to the storage layer in
     // feature `005-operator-dashboard-metrics` Decision 1 (revised).
     // Coverage for those concerns lives at the storage layer and the
-    // integration tests in `crates/server/src/api/dashboard_history.rs`.
+    // integration tests in `crates/server/src/api/dashboard_feeds.rs`.
     // The service-layer tests below exercise what the service still
     // owns: cursor-kind validation and (for backward-compat with the
     // pre-Decision-1 fixtures that exercised the threshold)

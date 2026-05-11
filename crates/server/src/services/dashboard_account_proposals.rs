@@ -362,7 +362,7 @@ mod tests {
     // Sort/filter behavior moved to the storage layer in feature
     // `005-operator-dashboard-metrics` Decision 1 (revised). Those
     // are exercised by the storage-layer impls and the integration
-    // tests in `crates/server/src/api/dashboard_history.rs`.
+    // tests in `crates/server/src/api/dashboard_feeds.rs`.
 
     #[tokio::test]
     async fn rejects_cursor_with_wrong_kind() {

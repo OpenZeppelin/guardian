@@ -3,7 +3,7 @@
 //! Spec reference: `005-operator-dashboard-metrics` FR-001..FR-008.
 //!
 //! - [`PagedResult<T>`] is the response envelope returned by every new
-//!   paginated endpoint (account list, per-account history, global feeds).
+//!   paginated endpoint (account list, per-account feed, global feeds).
 //! - [`parse_limit`] applies the documented `[1, 500]` validation with a
 //!   default of 50, and treats a bare `?limit=` (present but empty) as
 //!   omitted per FR-002.

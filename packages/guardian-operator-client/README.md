@@ -78,7 +78,7 @@ if (info.serviceStatus === 'degraded') {
 }
 ```
 
-### Per-Account Delta History
+### Per-Account Delta Feed
 
 ```typescript
 const page = await client.listAccountDeltas('0x...', { limit: 50 });

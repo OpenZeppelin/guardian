@@ -271,11 +271,11 @@ pub fn create_router(state: AppState) -> axum::Router {
         )
         .route(
             "/accounts/{account_id}/deltas",
-            axum::routing::get(crate::api::dashboard_history::list_account_deltas_handler),
+            axum::routing::get(crate::api::dashboard_feeds::list_account_deltas_handler),
         )
         .route(
             "/accounts/{account_id}/proposals",
-            axum::routing::get(crate::api::dashboard_history::list_account_proposals_handler),
+            axum::routing::get(crate::api::dashboard_feeds::list_account_proposals_handler),
         )
         .route(
             "/info",
@@ -283,11 +283,11 @@ pub fn create_router(state: AppState) -> axum::Router {
         )
         .route(
             "/deltas",
-            axum::routing::get(crate::api::dashboard_history::list_global_deltas_handler),
+            axum::routing::get(crate::api::dashboard_feeds::list_global_deltas_handler),
         )
         .route(
             "/proposals",
-            axum::routing::get(crate::api::dashboard_history::list_global_proposals_handler),
+            axum::routing::get(crate::api::dashboard_feeds::list_global_proposals_handler),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

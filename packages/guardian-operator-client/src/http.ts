@@ -26,7 +26,7 @@ import type {
 } from './types.js';
 
 /**
- * Common pagination query options for the new dashboard history
+ * Common pagination query options for the new dashboard feeds
  * endpoints. Spec reference: `005-operator-dashboard-metrics` FR-001.
  */
 export interface PaginationOptions {
@@ -261,7 +261,7 @@ export class GuardianOperatorHttpClient {
   }
 
   /**
-   * List the per-account delta history for `accountId`, paginated
+   * List the per-account delta feed for `accountId`, paginated
    * newest-first by `nonce DESC`. Spec reference:
    * `005-operator-dashboard-metrics` US3.
    */

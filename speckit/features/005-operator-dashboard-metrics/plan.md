@@ -178,7 +178,7 @@ documented per Constitution §II.
   - `GET /dashboard/deltas?limit=&cursor=&status=` (smallest priority)
   - `GET /dashboard/proposals?limit=&cursor=` (smallest priority)
 - Handlers in `src/api/dashboard.rs` plus a new
-  `src/api/dashboard_history.rs` for the per-account and global history
+  `src/api/dashboard_feeds.rs` for the per-account and global history
   routes.
 - Error mapping (`src/error.rs`): add typed variants `InvalidCursor`,
   `InvalidLimit`, `InvalidStatusFilter`, `DataUnavailable` and ensure
