@@ -56,6 +56,43 @@ paths:
         "503":
           $ref: "#/components/responses/DataUnavailable"
 
+  /dashboard/accounts/{account_id}/snapshot:
+    get:
+      summary: Per-account decoded state snapshot
+      description: |
+        Returns a decoded view of Guardian's stored state for one
+        account, at the commitment Guardian last canonicalized. Source
+        is the stored state blob; no live Miden RPC calls, no
+        cross-account aggregations, no joins with delta history. v1
+        surface exposes the vault. Future top-level keys (e.g.
+        `storage`, `code`) MUST be derivable from the same stored
+        blob.
+      parameters:
+        - $ref: "#/components/parameters/AccountIdPath"
+      responses:
+        "200":
+          description: Decoded snapshot for the account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardAccountSnapshot"
+        "400":
+          description: |
+            EVM-network account — the snapshot endpoint is Miden-only.
+            Body carries `code: "unsupported_for_network"` per the
+            FR-028 error taxonomy. Permanent condition for this
+            account on this endpoint; clients SHOULD NOT retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "503":
+          $ref: "#/components/responses/DataUnavailable"
+
   /dashboard/accounts/{account_id}/deltas:
     get:
       summary: Per-account delta history (paginated)
@@ -564,6 +601,74 @@ components:
           required: [account_id]
           properties:
             account_id: { type: string }
+
+    DashboardVaultFungibleEntry:
+      type: object
+      required: [faucet_id, amount]
+      properties:
+        faucet_id:
+          type: string
+          description: Hex-encoded Miden faucet AccountId.
+        amount:
+          type: string
+          description: |
+            Base-unit amount as a decimal string. String-typed to keep
+            `u64` precision safe across JS clients
+            (`Number.MAX_SAFE_INTEGER` is 2^53 − 1). Decimal scaling
+            and display formatting are dashboard-client concerns.
+
+    DashboardVaultNonFungibleEntry:
+      type: object
+      required: [faucet_id, vault_key]
+      properties:
+        faucet_id:
+          type: string
+          description: Hex-encoded Miden faucet AccountId.
+        vault_key:
+          type: string
+          description: |
+            Hex-encoded canonical Miden vault key (`Word`) identifying
+            the asset within the vault. Stable per (faucet, asset).
+
+    DashboardVaultSnapshot:
+      type: object
+      required: [fungible, non_fungible]
+      properties:
+        fungible:
+          type: array
+          items: { $ref: "#/components/schemas/DashboardVaultFungibleEntry" }
+        non_fungible:
+          type: array
+          items: { $ref: "#/components/schemas/DashboardVaultNonFungibleEntry" }
+
+    DashboardAccountSnapshot:
+      type: object
+      required: [commitment, updated_at, vault]
+      description: |
+        Decoded snapshot of one account's stored state at the
+        commitment Guardian last canonicalized. v1 surface exposes the
+        vault. New fields land here as additive top-level keys
+        derivable from the existing state blob.
+      properties:
+        commitment:
+          type: string
+          description: |
+            Hex state commitment the snapshot was decoded from. Equals
+            `DashboardAccountDetail.current_commitment` for the same
+            account at the same point in time; callers can correlate
+            the snapshot with a delta history entry by matching on
+            this hex.
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            Wall-clock time of the underlying state row's `updated_at`
+            — i.e. when Guardian last persisted the canonicalized
+            state this snapshot was decoded from. Equals
+            `DashboardAccountDetail.state_updated_at` for the same
+            account at the same point in time.
+        vault:
+          $ref: "#/components/schemas/DashboardVaultSnapshot"
 
     ErrorBody:
       type: object

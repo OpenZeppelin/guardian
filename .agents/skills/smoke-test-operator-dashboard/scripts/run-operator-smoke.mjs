@@ -79,6 +79,7 @@ const result = {
   login: null,
   accountList: null,
   accountDetail: null,
+  accountSnapshot: null,
   dashboardInfo: null,
   accountDeltas: null,
   accountProposals: null,
@@ -177,6 +178,32 @@ try {
     };
   } else {
     result.accountDetail = {
+      skipped: true,
+      reason: 'account list was empty',
+    };
+  }
+
+  if (firstAccountId) {
+    await clickAction(page, 'Fetch snapshot');
+    const snapshot = await waitLastResult(
+      page,
+      (value) =>
+        typeof value?.commitment === 'string' &&
+        typeof value?.updatedAt === 'string' &&
+        value?.vault &&
+        Array.isArray(value.vault.fungible) &&
+        Array.isArray(value.vault.nonFungible),
+      'account snapshot result',
+    );
+    result.accountSnapshot = {
+      commitment: snapshot.commitment,
+      updatedAt: snapshot.updatedAt,
+      fungibleCount: snapshot.vault.fungible.length,
+      nonFungibleCount: snapshot.vault.nonFungible.length,
+      firstFungible: snapshot.vault.fungible[0] ?? null,
+    };
+  } else {
+    result.accountSnapshot = {
       skipped: true,
       reason: 'account list was empty',
     };

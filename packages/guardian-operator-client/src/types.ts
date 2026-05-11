@@ -178,6 +178,48 @@ export interface DashboardGlobalProposalEntry extends DashboardProposalEntry {
   accountId: string;
 }
 
+/** Fungible asset entry in an account vault snapshot. `amount` is a
+ * string to keep `u64` precision safe across JS. Decimal handling and
+ * USD conversion are dashboard-client concerns; Guardian does not
+ * carry token metadata or price oracles. */
+export interface DashboardVaultFungibleEntry {
+  faucetId: string;
+  amount: string;
+}
+
+/** Non-fungible asset entry. `vaultKey` is the canonical Miden
+ * identifier for the asset within the vault. */
+export interface DashboardVaultNonFungibleEntry {
+  faucetId: string;
+  vaultKey: string;
+}
+
+export interface DashboardVaultSnapshot {
+  fungible: DashboardVaultFungibleEntry[];
+  nonFungible: DashboardVaultNonFungibleEntry[];
+}
+
+/**
+ * Decoded snapshot of one account's stored state at the commitment
+ * Guardian last canonicalized. Source of truth is Guardian's stored
+ * state — no live Miden RPC calls. New fields land here as additive
+ * top-level keys derivable from the existing state blob.
+ */
+export interface DashboardAccountSnapshot {
+  /** Hex state commitment the snapshot was decoded from. Equals
+   * `DashboardAccountDetail.currentCommitment` for the same account
+   * at the same point in time; callers can correlate the snapshot
+   * with a delta history entry by matching on this hex. */
+  commitment: string;
+  /** RFC3339 wall-clock time of the underlying state row's
+   * `updated_at` — i.e. when Guardian last persisted the
+   * canonicalized state this snapshot was decoded from. Equals
+   * `DashboardAccountDetail.stateUpdatedAt` for the same account at
+   * the same point in time. */
+  updatedAt: string;
+  vault: DashboardVaultSnapshot;
+}
+
 /**
  * Optional `?status=` filter on the global delta feed (FR-033).
  * Accepts either a single value or an array; the wrapper serializes

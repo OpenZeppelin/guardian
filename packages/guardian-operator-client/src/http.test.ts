@@ -301,6 +301,94 @@ describe('GuardianOperatorHttpClient', () => {
     );
   });
 
+  it('parses the account snapshot vault into camelCase', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({
+      commitment: '0xc0ffee',
+      updated_at: '2026-05-11T10:00:00Z',
+      vault: {
+        fungible: [
+          { faucet_id: '0xfa1', amount: '1000000' },
+          { faucet_id: '0xfa2', amount: '42' },
+        ],
+        non_fungible: [
+          { faucet_id: '0xnf1', vault_key: '0xdead' },
+        ],
+      },
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const snapshot = await client.getAccountSnapshot('0xacc');
+
+    expect(snapshot.commitment).toBe('0xc0ffee');
+    expect(snapshot.updatedAt).toBe('2026-05-11T10:00:00Z');
+    expect(snapshot.vault.fungible).toEqual([
+      { faucetId: '0xfa1', amount: '1000000' },
+      { faucetId: '0xfa2', amount: '42' },
+    ]);
+    expect(snapshot.vault.nonFungible).toEqual([
+      { faucetId: '0xnf1', vaultKey: '0xdead' },
+    ]);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts/0xacc/snapshot',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('encodes opaque account ids when fetching a snapshot', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({
+      commitment: '0xc',
+      updated_at: '2026-05-11T10:00:00Z',
+      vault: { fungible: [], non_fungible: [] },
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example/api');
+    await client.getAccountSnapshot('acct/with space');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/api/dashboard/accounts/acct%2Fwith%20space/snapshot',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('rejects a snapshot fungible entry missing required fields', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({
+      commitment: '0xc',
+      updated_at: '2026-05-11T10:00:00Z',
+      vault: {
+        // First entry is well-formed; second is missing `amount` —
+        // the parser is strict (requireString) so it must throw.
+        fungible: [
+          { faucet_id: '0xfa1', amount: '1' },
+          { faucet_id: '0xfa2' },
+        ],
+        non_fungible: [],
+      },
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.getAccountSnapshot('0xacc')).rejects.toBeInstanceOf(
+      GuardianOperatorContractError,
+    );
+  });
+
+  it('rejects a snapshot non-fungible entry missing required fields', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({
+      commitment: '0xc',
+      updated_at: '2026-05-11T10:00:00Z',
+      vault: {
+        fungible: [],
+        non_fungible: [
+          { faucet_id: '0xnf1' }, // missing vault_key
+        ],
+      },
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.getAccountSnapshot('0xacc')).rejects.toBeInstanceOf(
+      GuardianOperatorContractError,
+    );
+  });
+
   it('logs out with a POST request and parses the response', async () => {
     mockFetch.mockResolvedValueOnce(okJson({
       success: true,

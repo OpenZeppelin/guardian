@@ -102,20 +102,14 @@ follow-up feature paired with the EVM-specific dashboard work.
   `GET /dashboard/accounts/{account_id}` detail endpoint from
   `003-operator-account-apis`, which also returns richer per-account fields
   than a list summary; a redundant filtered-list shortcut is not added in v1.
-- Per-account asset, balance, token-amount, or "TVL" data of any kind. Today
-  Guardian persists account state as an opaque `state_json` blob whose schema
-  is client-defined; there is no normalized asset/vault read surface to
-  expose. Asset/TVL views are explicitly deferred to a follow-up feature that
-  must first define either a documented `state_json` schema convention or a
-  network-specific account-inspector extension (e.g. Miden `AssetVault`
-  enumeration). USD/fiat conversion, oracles, and pricing logic remain out
-  of scope for the foreseeable future, to be re-evaluated only after a
-  normalized state schema or account-inspector extension exists. Any
-  future asset surface MUST expose raw token-identifier and amount data
-  only and leave value derivation to the client.
-- Time-series charts, trendlines, alerting, or aggregation windows.
-  Aggregates are point-in-time snapshots derived from current persisted
-  records.
+- USD/fiat conversion, oracles, and pricing logic. Raw vault entries
+  (faucet identifier + amount) are surfaced via the snapshot endpoint
+  introduced by FR-043, but value derivation, decimals, and price
+  feeds remain dashboard-client concerns.
+- Time-series charts, trendlines, alerting, and aggregation windows
+  for any field (vault, lifecycle counts, activity). All aggregates
+  in this feature are point-in-time snapshots derived from current
+  persisted records.
 - Free text search, tag/label search, prefix/substring/fuzzy matching on
   account ids, or proposal/signer search.
 - Dashboard endpoints for cosigner activity, operator audit logs, or service
@@ -768,6 +762,51 @@ count, and signatures-required count.
   priority slice of this feature and MAY be delivered after the
   per-account endpoints; the dashboard MUST remain functional without
   them.
+
+#### Per-account decoded-state snapshot endpoint
+
+- **FR-043**: The server MUST expose a new authenticated dashboard
+  endpoint `GET /dashboard/accounts/{account_id}/snapshot` that returns
+  a decoded view of Guardian's *stored* state for one account, at the
+  commitment Guardian last canonicalized. The endpoint MUST NOT make
+  live Miden RPC calls, perform cross-account aggregations, or join
+  with delta history — its output is derivable purely from the
+  existing state blob.
+- **FR-044**: The v1 snapshot response MUST include `commitment`
+  (hex string identifying the state the snapshot was decoded from —
+  equals `DashboardAccountDetail.current_commitment` for the same
+  account at the same point in time), `updated_at` (RFC3339, the
+  state row's `updated_at` — equals
+  `DashboardAccountDetail.state_updated_at`), and a `vault` object
+  containing two arrays:
+    - `fungible`: `{ faucet_id, amount }` where `amount` is a string
+      to preserve `u64` precision across JS clients
+    - `non_fungible`: `{ faucet_id, vault_key }`
+  Raw token identifiers and amounts only — no decimals, no token
+  metadata, no price/USD conversion. Decimal handling and value
+  derivation are dashboard-client concerns.
+- **FR-045**: The snapshot endpoint MUST distinguish between permanent
+  network-incompatibility and transient/recoverable failures via the
+  FR-028 error taxonomy:
+    - `404 AccountNotFound` (`code: account_not_found`) when no
+      metadata exists for the given `account_id`.
+    - `400 UnsupportedForNetwork`
+      (`code: unsupported_for_network`) when the account's
+      `network_config` is EVM. The endpoint is Miden-only by
+      construction — there is no Miden `AssetVault` to decode — and
+      the condition is permanent for this surface, so it MUST NOT be
+      reported as `503`/`data_unavailable` (which implies
+      "retry later"). Detection MUST use
+      `metadata.network_config.is_evm()` rather than pattern-matching
+      on the auth variant, per AGENTS.md §5.
+    - `503 DataUnavailable` (`code: account_data_unavailable`) when
+      metadata exists but the state row cannot be loaded, or when the
+      stored state blob fails to deserialize as a Miden `Account`.
+      Both are transient/recoverable conditions.
+- **FR-046**: Future fields added to the snapshot response MUST be
+  additive top-level keys derivable from the stored state blob (e.g.
+  `storage`, `code`). Anything that needs live RPC, cross-account
+  aggregation, or history-joining belongs on a different endpoint.
 
 ### Contract / Transport Impact
 

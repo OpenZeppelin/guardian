@@ -1,6 +1,7 @@
 import type {
   DashboardAccountDetail,
   DashboardAccountResponse,
+  DashboardAccountSnapshot,
   DashboardAccountStateStatus,
   DashboardAccountSummary,
   DashboardDeltaEntry,
@@ -10,6 +11,9 @@ import type {
   DashboardGlobalProposalEntry,
   DashboardInfoResponse,
   DashboardProposalEntry,
+  DashboardVaultFungibleEntry,
+  DashboardVaultNonFungibleEntry,
+  DashboardVaultSnapshot,
   GlobalDeltasOptions,
   GuardianOperatorHttpClientOptions,
   GuardianOperatorHttpErrorData,
@@ -235,6 +239,24 @@ export class GuardianOperatorHttpClient {
       new URL(`dashboard/accounts/${encodedAccountId}`, this.baseUrl),
       { method: 'GET' },
       parseAccountResponse,
+    );
+  }
+
+  /**
+   * Return a decoded snapshot of `accountId`'s stored state at the
+   * commitment Guardian last canonicalized — v1 surface exposes the
+   * fungible/non-fungible vault. Returns a `data_unavailable` error
+   * for EVM accounts and for any Miden account whose state row is
+   * missing or fails to decode.
+   *
+   * Spec reference: follow-up addition to `005-operator-dashboard-metrics`.
+   */
+  async getAccountSnapshot(accountId: string): Promise<DashboardAccountSnapshot> {
+    const encodedAccountId = encodeURIComponent(accountId);
+    return this.request(
+      new URL(`dashboard/accounts/${encodedAccountId}/snapshot`, this.baseUrl),
+      { method: 'GET' },
+      parseAccountSnapshot,
     );
   }
 
@@ -619,6 +641,46 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
 
 function parseAccountResponse(value: unknown): DashboardAccountResponse {
   return parseAccountDetail(value, 'account response');
+}
+
+function parseAccountSnapshot(value: unknown): DashboardAccountSnapshot {
+  const record = asRecord(value, 'account snapshot');
+  const vaultRecord = asRecord(
+    requireField(record, 'vault', 'account snapshot'),
+    'account snapshot.vault',
+  );
+  const fungibleRaw = requireArray(
+    vaultRecord,
+    'fungible',
+    'account snapshot.vault',
+  );
+  const nonFungibleRaw = requireArray(
+    vaultRecord,
+    'non_fungible',
+    'account snapshot.vault',
+  );
+  const fungible: DashboardVaultFungibleEntry[] = fungibleRaw.map((entry, idx) => {
+    const ctx = `account snapshot.vault.fungible[${idx}]`;
+    const r = asRecord(entry, ctx);
+    return {
+      faucetId: requireString(r, 'faucet_id', ctx),
+      amount: requireString(r, 'amount', ctx),
+    };
+  });
+  const nonFungible: DashboardVaultNonFungibleEntry[] = nonFungibleRaw.map((entry, idx) => {
+    const ctx = `account snapshot.vault.non_fungible[${idx}]`;
+    const r = asRecord(entry, ctx);
+    return {
+      faucetId: requireString(r, 'faucet_id', ctx),
+      vaultKey: requireString(r, 'vault_key', ctx),
+    };
+  });
+  const vault: DashboardVaultSnapshot = { fungible, nonFungible };
+  return {
+    commitment: requireString(record, 'commitment', 'account snapshot'),
+    updatedAt: requireString(record, 'updated_at', 'account snapshot'),
+    vault,
+  };
 }
 
 function parseAccountSummary(

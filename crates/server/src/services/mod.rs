@@ -10,6 +10,7 @@ use std::sync::Arc;
 mod configure_account;
 mod dashboard_account_deltas;
 mod dashboard_account_proposals;
+mod dashboard_account_snapshot;
 mod dashboard_accounts;
 mod dashboard_global_deltas;
 mod dashboard_global_proposals;
@@ -33,6 +34,10 @@ pub use dashboard_account_deltas::{
     DashboardDeltaEntry, DashboardDeltaStatus, list_account_deltas,
 };
 pub use dashboard_account_proposals::{DashboardProposalEntry, list_account_proposals};
+pub use dashboard_account_snapshot::{
+    DashboardAccountSnapshot, DashboardVaultFungibleEntry, DashboardVaultNonFungibleEntry,
+    DashboardVaultSnapshot, get_account_snapshot,
+};
 pub use dashboard_accounts::{
     DashboardAccountDetail, DashboardAccountStateStatus, DashboardAccountSummary,
     GetDashboardAccountResult, get_dashboard_account, list_dashboard_accounts_paged,

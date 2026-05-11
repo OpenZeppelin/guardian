@@ -10,9 +10,9 @@ use crate::dashboard::cursor::CursorKind;
 use crate::dashboard::{AuthenticatedOperator, extract_cookie};
 use crate::error::Result;
 use crate::services::{
-    DashboardAccountDetail, DashboardAccountSummary, DashboardInfoResponse, PagedResult,
-    get_dashboard_account, get_dashboard_info, list_dashboard_accounts_paged, parse_cursor,
-    parse_limit,
+    DashboardAccountDetail, DashboardAccountSnapshot, DashboardAccountSummary,
+    DashboardInfoResponse, PagedResult, get_account_snapshot, get_dashboard_account,
+    get_dashboard_info, list_dashboard_accounts_paged, parse_cursor, parse_limit,
 };
 use crate::state::AppState;
 
@@ -170,6 +170,15 @@ pub async fn get_operator_account(
     Ok(Json(response.account))
 }
 
+pub async fn get_operator_account_snapshot(
+    State(state): State<AppState>,
+    Extension(_operator): Extension<AuthenticatedOperator>,
+    Path(account_id): Path<String>,
+) -> Result<Json<DashboardAccountSnapshot>> {
+    let snapshot = get_account_snapshot(&state, &account_id).await?;
+    Ok(Json(snapshot))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -273,6 +282,106 @@ mod tests {
         );
         assert_eq!(detail_body.auth_scheme, "falcon");
         assert_eq!(detail_body.authorized_signer_count, 1);
+
+        // Snapshot happy path: same account, same authenticated
+        // session, hits the new GET /dashboard/accounts/{id}/snapshot
+        // route. Confirms the route is registered behind the dashboard
+        // middleware, the service decodes the fixture vault, and the
+        // snapshot's `as_of_commitment` correlates with the account
+        // detail's `current_commitment`.
+        let snapshot_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/dashboard/accounts/{account_id_hex}/snapshot"))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot_response.status(), StatusCode::OK);
+        let snapshot_body: serde_json::Value = {
+            let bytes = to_bytes(snapshot_response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        assert_eq!(
+            snapshot_body["commitment"].as_str().unwrap(),
+            detail_body
+                .current_commitment
+                .as_deref()
+                .expect("detail commitment present for fixture account"),
+        );
+        assert!(snapshot_body["updated_at"].is_string());
+        assert!(snapshot_body["vault"]["fungible"].is_array());
+        assert!(snapshot_body["vault"]["non_fungible"].is_array());
+    }
+
+    #[tokio::test]
+    async fn snapshot_endpoint_rejects_evm_accounts_with_unsupported_for_network() {
+        use crate::metadata::AccountMetadata;
+        use crate::metadata::auth::Auth;
+
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".to_string(),
+            operator.commitment_hex.clone(),
+        )]));
+
+        // Seed an EVM-network account. The snapshot endpoint must
+        // surface this as `400 unsupported_for_network` per FR-045,
+        // not 503/`account_data_unavailable` — EVM has no Miden vault
+        // to decode and the condition is permanent for this surface.
+        let account_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let chain_id: u64 = 11155111;
+        let evm_account_id =
+            crate::metadata::network::evm_account_id(chain_id, account_address);
+        let evm_metadata = AccountMetadata {
+            account_id: evm_account_id.clone(),
+            auth: Auth::EvmEcdsa {
+                signers: vec![account_address.to_string()],
+            },
+            network_config: crate::metadata::NetworkConfig::Evm {
+                chain_id,
+                account_address: account_address.to_string(),
+                multisig_validator_address:
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            },
+            created_at: "2026-05-11T00:00:00Z".to_string(),
+            updated_at: "2026-05-11T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+        };
+        state
+            .metadata
+            .set(evm_metadata)
+            .await
+            .expect("metadata should be written");
+
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/dashboard/accounts/{evm_account_id}/snapshot"))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = {
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        assert_eq!(body["code"], "unsupported_for_network");
     }
 
     #[tokio::test]

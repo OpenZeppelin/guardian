@@ -199,6 +199,14 @@ export default function App() {
     });
   }
 
+  async function fetchAccountSnapshot() {
+    await runAction('fetchAccountSnapshot', () => {
+      const id = accountId.trim();
+      if (!id) throw new Error('Account ID is required');
+      return client.getAccountSnapshot(id);
+    });
+  }
+
   async function listGlobalDeltas() {
     await runAction('listGlobalDeltas', () => {
       const selected = (
@@ -463,6 +471,7 @@ export default function App() {
           </label>
           <div className="actions">
             <button onClick={() => void fetchAccount()}>Fetch account</button>
+            <button onClick={() => void fetchAccountSnapshot()}>Fetch snapshot</button>
             <button onClick={() => void listAccountDeltas()}>List account deltas</button>
             <button onClick={() => void listAccountProposals()}>List account proposals</button>
           </div>

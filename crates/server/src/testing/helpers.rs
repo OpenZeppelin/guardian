@@ -266,6 +266,10 @@ pub fn create_router(state: AppState) -> axum::Router {
             axum::routing::get(crate::api::dashboard::get_operator_account),
         )
         .route(
+            "/accounts/{account_id}/snapshot",
+            axum::routing::get(crate::api::dashboard::get_operator_account_snapshot),
+        )
+        .route(
             "/accounts/{account_id}/deltas",
             axum::routing::get(crate::api::dashboard_history::list_account_deltas_handler),
         )
