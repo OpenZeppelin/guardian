@@ -2,6 +2,7 @@
 
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
+use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
 use miden_protocol::utils::serde::Serializable;
@@ -46,6 +47,14 @@ impl EcdsaSigner {
     ) -> String {
         let message = AuthRequestMessage::new(*account_id, timestamp, payload).to_word();
         let signature = self.secret_key.lock().unwrap().sign(message);
+        format!("0x{}", hex::encode(signature.to_bytes()))
+    }
+
+    /// Signs a precomputed digest. Used by the lookup endpoint via
+    /// `Auth::sign_word_hex` — callers should prefer that entry point so the
+    /// scheme dispatch lives in one place.
+    pub fn sign_word_hex(&self, digest: Word) -> String {
+        let signature = self.secret_key.lock().unwrap().sign(digest);
         format!("0x{}", hex::encode(signature.to_bytes()))
     }
 }

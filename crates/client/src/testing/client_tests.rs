@@ -3,10 +3,10 @@ use crate::testing::mocks::{
     MockGuardianService, create_mock_account_state, create_mock_delta, start_mock_server,
 };
 use crate::{
-    AuthConfig, ClientError, ConfigureResponse, FalconKeyStore, GetDeltaProposalResponse,
-    GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse,
-    GuardianClient, PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse,
-    Signer,
+    AccountRef, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
+    GetAccountByKeyCommitmentResponse, GetDeltaProposalResponse, GetDeltaProposalsResponse,
+    GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse, GuardianClient,
+    PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse, Signer,
 };
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use miden_protocol::account::AccountId;
@@ -473,4 +473,148 @@ async fn test_signer_pubkey_hex_with_signer() {
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), expected_pubkey);
+}
+
+// --- lookup_account_by_key_commitment -
+
+fn lookup_test_signer() -> (Arc<dyn Signer>, String) {
+    let signer = Arc::new(FalconKeyStore::new(SecretKey::new())) as Arc<dyn Signer>;
+    let commitment_hex = signer.commitment_hex();
+    (signer, commitment_hex)
+}
+
+#[tokio::test]
+async fn test_lookup_account_by_key_commitment_single_match() {
+    let service = MockGuardianService::default().with_get_account_by_key_commitment(Ok(
+        GetAccountByKeyCommitmentResponse {
+            accounts: vec![AccountRef {
+                account_id: "0x7bfb0f38b0fafa103f86a805594170".to_string(),
+            }],
+        },
+    ));
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let (signer, commitment_hex) = lookup_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+
+    let response = client
+        .lookup_account_by_key_commitment(&commitment_hex)
+        .await
+        .expect("happy path returns Ok");
+    assert_eq!(response.accounts.len(), 1);
+    assert_eq!(
+        response.accounts[0].account_id,
+        "0x7bfb0f38b0fafa103f86a805594170"
+    );
+}
+
+#[tokio::test]
+async fn test_lookup_account_by_key_commitment_empty_result() {
+    // Empty list MUST surface as a successful response (not an error) so the
+    // SDK matches the server contract: the multisig recoverByKey helper relies
+    // on this to distinguish "no matches" from a real RPC failure.
+    let service = MockGuardianService::default().with_get_account_by_key_commitment(Ok(
+        GetAccountByKeyCommitmentResponse { accounts: vec![] },
+    ));
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let (signer, commitment_hex) = lookup_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+
+    let response = client
+        .lookup_account_by_key_commitment(&commitment_hex)
+        .await
+        .expect("empty list is a successful response");
+    assert!(response.accounts.is_empty());
+}
+
+#[tokio::test]
+async fn test_lookup_account_by_key_commitment_multi_match() {
+    let service = MockGuardianService::default().with_get_account_by_key_commitment(Ok(
+        GetAccountByKeyCommitmentResponse {
+            accounts: vec![
+                AccountRef {
+                    account_id: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1".to_string(),
+                },
+                AccountRef {
+                    account_id: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2".to_string(),
+                },
+            ],
+        },
+    ));
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let (signer, commitment_hex) = lookup_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+
+    let response = client
+        .lookup_account_by_key_commitment(&commitment_hex)
+        .await
+        .expect("multi-match returns all entries");
+    assert_eq!(response.accounts.len(), 2);
+    let ids: Vec<&str> = response
+        .accounts
+        .iter()
+        .map(|a| a.account_id.as_str())
+        .collect();
+    assert!(ids.contains(&"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"));
+    assert!(ids.contains(&"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2"));
+}
+
+#[tokio::test]
+async fn test_lookup_account_by_key_commitment_unauthenticated_error_propagates() {
+    let service = MockGuardianService::default().with_get_account_by_key_commitment(Err(
+        Status::unauthenticated(
+            "submitted public key does not derive to the queried key_commitment",
+        ),
+    ));
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let (signer, commitment_hex) = lookup_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+
+    let result = client
+        .lookup_account_by_key_commitment(&commitment_hex)
+        .await;
+    let err = result.expect_err("unauthenticated must propagate as ClientError");
+    match err {
+        ClientError::Status(status) => {
+            assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        }
+        other => panic!("expected Status error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_lookup_account_by_key_commitment_rejects_invalid_commitment_hex() {
+    // The client SHOULD fail-fast on a malformed commitment before issuing
+    // the gRPC call, so misconfigured callers get a clear local error.
+    let service = MockGuardianService::default();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let (signer, _commitment_hex) = lookup_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+
+    let result = client.lookup_account_by_key_commitment("not-hex").await;
+    let err = result.expect_err("malformed hex must fail locally");
+    match err {
+        ClientError::InvalidResponse(msg) => {
+            assert!(msg.contains("Invalid key_commitment hex"), "{msg}");
+        }
+        other => panic!("expected InvalidResponse, got {other:?}"),
+    }
 }

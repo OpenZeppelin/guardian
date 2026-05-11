@@ -20,7 +20,7 @@ use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
     configure, get_delta, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
-    get_state, push_delta, push_delta_proposal, sign_delta_proposal,
+    get_state, lookup, push_delta, push_delta_proposal, sign_delta_proposal,
 };
 use crate::dashboard::require_dashboard_session;
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
@@ -90,6 +90,7 @@ impl ServerHandle {
                     .route("/delta/proposal", put(sign_delta_proposal))
                     .route("/configure", post(configure))
                     .route("/state", get(get_state))
+                    .route("/state/lookup", get(lookup))
                     .route("/pubkey", get(get_pubkey))
                     .route("/auth/challenge", get(challenge_operator_login))
                     .route("/auth/verify", post(verify_operator_login))

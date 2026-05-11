@@ -2,6 +2,7 @@ import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
 import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { bytesToHex } from '../utils/encoding.js';
+import { lookupAuthDigest } from '../lookupAuth.js';
 import { wordToBytes } from '../utils/word.js';
 
 export interface WalletSigningContext {
@@ -55,6 +56,18 @@ export class MidenWalletSigner implements Signer {
   async signCommitment(commitmentHex: string): Promise<string> {
     const word = AuthDigest.fromCommitmentHex(commitmentHex);
     return this.signWord(word);
+  }
+
+  /**
+   * Sign a `LookupAuthMessage` digest for the `/state/lookup` endpoint.
+   * Account-less; used directly by `recoverByKey`.
+   */
+  async signLookupMessage(keyCommitmentHex: string, timestampMs: number): Promise<string> {
+    if (this.localAuthSigner?.signLookupMessage) {
+      return this.localAuthSigner.signLookupMessage(keyCommitmentHex, timestampMs);
+    }
+    const digest = lookupAuthDigest(timestampMs, keyCommitmentHex);
+    return this.signWord(digest);
   }
 
   private async signWord(word: { toFelts: () => Array<{ asInt: () => bigint }> }): Promise<string> {

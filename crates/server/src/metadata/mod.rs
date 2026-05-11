@@ -88,4 +88,14 @@ pub trait MetadataStore: Send + Sync {
         new_timestamp: i64,
         now: &str,
     ) -> Result<bool, String>;
+
+    /// Find every account whose Miden cosigner-commitment authorization set
+    /// contains the given commitment. Used by the `/state/lookup` endpoint.
+    ///
+    /// EVM accounts (`Auth::EvmEcdsa`) store signers in `signers` rather than
+    /// `cosigner_commitments` and MUST never match.
+    ///
+    /// `commitment` is expected to be a `0x`-prefixed lowercase hex string;
+    /// format validation is the caller's responsibility.
+    async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String>;
 }

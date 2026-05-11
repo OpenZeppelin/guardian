@@ -81,6 +81,38 @@ The configuration is automatically detected from the account's on-chain storage:
 const multisig = await client.load(accountId, signer);
 ```
 
+### Recover An Account By Key
+
+When the wallet only holds a signing key from the account's authorization
+set, it does not yet know the account ID. `recoverByKey` queries Guardian's
+`/state/lookup` endpoint with proof-of-possession of the key, fetches state
+for each matching account, and returns `(accountId, state)` pairs.
+
+```typescript
+const recovered = await client.recoverByKey(signer);
+
+if (recovered.length === 0) {
+  // No account on this Guardian operator authorizes the key.
+} else {
+  for (const { accountId, state } of recovered) {
+    const multisig = await client.load(accountId, signer);
+    // ...
+  }
+}
+```
+
+The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
+(the bundled `FalconSigner` and `EcdsaSigner` both do). The lookup endpoint
+authenticates by proof-of-possession of the queried commitment — same key
+that already authenticates per-account requests, so revealing the account ID
+does not grant any new capability. See the design doc for the security
+analysis.
+
+Multiple matches are returned uniformly: a key may legitimately authorize
+several accounts, and the helper surfaces all of them rather than silently
+picking one. The returned list is empty (not an error) when no account
+authorizes the queried commitment.
+
 ### Fetch Account State
 
 ```typescript
