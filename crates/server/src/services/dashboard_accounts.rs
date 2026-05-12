@@ -119,17 +119,33 @@ pub async fn list_dashboard_accounts_paged(
         .collect();
 
     let next_cursor = if has_more {
-        summaries.last().and_then(|last| {
-            let parsed = parse_timestamp(&last.updated_at).map(|dt| dt.with_timezone(&chrono::Utc));
-            parsed.map(|updated_at| {
+        // When `has_more` is true and we have a last entry, the cursor
+        // MUST be produced — silently falling back to `None` would
+        // prematurely terminate traversal and silently drop rows. A
+        // parse failure here means the stored `updated_at` is not
+        // RFC3339, which is a data-integrity bug we want surfaced as
+        // a 500 (StorageError) rather than a quiet truncation.
+        match summaries.last() {
+            Some(last) => {
+                let updated_at = parse_timestamp(&last.updated_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .ok_or_else(|| {
+                        GuardianError::StorageError(format!(
+                            "account list cursor: stored updated_at is not RFC3339 for '{}': '{}'",
+                            last.account_id, last.updated_at
+                        ))
+                    })?;
                 let cursor = Cursor::account_list(updated_at, last.account_id.clone());
-                cursor::encode(&cursor, state.dashboard.cursor_secret())
-            })
-        })
+                Some(cursor::encode(&cursor, state.dashboard.cursor_secret())?)
+            }
+            // has_more = true with no items is impossible (page_size
+            // > limit_us > 0), but treat defensively as end-of-list
+            // rather than panic.
+            None => None,
+        }
     } else {
         None
-    }
-    .transpose()?;
+    };
 
     Ok(PagedResult::new(summaries, next_cursor))
 }

@@ -2,7 +2,7 @@
 
 ## Authentication
 
-- Per-account Miden requests MUST include credentials authorised by the account's policy.
+- Per-account Miden requests MUST include credentials authorized by the account's policy.
 - Miden credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` and the same keys in gRPC metadata.
 - Miden `x-pubkey` is interpreted by the account auth policy:
   - Miden Falcon/ECDSA accounts use the serialized public key or its commitment.

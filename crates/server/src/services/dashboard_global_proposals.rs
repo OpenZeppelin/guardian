@@ -163,7 +163,12 @@ pub async fn list_global_proposals(
             Some(slot) => slot.clone(),
             None => {
                 let resolved = match state.metadata.get(&record.account_id).await.map_err(|e| {
-                    GuardianError::StorageError(format!(
+                    // Surface as 503 `data_unavailable` rather than
+                    // 500 `storage_error` — this matches the
+                    // dashboard-feed error contract (FR-022/FR-028):
+                    // metadata-present-but-unreadable is the
+                    // transient case the client should retry.
+                    GuardianError::DataUnavailable(format!(
                         "Failed to load metadata for '{}': {}",
                         record.account_id, e
                     ))
@@ -190,24 +195,37 @@ pub async fn list_global_proposals(
     }
 
     let next_cursor = if has_more {
-        cursor_anchor.and_then(|anchor| {
-            DateTime::parse_from_rfc3339(anchor.proposal.status.timestamp())
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-                .map(|ts| {
-                    Cursor::global_proposals(
-                        ts,
-                        anchor.account_id.clone(),
-                        anchor.proposal.nonce as i64,
-                        anchor.commitment.clone(),
-                    )
-                })
-                .map(|c| cursor::encode(&c, state.dashboard.cursor_secret()))
-        })
+        // When `has_more` is true, the cursor MUST be produced.
+        // Silently falling back to `None` when timestamp parsing
+        // fails would prematurely terminate traversal and skip rows.
+        // A parse failure here means stored `originating_timestamp`
+        // is not RFC3339 — a data-integrity bug, surfaced as 500.
+        match cursor_anchor {
+            Some(anchor) => {
+                let ts = DateTime::parse_from_rfc3339(anchor.proposal.status.timestamp())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| {
+                        GuardianError::StorageError(format!(
+                            "global proposal cursor: stored originating_timestamp is not RFC3339 for ('{}', nonce {}, commitment '{}'): '{}': {e}",
+                            anchor.account_id,
+                            anchor.proposal.nonce,
+                            anchor.commitment,
+                            anchor.proposal.status.timestamp()
+                        ))
+                    })?;
+                let cursor = Cursor::global_proposals(
+                    ts,
+                    anchor.account_id.clone(),
+                    anchor.proposal.nonce as i64,
+                    anchor.commitment.clone(),
+                );
+                Some(cursor::encode(&cursor, state.dashboard.cursor_secret())?)
+            }
+            None => None,
+        }
     } else {
         None
-    }
-    .transpose()?;
+    };
 
     Ok(PagedResult::new(entries, next_cursor))
 }

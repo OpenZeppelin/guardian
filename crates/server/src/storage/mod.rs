@@ -154,15 +154,29 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<std::collections::HashMap<String, StateObject>, String> {
         // Default: sequential single-account fetches. Concrete
         // backends override with their batched form.
+        //
+        // Error policy: `pull_state` currently returns `Result<_,
+        // String>` so we can't structurally distinguish "missing
+        // state row" from "transient storage failure". Until that
+        // surface is typed, we surface ANY error from `pull_state`
+        // via tracing so operators see degraded reads in logs
+        // instead of silent flips to `state_status: Unavailable` at
+        // the dashboard layer. Concrete backends SHOULD override
+        // this method with their own batched form that can
+        // distinguish the two cases (postgres already does — see
+        // `PostgresService::pull_states_batch`).
         let mut out = std::collections::HashMap::with_capacity(account_ids.len());
         for id in account_ids {
             match self.pull_state(id).await {
                 Ok(state) => {
                     out.insert((*id).to_string(), state);
                 }
-                Err(_) => {
-                    // Treat as missing; service layer maps to
-                    // `state_status: Unavailable`.
+                Err(e) => {
+                    tracing::warn!(
+                        account_id = %id,
+                        error = %e,
+                        "pull_states_batch: pull_state failed; treating as missing-state at dashboard layer",
+                    );
                 }
             }
         }

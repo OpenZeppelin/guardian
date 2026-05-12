@@ -175,27 +175,39 @@ pub async fn list_global_deltas(
             GuardianError::DataUnavailable(format!("Failed to load global delta feed: {e}"))
         })?;
 
+    // Derive `has_more` from the *raw* storage rows so that if any
+    // row gets dropped by `entry_from` (e.g. an unexpected `Pending`
+    // surfacing on the deltas table), we still emit a cursor when
+    // more rows exist. Deriving from `entries.len()` after
+    // `filter_map` would silently truncate pagination.
+    let limit_us = limit as usize;
+    let has_more = rows.len() > limit_us;
+
     let mut entries: Vec<DashboardGlobalDeltaEntry> = rows
         .iter()
         .filter_map(|row| entry_from(&row.delta, &row.account_id))
         .collect();
-
-    let limit_us = limit as usize;
-    let has_more = entries.len() > limit_us;
     entries.truncate(limit_us);
 
     let next_cursor = if has_more {
-        entries.last().and_then(|last| {
-            DateTime::parse_from_rfc3339(&last.status_timestamp)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-                .map(|ts| Cursor::global_deltas(ts, last.account_id.clone(), last.nonce as i64))
-                .map(|c| cursor::encode(&c, state.dashboard.cursor_secret()))
-        })
+        match entries.last() {
+            Some(last) => {
+                let ts = DateTime::parse_from_rfc3339(&last.status_timestamp)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| {
+                        GuardianError::StorageError(format!(
+                            "global delta cursor: stored status_timestamp is not RFC3339 for ('{}', nonce {}): '{}': {e}",
+                            last.account_id, last.nonce, last.status_timestamp
+                        ))
+                    })?;
+                let cursor = Cursor::global_deltas(ts, last.account_id.clone(), last.nonce as i64);
+                Some(cursor::encode(&cursor, state.dashboard.cursor_secret())?)
+            }
+            None => None,
+        }
     } else {
         None
-    }
-    .transpose()?;
+    };
 
     Ok(PagedResult::new(entries, next_cursor))
 }

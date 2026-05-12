@@ -15,11 +15,3 @@ pub fn build_profile() -> &'static str {
         "release"
     }
 }
-
-pub fn storage_backend() -> &'static str {
-    if cfg!(feature = "postgres") {
-        "postgres"
-    } else {
-        "filesystem"
-    }
-}

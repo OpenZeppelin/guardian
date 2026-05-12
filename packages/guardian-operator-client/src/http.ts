@@ -49,6 +49,9 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   'invalid_limit',
   'invalid_status_filter',
   'data_unavailable',
+  // Snapshot-specific codes (FR-045).
+  'unsupported_for_network',
+  'account_data_unavailable',
 ]);
 
 /**
@@ -82,7 +85,16 @@ export async function parseErrorBody(
     'text' in response &&
     typeof (response as Response).text === 'function'
   ) {
-    const body = await (response as Response).text();
+    // `response.text()` itself can reject when the body has already
+    // been consumed or the underlying stream errors. The function's
+    // contract says we never throw, so swallow that and treat it the
+    // same as an empty body.
+    let body: string;
+    try {
+      body = await (response as Response).text();
+    } catch {
+      return { code: null, message: null };
+    }
     if (!body) {
       return { code: null, message: null };
     }
@@ -245,11 +257,20 @@ export class GuardianOperatorHttpClient {
   /**
    * Return a decoded snapshot of `accountId`'s stored state at the
    * commitment Guardian last canonicalized — v1 surface exposes the
-   * fungible/non-fungible vault. Returns a `data_unavailable` error
-   * for EVM accounts and for any Miden account whose state row is
-   * missing or fails to decode.
+   * fungible/non-fungible vault. The endpoint distinguishes its
+   * failure modes via the FR-045 error taxonomy:
    *
-   * Spec reference: follow-up addition to `005-operator-dashboard-metrics`.
+   * - `400 unsupported_for_network` — the account's `network_config`
+   *   is EVM. The snapshot endpoint is Miden-only by construction;
+   *   this is a permanent condition for the account on this surface,
+   *   not a transient failure.
+   * - `404 account_not_found` — no metadata exists.
+   * - `503 account_data_unavailable` — metadata exists but the state
+   *   row cannot be loaded, or the stored blob fails to deserialize
+   *   as a Miden `Account`. Transient/recoverable.
+   *
+   * Spec reference: follow-up addition to `005-operator-dashboard-metrics`
+   * FR-043..FR-046.
    */
   async getAccountSnapshot(accountId: string): Promise<DashboardAccountSnapshot> {
     const encodedAccountId = encodeURIComponent(accountId);

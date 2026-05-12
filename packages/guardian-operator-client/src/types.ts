@@ -119,7 +119,13 @@ export type DashboardErrorCode =
   | 'invalid_cursor'
   | 'invalid_limit'
   | 'invalid_status_filter'
-  | 'data_unavailable';
+  | 'data_unavailable'
+  // Snapshot endpoint distinguishes EVM (permanent) from
+  // missing/undecodable state (transient) via separate codes — both
+  // must be in the typed union so callers' `isDashboardErrorCode()`
+  // narrowing branches on them without falling through.
+  | 'unsupported_for_network'
+  | 'account_data_unavailable';
 
 export interface PagedResult<T> {
   items: T[];

@@ -136,8 +136,17 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
     })?;
     let total_account_count = account_ids.len() as u64;
 
+    // Storage label reflects the *runtime* backend selected by the
+    // builder, not the cargo feature the binary was compiled with — a
+    // postgres-capable build that's running against the filesystem
+    // backend would mislead operators if we reported the feature
+    // flag. Dispatch via `state.storage.kind()`.
+    let storage_label = match state.storage.kind() {
+        crate::storage::StorageType::Filesystem => "filesystem",
+        crate::storage::StorageType::Postgres => "postgres",
+    };
     let backend = DashboardBackendInfo {
-        storage: build_info::storage_backend(),
+        storage: storage_label,
         supported_ack_schemes: vec!["ecdsa", "falcon"],
         canonicalization: state.canonicalization.as_ref().map(|c| {
             DashboardCanonicalizationConfig {
@@ -522,7 +531,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_storage_label_matches_compiled_feature_flag() {
+    async fn backend_storage_label_reflects_runtime_storage_kind() {
+        // `MockStorageBackend` defaults to `StorageType::Postgres`
+        // unless explicitly overridden via `with_kind`. The dashboard
+        // info handler reports the *runtime* kind via
+        // `state.storage.kind()`, not the compiled cargo feature, so
+        // this test exercises the postgres-label path regardless of
+        // whether the binary was built with `--features postgres`.
         let state = build_state(
             Vec::new(),
             crate::storage::DeltaStatusCounts::default(),
@@ -531,14 +546,45 @@ mod tests {
         )
         .await;
         let info = get_dashboard_info(&state).await.unwrap();
-        let expected = if cfg!(feature = "postgres") {
-            "postgres"
-        } else {
-            "filesystem"
-        };
-        assert_eq!(info.backend.storage, expected);
+        assert_eq!(info.backend.storage, "postgres");
         assert!(info.backend.supported_ack_schemes.contains(&"falcon"));
         assert!(info.backend.supported_ack_schemes.contains(&"ecdsa"));
+    }
+
+    #[tokio::test]
+    async fn backend_storage_label_reports_filesystem_when_storage_kind_is_filesystem() {
+        use crate::ack::AckRegistry;
+        use crate::builder::clock::test::MockClock;
+        use crate::testing::mocks::MockNetworkClient;
+        use tokio::sync::Mutex;
+
+        // Override the mock to report Filesystem; verifies that the
+        // dashboard handler dispatches off the *runtime* storage kind
+        // and not a compile-time constant.
+        let metadata = MockMetadataStore::new().with_list(Ok(Vec::new()));
+        let storage = MockStorageBackend::new()
+            .with_kind(crate::storage::StorageType::Filesystem)
+            .with_count_deltas_by_status(Ok(Default::default()))
+            .with_count_in_flight_proposals(Ok(0))
+            .with_latest_activity_timestamp(Ok(None));
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+
+        let state = AppState {
+            storage: Arc::new(storage),
+            metadata: Arc::new(metadata),
+            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::default()),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        };
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.backend.storage, "filesystem");
     }
 
     #[tokio::test]

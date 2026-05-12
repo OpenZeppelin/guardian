@@ -463,10 +463,21 @@ mod tests {
             "operator-1".into(),
             operator.commitment_hex.clone(),
         )]));
+        // Set both `auth` AND `network_config` to EVM so the test
+        // actually exercises the EVM branch — relying solely on
+        // `Auth::EvmEcdsa` would silently pass if a future refactor
+        // dispatched off `network_config.is_evm()` (AGENTS.md §5)
+        // since `miden_metadata` defaults the network to Miden.
         let auth = Auth::EvmEcdsa {
             signers: vec!["0xsigner".into()],
         };
-        seed_account(&state, miden_metadata(auth)).await;
+        let mut metadata = miden_metadata(auth);
+        metadata.network_config = crate::metadata::NetworkConfig::Evm {
+            chain_id: 11155111,
+            account_address: "0x0000000000000000000000000000000000000001".into(),
+            multisig_validator_address: "0x0000000000000000000000000000000000000002".into(),
+        };
+        seed_account(&state, metadata).await;
         let app = create_router(state);
         let cookie = authenticate(&app, &operator).await;
 

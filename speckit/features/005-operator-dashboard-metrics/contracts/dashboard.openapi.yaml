@@ -293,6 +293,7 @@ components:
           properties:
             items:
               type: array
+              maxItems: 500
               items:
                 $ref: "#/components/schemas/DashboardAccountSummary"
 
@@ -304,6 +305,7 @@ components:
           properties:
             items:
               type: array
+              maxItems: 500
               items:
                 $ref: "#/components/schemas/DashboardDeltaEntry"
 
@@ -315,6 +317,7 @@ components:
           properties:
             items:
               type: array
+              maxItems: 500
               items:
                 $ref: "#/components/schemas/DashboardProposalEntry"
 
@@ -326,6 +329,7 @@ components:
           properties:
             items:
               type: array
+              maxItems: 500
               items:
                 $ref: "#/components/schemas/DashboardGlobalDeltaEntry"
 
@@ -337,6 +341,7 @@ components:
           properties:
             items:
               type: array
+              maxItems: 500
               items:
                 $ref: "#/components/schemas/DashboardGlobalProposalEntry"
 
