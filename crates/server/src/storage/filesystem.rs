@@ -719,9 +719,15 @@ impl StorageBackend for FilesystemService {
         status_filter: Option<Vec<DeltaStatusKind>>,
     ) -> Result<Vec<GlobalDeltaRow>, String> {
         let account_ids = self.fanout_account_ids().await?;
+        // Hold the parsed cursor `DateTime<Utc>` so cutoff comparison
+        // is instant-based, not string-based. Comparing raw RFC3339
+        // strings is fragile: `2026-05-11T12:17:34Z` and
+        // `2026-05-11T12:17:34.000+00:00` represent the same instant
+        // but compare differently lexicographically, which can skip
+        // or duplicate page boundaries.
         let cutoff = cursor.as_ref().map(|c| {
             (
-                c.last_status_timestamp.to_rfc3339(),
+                c.last_status_timestamp,
                 c.last_account_id.clone(),
                 c.last_nonce as u64,
             )
@@ -742,8 +748,12 @@ impl StorageBackend for FilesystemService {
                     continue;
                 }
                 if let Some((cutoff_ts, cutoff_account, cutoff_nonce)) = &cutoff {
-                    let ts = delta.status.timestamp();
-                    let keep = match ts.cmp(cutoff_ts) {
+                    // Unparseable timestamps sort as `MIN_UTC` so
+                    // they land at the back of the DESC feed and
+                    // never accidentally jump the cutoff.
+                    let parsed = parse_status_timestamp(delta.status.timestamp())
+                        .unwrap_or(DateTime::<Utc>::MIN_UTC);
+                    let keep = match parsed.cmp(cutoff_ts) {
                         Ordering::Less => true,
                         Ordering::Greater => false,
                         Ordering::Equal => match account_id.cmp(cutoff_account) {
@@ -762,13 +772,18 @@ impl StorageBackend for FilesystemService {
                 });
             }
         }
-        // Newest-first by status timestamp, then account_id ASC, then
-        // nonce ASC — mirrors the Postgres SQL ORDER BY.
+        // Newest-first by parsed `DateTime<Utc>`, then account_id
+        // ASC, then nonce ASC — mirrors the Postgres SQL ORDER BY.
+        // Parsing on the sort path means two rows representing the
+        // same instant land in the deterministic tie-break order
+        // regardless of how their RFC3339 strings happen to be
+        // formatted.
         rows.sort_by(|a, b| {
-            b.delta
-                .status
-                .timestamp()
-                .cmp(a.delta.status.timestamp())
+            let ts_a = parse_status_timestamp(a.delta.status.timestamp())
+                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            let ts_b = parse_status_timestamp(b.delta.status.timestamp())
+                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            ts_b.cmp(&ts_a)
                 .then_with(|| a.account_id.cmp(&b.account_id))
                 .then_with(|| a.delta.nonce.cmp(&b.delta.nonce))
         });
@@ -782,9 +797,11 @@ impl StorageBackend for FilesystemService {
         cursor: Option<GlobalProposalCursor>,
     ) -> Result<Vec<ProposalRecord>, String> {
         let account_ids = self.fanout_account_ids().await?;
+        // See `list_global_deltas_paged` above for the rationale on
+        // holding the cutoff as a parsed `DateTime<Utc>`.
         let cutoff = cursor.as_ref().map(|c| {
             (
-                c.last_originating_timestamp.to_rfc3339(),
+                c.last_originating_timestamp,
                 c.last_account_id.clone(),
                 c.last_nonce as u64,
                 c.last_commitment.clone(),
@@ -796,8 +813,9 @@ impl StorageBackend for FilesystemService {
             {
                 if let Some((cutoff_ts, cutoff_account, cutoff_nonce, cutoff_commitment)) = &cutoff
                 {
-                    let ts = proposal.status.timestamp();
-                    let keep = match ts.cmp(cutoff_ts) {
+                    let parsed = parse_status_timestamp(proposal.status.timestamp())
+                        .unwrap_or(DateTime::<Utc>::MIN_UTC);
+                    let keep = match parsed.cmp(cutoff_ts) {
                         Ordering::Less => true,
                         Ordering::Greater => false,
                         Ordering::Equal => match account_id.as_str().cmp(cutoff_account.as_str()) {
@@ -822,10 +840,11 @@ impl StorageBackend for FilesystemService {
             }
         }
         rows.sort_by(|a, b| {
-            b.proposal
-                .status
-                .timestamp()
-                .cmp(a.proposal.status.timestamp())
+            let ts_a = parse_status_timestamp(a.proposal.status.timestamp())
+                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            let ts_b = parse_status_timestamp(b.proposal.status.timestamp())
+                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            ts_b.cmp(&ts_a)
                 .then_with(|| a.account_id.cmp(&b.account_id))
                 .then_with(|| a.proposal.nonce.cmp(&b.proposal.nonce))
                 .then_with(|| a.commitment.cmp(&b.commitment))
