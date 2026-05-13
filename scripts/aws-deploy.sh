@@ -425,6 +425,22 @@ cmd_build_and_push() {
   log_info "Image pushed successfully"
 }
 
+cmd_plan() {
+  log_info "Planning GUARDIAN server Terraform changes..."
+  validate_deploy_config
+  validate_ack_secrets_exist || return 1
+
+  local IMAGE_URI
+  IMAGE_URI=$(resolve_deploy_image_uri) || return 1
+  ensure_terraform_init || return 1
+  build_tf_vars "$IMAGE_URI"
+
+  log_info "Using image ${IMAGE_URI}"
+  log_info "Using Terraform state ${TF_STATE_PATH}"
+  log_info "Running terraform plan..."
+  terraform -chdir="$TF_DIR" plan -state="$TF_STATE_PATH" "${TF_VARS[@]}"
+}
+
 cmd_deploy() {
   log_info "Deploying GUARDIAN server with Terraform..."
   validate_deploy_config
@@ -444,7 +460,7 @@ cmd_deploy() {
   log_info "Deploying image ${IMAGE_URI}"
   log_info "Using Terraform state ${TF_STATE_PATH}"
   log_info "Applying Terraform..."
-  terraform -chdir="$TF_DIR" apply -auto-approve -state="$TF_STATE_PATH" -backup="$TF_STATE_BACKUP_PATH" "${TF_VARS[@]}"
+  terraform -chdir="$TF_DIR" apply -state="$TF_STATE_PATH" -backup="$TF_STATE_BACKUP_PATH" "${TF_VARS[@]}"
 
   local ALB_URL
   local ALB_DNS
@@ -659,6 +675,12 @@ case "${COMMAND:-}" in
   deploy)
     cmd_deploy
     ;;
+  plan)
+    cmd_plan
+    ;;
+  build)
+    cmd_build_and_push
+    ;;
   bootstrap-ack-keys)
     cmd_bootstrap_ack_keys
     ;;
@@ -678,6 +700,8 @@ case "${COMMAND:-}" in
     echo ""
     echo "Commands:"
     echo "  deploy   Build/push image and run Terraform apply"
+    echo "  plan     Run Terraform plan without building or applying"
+    echo "  build    Build and push the Docker image to ECR (no Terraform)"
     echo "  bootstrap-ack-keys  Create the prod ACK key secrets in Secrets Manager"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"

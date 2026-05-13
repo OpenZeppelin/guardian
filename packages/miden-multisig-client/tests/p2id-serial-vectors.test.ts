@@ -16,7 +16,7 @@ const sdkEntryPath = require.resolve('@miden-sdk/miden-sdk');
 const sdkDistDir = dirname(sdkEntryPath);
 const sdkWasmPath = join(sdkDistDir, 'assets', 'miden_client_web.wasm');
 
-const { initSync, Word } = await import('@miden-sdk/miden-sdk');
+const { initSync, Word } = await import('@miden-sdk/miden-sdk/lazy');
 initSync({ module: readFileSync(sdkWasmPath) });
 
 const { deriveP2idSerialNumber } = await import('../src/transaction/p2id.js');
