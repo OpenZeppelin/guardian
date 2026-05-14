@@ -4,6 +4,8 @@
 
 The API exposes a simple interface for operating states, deltas, and proposal coordination over HTTP and gRPC. Miden uses the state/delta paths and the delta proposal workflow. EVM is a feature-gated HTTP domain under `/evm/*` for wallet sessions, smart account registration, and opaque proposal coordination.
 
+The operator dashboard surface is HTTP-only and lives under `/dashboard/*`. Authentication is established by the `/auth/*` challenge/sign flow, which sets a `guardian_operator_session` cookie. Read-only dashboard endpoints include the inventory/health summary (`GET /dashboard/info`), the always-paginated account list, the single-account detail and snapshot endpoints (`/dashboard/accounts/{id}` and `/dashboard/accounts/{id}/snapshot`), the per-account delta and proposal feeds, and the global cross-account delta and proposal feeds. Paginated endpoints use a cursor envelope `{ items, next_cursor }`. The dashboard error taxonomy is stable: `401 authentication_failed`, `404 account_not_found`, `400 invalid_cursor` / `invalid_limit` / `invalid_status_filter`, `503 data_unavailable` for transient read failures across the paginated endpoints, plus `400 unsupported_for_network` and `503 account_data_unavailable` emitted specifically by the snapshot endpoint (FR-045 — EVM and missing/undecodable state respectively). The breaking changes in feature `005-operator-dashboard-metrics` (always-paginated `/dashboard/accounts`, removal of `total_count`, bare `DashboardAccountDetail` response without the `success`/`account` wrapper) are captured in `spec/api.md`.
+
 ## Metadata
 
 - Stores per-account configuration required to authorise requests, dispatch network-specific behavior, and route to storage.

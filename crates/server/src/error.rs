@@ -62,6 +62,25 @@ pub enum GuardianError {
         retry_after_secs: u32,
         scope: String,
     },
+    /// Dashboard pagination cursor is malformed, tampered, or no longer valid.
+    /// Maps to HTTP 400 with stable code `invalid_cursor`. See FR-005/FR-028
+    /// of `005-operator-dashboard-metrics`.
+    InvalidCursor(String),
+    /// Dashboard pagination `limit` parameter is outside the allowed range
+    /// `[1, 500]`. Maps to HTTP 400 with stable code `invalid_limit`. See
+    /// FR-002 of `005-operator-dashboard-metrics`.
+    InvalidLimit(String),
+    /// Dashboard global delta feed `status` filter contains an unknown or
+    /// malformed value. Maps to HTTP 400 with stable code
+    /// `invalid_status_filter`. See FR-033 of
+    /// `005-operator-dashboard-metrics`.
+    InvalidStatusFilter(String),
+    /// Underlying records exist (or metadata exists) but cannot be read,
+    /// or a cross-account aggregate is degraded above the filesystem
+    /// threshold. Maps to HTTP 503 with stable code `data_unavailable`.
+    /// Distinct from `AccountDataUnavailable` which is account-scoped.
+    /// See FR-029 of `005-operator-dashboard-metrics`.
+    DataUnavailable(String),
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -121,6 +140,10 @@ impl GuardianError {
             GuardianError::SigningError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             GuardianError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             GuardianError::ConfigurationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            GuardianError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidLimit(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidStatusFilter(_) => StatusCode::BAD_REQUEST,
+            GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 
@@ -157,6 +180,10 @@ impl GuardianError {
             GuardianError::SigningError(_) => tonic::Code::Internal,
             GuardianError::StorageError(_) => tonic::Code::Internal,
             GuardianError::ConfigurationError(_) => tonic::Code::Internal,
+            GuardianError::InvalidCursor(_) => tonic::Code::InvalidArgument,
+            GuardianError::InvalidLimit(_) => tonic::Code::InvalidArgument,
+            GuardianError::InvalidStatusFilter(_) => tonic::Code::InvalidArgument,
+            GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
         }
     }
 
@@ -193,6 +220,10 @@ impl GuardianError {
             GuardianError::InvalidEvmProposal(_) => "invalid_evm_proposal",
             GuardianError::InsufficientSignatures { .. } => "insufficient_signatures",
             GuardianError::RateLimitExceeded { .. } => "rate_limit_exceeded",
+            GuardianError::InvalidCursor(_) => "invalid_cursor",
+            GuardianError::InvalidLimit(_) => "invalid_limit",
+            GuardianError::InvalidStatusFilter(_) => "invalid_status_filter",
+            GuardianError::DataUnavailable(_) => "data_unavailable",
         }
     }
 }
@@ -277,6 +308,12 @@ impl fmt::Display for GuardianError {
                 f,
                 "Rate limit exceeded for {scope}. Retry after {retry_after_secs} seconds"
             ),
+            GuardianError::InvalidCursor(msg) => write!(f, "Invalid cursor: {msg}"),
+            GuardianError::InvalidLimit(msg) => write!(f, "Invalid limit: {msg}"),
+            GuardianError::InvalidStatusFilter(msg) => {
+                write!(f, "Invalid status filter: {msg}")
+            }
+            GuardianError::DataUnavailable(msg) => write!(f, "Data unavailable: {msg}"),
         }
     }
 }
@@ -858,5 +895,65 @@ mod tests {
         let status: tonic::Status = err.into();
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
         assert!(status.message().contains("bad creds"));
+    }
+
+    // --- Dashboard pagination error variants (FR-028) ---
+
+    #[test]
+    fn invalid_cursor_maps_to_400_with_stable_code() {
+        let err = GuardianError::InvalidCursor("tampered".into());
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "invalid_cursor");
+        assert_eq!(err.grpc_status(), tonic::Code::InvalidArgument);
+        assert!(err.to_string().contains("Invalid cursor"));
+        assert!(err.to_string().contains("tampered"));
+    }
+
+    #[test]
+    fn invalid_limit_maps_to_400_with_stable_code() {
+        let err = GuardianError::InvalidLimit("limit must be in [1, 500]".into());
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "invalid_limit");
+        assert_eq!(err.grpc_status(), tonic::Code::InvalidArgument);
+        assert!(err.to_string().contains("Invalid limit"));
+    }
+
+    #[test]
+    fn invalid_status_filter_maps_to_400_with_stable_code() {
+        let err = GuardianError::InvalidStatusFilter("unknown status 'foo'".into());
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "invalid_status_filter");
+        assert_eq!(err.grpc_status(), tonic::Code::InvalidArgument);
+        assert!(err.to_string().contains("Invalid status filter"));
+    }
+
+    #[test]
+    fn data_unavailable_maps_to_503_with_stable_code() {
+        let err = GuardianError::DataUnavailable("delta store unreadable".into());
+        assert_eq!(err.http_status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.code(), "data_unavailable");
+        assert_eq!(err.grpc_status(), tonic::Code::Unavailable);
+        assert!(err.to_string().contains("Data unavailable"));
+    }
+
+    #[test]
+    fn dashboard_error_variants_serialize_with_stable_code_in_body() {
+        // Smoke-tests the JSON body shape from `IntoResponse`. The body
+        // includes `code: <stable string>` so clients can branch without
+        // string-matching the message.
+        for (err, expected_code) in [
+            (GuardianError::InvalidCursor("x".into()), "invalid_cursor"),
+            (GuardianError::InvalidLimit("x".into()), "invalid_limit"),
+            (
+                GuardianError::InvalidStatusFilter("x".into()),
+                "invalid_status_filter",
+            ),
+            (
+                GuardianError::DataUnavailable("x".into()),
+                "data_unavailable",
+            ),
+        ] {
+            assert_eq!(err.code(), expected_code);
+        }
     }
 }

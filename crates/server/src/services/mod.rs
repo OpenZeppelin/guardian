@@ -8,7 +8,14 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod configure_account;
+mod dashboard_account_deltas;
+mod dashboard_account_proposals;
+mod dashboard_account_snapshot;
 mod dashboard_accounts;
+mod dashboard_global_deltas;
+mod dashboard_global_proposals;
+mod dashboard_info;
+mod dashboard_pagination;
 mod delta_commit;
 mod get_delta;
 mod get_delta_proposal;
@@ -24,11 +31,27 @@ pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
 };
 pub use configure_account::{ConfigureAccountParams, ConfigureAccountResult, configure_account};
+pub use dashboard_account_deltas::{
+    DashboardDeltaEntry, DashboardDeltaStatus, list_account_deltas,
+};
+pub use dashboard_account_proposals::{DashboardProposalEntry, list_account_proposals};
+pub use dashboard_account_snapshot::{
+    DashboardAccountSnapshot, DashboardVaultFungibleEntry, DashboardVaultNonFungibleEntry,
+    DashboardVaultSnapshot, get_account_snapshot,
+};
 pub use dashboard_accounts::{
     DashboardAccountDetail, DashboardAccountStateStatus, DashboardAccountSummary,
-    GetDashboardAccountResult, ListDashboardAccountsResult, get_dashboard_account,
-    list_dashboard_accounts,
+    GetDashboardAccountResult, get_dashboard_account, list_dashboard_accounts_paged,
 };
+pub use dashboard_global_deltas::{
+    DashboardGlobalDeltaEntry, list_global_deltas, parse_status_filter,
+};
+pub use dashboard_global_proposals::{DashboardGlobalProposalEntry, list_global_proposals};
+pub use dashboard_info::{
+    AGG_DELTA_STATUS_COUNTS, AGG_IN_FLIGHT_PROPOSAL_COUNT, AGG_LATEST_ACTIVITY,
+    DashboardDeltaStatusCounts, DashboardInfoResponse, DashboardServiceStatus, get_dashboard_info,
+};
+pub use dashboard_pagination::{DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit};
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
 pub use get_delta_proposal::{GetDeltaProposalParams, GetDeltaProposalResult, get_delta_proposal};
 pub use get_delta_proposals::{

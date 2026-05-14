@@ -135,6 +135,22 @@ pub struct DeltaObject {
     pub status: DeltaStatus,
 }
 
+impl DeltaObject {
+    /// Return the multisig proposal type tag carried in
+    /// `delta_payload.metadata.proposal_type`, if any. Multisig
+    /// proposals (and the deltas they commit) always set this to one of
+    /// the validated values (`add_signer`, `remove_signer`,
+    /// `change_threshold`, `update_procedure_threshold`, `p2id`,
+    /// `consume_notes`, `switch_guardian`). Single-key Miden
+    /// `push_delta` and EVM deltas carry no metadata and return `None`.
+    pub fn proposal_type(&self) -> Option<&str> {
+        self.delta_payload
+            .get("metadata")?
+            .get("proposal_type")?
+            .as_str()
+    }
+}
+
 impl<'de> Deserialize<'de> for DeltaObject {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where

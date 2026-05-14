@@ -1,5 +1,6 @@
 mod allowlist;
 mod config;
+pub mod cursor;
 mod middleware;
 mod state;
 mod types;

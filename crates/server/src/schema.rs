@@ -31,6 +31,14 @@ diesel::table! {
         delta_payload -> Jsonb,
         ack_sig -> Nullable<Text>,
         status -> Jsonb,
+        // Typed mirrors of the lifecycle status. Promoted in
+        // migration 2026-05-10-000001 for fast dashboard reads
+        // (feature `005-operator-dashboard-metrics`). Writes
+        // dual-populate these alongside the Jsonb `status`; reads
+        // (especially cross-account aggregates) prefer the typed
+        // columns.
+        status_kind -> Text,
+        status_timestamp -> Timestamptz,
     }
 }
 
@@ -52,6 +60,8 @@ diesel::table! {
         delta_payload -> Jsonb,
         ack_sig -> Nullable<Text>,
         status -> Jsonb,
+        status_kind -> Text,
+        status_timestamp -> Timestamptz,
     }
 }
 

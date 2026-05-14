@@ -2,6 +2,7 @@ pub use guardian_shared::{FromJson, ToJson};
 
 pub mod ack;
 pub mod api;
+pub mod build_info;
 pub mod builder;
 pub mod dashboard;
 pub mod middleware;
