@@ -107,7 +107,7 @@ locals {
   rds_proxy_role_name                          = "${var.stack_name}-rds-proxy"
   rds_proxy_security_group_name                = "${var.stack_name}-rds-proxy-sg"
   rds_master_password                          = var.postgres_password != "" ? var.postgres_password : random_password.postgres[0].result
-  effective_rds_instance_class                 = var.rds_instance_class != "" ? var.rds_instance_class : (local.is_prod ? "db.t3.medium" : "db.t3.micro")
+  effective_rds_instance_class                 = var.rds_instance_class != "" ? var.rds_instance_class : (local.is_prod ? "db.r6g.large" : "db.t3.micro")
   effective_rds_allocated_storage              = var.rds_allocated_storage != null ? var.rds_allocated_storage : (local.is_prod ? 50 : 20)
   effective_server_desired_count               = var.server_desired_count != null ? var.server_desired_count : (local.is_prod ? 2 : 1)
   effective_server_autoscaling_enabled         = var.server_autoscaling_enabled != null ? var.server_autoscaling_enabled : local.is_prod

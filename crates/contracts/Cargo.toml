@@ -18,7 +18,7 @@ miden-testing = { version = "=0.14.5" }
 
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
-guardian-shared = { version = "=0.14.5", path = "../shared" }
+guardian-shared = { version = "=0.14.6", path = "../shared" }
 
 [dev-dependencies]
 miden-client = { version = "=0.14.5", features = ["testing", "tonic"] }
