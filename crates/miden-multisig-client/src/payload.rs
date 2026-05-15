@@ -39,6 +39,14 @@ pub struct ProposalMetadataPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
 
+    /// `consume_notes` metadata version (issue #229). Absent => v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consume_notes_metadata_version: Option<u32>,
+
+    /// v2 embedded notes (base64), index-aligned with `note_ids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consume_notes_notes: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_guardian_pubkey: Option<String>,
 
@@ -156,11 +164,32 @@ impl ProposalPayload {
         self
     }
 
-    /// Sets the metadata for note consumption transactions.
+    /// Legacy (v1) note consumption metadata. Prefer
+    /// `with_note_consumption_metadata_v2` for new proposals (issue #229).
     pub fn with_note_consumption_metadata(mut self, note_ids: &[String], salt: String) -> Self {
         self.metadata = Some(ProposalMetadataPayload {
             proposal_type: "consume_notes".to_string(),
             note_ids: note_ids.to_vec(),
+            salt: Some(salt),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// v2 (self-contained) note consumption metadata. `notes_base64[i]`
+    /// MUST correspond to `note_ids[i]`; the binding is reasserted at
+    /// verify time (FR-007). Takes both vecs by value to skip a clone.
+    pub fn with_note_consumption_metadata_v2(
+        mut self,
+        note_ids: Vec<String>,
+        notes_base64: Vec<String>,
+        salt: String,
+    ) -> Self {
+        self.metadata = Some(ProposalMetadataPayload {
+            proposal_type: "consume_notes".to_string(),
+            note_ids,
+            consume_notes_metadata_version: Some(2),
+            consume_notes_notes: notes_base64,
             salt: Some(salt),
             ..Default::default()
         });
@@ -395,5 +424,92 @@ mod tests {
         assert_eq!(meta.target_threshold, Some(2));
         assert!(meta.signer_commitments.is_empty());
         assert!(meta.salt.is_none());
+    }
+
+    // ---------- consume_notes metadata v1/v2 round-trip (issue #229) ----------
+
+    /// v1 (legacy) consume_notes payload must round-trip without
+    /// silently introducing a `consume_notes_metadata_version` field or
+    /// a `consume_notes_notes` array on the wire — so the v1 wire shape
+    /// remains byte-identical to the pre-feature shape (FR-003).
+    #[test]
+    fn consume_notes_v1_payload_omits_v2_fields_on_wire() {
+        let meta = ProposalMetadataPayload {
+            proposal_type: "consume_notes".to_string(),
+            note_ids: vec!["0xabc".to_string()],
+            salt: Some("0xsalt".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(json.get("consume_notes_metadata_version").is_none());
+        assert!(json.get("consume_notes_notes").is_none());
+
+        let parsed: ProposalMetadataPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.proposal_type, "consume_notes");
+        assert_eq!(parsed.note_ids, vec!["0xabc".to_string()]);
+        assert!(parsed.consume_notes_metadata_version.is_none());
+        assert!(parsed.consume_notes_notes.is_empty());
+    }
+
+    /// v2 consume_notes payload round-trips with the discriminator and
+    /// embedded notes preserved (FR-001 / FR-002 wire support).
+    #[test]
+    fn consume_notes_v2_payload_round_trips() {
+        let meta = ProposalMetadataPayload {
+            proposal_type: "consume_notes".to_string(),
+            note_ids: vec!["0xabc".to_string(), "0xdef".to_string()],
+            consume_notes_metadata_version: Some(2),
+            consume_notes_notes: vec![
+                "YmFzZTY0Tm90ZTE=".to_string(),
+                "YmFzZTY0Tm90ZTI=".to_string(),
+            ],
+            salt: Some("0xsalt".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&meta).unwrap();
+        let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.consume_notes_metadata_version, Some(2));
+        assert_eq!(parsed.consume_notes_notes.len(), 2);
+        assert_eq!(parsed.note_ids, meta.note_ids);
+        assert_eq!(parsed.consume_notes_notes, meta.consume_notes_notes);
+    }
+
+    /// An unrecognized future metadata version deserializes successfully
+    /// at the serde layer. Rejection happens at dispatch time per FR-009,
+    /// not at parse time — so the parser stays forward-compatible.
+    #[test]
+    fn consume_notes_unknown_version_parses_at_serde_layer() {
+        let json = r#"{"proposal_type":"consume_notes","note_ids":["0xabc"],"consume_notes_metadata_version":99}"#;
+        let meta: ProposalMetadataPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.consume_notes_metadata_version, Some(99));
+    }
+
+    /// `with_note_consumption_metadata_v2` is the creation-path builder
+    /// that emits a v2-shape `consume_notes` proposal: discriminator
+    /// `Some(2)`, embedded `notes` populated, and indexes aligned with
+    /// the declared `note_ids` (binding asserted at verification time).
+    #[test]
+    fn with_note_consumption_metadata_v2_emits_v2_shape() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_note_consumption_metadata_v2(
+            vec!["0xabc".to_string()],
+            vec!["YmFzZTY0Tm90ZQ==".to_string()],
+            "0xsalt".to_string(),
+        );
+
+        let meta = payload.metadata.expect("metadata");
+        assert_eq!(meta.proposal_type, "consume_notes");
+        assert_eq!(meta.consume_notes_metadata_version, Some(2));
+        assert_eq!(
+            meta.consume_notes_notes,
+            vec!["YmFzZTY0Tm90ZQ==".to_string()]
+        );
+        assert_eq!(meta.note_ids, vec!["0xabc".to_string()]);
     }
 }

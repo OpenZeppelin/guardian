@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use guardian_client::DeltaObject;
 use guardian_shared::FromJson;
 use guardian_shared::hex::FromHex;
@@ -11,16 +13,56 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2FalconSignature;
-use miden_protocol::note::NoteId;
+use miden_protocol::note::{Note, NoteId};
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
+
+/// Max serialized v2 `consume_notes` metadata, enforced at creation. Spec FR-011.
+pub const MAX_CONSUME_NOTES_METADATA_BYTES: usize = 256 * 1024;
+
+/// `consume_notes` metadata schema version. Absence on the wire => v1 (legacy).
+pub const CONSUME_NOTES_METADATA_VERSION_V2: u32 = 2;
+
+/// Base64 of `Serializable::to_bytes(&note)`. Inner string is private so
+/// every construction goes through `from_note` or `from_base64`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SerializedNote(String);
+
+impl SerializedNote {
+    pub fn from_note(note: &Note) -> Self {
+        Self(BASE64.encode(Serializable::to_bytes(note)))
+    }
+
+    /// Wraps an already-base64-encoded wire string. Validation is deferred to `to_note`.
+    pub fn from_base64(s: String) -> Self {
+        Self(s)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    pub fn to_note(&self) -> Result<Note> {
+        let bytes = BASE64
+            .decode(self.0.as_bytes())
+            .map_err(|e| MultisigError::InvalidConfig(format!("invalid base64 in note: {}", e)))?;
+        Note::read_from_bytes(&bytes)
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to deserialize note: {}", e)))
+    }
+}
 
 /// Status of a proposal in the signing workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +92,10 @@ pub enum TransactionType {
     },
     ConsumeNotes {
         note_ids: Vec<NoteId>,
+        /// `None`/`Some(1)` => v1, `Some(2)` => v2 (issue #229).
+        metadata_version: Option<u32>,
+        /// v2 embedded notes, index-aligned with `note_ids`. Empty on v1.
+        notes: Vec<SerializedNote>,
     },
     AddCosigner {
         new_commitment: Word,
@@ -81,9 +127,22 @@ impl TransactionType {
         }
     }
 
-    /// Creates a ConsumeNotes transaction.
+    /// Legacy (v1) — no embedded notes. Use `consume_notes_v2` for new proposals.
     pub fn consume_notes(note_ids: Vec<NoteId>) -> Self {
-        Self::ConsumeNotes { note_ids }
+        Self::ConsumeNotes {
+            note_ids,
+            metadata_version: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// v2 — embeds the notes inline so verification doesn't read the local store (issue #229).
+    pub fn consume_notes_v2(note_ids: Vec<NoteId>, notes: Vec<SerializedNote>) -> Self {
+        Self::ConsumeNotes {
+            note_ids,
+            metadata_version: Some(CONSUME_NOTES_METADATA_VERSION_V2),
+            notes,
+        }
     }
 
     /// Creates an AddCosigner transaction.
@@ -171,6 +230,13 @@ pub struct ProposalMetadata {
 
     pub note_ids_hex: Vec<String>,
 
+    /// `consume_notes` metadata version. `None` => v1, `Some(2)` => v2.
+    /// Other values are rejected at dispatch (spec FR-009).
+    pub consume_notes_metadata_version: Option<u32>,
+
+    /// v2 embedded notes, index-aligned with `note_ids_hex`. Empty on v1.
+    pub consume_notes_notes: Vec<SerializedNote>,
+
     pub new_guardian_pubkey_hex: Option<String>,
     pub new_guardian_endpoint: Option<String>,
     pub target_procedure: Option<String>,
@@ -180,6 +246,14 @@ pub struct ProposalMetadata {
 }
 
 impl ProposalMetadata {
+    pub fn is_consume_notes_v1(&self) -> bool {
+        matches!(self.consume_notes_metadata_version, None | Some(1))
+    }
+
+    pub fn is_consume_notes_v2(&self) -> bool {
+        self.consume_notes_metadata_version == Some(CONSUME_NOTES_METADATA_VERSION_V2)
+    }
+
     /// Converts salt hex to Word.
     pub fn salt(&self) -> Result<Word> {
         match &self.salt_hex {
@@ -235,6 +309,8 @@ impl ProposalMetadata {
                 }
                 Ok(TransactionType::ConsumeNotes {
                     note_ids: self.note_ids()?,
+                    metadata_version: self.consume_notes_metadata_version,
+                    notes: self.consume_notes_notes.clone(),
                 })
             }
             "p2id" => {
@@ -470,6 +546,12 @@ impl Proposal {
             None => None,
         };
         let note_ids_hex = metadata_payload.note_ids;
+        let consume_notes_metadata_version = metadata_payload.consume_notes_metadata_version;
+        let consume_notes_notes = metadata_payload
+            .consume_notes_notes
+            .into_iter()
+            .map(SerializedNote::from_base64)
+            .collect();
 
         let new_guardian_pubkey_hex = metadata_payload.new_guardian_pubkey;
         let new_guardian_endpoint = metadata_payload.new_guardian_endpoint;
@@ -485,6 +567,8 @@ impl Proposal {
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
             note_ids_hex: note_ids_hex.clone(),
+            consume_notes_metadata_version,
+            consume_notes_notes,
             new_guardian_pubkey_hex: new_guardian_pubkey_hex.clone(),
             new_guardian_endpoint: new_guardian_endpoint.clone(),
             target_procedure: target_procedure.clone(),
@@ -721,7 +805,9 @@ mod tests {
         assert_eq!(
             tx,
             TransactionType::ConsumeNotes {
-                note_ids: vec![note_id]
+                note_ids: vec![note_id],
+                metadata_version: None,
+                notes: Vec::new(),
             }
         );
     }
@@ -891,6 +977,153 @@ mod tests {
         };
 
         assert_eq!(proposal.signatures_needed(), 0);
+    }
+
+    // ==================== US1 dispatch wiring tests (issue #229) ====================
+
+    /// The v1 `consume_notes` constructor builds a TransactionType that
+    /// the dispatch will route through the legacy local-store path.
+    #[test]
+    fn transaction_type_consume_notes_legacy_constructor_marks_v1() {
+        let note_id = NoteId::from_raw(Word::default());
+        let tx = TransactionType::consume_notes(vec![note_id]);
+        match tx {
+            TransactionType::ConsumeNotes {
+                metadata_version,
+                notes,
+                ..
+            } => {
+                assert!(
+                    metadata_version.is_none(),
+                    "legacy constructor must not stamp a version"
+                );
+                assert!(notes.is_empty(), "legacy constructor must not embed notes");
+            }
+            other => panic!("expected ConsumeNotes, got {:?}", other),
+        }
+    }
+
+    /// The v2 `consume_notes_v2` constructor stamps the discriminator
+    /// and carries the embedded notes so the dispatch routes through
+    /// the self-contained rebuild path.
+    #[test]
+    fn transaction_type_consume_notes_v2_constructor_stamps_version_and_notes() {
+        let note_id = NoteId::from_raw(Word::default());
+        let embedded = vec![SerializedNote::from_base64("YmFzZTY0Tm90ZQ==".to_string())];
+        let tx = TransactionType::consume_notes_v2(vec![note_id], embedded.clone());
+        match tx {
+            TransactionType::ConsumeNotes {
+                metadata_version,
+                notes,
+                ..
+            } => {
+                assert_eq!(metadata_version, Some(CONSUME_NOTES_METADATA_VERSION_V2));
+                assert_eq!(notes, embedded);
+            }
+            other => panic!("expected ConsumeNotes, got {:?}", other),
+        }
+    }
+
+    /// `ProposalMetadata::to_transaction_type` threads the v2 discriminator
+    /// and embedded notes from wire metadata into the runtime
+    /// TransactionType so the dispatch in `execution.rs` sees them.
+    /// This is the wire→runtime bridge that the foundational tests in
+    /// `payload.rs` exercise at the JSON layer.
+    #[test]
+    fn to_transaction_type_threads_v2_metadata() {
+        let note_id_hex =
+            "0x0100000000000000000000000000000000000000000000000000000000000000".to_string();
+        let metadata = ProposalMetadata {
+            note_ids_hex: vec![note_id_hex],
+            consume_notes_metadata_version: Some(CONSUME_NOTES_METADATA_VERSION_V2),
+            consume_notes_notes: vec![SerializedNote::from_base64("YmFzZTY0Tm90ZQ==".to_string())],
+            ..Default::default()
+        };
+
+        let tx = metadata
+            .to_transaction_type("consume_notes")
+            .expect("to_transaction_type");
+
+        match tx {
+            TransactionType::ConsumeNotes {
+                metadata_version,
+                notes,
+                ..
+            } => {
+                assert_eq!(metadata_version, Some(CONSUME_NOTES_METADATA_VERSION_V2));
+                assert_eq!(notes.len(), 1);
+                assert_eq!(notes[0].as_str(), "YmFzZTY0Tm90ZQ==");
+            }
+            other => panic!("expected ConsumeNotes, got {:?}", other),
+        }
+    }
+
+    // ==================== SerializedNote tests (issue #229) ====================
+
+    /// `SerializedNote` serializes transparently as a string (the base64
+    /// of a Miden `Note`'s byte serialization). This is the wire format
+    /// consumed by the v2 dispatch in US1.
+    #[test]
+    fn serialized_note_is_transparent_string_on_wire() {
+        let sn = SerializedNote::from_base64("YmFzZTY0LWVuY29kZWQtbm90ZQ==".to_string());
+        let json = serde_json::to_value(&sn).unwrap();
+        assert_eq!(
+            json,
+            serde_json::Value::String("YmFzZTY0LWVuY29kZWQtbm90ZQ==".to_string())
+        );
+
+        let parsed: SerializedNote =
+            serde_json::from_str(r#""YmFzZTY0LWVuY29kZWQtbm90ZQ==""#).unwrap();
+        assert_eq!(parsed.0, sn.0);
+    }
+
+    /// Decoding garbage base64 yields a clean error, not a panic.
+    #[test]
+    fn serialized_note_rejects_invalid_base64() {
+        let sn = SerializedNote::from_base64("@@@not-base64@@@".to_string());
+        let err = sn.to_note().unwrap_err();
+        assert!(matches!(err, MultisigError::InvalidConfig(_)));
+    }
+
+    /// `MAX_CONSUME_NOTES_METADATA_BYTES` is the 256 KiB limit from
+    /// research.md Decision 4 — pinning the value so future changes
+    /// are visible in test diffs.
+    #[test]
+    fn max_consume_notes_metadata_bytes_is_256_kib() {
+        assert_eq!(MAX_CONSUME_NOTES_METADATA_BYTES, 256 * 1024);
+        assert_eq!(MAX_CONSUME_NOTES_METADATA_BYTES, 262_144);
+    }
+
+    /// v1/v2 discriminator helpers on the internal `ProposalMetadata`
+    /// struct: absence and `Some(1)` both signal v1; `Some(2)` is v2.
+    #[test]
+    fn proposal_metadata_consume_notes_version_helpers() {
+        let v1_absent = ProposalMetadata::default();
+        assert!(v1_absent.is_consume_notes_v1());
+        assert!(!v1_absent.is_consume_notes_v2());
+
+        let v1_explicit = ProposalMetadata {
+            consume_notes_metadata_version: Some(1),
+            ..Default::default()
+        };
+        assert!(v1_explicit.is_consume_notes_v1());
+        assert!(!v1_explicit.is_consume_notes_v2());
+
+        let v2 = ProposalMetadata {
+            consume_notes_metadata_version: Some(CONSUME_NOTES_METADATA_VERSION_V2),
+            ..Default::default()
+        };
+        assert!(v2.is_consume_notes_v2());
+        assert!(!v2.is_consume_notes_v1());
+
+        // Unknown future version is neither v1 nor v2; dispatch handles
+        // rejection per spec FR-009.
+        let unknown = ProposalMetadata {
+            consume_notes_metadata_version: Some(99),
+            ..Default::default()
+        };
+        assert!(!unknown.is_consume_notes_v1());
+        assert!(!unknown.is_consume_notes_v2());
     }
 
     // ==================== ProposalMetadata parser tests ====================

@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
-use crate::proposal::{Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus};
+use crate::proposal::{
+    Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, SerializedNote,
+};
 use crate::utils::hex_body_eq;
 
 /// Current export format version.
@@ -87,6 +89,16 @@ pub struct ExportedMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,
 
+    /// `consume_notes` proposal-metadata schema version (issue #229).
+    /// Mirrors `ProposalMetadataPayload::consume_notes_metadata_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consume_notes_metadata_version: Option<u32>,
+
+    /// `consume_notes` v2 embedded notes; base64 of Miden `Note`
+    /// serialization, aligned by index with `note_ids_hex`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consume_notes_notes: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_guardian_pubkey_hex: Option<String>,
 
@@ -109,6 +121,14 @@ impl ExportedProposal {
             faucet_id_hex: self.metadata.faucet_id_hex.clone(),
             amount: self.metadata.amount,
             note_ids_hex: self.metadata.note_ids_hex.clone(),
+            consume_notes_metadata_version: self.metadata.consume_notes_metadata_version,
+            consume_notes_notes: self
+                .metadata
+                .consume_notes_notes
+                .iter()
+                .cloned()
+                .map(SerializedNote::from_base64)
+                .collect(),
             new_guardian_pubkey_hex: self.metadata.new_guardian_pubkey_hex.clone(),
             new_guardian_endpoint: self.metadata.new_guardian_endpoint.clone(),
             target_procedure: self.metadata.target_procedure.clone(),
@@ -259,6 +279,13 @@ impl ExportedProposal {
             faucet_id_hex: proposal.metadata.faucet_id_hex.clone(),
             amount: proposal.metadata.amount,
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
+            consume_notes_metadata_version: proposal.metadata.consume_notes_metadata_version,
+            consume_notes_notes: proposal
+                .metadata
+                .consume_notes_notes
+                .iter()
+                .map(|n| n.as_str().to_owned())
+                .collect(),
             new_guardian_pubkey_hex: proposal.metadata.new_guardian_pubkey_hex.clone(),
             new_guardian_endpoint: proposal.metadata.new_guardian_endpoint.clone(),
             target_procedure: proposal.metadata.target_procedure.clone(),
@@ -460,6 +487,8 @@ mod tests {
             faucet_id_hex: None,
             amount: None,
             note_ids_hex: vec![],
+            consume_notes_metadata_version: None,
+            consume_notes_notes: Vec::new(),
             new_guardian_pubkey_hex: None,
             new_guardian_endpoint: None,
             target_procedure: None,
@@ -714,6 +743,8 @@ mod tests {
             metadata: ExportedMetadata {
                 proposal_type: "consume_notes".to_string(),
                 note_ids_hex: vec![valid_note_id_hex()],
+                consume_notes_metadata_version: None,
+                consume_notes_notes: Vec::new(),
                 ..Default::default()
             },
         };

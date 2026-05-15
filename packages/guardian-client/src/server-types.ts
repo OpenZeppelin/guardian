@@ -44,6 +44,10 @@ export interface ServerProposalMetadata {
   new_guardian_pubkey?: string;
   new_guardian_endpoint?: string;
   note_ids?: string[];
+  /** consume_notes metadata version (issue #229). Absent => v1. */
+  consume_notes_metadata_version?: number;
+  /** v2 embedded notes (base64), index-aligned with `note_ids`. */
+  consume_notes_notes?: string[];
   recipient_id?: string;
   faucet_id?: string;
   amount?: string;

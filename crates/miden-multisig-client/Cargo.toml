@@ -39,5 +39,11 @@ anyhow = { workspace = true }
 # Utilities
 rand = { workspace = true }
 
+[features]
+default = ["legacy-consume-notes"]
+# Accept v1 `consume_notes` metadata (no `metadata_version`). The
+# cut-over release will ship with `default = []`. Tracks issue #229.
+legacy-consume-notes = []
+
 [dev-dependencies]
 tempfile = { workspace = true }

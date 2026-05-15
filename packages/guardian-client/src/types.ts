@@ -89,6 +89,10 @@ export interface ProposalMetadata {
   newGuardianPubkey?: string;
   newGuardianEndpoint?: string;
   noteIds?: string[];
+  /** consume_notes metadata version (issue #229). Absent => v1. */
+  consumeNotesMetadataVersion?: number;
+  /** v2 embedded notes (base64), index-aligned with `noteIds`. */
+  consumeNotesNotes?: string[];
   recipientId?: string;
   faucetId?: string;
   amount?: string;

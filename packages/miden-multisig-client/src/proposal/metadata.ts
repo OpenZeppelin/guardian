@@ -16,6 +16,8 @@ export class ProposalMetadataCodec {
         return {
           ...base,
           noteIds: metadata.noteIds,
+          consumeNotesMetadataVersion: metadata.metadataVersion,
+          consumeNotesNotes: metadata.notes,
         };
       case 'p2id':
         return {
@@ -82,6 +84,8 @@ export class ProposalMetadataCodec {
           ...base,
           proposalType: 'consume_notes',
           noteIds: guardian.noteIds,
+          metadataVersion: guardian.consumeNotesMetadataVersion as 1 | 2 | undefined,
+          notes: guardian.consumeNotesNotes,
         };
       case 'switch_guardian':
         if (!guardian.newGuardianPubkey || !guardian.newGuardianEndpoint) {
