@@ -49,9 +49,27 @@ export interface UpdateProcedureThresholdProposalMetadata extends BaseProposalMe
   targetThreshold: number;
 }
 
+/** `consume_notes` metadata version. Absence on the wire => v1 (issue #229). */
+export const CONSUME_NOTES_METADATA_VERSION_V2 = 2 as const;
+
+/** Max serialized v2 metadata, enforced at creation (FR-011). */
+export const MAX_CONSUME_NOTES_METADATA_BYTES = 256 * 1024;
+
 export interface ConsumeNotesProposalMetadata extends BaseProposalMetadata {
   proposalType: 'consume_notes';
   noteIds: string[];
+  /** Absent => v1 (legacy), `2` => v2 (issue #229). */
+  metadataVersion?: 2;
+  /** v2: base64-encoded `note.serialize()` output, index-aligned with `noteIds`. */
+  notes?: string[];
+}
+
+export function isConsumeNotesV2(md: ConsumeNotesProposalMetadata): boolean {
+  return md.metadataVersion === CONSUME_NOTES_METADATA_VERSION_V2;
+}
+
+export function isConsumeNotesV1(md: ConsumeNotesProposalMetadata): boolean {
+  return md.metadataVersion === undefined || (md.metadataVersion as number) === 1;
 }
 
 export interface P2IdProposalMetadata extends BaseProposalMetadata {

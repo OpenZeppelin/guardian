@@ -117,14 +117,63 @@ pub async fn build_final_transaction_request(
                 signature_advice,
             )
         }
-        TransactionType::ConsumeNotes { note_ids } => {
-            crate::transaction::build_consume_notes_transaction_request(
-                client,
-                note_ids.clone(),
-                salt,
-                signature_advice,
-            )
-            .await
+        TransactionType::ConsumeNotes {
+            note_ids,
+            metadata_version,
+            notes,
+        } => {
+            // v1/v2 dispatch for issue #229 / spec FR-009.
+            match metadata_version {
+                Some(crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2) => {
+                    if notes.len() != note_ids.len() {
+                        return Err(MultisigError::NoteBindingMismatch(format!(
+                            "consume_notes v2: notes.len()={} does not match note_ids.len()={}",
+                            notes.len(),
+                            note_ids.len()
+                        )));
+                    }
+                    let mut decoded: Vec<miden_protocol::note::Note> =
+                        Vec::with_capacity(notes.len());
+                    for (i, serialized) in notes.iter().enumerate() {
+                        let note = serialized.to_note()?;
+                        if note.id() != note_ids[i] {
+                            return Err(MultisigError::NoteBindingMismatch(format!(
+                                "consume_notes v2: notes[{}] id {} != note_ids[{}] {}",
+                                i,
+                                note.id().to_hex(),
+                                i,
+                                note_ids[i].to_hex()
+                            )));
+                        }
+                        decoded.push(note);
+                    }
+                    crate::transaction::build_consume_notes_transaction_request_from_notes(
+                        decoded,
+                        salt,
+                        signature_advice,
+                    )
+                }
+                None | Some(1) => {
+                    #[cfg(feature = "legacy-consume-notes")]
+                    {
+                        crate::transaction::build_consume_notes_transaction_request(
+                            client,
+                            note_ids.clone(),
+                            salt,
+                            signature_advice,
+                        )
+                        .await
+                    }
+                    #[cfg(not(feature = "legacy-consume-notes"))]
+                    {
+                        let _ = (client, salt, signature_advice);
+                        Err(MultisigError::UnsupportedMetadataVersion { found: None })
+                    }
+                }
+                Some(other) => Err(MultisigError::UnsupportedMetadataVersion {
+                    found: Some(*other),
+                }),
+            }
         }
         TransactionType::SwitchGuardian { new_commitment, .. } => {
             crate::transaction::build_update_guardian_transaction_request(

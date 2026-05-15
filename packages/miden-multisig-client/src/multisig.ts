@@ -28,6 +28,7 @@ import {
   AdviceMap,
   Endpoint,
   FeltArray,
+  Note,
   RpcClient,
   Signature,
   TransactionSummary,
@@ -41,6 +42,19 @@ import {
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
 } from './transaction.js';
+import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import {
+  CONSUME_NOTES_METADATA_VERSION_V2,
+  MAX_CONSUME_NOTES_METADATA_BYTES,
+} from './types/proposal.js';
+import { LEGACY_CONSUME_NOTES_ENABLED } from './multisig/config.js';
+import {
+  ConsumeNotesMetadataOversizeError,
+  LegacyConsumeNotesNoteMissingError,
+  NoteBindingMismatchError,
+  UnsupportedMetadataVersionError,
+} from './multisig/consumeNotesErrors.js';
+import { noteFromBase64, noteToBase64 } from './utils/encoding.js';
 import {
   base64ToUint8Array,
   uint8ArrayToBase64,
@@ -728,7 +742,19 @@ export class Multisig {
       throw new Error('At least one note ID is required');
     }
 
-    const { request, salt } = await buildConsumeNotesTransactionRequest(webClient, noteIds);
+    // Fetch notes locally (proposer has them per FR-012); embed for v2 verification.
+    const rawClient = await getRawMidenClient(webClient);
+    const fetchedNotes: Note[] = [];
+    for (const noteIdHex of noteIds) {
+      const inputNoteRecord = await rawClient.getInputNote(noteIdHex);
+      if (!inputNoteRecord) {
+        throw new LegacyConsumeNotesNoteMissingError(noteIdHex);
+      }
+      fetchedNotes.push(inputNoteRecord.toNote());
+    }
+    const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
+
+    const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -737,10 +763,18 @@ export class Multisig {
     const metadata: ProposalMetadata = {
       proposalType: 'consume_notes',
       noteIds,
+      metadataVersion: CONSUME_NOTES_METADATA_VERSION_V2,
+      notes: embeddedNotes,
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('consume_notes'),
       description: `Consume ${noteIds.length} note(s)`,
     };
+
+    // FR-011: enforce metadata size cap before signature collection.
+    const metadataSize = new TextEncoder().encode(JSON.stringify(metadata)).length;
+    if (metadataSize > MAX_CONSUME_NOTES_METADATA_BYTES) {
+      throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
+    }
 
     return this.createProposal(proposalNonce, summaryBase64, metadata);
   }
@@ -1319,12 +1353,46 @@ export class Multisig {
         return request;
       }
       case 'consume_notes': {
-        const { request } = await buildConsumeNotesTransactionRequest(
-          webClient,
-          metadata.noteIds,
-          { salt, signatureAdviceMap }
-        );
-        return request;
+        // v1/v2 dispatch for issue #229 / FR-009.
+        const version = metadata.metadataVersion;
+        if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
+          const embedded = metadata.notes ?? [];
+          if (embedded.length !== metadata.noteIds.length) {
+            throw new NoteBindingMismatchError(
+              `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${metadata.noteIds.length}`,
+            );
+          }
+          const decoded: Note[] = [];
+          for (let i = 0; i < embedded.length; i++) {
+            const note = noteFromBase64(embedded[i], Note);
+            // Normalize both sides; matches the file's other hex comparisons.
+            const embeddedId = normalizeHexWord(note.id().toString());
+            const declaredId = normalizeHexWord(metadata.noteIds[i]);
+            if (embeddedId !== declaredId) {
+              throw new NoteBindingMismatchError(
+                `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
+              );
+            }
+            decoded.push(note);
+          }
+          const { request } = buildConsumeNotesTransactionRequestFromNotes(decoded, {
+            salt,
+            signatureAdviceMap,
+          });
+          return request;
+        }
+        if (version === undefined || (version as number) === 1) {
+          if (!LEGACY_CONSUME_NOTES_ENABLED) {
+            throw new UnsupportedMetadataVersionError(undefined);
+          }
+          const { request } = await buildConsumeNotesTransactionRequest(
+            webClient,
+            metadata.noteIds,
+            { salt, signatureAdviceMap },
+          );
+          return request;
+        }
+        throw new UnsupportedMetadataVersionError(version ?? undefined);
       }
       case 'p2id': {
         const { request } = buildP2idTransactionRequest(

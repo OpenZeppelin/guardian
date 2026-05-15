@@ -346,6 +346,8 @@ mod tests {
             account
                 .effective_threshold_for_transaction(&TransactionType::ConsumeNotes {
                     note_ids: vec![NoteId::from_raw(word(5))],
+                    metadata_version: None,
+                    notes: Vec::new(),
                 })
                 .expect("threshold"),
             2

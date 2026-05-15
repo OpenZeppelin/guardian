@@ -7,24 +7,79 @@ use miden_protocol::{Felt, Word};
 use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 
-/// Builds a transaction request to consume notes.
+/// Fetches a slice of notes by ID from the client's local Miden store
+/// and converts each `InputNoteRecord` to a `Note`. Returns
+/// `LegacyConsumeNotesNoteMissing` for the first missing ID. Used by
+/// both proposal creation (the proposer-local fetch in
+/// `ProposalBuilder::build_consume_notes`) and the v1 verification
+/// adapter below.
+pub(crate) async fn fetch_notes_from_store(
+    client: &MidenSdkClient,
+    note_ids: &[NoteId],
+) -> Result<Vec<Note>> {
+    let mut notes: Vec<Note> = Vec::with_capacity(note_ids.len());
+    for note_id in note_ids {
+        let input_note_record = client
+            .get_input_note(*note_id)
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to fetch note: {}", e)))?
+            .ok_or(MultisigError::LegacyConsumeNotesNoteMissing { note_id: *note_id })?;
+        let note: Note = input_note_record.try_into().map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to convert note record to note: {:?}", e))
+        })?;
+        notes.push(note);
+    }
+    Ok(notes)
+}
+
+/// Builds a consume-notes transaction request directly from a slice of
+/// already-loaded `Note` objects. No local-store read is performed.
 ///
-/// Creates a transaction that will consume the specified notes, transferring their
-/// assets to the multisig account.
+/// This is the v2 (issue #229) rebuild path: cosigners use it to verify
+/// and execute a `consume_notes` proposal whose metadata carries the
+/// serialized notes inline, eliminating the per-device IndexedDB
+/// dependency of the legacy path.
 ///
-/// # Arguments
+/// Spec FR-005 / FR-013 / FR-014.
+pub fn build_consume_notes_transaction_request_from_notes<I>(
+    notes: Vec<Note>,
+    salt: Word,
+    signature_advice: I,
+) -> Result<TransactionRequest>
+where
+    I: IntoIterator<Item = (Word, Vec<Felt>)>,
+{
+    if notes.is_empty() {
+        return Err(MultisigError::InvalidConfig(
+            "no notes specified for consumption".to_string(),
+        ));
+    }
+
+    let note_and_args: Vec<(Note, Option<NoteArgs>)> =
+        notes.into_iter().map(|n| (n, None)).collect();
+
+    let mut builder = TransactionRequestBuilder::new()
+        .input_notes(note_and_args)
+        .auth_arg(salt);
+
+    for (key, values) in signature_advice {
+        builder = builder.extend_advice_map([(key, values)]);
+    }
+
+    builder.build().map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to build transaction request: {}", e))
+    })
+}
+
+/// Builds a consume-notes transaction request by fetching notes from
+/// the client's local store. This is the legacy (v1) path used during
+/// proposal creation (where the proposer is expected to hold the notes
+/// locally — spec FR-012) and during v1 verification on transitional
+/// builds.
 ///
-/// * `client` - Miden client used to fetch full note objects from local store
-/// * `note_ids` - IDs of the notes to consume
-/// * `salt` - Salt for replay protection
-/// * `signature_advice` - Iterator of (key, values) pairs for signature advice map
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - No note IDs are provided
-/// - Any note is not found in the local store
-/// - Any note cannot be converted to a full Note object (missing metadata)
+/// On v2 proposals, callers should use
+/// `build_consume_notes_transaction_request_from_notes` instead with
+/// notes decoded from the signed metadata.
 pub async fn build_consume_notes_transaction_request<I>(
     client: &MidenSdkClient,
     note_ids: Vec<NoteId>,
@@ -40,39 +95,6 @@ where
         ));
     }
 
-    // Fetch full Note objects from the client's local store
-    let mut notes: Vec<(Note, Option<NoteArgs>)> = Vec::new();
-    for note_id in &note_ids {
-        let input_note_record = client
-            .get_input_note(*note_id)
-            .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to fetch note: {}", e)))?
-            .ok_or_else(|| {
-                MultisigError::InvalidConfig(format!(
-                    "note not found in local store: {}",
-                    note_id.to_hex()
-                ))
-            })?;
-
-        // Convert InputNoteRecord to Note using TryInto
-        let note: Note = input_note_record.try_into().map_err(|e| {
-            MultisigError::InvalidConfig(format!("failed to convert note record to note: {:?}", e))
-        })?;
-
-        notes.push((note, None));
-    }
-
-    // Build the transaction request with full Note objects
-    let mut builder = TransactionRequestBuilder::new()
-        .input_notes(notes)
-        .auth_arg(salt);
-
-    // Add signature advice entries
-    for (key, values) in signature_advice {
-        builder = builder.extend_advice_map([(key, values)]);
-    }
-
-    builder.build().map_err(|e| {
-        MultisigError::TransactionExecution(format!("failed to build transaction request: {}", e))
-    })
+    let notes = fetch_notes_from_store(client, &note_ids).await?;
+    build_consume_notes_transaction_request_from_notes(notes, salt, signature_advice)
 }

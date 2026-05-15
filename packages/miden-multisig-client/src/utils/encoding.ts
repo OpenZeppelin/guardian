@@ -40,6 +40,19 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
   throw new Error('No base64 encoder available in this environment');
 }
 
+/** Serialize a Miden `Note` to base64 (v2 `consume_notes` metadata, issue #229). */
+export function noteToBase64(note: { serialize(): Uint8Array }): string {
+  return uint8ArrayToBase64(note.serialize());
+}
+
+/** Decode a base64 note. `noteCtor` is `Note` from `@miden-sdk/miden-sdk`. */
+export function noteFromBase64<TNote>(
+  base64: string,
+  noteCtor: { deserialize(bytes: Uint8Array): TNote },
+): TNote {
+  return noteCtor.deserialize(base64ToUint8Array(base64));
+}
+
 export function base64ToUint8Array(base64: string): Uint8Array {
   const binary =
     typeof atob === 'function'
