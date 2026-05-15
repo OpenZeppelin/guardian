@@ -167,7 +167,11 @@ pub async fn build_final_transaction_request(
                     #[cfg(not(feature = "legacy-consume-notes"))]
                     {
                         let _ = (client, salt, signature_advice);
-                        Err(MultisigError::UnsupportedMetadataVersion { found: None })
+                        // Preserve `Some(1)` vs `None` so the error tells the
+                        // operator which legacy shape was rejected.
+                        Err(MultisigError::UnsupportedMetadataVersion {
+                            found: *metadata_version,
+                        })
                     }
                 }
                 Some(other) => Err(MultisigError::UnsupportedMetadataVersion {

@@ -162,7 +162,7 @@ share string codes across Rust and TS (FR-021, FR-022).
 
 ## Version dispatch state machine
 
-```
+```text
 verifyProposalMetadataBinding(proposal):
     md = proposal.metadata
     match md.proposalType:
@@ -180,7 +180,7 @@ verifyProposalMetadataBinding(proposal):
                             notes.push(n.toNote())
                         return buildFromNotes(notes, salt)
                     else:                            // cut-over build
-                        throw UnsupportedMetadataVersionError(undefined)
+                        throw UnsupportedMetadataVersionError(md.metadataVersion)
 
                 2:
                     if md.notes.length != md.noteIds.length:

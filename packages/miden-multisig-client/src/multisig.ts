@@ -770,8 +770,12 @@ export class Multisig {
       description: `Consume ${noteIds.length} note(s)`,
     };
 
-    // FR-011: enforce metadata size cap before signature collection.
-    const metadataSize = new TextEncoder().encode(JSON.stringify(metadata)).length;
+    // FR-011: enforce metadata size cap on the wire-encoded form (what GUARDIAN
+    // actually persists), matching the Rust side which measures
+    // `ProposalMetadataPayload`. Sizing the local in-memory `metadata` would
+    // miss codec divergence.
+    const encoded = ProposalMetadataCodec.toGuardian(metadata);
+    const metadataSize = new TextEncoder().encode(JSON.stringify(encoded)).length;
     if (metadataSize > MAX_CONSUME_NOTES_METADATA_BYTES) {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
@@ -1381,9 +1385,11 @@ export class Multisig {
           });
           return request;
         }
-        if (version === undefined || (version as number) === 1) {
+        if (version === undefined || version === 1) {
           if (!LEGACY_CONSUME_NOTES_ENABLED) {
-            throw new UnsupportedMetadataVersionError(undefined);
+            // Preserve explicit `1` vs absent so the error tells the
+            // operator which legacy shape was rejected.
+            throw new UnsupportedMetadataVersionError(version);
           }
           const { request } = await buildConsumeNotesTransactionRequest(
             webClient,
@@ -1392,7 +1398,7 @@ export class Multisig {
           );
           return request;
         }
-        throw new UnsupportedMetadataVersionError(version ?? undefined);
+        throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
         const { request } = buildP2idTransactionRequest(

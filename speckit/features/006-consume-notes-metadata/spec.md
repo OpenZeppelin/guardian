@@ -367,11 +367,15 @@ clear error.
 - **FR-002**: The new metadata shape MUST include a discriminator
   field that explicitly identifies the shape's version, so the
   verification path can route to the correct rebuild logic without
-  guessing.
+  guessing. The new shape uses **version `2`**; the integer is
+  reserved for the self-contained, notes-embedded form defined by
+  this spec.
 - **FR-003**: The discriminator field MUST be present on
   newly-created `consume_notes` proposals and MUST be interpreted as
   the legacy shape when absent, so legacy proposals already in flight
-  at upgrade time are unambiguously identified.
+  at upgrade time are unambiguously identified. Legacy proposals
+  either omit the discriminator entirely or carry the value `1`;
+  both are treated identically as v1.
 - **FR-004**: The new metadata shape MUST preserve the existing
   note-identifier field so dashboards, logs, and human operators can
   continue to refer to a `consume_notes` proposal by the same
@@ -421,6 +425,9 @@ clear error.
   serialized new-shape metadata would exceed the documented
   per-proposal metadata size limit, returning an explicit error that
   names the limit and the actual size at proposal-creation time.
+  The limit is **`262_144` bytes (256 KiB)**, enforced symmetrically
+  on the Rust and TypeScript SDKs against the wire-encoded metadata
+  fragment.
 - **FR-012**: The proposer's local Miden note store MAY be consulted
   during proposal creation to source the note data being embedded.
   Proposal creation is the one moment in the lifecycle when the
@@ -633,10 +640,10 @@ clear error.
   note object (recipient/assets/inputs/script) at execution time;
   the rebuild step cannot be reverted to the original
   identifier-only construction even after this feature ships.
-- The documented per-proposal metadata size limit is high enough to
-  accommodate the common-case `consume_notes` proposal (small
-  numbers of notes with standard P2ID-style scripts) without
-  triggering FR-011. The exact limit is a plan-phase concern.
+- The per-proposal metadata size limit is set at 256 KiB (FR-011),
+  high enough to accommodate the common-case `consume_notes` proposal
+  (small numbers of notes with standard P2ID-style scripts) without
+  triggering the cap.
 - The Guardian server's proposal storage column type is large
   enough to hold the new-shape metadata for the common case; if
   not, a separate plan-phase decision will resize it. The server

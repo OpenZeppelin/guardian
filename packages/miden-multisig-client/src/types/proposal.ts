@@ -58,8 +58,8 @@ export const MAX_CONSUME_NOTES_METADATA_BYTES = 256 * 1024;
 export interface ConsumeNotesProposalMetadata extends BaseProposalMetadata {
   proposalType: 'consume_notes';
   noteIds: string[];
-  /** Absent => v1 (legacy), `2` => v2 (issue #229). */
-  metadataVersion?: 2;
+  /** Absent or `1` => v1 (legacy), `2` => v2 (issue #229). */
+  metadataVersion?: 1 | 2;
   /** v2: base64-encoded `note.serialize()` output, index-aligned with `noteIds`. */
   notes?: string[];
 }
@@ -69,7 +69,7 @@ export function isConsumeNotesV2(md: ConsumeNotesProposalMetadata): boolean {
 }
 
 export function isConsumeNotesV1(md: ConsumeNotesProposalMetadata): boolean {
-  return md.metadataVersion === undefined || (md.metadataVersion as number) === 1;
+  return md.metadataVersion === undefined || md.metadataVersion === 1;
 }
 
 export interface P2IdProposalMetadata extends BaseProposalMetadata {
