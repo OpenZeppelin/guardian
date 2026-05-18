@@ -1179,7 +1179,7 @@ mod tests {
             assert_eq!(events[0].operator_identity, operator.commitment_hex);
             // Symmetric with the auth.denied payload shape.
             let payload = &events[0].payload;
-            assert_eq!(payload["route_path"], "/_authz_probe");
+            assert_eq!(payload["route_path"], "/dashboard/_authz_probe");
             assert_eq!(payload["http_method"], "POST");
             assert_eq!(
                 payload["required_permissions"],
@@ -1235,7 +1235,7 @@ mod tests {
             // declared in its own router, which is the stable form
             // across mount points.
             let payload = &events[0].payload;
-            assert_eq!(payload["route_path"], "/_authz_probe");
+            assert_eq!(payload["route_path"], "/dashboard/_authz_probe");
             assert_eq!(payload["http_method"], "POST");
             assert_eq!(
                 payload["required_permissions"],

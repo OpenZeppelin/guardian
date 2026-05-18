@@ -179,7 +179,7 @@ metadata/state backends is preserved.
   shape including the permission(s) the operator lacks. The new code
   rides the existing flat `ErrorResponse` envelope additively (see
   §Design decisions); FR-016 has the exact field-level contract.
-- Pinning the human-readable `message` is out of scope.
+- Pinning the human-readable `error` field is out of scope.
 - No gRPC mapping is introduced because the operator surface is
   HTTP-only today.
 
@@ -269,9 +269,8 @@ metadata/state backends is preserved.
   order-of-magnitude tens of rows per day per deployment, so v1 keeps
   rows indefinitely and defers retention decisions until volume warrants
   one.
-- Pinning the human-readable `message` for the new error code or
-  localizing it. Clients key off `error.code`; the `message` is
-  best-effort English.
+- Pinning the human-readable `error` field for the new error code or
+  localizing it. Clients key off `code`; `error` is best-effort English.
 - A general structured-error refactor across every existing Guardian
   failure mode. This feature introduces exactly one new code (the
   permission denial); the broader error-model migration from [#179](https://github.com/OpenZeppelin/guardian/issues/179)
@@ -527,7 +526,7 @@ from a permissioned session resolves successfully.
    `DashboardErrorCode` variant (e.g. `insufficient_operator_permission`,
    matching whatever naming convention the existing union already
    uses) and structured `missing_permissions: string[]`; the human
-   `message` is not part of the typed contract.
+   `error` field is not part of the typed contract.
 2. **Given** the operator client exposes per-endpoint required
    permission metadata, **When** a dashboard consults that metadata,
    **Then** the metadata matches the server's actual middleware
@@ -702,7 +701,7 @@ for an entry with `permissions: []` and verify the endpoint returns
   renaming it is a breaking contract change.
 - **FR-016**: The error response body MUST include at least the
   top-level `code = "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION"`, a
-  human `message` (best-effort English; not part of the typed
+  human `error` field (best-effort English; not part of the typed
   contract), a `missing_permissions` list of the permission strings
   the route required that the operator lacks, and a `retryable =
   false` indicator (a permission denial is not transient). The new

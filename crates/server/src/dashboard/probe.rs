@@ -14,7 +14,7 @@
 //! effect.
 
 use axum::Extension;
-use axum::extract::{Request, State};
+use axum::extract::{OriginalUri, Request, State};
 use axum::http::StatusCode;
 use serde_json::json;
 
@@ -37,7 +37,11 @@ pub async fn handle(
     Extension(operator): Extension<AuthenticatedOperator>,
     request: Request,
 ) -> Result<StatusCode> {
-    let route_path = request.uri().path().to_owned();
+    let route_path = request
+        .extensions()
+        .get::<OriginalUri>()
+        .map(|uri| uri.0.path().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned());
     let http_method = request.method().as_str().to_owned();
     let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
     state.auditor.record(AuditEvent {

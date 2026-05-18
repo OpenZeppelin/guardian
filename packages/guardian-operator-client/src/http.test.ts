@@ -437,6 +437,22 @@ describe('GuardianOperatorHttpClient', () => {
     });
   });
 
+  it('rejects /dashboard/session with an unknown permission string', async () => {
+    // Surfacing server/client vocabulary drift as a contract failure
+    // is the load-bearing property — a stale client breaking against
+    // a new-server permission is better than silently flowing through.
+    mockFetch.mockResolvedValueOnce(okJson({
+      operator_id: '0xabc123',
+      permissions: ['dashboard:read', 'accounts:freeze'],
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const error = await client.getSession().catch((value) => value);
+
+    expect(error).toBeInstanceOf(GuardianOperatorContractError);
+    expect(String(error)).toContain('accounts:freeze');
+  });
+
   it('logs out with a POST request and parses the response', async () => {
     mockFetch.mockResolvedValueOnce(okJson({
       success: true,
@@ -1091,9 +1107,12 @@ describe('isDashboardErrorCode', () => {
   });
 
   it('narrows the feature-006-operator-authz permission-denial code', () => {
+    // The typed union uses snake_case; the wire emits SCREAMING_SNAKE
+    // and `parseErrorBody` maps at the boundary.
+    expect(isDashboardErrorCode('insufficient_operator_permission')).toBe(true);
     expect(
       isDashboardErrorCode('GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION'),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -1116,7 +1135,8 @@ describe('parseErrorBody (feature 006-operator-authz)', () => {
       },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
-    expect(parsed.code).toBe('GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION');
+    // Wire form maps to the typed snake_case surface.
+    expect(parsed.code).toBe('insufficient_operator_permission');
     expect(parsed.missingPermissions).toEqual(['accounts:pause']);
     expect(parsed.retryable).toBe(false);
   });

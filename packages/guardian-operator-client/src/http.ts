@@ -25,6 +25,7 @@ import type {
   VerifyOperatorRequest,
   VerifyOperatorResponse,
 } from './types.js';
+import type { OperatorPermission } from './permissions.js';
 
 /**
  * Common pagination query options for the new dashboard feeds
@@ -53,9 +54,29 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   // Snapshot-specific codes (FR-045).
   'unsupported_for_network',
   'account_data_unavailable',
-  // Feature 006-operator-authz FR-015.
-  'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
+  // Feature 006-operator-authz FR-015. The server emits the
+  // SCREAMING_SNAKE_CASE wire form; the TS union surfaces it as
+  // snake_case to match the rest of the DashboardErrorCode
+  // vocabulary. `parseErrorBody` does the mapping at the boundary.
+  'insufficient_operator_permission',
 ]);
+
+/** Server-emitted wire form for the permission-denial error code. */
+const WIRE_INSUFFICIENT_OPERATOR_PERMISSION =
+  'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION';
+
+/**
+ * Map a server-emitted error `code` to the typed
+ * {@link DashboardErrorCode} surface. The only mapping today is for
+ * the permission-denial code; every other code matches by string
+ * equality.
+ */
+function mapDashboardErrorCode(raw: string | null): string | null {
+  if (raw === WIRE_INSUFFICIENT_OPERATOR_PERMISSION) {
+    return 'insufficient_operator_permission';
+  }
+  return raw;
+}
 
 /**
  * Result of parsing an error response body. The {@link code} field is
@@ -68,7 +89,7 @@ export interface ParsedErrorBody {
   message: string | null;
   retryAfterSecs?: number;
   /**
-   * Populated only when `code === 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION'`.
+   * Populated only when `code === 'insufficient_operator_permission'`.
    * Lists the permission strings the route required that the
    * authenticated operator does not hold, lexicographically sorted by
    * the server (feature 006-operator-authz FR-017).
@@ -128,8 +149,9 @@ export async function parseErrorBody(
   const record = raw as Record<string, unknown>;
 
   const codeRaw = record['code'];
-  const code: DashboardErrorCode | string | null =
-    typeof codeRaw === 'string' ? codeRaw : null;
+  const code: DashboardErrorCode | string | null = mapDashboardErrorCode(
+    typeof codeRaw === 'string' ? codeRaw : null,
+  );
 
   const messageRaw = record['error'];
   const message = typeof messageRaw === 'string' ? messageRaw : null;
@@ -143,10 +165,13 @@ export async function parseErrorBody(
   // Feature 006-operator-authz FR-016: populate `missingPermissions`
   // and `retryable` only when the server emitted the permission-denial
   // code. Every other code path leaves both fields undefined so the
-  // additive envelope extension is invisible to existing parsers.
+  // additive envelope extension is invisible to existing parsers. The
+  // contract pins `retryable=false` for this code; surface that
+  // unconditionally so a non-compliant server can't mislead retry
+  // policy code into retrying a permission denial.
   let missingPermissions: readonly string[] | undefined;
   let retryable: boolean | undefined;
-  if (code === 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION') {
+  if (code === 'insufficient_operator_permission') {
     const missingRaw = record['missing_permissions'];
     if (
       Array.isArray(missingRaw) &&
@@ -154,10 +179,7 @@ export async function parseErrorBody(
     ) {
       missingPermissions = missingRaw as readonly string[];
     }
-    const retryableRaw = record['retryable'];
-    if (typeof retryableRaw === 'boolean') {
-      retryable = retryableRaw;
-    }
+    retryable = false;
   }
 
   return { code, message, retryAfterSecs, missingPermissions, retryable };
@@ -558,11 +580,36 @@ function parseLogoutResponse(value: unknown): LogoutOperatorResponse {
 
 function parseSessionInfo(value: unknown): SessionInfoResponse {
   const record = asRecord(value, 'session response');
+  const permissions = requireStringArray(
+    record,
+    'permissions',
+    'session response',
+  );
+  for (const [index, permission] of permissions.entries()) {
+    if (!KNOWN_OPERATOR_PERMISSIONS.has(permission)) {
+      throw new GuardianOperatorContractError(
+        'session response',
+        `permissions[${index}] is not a known operator permission: ${JSON.stringify(permission)}`,
+      );
+    }
+  }
   return {
     operatorId: requireString(record, 'operator_id', 'session response'),
-    permissions: requireStringArray(record, 'permissions', 'session response'),
+    permissions: permissions as OperatorPermission[],
   };
 }
+
+/**
+ * Stable v1 operator permission vocabulary. Mirrors
+ * `crates/server/src/dashboard/permissions.rs::Permission::as_str`.
+ * Surfaces server/client drift as a contract failure instead of
+ * silently flowing unknown strings through.
+ */
+const KNOWN_OPERATOR_PERMISSIONS: ReadonlySet<string> = new Set<OperatorPermission>([
+  'dashboard:read',
+  'accounts:pause',
+  'policies:write',
+]);
 
 function parseAccountListPage(
   value: unknown,
@@ -835,7 +882,7 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
         'code must be a string when present',
       );
     }
-    code = codeValue;
+    code = mapDashboardErrorCode(codeValue) ?? undefined;
   }
 
   // Feature 006-operator-authz FR-016: populate `missingPermissions`
@@ -844,7 +891,7 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
   // 4xx errors continue to parse byte-for-byte as before.
   let missingPermissions: readonly string[] | undefined;
   let retryable: boolean | undefined;
-  if (code === 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION') {
+  if (code === 'insufficient_operator_permission') {
     const missingRaw = record.missing_permissions;
     if (missingRaw !== undefined) {
       if (
@@ -860,13 +907,16 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     }
     const retryableRaw = record.retryable;
     if (retryableRaw !== undefined) {
-      if (typeof retryableRaw !== 'boolean') {
+      if (retryableRaw !== false) {
+        // FR-016 pins `retryable: false` for permission denials.
+        // Surface server contract drift loudly rather than letting
+        // retry policy code retry an unretryable failure.
         throw new GuardianOperatorContractError(
           'error response',
-          'retryable must be a boolean',
+          'retryable must be false for insufficient_operator_permission',
         );
       }
-      retryable = retryableRaw;
+      retryable = false;
     }
   }
 

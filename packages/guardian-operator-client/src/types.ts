@@ -1,3 +1,5 @@
+import type { OperatorPermission } from './permissions.js';
+
 export type DashboardAccountStateStatus = 'available' | 'unavailable';
 
 export interface GuardianOperatorHttpErrorData {
@@ -15,7 +17,7 @@ export interface GuardianOperatorHttpErrorData {
   retryAfterSecs?: number;
   /**
    * Feature 006-operator-authz FR-016 / FR-017: populated only for
-   * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` responses. Lists the
+   * `insufficient_operator_permission` responses. Lists the
    * permission strings the route required that the authenticated
    * operator does not hold, sorted lexicographically. Absent for
    * every other error code.
@@ -67,11 +69,14 @@ export interface LogoutOperatorResponse {
 /**
  * Response shape for `GET /dashboard/session`. `permissions` is sorted
  * lexicographic ASCII and may be empty (means "logged in, no
- * capabilities" — distinct from a 401).
+ * capabilities" — distinct from a 401). The parser validates every
+ * entry against the known operator-permission vocabulary, so an
+ * unknown string surfaces as a contract error rather than flowing
+ * through silently.
  */
 export interface SessionInfoResponse {
   operatorId: string;
-  permissions: string[];
+  permissions: OperatorPermission[];
 }
 
 export interface DashboardAccountSummary {
@@ -153,7 +158,7 @@ export type DashboardErrorCode =
   // Feature 006-operator-authz FR-015: the wire string is uppercased
   // per spec to make it visually distinct from the snake_case codes
   // inherited from earlier features. Stable across releases.
-  | 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION';
+  | 'insufficient_operator_permission';
 
 export interface PagedResult<T> {
   items: T[];

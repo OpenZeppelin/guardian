@@ -86,8 +86,14 @@ pub async fn enforce(
     }
 
     // Audit MUST precede the response (FR-013); payload carries
-    // route + method per FR-025.
-    let route_path = request.uri().path().to_owned();
+    // route + method per FR-025. Pull `OriginalUri` so the path
+    // reflects the full pre-nest form (`/dashboard/_authz_probe`)
+    // an incident responder would actually curl.
+    let route_path = request
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|uri| uri.0.path().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned());
     let http_method = request.method().as_str().to_owned();
     let required_strings: Vec<String> = required.iter().map(|p| p.as_str().to_owned()).collect();
     let client_ip = crate::middleware::client_ip::extract_client_ip(&request);

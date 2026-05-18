@@ -67,13 +67,10 @@ CREATE TRIGGER admin_actions_no_update
     same payload shape; consumers SHOULD follow this for any new
     mutating endpoint.
 
-  **`route_path` is the inner axum router path** (e.g.
-  `/_authz_probe`), not the full mount-prefixed path
-  (`/dashboard/_authz_probe`). Axum strips the nest prefix from
-  the request URI inside a nested router, and that stripped form
-  is what reaches the audit emission site. Forensic queries
-  SHOULD filter on `action_kind` + `http_method` (stable across
-  remounts) rather than on the full mount-prefix path.
+  `route_path` is the full pre-nest request path
+  (`/dashboard/_authz_probe`, not `/_authz_probe`) — the audit
+  emission pulls `axum::extract::OriginalUri` so the recorded
+  value matches what an incident responder would `curl`.
 - `outcome`: TEXT, `success` or `denied`. CHECK constraint pins
   domain.
 - `error_code`: nullable TEXT. Populated when `outcome = denied`
