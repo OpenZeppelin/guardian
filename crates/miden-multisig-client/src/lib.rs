@@ -82,7 +82,10 @@ pub use keystore::{
 
 // Proposals
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
-pub use proposal::{Proposal, ProposalMetadata, ProposalStatus, TransactionType};
+pub use proposal::{
+    CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, Proposal,
+    ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
+};
 pub use transaction::ProposalBuilder;
 
 // Export/Import

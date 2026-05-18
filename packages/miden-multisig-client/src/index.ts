@@ -80,6 +80,30 @@ export {
 } from './account/index.js';
 
 export {
+  CONSUME_NOTES_METADATA_VERSION_V2,
+  MAX_CONSUME_NOTES_METADATA_BYTES,
+  isConsumeNotesV1,
+  isConsumeNotesV2,
+} from './types/proposal.js';
+
+export {
+  LEGACY_CONSUME_NOTES_ENABLED,
+} from './multisig/config.js';
+
+export {
+  type ConsumeNotesErrorCode,
+  NoteBindingMismatchError,
+  UnsupportedMetadataVersionError,
+  ConsumeNotesMetadataOversizeError,
+  LegacyConsumeNotesNoteMissingError,
+} from './multisig/consumeNotesErrors.js';
+
+export {
+  noteToBase64,
+  noteFromBase64,
+} from './utils/encoding.js';
+
+export {
   PROCEDURE_ROOTS,
   getProcedureRoot,
   isProcedureName,
