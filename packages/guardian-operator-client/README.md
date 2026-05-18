@@ -70,6 +70,23 @@ console.log(detail.authorizedSignerIds);
 console.log(detail.currentCommitment, detail.stateUpdatedAt);
 ```
 
+### Decoded Account Snapshot
+
+Returns the decoded state (vault contents, pending-candidate flag) at
+the commitment Guardian last canonicalized for the account. Sourced
+from Guardian's stored state — no live Miden RPC calls.
+
+```typescript
+const snapshot = await client.getAccountSnapshot('0x...');
+console.log(snapshot.commitment, snapshot.updatedAt);
+if (snapshot.hasPendingCandidate) {
+  console.warn('vault may be stale — candidate delta in flight');
+}
+for (const asset of snapshot.vault.fungible) {
+  console.log(asset.faucetId, asset.amount);
+}
+```
+
 ### Inventory And Health Snapshot
 
 ```typescript
@@ -100,6 +117,41 @@ proposal queue.
 const page = await client.listAccountProposals('0x...', { limit: 50 });
 for (const entry of page.items) {
   console.log(
+    entry.commitment,
+    entry.signaturesCollected,
+    '/',
+    entry.signaturesRequired,
+  );
+}
+```
+
+### Cross-Account Delta Feed
+
+Paginated newest-first by `status_timestamp DESC`. The optional
+`status` filter accepts a single status or an array; the wrapper
+serializes the array to a comma-separated query parameter.
+
+```typescript
+const page = await client.listGlobalDeltas({
+  limit: 50,
+  status: ['candidate', 'canonical'],
+});
+for (const entry of page.items) {
+  console.log(entry.accountId, entry.nonce, entry.status);
+}
+```
+
+### Cross-Account In-Flight Proposal Feed
+
+Paginated newest-first by `originating_timestamp DESC`. There is no
+`status` filter — every entry is in-flight by definition. EVM accounts
+do not appear in v1.
+
+```typescript
+const page = await client.listGlobalProposals({ limit: 50 });
+for (const entry of page.items) {
+  console.log(
+    entry.accountId,
     entry.commitment,
     entry.signaturesCollected,
     '/',

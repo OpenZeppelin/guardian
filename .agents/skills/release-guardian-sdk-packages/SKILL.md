@@ -19,6 +19,8 @@ Read the current source of truth at the start of every release task:
 - `packages/guardian-evm-client/package-lock.json`
 - `packages/miden-multisig-client/package.json`
 - `packages/miden-multisig-client/package-lock.json`
+- `packages/guardian-operator-client/package.json`
+- `packages/guardian-operator-client/package-lock.json`
 - `references/release-surface.md`
 
 Trust these sources in this order:
@@ -75,6 +77,7 @@ TypeScript packages:
 - `@openzeppelin/guardian-client`
 - `@openzeppelin/guardian-evm-client`
 - `@openzeppelin/miden-multisig-client`
+- `@openzeppelin/guardian-operator-client`
 
 ## Version Bump Rules
 
@@ -88,6 +91,7 @@ For a coordinated release, update all of these:
 - `packages/guardian-evm-client/package.json` `version`
 - `packages/miden-multisig-client/package.json` `version`
 - `packages/miden-multisig-client/package.json` `@openzeppelin/guardian-client` dependency range
+- `packages/guardian-operator-client/package.json` `version`
 
 After editing TypeScript versions, refresh lockfiles from the package directories:
 
@@ -95,6 +99,7 @@ After editing TypeScript versions, refresh lockfiles from the package directorie
 cd packages/guardian-client && npm install --package-lock-only
 cd packages/guardian-evm-client && npm install --package-lock-only
 cd packages/miden-multisig-client && npm install --package-lock-only
+cd packages/guardian-operator-client && npm install --package-lock-only
 ```
 
 Inspect the resulting lockfile diff. Keep the refresh focused on version and dependency metadata.
@@ -117,6 +122,8 @@ cd packages/guardian-evm-client && npm test
 cd packages/guardian-evm-client && npm run build
 cd packages/miden-multisig-client && npm test
 cd packages/miden-multisig-client && npm run build
+cd packages/guardian-operator-client && npm test
+cd packages/guardian-operator-client && npm run build
 ```
 
 Then run publish dry-runs:
@@ -132,6 +139,7 @@ cargo publish -p miden-multisig-client --dry-run
 cd packages/guardian-client && npm publish --access public --dry-run
 cd packages/guardian-evm-client && npm publish --access public --dry-run
 cd packages/miden-multisig-client && npm publish --access public --dry-run
+cd packages/guardian-operator-client && npm publish --access public --dry-run
 ```
 
 If a dry-run or test fails, stop there and report the failing step, package, and minimal next action.
@@ -172,6 +180,7 @@ TypeScript packages must be published in dependency order:
 1. `@openzeppelin/guardian-client`
 2. `@openzeppelin/guardian-evm-client`
 3. `@openzeppelin/miden-multisig-client`
+4. `@openzeppelin/guardian-operator-client` (no internal deps — order-independent, listed last for convenience)
 
 ## Manual Boundary
 
