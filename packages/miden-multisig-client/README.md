@@ -222,6 +222,73 @@ const sigBytes = signatureHexToBytes(signatureHex);
 // => Uint8Array with the Falcon Poseidon2 auth prefix
 ```
 
+## Consume-notes metadata versions
+
+`consume_notes` proposals come in two metadata shapes. The
+`metadataVersion` field on `ConsumeNotesProposalMetadata` is the
+discriminator.
+
+- **v1 (legacy)** — `metadataVersion` absent. The proposal carries
+  only `noteIds`; verification rebuilds the transaction request by
+  fetching each note from the cosigner's **own local Miden store**
+  (IndexedDB in the browser). If the verifier does not have the note
+  locally (cursor advanced past the block, store was cleared via
+  `clearMidenDatabase()`, private-note transport pruned the blob),
+  verification throws `LegacyConsumeNotesNoteMissingError` and the
+  cosigner cannot sign. This is the failure tracked by
+  [issue #229](https://github.com/OpenZeppelin/guardian/issues/229).
+- **v2 (self-contained)** — `metadataVersion: 2` plus a `notes` array
+  of base64-encoded `Note.serialize()` bytes, aligned by index with
+  `noteIds`. Verification rebuilds the request from the embedded notes
+  alone — no `getInputNote`, no network call. Restores the same
+  "rebuild from signed metadata" invariant every other proposal type
+  already satisfied (and that audit finding **M-08** remediated for
+  `p2id`).
+
+`createConsumeNotesProposal` always emits v2 starting with this
+release; the proposer is the one party guaranteed to hold the notes
+locally. The per-proposal v2 payload is capped at
+`MAX_CONSUME_NOTES_METADATA_BYTES` (256 KiB) and the size is enforced
+at creation time so the failure surfaces to the proposer before any
+signature collection begins.
+
+```typescript
+import {
+  MAX_CONSUME_NOTES_METADATA_BYTES,
+  CONSUME_NOTES_METADATA_VERSION_V2,
+  ConsumeNotesMetadataOversizeError,
+  LegacyConsumeNotesNoteMissingError,
+  NoteBindingMismatchError,
+  UnsupportedMetadataVersionError,
+  isConsumeNotesV2,
+} from '@openzeppelin/miden-multisig-client';
+```
+
+### Error taxonomy
+
+Each error class exposes a stable `.code` string identical to the Rust
+SDK's `MultisigError::code()` value, so cross-SDK tests and operator
+dashboards can branch on one taxonomy.
+
+| Error class | `.code` | When |
+|---|---|---|
+| `NoteBindingMismatchError` | `consume_notes_note_binding_mismatch` | v2: `notes.length !== noteIds.length`, or `note.id().toString() !== noteIds[i]` |
+| `UnsupportedMetadataVersionError` | `consume_notes_unsupported_metadata_version` | Unrecognized version (including v1 on a cut-over build) |
+| `ConsumeNotesMetadataOversizeError` | `consume_notes_metadata_oversize` | v2 metadata serialization exceeds 256 KiB at creation |
+| `LegacyConsumeNotesNoteMissingError` | `consume_notes_legacy_note_missing` | v1 path: local store does not contain the referenced note |
+
+### Cut-over policy
+
+The `LEGACY_CONSUME_NOTES_ENABLED` build-time constant (default `true`
+in this transitional release) gates whether this build accepts v1
+metadata for verification. A future cut-over release will flip the
+default to `false`, at which point v1 proposals are refused with
+`UnsupportedMetadataVersionError(undefined)` on every code path.
+Deployments should drain or re-propose any v1 `consume_notes`
+proposals in flight before upgrading past the cut-over client version.
+Tracked by spec
+[`006-consume-notes-metadata`](../../speckit/features/006-consume-notes-metadata/spec.md).
+
 ## Testing
 
 ```bash

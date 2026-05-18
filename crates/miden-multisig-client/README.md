@@ -136,6 +136,58 @@ let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
 
+## Consume-notes metadata versions
+
+`consume_notes` proposals come in two metadata shapes. The discriminator
+is the `consume_notes_metadata_version` field on the wire.
+
+- **v1 (legacy)** — `consume_notes_metadata_version` absent on the wire.
+  The proposal carries only `note_ids`; the verifier rebuilds the
+  transaction request by fetching each note from its **own local Miden
+  store**. If the verifier does not have the note locally (cursor
+  advanced past the block, store was wiped, private-note transport
+  pruned the blob), verification fails with
+  `MultisigError::LegacyConsumeNotesNoteMissing` and the cosigner
+  cannot sign. This is the failure tracked by
+  [issue #229](https://github.com/OpenZeppelin/guardian/issues/229).
+- **v2 (self-contained)** — `consume_notes_metadata_version: 2` plus a
+  `consume_notes_notes` array carrying base64-serialized `Note` bytes
+  aligned by index with `note_ids`. Verification rebuilds the request
+  from the embedded notes alone — no local-store read, no network
+  call. This restores the same "rebuild from signed metadata" invariant
+  every other proposal type already satisfied (and that audit finding
+  **M-08** remediated for `p2id`).
+
+Proposal creation always emits v2 starting with this release; the
+proposer is the one party guaranteed to hold the notes locally. The
+per-proposal v2 payload is capped at `MAX_CONSUME_NOTES_METADATA_BYTES`
+(256 KiB) and the size is enforced at creation time so the failure
+surfaces to the proposer before any signature collection begins.
+
+### Error taxonomy
+
+All four errors below carry a stable, cross-SDK string code via
+`MultisigError::code()`. The TS SDK exposes the same identifiers as
+`Error.code`.
+
+| Variant | `.code()` | When |
+|---|---|---|
+| `NoteBindingMismatch` | `consume_notes_note_binding_mismatch` | v2: `notes.len() != note_ids.len()`, or `note.id() != note_ids[i]` |
+| `UnsupportedMetadataVersion { found }` | `consume_notes_unsupported_metadata_version` | Unrecognized version (including v1 on a cut-over build) |
+| `ConsumeNotesMetadataOversize { limit, actual }` | `consume_notes_metadata_oversize` | v2 metadata serialization exceeds 256 KiB at creation |
+| `LegacyConsumeNotesNoteMissing { note_id }` | `consume_notes_legacy_note_missing` | v1 path: local store does not contain the referenced note |
+
+### Cut-over policy
+
+The `legacy-consume-notes` Cargo feature (default-on in this transitional
+release) gates whether the crate accepts v1 metadata for verification.
+A future cut-over release will ship with `default = []`, at which point
+v1 proposals are refused with `UnsupportedMetadataVersion { found: None }`
+on every code path. Deployments should drain or re-propose any v1
+`consume_notes` proposals in flight before upgrading past the cut-over
+client version. Tracked by spec
+[`006-consume-notes-metadata`](../../speckit/features/006-consume-notes-metadata/spec.md).
+
 ## Demo CLI
 
  Run the Terminal UI demo in [`examples/demo`](../../examples/demo/), which exercises the same APIs for account management, note listing, proposal signing, and offline export/import.

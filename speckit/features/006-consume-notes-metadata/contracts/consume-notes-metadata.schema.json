@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guardian.openzeppelin.com/schemas/multisig/consume-notes-metadata.json",
+  "title": "ConsumeNotesProposalMetadata",
+  "description": "Multisig proposal metadata for the consume_notes proposal type. Discriminated by metadataVersion: absent => v1 (legacy, local-store-dependent verification); 2 => v2 (self-contained verification with embedded notes). Owned by the multisig client SDKs; the Guardian server stores this as opaque payload.",
+  "oneOf": [
+    { "$ref": "#/$defs/V1Legacy" },
+    { "$ref": "#/$defs/V2SelfContained" }
+  ],
+  "$defs": {
+    "V1Legacy": {
+      "type": "object",
+      "description": "Legacy shape. Verification requires the cosigner's local Miden store to contain the referenced notes. Accepted by transitional clients (Release N) only; refused by cut-over clients (Release N+1) with consume_notes_unsupported_metadata_version.",
+      "required": ["proposalType", "noteIds"],
+      "properties": {
+        "proposalType": { "const": "consume_notes" },
+        "noteIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/NoteIdHex" }
+        },
+        "metadataVersion": { "not": {} }
+      },
+      "additionalProperties": true
+    },
+    "V2SelfContained": {
+      "type": "object",
+      "description": "Self-contained shape. Verification rebuilds the TransactionRequest from the embedded notes alone; no local-store, transport, or chain access is required.",
+      "required": ["proposalType", "metadataVersion", "noteIds", "notes"],
+      "properties": {
+        "proposalType": { "const": "consume_notes" },
+        "metadataVersion": { "const": 2 },
+        "noteIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/NoteIdHex" }
+        },
+        "notes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/SerializedNote" },
+          "description": "base64 of Miden SDK Note::to_bytes() / note.serialize(). Length and order MUST match noteIds. For each index i, Note.deserialize(base64decode(notes[i])).id() MUST equal noteIds[i]; otherwise verification fails with consume_notes_note_binding_mismatch."
+        }
+      },
+      "additionalProperties": true
+    },
+    "NoteIdHex": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]+$",
+      "description": "Canonical Miden NoteId rendered as hex with 0x prefix."
+    },
+    "SerializedNote": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "base64 encoding of Miden Note serialization bytes (Note::to_bytes() / note.serialize())."
+    }
+  },
+  "x-error-codes": {
+    "consume_notes_note_binding_mismatch": "v2: notes.length !== noteIds.length, or any embedded Note.id() does not match the declared noteIds[i].",
+    "consume_notes_unsupported_metadata_version": "metadataVersion is a value the client does not support (including v1 on a cut-over build).",
+    "consume_notes_metadata_oversize": "Serialized v2 metadata exceeds 256 KiB (MAX_CONSUME_NOTES_METADATA_BYTES). Enforced at proposal-creation time before any signature collection.",
+    "consume_notes_legacy_note_missing": "v1: get_input_note returned no record for at least one declared note_id. Indicates the cosigner's local Miden store does not contain the referenced note; not reachable on v2 proposals."
+  },
+  "x-size-limit-bytes": 262144
+}
