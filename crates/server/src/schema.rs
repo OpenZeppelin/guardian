@@ -81,4 +81,22 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    /// Representation of the `admin_actions` table.
+    ///
+    /// Feature 006-operator-authz append-only audit trail. Inserts only;
+    /// UPDATE/DELETE blocked by the `admin_actions_no_update` trigger
+    /// defined in the matching migration.
+    admin_actions (id) {
+        id -> Int8,
+        occurred_at -> Timestamptz,
+        operator_identity -> Text,
+        action_kind -> Text,
+        target_account_id -> Nullable<Text>,
+        payload -> Jsonb,
+        outcome -> Text,
+        error_code -> Nullable<Text>,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(states, deltas, delta_proposals, account_metadata,);

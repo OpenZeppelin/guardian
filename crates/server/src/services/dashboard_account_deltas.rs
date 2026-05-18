@@ -303,6 +303,7 @@ mod tests {
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            auditor: Arc::new(crate::audit::LogAuditor::new()),
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         }
@@ -416,6 +417,7 @@ mod tests {
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            auditor: Arc::new(crate::audit::LogAuditor::new()),
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         };
@@ -504,6 +506,7 @@ mod tests {
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            auditor: Arc::new(crate::audit::LogAuditor::new()),
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         };

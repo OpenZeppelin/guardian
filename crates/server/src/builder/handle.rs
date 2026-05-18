@@ -78,6 +78,17 @@ impl ServerHandle {
             let body_limit_config = self.body_limit_config;
 
             let task = tokio::spawn(async move {
+                // Feature 006-operator-authz FR-013: every existing dashboard
+                // read route requires `{dashboard:read}`. The authorization
+                // middleware is layered *inside* the session middleware so
+                // session validation always runs first (FR-012) — axum
+                // `route_layer`s compose outer-first, so the session layer
+                // is added last and the authz layer first.
+                use crate::dashboard::authz::{AuthzState, enforce as enforce_authz};
+                use crate::dashboard::permissions::Permission;
+                let dashboard_read_authz =
+                    AuthzState::new(state.clone(), &[Permission::DashboardRead]);
+
                 let dashboard_routes = Router::new()
                     .route("/accounts", get(list_operator_accounts))
                     .route("/accounts/{account_id}", get(get_operator_account))
@@ -96,7 +107,27 @@ impl ServerHandle {
                     .route("/info", get(get_dashboard_info_handler))
                     .route("/deltas", get(list_global_deltas_handler))
                     .route("/proposals", get(list_global_proposals_handler))
+                    .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+
+                // Feature 006-operator-authz FR-027 / FR-028: the
+                // authz-probe Cargo feature gates a single test-only
+                // route that exercises the middleware end-to-end with
+                // a non-`dashboard:read` requirement. Default-off in
+                // release builds.
+                #[cfg(feature = "authz-probe")]
+                let dashboard_routes = {
+                    let accounts_pause_authz =
+                        AuthzState::new(state.clone(), &[Permission::AccountsPause]);
+                    let probe_router = Router::new()
+                        .route(
+                            crate::dashboard::probe::PROBE_PATH,
+                            post(crate::dashboard::probe::handle),
+                        )
+                        .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
+                        .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+                    dashboard_routes.merge(probe_router)
+                };
 
                 let app = Router::new()
                     .route("/", get(root))

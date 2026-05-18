@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openzeppelin.com/guardian/006-operator-authz/allowlist.schema.json",
+  "title": "Guardian Operator Allowlist (006-operator-authz)",
+  "description": "JSON document accepted uniformly by GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON (deploy → AWS Secrets Manager payload), GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE (file on disk), and GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID (AWS Secrets Manager). Each array element is either a legacy hex Falcon public key (read-only) or an object carrying an explicit permission set.",
+  "type": "array",
+  "items": {
+    "oneOf": [
+      {
+        "type": "string",
+        "description": "Legacy element: hex-encoded Falcon public key. Treated as holding {dashboard:read} only.",
+        "pattern": "^0x[0-9a-fA-F]+$"
+      },
+      {
+        "type": "object",
+        "description": "Structured element: explicit permission set.",
+        "required": ["public_key", "permissions"],
+        "additionalProperties": false,
+        "properties": {
+          "public_key": {
+            "type": "string",
+            "description": "Hex-encoded Falcon public key.",
+            "pattern": "^0x[0-9a-fA-F]+$"
+          },
+          "permissions": {
+            "type": "array",
+            "description": "Effective permission set for this operator. Empty array denies every authorization check.",
+            "uniqueItems": false,
+            "items": {
+              "type": "string",
+              "enum": [
+                "dashboard:read",
+                "accounts:pause",
+                "policies:write"
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "examples": [
+    [
+      "0x094f145ec43583db3ca443f43a67545c4e21413ec3037c855aa05e1f602eba31"
+    ],
+    [
+      "0x094f145ec43583db3ca443f43a67545c",
+      {
+        "public_key": "0x0944089753530e9104cc9fc4",
+        "permissions": ["dashboard:read", "accounts:pause"]
+      },
+      {
+        "public_key": "0x0a11deadbeef",
+        "permissions": []
+      }
+    ]
+  ]
+}

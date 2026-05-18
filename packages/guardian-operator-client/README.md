@@ -197,8 +197,69 @@ FR-028) is:
 | HTTP | Body `code` | When |
 |------|-------------|------|
 | 401 | `authentication_failed` | missing / tampered / expired operator session |
+| 403 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | operator session is valid but lacks one or more route-required permissions (feature `006-operator-authz`) |
 | 404 | `account_not_found` | path-addressed account does not exist |
 | 400 | `invalid_cursor` | tampered, malformed, or stale cursor |
 | 400 | `invalid_limit` | `limit` outside `[1, 500]` |
 | 400 | `invalid_status_filter` | global delta feed `status` filter is unknown or malformed |
 | 503 | `data_unavailable` | metadata exists but underlying records cannot be read |
+
+### Operator Authorization (feature `006-operator-authz`)
+
+The dashboard now enforces per-operator permissions on every route. The
+allowlist JSON consumed by `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON` /
+`_FILE` / `_SECRET_ID` accepts a **heterogeneous** array of two element
+shapes:
+
+```jsonc
+[
+  // Legacy element: bare hex string → `{dashboard:read}` only.
+  "0x094f145ec43583db3ca443f43a67545c...",
+
+  // Structured element: explicit permission set.
+  {
+    "public_key": "0x0944089753530e9104cc9fc4...",
+    "permissions": ["dashboard:read", "accounts:pause"]
+  },
+
+  // Explicit-deny element: loads, but denies every authorization
+  // check (different from omitting the operator entirely).
+  {
+    "public_key": "0x0a11...",
+    "permissions": []
+  }
+]
+```
+
+Recognized permissions in v1: `dashboard:read`, `accounts:pause`,
+`policies:write`.
+
+When the server denies a request for insufficient permissions, the
+response body extends the existing flat envelope additively:
+
+```json
+{
+  "success": false,
+  "code": "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION",
+  "error": "Operator lacks required permissions: accounts:pause",
+  "missing_permissions": ["accounts:pause"],
+  "retryable": false
+}
+```
+
+`parseErrorBody` and the `GuardianOperatorHttpErrorData` shape both
+expose `missingPermissions` and `retryable` for this code; the fields
+are `undefined` for every other code.
+
+For UI gating, the package exports a per-endpoint required-permission
+metadata map:
+
+```typescript
+import { REQUIRED_PERMISSIONS, requiredPermissionsFor } from '@openzeppelin/guardian-operator-client';
+
+// Hide an action button if the operator lacks the required permission.
+const required = requiredPermissionsFor('listAccounts'); // → ['dashboard:read']
+```
+
+The map is advisory only. The server is the source of truth — the
+client MUST NOT short-circuit a request based on the metadata.

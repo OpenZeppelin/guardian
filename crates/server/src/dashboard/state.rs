@@ -57,6 +57,24 @@ impl DashboardState {
         .expect("dashboard test configuration should be valid")
     }
 
+    /// Test-only constructor that lets feature 006-operator-authz
+    /// integration tests inject operators with arbitrary permission
+    /// sets (including the explicit-empty `permissions: []` case from
+    /// FR-003). Behavior is otherwise identical to `for_tests`.
+    #[cfg(test)]
+    pub fn for_tests_with_permissions(
+        operators: Vec<crate::dashboard::types::AuthenticatedOperator>,
+    ) -> Self {
+        let allowlist = OperatorAllowlist::from_authenticated_operators(operators)
+            .expect("dashboard test configuration should be valid");
+        Self::from_allowlist_source(
+            AllowlistSource::Static,
+            allowlist,
+            DashboardConfig::for_tests(),
+        )
+        .expect("dashboard test configuration should be valid")
+    }
+
     pub fn cookie_name(&self) -> &str {
         &self.config.cookie_name
     }
@@ -216,10 +234,12 @@ impl DashboardState {
 
         let issued_at = now;
         let expires_at = now + self.config.session_ttl;
-        let operator_identity = AuthenticatedOperator {
-            operator_id: operator.operator_id.clone(),
-            commitment: operator.commitment.clone(),
-        };
+        // Stash the freshly-resolved principal (identity + current
+        // permissions) into the session record. `authenticate_session`
+        // re-resolves permissions per request from the live allowlist
+        // anyway, so the copy held here is just a fallback used for
+        // logout-side logging.
+        let operator_identity = operator.clone();
         let token = random_hex::<32>();
         let cookie_header = self.session_cookie_header(&token, issued_at, expires_at);
 
@@ -266,11 +286,16 @@ impl DashboardState {
             GuardianError::AuthenticationFailed("Invalid operator session".to_string())
         })?;
 
-        if self
+        // Re-resolve the principal from the **live** allowlist snapshot
+        // rather than returning the (potentially stale) copy carried in
+        // the session record. This is the load-bearing wiring for
+        // feature 006-operator-authz FR-008 / SC-004: a permission
+        // grant or revocation written to the allowlist source takes
+        // effect on the next authenticated request without re-login.
+        let Some(live_operator) = self
             .lookup_allowlisted_operator(&session.operator.commitment)
             .await
-            .is_none()
-        {
+        else {
             sessions.remove(token);
             tracing::warn!(
                 auth_event = "session_rejected",
@@ -281,9 +306,9 @@ impl DashboardState {
             return Err(GuardianError::AuthenticationFailed(
                 "Invalid operator session".to_string(),
             ));
-        }
+        };
 
-        Ok(session.operator)
+        Ok(live_operator)
     }
 
     pub async fn logout(&self, token: Option<&str>, now: DateTime<Utc>) {

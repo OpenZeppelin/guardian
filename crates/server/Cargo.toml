@@ -69,6 +69,7 @@ miden-standards = { workspace = true }
 [features]
 default = []
 evm = ["alloy"]
+authz-probe = []
 postgres = [
     "diesel",
     "diesel-async",

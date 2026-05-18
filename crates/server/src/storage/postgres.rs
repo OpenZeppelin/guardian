@@ -174,6 +174,21 @@ pub(crate) async fn build_postgres_pool(
     Ok(pool)
 }
 
+/// Build a connection pool without eagerly validating the URL. Test
+/// helper used by feature-006-operator-authz fault-injection coverage
+/// to construct a deliberately-broken pool whose `get()` will fail at
+/// use time rather than at construction. Not exposed outside `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) fn build_postgres_pool_lazy(
+    database_url: &str,
+    pool_max_size: usize,
+) -> Result<Pool<AsyncPgConnection>, String> {
+    Pool::builder(postgres_connection_manager(database_url))
+        .max_size(pool_max_size)
+        .build()
+        .map_err(|error| format!("Failed to create connection pool: {error}"))
+}
+
 // Queryable structs for reading from database
 #[derive(Queryable, Selectable)]
 #[diesel(table_name = states)]

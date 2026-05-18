@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(not(feature = "postgres"))]
+use crate::audit::LogAuditor;
+#[cfg(feature = "postgres")]
+use crate::audit::PostgresAuditor;
+use crate::audit::SharedAuditor;
 use crate::metadata::MetadataStore;
 #[cfg(not(feature = "postgres"))]
 use crate::metadata::filesystem::FilesystemMetadataStore;
@@ -74,7 +79,16 @@ impl StorageMetadataBuilder {
             .database_url(std::env::var("DATABASE_URL").ok().unwrap_or_default())
     }
 
-    pub async fn build(self) -> Result<(Arc<dyn StorageBackend>, Arc<dyn MetadataStore>), String> {
+    pub async fn build(
+        self,
+    ) -> Result<
+        (
+            Arc<dyn StorageBackend>,
+            Arc<dyn MetadataStore>,
+            SharedAuditor,
+        ),
+        String,
+    > {
         #[cfg(feature = "postgres")]
         {
             let database_url = self
@@ -96,8 +110,9 @@ impl StorageMetadataBuilder {
             let storage = PostgresService::new(&database_url, database_pool_max_size).await?;
             let metadata =
                 PostgresMetadataStore::new(&database_url, metadata_pool_max_size).await?;
+            let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
 
-            Ok((Arc::new(storage), Arc::new(metadata)))
+            Ok((Arc::new(storage), Arc::new(metadata), auditor))
         }
 
         #[cfg(not(feature = "postgres"))]
@@ -111,8 +126,17 @@ impl StorageMetadataBuilder {
 
             let storage = FilesystemService::new(storage_path).await?;
             let metadata = FilesystemMetadataStore::new(metadata_path).await?;
+            // Filesystem-only deployment: no Postgres for `admin_actions`.
+            // Fall back to structured logs (FR-021) and emit a loud
+            // one-shot startup warning so the operational gap is
+            // visible in deployment logs.
+            tracing::warn!(
+                target: "audit.admin_action.startup",
+                "audit events will not be persisted (filesystem backend); structured logs only",
+            );
+            let auditor: SharedAuditor = Arc::new(LogAuditor::new());
 
-            Ok((Arc::new(storage), Arc::new(metadata)))
+            Ok((Arc::new(storage), Arc::new(metadata), auditor))
         }
     }
 }
@@ -270,6 +294,79 @@ mod tests {
 
         let result = builder.build().await;
         assert!(result.is_ok());
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    /// Feature 006-operator-authz FR-021 / SC-011 / T043: the
+    /// filesystem-backed `StorageMetadataBuilder::build()` MUST emit
+    /// one structured warning under
+    /// `target = "audit.admin_action.startup"` informing operators
+    /// that audit events flow to logs rather than to Postgres rows.
+    /// Pinned text matches what release-build deployments are told.
+    #[cfg(not(feature = "postgres"))]
+    #[tokio::test]
+    async fn filesystem_build_emits_audit_startup_warning() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use tracing::Level;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct CapturedWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Write for CapturedWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buf.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for CapturedWriter {
+            type Writer = CapturedWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "guardian_audit_startup_warn_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let storage_path = temp_dir.join("storage");
+        let metadata_path = temp_dir.join("metadata");
+
+        let writer = CapturedWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_max_level(Level::TRACE)
+            .with_ansi(false)
+            .finish();
+
+        let writer_for_assert = writer.clone();
+        tracing::subscriber::with_default(subscriber, || {
+            futures::executor::block_on(async {
+                let builder = StorageMetadataBuilder::new()
+                    .storage_path(storage_path.clone())
+                    .metadata_path(metadata_path.clone());
+                let result = builder.build().await;
+                assert!(result.is_ok(), "filesystem build should succeed");
+            });
+        });
+
+        let captured = String::from_utf8(writer_for_assert.buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            captured.contains("audit.admin_action.startup"),
+            "expected startup-warning target in: {captured}",
+        );
+        assert!(
+            captured.contains("audit events will not be persisted")
+                && captured.contains("filesystem backend"),
+            "expected pinned warning message in: {captured}",
+        );
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

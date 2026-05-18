@@ -35,6 +35,7 @@ pub struct ServerBuilder {
     network_type: Option<NetworkType>,
     storage: Option<Arc<dyn StorageBackend>>,
     metadata: Option<Arc<dyn MetadataStore>>,
+    auditor: Option<crate::audit::SharedAuditor>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
     dashboard: Option<Arc<DashboardState>>,
@@ -55,6 +56,7 @@ impl ServerBuilder {
             network_type: None,
             storage: None,
             metadata: None,
+            auditor: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
             dashboard: None,
@@ -132,6 +134,16 @@ impl ServerBuilder {
     /// ```
     pub fn metadata(mut self, metadata: Arc<dyn MetadataStore>) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Set the always-on audit writer used by the operator-authorization
+    /// middleware and consumer endpoints (feature 006-operator-authz).
+    /// Built alongside the metadata store by
+    /// [`crate::builder::storage::StorageMetadataBuilder::build`]; callers
+    /// that compose the server manually pass the writer through here.
+    pub fn auditor(mut self, auditor: crate::audit::SharedAuditor) -> Self {
+        self.auditor = Some(auditor);
         self
     }
 
@@ -387,6 +399,10 @@ impl ServerBuilder {
             .metadata
             .ok_or("Metadata store not set. Use .metadata(...)")?;
 
+        let auditor = self
+            .auditor
+            .ok_or("Auditor not set. Use .auditor(...) — typically populated by StorageMetadataBuilder::build()")?;
+
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
@@ -413,6 +429,7 @@ impl ServerBuilder {
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),
             dashboard,
+            auditor,
             #[cfg(feature = "evm")]
             evm,
         };

@@ -52,6 +52,8 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   // Snapshot-specific codes (FR-045).
   'unsupported_for_network',
   'account_data_unavailable',
+  // Feature 006-operator-authz FR-015.
+  'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
 ]);
 
 /**
@@ -64,6 +66,18 @@ export interface ParsedErrorBody {
   code: DashboardErrorCode | string | null;
   message: string | null;
   retryAfterSecs?: number;
+  /**
+   * Populated only when `code === 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION'`.
+   * Lists the permission strings the route required that the
+   * authenticated operator does not hold, lexicographically sorted by
+   * the server (feature 006-operator-authz FR-017).
+   */
+  missingPermissions?: readonly string[];
+  /**
+   * Feature 006-operator-authz FR-016: `false` for permission denials,
+   * absent for every other code.
+   */
+  retryable?: boolean;
 }
 
 /**
@@ -125,7 +139,27 @@ export async function parseErrorBody(
       ? retryRaw
       : undefined;
 
-  return { code, message, retryAfterSecs };
+  // Feature 006-operator-authz FR-016: populate `missingPermissions`
+  // and `retryable` only when the server emitted the permission-denial
+  // code. Every other code path leaves both fields undefined so the
+  // additive envelope extension is invisible to existing parsers.
+  let missingPermissions: readonly string[] | undefined;
+  let retryable: boolean | undefined;
+  if (code === 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION') {
+    const missingRaw = record['missing_permissions'];
+    if (
+      Array.isArray(missingRaw) &&
+      missingRaw.every((v): v is string => typeof v === 'string')
+    ) {
+      missingPermissions = missingRaw as readonly string[];
+    }
+    const retryableRaw = record['retryable'];
+    if (typeof retryableRaw === 'boolean') {
+      retryable = retryableRaw;
+    }
+  }
+
+  return { code, message, retryAfterSecs, missingPermissions, retryable };
 }
 
 /**
@@ -782,11 +816,45 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     code = codeValue;
   }
 
+  // Feature 006-operator-authz FR-016: populate `missingPermissions`
+  // and `retryable` only on the permission-denial code. Tolerate
+  // either ordering or omission on every other code so legacy 5xx /
+  // 4xx errors continue to parse byte-for-byte as before.
+  let missingPermissions: readonly string[] | undefined;
+  let retryable: boolean | undefined;
+  if (code === 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION') {
+    const missingRaw = record.missing_permissions;
+    if (missingRaw !== undefined) {
+      if (
+        !Array.isArray(missingRaw) ||
+        !missingRaw.every((v): v is string => typeof v === 'string')
+      ) {
+        throw new GuardianOperatorContractError(
+          'error response',
+          'missing_permissions must be an array of strings',
+        );
+      }
+      missingPermissions = missingRaw as readonly string[];
+    }
+    const retryableRaw = record.retryable;
+    if (retryableRaw !== undefined) {
+      if (typeof retryableRaw !== 'boolean') {
+        throw new GuardianOperatorContractError(
+          'error response',
+          'retryable must be a boolean',
+        );
+      }
+      retryable = retryableRaw;
+    }
+  }
+
   return {
     success: false,
     code,
     error: requireString(record, 'error', 'error response'),
     retryAfterSecs,
+    missingPermissions,
+    retryable,
   };
 }
 

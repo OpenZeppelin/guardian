@@ -13,6 +13,20 @@ export interface GuardianOperatorHttpErrorData {
   code?: string;
   error: string;
   retryAfterSecs?: number;
+  /**
+   * Feature 006-operator-authz FR-016 / FR-017: populated only for
+   * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` responses. Lists the
+   * permission strings the route required that the authenticated
+   * operator does not hold, sorted lexicographically. Absent for
+   * every other error code.
+   */
+  missingPermissions?: readonly string[];
+  /**
+   * Feature 006-operator-authz FR-016: explicit retryability flag.
+   * `false` for permission denials (the contract pins this); absent
+   * for every other code so existing parsers see no change.
+   */
+  retryable?: boolean;
 }
 
 export interface GuardianOperatorHttpClientOptions {
@@ -125,7 +139,11 @@ export type DashboardErrorCode =
   // must be in the typed union so callers' `isDashboardErrorCode()`
   // narrowing branches on them without falling through.
   | 'unsupported_for_network'
-  | 'account_data_unavailable';
+  | 'account_data_unavailable'
+  // Feature 006-operator-authz FR-015: the wire string is uppercased
+  // per spec to make it visually distinct from the snake_case codes
+  // inherited from earlier features. Stable across releases.
+  | 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION';
 
 export interface PagedResult<T> {
   items: T[];

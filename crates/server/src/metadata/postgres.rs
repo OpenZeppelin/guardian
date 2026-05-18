@@ -20,6 +20,14 @@ impl PostgresMetadataStore {
     pub async fn with_pool(pool: Pool<AsyncPgConnection>) -> Self {
         Self { pool }
     }
+
+    /// Clone of the underlying connection pool. Used by the
+    /// feature-006-operator-authz `PostgresAuditor` to write audit
+    /// rows through the same pool the rest of the metadata layer
+    /// uses, so audit and metadata writes share connection capacity.
+    pub fn pool_handle(&self) -> Pool<AsyncPgConnection> {
+        self.pool.clone()
+    }
 }
 
 /// Row shape for the cosigner-commitment lookup query. Uses `QueryableByName`

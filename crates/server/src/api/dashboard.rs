@@ -927,4 +927,323 @@ mod tests {
                 .expect("state should be written");
         }
     }
+
+    // -----------------------------------------------------------------
+    // Feature 006-operator-authz, User Story 1
+    // Read-Only Operator Can Still Use The Dashboard.
+    // -----------------------------------------------------------------
+
+    use crate::dashboard::AuthenticatedOperator as AuthOp;
+    use crate::dashboard::permissions::Permission;
+    use std::collections::BTreeSet;
+
+    fn op_with_perms(signer: &TestSigner, perms: &[Permission]) -> AuthOp {
+        let mut set: BTreeSet<Permission> = BTreeSet::new();
+        for p in perms {
+            set.insert(*p);
+        }
+        AuthOp {
+            operator_id: signer.commitment_hex.clone(),
+            commitment: signer.commitment_hex.clone(),
+            effective_permissions: Arc::new(set),
+        }
+    }
+
+    /// US1 Acceptance Scenario 1 + 2: a legacy-grant or explicit
+    /// `dashboard:read` operator successfully calls every existing
+    /// dashboard read endpoint. Verifies the authz middleware does
+    /// not regress existing behavior (SC-001).
+    #[tokio::test]
+    async fn dashboard_read_succeeds_for_legacy_grant_operator() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        // Legacy-grant (bare-hex equivalent) → {dashboard:read}.
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[Permission::DashboardRead]),
+        ]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        for path in [
+            "/dashboard/accounts",
+            "/dashboard/info",
+            "/dashboard/deltas",
+            "/dashboard/proposals",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "legacy-grant operator should be allowed on {path}"
+            );
+        }
+    }
+
+    /// US1 Acceptance Scenario 3: operator with `permissions: []`
+    /// receives 403 `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` on
+    /// every dashboard read endpoint, with `missing_permissions`
+    /// listing `dashboard:read`. Explicit empty is permission
+    /// revocation, not legacy-grant (FR-003 / SC-002).
+    #[tokio::test]
+    async fn dashboard_read_denied_for_empty_permissions_operator() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        // `permissions: []` — explicit revocation.
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[]),
+        ]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        for path in [
+            "/dashboard/accounts",
+            "/dashboard/info",
+            "/dashboard/deltas",
+            "/dashboard/proposals",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "explicit-empty operator should be denied on {path}",
+            );
+
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION",
+                "expected stable code on {path}",
+            );
+            assert_eq!(
+                body["missing_permissions"],
+                serde_json::json!(["dashboard:read"]),
+                "expected missing_permissions on {path}",
+            );
+            assert_eq!(body["retryable"], serde_json::Value::Bool(false));
+        }
+    }
+
+    /// US1 Acceptance Scenario alongside US2 Scenario 3: 401 still
+    /// fires before the authz middleware runs, i.e. `permissions: []`
+    /// without a session does not produce a 403; the session layer
+    /// short-circuits first (FR-012).
+    #[tokio::test]
+    async fn unauthenticated_request_returns_401_before_authz() {
+        let state = create_test_app_state().await;
+        let app = create_router(state);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/accounts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Must not be the authz code — the session layer rejected
+        // before authz ran.
+        assert_ne!(
+            body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION",
+            "401 path must not surface authz code"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Feature 006-operator-authz, User Story 2
+    // Mutating Action Requires The Mutating Permission.
+    // The probe endpoint stands in for #181 (Account Pause) until that
+    // ships. Tests are gated behind the `authz-probe` Cargo feature so
+    // they only run when the route is actually registered.
+    // -----------------------------------------------------------------
+
+    /// US2 Scenario 4 / FR-028 / SC-010: release builds without the
+    /// `authz-probe` Cargo feature return 404 on the probe path and
+    /// MUST NOT write an audit row. This test runs regardless of the
+    /// feature flag — if the feature happens to be on at test time
+    /// the probe is registered and the assertion is intentionally
+    /// skipped to keep the suite green across feature matrices.
+    #[tokio::test]
+    async fn probe_path_returns_404_without_authz_probe_feature() {
+        // When `authz-probe` IS enabled, the probe is registered and
+        // returns 401/403/204 depending on the session; the four other
+        // US2 tests cover those cases. Skip this assertion in that
+        // configuration so CI runs with `--features authz-probe`
+        // don't fail.
+        if cfg!(feature = "authz-probe") {
+            return;
+        }
+        let state = create_test_app_state().await;
+        let app = create_router(state);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/dashboard/_authz_probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "authz-probe")]
+    mod authz_probe {
+        use super::*;
+        use crate::audit::{AuditOutcome, kinds};
+        use crate::testing::helpers::CapturingAuditor;
+
+        const PROBE_URI: &str = "/dashboard/_authz_probe";
+
+        async fn state_with_capturing_auditor() -> (AppState, Arc<CapturingAuditor>) {
+            let auditor = Arc::new(CapturingAuditor::new());
+            let mut state = create_test_app_state().await;
+            state.auditor = auditor.clone();
+            (state, auditor)
+        }
+
+        /// US2 Scenario 2: pause-capable operator → 204 + one
+        /// `probe.access` success event.
+        #[tokio::test]
+        async fn probe_succeeds_for_pause_capable_operator() {
+            let operator = TestSigner::new();
+            let (mut state, auditor) = state_with_capturing_auditor().await;
+            state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+                op_with_perms(
+                    &operator,
+                    &[Permission::DashboardRead, Permission::AccountsPause],
+                ),
+            ]));
+            let app = create_router(state);
+            let cookie = authenticate_operator(&app, &operator).await;
+
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(PROBE_URI)
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+            let events = auditor.snapshot();
+            assert_eq!(events.len(), 1, "expected one audit event");
+            assert_eq!(events[0].action_kind, kinds::PROBE_ACCESS);
+            assert_eq!(events[0].outcome, AuditOutcome::Success);
+            assert_eq!(events[0].error_code, None);
+            assert_eq!(events[0].operator_identity, operator.commitment_hex);
+        }
+
+        /// US2 Scenario 1: read-only operator → 403 + one
+        /// `auth.denied` event with the missing-permission payload.
+        #[tokio::test]
+        async fn probe_denied_for_read_only_operator() {
+            let operator = TestSigner::new();
+            let (mut state, auditor) = state_with_capturing_auditor().await;
+            state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+                op_with_perms(&operator, &[Permission::DashboardRead]),
+            ]));
+            let app = create_router(state);
+            let cookie = authenticate_operator(&app, &operator).await;
+
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(PROBE_URI)
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+            assert_eq!(
+                body["missing_permissions"],
+                serde_json::json!(["accounts:pause"])
+            );
+
+            let events = auditor.snapshot();
+            assert_eq!(events.len(), 1, "expected one audit event");
+            assert_eq!(events[0].action_kind, kinds::AUTH_DENIED);
+            assert_eq!(events[0].outcome, AuditOutcome::Denied);
+            assert_eq!(
+                events[0].error_code.as_deref(),
+                Some("GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION")
+            );
+            assert_eq!(events[0].operator_identity, operator.commitment_hex);
+            // Payload carries route + method + required (FR-025).
+            // Note: nested routers see the inner path, not the outer
+            // mount prefix — the audit row records what the route
+            // declared in its own router, which is the stable form
+            // across mount points.
+            let payload = &events[0].payload;
+            assert_eq!(payload["route_path"], "/_authz_probe");
+            assert_eq!(payload["http_method"], "POST");
+            assert_eq!(
+                payload["required_permissions"],
+                serde_json::json!(["accounts:pause"])
+            );
+        }
+
+        /// US2 Scenario 3: unauthenticated caller → 401 from session
+        /// layer, no audit event written. Authentication failures are
+        /// NOT authorization audit events (Edge Case 19).
+        #[tokio::test]
+        async fn probe_unauthenticated_returns_401_and_no_audit_row() {
+            let (state, auditor) = state_with_capturing_auditor().await;
+            let app = create_router(state);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(PROBE_URI)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                auditor.snapshot().len(),
+                0,
+                "401 must not produce an audit event"
+            );
+        }
+    }
 }

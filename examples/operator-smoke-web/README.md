@@ -55,3 +55,48 @@ The `Operator commitment` field is editable, but by default it is seeded from
 the generated Falcon key's real `publicKey.toCommitment()` value. This avoids
 the Miden Wallet browser-bridge issues and gives a stable local smoke path for
 the operator client.
+
+## Authorization profiles (feature `006-operator-authz`)
+
+The operator allowlist JSON now accepts a heterogeneous array: each
+entry is either a bare hex string (legacy, `{dashboard:read}` only) or
+a structured object with explicit permissions. Three smoke profiles
+help you exercise the new authorization middleware:
+
+```jsonc
+// /tmp/guardian-operator-smoke/operator-public-keys.json
+[
+  // Profile A — read-only operator (legacy form).
+  "0x<hex of READ_ONLY signer>",
+
+  // Profile B — read + pause capable.
+  {
+    "public_key": "0x<hex of PAUSE_CAPABLE signer>",
+    "permissions": ["dashboard:read", "accounts:pause"]
+  },
+
+  // Profile C — explicitly denied (different from "absent").
+  {
+    "public_key": "0x<hex of DENIED signer>",
+    "permissions": []
+  }
+]
+```
+
+Then exercise each profile:
+
+| Profile | Dashboard reads | Probe (`POST /dashboard/_authz_probe`)\* |
+|---------|-----------------|--------------------------|
+| A — read-only | `200` | `403` + `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` |
+| B — pause-capable | `200` | `204` |
+| C — explicitly denied | `403` on every read | `403` |
+
+\*The probe endpoint is gated by the `authz-probe` Cargo feature. Start
+Guardian with `cargo run -p guardian-server --features authz-probe`
+when smoke-testing US2; release builds return `404` for that path.
+
+The browser UI's `Operator Public Keys JSON` field shows the legacy
+single-string form — to test profile B or C, paste a JSON array of
+mixed entries into the file directly and the next Guardian reload
+will pick them up (hot-reload is already supported by
+`002-operator-auth`).

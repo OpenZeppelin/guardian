@@ -194,6 +194,7 @@ pub async fn create_test_app_state() -> AppState {
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
+        auditor: Arc::new(crate::audit::LogAuditor::new()),
         #[cfg(feature = "evm")]
         evm: Arc::new(crate::evm::EvmAppState::for_tests()),
     }
@@ -289,10 +290,46 @@ pub fn create_router(state: AppState) -> axum::Router {
             "/proposals",
             axum::routing::get(crate::api::dashboard_feeds::list_global_proposals_handler),
         )
+        // Feature 006-operator-authz: existing dashboard reads now
+        // require `{dashboard:read}`. Apply the same layering as
+        // production (`builder/handle.rs`): authz inside the session
+        // layer so session validation runs first.
+        .route_layer(axum::middleware::from_fn_with_state(
+            crate::dashboard::authz::AuthzState::new(
+                state.clone(),
+                &[crate::dashboard::permissions::Permission::DashboardRead],
+            ),
+            crate::dashboard::authz::enforce,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::dashboard::require_dashboard_session,
         ));
+
+    // Feature 006-operator-authz: probe route wired in test builds when
+    // the `authz-probe` Cargo feature is enabled. Mirrors production
+    // wiring in `builder/handle.rs`.
+    #[cfg(feature = "authz-probe")]
+    let dashboard_routes = {
+        let accounts_pause_authz = crate::dashboard::authz::AuthzState::new(
+            state.clone(),
+            &[crate::dashboard::permissions::Permission::AccountsPause],
+        );
+        let probe_router = axum::Router::new()
+            .route(
+                crate::dashboard::probe::PROBE_PATH,
+                axum::routing::post(crate::dashboard::probe::handle),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                accounts_pause_authz,
+                crate::dashboard::authz::enforce,
+            ))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::dashboard::require_dashboard_session,
+            ));
+        dashboard_routes.merge(probe_router)
+    };
 
     let router = axum::Router::new()
         .route("/configure", axum::routing::post(http::configure))
@@ -716,7 +753,41 @@ pub fn create_test_app_state_with_mocks(
         canonicalization: None, // Use optimistic mode for unit tests
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
+        auditor: Arc::new(crate::audit::LogAuditor::new()),
         #[cfg(feature = "evm")]
         evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+    }
+}
+
+// -----------------------------------------------------------------
+// Feature 006-operator-authz: `CapturingAuditor` test helper.
+// -----------------------------------------------------------------
+
+/// `Auditor` implementation that records every event in memory so
+/// tests can assert on the count, ordering, and payload of audit
+/// emissions. Used by US2 / US4 integration tests in place of the
+/// production `LogAuditor` / `PostgresAuditor`.
+#[derive(Clone, Default)]
+pub struct CapturingAuditor {
+    events: Arc<std::sync::Mutex<Vec<crate::audit::AuditEvent>>>,
+}
+
+impl CapturingAuditor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Vec<crate::audit::AuditEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    pub fn clear(&self) {
+        self.events.lock().unwrap().clear();
+    }
+}
+
+impl crate::audit::Auditor for CapturingAuditor {
+    fn record(&self, event: crate::audit::AuditEvent) {
+        self.events.lock().unwrap().push(event);
     }
 }

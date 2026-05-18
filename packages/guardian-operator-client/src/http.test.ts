@@ -1046,6 +1046,94 @@ describe('isDashboardErrorCode', () => {
     expect(isDashboardErrorCode('unauthorized')).toBe(false);
     expect(isDashboardErrorCode('')).toBe(false);
   });
+
+  it('narrows the feature-006-operator-authz permission-denial code', () => {
+    expect(
+      isDashboardErrorCode('GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION'),
+    ).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------
+// Feature 006-operator-authz, User Story 5: typed permission-denial
+// error surface.
+// -----------------------------------------------------------------
+
+describe('parseErrorBody (feature 006-operator-authz)', () => {
+  it('extracts missing_permissions and retryable on the permission-denial code', async () => {
+    const response = errorResponse({
+      status: 403,
+      statusText: 'Forbidden',
+      body: {
+        success: false,
+        code: 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
+        error: 'Operator lacks required permissions: accounts:pause',
+        missing_permissions: ['accounts:pause'],
+        retryable: false,
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.code).toBe('GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION');
+    expect(parsed.missingPermissions).toEqual(['accounts:pause']);
+    expect(parsed.retryable).toBe(false);
+  });
+
+  it('leaves missingPermissions and retryable undefined on every other code', async () => {
+    const response = errorResponse({
+      status: 404,
+      statusText: 'Not Found',
+      body: {
+        success: false,
+        code: 'account_not_found',
+        error: "Account 'x' not found",
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.code).toBe('account_not_found');
+    expect(parsed.missingPermissions).toBeUndefined();
+    expect(parsed.retryable).toBeUndefined();
+  });
+
+  it('preserves lexicographic ordering of missing_permissions from the server', async () => {
+    // The server pins lex-sort (FR-017); the client must not
+    // re-sort, dedupe, or reorder.
+    const response = errorResponse({
+      status: 403,
+      statusText: 'Forbidden',
+      body: {
+        success: false,
+        code: 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
+        error: 'multiple missing',
+        missing_permissions: ['accounts:pause', 'policies:write'],
+        retryable: false,
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.missingPermissions).toEqual([
+      'accounts:pause',
+      'policies:write',
+    ]);
+  });
+
+  it('ignores missing_permissions if the code is not the permission-denial one', async () => {
+    // Defensive: a buggy server that emits the new field alongside
+    // another code should NOT cause clients to surface it as a
+    // permission-denial. We strictly gate the field on the code.
+    const response = errorResponse({
+      status: 404,
+      statusText: 'Not Found',
+      body: {
+        success: false,
+        code: 'account_not_found',
+        error: 'unrelated',
+        missing_permissions: ['accounts:pause'],
+        retryable: false,
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.missingPermissions).toBeUndefined();
+    expect(parsed.retryable).toBeUndefined();
+  });
 });
 
 function okJson(payload: unknown) {

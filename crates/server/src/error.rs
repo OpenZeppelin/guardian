@@ -75,6 +75,17 @@ pub enum GuardianError {
     /// `invalid_status_filter`. See FR-033 of
     /// `005-operator-dashboard-metrics`.
     InvalidStatusFilter(String),
+    /// Operator session is valid but lacks one or more required
+    /// permissions. Feature 006-operator-authz FR-015 / FR-016. Maps
+    /// to HTTP 403 with stable code
+    /// `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`. The carried list
+    /// is the set of permissions the route required that the operator
+    /// does not hold, ordered lexicographically (FR-017). Not gRPC-
+    /// surfaced because the operator dashboard is HTTP-only today
+    /// (`crates/server/proto/guardian.proto:6-42`).
+    InsufficientOperatorPermission {
+        missing_permissions: Vec<String>,
+    },
     /// Underlying records exist (or metadata exists) but cannot be read,
     /// or a cross-account aggregate is degraded above the filesystem
     /// threshold. Maps to HTTP 503 with stable code `data_unavailable`.
@@ -143,6 +154,7 @@ impl GuardianError {
             GuardianError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
             GuardianError::InvalidLimit(_) => StatusCode::BAD_REQUEST,
             GuardianError::InvalidStatusFilter(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InsufficientOperatorPermission { .. } => StatusCode::FORBIDDEN,
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -183,6 +195,10 @@ impl GuardianError {
             GuardianError::InvalidCursor(_) => tonic::Code::InvalidArgument,
             GuardianError::InvalidLimit(_) => tonic::Code::InvalidArgument,
             GuardianError::InvalidStatusFilter(_) => tonic::Code::InvalidArgument,
+            // Operator surface is HTTP-only; this gRPC mapping exists only
+            // for `tonic::Status` parity at the conversion boundary and
+            // is not exposed to any production gRPC consumer in v1.
+            GuardianError::InsufficientOperatorPermission { .. } => tonic::Code::PermissionDenied,
             GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
         }
     }
@@ -223,6 +239,9 @@ impl GuardianError {
             GuardianError::InvalidCursor(_) => "invalid_cursor",
             GuardianError::InvalidLimit(_) => "invalid_limit",
             GuardianError::InvalidStatusFilter(_) => "invalid_status_filter",
+            GuardianError::InsufficientOperatorPermission { .. } => {
+                "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION"
+            }
             GuardianError::DataUnavailable(_) => "data_unavailable",
         }
     }
@@ -313,6 +332,15 @@ impl fmt::Display for GuardianError {
             GuardianError::InvalidStatusFilter(msg) => {
                 write!(f, "Invalid status filter: {msg}")
             }
+            GuardianError::InsufficientOperatorPermission {
+                missing_permissions,
+            } => {
+                write!(
+                    f,
+                    "Operator lacks required permissions: {}",
+                    missing_permissions.join(", ")
+                )
+            }
             GuardianError::DataUnavailable(msg) => write!(f, "Data unavailable: {msg}"),
         }
     }
@@ -351,6 +379,19 @@ struct ErrorResponse {
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_after_secs: Option<u32>,
+    /// Feature 006-operator-authz FR-016: list of permissions the
+    /// route required that the authenticated operator lacks, sorted
+    /// lexicographic ASCII (FR-017). Populated only for
+    /// `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`; absent for every
+    /// other error code. Additive extension of the existing flat
+    /// envelope (research.md Decision 1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing_permissions: Option<Vec<String>>,
+    /// Feature 006-operator-authz FR-016: explicit retryability flag.
+    /// `false` for permission denials (the contract pins this) and
+    /// absent for every other code so existing parsers see no change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retryable: Option<bool>,
 }
 
 impl IntoResponse for GuardianError {
@@ -362,11 +403,19 @@ impl IntoResponse for GuardianError {
             } => Some(*retry_after_secs),
             _ => None,
         };
+        let (missing_permissions, retryable) = match &self {
+            GuardianError::InsufficientOperatorPermission {
+                missing_permissions,
+            } => (Some(missing_permissions.clone()), Some(false)),
+            _ => (None, None),
+        };
         let body = Json(ErrorResponse {
             success: false,
             code: self.code(),
             error: self.to_string(),
             retry_after_secs,
+            missing_permissions,
+            retryable,
         });
         if let Some(retry_after_secs) = retry_after_secs {
             (
@@ -955,5 +1004,60 @@ mod tests {
         ] {
             assert_eq!(err.code(), expected_code);
         }
+    }
+
+    // -- Feature 006-operator-authz: InsufficientOperatorPermission --
+
+    #[test]
+    fn insufficient_operator_permission_pins_http_grpc_and_code() {
+        let err = GuardianError::InsufficientOperatorPermission {
+            missing_permissions: vec!["accounts:pause".into()],
+        };
+        assert_eq!(err.http_status(), StatusCode::FORBIDDEN);
+        assert_eq!(err.grpc_status(), tonic::Code::PermissionDenied);
+        assert_eq!(err.code(), "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+    }
+
+    #[test]
+    fn insufficient_operator_permission_serializes_with_missing_permissions_and_retryable_false() {
+        use axum::body::to_bytes;
+        let err = GuardianError::InsufficientOperatorPermission {
+            missing_permissions: vec!["accounts:pause".into()],
+        };
+        let response = err.into_response();
+        let status = response.status();
+        let body_bytes = futures::executor::block_on(to_bytes(response.into_body(), usize::MAX))
+            .expect("body bytes");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("body is valid JSON");
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(parsed["success"], serde_json::Value::Bool(false));
+        assert_eq!(parsed["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+        assert_eq!(
+            parsed["missing_permissions"],
+            serde_json::json!(["accounts:pause"])
+        );
+        assert_eq!(parsed["retryable"], serde_json::Value::Bool(false));
+        // The new fields are populated; the legacy `retry_after_secs`
+        // is absent for this code (additive extension preserves the
+        // existing envelope shape for every other code).
+        assert!(parsed.get("retry_after_secs").is_none());
+    }
+
+    #[test]
+    fn other_errors_do_not_carry_missing_permissions_or_retryable() {
+        use axum::body::to_bytes;
+        // A non-permission error must NOT populate the new fields, so
+        // existing dashboard error parsers see no change (research.md
+        // Decision 1: additive extension).
+        let err = GuardianError::AccountNotFound("0xabc".into());
+        let response = err.into_response();
+        let body_bytes = futures::executor::block_on(to_bytes(response.into_body(), usize::MAX))
+            .expect("body bytes");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("body is valid JSON");
+        assert!(parsed.get("missing_permissions").is_none());
+        assert!(parsed.get("retryable").is_none());
     }
 }

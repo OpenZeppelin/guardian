@@ -1,4 +1,5 @@
 use crate::ack::AckRegistry;
+use crate::audit::SharedAuditor;
 use crate::builder::clock::Clock;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::dashboard::DashboardState;
@@ -19,6 +20,11 @@ pub struct AppState {
     pub canonicalization: Option<CanonicalizationConfig>,
     pub clock: Arc<dyn Clock>,
     pub dashboard: Arc<DashboardState>,
+    /// Always-on audit writer (feature 006-operator-authz). On
+    /// Postgres builds this is `PostgresAuditor`; on filesystem-only
+    /// builds it is `LogAuditor` and a one-shot startup warning is
+    /// emitted at construction time (FR-020 / FR-021).
+    pub auditor: SharedAuditor,
     #[cfg(feature = "evm")]
     pub evm: Arc<EvmAppState>,
 }

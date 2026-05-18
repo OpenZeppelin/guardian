@@ -8,6 +8,19 @@ export {
 
 export type { PaginationOptions, ParsedErrorBody } from './http.js';
 
+export {
+  ACCOUNTS_PAUSE,
+  DASHBOARD_READ,
+  POLICIES_WRITE,
+  REQUIRED_PERMISSIONS,
+  requiredPermissionsFor,
+} from './permissions.js';
+
+export type {
+  DashboardEndpointKey,
+  OperatorPermission,
+} from './permissions.js';
+
 export type {
   DashboardAccountDetail,
   DashboardAccountResponse,
