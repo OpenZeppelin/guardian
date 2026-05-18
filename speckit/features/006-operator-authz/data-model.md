@@ -21,7 +21,8 @@ CREATE TABLE admin_actions (
     target_account_id   TEXT NULL,
     payload             JSONB NOT NULL DEFAULT '{}'::jsonb,
     outcome             TEXT NOT NULL CHECK (outcome IN ('success','denied')),
-    error_code          TEXT NULL
+    error_code          TEXT NULL,
+    client_ip           TEXT NULL
 );
 CREATE INDEX admin_actions_operator_idx
     ON admin_actions (operator_identity, occurred_at DESC);
@@ -57,12 +58,25 @@ CREATE TRIGGER admin_actions_no_update
 - `payload`: JSONB. v1 schema per `action_kind`:
   - `auth.denied`: `{ "route_path": "...", "http_method": "POST",
     "required_permissions": ["..."] }` (FR-025).
-  - `probe.access`: `{}`.
-  - Other kinds: defined by consumer features.
+  - `probe.access`: same shape as `auth.denied` so success and
+    denied rows for the same route carry symmetric forensic
+    context — downstream queries don't have to branch on
+    `outcome` to find route + required permissions.
+  - Other kinds: defined by consumer features. Convention is that
+    success and denial rows for the same `action_kind` carry the
+    same payload shape; consumers SHOULD follow this for any new
+    mutating endpoint.
 - `outcome`: TEXT, `success` or `denied`. CHECK constraint pins
   domain.
 - `error_code`: nullable TEXT. Populated when `outcome = denied`
   (`GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` in v1).
+- `client_ip`: nullable TEXT. Originating client IP at the audit
+  boundary, populated via the shared
+  `crate::middleware::client_ip::extract_client_ip` helper
+  (precedence: `X-Forwarded-For` first parseable → `X-Real-IP` →
+  axum `ConnectInfo`). NULL when no request context is available
+  (synthetic callers in fault-injection tests, future
+  service-to-service paths).
 
 **Append-only enforcement**: the `admin_actions_no_update` trigger
 fires on UPDATE or DELETE and raises an exception. Retention work
@@ -92,6 +106,7 @@ diesel::table! {
         payload -> Jsonb,
         outcome -> Text,
         error_code -> Nullable<Text>,
+        client_ip -> Nullable<Text>,
     }
 }
 ```
@@ -110,6 +125,7 @@ pub struct AdminActionRow {
     pub payload: serde_json::Value,
     pub outcome: String,
     pub error_code: Option<String>,
+    pub client_ip: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -121,6 +137,7 @@ pub struct NewAdminAction<'a> {
     pub payload: &'a serde_json::Value,
     pub outcome: &'a str,
     pub error_code: Option<&'a str>,
+    pub client_ip: Option<&'a str>,
 }
 ```
 
@@ -328,6 +345,7 @@ WARN audit.admin_action
   payload={"route_path":"/dashboard/_authz_probe","http_method":"POST","required_permissions":["accounts:pause"]}
   outcome=denied
   error_code=GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION
+  client_ip=203.0.113.5
 ```
 
 The log line is the **same event** as the row, not a duplicate; on

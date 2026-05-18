@@ -31,6 +31,7 @@ struct NewAdminAction<'a> {
     payload: &'a serde_json::Value,
     outcome: &'a str,
     error_code: Option<&'a str>,
+    client_ip: Option<&'a str>,
 }
 
 /// Diesel `Queryable` row shape for tests and (future) read paths.
@@ -49,6 +50,7 @@ pub struct AdminActionRow {
     pub payload: serde_json::Value,
     pub outcome: String,
     pub error_code: Option<String>,
+    pub client_ip: Option<String>,
 }
 
 /// Audit writer that INSERTs into `admin_actions`. Falls back to
@@ -93,6 +95,7 @@ impl PostgresAuditor {
                     payload: &event.payload,
                     outcome,
                     error_code: event.error_code.as_deref(),
+                    client_ip: event.client_ip.as_deref(),
                 };
                 diesel::insert_into(admin_actions::table)
                     .values(&new_row)
@@ -186,6 +189,7 @@ mod tests {
             }),
             outcome: AuditOutcome::Denied,
             error_code: Some("GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION".into()),
+            client_ip: Some("203.0.113.9".into()),
         }
     }
 

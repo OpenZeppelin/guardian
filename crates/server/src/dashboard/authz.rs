@@ -86,10 +86,13 @@ pub async fn enforce(
     }
 
     // Audit emission MUST precede the response (FR-013). Use the path
-    // and method from the request for the `payload` per FR-025.
+    // and method from the request for the `payload` per FR-025; pull
+    // the originating client IP via the shared extractor so denied
+    // and successful rows carry the same forensic shape.
     let route_path = request.uri().path().to_owned();
     let http_method = request.method().as_str().to_owned();
     let required_strings: Vec<String> = required.iter().map(|p| p.as_str().to_owned()).collect();
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
     state.auditor.record(AuditEvent {
         operator_identity: operator.operator_id.clone(),
         action_kind: kinds::AUTH_DENIED,
@@ -101,6 +104,7 @@ pub async fn enforce(
         }),
         outcome: AuditOutcome::Denied,
         error_code: Some("GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION".to_string()),
+        client_ip,
     });
 
     Err(GuardianError::InsufficientOperatorPermission {
@@ -186,6 +190,7 @@ mod tests {
             payload: json!({}),
             outcome: AuditOutcome::Denied,
             error_code: Some("GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION".into()),
+            client_ip: None,
         });
         let snap = auditor.snapshot();
         assert_eq!(snap.len(), 1);

@@ -14,11 +14,12 @@
 //! effect.
 
 use axum::Extension;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use serde_json::json;
 
 use crate::audit::{AuditEvent, AuditOutcome, kinds};
+use crate::dashboard::permissions::Permission;
 use crate::dashboard::types::AuthenticatedOperator;
 use crate::error::Result;
 use crate::state::AppState;
@@ -31,17 +32,32 @@ pub const PROBE_PATH: &str = "/_authz_probe";
 /// authorization middleware has already verified the caller holds
 /// `{accounts:pause}`. Records one `admin_actions` event with
 /// `action_kind = probe.access` then returns 204.
+///
+/// The success-row payload mirrors the `auth.denied` payload shape
+/// (route_path, http_method, required_permissions) so successful and
+/// denied rows for the same route carry the same forensic context —
+/// downstream consumers can correlate success/denial by route without
+/// branching on `outcome`.
 pub async fn handle(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
+    request: Request,
 ) -> Result<StatusCode> {
+    let route_path = request.uri().path().to_owned();
+    let http_method = request.method().as_str().to_owned();
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
     state.auditor.record(AuditEvent {
         operator_identity: operator.operator_id.clone(),
         action_kind: kinds::PROBE_ACCESS,
         target_account_id: None,
-        payload: json!({}),
+        payload: json!({
+            "route_path": route_path,
+            "http_method": http_method,
+            "required_permissions": [Permission::AccountsPause.as_str()],
+        }),
         outcome: AuditOutcome::Success,
         error_code: None,
+        client_ip,
     });
     Ok(StatusCode::NO_CONTENT)
 }

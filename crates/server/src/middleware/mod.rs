@@ -1,4 +1,5 @@
 pub mod body_limit;
+pub mod client_ip;
 pub mod cors;
 pub mod rate_limit;
 

@@ -6,7 +6,6 @@
 use axum::{
     Json,
     body::Body,
-    extract::ConnectInfo,
     http::{Request, Response, StatusCode},
     response::IntoResponse,
 };
@@ -15,7 +14,6 @@ use std::{
     collections::HashMap,
     env,
     future::Future,
-    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{Arc, RwLock},
     task::{Context, Poll},
@@ -380,36 +378,14 @@ where
 }
 
 /// Extract client IP from request, preferring forwarding headers from the ingress proxy.
+///
+/// Rate-limit keying relies on a non-empty string per request, so the
+/// shared extractor's `None` is folded back into the legacy
+/// `"unknown"` sentinel here. Audit callers that need to distinguish
+/// "we don't know" from a literal `"unknown"` IP use
+/// [`crate::middleware::client_ip::extract_client_ip`] directly.
 fn extract_client_ip<B>(req: &Request<B>) -> String {
-    if let Some(ip) = extract_forwarded_for_ip(req) {
-        return ip;
-    }
-
-    if let Some(ip) = extract_real_ip(req) {
-        return ip;
-    }
-
-    if let Some(connect_info) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        return connect_info.0.ip().to_string();
-    }
-
-    "unknown".to_string()
-}
-
-fn extract_forwarded_for_ip<B>(req: &Request<B>) -> Option<String> {
-    let forwarded = req.headers().get("x-forwarded-for")?;
-    let value = forwarded.to_str().ok()?;
-
-    value
-        .split(',')
-        .map(str::trim)
-        .find_map(|entry| entry.parse::<IpAddr>().ok().map(|ip| ip.to_string()))
-}
-
-fn extract_real_ip<B>(req: &Request<B>) -> Option<String> {
-    let real_ip = req.headers().get("x-real-ip")?;
-    let value = real_ip.to_str().ok()?;
-    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+    super::client_ip::extract_client_ip(req).unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Extract account_id or signer pubkey for enhanced rate limit keying
@@ -442,6 +418,7 @@ fn extract_enhanced_key<B>(req: &Request<B>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::ConnectInfo;
     use axum::http::header::HeaderValue;
     use std::net::{IpAddr, SocketAddr};
 

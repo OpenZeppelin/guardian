@@ -96,6 +96,7 @@ diesel::table! {
         payload -> Jsonb,
         outcome -> Text,
         error_code -> Nullable<Text>,
+        client_ip -> Nullable<Text>,
     }
 }
 

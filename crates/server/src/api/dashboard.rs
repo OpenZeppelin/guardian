@@ -1190,6 +1190,17 @@ mod tests {
             assert_eq!(events[0].outcome, AuditOutcome::Success);
             assert_eq!(events[0].error_code, None);
             assert_eq!(events[0].operator_identity, operator.commitment_hex);
+            // Symmetric payload: success rows carry the same route +
+            // method + required_permissions as denied rows so
+            // downstream forensic queries don't have to branch on
+            // outcome.
+            let payload = &events[0].payload;
+            assert_eq!(payload["route_path"], "/_authz_probe");
+            assert_eq!(payload["http_method"], "POST");
+            assert_eq!(
+                payload["required_permissions"],
+                serde_json::json!(["accounts:pause"])
+            );
         }
 
         /// US2 Scenario 1: read-only operator → 403 + one

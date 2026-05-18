@@ -42,6 +42,7 @@ impl Auditor for LogAuditor {
             payload = %payload,
             outcome = %event.outcome.as_str(),
             error_code = ?event.error_code,
+            client_ip = ?event.client_ip,
         );
     }
 }
@@ -112,6 +113,7 @@ mod tests {
                 }),
                 outcome: AuditOutcome::Denied,
                 error_code: Some("GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION".into()),
+                client_ip: Some("203.0.113.5".into()),
             });
         });
 
@@ -135,6 +137,10 @@ mod tests {
             captured.contains("GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION"),
             "expected error_code in: {captured}"
         );
+        assert!(
+            captured.contains("client_ip") && captured.contains("203.0.113.5"),
+            "expected client_ip in: {captured}"
+        );
         // Should be exactly one event in the output.
         assert_eq!(
             captured.matches("audit.admin_action").count(),
@@ -153,6 +159,7 @@ mod tests {
                 payload: json!({}),
                 outcome: AuditOutcome::Success,
                 error_code: None,
+                client_ip: None,
             });
         });
         assert!(captured.contains("probe.access"));
@@ -162,6 +169,11 @@ mod tests {
         assert!(
             captured.contains("error_code=None"),
             "expected None error_code in: {captured}",
+        );
+        // client_ip is optional and absent for synthetic callers.
+        assert!(
+            captured.contains("client_ip=None"),
+            "expected None client_ip in: {captured}",
         );
     }
 

@@ -15,7 +15,13 @@ CREATE TABLE admin_actions (
     target_account_id TEXT        NULL,
     payload           JSONB       NOT NULL DEFAULT '{}'::jsonb,
     outcome           TEXT        NOT NULL CHECK (outcome IN ('success', 'denied')),
-    error_code        TEXT        NULL
+    error_code        TEXT        NULL,
+    -- Originating client IP at the audit boundary, extracted via the
+    -- same precedence chain as rate limiting (X-Forwarded-For first
+    -- parseable → X-Real-IP → axum ConnectInfo). Nullable because
+    -- synthetic callers without a request context (fault-injection
+    -- tests, future service-to-service paths) have no meaningful IP.
+    client_ip         TEXT        NULL
 );
 
 -- Primary forensic lookup: "what did operator X do".
