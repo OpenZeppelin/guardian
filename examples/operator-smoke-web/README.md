@@ -47,7 +47,15 @@ VITE_GUARDIAN_TARGET=https://your-guardian.example npm run dev
 4. Keep Guardian running with `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` pointed at that file.
 5. Click `Request challenge`.
 6. Click `Login`.
-7. Use `List accounts`, `Fetch account`, and `Logout`.
+7. Use `List accounts`, `Fetch account`, `Get session`, and `Logout`.
+
+`Get session` calls `GET /dashboard/session` (feature `006-operator-authz`
+US6) and shows the operator's identity and effective permission set as
+the server resolved them on this request. Permissions are live-read from
+the allowlist, so editing the JSON file and clicking the button again
+reflects the change without re-login. The endpoint requires only a
+valid session — operators with `permissions: []` get `200` with an
+empty array, not `403`.
 
 ## Important Note
 
@@ -85,11 +93,11 @@ help you exercise the new authorization middleware:
 
 Then exercise each profile:
 
-| Profile | Dashboard reads | Probe (`POST /dashboard/_authz_probe`)\* |
-|---------|-----------------|--------------------------|
-| A — read-only | `200` | `403` + `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` |
-| B — pause-capable | `200` | `204` |
-| C — explicitly denied | `403` on every read | `403` |
+| Profile | Dashboard reads | `Get session` | Probe (`POST /dashboard/_authz_probe`)\* |
+|---------|-----------------|---------------|--------------------------|
+| A — read-only | `200` | `200`, `permissions: ["dashboard:read"]` | `403` + `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` |
+| B — pause-capable | `200` | `200`, `permissions: ["accounts:pause", "dashboard:read"]` | `204` |
+| C — explicitly denied | `403` on every read | `200`, `permissions: []` (NOT `403`) | `403` |
 
 \*The probe endpoint is gated by the `authz-probe` Cargo feature. Start
 Guardian with `cargo run -p guardian-server --features authz-probe`
