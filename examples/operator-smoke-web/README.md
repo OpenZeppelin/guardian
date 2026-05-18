@@ -103,8 +103,53 @@ Then exercise each profile:
 Guardian with `cargo run -p guardian-server --features authz-test-probe`
 when smoke-testing US2; release builds return `404` for that path.
 
+**Note on `policies:write`**: the v1 permission vocabulary includes
+`policies:write` but no route requires it yet. Granting it on an
+allowlist entry loads cleanly but has no behavioral effect — the
+first consumer ships with #182. The grant is **not** inert against
+downgrade though: rolling back to a server build that predates the
+permission will fail to load the allowlist. Remove forward-defined
+permissions before downgrading the server binary.
+
 The browser UI's `Operator Public Keys JSON` field shows the legacy
 single-string form — to test profile B or C, paste a JSON array of
 mixed entries into the file directly and the next Guardian reload
 will pick them up (hot-reload is already supported by
 `002-operator-auth`).
+
+## Inspecting audit events
+
+Every probe denial or success writes one `admin_actions` event. The
+endpoint and the underlying writer don't change shape between
+backends — only the storage does. On a Postgres-backed Guardian:
+
+```bash
+docker compose -f docker-compose.postgres.yml exec postgres \
+  psql -U guardian -d guardian -c \
+  "SELECT id, occurred_at, operator_identity, action_kind, outcome,
+          error_code, client_ip, payload
+     FROM admin_actions ORDER BY occurred_at DESC LIMIT 10;"
+```
+
+On a filesystem-only Guardian the writer falls back to structured
+logs under `target = audit.admin_action`:
+
+```bash
+grep audit.admin_action server.log
+```
+
+`GET /dashboard/session` calls are intentionally **not** audited
+(FR-035) — only mutating attempts and authz denials produce rows.
+
+## Verifying the append-only trigger
+
+```bash
+docker compose -f docker-compose.postgres.yml exec postgres \
+  psql -U guardian -d guardian -c \
+  "UPDATE admin_actions SET outcome='success' WHERE id=1;"
+# → ERROR:  admin_actions is append-only
+```
+
+The trigger is the load-bearing enforcement layer (see
+[spec §Design decisions](../../speckit/features/006-operator-authz/spec.md#design-decisions)).
+A future retention migration is the only legitimate way to remove it.

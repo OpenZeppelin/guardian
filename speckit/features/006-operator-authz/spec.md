@@ -177,11 +177,8 @@ metadata/state backends is preserved.
 - Add one new stable error code `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
   with pinned HTTP status (`403 Forbidden`), plus a stable response
   shape including the permission(s) the operator lacks. The new code
-  is added to whatever envelope Guardian uses for error responses at
-  implementation time (today's envelope, in
-  `crates/server/src/error.rs::ErrorResponse`, is flat). The
-  flat-vs-nested envelope shape is a plan-phase decision; see FR-016
-  for the exact field-level contract and the decision criteria.
+  rides the existing flat `ErrorResponse` envelope additively (see
+  §Design decisions); FR-016 has the exact field-level contract.
 - Pinning the human-readable `message` is out of scope.
 - No gRPC mapping is introduced because the operator surface is
   HTTP-only today.
@@ -494,9 +491,8 @@ action kind, outcome, and (on failure) the error code.
    blocked on the row landing.
 4. **Given** an `admin_actions` row that is persisted, **When** any
    process attempts to UPDATE or DELETE it through normal server
-   operation, **Then** the operation fails. Enforcement layer is
-   pinned at plan-phase (see §Data Impact); the spec requires that
-   "append-only" be enforced beyond a code convention. Log-fallback
+   operation, **Then** the operation fails. Enforcement is a Postgres
+   trigger on `admin_actions` (see §Design decisions); log-fallback
    events are append-only by construction.
 
 ---
@@ -709,15 +705,10 @@ for an entry with `permissions: []` and verify the endpoint returns
   human `message` (best-effort English; not part of the typed
   contract), a `missing_permissions` list of the permission strings
   the route required that the operator lacks, and a `retryable =
-  false` indicator (a permission denial is not transient).
-  **Plan-phase decision:** the current envelope is flat
-  (`crates/server/src/error.rs::ErrorResponse`); the implementation
-  may either (a) extend the flat envelope additively, or (b)
-  introduce a nested `error.{code,message,details,retryable}` shape.
-  The choice must keep the existing TS `parseErrorBody`
-  (`packages/guardian-operator-client/src/http.ts:78`) working and
-  match this code's typed fields end-to-end. Pin the choice in the
-  plan before writing the Rust + TS code.
+  false` indicator (a permission denial is not transient). The new
+  fields are additive extensions of the existing flat envelope
+  (`crates/server/src/error.rs::ErrorResponse`); see §Design
+  decisions for rationale.
 - **FR-017**: The `missing_permissions` array MUST be ordered
   deterministically (lexicographic ASCII) so snapshot tests and
   audit events do not drift between runs.
@@ -777,13 +768,12 @@ for an entry with `permissions: []` and verify the endpoint returns
   signatures, raw cosigner data, or any per-account secret state;
   payload is for action context only.
 - **FR-026**: Once persisted, an `admin_actions` row MUST NOT be
-  modifiable through the running server. **Plan-phase decision:**
-  enforcement layer is Postgres-level (a trigger or rule blocking
-  `UPDATE`/`DELETE` on `admin_actions`) OR application-level (the
-  `Auditor` trait exposes no update/delete methods); pick one. The
-  spec requires that "append-only" be more than convention.
-  Out-of-band DB superuser access remains out of scope. Log-fallback
-  events are append-only by construction.
+  modifiable through the running server. Enforcement is a Postgres
+  trigger that raises on `UPDATE` or `DELETE` (see §Design decisions);
+  the `Auditor` trait additionally exposes no update/delete method,
+  but the trigger is the trusted layer. Out-of-band DB superuser
+  access remains out of scope. Log-fallback events are append-only by
+  construction.
 - **FR-027**: If the Postgres-backed audit write fails on a denial,
   the server MUST still return the denial response to the caller
   AND the writer MUST emit the same structured log line that the
@@ -866,8 +856,8 @@ for an entry with `permissions: []` and verify the endpoint returns
 - The error envelope used by Guardian server gains exactly one new
   pinned variant (`GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`)
   carrying `missing_permissions: string[]`. No other error variants
-  are introduced or modified in this feature. The flat-vs-nested
-  envelope shape for `details` is a plan-phase decision (see FR-016).
+  are introduced or modified in this feature. The new fields are
+  additive on the existing flat envelope (see §Design decisions).
 - The dashboard read endpoints introduced by [`005-operator-dashboard-metrics`](../005-operator-dashboard-metrics/spec.md)
   acquire an implicit required permission of `{dashboard:read}`.
   Their request/response shapes are unchanged; the only observable
@@ -1106,10 +1096,9 @@ for an entry with `permissions: []` and verify the endpoint returns
    (see §Dependencies).
 10. **The structured error envelope from [#179](https://github.com/OpenZeppelin/guardian/issues/179)
     is a soft prerequisite, not a hard one**. This feature pins one
-    new error code; FR-016 leaves the flat-vs-nested envelope shape
-    as a plan-phase decision so this code can ride either the
-    existing flat envelope or a [#179](https://github.com/OpenZeppelin/guardian/issues/179)-style
-    nested envelope without re-spec.
+    new error code on the existing flat envelope (additively); when
+    #179 lands its nested shape, this code rides it without a
+    re-spec because its typed fields are envelope-independent.
 
 ## Dependencies
 
@@ -1134,18 +1123,22 @@ for an entry with `permissions: []` and verify the endpoint returns
   follow-up replaces that with a queryable, runtime-mutable Postgres
   table.
 
-## Plan-phase decisions to pin before implementation
+## Design decisions
 
-(These are surfaced so the plan-phase doc can resolve them; the spec
-intentionally leaves them open so design alternatives can be weighed
-during planning rather than re-specced.)
-
-- **FR-016 envelope shape**: extend the existing flat `ErrorResponse`
-  additively, or move to a nested `error.{code,message,details,
-  retryable}` shape. Either is permissible; choose the one that
-  minimally disturbs the existing TS `parseErrorBody` and forward-
-  fits #179.
-- **FR-026 append-only enforcement**: Postgres trigger blocking
-  `UPDATE`/`DELETE` on `admin_actions`, or application-level trait
-  surface that exposes no update/delete methods. Either is
-  permissible.
+- **Error envelope (FR-016)**: extend the existing flat
+  `ErrorResponse` envelope additively. The new fields
+  (`missing_permissions`, `retryable`) are serialized only for the
+  permission-denial code; every other code emits the same bytes as
+  before. Avoids coupling this feature to the broader nested-envelope
+  migration tracked under #179.
+- **Append-only enforcement (FR-026)**: Postgres trigger
+  `admin_actions_no_update` raises on `UPDATE`/`DELETE`. The Rust
+  `Auditor` trait additionally exposes no update/delete methods, but
+  the trigger is the trusted layer — a code refactor that adds a
+  cleanup path cannot silently bypass append-only. Future retention
+  work must drop the trigger explicitly in its own migration.
+- **Probe endpoint gating (FR-028 / FR-029)**: Cargo feature
+  `authz-test-probe`, default off. Build-time gating means the
+  binary's feature list is the audit surface — no runtime flag, no
+  env-var toggle. CI builds with the feature; production builds
+  without it return `404` for the path.

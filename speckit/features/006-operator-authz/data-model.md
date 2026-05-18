@@ -4,7 +4,7 @@
 
 This document specifies the persistence and in-memory data shapes
 introduced or extended by this feature. Read alongside `spec.md`
-(authority on semantics) and `research.md` (decision rationale).
+(authority on semantics, including §Design decisions).
 
 ## Persistence Changes
 
@@ -66,6 +66,14 @@ CREATE TRIGGER admin_actions_no_update
     success and denial rows for the same `action_kind` carry the
     same payload shape; consumers SHOULD follow this for any new
     mutating endpoint.
+
+  **`route_path` is the inner axum router path** (e.g.
+  `/_authz_probe`), not the full mount-prefixed path
+  (`/dashboard/_authz_probe`). Axum strips the nest prefix from
+  the request URI inside a nested router, and that stripped form
+  is what reaches the audit emission site. Forensic queries
+  SHOULD filter on `action_kind` + `http_method` (stable across
+  remounts) rather than on the full mount-prefix path.
 - `outcome`: TEXT, `success` or `denied`. CHECK constraint pins
   domain.
 - `error_code`: nullable TEXT. Populated when `outcome = denied`

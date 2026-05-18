@@ -11,12 +11,15 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 /// The set of permissions this Guardian build recognizes. Stable
 /// across releases; renaming a variant is a breaking contract change.
-#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// Intentionally does NOT derive serde traits: the canonical wire
+/// form is the colon string from [`Permission::as_str`]. Routing the
+/// value through serde would produce the rust-snake-case form
+/// (`accounts_pause`) and silently diverge from the allowlist /
+/// dashboard / audit wire vocabulary.
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Permission {
     DashboardRead,
     AccountsPause,
@@ -143,15 +146,5 @@ mod tests {
             let parsed = Permission::from_str(permission.as_str()).unwrap();
             assert_eq!(parsed, permission);
         }
-    }
-
-    #[test]
-    fn serializes_to_snake_case() {
-        let json = serde_json::to_string(&Permission::AccountsPause).unwrap();
-        // Note: the wire string used by the allowlist JSON is the colon
-        // form via `as_str` / `Display`; the serde representation here
-        // is incidental to internal use and uses snake_case so it does
-        // not collide with the colon form.
-        assert_eq!(json, "\"accounts_pause\"");
     }
 }

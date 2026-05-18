@@ -125,11 +125,12 @@ impl Auditor for PostgresAuditor {
     fn record(&self, event: AuditEvent) {
         // Audit writes are fire-and-forget from the caller's
         // perspective (FR-027): the denial response must not block on
-        // the row landing. We spawn the INSERT on the existing tokio
-        // runtime; if Diesel rejects (DB down, pool exhausted, schema
-        // mismatch), the same event flows through `LogAuditor` so the
-        // forensic record survives.
-        let _ = self.record_with_handle(event);
+        // the row landing. The spawned task runs to completion in the
+        // background regardless of whether we keep the handle; if
+        // Diesel rejects (DB down, pool exhausted, schema mismatch),
+        // the same event flows through `LogAuditor` inside the task
+        // so the forensic record survives.
+        drop(self.record_with_handle(event));
     }
 }
 
@@ -298,8 +299,7 @@ mod tests {
             .set(admin_actions::outcome.eq("success"))
             .execute(&mut conn)
             .await
-            .err()
-            .expect("UPDATE must be blocked");
+            .expect_err("UPDATE must be blocked");
         assert!(
             update_err
                 .to_string()
@@ -311,8 +311,7 @@ mod tests {
         let delete_err = diesel::delete(admin_actions::table.filter(admin_actions::id.eq(row_id)))
             .execute(&mut conn)
             .await
-            .err()
-            .expect("DELETE must be blocked");
+            .expect_err("DELETE must be blocked");
         assert!(
             delete_err
                 .to_string()

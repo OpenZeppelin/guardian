@@ -112,7 +112,7 @@ components:
       description: >
         Stable response shape for GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION.
         Additive extension of the existing flat ErrorResponse envelope
-        (Decision 1 in research.md). The `code` field is the stable typed
+        (spec.md §Design decisions). The `code` field is the stable typed
         discriminator; downstream consumers MUST key off `code`, not on the
         HTTP status alone or on `error` message text.
       type: object

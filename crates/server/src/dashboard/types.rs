@@ -15,14 +15,19 @@ use super::permissions::Permission;
 /// (feature 006-operator-authz FR-008), so a permission grant or
 /// revocation written to the allowlist source takes effect on the next
 /// request without re-login.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Intentionally does NOT derive `Serialize`/`Deserialize`: the
+/// canonical wire form for `Permission` is the colon string from
+/// `Permission::as_str` (e.g. `accounts:pause`). Handlers that need
+/// to expose permissions on the wire MUST map through `as_str()`
+/// rather than JSON-serializing this struct directly.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedOperator {
     pub operator_id: String,
     pub commitment: String,
     /// Effective permission set at the moment of authentication. Empty
     /// for an explicit `permissions: []` allowlist entry; populated to
     /// `{dashboard:read}` for legacy bare-hex entries.
-    #[serde(default)]
     pub effective_permissions: Arc<BTreeSet<Permission>>,
 }
 
