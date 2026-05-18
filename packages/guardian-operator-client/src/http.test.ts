@@ -394,6 +394,49 @@ describe('GuardianOperatorHttpClient', () => {
     );
   });
 
+  // ---------------------------------------------------------------
+  // Feature 006-operator-authz US6 / FR-033..FR-036:
+  // GET /dashboard/session — operator identity + effective permissions.
+  // ---------------------------------------------------------------
+
+  it('fetches /dashboard/session and parses operator_id + permissions', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({
+      operator_id: '0xabc123',
+      permissions: ['accounts:pause', 'dashboard:read'],
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const session = await client.getSession();
+
+    expect(session).toEqual({
+      operatorId: '0xabc123',
+      permissions: ['accounts:pause', 'dashboard:read'],
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/session',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('parses /dashboard/session with an empty permissions array (explicit-empty operator)', async () => {
+    // FR-034: an operator with `permissions: []` receives 200 with
+    // an empty array, NOT 403. The client must surface this state
+    // distinctly from a 401 so the dashboard can render "no
+    // capabilities" vs "not logged in".
+    mockFetch.mockResolvedValueOnce(okJson({
+      operator_id: '0xdef456',
+      permissions: [],
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const session = await client.getSession();
+
+    expect(session).toEqual({
+      operatorId: '0xdef456',
+      permissions: [],
+    });
+  });
+
   it('logs out with a POST request and parses the response', async () => {
     mockFetch.mockResolvedValueOnce(okJson({
       success: true,

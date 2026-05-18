@@ -5,10 +5,10 @@ info:
   description: >
     Wire additions introduced by feature 006-operator-authz. Layers on top of
     the existing dashboard surface defined by 002-operator-auth,
-    003-operator-account-apis, and 005-operator-dashboard-metrics. Nothing
-    here introduces a new dashboard read endpoint; the only new path is the
-    Cargo-feature-gated probe used to exercise the authorization middleware
-    end-to-end before #181 (account pause) lands.
+    003-operator-account-apis, and 005-operator-dashboard-metrics. Two new
+    paths are introduced: GET /dashboard/session (session introspection,
+    always present) and POST /dashboard/_authz_probe (Cargo-feature-gated
+    middleware probe, default-off in release builds).
 
 servers:
   - url: "{guardian_origin}"
@@ -17,6 +17,30 @@ servers:
         default: "http://localhost:8080"
 
 paths:
+  /dashboard/session:
+    get:
+      operationId: getDashboardSession
+      summary: Return the authenticated operator's identity and effective permissions.
+      description: >
+        Session introspection. Requires a valid operator session but no specific
+        permission (FR-033, FR-034) — operators whose allowlist entry holds
+        `permissions: []` receive 200 with an empty array, not 403. Permissions
+        are re-resolved from the live allowlist on every call via the FR-008
+        path, so this endpoint reflects hot-reloaded grants and revocations
+        without requiring re-login. No `admin_actions` event is written for any
+        outcome (FR-035) — this is a read-only metadata endpoint.
+      security:
+        - dashboardSession: []
+      responses:
+        "200":
+          description: Authenticated; identity and effective permission set returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfoResponse"
+        "401":
+          description: Missing or invalid operator session (existing 002-operator-auth contract). No admin_actions event is written.
+
   /dashboard/_authz_probe:
     post:
       operationId: probeAuthz
@@ -52,6 +76,38 @@ components:
       name: guardian_operator_session
 
   schemas:
+    SessionInfoResponse:
+      description: >
+        Response shape for GET /dashboard/session. Carries the operator
+        identity from the authenticated principal and the effective
+        permission set as a lexicographically ordered string array
+        (FR-017 ordering rule, reused here for snapshot stability).
+      type: object
+      required:
+        - operator_id
+        - permissions
+      properties:
+        operator_id:
+          type: string
+          description: >
+            Operator identity from AuthenticatedOperator (today the commitment
+            hex per FR-023). Stable across permission changes.
+        permissions:
+          type: array
+          description: >
+            Effective permission set drawn live from the allowlist (FR-008),
+            sorted lexicographic ASCII. MAY be empty for entries with explicit
+            `permissions: []`.
+          items:
+            type: string
+            enum:
+              - "dashboard:read"
+              - "accounts:pause"
+              - "policies:write"
+      example:
+        operator_id: "0x094f..."
+        permissions: ["accounts:pause", "dashboard:read"]
+
     InsufficientOperatorPermissionResponse:
       description: >
         Stable response shape for GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION.

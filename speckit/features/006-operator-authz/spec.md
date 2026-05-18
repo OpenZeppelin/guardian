@@ -197,6 +197,24 @@ metadata/state backends is preserved.
   can gate UI affordances; the server remains authoritative — the
   client MUST NOT short-circuit a request based on its own metadata.
 
+**Session introspection endpoint**
+
+- Add a single read-only endpoint `GET /dashboard/session` that returns the
+  authenticated operator's identity and effective permission set. The
+  endpoint requires a valid operator session but **no specific permission**
+  (so operators with `permissions: []` can still call it and receive their
+  empty set rather than `403`). Dashboards consult this endpoint to gate UI
+  affordances against the operator's **actual** capabilities, replacing the
+  static `REQUIRED_PERMISSIONS` advisory map in `@openzeppelin/guardian-operator-client`
+  with live, per-session data. Because permissions are re-resolved from the
+  allowlist on every authenticated request (FR-008), this endpoint is also
+  the natural polling point for hot-reloaded permission changes without
+  forcing re-login.
+- The endpoint is **not** recorded in `admin_actions`. It is a read-only
+  metadata endpoint expected to be polled by dashboards; auditing it would
+  flood the forensic stream with non-mutating noise inconsistent with the
+  rest of the dashboard read surface.
+
 **Probe endpoint (testing aid)**
 
 - Introduce exactly one operator-authenticated probe endpoint to
@@ -526,6 +544,61 @@ from a permissioned session resolves successfully.
 
 ---
 
+### User Story 6 - Dashboard Can Discover Current Operator's Permissions (Priority: P3)
+
+As a dashboard developer integrating against the operator client, I can
+ask the server "who is the current operator and what can they do" with a
+single call so the UI shows only the actions the operator is actually
+permitted to perform, instead of hiding behind a static client-side map
+that can drift from the server's middleware requirements.
+
+**Why this priority**: This is a dashboard ergonomics win, not a security
+boundary — the server middleware (US2) remains the source of truth, and
+the typed denial error (US5) is what protects users when client-side
+gating is wrong or stale. Without this endpoint, dashboards either rely
+on the client's static `REQUIRED_PERMISSIONS` advisory map (which can drift)
+or call every endpoint and react to `403` (poor UX). With it, dashboards
+get a single live read of the operator's effective permission set that
+naturally tracks allowlist hot-reloads via FR-008.
+
+**Independent Test**: Establish a valid operator session for an entry with
+`permissions: ["dashboard:read", "accounts:pause"]`. Call
+`GET /dashboard/session` and verify the response carries the operator
+identity and exactly that permission set in lexicographic order. Edit the
+allowlist to remove `accounts:pause`, trigger a reload, re-call the
+endpoint within the same session, and verify the response now reflects
+only `["dashboard:read"]` without re-login. Establish a second session
+for an entry with `permissions: []` and verify the endpoint returns
+`200` with an empty permission array (not `403`).
+
+**Acceptance Scenarios**:
+
+1. **Given** a valid operator session whose allowlist entry holds a
+   non-empty permission set, **When** the operator calls
+   `GET /dashboard/session`, **Then** the server returns `200 OK` with
+   a body containing the `operator_id` from the authenticated principal
+   and the effective permission set as a lexicographically ordered
+   string array.
+2. **Given** a valid operator session whose allowlist entry holds
+   `permissions: []`, **When** the operator calls
+   `GET /dashboard/session`, **Then** the server returns `200 OK` with
+   the operator identity and an empty `permissions` array. The
+   endpoint MUST NOT deny on the empty-permission set case — this is
+   the load-bearing UX property that lets the dashboard distinguish
+   "no permissions" from "not logged in".
+3. **Given** an active session and a mid-session allowlist edit that
+   grants or revokes a permission, **When** the operator next calls
+   `GET /dashboard/session`, **Then** the response reflects the new
+   effective permission set without requiring re-login (via the
+   FR-008 re-resolve path).
+4. **Given** no valid operator session, **When** the caller invokes
+   `GET /dashboard/session`, **Then** the server returns `401
+   Unauthorized` from the existing session layer. No `admin_actions`
+   event is written for the authenticated success case OR the
+   unauthenticated failure case.
+
+---
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -718,6 +791,39 @@ from a permissioned session resolves successfully.
   invisible). The operator response MUST NOT be blocked on the row
   landing.
 
+**Session introspection endpoint**
+
+- **FR-033**: The server MUST expose `GET /dashboard/session` returning
+  the authenticated operator's identity and effective permission set
+  as JSON `{ "operator_id": string, "permissions": string[] }`.
+  `operator_id` MUST be the same value the principal already carries
+  (`AuthenticatedOperator::operator_id`, today the commitment hex per
+  FR-023). `permissions` MUST be the effective permission set read
+  through the same FR-008 re-resolve path that the authorization
+  middleware uses, ordered lexicographically (ASCII) per FR-017's
+  determinism rule. The endpoint MUST be registered under the
+  existing `/dashboard` Axum router so it inherits the session
+  middleware.
+- **FR-034**: The session introspection endpoint MUST require a valid
+  operator session (existing `require_dashboard_session` middleware)
+  but MUST NOT be gated by the authorization middleware. An operator
+  whose allowlist entry has `permissions: []` MUST receive `200 OK`
+  with an empty `permissions` array — not `403`. This is the only
+  authenticated dashboard endpoint introduced or modified by this
+  feature that does **not** carry a required permission set.
+- **FR-035**: The session introspection endpoint MUST NOT write any
+  `admin_actions` event, on success or on the `401` session-validation
+  failure path. It is a read-only metadata endpoint; auditing it
+  would flood the forensic stream with non-mutating noise. (Mutating
+  endpoints retain their own audit obligations under FR-019.)
+- **FR-036**: `@openzeppelin/guardian-operator-client` MUST expose a
+  typed wrapper for `GET /dashboard/session` returning
+  `{ operatorId: string, permissions: string[] }`. The TypeScript
+  client MUST surface the `permissions` array using the same
+  permission-string vocabulary the server emits (FR-004), so
+  consumers can compare it to the per-endpoint `REQUIRED_PERMISSIONS`
+  metadata from FR-031 without translation.
+
 **Probe endpoint (testing aid)**
 
 - **FR-028**: The server MUST expose exactly one gated probe
@@ -766,6 +872,11 @@ from a permissioned session resolves successfully.
 - The allowlist JSON gains the heterogeneous element shape per FR-001.
   Existing deployments using the legacy `Vec<String>` form load
   unchanged.
+- One new dashboard endpoint is introduced: `GET /dashboard/session`,
+  returning `{ operator_id, permissions }`. The endpoint requires a
+  valid session but no specific permission (FR-033, FR-034). Its
+  shape is added to the OpenAPI contract addendum
+  (`contracts/dashboard-authz.openapi.yaml`).
 - No gRPC mapping is added (operator surface is HTTP-only).
 
 ### Data / Lifecycle Impact
@@ -930,6 +1041,16 @@ from a permissioned session resolves successfully.
     transient DB write failure does not suppress the denial response
     AND produces exactly one fallback log line under the audit
     selector — verified by a fault-injection integration test.
+13. **SC-013**: `GET /dashboard/session` returns the authenticated
+    operator's identity and permission set in lexicographic order
+    for sessions backed by non-empty allowlist entries, returns the
+    identity with an empty `permissions: []` array for sessions
+    backed by explicit-empty entries, and returns `401` for callers
+    with no valid session — all without writing any `admin_actions`
+    event. After a hot-reload that grants or revokes a permission,
+    the next call within an already-active session reflects the new
+    set, verified by an integration test that edits the allowlist
+    source mid-session.
 
 ## Assumptions
 

@@ -75,6 +75,24 @@ impl DashboardState {
         .expect("dashboard test configuration should be valid")
     }
 
+    /// Test-only hook for simulating an allowlist hot-reload while
+    /// keeping the existing session table intact. Feature
+    /// 006-operator-authz SC-013 / SC-004 verify that a permission
+    /// grant or revocation reflects on the next request from an
+    /// already-active session; this swaps the underlying allowlist
+    /// the way the file-backed reload path would, without forcing
+    /// callers to thread env vars and temp files.
+    #[cfg(test)]
+    pub async fn replace_allowlist_for_tests(
+        &self,
+        operators: Vec<crate::dashboard::types::AuthenticatedOperator>,
+    ) {
+        let allowlist = OperatorAllowlist::from_authenticated_operators(operators)
+            .expect("dashboard test allowlist swap should be valid");
+        let mut guard = self.allowlist.write().await;
+        *guard = allowlist;
+    }
+
     pub fn cookie_name(&self) -> &str {
         &self.config.cookie_name
     }

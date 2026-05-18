@@ -41,6 +41,7 @@ export type {
   OperatorChallenge,
   OperatorChallengeResponse,
   PagedResult,
+  SessionInfoResponse,
   VerifyOperatorRequest,
   VerifyOperatorResponse,
 } from './types.js';

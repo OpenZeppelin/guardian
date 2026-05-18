@@ -161,6 +161,34 @@ pub async fn get_dashboard_info_handler(
     Ok(Json(info))
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionInfoResponse {
+    pub operator_id: String,
+    pub permissions: Vec<String>,
+}
+
+// `GET /dashboard/session` — session introspection per feature
+// `006-operator-authz` US6. Returns the authenticated operator's
+// identity and effective permission set (live-resolved from the
+// allowlist via FR-008). Requires a valid session but no specific
+// permission (FR-034) — operators with `permissions: []` receive 200
+// with an empty array, not 403. Not recorded in `admin_actions`
+// (FR-035).
+pub async fn get_dashboard_session_handler(
+    Extension(operator): Extension<AuthenticatedOperator>,
+) -> Json<SessionInfoResponse> {
+    let mut permissions: Vec<String> = operator
+        .effective_permissions
+        .iter()
+        .map(|p| p.as_str().to_owned())
+        .collect();
+    permissions.sort();
+    Json(SessionInfoResponse {
+        operator_id: operator.operator_id,
+        permissions,
+    })
+}
+
 pub async fn get_operator_account(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
@@ -1245,5 +1273,245 @@ mod tests {
                 "401 must not produce an audit event"
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Feature 006-operator-authz, User Story 6 (SC-013)
+    // GET /dashboard/session — current operator identity + effective
+    // permission set. Requires session but no specific permission.
+    // -----------------------------------------------------------------
+
+    /// SC-013 case 1: a populated permission set is returned as a
+    /// lexicographically ordered string array using the canonical
+    /// colon-form wire vocabulary (FR-033 / FR-017 ordering reuse).
+    #[tokio::test]
+    async fn session_endpoint_returns_lex_ordered_permissions() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(
+                &operator,
+                // Insertion order chosen so the enum's natural Ord
+                // (DashboardRead < AccountsPause < PoliciesWrite)
+                // differs from lex order on the wire strings —
+                // forces the handler to actually sort the strings.
+                &[
+                    Permission::DashboardRead,
+                    Permission::PoliciesWrite,
+                    Permission::AccountsPause,
+                ],
+            ),
+        ]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["operator_id"], operator.commitment_hex);
+        assert_eq!(
+            body["permissions"],
+            serde_json::json!(["accounts:pause", "dashboard:read", "policies:write"]),
+            "permissions must be lex-ordered ASCII",
+        );
+    }
+
+    /// SC-013 case 2 / FR-034: an operator whose allowlist entry holds
+    /// `permissions: []` must receive 200 with an empty array — NOT
+    /// 403. This is the load-bearing UX property that lets the UI
+    /// distinguish "no permissions" from "not logged in".
+    #[tokio::test]
+    async fn session_endpoint_returns_200_with_empty_permissions_for_empty_entry() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[]),
+        ]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "/session must NOT be gated by the dashboard:read authz layer",
+        );
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["operator_id"], operator.commitment_hex);
+        assert_eq!(body["permissions"], serde_json::json!([]));
+    }
+
+    /// SC-013 case 3: no valid session → 401 from the session middleware.
+    #[tokio::test]
+    async fn session_endpoint_requires_operator_session() {
+        let state = create_test_app_state().await;
+        let app = create_router(state);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// SC-013 case 4 / FR-008 hot-reload: a permission grant or
+    /// revocation written to the allowlist after the session is issued
+    /// is reflected on the next `/session` call without re-login.
+    #[tokio::test]
+    async fn session_endpoint_reflects_hot_reload_within_active_session() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        let dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[Permission::DashboardRead]),
+        ]));
+        state.dashboard = dashboard.clone();
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        // Initial call: only `dashboard:read`.
+        let initial = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial_body: serde_json::Value = read_json(initial).await;
+        assert_eq!(
+            initial_body["permissions"],
+            serde_json::json!(["dashboard:read"]),
+        );
+
+        // Grant `accounts:pause` to the same operator without
+        // touching the session table.
+        dashboard
+            .replace_allowlist_for_tests(vec![op_with_perms(
+                &operator,
+                &[Permission::DashboardRead, Permission::AccountsPause],
+            )])
+            .await;
+
+        // Next call in the same session must reflect the new
+        // permission set (FR-008 re-resolve on every authenticate).
+        let after_grant = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_grant.status(), StatusCode::OK);
+        let after_grant_body: serde_json::Value = read_json(after_grant).await;
+        assert_eq!(
+            after_grant_body["permissions"],
+            serde_json::json!(["accounts:pause", "dashboard:read"]),
+            "hot-reloaded permissions must be visible on the next /session call",
+        );
+
+        // Revoke down to empty.
+        dashboard
+            .replace_allowlist_for_tests(vec![op_with_perms(&operator, &[])])
+            .await;
+        let after_revoke = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_revoke.status(), StatusCode::OK);
+        let after_revoke_body: serde_json::Value = read_json(after_revoke).await;
+        assert_eq!(after_revoke_body["permissions"], serde_json::json!([]));
+    }
+
+    /// FR-035: `/session` must not write any `admin_actions` event,
+    /// on success or 401. This keeps the polling endpoint out of the
+    /// forensic stream.
+    #[cfg(feature = "authz-probe")]
+    #[tokio::test]
+    async fn session_endpoint_does_not_write_audit_events() {
+        use crate::testing::helpers::CapturingAuditor;
+
+        let operator = TestSigner::new();
+        let auditor = Arc::new(CapturingAuditor::new());
+        let mut state = create_test_app_state().await;
+        state.auditor = auditor.clone();
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[Permission::DashboardRead]),
+        ]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        // Success path.
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // 401 path.
+        let unauth = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        assert_eq!(
+            auditor.snapshot().len(),
+            0,
+            "/session must not produce any admin_actions events",
+        );
     }
 }

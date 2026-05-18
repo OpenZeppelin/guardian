@@ -6,8 +6,9 @@ use tonic::transport::Server;
 use tower_http::cors::CorsLayer;
 
 use crate::api::dashboard::{
-    challenge_operator_login, get_dashboard_info_handler, get_operator_account,
-    get_operator_account_snapshot, list_operator_accounts, logout_operator, verify_operator_login,
+    challenge_operator_login, get_dashboard_info_handler, get_dashboard_session_handler,
+    get_operator_account, get_operator_account_snapshot, list_operator_accounts, logout_operator,
+    verify_operator_login,
 };
 use crate::api::dashboard_feeds::{
     list_account_deltas_handler, list_account_proposals_handler, list_global_deltas_handler,
@@ -109,6 +110,17 @@ impl ServerHandle {
                     .route("/proposals", get(list_global_proposals_handler))
                     .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+
+                // Feature 006-operator-authz FR-033/FR-034: session
+                // introspection. Requires a valid session but NO
+                // specific permission, so it sits in its own router
+                // outside the `dashboard:read` authz layer. Operators
+                // with `permissions: []` must receive 200 with an
+                // empty array here, not 403.
+                let session_router = Router::new()
+                    .route("/session", get(get_dashboard_session_handler))
+                    .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+                let dashboard_routes = dashboard_routes.merge(session_router);
 
                 // Feature 006-operator-authz FR-027 / FR-028: the
                 // authz-probe Cargo feature gates a single test-only

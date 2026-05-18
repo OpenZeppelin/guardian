@@ -306,6 +306,21 @@ pub fn create_router(state: AppState) -> axum::Router {
             crate::dashboard::require_dashboard_session,
         ));
 
+    // Feature 006-operator-authz FR-033/FR-034: session introspection
+    // sits outside the `dashboard:read` authz layer so `permissions: []`
+    // operators receive 200 with an empty array, not 403. Session
+    // middleware still applies.
+    let session_router = axum::Router::new()
+        .route(
+            "/session",
+            axum::routing::get(crate::api::dashboard::get_dashboard_session_handler),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::dashboard::require_dashboard_session,
+        ));
+    let dashboard_routes = dashboard_routes.merge(session_router);
+
     // Feature 006-operator-authz: probe route wired in test builds when
     // the `authz-probe` Cargo feature is enabled. Mirrors production
     // wiring in `builder/handle.rs`.

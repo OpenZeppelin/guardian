@@ -21,6 +21,7 @@ import type {
   OperatorChallenge,
   OperatorChallengeResponse,
   PagedResult,
+  SessionInfoResponse,
   VerifyOperatorRequest,
   VerifyOperatorResponse,
 } from './types.js';
@@ -265,6 +266,26 @@ export class GuardianOperatorHttpClient {
     const url = new URL('dashboard/accounts', this.baseUrl);
     applyPaginationParams(url, options);
     return this.request(url, { method: 'GET' }, parseAccountListPage);
+  }
+
+  /**
+   * Return the authenticated operator's identity and effective
+   * permission set. Feature `006-operator-authz` US6 /
+   * FR-033..FR-036.
+   *
+   * Requires only a valid session — no specific permission — so this
+   * call succeeds even for operators whose allowlist entry holds
+   * `permissions: []` (the response carries an empty `permissions`
+   * array). Dashboards SHOULD use this endpoint to gate UI
+   * affordances against the operator's actual capabilities; the
+   * server remains authoritative on every other endpoint.
+   */
+  async getSession(): Promise<SessionInfoResponse> {
+    return this.request(
+      new URL('dashboard/session', this.baseUrl),
+      { method: 'GET' },
+      parseSessionInfo,
+    );
   }
 
   /**
@@ -539,6 +560,14 @@ function parseLogoutResponse(value: unknown): LogoutOperatorResponse {
   const record = asRecord(value, 'logout response');
   return {
     success: requireSuccess(record, 'logout response'),
+  };
+}
+
+function parseSessionInfo(value: unknown): SessionInfoResponse {
+  const record = asRecord(value, 'session response');
+  return {
+    operatorId: requireString(record, 'operator_id', 'session response'),
+    permissions: requireStringArray(record, 'permissions', 'session response'),
   };
 }
 
