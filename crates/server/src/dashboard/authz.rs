@@ -85,10 +85,8 @@ pub async fn enforce(
         return Ok(next.run(request).await);
     }
 
-    // Audit emission MUST precede the response (FR-013). Use the path
-    // and method from the request for the `payload` per FR-025; pull
-    // the originating client IP via the shared extractor so denied
-    // and successful rows carry the same forensic shape.
+    // Audit MUST precede the response (FR-013); payload carries
+    // route + method per FR-025.
     let route_path = request.uri().path().to_owned();
     let http_method = request.method().as_str().to_owned();
     let required_strings: Vec<String> = required.iter().map(|p| p.as_str().to_owned()).collect();

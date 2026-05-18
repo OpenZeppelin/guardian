@@ -306,10 +306,7 @@ pub fn create_router(state: AppState) -> axum::Router {
             crate::dashboard::require_dashboard_session,
         ));
 
-    // Feature 006-operator-authz FR-033/FR-034: session introspection
-    // sits outside the `dashboard:read` authz layer so `permissions: []`
-    // operators receive 200 with an empty array, not 403. Session
-    // middleware still applies.
+    // FR-034: /session sits outside the dashboard:read authz layer.
     let session_router = axum::Router::new()
         .route(
             "/session",

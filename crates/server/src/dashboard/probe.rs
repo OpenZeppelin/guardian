@@ -28,16 +28,10 @@ use crate::state::AppState;
 /// production route registration and the test/smoke harness in sync.
 pub const PROBE_PATH: &str = "/_authz_probe";
 
-/// Handler for `POST /dashboard/_authz_probe`. Reached only when the
-/// authorization middleware has already verified the caller holds
-/// `{accounts:pause}`. Records one `admin_actions` event with
-/// `action_kind = probe.access` then returns 204.
-///
-/// The success-row payload mirrors the `auth.denied` payload shape
-/// (route_path, http_method, required_permissions) so successful and
-/// denied rows for the same route carry the same forensic context —
-/// downstream consumers can correlate success/denial by route without
-/// branching on `outcome`.
+/// Handler for `POST /dashboard/_authz_probe`. Records a
+/// `probe.access` event with the same payload shape as `auth.denied`
+/// (route, method, required permissions) so forensic queries don't
+/// branch on `outcome`. Returns 204.
 pub async fn handle(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,

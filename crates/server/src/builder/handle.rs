@@ -111,12 +111,9 @@ impl ServerHandle {
                     .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
 
-                // Feature 006-operator-authz FR-033/FR-034: session
-                // introspection. Requires a valid session but NO
-                // specific permission, so it sits in its own router
-                // outside the `dashboard:read` authz layer. Operators
-                // with `permissions: []` must receive 200 with an
-                // empty array here, not 403.
+                // FR-034: /session sits outside the dashboard:read
+                // authz layer so `permissions: []` operators get 200,
+                // not 403.
                 let session_router = Router::new()
                     .route("/session", get(get_dashboard_session_handler))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));

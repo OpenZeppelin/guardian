@@ -65,21 +65,9 @@ export interface LogoutOperatorResponse {
 }
 
 /**
- * Response shape for `GET /dashboard/session`. Feature
- * `006-operator-authz` US6 / FR-033..FR-036.
- *
- * Returns the authenticated operator's identity and effective
- * permission set as the server resolved them on this request (live
- * from the allowlist via FR-008, so a hot-reloaded grant or
- * revocation is visible on the next call without re-login).
- *
- * `permissions` is sorted lexicographic ASCII (matching FR-017's
- * ordering rule on `missingPermissions`) and uses the canonical
- * colon-form wire vocabulary (`dashboard:read`, `accounts:pause`,
- * `policies:write`). It MAY be empty for operators whose allowlist
- * entry holds `permissions: []` — the endpoint MUST NOT 403 in that
- * case (FR-034), so an empty array means "logged in, no
- * capabilities", distinct from a 401 ("not logged in").
+ * Response shape for `GET /dashboard/session`. `permissions` is sorted
+ * lexicographic ASCII and may be empty (means "logged in, no
+ * capabilities" — distinct from a 401).
  */
 export interface SessionInfoResponse {
   operatorId: string;

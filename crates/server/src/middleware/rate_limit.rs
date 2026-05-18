@@ -377,13 +377,8 @@ where
     }
 }
 
-/// Extract client IP from request, preferring forwarding headers from the ingress proxy.
-///
-/// Rate-limit keying relies on a non-empty string per request, so the
-/// shared extractor's `None` is folded back into the legacy
-/// `"unknown"` sentinel here. Audit callers that need to distinguish
-/// "we don't know" from a literal `"unknown"` IP use
-/// [`crate::middleware::client_ip::extract_client_ip`] directly.
+/// Rate-limit keying needs a non-empty string per request; the
+/// shared extractor's `None` becomes `"unknown"` here.
 fn extract_client_ip<B>(req: &Request<B>) -> String {
     super::client_ip::extract_client_ip(req).unwrap_or_else(|| "unknown".to_string())
 }

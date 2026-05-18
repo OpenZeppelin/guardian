@@ -48,11 +48,8 @@ pub struct AuditEvent {
     /// Stable Guardian error code string when `outcome` is `denied`.
     /// `None` on success.
     pub error_code: Option<String>,
-    /// Originating client IP at the moment the audit boundary was
-    /// crossed, extracted via the same precedence chain as rate
-    /// limiting (`X-Forwarded-For` → `X-Real-IP` → axum `ConnectInfo`).
-    /// `None` for synthetic callers without a request context (e.g.
-    /// fault-injection tests, future internal callers).
+    /// Originating client IP. `None` when no request context is
+    /// available (synthetic callers, fault-injection tests).
     pub client_ip: Option<String>,
 }
 

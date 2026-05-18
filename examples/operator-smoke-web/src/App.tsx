@@ -183,10 +183,6 @@ export default function App() {
     await runAction('dashboardInfo', () => client.getDashboardInfo());
   }
 
-  // Feature 006-operator-authz US6: returns the authenticated
-  // operator's identity and effective permission set. Requires a
-  // valid session but no specific permission, so it succeeds even
-  // for operators whose allowlist entry holds `permissions: []`.
   async function getSession() {
     await runAction('getSession', () => client.getSession());
   }

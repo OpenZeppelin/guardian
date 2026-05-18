@@ -1,15 +1,7 @@
 //! Shared client-IP extraction.
 //!
-//! Precedence (matches the original implementation in
-//! `rate_limit.rs::extract_client_ip` that this module replaces):
-//! `X-Forwarded-For` (first parseable entry) → `X-Real-IP` → axum
-//! `ConnectInfo<SocketAddr>` → `None`.
-//!
-//! Returning `Option<String>` lets audit callers persist `NULL` for
-//! "we don't know" rather than baking in the rate-limit-side
-//! `"unknown"` sentinel. The rate-limit module wraps with its own
-//! `.unwrap_or_else(|| "unknown".into())` to preserve the keying
-//! behavior it depended on.
+//! Precedence: `X-Forwarded-For` (first parseable) → `X-Real-IP` →
+//! axum `ConnectInfo<SocketAddr>` → `None`.
 
 use axum::{extract::ConnectInfo, http::Request};
 use std::net::{IpAddr, SocketAddr};

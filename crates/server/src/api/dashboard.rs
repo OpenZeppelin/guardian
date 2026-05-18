@@ -167,13 +167,8 @@ pub struct SessionInfoResponse {
     pub permissions: Vec<String>,
 }
 
-// `GET /dashboard/session` — session introspection per feature
-// `006-operator-authz` US6. Returns the authenticated operator's
-// identity and effective permission set (live-resolved from the
-// allowlist via FR-008). Requires a valid session but no specific
-// permission (FR-034) — operators with `permissions: []` receive 200
-// with an empty array, not 403. Not recorded in `admin_actions`
-// (FR-035).
+// `GET /dashboard/session` — session introspection (US6 / FR-033..FR-036).
+// Bypasses the authz layer so `permissions: []` operators get 200 + [], not 403.
 pub async fn get_dashboard_session_handler(
     Extension(operator): Extension<AuthenticatedOperator>,
 ) -> Json<SessionInfoResponse> {
@@ -1190,10 +1185,7 @@ mod tests {
             assert_eq!(events[0].outcome, AuditOutcome::Success);
             assert_eq!(events[0].error_code, None);
             assert_eq!(events[0].operator_identity, operator.commitment_hex);
-            // Symmetric payload: success rows carry the same route +
-            // method + required_permissions as denied rows so
-            // downstream forensic queries don't have to branch on
-            // outcome.
+            // Symmetric with the auth.denied payload shape.
             let payload = &events[0].payload;
             assert_eq!(payload["route_path"], "/_authz_probe");
             assert_eq!(payload["http_method"], "POST");
@@ -1286,15 +1278,9 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------
-    // Feature 006-operator-authz, User Story 6 (SC-013)
-    // GET /dashboard/session — current operator identity + effective
-    // permission set. Requires session but no specific permission.
-    // -----------------------------------------------------------------
+    // GET /dashboard/session tests (US6 / SC-013).
 
-    /// SC-013 case 1: a populated permission set is returned as a
-    /// lexicographically ordered string array using the canonical
-    /// colon-form wire vocabulary (FR-033 / FR-017 ordering reuse).
+    /// SC-013 case 1: populated permissions returned in lex order.
     #[tokio::test]
     async fn session_endpoint_returns_lex_ordered_permissions() {
         let operator = TestSigner::new();
@@ -1302,10 +1288,8 @@ mod tests {
         state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
             op_with_perms(
                 &operator,
-                // Insertion order chosen so the enum's natural Ord
-                // (DashboardRead < AccountsPause < PoliciesWrite)
-                // differs from lex order on the wire strings —
-                // forces the handler to actually sort the strings.
+                // Enum Ord differs from wire-string lex order — forces
+                // the handler to sort the strings, not the enum.
                 &[
                     Permission::DashboardRead,
                     Permission::PoliciesWrite,
@@ -1338,10 +1322,8 @@ mod tests {
         );
     }
 
-    /// SC-013 case 2 / FR-034: an operator whose allowlist entry holds
-    /// `permissions: []` must receive 200 with an empty array — NOT
-    /// 403. This is the load-bearing UX property that lets the UI
-    /// distinguish "no permissions" from "not logged in".
+    /// SC-013 case 2 / FR-034: `permissions: []` → 200 + [], not 403.
+    /// Lets the UI distinguish "no permissions" from "not logged in".
     #[tokio::test]
     async fn session_endpoint_returns_200_with_empty_permissions_for_empty_entry() {
         let operator = TestSigner::new();
@@ -1391,9 +1373,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// SC-013 case 4 / FR-008 hot-reload: a permission grant or
-    /// revocation written to the allowlist after the session is issued
-    /// is reflected on the next `/session` call without re-login.
+    /// SC-013 case 4 / FR-008: allowlist edits reflect on the next
+    /// `/session` call without re-login.
     #[tokio::test]
     async fn session_endpoint_reflects_hot_reload_within_active_session() {
         let operator = TestSigner::new();
@@ -1405,7 +1386,6 @@ mod tests {
         let app = create_router(state);
         let cookie = authenticate_operator(&app, &operator).await;
 
-        // Initial call: only `dashboard:read`.
         let initial = app
             .clone()
             .oneshot(
@@ -1424,8 +1404,7 @@ mod tests {
             serde_json::json!(["dashboard:read"]),
         );
 
-        // Grant `accounts:pause` to the same operator without
-        // touching the session table.
+        // Grant `accounts:pause` without re-issuing the session.
         dashboard
             .replace_allowlist_for_tests(vec![op_with_perms(
                 &operator,
@@ -1433,8 +1412,6 @@ mod tests {
             )])
             .await;
 
-        // Next call in the same session must reflect the new
-        // permission set (FR-008 re-resolve on every authenticate).
         let after_grant = app
             .clone()
             .oneshot(
@@ -1454,7 +1431,6 @@ mod tests {
             "hot-reloaded permissions must be visible on the next /session call",
         );
 
-        // Revoke down to empty.
         dashboard
             .replace_allowlist_for_tests(vec![op_with_perms(&operator, &[])])
             .await;
@@ -1474,11 +1450,8 @@ mod tests {
         assert_eq!(after_revoke_body["permissions"], serde_json::json!([]));
     }
 
-    /// FR-035: `/session` must not write any `admin_actions` event,
-    /// on success or 401. This keeps the polling endpoint out of the
-    /// forensic stream. Runs in every CI configuration — the no-audit
-    /// guarantee is independent of whether the test-only probe route
-    /// is registered.
+    /// FR-035: `/session` writes no `admin_actions` event on success
+    /// or 401.
     #[tokio::test]
     async fn session_endpoint_does_not_write_audit_events() {
         use crate::testing::helpers::CapturingAuditor;

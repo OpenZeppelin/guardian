@@ -270,15 +270,8 @@ export class GuardianOperatorHttpClient {
 
   /**
    * Return the authenticated operator's identity and effective
-   * permission set. Feature `006-operator-authz` US6 /
-   * FR-033..FR-036.
-   *
-   * Requires only a valid session — no specific permission — so this
-   * call succeeds even for operators whose allowlist entry holds
-   * `permissions: []` (the response carries an empty `permissions`
-   * array). Dashboards SHOULD use this endpoint to gate UI
-   * affordances against the operator's actual capabilities; the
-   * server remains authoritative on every other endpoint.
+   * permission set. Succeeds for any valid session, including
+   * operators with `permissions: []` (returns an empty array).
    */
   async getSession(): Promise<SessionInfoResponse> {
     return this.request(
