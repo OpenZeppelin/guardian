@@ -1103,19 +1103,11 @@ mod tests {
     // they only run when the route is actually registered.
     // -----------------------------------------------------------------
 
-    /// US2 Scenario 4 / FR-028 / SC-010: release builds without the
-    /// `authz-test-probe` Cargo feature return 404 on the probe path and
-    /// MUST NOT write an audit row. This test runs regardless of the
-    /// feature flag — if the feature happens to be on at test time
-    /// the probe is registered and the assertion is intentionally
-    /// skipped to keep the suite green across feature matrices.
+    /// US2 Scenario 4 / FR-028 / SC-010: release builds (feature off)
+    /// return 404 on the probe path and write no audit row.
     #[tokio::test]
     async fn probe_path_returns_404_without_authz_probe_feature() {
-        // When `authz-test-probe` IS enabled, the probe is registered and
-        // returns 401/403/204 depending on the session; the four other
-        // US2 tests cover those cases. Skip this assertion in that
-        // configuration so CI runs with `--features authz-test-probe`
-        // don't fail.
+        // Skip when the feature is on — covered by the gated tests below.
         if cfg!(feature = "authz-test-probe") {
             return;
         }

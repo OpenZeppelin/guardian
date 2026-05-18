@@ -2,6 +2,12 @@
 //!
 //! Precedence: `X-Forwarded-For` (first parseable) → `X-Real-IP` →
 //! axum `ConnectInfo<SocketAddr>` → `None`.
+//!
+//! Trusting the forwarding headers assumes Guardian sits behind a
+//! known ingress proxy (the production AWS ALB, or a local reverse
+//! proxy in dev). With no proxy in front, those headers are
+//! attacker-controlled — same trust model as the existing rate-limit
+//! keying.
 
 use axum::{extract::ConnectInfo, http::Request};
 use std::net::{IpAddr, SocketAddr};

@@ -379,17 +379,11 @@ struct ErrorResponse {
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_after_secs: Option<u32>,
-    /// Feature 006-operator-authz FR-016: list of permissions the
-    /// route required that the authenticated operator lacks, sorted
-    /// lexicographic ASCII (FR-017). Populated only for
-    /// `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`; absent for every
-    /// other error code. Additive extension of the existing flat
-    /// envelope (research.md Decision 1).
+    /// FR-016 / FR-017: lex-sorted permissions the operator lacks.
+    /// Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_permissions: Option<Vec<String>>,
-    /// Feature 006-operator-authz FR-016: explicit retryability flag.
-    /// `false` for permission denials (the contract pins this) and
-    /// absent for every other code so existing parsers see no change.
+    /// FR-016: `false` for permission denials, absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
 }

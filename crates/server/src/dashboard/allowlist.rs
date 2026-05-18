@@ -15,12 +15,16 @@ use serde::Deserialize;
 use super::permissions::Permission;
 use super::types::AuthenticatedOperator;
 
-/// Wire shape of a single operator allowlist array element. Either a
+/// Wire shape of a single operator allowlist array element: either a
 /// bare hex string (legacy, `{dashboard:read}` only — FR-002) or a
 /// structured object with an explicit permission set (FR-001). Mixed
 /// arrays of the two shapes are permitted in one document.
-#[derive(Deserialize)]
-#[serde(untagged)]
+///
+/// Dispatched manually on `serde_json::Value` rather than via
+/// `#[serde(untagged)]` so failures name the offending entry
+/// ("entry 3 is missing field `permissions`") instead of "data did
+/// not match any variant" — the load is operator-edited config, and
+/// the error reaches deployment operators directly.
 enum AllowlistEntryWire {
     LegacyHex(String),
     Structured(StructuredEntry),
@@ -35,6 +39,32 @@ enum AllowlistEntryWire {
 struct StructuredEntry {
     public_key: String,
     permissions: Vec<String>,
+}
+
+impl AllowlistEntryWire {
+    fn from_value(value: serde_json::Value) -> std::result::Result<Self, String> {
+        match value {
+            serde_json::Value::String(hex) => Ok(Self::LegacyHex(hex)),
+            obj @ serde_json::Value::Object(_) => serde_json::from_value::<StructuredEntry>(obj)
+                .map(Self::Structured)
+                .map_err(|err| err.to_string()),
+            other => Err(format!(
+                "expected a hex string or `{{public_key, permissions}}` object, got {}",
+                shape_name(&other)
+            )),
+        }
+    }
+}
+
+fn shape_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 pub(crate) const ENV_OPERATOR_PUBLIC_KEYS_FILE: &str = "GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE";
@@ -154,13 +184,15 @@ impl OperatorAllowlist {
     /// arrays are permitted. Returns a deterministic error on duplicate
     /// commitments, unknown permission strings, or malformed objects.
     pub(crate) fn from_json(source_label: &str, json: &str) -> std::result::Result<Self, String> {
-        let entries: Vec<AllowlistEntryWire> = serde_json::from_str(json)
+        let raw_entries: Vec<serde_json::Value> = serde_json::from_str(json)
             .map_err(|error| format!("Failed to parse {source_label}: {error}"))?;
 
-        let mut by_commitment = HashMap::with_capacity(entries.len());
-        let mut commitments = HashSet::with_capacity(entries.len());
+        let mut by_commitment = HashMap::with_capacity(raw_entries.len());
+        let mut commitments = HashSet::with_capacity(raw_entries.len());
 
-        for (index, entry) in entries.into_iter().enumerate() {
+        for (index, raw) in raw_entries.into_iter().enumerate() {
+            let entry = AllowlistEntryWire::from_value(raw)
+                .map_err(|error| format!("{source_label} entry {}: {error}", index + 1))?;
             let (public_key_hex, permission_strings, is_legacy) = match entry {
                 AllowlistEntryWire::LegacyHex(hex) => (hex, Vec::<String>::new(), true),
                 AllowlistEntryWire::Structured(StructuredEntry {
@@ -427,13 +459,8 @@ mod tests {
         assert!(OperatorAllowlist::from_json("test", &json).is_err());
     }
 
-    /// FR-001 update: object entry with unknown property is rejected
-    /// (`#[serde(deny_unknown_fields)]`). The untagged enum surfaces a
-    /// generic "did not match any variant" message rather than naming
-    /// the offending field; functional rejection is the contract, the
-    /// message wording is not pinned. Improving the message is a
-    /// polish task (use a custom Deserialize impl if specificity
-    /// becomes operator-facing).
+    /// FR-001: object with unknown property rejected, and the error
+    /// names the offending entry index + field.
     #[test]
     fn unknown_object_property_rejected() {
         let signer = TestSigner::new();
@@ -441,10 +468,9 @@ mod tests {
             r#"[{{"public_key": {:?}, "permissions": [], "comment": "test"}}]"#,
             pk(&signer)
         );
-        assert!(
-            OperatorAllowlist::from_json("test", &json).is_err(),
-            "object with unknown property must be rejected"
-        );
+        let err = OperatorAllowlist::from_json("test", &json).unwrap_err();
+        assert!(err.contains("entry 1"), "expected entry index in: {err}");
+        assert!(err.contains("comment"), "expected field name in: {err}");
     }
 
     /// FR-006: duplicate permissions within one entry dedupe.
@@ -471,11 +497,25 @@ mod tests {
     }
 
     /// Edge Case 4: object entry missing `permissions` is rejected as
-    /// malformed.
+    /// malformed; the error names the entry index and the missing field.
     #[test]
     fn object_missing_permissions_rejected() {
         let signer = TestSigner::new();
         let json = format!(r#"[{{"public_key": {:?}}}]"#, pk(&signer));
-        assert!(OperatorAllowlist::from_json("test", &json).is_err());
+        let err = OperatorAllowlist::from_json("test", &json).unwrap_err();
+        assert!(err.contains("entry 1"), "expected entry index in: {err}");
+        assert!(
+            err.contains("permissions"),
+            "expected missing-field name in: {err}",
+        );
+    }
+
+    /// FR-001: a non-string, non-object array element (e.g. number)
+    /// is rejected with a clear shape diagnostic.
+    #[test]
+    fn wrong_shape_entry_rejected_with_shape_name() {
+        let err = OperatorAllowlist::from_json("test", "[42]").unwrap_err();
+        assert!(err.contains("entry 1"), "expected entry index in: {err}");
+        assert!(err.contains("number"), "expected shape name in: {err}");
     }
 }
