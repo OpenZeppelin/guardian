@@ -251,15 +251,25 @@ response body extends the existing flat envelope additively:
 expose `missingPermissions` and `retryable` for this code; the fields
 are `undefined` for every other code.
 
-For UI gating, the package exports a per-endpoint required-permission
-metadata map:
+For UI gating, call `getSession()` to read the authenticated
+operator's live permission set and compare entries against the
+exported wire-string constants:
 
 ```typescript
-import { REQUIRED_PERMISSIONS, requiredPermissionsFor } from '@openzeppelin/guardian-operator-client';
+import {
+  ACCOUNTS_PAUSE,
+  DASHBOARD_READ,
+  GuardianOperatorHttpClient,
+} from '@openzeppelin/guardian-operator-client';
 
-// Hide an action button if the operator lacks the required permission.
-const required = requiredPermissionsFor('listAccounts'); // → ['dashboard:read']
+const client = new GuardianOperatorHttpClient('https://guardian.example');
+const { permissions } = await client.getSession();
+
+const canPause = permissions.includes(ACCOUNTS_PAUSE);
+const canRead = permissions.includes(DASHBOARD_READ);
 ```
 
-The map is advisory only. The server is the source of truth — the
-client MUST NOT short-circuit a request based on the metadata.
+The session endpoint re-reads permissions from the allowlist on every
+call, so allowlist edits take effect without re-login. The server is
+still the source of truth on every mutating endpoint — the client
+MUST NOT short-circuit a request based on its own capability check.

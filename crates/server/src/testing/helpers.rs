@@ -322,9 +322,9 @@ pub fn create_router(state: AppState) -> axum::Router {
     let dashboard_routes = dashboard_routes.merge(session_router);
 
     // Feature 006-operator-authz: probe route wired in test builds when
-    // the `authz-probe` Cargo feature is enabled. Mirrors production
+    // the `authz-test-probe` Cargo feature is enabled. Mirrors production
     // wiring in `builder/handle.rs`.
-    #[cfg(feature = "authz-probe")]
+    #[cfg(feature = "authz-test-probe")]
     let dashboard_routes = {
         let accounts_pause_authz = crate::dashboard::authz::AuthzState::new(
             state.clone(),

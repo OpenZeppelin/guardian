@@ -14,7 +14,7 @@
 pub const AUTH_DENIED: &str = "auth.denied";
 
 /// Authorization-middleware probe endpoint was hit successfully. Test
-/// surface only — the probe is behind the `authz-probe` Cargo feature
+/// surface only — the probe is behind the `authz-test-probe` Cargo feature
 /// and never reaches production builds. `payload` is `{}`.
 pub const PROBE_ACCESS: &str = "probe.access";
 

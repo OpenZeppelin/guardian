@@ -1104,24 +1104,24 @@ mod tests {
     // Feature 006-operator-authz, User Story 2
     // Mutating Action Requires The Mutating Permission.
     // The probe endpoint stands in for #181 (Account Pause) until that
-    // ships. Tests are gated behind the `authz-probe` Cargo feature so
+    // ships. Tests are gated behind the `authz-test-probe` Cargo feature so
     // they only run when the route is actually registered.
     // -----------------------------------------------------------------
 
     /// US2 Scenario 4 / FR-028 / SC-010: release builds without the
-    /// `authz-probe` Cargo feature return 404 on the probe path and
+    /// `authz-test-probe` Cargo feature return 404 on the probe path and
     /// MUST NOT write an audit row. This test runs regardless of the
     /// feature flag — if the feature happens to be on at test time
     /// the probe is registered and the assertion is intentionally
     /// skipped to keep the suite green across feature matrices.
     #[tokio::test]
     async fn probe_path_returns_404_without_authz_probe_feature() {
-        // When `authz-probe` IS enabled, the probe is registered and
+        // When `authz-test-probe` IS enabled, the probe is registered and
         // returns 401/403/204 depending on the session; the four other
         // US2 tests cover those cases. Skip this assertion in that
-        // configuration so CI runs with `--features authz-probe`
+        // configuration so CI runs with `--features authz-test-probe`
         // don't fail.
-        if cfg!(feature = "authz-probe") {
+        if cfg!(feature = "authz-test-probe") {
             return;
         }
         let state = create_test_app_state().await;
@@ -1140,7 +1140,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    #[cfg(feature = "authz-probe")]
+    #[cfg(feature = "authz-test-probe")]
     mod authz_probe {
         use super::*;
         use crate::audit::{AuditOutcome, kinds};
@@ -1476,8 +1476,9 @@ mod tests {
 
     /// FR-035: `/session` must not write any `admin_actions` event,
     /// on success or 401. This keeps the polling endpoint out of the
-    /// forensic stream.
-    #[cfg(feature = "authz-probe")]
+    /// forensic stream. Runs in every CI configuration — the no-audit
+    /// guarantee is independent of whether the test-only probe route
+    /// is registered.
     #[tokio::test]
     async fn session_endpoint_does_not_write_audit_events() {
         use crate::testing::helpers::CapturingAuditor;

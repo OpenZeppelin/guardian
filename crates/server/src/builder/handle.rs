@@ -123,11 +123,11 @@ impl ServerHandle {
                 let dashboard_routes = dashboard_routes.merge(session_router);
 
                 // Feature 006-operator-authz FR-027 / FR-028: the
-                // authz-probe Cargo feature gates a single test-only
+                // authz-test-probe Cargo feature gates a single test-only
                 // route that exercises the middleware end-to-end with
                 // a non-`dashboard:read` requirement. Default-off in
                 // release builds.
-                #[cfg(feature = "authz-probe")]
+                #[cfg(feature = "authz-test-probe")]
                 let dashboard_routes = {
                     let accounts_pause_authz =
                         AuthzState::new(state.clone(), &[Permission::AccountsPause]);

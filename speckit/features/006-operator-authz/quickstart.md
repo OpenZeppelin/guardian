@@ -3,13 +3,13 @@
 **Feature Key**: `006-operator-authz` | **Date**: 2026-05-15
 
 Walks the happy path and the denial path against a locally-running
-Guardian built with the `authz-probe` Cargo feature. Postgres is
+Guardian built with the `authz-test-probe` Cargo feature. Postgres is
 optional; the log-fallback path is exercised explicitly in step 6.
 
 ## 0. Prerequisites
 
 - Local Guardian checkout, dependencies installed
-  (`cargo build -p guardian-server --features authz-probe`).
+  (`cargo build -p guardian-server --features authz-test-probe`).
 - Postgres optional. If running without Postgres, the
   `Auditor` falls back to structured logs (FR-021); a startup
   `WARN` line announces it.
@@ -35,7 +35,7 @@ Start the server pointing at the file:
 
 ```bash
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/operator-allowlist.json \
-  cargo run -p guardian-server --features authz-probe
+  cargo run -p guardian-server --features authz-test-probe
 ```
 
 Expected startup behavior:

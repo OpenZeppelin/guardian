@@ -252,7 +252,7 @@ mod tests {
     /// persisted row. Marked `#[ignore]` because it requires a live
     /// Postgres reachable at `DATABASE_URL` with the migration
     /// applied — run via `cargo test -p guardian-server --lib
-    /// --features authz-probe -- --ignored postgres_trigger`.
+    /// --features authz-test-probe -- --ignored postgres_trigger`.
     #[tokio::test]
     #[ignore = "requires DATABASE_URL with migrations applied"]
     async fn postgres_trigger_blocks_update_and_delete() {

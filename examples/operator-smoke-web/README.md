@@ -99,8 +99,8 @@ Then exercise each profile:
 | B — pause-capable | `200` | `200`, `permissions: ["accounts:pause", "dashboard:read"]` | `204` |
 | C — explicitly denied | `403` on every read | `200`, `permissions: []` (NOT `403`) | `403` |
 
-\*The probe endpoint is gated by the `authz-probe` Cargo feature. Start
-Guardian with `cargo run -p guardian-server --features authz-probe`
+\*The probe endpoint is gated by the `authz-test-probe` Cargo feature. Start
+Guardian with `cargo run -p guardian-server --features authz-test-probe`
 when smoke-testing US2; release builds return `404` for that path.
 
 The browser UI's `Operator Public Keys JSON` field shows the legacy

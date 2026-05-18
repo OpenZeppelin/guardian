@@ -22,8 +22,9 @@ emits one structured log line per event on filesystem-only
 deployments (with a loud startup warning). A Cargo-feature-gated
 probe endpoint exercises the middleware end-to-end before #181
 lands. `@openzeppelin/guardian-operator-client` extends its existing
-`DashboardErrorCode` union with the new variant and exposes
-per-endpoint required-permission metadata.
+`DashboardErrorCode` union with the new variant and ships a
+`getSession()` wrapper so dashboards read the authenticated operator's
+live permission set from the server.
 
 The change is plumbing only. No DB-backed operator table, no
 dashboard CRUD for operators/permissions, no new gRPC, no policy
@@ -236,18 +237,18 @@ No unresolved violations. The HTTP-only divergence and the file-vs-secret-vs-env
 
 ### Server — Probe endpoint (Phase B)
 
-- **Cargo feature**: add `authz-probe = []` to
+- **Cargo feature**: add `authz-test-probe = []` to
   `crates/server/Cargo.toml` (default-off in release builds —
   Decision 5).
 - **Module**: `crates/server/src/dashboard/probe.rs` registered
-  inside `#[cfg(feature = "authz-probe")]` blocks in
+  inside `#[cfg(feature = "authz-test-probe")]` blocks in
   `crates/server/src/builder/handle.rs`. One route, e.g.
   `POST /dashboard/_authz_probe`, declares
   `require_operator_permissions(&[Permission::AccountsPause])`. On
   success, invokes `Auditor::record` with `action_kind =
   probe.access`, `outcome = success`. Returns `204 No Content`.
 - **Test surface**: server integration tests build with
-  `--features authz-probe`; the existing `cargo test -p guardian-server`
+  `--features authz-test-probe`; the existing `cargo test -p guardian-server`
   command is updated in `Justfile`/CI to add this feature for the
   authz integration suite.
 
@@ -263,18 +264,22 @@ No unresolved violations. The HTTP-only divergence and the file-vs-secret-vs-env
   parsed `code` equals the new variant, copy the
   `missing_permissions` array out of the response body into the
   parsed `GuardianOperatorHttpErrorData`.
-- **Per-endpoint permission metadata**: introduce
-  `packages/guardian-operator-client/src/permissions.ts` exporting
-  `REQUIRED_PERMISSIONS: Record<EndpointKey, ReadonlyArray<string>>`.
-  Each wrapped method (e.g. `listAccounts`, `getAccountSnapshot`,
-  etc.) gets an entry pointing at `["dashboard:read"]`. The probe
-  endpoint wrapper (if exposed in TS — optional for v1) gets
-  `["accounts:pause"]`. Consumers MAY consult this; the client MUST
-  NOT short-circuit (FR-032).
+- **Permission constants + session wrapper**:
+  `packages/guardian-operator-client/src/permissions.ts` exports the
+  three v1 wire-string constants (`DASHBOARD_READ`,
+  `ACCOUNTS_PAUSE`, `POLICIES_WRITE`) and the `OperatorPermission`
+  union. `GuardianOperatorHttpClient` adds `getSession(): Promise<{
+  operatorId: string; permissions: string[] }>` so dashboards read
+  the operator's live permission set from `GET /dashboard/session`
+  and compare entries against the exported constants. Consumers MAY
+  use these for UI gating; the client MUST NOT short-circuit a
+  request based on them (FR-032).
 - **Vitest coverage**: extend
   `packages/guardian-operator-client/test/http.test.ts` (or
   equivalent) with a `parseErrorBody` round-trip for the new code,
-  plus a `permissions.test.ts` snapshot of the metadata map.
+  plus a `getSession()` test covering the populated and explicit-empty
+  responses, and a `permissions.test.ts` assertion that the wire-string
+  constants match the server's vocabulary.
 
 ### Tests
 
@@ -300,7 +305,7 @@ No unresolved violations. The HTTP-only divergence and the file-vs-secret-vs-env
 - **Smoke**: `examples/operator-smoke-web` gets a third allowlist
   profile (legacy + read-only + pause-capable) and a smoke step
   exercising the probe with the pause-capable identity. Skipped if
-  the server is built without `authz-probe`.
+  the server is built without `authz-test-probe`.
 
 ### Docs
 
@@ -327,12 +332,12 @@ Three phases. A and B parallelizable; C depends on B's error-code wire-through.
     `auth.denied` audit emission.
   - B3: route-wiring in `builder/handle.rs` retrofitting
     `{dashboard:read}` on every existing dashboard route.
-  - B4: probe endpoint behind `authz-probe` Cargo feature +
+  - B4: probe endpoint behind `authz-test-probe` Cargo feature +
     integration test.
 - **Phase C — TS client + docs** (depends on B1)
   - C1: `DashboardErrorCode` union extension + `parseErrorBody`
     update + Vitest.
-  - C2: per-endpoint permission metadata + snapshot test.
+  - C2: permission constants + `getSession()` wrapper + Vitest.
   - C3: README updates.
 
 ## Validation
@@ -341,9 +346,9 @@ Per [guardian-validation-matrix](.claude/skills/guardian-validation-matrix/SKILL
 
 | Layer | Command | Coverage |
 |-------|---------|----------|
-| Server unit | `cargo test -p guardian-server --features authz-probe` | Allowlist loader, permission enum, middleware, Auditor, error code |
-| Server integration | `cargo test -p guardian-server --features authz-probe --test dashboard_authz` | All five user stories end-to-end via test server |
-| Server lints | `cargo clippy -p guardian-server --features authz-probe -- -D warnings` | No new lints |
+| Server unit | `cargo test -p guardian-server --features authz-test-probe` | Allowlist loader, permission enum, middleware, Auditor, error code |
+| Server integration | `cargo test -p guardian-server --features authz-test-probe --test dashboard_authz` | All five user stories end-to-end via test server |
+| Server lints | `cargo clippy -p guardian-server --features authz-test-probe -- -D warnings` | No new lints |
 | TS unit | `cd packages/guardian-operator-client && npm test` | `parseErrorBody`, permission metadata snapshot |
 | TS typecheck | `cd packages/guardian-operator-client && npm run typecheck` | Union extension compiles cleanly |
 | Smoke (manual) | [smoke-test-operator-dashboard](.claude/skills/smoke-test-operator-dashboard/SKILL.md) | Three allowlist profiles + probe call |

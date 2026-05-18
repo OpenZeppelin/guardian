@@ -165,13 +165,13 @@ names.
 
 ---
 
-## Decision 5: Probe endpoint gated by Cargo feature `authz-probe`, default off
+## Decision 5: Probe endpoint gated by Cargo feature `authz-test-probe`, default off
 
-**Decision**: Add `authz-probe = []` to `crates/server/Cargo.toml`
+**Decision**: Add `authz-test-probe = []` to `crates/server/Cargo.toml`
 features, default off in release builds. The probe route is
-registered inside `#[cfg(feature = "authz-probe")]` blocks in
+registered inside `#[cfg(feature = "authz-test-probe")]` blocks in
 `builder/handle.rs`. CI runs the dashboard authz integration tests
-with `--features authz-probe`.
+with `--features authz-test-probe`.
 
 **Rationale**:
 
@@ -197,7 +197,7 @@ with `--features authz-probe`.
   shouldn't ship.
 
 **Implications**: CI and smoke tests must opt in via
-`--features authz-probe`. Document this in `quickstart.md`.
+`--features authz-test-probe`. Document this in `quickstart.md`.
 
 ---
 

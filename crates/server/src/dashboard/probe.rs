@@ -4,7 +4,7 @@
 //! exercise the authorization middleware end-to-end before
 //! [#181](https://github.com/OpenZeppelin/guardian/issues/181) (Account
 //! Pause) lands a real mutating consumer. The route is registered
-//! exclusively under `#[cfg(feature = "authz-probe")]`; release
+//! exclusively under `#[cfg(feature = "authz-test-probe")]`; release
 //! builds compile without it and return 404 for the path.
 //!
 //! The route declares required permission set `{accounts:pause}`. On

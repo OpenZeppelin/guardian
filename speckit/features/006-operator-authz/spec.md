@@ -193,9 +193,10 @@ metadata/state backends is preserved.
   gains a new variant for permission denial, and the existing
   `parseErrorBody` (`http.ts:78-129`) populates `missing_permissions`
   for that code.
-- Export per-endpoint required permission **metadata** so dashboards
-  can gate UI affordances; the server remains authoritative — the
-  client MUST NOT short-circuit a request based on its own metadata.
+- Dashboards gate UI affordances against the **live** operator
+  permission set returned by `GET /dashboard/session` (US6), not
+  against a static client-side map. The server remains authoritative
+  on every call.
 
 **Session introspection endpoint**
 
@@ -204,9 +205,9 @@ metadata/state backends is preserved.
   endpoint requires a valid operator session but **no specific permission**
   (so operators with `permissions: []` can still call it and receive their
   empty set rather than `403`). Dashboards consult this endpoint to gate UI
-  affordances against the operator's **actual** capabilities, replacing the
-  static `REQUIRED_PERMISSIONS` advisory map in `@openzeppelin/guardian-operator-client`
-  with live, per-session data. Because permissions are re-resolved from the
+  affordances against the operator's **actual** capabilities; capability
+  gating in dashboards goes through this endpoint. Because permissions
+  are re-resolved from the
   allowlist on every authenticated request (FR-008), this endpoint is also
   the natural polling point for hot-reloaded permission changes without
   forcing re-login.
@@ -555,9 +556,8 @@ that can drift from the server's middleware requirements.
 **Why this priority**: This is a dashboard ergonomics win, not a security
 boundary — the server middleware (US2) remains the source of truth, and
 the typed denial error (US5) is what protects users when client-side
-gating is wrong or stale. Without this endpoint, dashboards either rely
-on the client's static `REQUIRED_PERMISSIONS` advisory map (which can drift)
-or call every endpoint and react to `403` (poor UX). With it, dashboards
+gating is wrong or stale. Without this endpoint, dashboards would have to
+call every endpoint and react to `403` (poor UX). With it, dashboards
 get a single live read of the operator's effective permission set that
 naturally tracks allowlist hot-reloads via FR-008.
 
@@ -821,8 +821,9 @@ for an entry with `permissions: []` and verify the endpoint returns
   `{ operatorId: string, permissions: string[] }`. The TypeScript
   client MUST surface the `permissions` array using the same
   permission-string vocabulary the server emits (FR-004), so
-  consumers can compare it to the per-endpoint `REQUIRED_PERMISSIONS`
-  metadata from FR-031 without translation.
+  consumers can compare it directly against the exported permission
+  constants (`DASHBOARD_READ`, `ACCOUNTS_PAUSE`, `POLICIES_WRITE`)
+  without translation.
 
 **Probe endpoint (testing aid)**
 
@@ -833,7 +834,7 @@ for an entry with `permissions: []` and verify the endpoint returns
   `admin_actions` event with `action_kind = probe.access`,
   `outcome = success`, and perform no other state change.
 - **FR-029**: The probe endpoint MUST be gated by a Cargo feature
-  (working name `authz-probe`) whose default is **off** in release
+  (working name `authz-test-probe`) whose default is **off** in release
   builds. When gated off, the endpoint MUST not be registered at all
   and the server MUST return `404 Not Found` for that path, with no
   audit event written.
@@ -846,14 +847,17 @@ for an entry with `permissions: []` and verify the endpoint returns
   variant for the permission-denial code, and `parseErrorBody`
   (`http.ts:78-129`) MUST populate `missing_permissions: string[]`
   for that variant.
-- **FR-031**: The TypeScript client MUST expose, for each wrapped
-  endpoint that requires a non-empty permission set, machine-
-  readable metadata listing the required permission strings.
-  Dashboards MAY consult this metadata to gate UI affordances; the
-  server remains authoritative.
+- **FR-031**: Dashboards gate UI affordances by reading the
+  authenticated operator's effective permission set from
+  `GET /dashboard/session` (FR-033..FR-036) and comparing entries
+  against the exported wire-string constants (`DASHBOARD_READ`,
+  `ACCOUNTS_PAUSE`, `POLICIES_WRITE`) and the `OperatorPermission`
+  union. The TypeScript client MUST export these constants for typed
+  set-membership checks; the server remains authoritative on every
+  call.
 - **FR-032**: The TypeScript client MUST NOT short-circuit a request
-  based on its own metadata before contacting the server. The
-  middleware on the server is the source of truth; client-side
+  based on its own capability knowledge before contacting the server.
+  The middleware on the server is the source of truth; client-side
   gating is for UI only and MUST NOT prevent a request from reaching
   the server.
 
@@ -1017,11 +1021,12 @@ for an entry with `permissions: []` and verify the endpoint returns
    `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`; no other Guardian
    error path returns this code.
 8. **SC-008**: The TypeScript operator client extends the existing
-   `DashboardErrorCode` union with the new variant, and exposes
-   per-endpoint required permission metadata that matches the
-   server's middleware requirements for the same endpoint — verified
-   by a TS test that resolves the metadata against the server and
-   asserts equality.
+   `DashboardErrorCode` union with the new variant, and exports the
+   three wire-string permission constants (`dashboard:read`,
+   `accounts:pause`, `policies:write`) that match the server's
+   vocabulary in `crates/server/src/dashboard/permissions.rs` —
+   verified by a TS test that asserts each constant matches its
+   wire-string value.
 9. **SC-009**: Direct `UPDATE` or `DELETE` against a persisted
    `admin_actions` row through the running server's writer surface
    fails. The exact enforcement layer (Postgres trigger vs Rust trait

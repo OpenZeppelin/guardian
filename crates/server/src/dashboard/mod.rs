@@ -8,7 +8,7 @@ mod types;
 mod util;
 
 pub mod authz;
-#[cfg(feature = "authz-probe")]
+#[cfg(feature = "authz-test-probe")]
 pub mod probe;
 
 pub use config::DashboardConfig;

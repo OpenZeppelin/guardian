@@ -44,14 +44,14 @@ paths:
   /dashboard/_authz_probe:
     post:
       operationId: probeAuthz
-      summary: Authorization-middleware probe (Cargo feature `authz-probe`, default-off).
+      summary: Authorization-middleware probe (Cargo feature `authz-test-probe`, default-off).
       description: >
         Test-only endpoint. Declared required permission set: {accounts:pause}.
         On success: writes one `admin_actions` row with action_kind = probe.access,
         outcome = success, and returns 204. On insufficient permissions: returns
         the 403 contract below and writes one `admin_actions` row with
         action_kind = auth.denied. Returns 404 when the server is built without
-        the `authz-probe` Cargo feature.
+        the `authz-test-probe` Cargo feature.
       security:
         - dashboardSession: []
       responses:
@@ -66,7 +66,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/InsufficientOperatorPermissionResponse"
         "404":
-          description: Server was built without the `authz-probe` Cargo feature.
+          description: Server was built without the `authz-test-probe` Cargo feature.
 
 components:
   securitySchemes:
