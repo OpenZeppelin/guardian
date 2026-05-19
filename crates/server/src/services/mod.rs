@@ -7,6 +7,7 @@ use base64::Engine;
 use serde_json::Value;
 use std::sync::Arc;
 
+pub mod account_status;
 mod configure_account;
 mod dashboard_account_deltas;
 mod dashboard_account_proposals;
@@ -23,9 +24,11 @@ mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
 mod lookup_account;
+pub mod pause_account;
 mod push_delta;
 mod push_delta_proposal;
 mod sign_delta_proposal;
+pub mod unpause_account;
 
 pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
@@ -376,6 +379,8 @@ mod tests {
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 

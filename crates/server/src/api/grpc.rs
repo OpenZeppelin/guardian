@@ -575,6 +575,8 @@ mod tests {
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 

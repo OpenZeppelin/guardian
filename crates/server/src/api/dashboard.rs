@@ -8,11 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::dashboard::cursor::CursorKind;
 use crate::dashboard::{AuthenticatedOperator, extract_cookie};
-use crate::error::Result;
+use crate::error::{GuardianError, Result};
+use crate::services::pause_account::PauseResponse;
+use crate::services::unpause_account::UnpauseResponse;
 use crate::services::{
     DashboardAccountDetail, DashboardAccountSnapshot, DashboardAccountSummary,
     DashboardInfoResponse, PagedResult, get_account_snapshot, get_dashboard_account,
-    get_dashboard_info, list_dashboard_accounts_paged, parse_cursor, parse_limit,
+    get_dashboard_info, list_dashboard_accounts_paged, parse_cursor, parse_limit, pause_account,
+    unpause_account,
 };
 use crate::state::AppState;
 
@@ -202,6 +205,60 @@ pub async fn get_operator_account_snapshot(
     Ok(Json(snapshot))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PauseAccountRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UnpauseAccountRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn pause_account_handler(
+    State(state): State<AppState>,
+    Extension(operator): Extension<AuthenticatedOperator>,
+    Path(account_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<PauseResponse>> {
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
+    let (_parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1024 * 16)
+        .await
+        .map_err(|_| GuardianError::InvalidInput("failed to read request body".to_string()))?;
+    let body: PauseAccountRequest = serde_json::from_slice(&bytes)
+        .map_err(|e| GuardianError::InvalidInput(format!("malformed pause request body: {e}")))?;
+    let response =
+        pause_account::pause(&state, &operator, &account_id, &body.reason, client_ip).await?;
+    Ok(Json(response))
+}
+
+pub async fn unpause_account_handler(
+    State(state): State<AppState>,
+    Extension(operator): Extension<AuthenticatedOperator>,
+    Path(account_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<UnpauseResponse>> {
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
+    let (_parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1024 * 16)
+        .await
+        .map_err(|_| GuardianError::InvalidInput("failed to read request body".to_string()))?;
+    let reason = if bytes.is_empty() {
+        None
+    } else {
+        let req: UnpauseAccountRequest = serde_json::from_slice(&bytes).map_err(|e| {
+            GuardianError::InvalidInput(format!("malformed unpause request body: {e}"))
+        })?;
+        req.reason
+    };
+    let response =
+        unpause_account::unpause(&state, &operator, &account_id, reason.as_deref(), client_ip)
+            .await?;
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -377,6 +434,8 @@ mod tests {
             updated_at: "2026-05-11T00:00:00Z".to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         };
         state
             .metadata
@@ -913,6 +972,8 @@ mod tests {
             updated_at: updated_at.to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 

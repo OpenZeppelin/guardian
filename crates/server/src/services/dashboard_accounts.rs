@@ -40,6 +40,15 @@ pub struct DashboardAccountDetail {
     pub updated_at: String,
     pub state_created_at: Option<String>,
     pub state_updated_at: Option<String>,
+    /// Feature 001-account-pausing FR-005: RFC 3339 UTC timestamp of
+    /// the original pause; `None` when the account is active. Always
+    /// emitted (active accounts get `null`) for a uniform wire shape.
+    #[serde(default)]
+    pub paused_at: Option<String>,
+    /// Feature 001-account-pausing FR-005: reason captured at first
+    /// pause; `None` when the account is active.
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +223,8 @@ impl DashboardAccountDetail {
             updated_at: metadata.updated_at.clone(),
             state_created_at: Some(account_state.created_at.clone()),
             state_updated_at: Some(account_state.updated_at.clone()),
+            paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
+            paused_reason: metadata.paused_reason.clone(),
         }
     }
 }
@@ -260,6 +271,8 @@ mod tests {
             updated_at: updated_at.to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 

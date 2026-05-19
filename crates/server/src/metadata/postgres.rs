@@ -1,7 +1,9 @@
 use crate::metadata::{AccountListCursor, AccountMetadata, Auth, MetadataStore, NetworkConfig};
 use crate::schema::account_metadata;
+use crate::services::account_status::{AccountStatus, PauseTransition};
 use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel::sql_types::Text;
 use diesel_async::pooled_connection::deadpool::Pool;
@@ -51,6 +53,8 @@ struct MetadataRow {
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
     last_auth_timestamp: Option<i64>,
+    paused_at: Option<chrono::DateTime<chrono::Utc>>,
+    paused_reason: Option<String>,
 }
 
 // Insertable struct for writing to database
@@ -64,6 +68,8 @@ struct NewMetadata<'a> {
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
     last_auth_timestamp: Option<i64>,
+    paused_at: Option<chrono::DateTime<chrono::Utc>>,
+    paused_reason: Option<String>,
 }
 
 impl TryFrom<MetadataRow> for AccountMetadata {
@@ -83,6 +89,8 @@ impl TryFrom<MetadataRow> for AccountMetadata {
             updated_at: row.updated_at.to_rfc3339(),
             has_pending_candidate: row.has_pending_candidate,
             last_auth_timestamp: row.last_auth_timestamp,
+            paused_at: row.paused_at,
+            paused_reason: row.paused_reason,
         })
     }
 }
@@ -139,6 +147,8 @@ impl MetadataStore for PostgresMetadataStore {
             updated_at,
             has_pending_candidate: metadata.has_pending_candidate,
             last_auth_timestamp: metadata.last_auth_timestamp,
+            paused_at: metadata.paused_at,
+            paused_reason: metadata.paused_reason.clone(),
         };
 
         diesel::insert_into(account_metadata::table)
@@ -265,6 +275,107 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
 
         Ok(rows_updated > 0)
+    }
+
+    /// First-writer-wins pause via `COALESCE` — re-pausing a paused
+    /// account preserves the original `paused_at` and `paused_reason`
+    /// (feature 001-account-pausing FR-013).
+    async fn set_pause(
+        &self,
+        account_id: &str,
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<PauseTransition, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        // Read existing state so the audit row can record before_state
+        // accurately even on the idempotent retry path. A subsequent
+        // UPDATE with COALESCE is the persistence transition.
+        let before: MetadataRow = account_metadata::table
+            .filter(account_metadata::account_id.eq(account_id))
+            .select(MetadataRow::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| format!("Failed to load account_metadata: {e}"))?
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
+        let before_state = if before.paused_at.is_some() {
+            AccountStatus::Paused
+        } else {
+            AccountStatus::Active
+        };
+
+        // First-writer-wins: write paused_at / paused_reason only when
+        // the row is currently active. The WHERE clause encodes the
+        // COALESCE semantics without an extra column read.
+        if before_state == AccountStatus::Active {
+            diesel::update(account_metadata::table)
+                .filter(account_metadata::account_id.eq(account_id))
+                .filter(account_metadata::paused_at.is_null())
+                .set((
+                    account_metadata::paused_at.eq(Some(now)),
+                    account_metadata::paused_reason.eq(Some(reason.to_string())),
+                ))
+                .execute(&mut conn)
+                .await
+                .map_err(|e| format!("Failed to set pause: {e}"))?;
+            Ok(PauseTransition {
+                before_state,
+                after_state: AccountStatus::Paused,
+                paused_at: Some(now),
+                paused_reason: Some(reason.to_string()),
+            })
+        } else {
+            Ok(PauseTransition {
+                before_state,
+                after_state: AccountStatus::Paused,
+                paused_at: before.paused_at,
+                paused_reason: before.paused_reason,
+            })
+        }
+    }
+
+    async fn clear_pause(&self, account_id: &str) -> Result<PauseTransition, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let before: MetadataRow = account_metadata::table
+            .filter(account_metadata::account_id.eq(account_id))
+            .select(MetadataRow::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| format!("Failed to load account_metadata: {e}"))?
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
+        let before_state = if before.paused_at.is_some() {
+            AccountStatus::Paused
+        } else {
+            AccountStatus::Active
+        };
+
+        diesel::update(account_metadata::table)
+            .filter(account_metadata::account_id.eq(account_id))
+            .set((
+                account_metadata::paused_at.eq::<Option<DateTime<Utc>>>(None),
+                account_metadata::paused_reason.eq::<Option<String>>(None),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to clear pause: {e}"))?;
+
+        Ok(PauseTransition {
+            before_state,
+            after_state: AccountStatus::Active,
+            paused_at: None,
+            paused_reason: None,
+        })
     }
 
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {

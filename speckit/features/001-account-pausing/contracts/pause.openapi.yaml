@@ -1,0 +1,312 @@
+openapi: 3.1.0
+info:
+  title: Guardian Operator Dashboard — Account Pause
+  version: 0.1.0
+  description: |
+    Operator-initiated per-account pause and unpause endpoints,
+    plus the `paused_at`/`paused_reason` extension to the existing
+    account-detail read endpoint, and the new
+    `GUARDIAN_ACCOUNT_PAUSED` error code returned from mutating
+    paths against a paused account.
+
+    Feature key: `001-account-pausing`.
+    Spec: `speckit/features/001-account-pausing/spec.md`.
+    All endpoints live under the existing operator dashboard
+    surface (`005-operator-dashboard-metrics`), require an
+    authenticated operator session (`002-operator-auth`), and
+    are gated by the `accounts:pause` permission added by
+    `006-operator-authz`.
+
+servers:
+  - url: https://guardian.example.com
+    description: Production Guardian (placeholder)
+
+components:
+  securitySchemes:
+    operatorSession:
+      type: apiKey
+      in: cookie
+      name: guardian_operator_session
+      description: |
+        Cookie established by the operator login flow
+        (`002-operator-auth`). All endpoints in this spec require
+        an active session in addition to the per-route permission.
+
+  schemas:
+    AccountStatus:
+      type: string
+      enum: [active, paused]
+
+    PauseRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: |
+            Operator-supplied forensic context. Required on pause.
+            Capped at 512 UTF-8 characters (FR-007). Stored verbatim
+            in `paused_reason` on the account row and in the
+            corresponding `admin_actions` audit payload.
+
+    UnpauseRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: |
+            Optional context. Capped at 512 UTF-8 characters. Not
+            persisted on the account row (the account row's
+            `paused_*` fields are cleared) but is recorded in the
+            `admin_actions` audit payload.
+
+    PauseResponse:
+      type: object
+      required: [account_id, before_state, after_state, paused_at, paused_reason]
+      properties:
+        account_id:    { type: string }
+        before_state:  { $ref: "#/components/schemas/AccountStatus" }
+        after_state:   { $ref: "#/components/schemas/AccountStatus" }
+        paused_at:
+          type: string
+          format: date-time
+          description: |
+            UTC timestamp at which pause first took effect. On an
+            idempotent retry against an already-paused account this
+            is the *original* timestamp, not the retry timestamp
+            (see `research.md` Decision 2).
+        paused_reason:
+          type: string
+          description: |
+            Reason recorded at first pause. On idempotent retry,
+            this is the original reason — re-pause does not
+            overwrite it.
+
+    UnpauseResponse:
+      type: object
+      required: [account_id, before_state, after_state]
+      properties:
+        account_id:    { type: string }
+        before_state:  { $ref: "#/components/schemas/AccountStatus" }
+        after_state:   { $ref: "#/components/schemas/AccountStatus" }
+        reason:
+          type: string
+          nullable: true
+          description: Reason supplied on the unpause request, if any.
+
+    AccountDetailExtension:
+      description: |
+        Fields ADDED by this feature to the existing
+        `GET /dashboard/accounts/{account_id}` response body.
+        Existing fields are unchanged.
+      type: object
+      properties:
+        paused_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Non-null when the account is currently paused; null
+            when active. Source-of-truth for "is this account
+            paused" — clients SHOULD derive status from this rather
+            than from a separate string field.
+        paused_reason:
+          type: string
+          nullable: true
+          description: |
+            Reason from the original pause request. Non-null iff
+            `paused_at` is non-null.
+
+    GuardianErrorEnvelope:
+      type: object
+      required: [code, message]
+      properties:
+        code:    { type: string }
+        message: { type: string }
+        retryable:
+          type: boolean
+          nullable: true
+        missing_permissions:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Populated for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` only.
+        paused_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Populated for `GUARDIAN_ACCOUNT_PAUSED` only.
+        paused_reason:
+          type: string
+          nullable: true
+          description: Populated for `GUARDIAN_ACCOUNT_PAUSED` only.
+
+security:
+  - operatorSession: []
+
+paths:
+  /dashboard/accounts/{account_id}/pause:
+    post:
+      operationId: pauseAccount
+      summary: Pause mutating actions for the given account.
+      description: |
+        Requires `accounts:pause` permission. Idempotent: a pause
+        request against an already-paused account returns success
+        without changing the persisted `paused_at` (first-writer-
+        wins; see `research.md` Decision 2). Every successful call
+        — including idempotent retries — writes a row to
+        `admin_actions` with kind `accounts.pause`.
+
+        After a successful response, any subsequent mutating action
+        on this account from any transport (gRPC or HTTP) is
+        rejected at the server with `GUARDIAN_ACCOUNT_PAUSED` until
+        the account is unpaused. Read endpoints (account detail,
+        dashboard feeds, state, deltas, proposals) are unaffected.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PauseRequest" }
+      responses:
+        "200":
+          description: Pause applied (or already-paused; idempotent).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PauseResponse" }
+        "400":
+          description: |
+            Reason missing, empty, longer than 512 UTF-8 characters,
+            or not a string.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+        "401":
+          description: No active operator session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+        "403":
+          description: |
+            Operator session is valid but lacks `accounts:pause`.
+            Body code is `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
+            and `missing_permissions` lists the unmet permissions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+        "404":
+          description: Account does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+
+  /dashboard/accounts/{account_id}/unpause:
+    post:
+      operationId: unpauseAccount
+      summary: Lift the pause for the given account.
+      description: |
+        Requires `accounts:pause` permission. Idempotent: an
+        unpause request against an already-active account returns
+        success without persisting any change. Every successful
+        call — including no-op retries — writes a row to
+        `admin_actions` with kind `accounts.unpause`.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UnpauseRequest" }
+      responses:
+        "200":
+          description: Account is active (transitioned or was already active).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnpauseResponse" }
+        "400":
+          description: Reason is present but exceeds 512 UTF-8 characters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+        "401":
+          description: No active operator session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+        "403":
+          description: |
+            Operator session is valid but lacks `accounts:pause`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+        "404":
+          description: Account does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuardianErrorEnvelope" }
+
+  /dashboard/accounts/{account_id}:
+    get:
+      operationId: getDashboardAccountDetail
+      summary: |
+        Existing operator account-detail endpoint, extended with
+        `paused_at` and `paused_reason` fields. Existing fields
+        are unchanged.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Account detail (existing schema + pause extension).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - description: existing OperatorAccountDetail response (see 003-operator-account-apis)
+                    type: object
+                  - $ref: "#/components/schemas/AccountDetailExtension"
+
+# ----------------------------------------------------------------
+# GUARDIAN_ACCOUNT_PAUSED contract on mutating paths (not a new
+# endpoint — documents the response shape now emitted by the
+# existing push_delta / push_delta_proposal / sign_delta_proposal
+# entry points when the target account is paused). Listed here for
+# discoverability.
+# ----------------------------------------------------------------
+x-guardian-error-contract:
+  GUARDIAN_ACCOUNT_PAUSED:
+    http_status: 409
+    grpc_code: FAILED_PRECONDITION
+    retryable: false
+    envelope_fields:
+      - paused_at
+      - paused_reason
+    emitted_by:
+      # Multisig pipeline — always present.
+      - services::push_delta
+      - services::push_delta_proposal
+      - services::sign_delta_proposal
+      # EVM pipeline — present only when the EVM Cargo feature is enabled.
+      - evm::service::create_proposal
+      - evm::service::approve_proposal
+      - evm::service::cancel_proposal
+    description: |
+      Server-side gate from `services::account_status::ensure_account_active`.
+      When the target account's `paused_at` is non-null at the
+      moment of the mutating request, the call is rejected with
+      this code on both gRPC and HTTP transports. The response
+      carries the persisted `paused_at` and `paused_reason` so the
+      client can show context without a follow-up GET.

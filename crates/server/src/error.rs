@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fmt;
 
@@ -92,6 +93,16 @@ pub enum GuardianError {
     /// Distinct from `AccountDataUnavailable` which is account-scoped.
     /// See FR-029 of `005-operator-dashboard-metrics`.
     DataUnavailable(String),
+    /// Account is paused; mutating action rejected with stable code
+    /// `GUARDIAN_ACCOUNT_PAUSED`. HTTP 409 Conflict, gRPC
+    /// `FAILED_PRECONDITION`. `paused_at` / `paused_reason` are carried
+    /// on the response body / gRPC `Status::details` so clients can
+    /// show context without a follow-up GET. Feature 001-account-pausing
+    /// FR-010 / FR-011.
+    AccountPaused {
+        paused_at: DateTime<Utc>,
+        paused_reason: Option<String>,
+    },
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -156,6 +167,7 @@ impl GuardianError {
             GuardianError::InvalidStatusFilter(_) => StatusCode::BAD_REQUEST,
             GuardianError::InsufficientOperatorPermission { .. } => StatusCode::FORBIDDEN,
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            GuardianError::AccountPaused { .. } => StatusCode::CONFLICT,
         }
     }
 
@@ -200,6 +212,7 @@ impl GuardianError {
             // is not exposed to any production gRPC consumer in v1.
             GuardianError::InsufficientOperatorPermission { .. } => tonic::Code::PermissionDenied,
             GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
+            GuardianError::AccountPaused { .. } => tonic::Code::FailedPrecondition,
         }
     }
 
@@ -243,6 +256,7 @@ impl GuardianError {
                 "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION"
             }
             GuardianError::DataUnavailable(_) => "data_unavailable",
+            GuardianError::AccountPaused { .. } => "GUARDIAN_ACCOUNT_PAUSED",
         }
     }
 }
@@ -342,6 +356,10 @@ impl fmt::Display for GuardianError {
                 )
             }
             GuardianError::DataUnavailable(msg) => write!(f, "Data unavailable: {msg}"),
+            GuardianError::AccountPaused { paused_reason, .. } => match paused_reason {
+                Some(reason) => write!(f, "Account is paused: {reason}"),
+                None => write!(f, "Account is paused"),
+            },
         }
     }
 }
@@ -383,9 +401,19 @@ struct ErrorResponse {
     /// Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_permissions: Option<Vec<String>>,
-    /// FR-016: `false` for permission denials, absent elsewhere.
+    /// FR-016: `false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`,
+    /// absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
+    /// Feature 001-account-pausing FR-010: RFC 3339 UTC timestamp of
+    /// the original pause. Populated only for `GUARDIAN_ACCOUNT_PAUSED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paused_at: Option<String>,
+    /// Feature 001-account-pausing FR-010: reason captured at first
+    /// pause. Populated only for `GUARDIAN_ACCOUNT_PAUSED` (may be
+    /// absent within that variant if the reason field is null).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paused_reason: Option<String>,
 }
 
 impl IntoResponse for GuardianError {
@@ -397,11 +425,20 @@ impl IntoResponse for GuardianError {
             } => Some(*retry_after_secs),
             _ => None,
         };
-        let (missing_permissions, retryable) = match &self {
+        let (missing_permissions, retryable, paused_at, paused_reason) = match &self {
             GuardianError::InsufficientOperatorPermission {
                 missing_permissions,
-            } => (Some(missing_permissions.clone()), Some(false)),
-            _ => (None, None),
+            } => (Some(missing_permissions.clone()), Some(false), None, None),
+            GuardianError::AccountPaused {
+                paused_at,
+                paused_reason,
+            } => (
+                None,
+                Some(false),
+                Some(paused_at.to_rfc3339()),
+                paused_reason.clone(),
+            ),
+            _ => (None, None, None, None),
         };
         let body = Json(ErrorResponse {
             success: false,
@@ -410,6 +447,8 @@ impl IntoResponse for GuardianError {
             retry_after_secs,
             missing_permissions,
             retryable,
+            paused_at,
+            paused_reason,
         });
         if let Some(retry_after_secs) = retry_after_secs {
             (
@@ -426,7 +465,22 @@ impl IntoResponse for GuardianError {
 
 impl From<GuardianError> for tonic::Status {
     fn from(err: GuardianError) -> Self {
-        tonic::Status::new(err.grpc_status(), err.to_string())
+        match &err {
+            GuardianError::AccountPaused {
+                paused_at,
+                paused_reason,
+            } => {
+                let details = serde_json::json!({
+                    "code": err.code(),
+                    "paused_at": paused_at.to_rfc3339(),
+                    "paused_reason": paused_reason,
+                })
+                .to_string()
+                .into_bytes();
+                tonic::Status::with_details(err.grpc_status(), err.to_string(), details.into())
+            }
+            _ => tonic::Status::new(err.grpc_status(), err.to_string()),
+        }
     }
 }
 
@@ -1037,6 +1091,62 @@ mod tests {
         // is absent for this code (additive extension preserves the
         // existing envelope shape for every other code).
         assert!(parsed.get("retry_after_secs").is_none());
+    }
+
+    // -- Feature 001-account-pausing: AccountPaused --
+
+    #[test]
+    fn account_paused_pins_http_grpc_and_code() {
+        let err = GuardianError::AccountPaused {
+            paused_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T14:23:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            paused_reason: Some("suspected cosigner compromise".into()),
+        };
+        assert_eq!(err.http_status(), StatusCode::CONFLICT);
+        assert_eq!(err.grpc_status(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.code(), "GUARDIAN_ACCOUNT_PAUSED");
+        assert!(err.to_string().contains("suspected cosigner compromise"));
+    }
+
+    #[test]
+    fn account_paused_http_envelope_carries_paused_fields_and_retryable_false() {
+        use axum::body::to_bytes;
+        let err = GuardianError::AccountPaused {
+            paused_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T14:23:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            paused_reason: Some("suspected cosigner compromise".into()),
+        };
+        let response = err.into_response();
+        let status = response.status();
+        let body_bytes = futures::executor::block_on(to_bytes(response.into_body(), usize::MAX))
+            .expect("body bytes");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("body is valid JSON");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(parsed["code"], "GUARDIAN_ACCOUNT_PAUSED");
+        assert_eq!(parsed["paused_at"], "2026-05-19T14:23:00+00:00");
+        assert_eq!(parsed["paused_reason"], "suspected cosigner compromise");
+        assert_eq!(parsed["retryable"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn account_paused_grpc_status_carries_details() {
+        let err = GuardianError::AccountPaused {
+            paused_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T14:23:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            paused_reason: Some("compromise".into()),
+        };
+        let status: tonic::Status = err.into();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("details are JSON");
+        assert_eq!(details["code"], "GUARDIAN_ACCOUNT_PAUSED");
+        assert_eq!(details["paused_at"], "2026-05-19T14:23:00+00:00");
+        assert_eq!(details["paused_reason"], "compromise");
     }
 
     #[test]

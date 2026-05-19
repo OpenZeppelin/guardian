@@ -3,6 +3,7 @@ use guardian_shared::SignatureScheme;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
+use crate::services::account_status::ensure_account_active;
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
 use crate::services::resolve_account;
 use crate::state::AppState;
@@ -24,6 +25,9 @@ pub struct PushDeltaResult {
 )]
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
     tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
+
+    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
+    ensure_account_active(state, &params.delta.account_id).await?;
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
     if resolved.metadata.network_config.is_evm() {

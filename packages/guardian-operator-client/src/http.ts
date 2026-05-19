@@ -1,4 +1,5 @@
 import type {
+  AccountStatus,
   DashboardAccountDetail,
   DashboardAccountResponse,
   DashboardAccountSnapshot,
@@ -21,7 +22,9 @@ import type {
   OperatorChallenge,
   OperatorChallengeResponse,
   PagedResult,
+  PauseAccountResponse,
   SessionInfoResponse,
+  UnpauseAccountResponse,
   VerifyOperatorRequest,
   VerifyOperatorResponse,
 } from './types.js';
@@ -59,11 +62,17 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   // snake_case to match the rest of the DashboardErrorCode
   // vocabulary. `parseErrorBody` does the mapping at the boundary.
   'insufficient_operator_permission',
+  // Feature 001-account-pausing FR-010. Same wire-form / TS-form
+  // mapping pattern as `insufficient_operator_permission`.
+  'account_paused',
 ]);
 
 /** Server-emitted wire form for the permission-denial error code. */
 const WIRE_INSUFFICIENT_OPERATOR_PERMISSION =
   'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION';
+
+/** Server-emitted wire form for the account-paused error code. */
+const WIRE_ACCOUNT_PAUSED = 'GUARDIAN_ACCOUNT_PAUSED';
 
 /**
  * Map a server-emitted error `code` to the typed
@@ -74,6 +83,9 @@ const WIRE_INSUFFICIENT_OPERATOR_PERMISSION =
 function mapDashboardErrorCode(raw: string | null): string | null {
   if (raw === WIRE_INSUFFICIENT_OPERATOR_PERMISSION) {
     return 'insufficient_operator_permission';
+  }
+  if (raw === WIRE_ACCOUNT_PAUSED) {
+    return 'account_paused';
   }
   return raw;
 }
@@ -97,9 +109,22 @@ export interface ParsedErrorBody {
   missingPermissions?: readonly string[];
   /**
    * Feature 006-operator-authz FR-016: `false` for permission denials,
-   * absent for every other code.
+   * and feature 001-account-pausing FR-011: `false` for account-paused
+   * rejections. Absent for every other code.
    */
   retryable?: boolean;
+  /**
+   * Feature 001-account-pausing FR-011: populated only when
+   * `code === 'account_paused'`. RFC 3339 UTC timestamp of the
+   * original pause.
+   */
+  pausedAt?: string;
+  /**
+   * Feature 001-account-pausing FR-011: populated only when
+   * `code === 'account_paused'`. May be `null` for forward
+   * compatibility (the v1 server always emits a non-null reason).
+   */
+  pausedReason?: string | null;
 }
 
 /**
@@ -171,6 +196,8 @@ export async function parseErrorBody(
   // policy code into retrying a permission denial.
   let missingPermissions: readonly string[] | undefined;
   let retryable: boolean | undefined;
+  let pausedAt: string | undefined;
+  let pausedReason: string | null | undefined;
   if (code === 'insufficient_operator_permission') {
     const missingRaw = record['missing_permissions'];
     if (
@@ -180,9 +207,29 @@ export async function parseErrorBody(
       missingPermissions = missingRaw as readonly string[];
     }
     retryable = false;
+  } else if (code === 'account_paused') {
+    const pausedAtRaw = record['paused_at'];
+    if (typeof pausedAtRaw === 'string') {
+      pausedAt = pausedAtRaw;
+    }
+    const reasonRaw = record['paused_reason'];
+    if (typeof reasonRaw === 'string') {
+      pausedReason = reasonRaw;
+    } else if (reasonRaw === null) {
+      pausedReason = null;
+    }
+    retryable = false;
   }
 
-  return { code, message, retryAfterSecs, missingPermissions, retryable };
+  return {
+    code,
+    message,
+    retryAfterSecs,
+    missingPermissions,
+    retryable,
+    pausedAt,
+    pausedReason,
+  };
 }
 
 /**
@@ -312,6 +359,45 @@ export class GuardianOperatorHttpClient {
       new URL('dashboard/info', this.baseUrl),
       { method: 'GET' },
       parseDashboardInfo,
+    );
+  }
+
+  /**
+   * Feature 001-account-pausing: pause mutating actions for the given
+   * account. Requires `accounts:pause`. Idempotent: re-pausing an
+   * already-paused account returns success with the original
+   * `pausedAt` preserved.
+   */
+  async pauseAccount(
+    accountId: string,
+    reason: string,
+  ): Promise<PauseAccountResponse> {
+    const encoded = encodeURIComponent(accountId);
+    return this.request(
+      new URL(`dashboard/accounts/${encoded}/pause`, this.baseUrl),
+      { method: 'POST', body: JSON.stringify({ reason }) },
+      parsePauseResponse,
+    );
+  }
+
+  /**
+   * Feature 001-account-pausing: clear pause state for the given
+   * account. Requires `accounts:pause`. Idempotent: unpausing an
+   * already-active account returns success with no state change.
+   */
+  async unpauseAccount(
+    accountId: string,
+    reason?: string,
+  ): Promise<UnpauseAccountResponse> {
+    const encoded = encodeURIComponent(accountId);
+    const init: RequestInit = { method: 'POST' };
+    if (reason !== undefined) {
+      init.body = JSON.stringify({ reason });
+    }
+    return this.request(
+      new URL(`dashboard/accounts/${encoded}/unpause`, this.baseUrl),
+      init,
+      parseUnpauseResponse,
     );
   }
 
@@ -844,6 +930,74 @@ function parseAccountDetail(
     authorizedSignerIds: requireStringArray(record, 'authorized_signer_ids', context),
     stateCreatedAt: requireNullableString(record, 'state_created_at', context),
     stateUpdatedAt: requireNullableString(record, 'state_updated_at', context),
+    pausedAt: optionalNullableString(record, 'paused_at', context),
+    pausedReason: optionalNullableString(record, 'paused_reason', context),
+  };
+}
+
+function optionalNullableString(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string | null {
+  if (!(key in record) || record[key] === undefined) {
+    return null;
+  }
+  const value = record[key];
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new GuardianOperatorContractError(
+      context,
+      `field "${key}" must be a string or null`,
+    );
+  }
+  return value;
+}
+
+function parseAccountStatus(value: string, context: string): AccountStatus {
+  if (value === 'active' || value === 'paused') {
+    return value;
+  }
+  throw new GuardianOperatorContractError(
+    context,
+    `expected account status "active" or "paused", got ${JSON.stringify(value)}`,
+  );
+}
+
+function parsePauseResponse(value: unknown): PauseAccountResponse {
+  const ctx = 'pause response';
+  const record = asRecord(value, ctx);
+  return {
+    accountId: requireString(record, 'account_id', ctx),
+    beforeState: parseAccountStatus(
+      requireString(record, 'before_state', ctx),
+      `${ctx}.before_state`,
+    ),
+    afterState: parseAccountStatus(
+      requireString(record, 'after_state', ctx),
+      `${ctx}.after_state`,
+    ),
+    pausedAt: requireString(record, 'paused_at', ctx),
+    pausedReason: requireString(record, 'paused_reason', ctx),
+  };
+}
+
+function parseUnpauseResponse(value: unknown): UnpauseAccountResponse {
+  const ctx = 'unpause response';
+  const record = asRecord(value, ctx);
+  return {
+    accountId: requireString(record, 'account_id', ctx),
+    beforeState: parseAccountStatus(
+      requireString(record, 'before_state', ctx),
+      `${ctx}.before_state`,
+    ),
+    afterState: parseAccountStatus(
+      requireString(record, 'after_state', ctx),
+      `${ctx}.after_state`,
+    ),
+    reason: optionalNullableString(record, 'reason', ctx),
   };
 }
 
@@ -891,6 +1045,8 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
   // 4xx errors continue to parse byte-for-byte as before.
   let missingPermissions: readonly string[] | undefined;
   let retryable: boolean | undefined;
+  let pausedAt: string | undefined;
+  let pausedReason: string | null | undefined;
   if (code === 'insufficient_operator_permission') {
     const missingRaw = record.missing_permissions;
     if (missingRaw !== undefined) {
@@ -918,6 +1074,32 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
       }
       retryable = false;
     }
+  } else if (code === 'account_paused') {
+    const pausedAtRaw = record.paused_at;
+    if (typeof pausedAtRaw !== 'string') {
+      throw new GuardianOperatorContractError(
+        'error response',
+        'paused_at must be a string for account_paused',
+      );
+    }
+    pausedAt = pausedAtRaw;
+    const reasonRaw = record.paused_reason;
+    if (typeof reasonRaw === 'string' || reasonRaw === null) {
+      pausedReason = reasonRaw;
+    } else if (reasonRaw !== undefined) {
+      throw new GuardianOperatorContractError(
+        'error response',
+        'paused_reason must be a string or null for account_paused',
+      );
+    }
+    const retryableRaw = record.retryable;
+    if (retryableRaw !== undefined && retryableRaw !== false) {
+      throw new GuardianOperatorContractError(
+        'error response',
+        'retryable must be false for account_paused',
+      );
+    }
+    retryable = false;
   }
 
   return {
@@ -927,6 +1109,8 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     retryAfterSecs,
     missingPermissions,
     retryable,
+    pausedAt,
+    pausedReason,
   };
 }
 

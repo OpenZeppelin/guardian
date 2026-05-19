@@ -839,4 +839,30 @@ impl MetadataStore for MockMetadataStore {
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
     }
+
+    async fn set_pause(
+        &self,
+        _account_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> StdResult<crate::services::account_status::PauseTransition, String> {
+        Ok(crate::services::account_status::PauseTransition {
+            before_state: crate::services::account_status::AccountStatus::Active,
+            after_state: crate::services::account_status::AccountStatus::Paused,
+            paused_at: Some(now),
+            paused_reason: Some(reason.to_string()),
+        })
+    }
+
+    async fn clear_pause(
+        &self,
+        _account_id: &str,
+    ) -> StdResult<crate::services::account_status::PauseTransition, String> {
+        Ok(crate::services::account_status::PauseTransition {
+            before_state: crate::services::account_status::AccountStatus::Paused,
+            after_state: crate::services::account_status::AccountStatus::Active,
+            paused_at: None,
+            paused_reason: None,
+        })
+    }
 }
