@@ -25,6 +25,8 @@ pub fn falcon_account(account_id: &str, cosigner_commitments: Vec<String>) -> Ac
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         has_pending_candidate: false,
         last_auth_timestamp: None,
+        paused_at: None,
+        paused_reason: None,
     }
 }
 
@@ -39,6 +41,8 @@ pub fn ecdsa_account(account_id: &str, cosigner_commitments: Vec<String>) -> Acc
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         has_pending_candidate: false,
         last_auth_timestamp: None,
+        paused_at: None,
+        paused_reason: None,
     }
 }
 
@@ -51,6 +55,8 @@ pub fn evm_account(account_id: &str, signers: Vec<String>) -> AccountMetadata {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         has_pending_candidate: false,
         last_auth_timestamp: None,
+        paused_at: None,
+        paused_reason: None,
     }
 }
 

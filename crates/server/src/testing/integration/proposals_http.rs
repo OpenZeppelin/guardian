@@ -440,7 +440,7 @@ async fn test_push_delta_proposal_unauthorized() {
 
     assert_eq!(
         push_response.status(),
-        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
         "Unauthorized push should fail"
     );
 }
