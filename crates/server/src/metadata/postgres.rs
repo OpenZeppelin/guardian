@@ -189,6 +189,7 @@ impl MetadataStore for PostgresMetadataStore {
         &self,
         limit: u32,
         cursor: Option<AccountListCursor>,
+        paused: Option<bool>,
     ) -> Result<Vec<AccountMetadata>, String> {
         let mut conn = self
             .pool
@@ -197,6 +198,13 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
         let mut query = account_metadata::table.into_boxed();
+        match paused {
+            // `is_not_null` hits the partial index `idx_account_metadata_paused`
+            // (migration 2026-05-19-000001_account_pause_fields).
+            Some(true) => query = query.filter(account_metadata::paused_at.is_not_null()),
+            Some(false) => query = query.filter(account_metadata::paused_at.is_null()),
+            None => {}
+        }
         if let Some(c) = cursor {
             // Composite predicate over `(updated_at DESC, account_id ASC)`:
             //   updated_at < c.ts

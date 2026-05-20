@@ -69,6 +69,7 @@ pub async fn list_dashboard_accounts_paged(
     state: &AppState,
     limit: u32,
     cursor: Option<Cursor>,
+    paused: Option<bool>,
 ) -> Result<PagedResult<DashboardAccountSummary>> {
     if let Some(c) = cursor.as_ref()
         && c.kind != CursorKind::AccountList
@@ -96,7 +97,7 @@ pub async fn list_dashboard_accounts_paged(
     let page_size = limit.saturating_add(1);
     let metadatas = state
         .metadata
-        .list_paged(page_size, storage_cursor)
+        .list_paged(page_size, storage_cursor, paused)
         .await
         .map_err(|e| GuardianError::StorageError(format!("Failed to list metadata: {e}")))?;
 
@@ -336,7 +337,7 @@ mod tests {
         let mut next_cursor: Option<Cursor> = None;
         let mut pages = 0;
         for _ in 0..10 {
-            let page = list_dashboard_accounts_paged(&state, limit, next_cursor)
+            let page = list_dashboard_accounts_paged(&state, limit, next_cursor, None)
                 .await
                 .expect("list");
             for entry in &page.items {

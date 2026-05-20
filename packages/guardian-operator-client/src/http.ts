@@ -42,6 +42,15 @@ export interface PaginationOptions {
 }
 
 /**
+ * Options for {@link GuardianOperatorHttpClient.listAccounts}. Extends
+ * {@link PaginationOptions} with a tri-state pause filter: `true` for
+ * paused accounts only, `false` for active only, omitted for all.
+ */
+export interface ListAccountsOptions extends PaginationOptions {
+  paused?: boolean;
+}
+
+/**
  * Set of stable error codes added by feature
  * `005-operator-dashboard-metrics`. Used by {@link parseErrorBody} to
  * narrow the unknown server `code` to the typed
@@ -330,10 +339,13 @@ export class GuardianOperatorHttpClient {
    * relied on `listAccounts()` must migrate to this method.
    */
   async listAccounts(
-    options: PaginationOptions = {},
+    options: ListAccountsOptions = {},
   ): Promise<PagedResult<DashboardAccountSummary>> {
     const url = new URL('dashboard/accounts', this.baseUrl);
     applyPaginationParams(url, options);
+    if (options.paused !== undefined) {
+      url.searchParams.set('paused', String(options.paused));
+    }
     return this.request(url, { method: 'GET' }, parseAccountListPage);
   }
 

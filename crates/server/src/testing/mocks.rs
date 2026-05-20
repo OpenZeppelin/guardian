@@ -796,6 +796,7 @@ impl MetadataStore for MockMetadataStore {
         &self,
         _limit: u32,
         _cursor: Option<crate::metadata::AccountListCursor>,
+        _paused: Option<bool>,
     ) -> StdResult<Vec<crate::metadata::AccountMetadata>, String> {
         self.list_paged_responses
             .lock()

@@ -123,11 +123,17 @@ impl MetadataStore for FilesystemMetadataStore {
         &self,
         limit: u32,
         cursor: Option<AccountListCursor>,
+        paused: Option<bool>,
     ) -> Result<Vec<AccountMetadata>, String> {
         let cache = self.cache.read().await;
         let cutoff = cursor.map(|c| (c.last_updated_at, c.last_account_id));
         let mut rows: Vec<AccountMetadata> = cache
             .values()
+            .filter(|m| match paused {
+                Some(true) => m.paused_at.is_some(),
+                Some(false) => m.paused_at.is_none(),
+                None => true,
+            })
             .filter(|m| match &cutoff {
                 None => true,
                 Some((cutoff_ts, cutoff_id)) => {

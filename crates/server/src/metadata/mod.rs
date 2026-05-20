@@ -64,10 +64,16 @@ pub trait MetadataStore: Send + Sync {
     /// the composite index added in migration
     /// `2026-05-10-000002_account_metadata_pagination_index`;
     /// filesystem fans out and sorts in memory.
+    ///
+    /// `paused` filters by pause state when supplied: `Some(true)`
+    /// returns only currently-paused accounts (served by the partial
+    /// index on `paused_at`), `Some(false)` only active accounts,
+    /// `None` returns all.
     async fn list_paged(
         &self,
         limit: u32,
         cursor: Option<AccountListCursor>,
+        paused: Option<bool>,
     ) -> Result<Vec<AccountMetadata>, String>;
 
     /// Update the authentication configuration for an account

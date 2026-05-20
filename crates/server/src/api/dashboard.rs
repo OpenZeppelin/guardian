@@ -79,6 +79,8 @@ pub struct AccountsQuery {
     pub limit: Option<String>,
     #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub paused: Option<bool>,
 }
 
 pub async fn challenge_operator_login(
@@ -150,7 +152,7 @@ pub async fn list_operator_accounts(
         state.dashboard.cursor_secret(),
         CursorKind::AccountList,
     )?;
-    let result = list_dashboard_accounts_paged(&state, limit, cursor).await?;
+    let result = list_dashboard_accounts_paged(&state, limit, cursor, query.paused).await?;
     Ok(Json(result))
 }
 

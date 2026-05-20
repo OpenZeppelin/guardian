@@ -6,7 +6,7 @@ export {
   parseErrorBody,
 } from './http.js';
 
-export type { PaginationOptions, ParsedErrorBody } from './http.js';
+export type { ListAccountsOptions, PaginationOptions, ParsedErrorBody } from './http.js';
 
 export {
   ACCOUNTS_PAUSE,
