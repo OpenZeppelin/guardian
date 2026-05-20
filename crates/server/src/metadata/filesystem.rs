@@ -103,13 +103,19 @@ impl MetadataStore for FilesystemMetadataStore {
     async fn set(&self, metadata: AccountMetadata) -> Result<(), String> {
         let account_id = metadata.account_id.clone();
 
-        // Update cache
+        // Mirror the Postgres `set` semantics: pause state is owned by
+        // `set_pause` / `clear_pause` and must not be cleared by a
+        // generic metadata write (e.g. reconfigure, EVM re-register).
+        let mut metadata = metadata;
         {
             let mut cache = self.cache.write().await;
+            if let Some(existing) = cache.get(&account_id) {
+                metadata.paused_at = existing.paused_at;
+                metadata.paused_reason = existing.paused_reason.clone();
+            }
             cache.insert(account_id, metadata);
         }
 
-        // Persist to disk
         let cache = self.cache.read().await;
         self.persist(&cache).await
     }

@@ -544,12 +544,13 @@ export default function App() {
             <button onClick={() => void unpauseAccountAction()}>Unpause account</button>
           </div>
           <p className="hint">
-            Requires <code>accounts:pause</code>. After pausing, try{' '}
-            <strong>List account deltas</strong> against the same id to exercise
-            the 409 path — the error banner should show{' '}
-            <code>[account_paused]</code> with <code>pausedAt</code> and{' '}
-            <code>pausedReason</code>, confirming the client-side normalization
-            of <code>GUARDIAN_ACCOUNT_PAUSED</code>.
+            Requires <code>accounts:pause</code>. After pausing, run{' '}
+            <strong>List paused accounts</strong> or <strong>Get account</strong>{' '}
+            against the same id — the response should expose{' '}
+            <code>pausedAt</code> and <code>pausedReason</code>. The 409{' '}
+            <code>account_paused</code> path is exercised by mutating endpoints
+            (delta push, proposal create/sign) which this read-only harness does
+            not call directly.
           </p>
 
           {accounts.length ? (

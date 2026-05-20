@@ -922,8 +922,8 @@ function parseAccountSummary(
     ),
     createdAt: requireString(record, 'created_at', context),
     updatedAt: requireString(record, 'updated_at', context),
-    pausedAt: optionalNullableString(record, 'paused_at', context),
-    pausedReason: optionalNullableString(record, 'paused_reason', context),
+    pausedAt: requireNullableString(record, 'paused_at', context),
+    pausedReason: requireNullableString(record, 'paused_reason', context),
   };
 }
 
@@ -940,27 +940,6 @@ function parseAccountDetail(
     stateCreatedAt: requireNullableString(record, 'state_created_at', context),
     stateUpdatedAt: requireNullableString(record, 'state_updated_at', context),
   };
-}
-
-function optionalNullableString(
-  record: Record<string, unknown>,
-  key: string,
-  context: string,
-): string | null {
-  if (!(key in record) || record[key] === undefined) {
-    return null;
-  }
-  const value = record[key];
-  if (value === null) {
-    return null;
-  }
-  if (typeof value !== 'string') {
-    throw new GuardianOperatorContractError(
-      context,
-      `field "${key}" must be a string or null`,
-    );
-  }
-  return value;
 }
 
 function parseAccountStatus(value: string, context: string): AccountStatus {
@@ -1004,7 +983,7 @@ function parseUnpauseResponse(value: unknown): UnpauseAccountResponse {
       requireString(record, 'after_state', ctx),
       `${ctx}.after_state`,
     ),
-    reason: optionalNullableString(record, 'reason', ctx),
+    reason: requireNullableString(record, 'reason', ctx),
   };
 }
 

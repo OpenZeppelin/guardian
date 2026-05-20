@@ -319,7 +319,7 @@ impl MetadataStore for PostgresMetadataStore {
         // the row is currently active. The WHERE clause encodes the
         // COALESCE semantics without an extra column read.
         if before_state == AccountStatus::Active {
-            diesel::update(account_metadata::table)
+            let rows_updated = diesel::update(account_metadata::table)
                 .filter(account_metadata::account_id.eq(account_id))
                 .filter(account_metadata::paused_at.is_null())
                 .set((
@@ -329,12 +329,29 @@ impl MetadataStore for PostgresMetadataStore {
                 .execute(&mut conn)
                 .await
                 .map_err(|e| format!("Failed to set pause: {e}"))?;
-            Ok(PauseTransition {
-                before_state,
-                after_state: AccountStatus::Paused,
-                paused_at: Some(now),
-                paused_reason: Some(reason.to_string()),
-            })
+            if rows_updated > 0 {
+                Ok(PauseTransition {
+                    before_state,
+                    after_state: AccountStatus::Paused,
+                    paused_at: Some(now),
+                    paused_reason: Some(reason.to_string()),
+                })
+            } else {
+                // Lost the race against a concurrent pause; return the
+                // values actually persisted (first-writer-wins).
+                let after: MetadataRow = account_metadata::table
+                    .filter(account_metadata::account_id.eq(account_id))
+                    .select(MetadataRow::as_select())
+                    .first(&mut conn)
+                    .await
+                    .map_err(|e| format!("Failed to re-read account_metadata: {e}"))?;
+                Ok(PauseTransition {
+                    before_state: AccountStatus::Paused,
+                    after_state: AccountStatus::Paused,
+                    paused_at: after.paused_at,
+                    paused_reason: after.paused_reason,
+                })
+            }
         } else {
             Ok(PauseTransition {
                 before_state,

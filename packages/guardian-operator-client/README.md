@@ -128,11 +128,13 @@ await client.unpauseAccount('0x...', 'cleared by legal');
 ```
 
 While an account is paused, mutating endpoints (delta submission,
-proposal creation, auth updates) reject with HTTP 409 and code
+proposal creation, proposal signing) reject with HTTP 409 and code
 `account_paused` (normalized by the client from the server wire code
-`GUARDIAN_ACCOUNT_PAUSED`). Read endpoints — including
-`listAccounts({ paused: true })` and `getAccount()` — continue to work
-and surface `pausedAt` / `pausedReason` on the detail response.
+`GUARDIAN_ACCOUNT_PAUSED`). Account setup paths (`configureAccount`,
+EVM register) are admin operations and remain available while paused.
+Read endpoints — including `listAccounts({ paused: true })` and
+`getAccount()` — continue to work and surface `pausedAt` /
+`pausedReason` on the response.
 
 ### Logout
 

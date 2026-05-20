@@ -28,12 +28,12 @@ pub struct PauseResponse {
 pub fn validate_reason(reason: &str) -> Result<()> {
     if reason.is_empty() {
         return Err(GuardianError::InvalidInput(
-            "pause reason must be non-empty".to_string(),
+            "reason must be non-empty".to_string(),
         ));
     }
     if reason.chars().count() > MAX_REASON_LEN {
         return Err(GuardianError::InvalidInput(format!(
-            "pause reason exceeds {MAX_REASON_LEN} character limit"
+            "reason exceeds {MAX_REASON_LEN} character limit"
         )));
     }
     Ok(())

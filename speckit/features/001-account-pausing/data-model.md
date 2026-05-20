@@ -320,7 +320,7 @@ pattern the existing `OperatorAccountDetail` fields use.
 
 ## State machine
 
-```
+```text
                 ┌────────────────────┐
                 │       Active       │ ◄────────────┐
                 │ paused_at == NULL  │              │

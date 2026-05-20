@@ -133,6 +133,7 @@ components:
         missing_permissions:
           type: array
           items: { type: string }
+          maxItems: 32
           nullable: true
           description: Populated for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` only.
         paused_at:
