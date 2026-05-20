@@ -17,14 +17,13 @@ pub const AUTH_DENIED: &str = "auth.denied";
 /// and never reaches production builds. `payload` is `{}`.
 pub const PROBE_ACCESS: &str = "probe.access";
 
-/// Feature 001-account-pausing: operator paused an account.
-/// `payload` carries `{ before_state, after_state, reason }`;
-/// `target_account_id` is set.
+/// Operator paused an account. `payload` carries
+/// `{ before_state, after_state, reason }`; `target_account_id` is set.
 pub const ACCOUNTS_PAUSE: &str = "accounts.pause";
 
-/// Feature 001-account-pausing: operator unpaused (or attempted to
-/// unpause an already-active) account. `payload` carries
-/// `{ before_state, after_state, reason }`; `target_account_id` is set.
+/// Operator unpaused (or attempted to unpause an already-active)
+/// account. `payload` carries `{ before_state, after_state, reason }`;
+/// `target_account_id` is set.
 pub const ACCOUNTS_UNPAUSE: &str = "accounts.unpause";
 
 /// All registered kinds in v1, for tests and introspection. Append

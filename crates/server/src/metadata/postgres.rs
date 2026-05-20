@@ -199,8 +199,7 @@ impl MetadataStore for PostgresMetadataStore {
 
         let mut query = account_metadata::table.into_boxed();
         match paused {
-            // `is_not_null` hits the partial index `idx_account_metadata_paused`
-            // (migration 2026-05-19-000001_account_pause_fields).
+            // `is_not_null` hits the partial index on `paused_at`.
             Some(true) => query = query.filter(account_metadata::paused_at.is_not_null()),
             Some(false) => query = query.filter(account_metadata::paused_at.is_null()),
             None => {}
@@ -286,8 +285,7 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     /// First-writer-wins pause via `COALESCE` — re-pausing a paused
-    /// account preserves the original `paused_at` and `paused_reason`
-    /// (feature 001-account-pausing FR-013).
+    /// account preserves the original `paused_at` and `paused_reason`.
     async fn set_pause(
         &self,
         account_id: &str,

@@ -34,7 +34,6 @@ pub async fn sign_delta_proposal(
 
     let normalized_commitment = normalize_commitment_hex(&commitment)?;
 
-    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
     ensure_account_active(state, &account_id).await?;
 
     // Resolve account and verify authentication

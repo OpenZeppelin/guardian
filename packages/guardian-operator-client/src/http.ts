@@ -66,13 +66,11 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   // Snapshot-specific codes (FR-045).
   'unsupported_for_network',
   'account_data_unavailable',
-  // Feature 006-operator-authz FR-015. The server emits the
-  // SCREAMING_SNAKE_CASE wire form; the TS union surfaces it as
-  // snake_case to match the rest of the DashboardErrorCode
-  // vocabulary. `parseErrorBody` does the mapping at the boundary.
+  // Server emits SCREAMING_SNAKE_CASE; the TS union surfaces snake_case
+  // to match the rest of the DashboardErrorCode vocabulary.
+  // `parseErrorBody` does the mapping at the boundary.
   'insufficient_operator_permission',
-  // Feature 001-account-pausing FR-010. Same wire-form / TS-form
-  // mapping pattern as `insufficient_operator_permission`.
+  // Same wire-form / TS-form mapping as `insufficient_operator_permission`.
   'account_paused',
 ]);
 
@@ -117,21 +115,19 @@ export interface ParsedErrorBody {
    */
   missingPermissions?: readonly string[];
   /**
-   * Feature 006-operator-authz FR-016: `false` for permission denials,
-   * and feature 001-account-pausing FR-011: `false` for account-paused
-   * rejections. Absent for every other code.
+   * `false` for permission denials and account-paused rejections;
+   * absent for every other code.
    */
   retryable?: boolean;
   /**
-   * Feature 001-account-pausing FR-011: populated only when
-   * `code === 'account_paused'`. RFC 3339 UTC timestamp of the
-   * original pause.
+   * Populated only when `code === 'account_paused'`. RFC 3339 UTC
+   * timestamp of the original pause.
    */
   pausedAt?: string;
   /**
-   * Feature 001-account-pausing FR-011: populated only when
-   * `code === 'account_paused'`. May be `null` for forward
-   * compatibility (the v1 server always emits a non-null reason).
+   * Populated only when `code === 'account_paused'`. May be `null`
+   * for forward compatibility (the v1 server always emits a
+   * non-null reason).
    */
   pausedReason?: string | null;
 }
@@ -375,10 +371,9 @@ export class GuardianOperatorHttpClient {
   }
 
   /**
-   * Feature 001-account-pausing: pause mutating actions for the given
-   * account. Requires `accounts:pause`. Idempotent: re-pausing an
-   * already-paused account returns success with the original
-   * `pausedAt` preserved.
+   * Pause mutating actions for the given account. Requires
+   * `accounts:pause`. Idempotent: re-pausing an already-paused account
+   * returns success with the original `pausedAt` preserved.
    */
   async pauseAccount(
     accountId: string,
@@ -393,9 +388,9 @@ export class GuardianOperatorHttpClient {
   }
 
   /**
-   * Feature 001-account-pausing: clear pause state for the given
-   * account. Requires `accounts:pause`. Idempotent: unpausing an
-   * already-active account returns success with no state change.
+   * Clear pause state for the given account. Requires `accounts:pause`.
+   * Idempotent: unpausing an already-active account returns success
+   * with no state change.
    */
   async unpauseAccount(
     accountId: string,

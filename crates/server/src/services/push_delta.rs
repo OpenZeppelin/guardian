@@ -26,7 +26,6 @@ pub struct PushDeltaResult {
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
     tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
 
-    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
     ensure_account_active(state, &params.delta.account_id).await?;
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;

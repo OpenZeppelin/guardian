@@ -51,10 +51,9 @@ pub struct ApproveEvmProposalParams {
     pub session_address: String,
 }
 
-// Feature 001-account-pausing Non-Goal: `register_account` is an
-// admin/setup path and intentionally NOT gated by
-// `services::account_status::ensure_account_active`. Do not add a
-// chokepoint call here without revisiting the spec Non-Goals.
+// `register_account` is an admin/setup path and intentionally NOT
+// gated by `ensure_account_active`. Pause must not block initial
+// registration — do not add the chokepoint here.
 pub async fn register_account(
     state: &AppState,
     params: RegisterEvmAccountParams,
@@ -156,7 +155,6 @@ pub async fn create_proposal(
     state: &AppState,
     params: CreateEvmProposalParams,
 ) -> Result<EvmProposal> {
-    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
     ensure_account_active(state, &params.account_id).await?;
     let metadata = load_evm_metadata(state, &params.account_id).await?;
     let (chain_id, account_address, validator_address) =
@@ -303,7 +301,6 @@ pub async fn approve_proposal(
     state: &AppState,
     params: ApproveEvmProposalParams,
 ) -> Result<EvmProposal> {
-    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
     ensure_account_active(state, &params.account_id).await?;
     let proposal_id = normalize_proposal_id(&params.proposal_id)?;
     let signer = normalize_session_address(&params.session_address)?;
@@ -358,7 +355,6 @@ pub async fn cancel_proposal(
     commitment: &str,
     session_address: &str,
 ) -> Result<()> {
-    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
     ensure_account_active(state, account_id).await?;
     let proposal_id = normalize_proposal_id(commitment)?;
     let session_address = normalize_session_address(session_address)?;
@@ -527,11 +523,6 @@ mod tests {
         );
     }
 
-    /// Pause-gate guards on the three EVM proposal entry points.
-    /// Each must reject before any storage mutation: `create_proposal`
-    /// must not call `submit_delta_proposal`, `approve_proposal` and
-    /// `cancel_proposal` must not call `update_delta_proposal` /
-    /// `delete_delta_proposal`.
     #[tokio::test]
     async fn create_proposal_rejects_paused_account() {
         let (state, storage) = state_with_paused("0xpaused");

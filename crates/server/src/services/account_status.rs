@@ -1,16 +1,13 @@
-//! Per-account pause chokepoint (feature 001-account-pausing).
+//! Per-account pause chokepoint.
 //!
 //! Single helper [`ensure_account_active`] consulted from every
 //! per-account mutating entry point (multisig + EVM proposal pipelines).
 //! Admin/setup paths (`services::configure_account`,
 //! `evm::service::register_account`) deliberately do NOT call this
-//! helper — see spec Non-Goals.
-//!
-//! FR-025 single-call-site invariant: this module is the ONLY place
-//! outside read endpoints + the pause/unpause handlers that reads
-//! `AccountMetadata::paused_at`. When the broader `PolicyEngine` (#182)
-//! lands, this helper is replaced wholesale by `policy_engine.evaluate_all(...)`
-//! with no API, audit, or storage change (FR-026 / SC-007).
+//! helper. This module is the ONLY place outside read endpoints +
+//! the pause/unpause handlers that reads `AccountMetadata::paused_at` —
+//! keeping the read centralized is what lets the future `PolicyEngine`
+//! replace this helper wholesale without API, audit, or storage churn.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

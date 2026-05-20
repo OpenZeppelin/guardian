@@ -130,12 +130,9 @@ pub async fn configure_account(
             GuardianError::StorageError(format!("Failed to submit initial state: {e}"))
         })?;
 
-    // Create and store metadata (preserving created_at and replay protection on reconfigure).
-    //
-    // Feature 001-account-pausing Non-Goal: configure_account is an
-    // admin/setup path and intentionally NOT gated by
-    // `services::account_status::ensure_account_active`. Do not add a
-    // chokepoint call here without revisiting the spec Non-Goals.
+    // configure_account is an admin/setup path and intentionally NOT
+    // gated by `ensure_account_active`. Pause must not block account
+    // reconfiguration — do not add the chokepoint here.
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
@@ -147,10 +144,9 @@ pub async fn configure_account(
             .map(|m| m.has_pending_candidate)
             .unwrap_or(false),
         last_auth_timestamp: existing.and_then(|m| m.last_auth_timestamp),
-        // Feature 001-account-pausing Non-Goal: configure_account is an
-        // admin/setup path and never modifies pause state. The postgres
-        // `set` impl does NOT include `paused_*` in its do_update.set
-        // clause, so an existing pause on reconfigure is preserved.
+        // These `None` values are NOT persisted on reconfigure: the
+        // postgres `set` impl excludes `paused_*` from its update
+        // clause, so an existing pause survives.
         paused_at: None,
         paused_reason: None,
     };

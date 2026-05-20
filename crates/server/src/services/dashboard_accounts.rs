@@ -40,13 +40,12 @@ pub struct DashboardAccountDetail {
     pub updated_at: String,
     pub state_created_at: Option<String>,
     pub state_updated_at: Option<String>,
-    /// Feature 001-account-pausing FR-005: RFC 3339 UTC timestamp of
-    /// the original pause; `None` when the account is active. Always
-    /// emitted (active accounts get `null`) for a uniform wire shape.
+    /// RFC 3339 UTC timestamp of the original pause; `None` when
+    /// active. Always emitted (active accounts get `null`) for a
+    /// uniform wire shape.
     #[serde(default)]
     pub paused_at: Option<String>,
-    /// Feature 001-account-pausing FR-005: reason captured at first
-    /// pause; `None` when the account is active.
+    /// Reason captured at first pause; `None` when active.
     #[serde(default)]
     pub paused_reason: Option<String>,
 }

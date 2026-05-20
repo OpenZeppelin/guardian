@@ -57,7 +57,6 @@ pub async fn push_delta_proposal(
 
     let delta_payload = normalize_payload(delta_payload)?;
 
-    // Feature 001-account-pausing chokepoint (FR-008 / FR-025).
     ensure_account_active(state, &account_id).await?;
 
     let resolved = resolve_account(state, &account_id, &credentials).await?;

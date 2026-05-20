@@ -119,11 +119,10 @@ impl ServerHandle {
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
                 let dashboard_routes = dashboard_routes.merge(session_router);
 
-                // Feature 001-account-pausing: per-account pause /
-                // unpause control endpoints. Same per-route authz
-                // composition pattern as the probe — declares
-                // `accounts:pause` required permission and reuses the
-                // session middleware.
+                // Per-account pause / unpause endpoints. Same per-route
+                // authz composition as the probe: declares the
+                // `accounts:pause` permission and reuses the session
+                // middleware.
                 let dashboard_routes = {
                     let accounts_pause_authz =
                         AuthzState::new(state.clone(), &[Permission::AccountsPause]);

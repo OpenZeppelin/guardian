@@ -97,8 +97,7 @@ pub enum GuardianError {
     /// `GUARDIAN_ACCOUNT_PAUSED`. HTTP 409 Conflict, gRPC
     /// `FAILED_PRECONDITION`. `paused_at` / `paused_reason` are carried
     /// on the response body / gRPC `Status::details` so clients can
-    /// show context without a follow-up GET. Feature 001-account-pausing
-    /// FR-010 / FR-011.
+    /// show context without a follow-up GET.
     AccountPaused {
         paused_at: DateTime<Utc>,
         paused_reason: Option<String>,
@@ -405,13 +404,13 @@ struct ErrorResponse {
     /// absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
-    /// Feature 001-account-pausing FR-010: RFC 3339 UTC timestamp of
-    /// the original pause. Populated only for `GUARDIAN_ACCOUNT_PAUSED`.
+    /// RFC 3339 UTC timestamp of the original pause. Populated only
+    /// for `GUARDIAN_ACCOUNT_PAUSED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     paused_at: Option<String>,
-    /// Feature 001-account-pausing FR-010: reason captured at first
-    /// pause. Populated only for `GUARDIAN_ACCOUNT_PAUSED` (may be
-    /// absent within that variant if the reason field is null).
+    /// Reason captured at first pause. Populated only for
+    /// `GUARDIAN_ACCOUNT_PAUSED` (may be absent within that variant
+    /// if the reason field is null).
     #[serde(skip_serializing_if = "Option::is_none")]
     paused_reason: Option<String>,
 }

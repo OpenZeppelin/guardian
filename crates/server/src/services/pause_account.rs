@@ -1,14 +1,9 @@
-//! Feature 001-account-pausing — pause service.
+//! Pause service.
 //!
-//! Orchestrates: reason validation (FR-007), persistence transition
-//! via `MetadataStore::set_pause`, and the `admin_actions` audit row
-//! emission. The audit row is emitted **after** the persistence
-//! transition succeeds but **before** the response returns, so the
-//! "200 ⇒ audit row exists" invariant holds (FR-018).
-//!
-//! Idempotent re-pause is fully audited (FR-019): the audit row carries
-//! `before_state == after_state == paused` and the response carries the
-//! original `paused_at` / `paused_reason` (FR-013).
+//! The audit row is emitted after the persistence transition succeeds
+//! but before the response returns, so "200 ⇒ audit row exists" holds.
+//! Re-pause is first-writer-wins: the persisted `paused_at` /
+//! `paused_reason` are preserved and re-emitted on the response.
 
 use serde::Serialize;
 use serde_json::json;

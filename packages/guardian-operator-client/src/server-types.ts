@@ -38,15 +38,9 @@ export interface GuardianDashboardAccountDetail extends GuardianDashboardAccount
   authorized_signer_ids: string[];
   state_created_at: string | null;
   state_updated_at: string | null;
-  /**
-   * Feature 001-account-pausing FR-005: RFC 3339 UTC timestamp of the
-   * original pause; `null` when the account is active.
-   */
+  /** RFC 3339 UTC timestamp of the original pause; `null` when active. */
   paused_at: string | null;
-  /**
-   * Feature 001-account-pausing FR-005: reason captured at first pause;
-   * `null` when the account is active.
-   */
+  /** Reason captured at first pause; `null` when active. */
   paused_reason: string | null;
 }
 
@@ -68,9 +62,8 @@ export interface GuardianUnpauseAccountResponse {
 }
 
 /**
- * Feature 001-account-pausing FR-010. Stable error code returned by
- * mutating endpoints when the target account is paused. HTTP 409,
- * gRPC FAILED_PRECONDITION.
+ * Stable error code returned by mutating endpoints when the target
+ * account is paused. HTTP 409, gRPC FAILED_PRECONDITION.
  */
 export const GUARDIAN_ACCOUNT_PAUSED = 'GUARDIAN_ACCOUNT_PAUSED' as const;
 

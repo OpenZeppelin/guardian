@@ -1,9 +1,7 @@
-//! Feature 001-account-pausing — unpause service.
-//!
-//! Mirror of [`crate::services::pause_account`] for the unpause
-//! transition. Idempotent: a call against an already-active account is
-//! a no-op at the persistence layer and still emits an `accounts.unpause`
-//! audit row with `before_state == after_state == active` (FR-014 / FR-019).
+//! Unpause service. Mirror of [`crate::services::pause_account`].
+//! Idempotent: a call against an already-active account is a no-op
+//! at the persistence layer and still emits an `accounts.unpause`
+//! audit row.
 
 use serde::Serialize;
 use serde_json::json;
