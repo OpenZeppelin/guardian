@@ -66,3 +66,125 @@ pub async fn ensure_account_active(state: &AppState, account_id: &str) -> Result
     }
     Ok(())
 }
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+    use crate::ack::AckRegistry;
+    use crate::builder::clock::test::MockClock;
+    use crate::metadata::{AccountMetadata, Auth, NetworkConfig};
+    use crate::storage::filesystem::FilesystemService;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient};
+    use chrono::TimeZone;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    fn meta(account_id: &str, paused: Option<(DateTime<Utc>, Option<&str>)>) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xc1".into()],
+            },
+            network_config: NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: paused.map(|(ts, _)| ts),
+            paused_reason: paused.and_then(|(_, r)| r.map(|s| s.to_string())),
+        }
+    }
+
+    async fn state_with(metadata: MockMetadataStore) -> AppState {
+        let dir = TempDir::new().expect("tempdir");
+        let storage = FilesystemService::new(dir.path().to_path_buf())
+            .await
+            .expect("svc");
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+        AppState {
+            storage: Arc::new(storage),
+            metadata: Arc::new(metadata),
+            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::default()),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            auditor: Arc::new(crate::audit::LogAuditor::new()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_account_returns_ok() {
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(meta("acc-1", None))));
+        let state = state_with(metadata).await;
+
+        ensure_account_active(&state, "acc-1")
+            .await
+            .expect("active account must pass the chokepoint");
+    }
+
+    #[tokio::test]
+    async fn paused_account_returns_account_paused_with_details() {
+        let ts = Utc.with_ymd_and_hms(2026, 5, 19, 14, 30, 0).unwrap();
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(meta("acc-1", Some((ts, Some("compliance")))))));
+        let state = state_with(metadata).await;
+
+        let err = ensure_account_active(&state, "acc-1")
+            .await
+            .expect_err("paused account must be rejected");
+
+        match err {
+            GuardianError::AccountPaused {
+                paused_at,
+                paused_reason,
+            } => {
+                assert_eq!(paused_at, ts);
+                assert_eq!(paused_reason.as_deref(), Some("compliance"));
+            }
+            other => panic!("expected AccountPaused, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn paused_without_reason_surfaces_none() {
+        let ts = Utc.with_ymd_and_hms(2026, 5, 19, 14, 30, 0).unwrap();
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(meta("acc-1", Some((ts, None))))));
+        let state = state_with(metadata).await;
+
+        match ensure_account_active(&state, "acc-1").await {
+            Err(GuardianError::AccountPaused { paused_reason, .. }) => {
+                assert!(paused_reason.is_none());
+            }
+            other => panic!("expected AccountPaused with None reason, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_account_returns_not_found() {
+        let metadata = MockMetadataStore::new().with_get(Ok(None));
+        let state = state_with(metadata).await;
+
+        match ensure_account_active(&state, "missing").await {
+            Err(GuardianError::AccountNotFound(id)) => assert_eq!(id, "missing"),
+            other => panic!("expected AccountNotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_load_failure_surfaces_as_storage_error() {
+        let metadata = MockMetadataStore::new().with_get(Err("disk on fire".to_string()));
+        let state = state_with(metadata).await;
+
+        match ensure_account_active(&state, "acc-1").await {
+            Err(GuardianError::StorageError(msg)) => assert!(msg.contains("disk on fire")),
+            other => panic!("expected StorageError, got {other:?}"),
+        }
+    }
+}

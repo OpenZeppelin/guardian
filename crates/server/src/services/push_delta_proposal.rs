@@ -234,6 +234,7 @@ mod tests {
     use crate::testing::fixtures;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::TimeZone;
     use guardian_shared::ProposalSignature;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -895,5 +896,61 @@ mod tests {
         let result = push_delta_proposal(&state, params).await;
 
         assert!(result.is_ok(), "Expected success, got: {:?}", result);
+    }
+
+    /// Pause-gate guard: a paused account must be rejected before
+    /// any proposal-side effects fire. Asserts AccountPaused and
+    /// that `submit_delta_proposal` was never called.
+    #[tokio::test]
+    async fn paused_account_rejected_before_proposal_submitted() {
+        let (state, storage, _network, metadata) = create_test_state();
+
+        let account_id = "0xpaused".to_string();
+        let mut paused = create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xc1".into()],
+            },
+        );
+        paused.paused_at = Some(
+            chrono::Utc
+                .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                .unwrap(),
+        );
+        paused.paused_reason = Some("compliance".to_string());
+        let _metadata = metadata.with_get(Ok(Some(paused)));
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"].clone(),
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": ["0xc1"]
+            }
+        });
+
+        let params = PushDeltaProposalParams {
+            account_id: account_id.clone(),
+            nonce: 1,
+            delta_payload,
+            credentials: Credentials::signature(String::new(), String::new(), 0),
+        };
+
+        let err = push_delta_proposal(&state, params)
+            .await
+            .expect_err("paused account must be rejected");
+        assert!(
+            matches!(err, GuardianError::AccountPaused { ref paused_reason, .. }
+                if paused_reason.as_deref() == Some("compliance")),
+            "unexpected error: {err:?}"
+        );
+
+        assert!(
+            storage.get_submit_delta_proposal_calls().is_empty(),
+            "no proposal should be submitted when the account is paused"
+        );
     }
 }

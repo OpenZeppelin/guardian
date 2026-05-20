@@ -120,3 +120,73 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         delta: result_delta,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
+    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::TimeZone;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn paused_metadata(account_id: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xc1".into()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                    .unwrap(),
+            ),
+            paused_reason: Some("compliance".to_string()),
+        }
+    }
+
+    /// Pause-gate guard: `push_delta` MUST reject before touching
+    /// storage or the network. Defends against a refactor that
+    /// silently drops the `ensure_account_active` call.
+    #[tokio::test]
+    async fn paused_account_rejected_before_side_effects() {
+        let storage = MockStorageBackend::new();
+        let network = MockNetworkClient::new();
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(paused_metadata("acc-paused"))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network.clone())),
+            Arc::new(metadata.clone()),
+        );
+
+        let params = PushDeltaParams {
+            delta: DeltaObject {
+                account_id: "acc-paused".to_string(),
+                ..Default::default()
+            },
+            credentials: Credentials::signature(String::new(), String::new(), 0),
+        };
+
+        let err = push_delta(&state, params)
+            .await
+            .expect_err("paused account must be rejected");
+        assert!(
+            matches!(err, GuardianError::AccountPaused { ref paused_reason, .. }
+                if paused_reason.as_deref() == Some("compliance")),
+            "unexpected error: {err:?}"
+        );
+
+        assert!(
+            storage.get_submit_delta_calls().is_empty(),
+            "no delta should be submitted when the account is paused"
+        );
+    }
+}

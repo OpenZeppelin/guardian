@@ -177,6 +177,7 @@ mod tests {
     use crate::testing::fixtures;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::TimeZone;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -750,5 +751,51 @@ mod tests {
                 commitment: ref err_commitment
             }) if err_account == &account_id && err_commitment == &commitment
         ));
+    }
+
+    /// Pause-gate guard: signing must be rejected for a paused
+    /// account before any proposal storage is touched.
+    #[tokio::test]
+    async fn paused_account_rejected_before_proposal_lookup() {
+        let (state, storage, _network, metadata) = create_test_state();
+
+        let account_id = "0xpaused".to_string();
+        let mut paused = create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xc1".into()],
+            },
+        );
+        paused.paused_at = Some(
+            chrono::Utc
+                .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                .unwrap(),
+        );
+        paused.paused_reason = Some("compliance".to_string());
+        let _metadata = metadata.with_get(Ok(Some(paused)));
+
+        let params = SignDeltaProposalParams {
+            account_id: account_id.clone(),
+            commitment: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            signature: ProposalSignature::Falcon {
+                signature: format!("0x{}", "a".repeat(666)),
+            },
+            credentials: Credentials::signature(String::new(), String::new(), 0),
+        };
+
+        let err = sign_delta_proposal(&state, params)
+            .await
+            .expect_err("paused account must be rejected");
+        assert!(
+            matches!(err, GuardianError::AccountPaused { ref paused_reason, .. }
+                if paused_reason.as_deref() == Some("compliance")),
+            "unexpected error: {err:?}"
+        );
+
+        assert!(
+            storage.get_update_delta_proposal_calls().is_empty(),
+            "no proposal update should fire when the account is paused"
+        );
     }
 }

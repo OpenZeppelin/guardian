@@ -475,3 +475,109 @@ fn is_evm_delta(delta: &DeltaObject) -> bool {
         .and_then(serde_json::Value::as_str)
         .is_some_and(|kind| kind == EVM_PROPOSAL_KIND)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
+    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::TimeZone;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn paused_evm_metadata(account_id: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::EvmEcdsa {
+                signers: vec!["0xsigner".into()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                    .unwrap(),
+            ),
+            paused_reason: Some("compliance".to_string()),
+        }
+    }
+
+    fn state_with_paused(account_id: &str) -> (AppState, MockStorageBackend) {
+        let storage = MockStorageBackend::new();
+        let network = MockNetworkClient::new();
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(paused_evm_metadata(account_id))));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        (state, storage)
+    }
+
+    fn assert_paused(err: GuardianError) {
+        assert!(
+            matches!(err, GuardianError::AccountPaused { ref paused_reason, .. }
+                if paused_reason.as_deref() == Some("compliance")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Pause-gate guards on the three EVM proposal entry points.
+    /// Each must reject before any storage mutation: `create_proposal`
+    /// must not call `submit_delta_proposal`, `approve_proposal` and
+    /// `cancel_proposal` must not call `update_delta_proposal` /
+    /// `delete_delta_proposal`.
+    #[tokio::test]
+    async fn create_proposal_rejects_paused_account() {
+        let (state, storage) = state_with_paused("0xpaused");
+        let err = create_proposal(
+            &state,
+            CreateEvmProposalParams {
+                account_id: "0xpaused".to_string(),
+                user_op_hash: String::new(),
+                payload: String::new(),
+                nonce: String::new(),
+                ttl_seconds: 0,
+                signature: String::new(),
+                session_address: String::new(),
+            },
+        )
+        .await
+        .expect_err("paused must reject");
+        assert_paused(err);
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approve_proposal_rejects_paused_account() {
+        let (state, storage) = state_with_paused("0xpaused");
+        let err = approve_proposal(
+            &state,
+            ApproveEvmProposalParams {
+                account_id: "0xpaused".to_string(),
+                proposal_id: String::new(),
+                signature: String::new(),
+                session_address: String::new(),
+            },
+        )
+        .await
+        .expect_err("paused must reject");
+        assert_paused(err);
+        assert!(storage.get_update_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_proposal_rejects_paused_account() {
+        let (state, storage) = state_with_paused("0xpaused");
+        let err = cancel_proposal(&state, "0xpaused", "0xcommitment", "0xsigner")
+            .await
+            .expect_err("paused must reject");
+        assert_paused(err);
+        assert!(storage.get_delete_delta_proposal_calls().is_empty());
+    }
+}
