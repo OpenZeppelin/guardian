@@ -100,16 +100,16 @@ export interface DashboardAccountSummary {
   stateStatus: DashboardAccountStateStatus;
   createdAt: string;
   updatedAt: string;
+  /** RFC 3339 UTC timestamp of the original pause; `null` when active. */
+  pausedAt: string | null;
+  /** Reason captured at first pause; `null` when active. */
+  pausedReason: string | null;
 }
 
 export interface DashboardAccountDetail extends DashboardAccountSummary {
   authorizedSignerIds: string[];
   stateCreatedAt: string | null;
   stateUpdatedAt: string | null;
-  /** RFC 3339 UTC timestamp of the original pause; `null` when active. */
-  pausedAt: string | null;
-  /** Reason captured at first pause; `null` when active. */
-  pausedReason: string | null;
 }
 
 /** Two-state account lifecycle flag. */

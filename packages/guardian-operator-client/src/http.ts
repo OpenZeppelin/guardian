@@ -922,6 +922,8 @@ function parseAccountSummary(
     ),
     createdAt: requireString(record, 'created_at', context),
     updatedAt: requireString(record, 'updated_at', context),
+    pausedAt: optionalNullableString(record, 'paused_at', context),
+    pausedReason: optionalNullableString(record, 'paused_reason', context),
   };
 }
 
@@ -937,8 +939,6 @@ function parseAccountDetail(
     authorizedSignerIds: requireStringArray(record, 'authorized_signer_ids', context),
     stateCreatedAt: requireNullableString(record, 'state_created_at', context),
     stateUpdatedAt: requireNullableString(record, 'state_updated_at', context),
-    pausedAt: optionalNullableString(record, 'paused_at', context),
-    pausedReason: optionalNullableString(record, 'paused_reason', context),
   };
 }
 

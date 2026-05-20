@@ -25,6 +25,10 @@ pub struct DashboardAccountSummary {
     pub state_status: DashboardAccountStateStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub paused_at: Option<String>,
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,6 +207,8 @@ impl DashboardAccountSummary {
             state_status,
             created_at: metadata.created_at.clone(),
             updated_at: metadata.updated_at.clone(),
+            paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
+            paused_reason: metadata.paused_reason.clone(),
         }
     }
 }

@@ -405,11 +405,21 @@ impl DashboardState {
     }
 
     async fn refresh_allowlist(&self) -> Result<()> {
-        let Some(updated_allowlist) = self
-            .allowlist_source
-            .load_dynamic()
-            .await
-            .map_err(GuardianError::ConfigurationError)?
+        let Some(updated_allowlist) =
+            self.allowlist_source
+                .load_dynamic()
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        auth_event = "allowlist_reload_failed",
+                        source = %self.allowlist_source.label(),
+                        %error,
+                        "Failed to reload operator allowlist"
+                    );
+                    GuardianError::ConfigurationError(
+                        "operator allowlist is misconfigured".to_string(),
+                    )
+                })?
         else {
             return Ok(());
         };
@@ -672,6 +682,57 @@ mod tests {
                 .await
                 .is_err(),
             "old session should be revoked after allowlist reload"
+        );
+
+        fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn allowlist_reload_error_does_not_leak_path_or_entry_details() {
+        let _env_lock = ENV_LOCK.lock().await;
+        let operator = TestSigner::new();
+        let path = std::env::temp_dir().join(format!(
+            "guardian_operator_public_keys_{}.json",
+            Uuid::new_v4()
+        ));
+
+        write_operator_public_keys_file(&path, &[&operator.pubkey_hex]);
+        let _operator_public_keys_file =
+            EnvVarGuard::set(ENV_OPERATOR_PUBLIC_KEYS_FILE, path.display().to_string());
+        let _operator_public_keys_secret = EnvVarGuard::remove(ENV_OPERATOR_PUBLIC_KEYS_SECRET_ID);
+
+        let state = DashboardState::from_env()
+            .await
+            .expect("dashboard state should load");
+
+        let bad_entry = format!(
+            r#"[{{"public_key":"{}","permissions":["account:pause"]}}]"#,
+            operator.pubkey_hex
+        );
+        fs::write(&path, &bad_entry).expect("bad allowlist file should be written");
+
+        let now = Utc::now() + Duration::seconds(1);
+        let error = state
+            .issue_challenge(&operator.commitment_hex, now)
+            .await
+            .expect_err("issue_challenge should fail after allowlist becomes invalid");
+        let rendered = error.to_string();
+
+        assert!(
+            !rendered.contains(path.display().to_string().as_str()),
+            "error must not disclose allowlist file path: {rendered}"
+        );
+        assert!(
+            !rendered.contains("account:pause"),
+            "error must not echo bad permission value: {rendered}"
+        );
+        assert!(
+            !rendered.contains("entry"),
+            "error must not disclose entry index: {rendered}"
+        );
+        assert!(
+            !rendered.contains(ENV_OPERATOR_PUBLIC_KEYS_FILE),
+            "error must not disclose env var name: {rendered}"
         );
 
         fs::remove_file(path).ok();

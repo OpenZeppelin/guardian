@@ -32,16 +32,16 @@ export interface GuardianDashboardAccountSummary {
   state_status: GuardianDashboardAccountStateStatus;
   created_at: string;
   updated_at: string;
+  /** RFC 3339 UTC timestamp of the original pause; `null` when active. */
+  paused_at: string | null;
+  /** Reason captured at first pause; `null` when active. */
+  paused_reason: string | null;
 }
 
 export interface GuardianDashboardAccountDetail extends GuardianDashboardAccountSummary {
   authorized_signer_ids: string[];
   state_created_at: string | null;
   state_updated_at: string | null;
-  /** RFC 3339 UTC timestamp of the original pause; `null` when active. */
-  paused_at: string | null;
-  /** Reason captured at first pause; `null` when active. */
-  paused_reason: string | null;
 }
 
 export type GuardianAccountStatus = 'active' | 'paused';

@@ -132,6 +132,8 @@ describe('GuardianOperatorHttpClient', () => {
           stateStatus: 'available',
           createdAt: '2026-04-22T10:00:00Z',
           updatedAt: '2026-04-22T11:00:00Z',
+          pausedAt: null,
+          pausedReason: null,
         },
       ],
       nextCursor: null,
