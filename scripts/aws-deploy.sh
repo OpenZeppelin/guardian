@@ -322,11 +322,11 @@ terraform_output_raw() {
 }
 
 ack_falcon_secret_name() {
-  echo "${GUARDIAN_ACK_FALCON_SECRET_NAME:-${STACK_NAME}/server/ack-falcon-secret-key}"
+  echo "${GUARDIAN_ACK_FALCON_SECRET_NAME:-${TF_VAR_guardian_ack_falcon_secret_name:-${STACK_NAME}/server/ack-falcon-secret-key}}"
 }
 
 ack_ecdsa_secret_name() {
-  echo "${GUARDIAN_ACK_ECDSA_SECRET_NAME:-${STACK_NAME}/server/ack-ecdsa-secret-key}"
+  echo "${GUARDIAN_ACK_ECDSA_SECRET_NAME:-${TF_VAR_guardian_ack_ecdsa_secret_name:-${STACK_NAME}/server/ack-ecdsa-secret-key}}"
 }
 
 secret_exists() {
