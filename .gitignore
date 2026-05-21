@@ -1,6 +1,7 @@
 target/
 store.sqlite3
 /keystore/
+/var/
 miden-client.toml
 templates/
 .env
