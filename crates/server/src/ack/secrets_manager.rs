@@ -112,10 +112,16 @@ fn ensure_aws_region() -> Result<()> {
 
 fn resolve_secret_id(env_var: &str, default: &str) -> Result<String> {
     match std::env::var(env_var) {
-        Ok(value) if !value.is_empty() => Ok(value),
-        Ok(_) => Err(GuardianError::ConfigurationError(format!(
-            "{env_var} must not be empty when set"
-        ))),
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Err(GuardianError::ConfigurationError(format!(
+                    "{env_var} must not be blank when set"
+                )))
+            } else {
+                Ok(trimmed.to_string())
+            }
+        }
         Err(std::env::VarError::NotPresent) => Ok(default.to_string()),
         Err(std::env::VarError::NotUnicode(_)) => Err(GuardianError::ConfigurationError(format!(
             "{env_var} must contain valid UTF-8"
@@ -130,13 +136,41 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: callers hold ENV_LOCK to serialize env mutations
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: callers hold ENV_LOCK to serialize env mutations
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: callers hold ENV_LOCK to serialize env mutations
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     #[test]
     fn resolve_secret_id_returns_default_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // SAFETY: serialized via ENV_LOCK to avoid races with other env-touching tests
-        unsafe {
-            std::env::remove_var(ENV_ACK_FALCON_SECRET_ID);
-        }
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::remove(ENV_ACK_FALCON_SECRET_ID);
 
         let resolved =
             resolve_secret_id(ENV_ACK_FALCON_SECRET_ID, DEFAULT_FALCON_SECRET_ID).unwrap();
@@ -145,30 +179,29 @@ mod tests {
 
     #[test]
     fn resolve_secret_id_uses_override_when_set() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap();
         let override_value = "custom/path/ack-falcon";
-        // SAFETY: serialized via ENV_LOCK
-        unsafe {
-            std::env::set_var(ENV_ACK_FALCON_SECRET_ID, override_value);
-        }
+        let _guard = EnvVarGuard::set(ENV_ACK_FALCON_SECRET_ID, override_value);
 
         let resolved =
             resolve_secret_id(ENV_ACK_FALCON_SECRET_ID, DEFAULT_FALCON_SECRET_ID).unwrap();
         assert_eq!(resolved, override_value);
+    }
 
-        // SAFETY: serialized via ENV_LOCK
-        unsafe {
-            std::env::remove_var(ENV_ACK_FALCON_SECRET_ID);
-        }
+    #[test]
+    fn resolve_secret_id_trims_surrounding_whitespace() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set(ENV_ACK_FALCON_SECRET_ID, "  custom/path/ack-falcon  ");
+
+        let resolved =
+            resolve_secret_id(ENV_ACK_FALCON_SECRET_ID, DEFAULT_FALCON_SECRET_ID).unwrap();
+        assert_eq!(resolved, "custom/path/ack-falcon");
     }
 
     #[test]
     fn resolve_secret_id_rejects_empty_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // SAFETY: serialized via ENV_LOCK
-        unsafe {
-            std::env::set_var(ENV_ACK_ECDSA_SECRET_ID, "");
-        }
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set(ENV_ACK_ECDSA_SECRET_ID, "");
 
         let result = resolve_secret_id(ENV_ACK_ECDSA_SECRET_ID, DEFAULT_ECDSA_SECRET_ID);
         assert!(matches!(
@@ -176,10 +209,18 @@ mod tests {
             Err(GuardianError::ConfigurationError(message))
                 if message.contains(ENV_ACK_ECDSA_SECRET_ID)
         ));
+    }
 
-        // SAFETY: serialized via ENV_LOCK
-        unsafe {
-            std::env::remove_var(ENV_ACK_ECDSA_SECRET_ID);
-        }
+    #[test]
+    fn resolve_secret_id_rejects_whitespace_only_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set(ENV_ACK_ECDSA_SECRET_ID, "   ");
+
+        let result = resolve_secret_id(ENV_ACK_ECDSA_SECRET_ID, DEFAULT_ECDSA_SECRET_ID);
+        assert!(matches!(
+            result,
+            Err(GuardianError::ConfigurationError(message))
+                if message.contains(ENV_ACK_ECDSA_SECRET_ID)
+        ));
     }
 }
