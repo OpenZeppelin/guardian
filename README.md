@@ -105,7 +105,13 @@ The HTTP server will be available at `http://localhost:3000`
 
 The gRPC server will be available at `localhost:50051`
 
-This default Compose flow uses the filesystem backend. If you need a local Postgres container for benchmark or explicit Postgres-backed runs, use [docker-compose.postgres.yml](/Users/marcos/repos/guardian/docker-compose.postgres.yml) instead.
+This default Compose flow uses the filesystem backend. If you need a local Postgres container for benchmark or explicit Postgres-backed runs, set `POSTGRES_PASSWORD` in `.env` and run with the [Postgres override](./docker-compose.postgres.yml):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -d
+```
+
+`--build` is required the first time because the server image must be rebuilt with the `postgres` Cargo feature enabled.
 
 ### Testing
 
