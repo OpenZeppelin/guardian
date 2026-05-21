@@ -2,7 +2,7 @@ use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::account_status::ensure_account_active;
+use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
 use guardian_shared::DeltaSignature;
@@ -34,10 +34,9 @@ pub async fn sign_delta_proposal(
 
     let normalized_commitment = normalize_commitment_hex(&commitment)?;
 
-    ensure_account_active(state, &account_id).await?;
-
     // Resolve account and verify authentication
     let resolved = resolve_account(state, &account_id, &credentials).await?;
+    ensure_account_active_metadata(&resolved.metadata)?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),
@@ -753,16 +752,21 @@ mod tests {
     }
 
     /// Pause-gate guard: signing must be rejected for a paused
-    /// account before any proposal storage is touched.
+    /// account before any proposal storage is touched — but only
+    /// AFTER authentication, so unauthenticated probes cannot learn
+    /// pause state.
     #[tokio::test]
     async fn paused_account_rejected_before_proposal_lookup() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0xpaused".to_string();
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
         let mut paused = create_account_metadata(
             account_id.clone(),
             Auth::MidenFalconRpo {
-                cosigner_commitments: vec!["0xc1".into()],
+                cosigner_commitments: vec![signer_commitment.clone()],
             },
         );
         paused.paused_at = Some(
@@ -780,7 +784,7 @@ mod tests {
             signature: ProposalSignature::Falcon {
                 signature: format!("0x{}", "a".repeat(666)),
             },
-            credentials: Credentials::signature(String::new(), String::new(), 0),
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
         };
 
         let err = sign_delta_proposal(&state, params)
@@ -795,6 +799,47 @@ mod tests {
         assert!(
             storage.get_update_delta_proposal_calls().is_empty(),
             "no proposal update should fire when the account is paused"
+        );
+    }
+
+    /// Pause-gate ordering: unauthenticated callers MUST get an auth
+    /// error, NOT `AccountPaused`. Defends against reintroducing the
+    /// pre-auth chokepoint that leaked pause state to probes.
+    #[tokio::test]
+    async fn paused_account_returns_auth_error_for_unauthenticated_caller() {
+        let (state, _storage, _network, metadata) = create_test_state();
+
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let mut paused = create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xc1".into()],
+            },
+        );
+        paused.paused_at = Some(
+            chrono::Utc
+                .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                .unwrap(),
+        );
+        paused.paused_reason = Some("compliance".to_string());
+        let _metadata = metadata.with_get(Ok(Some(paused)));
+
+        let params = SignDeltaProposalParams {
+            account_id,
+            commitment: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            signature: ProposalSignature::Falcon {
+                signature: format!("0x{}", "a".repeat(666)),
+            },
+            credentials: Credentials::signature(String::new(), String::new(), 0),
+        };
+
+        let err = sign_delta_proposal(&state, params)
+            .await
+            .expect_err("unauthenticated paused account must be rejected with auth error");
+        assert!(
+            matches!(err, GuardianError::AuthenticationFailed(_)),
+            "unauthenticated caller must not learn pause state; got: {err:?}"
         );
     }
 }

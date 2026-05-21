@@ -1323,6 +1323,215 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
   });
 });
 
+describe('GuardianOperatorHttpClient — account pause/unpause', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch);
+    mockFetch.mockReset();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('serializes paused=true into the listAccounts URL', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({ items: [], next_cursor: null }));
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await client.listAccounts({ paused: true });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts?paused=true',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('serializes paused=false into the listAccounts URL', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({ items: [], next_cursor: null }));
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await client.listAccounts({ paused: false });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts?paused=false',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('omits the paused query parameter when not provided', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({ items: [], next_cursor: null }));
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await client.listAccounts();
+    const [calledUrl] = mockFetch.mock.calls[0]!;
+    expect(String(calledUrl)).toBe('https://guardian.example/dashboard/accounts');
+  });
+
+  it('pauseAccount POSTs the reason and maps the response to camelCase', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xabc',
+        before_state: 'active',
+        after_state: 'paused',
+        paused_at: '2026-05-19T14:30:00Z',
+        paused_reason: 'compliance review',
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const response = await client.pauseAccount('0xabc', 'compliance review');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts/0xabc/pause',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ reason: 'compliance review' }),
+      }),
+    );
+    expect(response).toEqual({
+      accountId: '0xabc',
+      beforeState: 'active',
+      afterState: 'paused',
+      pausedAt: '2026-05-19T14:30:00Z',
+      pausedReason: 'compliance review',
+    });
+  });
+
+  it('pauseAccount URL-encodes the account id', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xabc/def',
+        before_state: 'active',
+        after_state: 'paused',
+        paused_at: '2026-05-19T14:30:00Z',
+        paused_reason: 'r',
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await client.pauseAccount('0xabc/def', 'r');
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts/0xabc%2Fdef/pause',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('unpauseAccount POSTs without a body when reason is omitted', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xabc',
+        before_state: 'paused',
+        after_state: 'active',
+        reason: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const response = await client.unpauseAccount('0xabc');
+
+    const [calledUrl, calledInit] = mockFetch.mock.calls[0]!;
+    expect(String(calledUrl)).toBe(
+      'https://guardian.example/dashboard/accounts/0xabc/unpause',
+    );
+    expect((calledInit as RequestInit).method).toBe('POST');
+    expect((calledInit as RequestInit).body).toBeUndefined();
+    expect(response).toEqual({
+      accountId: '0xabc',
+      beforeState: 'paused',
+      afterState: 'active',
+      reason: null,
+    });
+  });
+
+  it('unpauseAccount POSTs the reason when provided', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xabc',
+        before_state: 'paused',
+        after_state: 'active',
+        reason: 'cleared by legal',
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const response = await client.unpauseAccount('0xabc', 'cleared by legal');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts/0xabc/unpause',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ reason: 'cleared by legal' }),
+      }),
+    );
+    expect(response.reason).toBe('cleared by legal');
+  });
+
+  it('normalizes a 409 GUARDIAN_ACCOUNT_PAUSED into code account_paused with paused details', async () => {
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          success: false,
+          code: 'GUARDIAN_ACCOUNT_PAUSED',
+          error: 'account is paused',
+          paused_at: '2026-05-19T14:30:00Z',
+          paused_reason: 'compliance review',
+          retryable: false,
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .pauseAccount('0xabc', 'reason')
+      .catch((v) => v)) as GuardianOperatorHttpError;
+
+    expect(err).toBeInstanceOf(GuardianOperatorHttpError);
+    expect(err.status).toBe(409);
+    expect(err.data?.code).toBe('account_paused');
+    expect(err.data?.pausedAt).toBe('2026-05-19T14:30:00Z');
+    expect(err.data?.pausedReason).toBe('compliance review');
+    expect(err.data?.retryable).toBe(false);
+  });
+
+  it('account_paused tolerates a null paused_reason for forward compat', async () => {
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          success: false,
+          code: 'GUARDIAN_ACCOUNT_PAUSED',
+          error: 'account is paused',
+          paused_at: '2026-05-19T14:30:00Z',
+          paused_reason: null,
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .pauseAccount('0xabc', 'reason')
+      .catch((v) => v)) as GuardianOperatorHttpError;
+
+    expect(err.data?.code).toBe('account_paused');
+    expect(err.data?.pausedReason).toBeNull();
+  });
+
+  it('drops parsed details when an account_paused error omits paused_at (contract drift)', async () => {
+    // `tryParseErrorData` swallows parser failures and returns null,
+    // so a malformed 409 body still surfaces a `GuardianOperatorHttpError`
+    // — but without the normalized pause details that callers depend on.
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          success: false,
+          code: 'GUARDIAN_ACCOUNT_PAUSED',
+          error: 'account is paused',
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .pauseAccount('0xabc', 'reason')
+      .catch((v) => v)) as GuardianOperatorHttpError;
+    expect(err).toBeInstanceOf(GuardianOperatorHttpError);
+    expect(err.status).toBe(409);
+    expect(err.data).toBeNull();
+  });
+});
+
 function okJson(payload: unknown) {
   return {
     ok: true,

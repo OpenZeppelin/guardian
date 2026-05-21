@@ -11,7 +11,7 @@ use crate::metadata::AccountMetadata;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::Auth;
 use crate::metadata::network::{evm_account_id, normalize_evm_address};
-use crate::services::account_status::ensure_account_active;
+use crate::services::account_status::ensure_account_active_metadata;
 use crate::state::AppState;
 
 #[derive(Clone, Debug)]
@@ -52,8 +52,11 @@ pub struct ApproveEvmProposalParams {
 }
 
 // `register_account` is an admin/setup path and intentionally NOT
-// gated by `ensure_account_active`. Pause must not block initial
-// registration — do not add the chokepoint here.
+// gated by the pause chokepoint. Pause must not block initial
+// registration — do not add the chokepoint here. Pause state is
+// carried forward from `existing` so a new storage backend cannot
+// accidentally clear it (the field is only mutated by
+// `set_pause`/`clear_pause`).
 pub async fn register_account(
     state: &AppState,
     params: RegisterEvmAccountParams,
@@ -127,9 +130,9 @@ pub async fn register_account(
             created_at,
             updated_at: now,
             has_pending_candidate: false,
-            last_auth_timestamp: existing.and_then(|m| m.last_auth_timestamp),
-            paused_at: None,
-            paused_reason: None,
+            last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
+            paused_at: existing.as_ref().and_then(|m| m.paused_at),
+            paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
         })
         .await
         .map_err(|e| {
@@ -155,7 +158,6 @@ pub async fn create_proposal(
     state: &AppState,
     params: CreateEvmProposalParams,
 ) -> Result<EvmProposal> {
-    ensure_account_active(state, &params.account_id).await?;
     let metadata = load_evm_metadata(state, &params.account_id).await?;
     let (chain_id, account_address, validator_address) =
         evm_network_parts(&metadata.network_config)?;
@@ -205,6 +207,8 @@ pub async fn create_proposal(
             "initial proposal signature signer does not match proposer".to_string(),
         ));
     }
+
+    ensure_account_active_metadata(&metadata)?;
 
     let proposal_id = crate::evm::contracts::compute_proposal_id(&input)?;
     if let Ok(existing_delta) = state
@@ -301,7 +305,6 @@ pub async fn approve_proposal(
     state: &AppState,
     params: ApproveEvmProposalParams,
 ) -> Result<EvmProposal> {
-    ensure_account_active(state, &params.account_id).await?;
     let proposal_id = normalize_proposal_id(&params.proposal_id)?;
     let signer = normalize_session_address(&params.session_address)?;
     let mut proposal = load_active_proposal(state, &params.account_id, &proposal_id).await?;
@@ -318,6 +321,9 @@ pub async fn approve_proposal(
             "approval signature signer does not match signer".to_string(),
         ));
     }
+
+    let metadata = load_evm_metadata(state, &params.account_id).await?;
+    ensure_account_active_metadata(&metadata)?;
 
     proposal.signatures.push(EvmProposalSignature {
         signer,
@@ -355,7 +361,6 @@ pub async fn cancel_proposal(
     commitment: &str,
     session_address: &str,
 ) -> Result<()> {
-    ensure_account_active(state, account_id).await?;
     let proposal_id = normalize_proposal_id(commitment)?;
     let session_address = normalize_session_address(session_address)?;
     let proposal = load_active_proposal(state, account_id, &proposal_id).await?;
@@ -364,6 +369,8 @@ pub async fn cancel_proposal(
             "Only the proposal creator can cancel this EVM proposal".to_string(),
         ));
     }
+    let metadata = load_evm_metadata(state, account_id).await?;
+    ensure_account_active_metadata(&metadata)?;
     state
         .storage
         .delete_delta_proposal(account_id, &proposal_id)
@@ -489,7 +496,11 @@ mod tests {
             auth: Auth::EvmEcdsa {
                 signers: vec!["0xsigner".into()],
             },
-            network_config: crate::metadata::NetworkConfig::miden_default(),
+            network_config: crate::metadata::NetworkConfig::Evm {
+                chain_id: 1,
+                account_address: "0x0000000000000000000000000000000000000001".into(),
+                multisig_validator_address: "0x0000000000000000000000000000000000000002".into(),
+            },
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
@@ -515,16 +526,13 @@ mod tests {
         (state, storage)
     }
 
-    fn assert_paused(err: GuardianError) {
-        assert!(
-            matches!(err, GuardianError::AccountPaused { ref paused_reason, .. }
-                if paused_reason.as_deref() == Some("compliance")),
-            "unexpected error: {err:?}"
-        );
-    }
-
+    /// Pause-gate ordering: `create_proposal` runs the pause check
+    /// AFTER signature verification, so an unauthenticated caller
+    /// (here: garbage payload) sees a validation error rather than
+    /// `AccountPaused`. The chokepoint itself is covered by the
+    /// integration tests under `testing/integration/`.
     #[tokio::test]
-    async fn create_proposal_rejects_paused_account() {
+    async fn create_proposal_does_not_leak_pause_state_to_unauthenticated_caller() {
         let (state, storage) = state_with_paused("0xpaused");
         let err = create_proposal(
             &state,
@@ -539,13 +547,17 @@ mod tests {
             },
         )
         .await
-        .expect_err("paused must reject");
-        assert_paused(err);
+        .expect_err("garbage payload must reject");
+        assert!(
+            !matches!(err, GuardianError::AccountPaused { .. }),
+            "pre-auth garbage must not surface pause state; got: {err:?}"
+        );
         assert!(storage.get_submit_delta_proposal_calls().is_empty());
     }
 
+    /// Same ordering assertion for `approve_proposal`.
     #[tokio::test]
-    async fn approve_proposal_rejects_paused_account() {
+    async fn approve_proposal_does_not_leak_pause_state_to_unauthenticated_caller() {
         let (state, storage) = state_with_paused("0xpaused");
         let err = approve_proposal(
             &state,
@@ -557,18 +569,25 @@ mod tests {
             },
         )
         .await
-        .expect_err("paused must reject");
-        assert_paused(err);
+        .expect_err("garbage payload must reject");
+        assert!(
+            !matches!(err, GuardianError::AccountPaused { .. }),
+            "pre-auth garbage must not surface pause state; got: {err:?}"
+        );
         assert!(storage.get_update_delta_proposal_calls().is_empty());
     }
 
+    /// Same ordering assertion for `cancel_proposal`.
     #[tokio::test]
-    async fn cancel_proposal_rejects_paused_account() {
+    async fn cancel_proposal_does_not_leak_pause_state_to_unauthenticated_caller() {
         let (state, storage) = state_with_paused("0xpaused");
         let err = cancel_proposal(&state, "0xpaused", "0xcommitment", "0xsigner")
             .await
-            .expect_err("paused must reject");
-        assert_paused(err);
+            .expect_err("garbage payload must reject");
+        assert!(
+            !matches!(err, GuardianError::AccountPaused { .. }),
+            "pre-auth garbage must not surface pause state; got: {err:?}"
+        );
         assert!(storage.get_delete_delta_proposal_calls().is_empty());
     }
 }

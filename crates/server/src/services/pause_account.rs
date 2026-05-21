@@ -1,7 +1,10 @@
 //! Pause service.
 //!
-//! The audit row is emitted after the persistence transition succeeds
-//! but before the response returns, so "200 ⇒ audit row exists" holds.
+//! After persistence succeeds, an audit event is dispatched to the
+//! [`Auditor`](crate::audit). For the Postgres auditor this is a
+//! fire-and-forget background insert (FR-027) that falls back to a
+//! structured log on failure, so the row is not guaranteed to be
+//! visible — or persisted — by the time the 200 response returns.
 //! Re-pause is first-writer-wins: the persisted `paused_at` /
 //! `paused_reason` are preserved and re-emitted on the response.
 

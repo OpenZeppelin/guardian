@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{GuardianError, Result};
+use crate::metadata::AccountMetadata;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,11 +43,29 @@ pub struct PauseTransition {
     pub paused_reason: Option<String>,
 }
 
-/// Returns `Ok(())` if the account is active and may proceed, or
-/// `GuardianError::AccountPaused { .. }` carrying the persisted
-/// `paused_at` / `paused_reason` when the account is paused. Missing
-/// account surfaces as `GuardianError::AccountNotFound` to keep the
-/// existing not-found error model unchanged on the mutating paths.
+/// Returns `Ok(())` if the supplied metadata describes an active
+/// account, or `GuardianError::AccountPaused { .. }` carrying the
+/// persisted `paused_at` / `paused_reason` when the account is paused.
+///
+/// Callers MUST invoke this only after authentication has succeeded —
+/// otherwise unauthenticated probes can learn pause state and reason.
+/// Pair with `resolve_account` (multisig) or post-signature verification
+/// (EVM) so the chokepoint reads from already-loaded metadata.
+pub fn ensure_account_active_metadata(metadata: &AccountMetadata) -> Result<()> {
+    if let Some(paused_at) = metadata.paused_at {
+        return Err(GuardianError::AccountPaused {
+            paused_at,
+            paused_reason: metadata.paused_reason.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Convenience wrapper that loads metadata then delegates to
+/// [`ensure_account_active_metadata`]. Prefer the metadata-only form when the
+/// caller has already loaded metadata via `resolve_account` or
+/// `load_evm_metadata` — that path avoids a redundant DB read AND
+/// keeps the pause check behind authentication.
 pub async fn ensure_account_active(state: &AppState, account_id: &str) -> Result<()> {
     let metadata = state
         .metadata
@@ -55,13 +74,7 @@ pub async fn ensure_account_active(state: &AppState, account_id: &str) -> Result
         .map_err(|e| GuardianError::StorageError(format!("Failed to load metadata: {e}")))?
         .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
 
-    if let Some(paused_at) = metadata.paused_at {
-        return Err(GuardianError::AccountPaused {
-            paused_at,
-            paused_reason: metadata.paused_reason,
-        });
-    }
-    Ok(())
+    ensure_account_active_metadata(&metadata)
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]

@@ -1554,4 +1554,212 @@ mod tests {
             "/session must not produce any admin_actions events",
         );
     }
+
+    // -----------------------------------------------------------------
+    // Feature 001-account-pausing
+    // POST /dashboard/accounts/{id}/pause and /unpause handler contract.
+    // -----------------------------------------------------------------
+
+    fn pause_uri(account_id: &str) -> String {
+        format!("/dashboard/accounts/{account_id}/pause")
+    }
+
+    fn unpause_uri(account_id: &str) -> String {
+        format!("/dashboard/accounts/{account_id}/unpause")
+    }
+
+    async fn pause_capable_state_and_account() -> (
+        axum::Router,
+        String, // session cookie
+        String, // account_id_hex
+    ) {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(
+                &operator,
+                &[Permission::DashboardRead, Permission::AccountsPause],
+            ),
+        ]));
+        let (_account_id, account_id_hex, _account_json) = load_fixture_account();
+        seed_account(
+            &state,
+            create_metadata(&account_id_hex, "2024-01-02T00:00:00Z"),
+            None,
+        )
+        .await;
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+        (app, cookie, account_id_hex)
+    }
+
+    #[tokio::test]
+    async fn pause_handler_returns_200_and_transition_for_active_account() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "reason": "compliance review" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["account_id"], account_id);
+        assert_eq!(body["before_state"], "active");
+        assert_eq!(body["after_state"], "paused");
+        assert_eq!(body["paused_reason"], "compliance review");
+        assert!(body["paused_at"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn pause_handler_rejects_missing_reason_with_400() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn pause_handler_rejects_empty_reason_with_400() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": "" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn pause_handler_rejects_oversize_reason_with_400() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let oversize = "x".repeat(crate::services::pause_account::MAX_REASON_LEN + 1);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": oversize }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unpause_handler_accepts_empty_body_and_returns_200() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        // Pre-pause so the unpause transition is meaningful; idempotent
+        // unpause of an already-active account also returns 200, but
+        // exercising the real transition is more informative.
+        let pause = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": "compliance" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pause.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(unpause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["before_state"], "paused");
+        assert_eq!(body["after_state"], "active");
+        assert!(body["reason"].is_null());
+    }
+
+    #[tokio::test]
+    async fn pause_handler_denies_operator_without_accounts_pause_permission() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[Permission::DashboardRead]),
+        ]));
+        let (_account_id, account_id_hex, _account_json) = load_fixture_account();
+        seed_account(
+            &state,
+            create_metadata(&account_id_hex, "2024-01-02T00:00:00Z"),
+            None,
+        )
+        .await;
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id_hex))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": "r" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+        assert_eq!(
+            body["missing_permissions"],
+            serde_json::json!(["accounts:pause"])
+        );
+    }
 }

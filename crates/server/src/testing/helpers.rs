@@ -318,6 +318,35 @@ pub fn create_router(state: AppState) -> axum::Router {
         ));
     let dashboard_routes = dashboard_routes.merge(session_router);
 
+    // Feature 001-account-pausing: pause/unpause sit under the same
+    // session layer as the dashboard reads, but behind their own
+    // `accounts:pause` authz layer. Mirrors production wiring in
+    // `builder/handle.rs`.
+    let dashboard_routes = {
+        let accounts_pause_authz = crate::dashboard::authz::AuthzState::new(
+            state.clone(),
+            &[crate::dashboard::permissions::Permission::AccountsPause],
+        );
+        let pause_router = axum::Router::new()
+            .route(
+                "/accounts/{account_id}/pause",
+                axum::routing::post(crate::api::dashboard::pause_account_handler),
+            )
+            .route(
+                "/accounts/{account_id}/unpause",
+                axum::routing::post(crate::api::dashboard::unpause_account_handler),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                accounts_pause_authz,
+                crate::dashboard::authz::enforce,
+            ))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::dashboard::require_dashboard_session,
+            ));
+        dashboard_routes.merge(pause_router)
+    };
+
     // Feature 006-operator-authz: probe route wired in test builds when
     // the `authz-test-probe` Cargo feature is enabled. Mirrors production
     // wiring in `builder/handle.rs`.

@@ -131,8 +131,11 @@ pub async fn configure_account(
         })?;
 
     // configure_account is an admin/setup path and intentionally NOT
-    // gated by `ensure_account_active`. Pause must not block account
-    // reconfiguration — do not add the chokepoint here.
+    // gated by the pause chokepoint. Pause must not block account
+    // reconfiguration — do not add the chokepoint here. Pause state
+    // is carried forward from `existing` so a new storage backend
+    // cannot accidentally clear it (the field is only mutated by
+    // `set_pause`/`clear_pause`).
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
@@ -143,12 +146,9 @@ pub async fn configure_account(
             .as_ref()
             .map(|m| m.has_pending_candidate)
             .unwrap_or(false),
-        last_auth_timestamp: existing.and_then(|m| m.last_auth_timestamp),
-        // These `None` values are NOT persisted on reconfigure: the
-        // postgres `set` impl excludes `paused_*` from its update
-        // clause, so an existing pause survives.
-        paused_at: None,
-        paused_reason: None,
+        last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
+        paused_at: existing.as_ref().and_then(|m| m.paused_at),
+        paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
     };
 
     state.metadata.set(metadata_entry).await.map_err(|e| {
@@ -368,6 +368,69 @@ mod tests {
         assert!(result.is_ok(), "Reconfiguration should succeed");
         let result = result.unwrap();
         assert_eq!(result.account_id, account_id_hex);
+    }
+
+    /// Regression: reconfiguring a paused account must NOT clear
+    /// `paused_at` / `paused_reason`. Pause state can only be
+    /// transitioned by `set_pause`/`clear_pause` (FR-019).
+    #[tokio::test]
+    async fn test_configure_account_preserves_existing_pause_state() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        use chrono::TimeZone;
+        let paused_at = chrono::Utc
+            .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+            .unwrap();
+        let existing_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            last_auth_timestamp: Some(1000),
+            paused_at: Some(paused_at),
+            paused_reason: Some("compliance".to_string()),
+        };
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x5678".to_string()));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()));
+
+        let state =
+            create_test_app_state(network_client, storage_backend, metadata_store.clone()).await;
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential,
+        };
+
+        configure_account(&state, params)
+            .await
+            .expect("Reconfiguration should succeed");
+
+        let set_calls = metadata_store.get_set_calls();
+        assert_eq!(set_calls.len(), 1);
+        assert_eq!(set_calls[0].paused_at, Some(paused_at));
+        assert_eq!(set_calls[0].paused_reason.as_deref(), Some("compliance"));
     }
 
     #[tokio::test]
