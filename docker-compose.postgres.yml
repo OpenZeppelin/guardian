@@ -9,7 +9,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD}@postgres:5432/guardian
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
 
   postgres:
     image: postgres:16-alpine
