@@ -211,7 +211,7 @@ impl NetworkClient for MockNetworkClient {
         _nonce: u64,
         _delta_payload: &serde_json::Value,
     ) -> Result<String, String> {
-        Ok("mock_proposal_id".to_string())
+        Ok(format!("0x{}", "ab".repeat(32)))
     }
 }
 

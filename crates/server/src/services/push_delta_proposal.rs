@@ -365,7 +365,10 @@ mod tests {
 
         assert!(result.is_ok(), "Expected success, got: {:?}", result);
         let result = result.unwrap();
-        assert_eq!(result.commitment, "mock_proposal_id");
+        assert_eq!(
+            result.commitment,
+            "0xabababababababababababababababababababababababababababababababab"
+        );
         assert_eq!(result.delta.account_id, account_id);
         assert_eq!(result.delta.nonce, 1);
 
@@ -383,7 +386,10 @@ mod tests {
 
         let submit_calls = storage.get_submit_delta_proposal_calls();
         assert_eq!(submit_calls.len(), 1);
-        assert_eq!(submit_calls[0].0, "mock_proposal_id");
+        assert_eq!(
+            submit_calls[0].0,
+            "0xabababababababababababababababababababababababababababababababab"
+        );
     }
 
     #[tokio::test]
@@ -466,7 +472,10 @@ mod tests {
 
         let submit_calls = storage.get_submit_delta_proposal_calls();
         assert_eq!(submit_calls.len(), 1);
-        assert_eq!(submit_calls[0].0, "mock_proposal_id");
+        assert_eq!(
+            submit_calls[0].0,
+            "0xabababababababababababababababababababababababababababababababab"
+        );
     }
 
     #[tokio::test]
