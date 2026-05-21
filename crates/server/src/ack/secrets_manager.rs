@@ -7,8 +7,10 @@ use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretK
 use miden_protocol::utils::serde::Deserializable;
 
 const ENV_AWS_REGION: &str = "AWS_REGION";
-pub const PROD_FALCON_SECRET_ID: &str = "guardian-prod/server/ack-falcon-secret-key";
-pub const PROD_ECDSA_SECRET_ID: &str = "guardian-prod/server/ack-ecdsa-secret-key";
+const ENV_ACK_FALCON_SECRET_ID: &str = "GUARDIAN_ACK_FALCON_SECRET_ID";
+const ENV_ACK_ECDSA_SECRET_ID: &str = "GUARDIAN_ACK_ECDSA_SECRET_ID";
+pub const DEFAULT_FALCON_SECRET_ID: &str = "guardian-prod/server/ack-falcon-secret-key";
+pub const DEFAULT_ECDSA_SECRET_ID: &str = "guardian-prod/server/ack-ecdsa-secret-key";
 
 #[async_trait]
 pub trait AckSecretProvider: Send + Sync {
@@ -18,15 +20,22 @@ pub trait AckSecretProvider: Send + Sync {
 
 pub struct AwsSecretsManagerProvider {
     client: Client,
+    falcon_secret_id: String,
+    ecdsa_secret_id: String,
 }
 
 impl AwsSecretsManagerProvider {
     pub async fn from_env() -> Result<Self> {
         ensure_aws_region()?;
+        let falcon_secret_id =
+            resolve_secret_id(ENV_ACK_FALCON_SECRET_ID, DEFAULT_FALCON_SECRET_ID)?;
+        let ecdsa_secret_id = resolve_secret_id(ENV_ACK_ECDSA_SECRET_ID, DEFAULT_ECDSA_SECRET_ID)?;
         let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
 
         Ok(Self {
             client: Client::new(&config),
+            falcon_secret_id,
+            ecdsa_secret_id,
         })
     }
 
@@ -72,14 +81,14 @@ impl AwsSecretsManagerProvider {
 #[async_trait]
 impl AckSecretProvider for AwsSecretsManagerProvider {
     async fn falcon_secret_key(&self) -> Result<FalconSecretKey> {
-        self.parsed_secret_key(PROD_FALCON_SECRET_ID, |secret_bytes| {
+        self.parsed_secret_key(&self.falcon_secret_id, |secret_bytes| {
             FalconSecretKey::read_from_bytes(secret_bytes).map_err(|error| error.to_string())
         })
         .await
     }
 
     async fn ecdsa_secret_key(&self) -> Result<EcdsaSecretKey> {
-        self.parsed_secret_key(PROD_ECDSA_SECRET_ID, |secret_bytes| {
+        self.parsed_secret_key(&self.ecdsa_secret_id, |secret_bytes| {
             EcdsaSecretKey::read_from_bytes(secret_bytes).map_err(|error| error.to_string())
         })
         .await
@@ -98,5 +107,79 @@ fn ensure_aws_region() -> Result<()> {
         Err(std::env::VarError::NotUnicode(_)) => Err(GuardianError::ConfigurationError(format!(
             "{ENV_AWS_REGION} must contain valid UTF-8"
         ))),
+    }
+}
+
+fn resolve_secret_id(env_var: &str, default: &str) -> Result<String> {
+    match std::env::var(env_var) {
+        Ok(value) if !value.is_empty() => Ok(value),
+        Ok(_) => Err(GuardianError::ConfigurationError(format!(
+            "{env_var} must not be empty when set"
+        ))),
+        Err(std::env::VarError::NotPresent) => Ok(default.to_string()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(GuardianError::ConfigurationError(format!(
+            "{env_var} must contain valid UTF-8"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_secret_id_returns_default_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: serialized via ENV_LOCK to avoid races with other env-touching tests
+        unsafe {
+            std::env::remove_var(ENV_ACK_FALCON_SECRET_ID);
+        }
+
+        let resolved =
+            resolve_secret_id(ENV_ACK_FALCON_SECRET_ID, DEFAULT_FALCON_SECRET_ID).unwrap();
+        assert_eq!(resolved, DEFAULT_FALCON_SECRET_ID);
+    }
+
+    #[test]
+    fn resolve_secret_id_uses_override_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let override_value = "custom/path/ack-falcon";
+        // SAFETY: serialized via ENV_LOCK
+        unsafe {
+            std::env::set_var(ENV_ACK_FALCON_SECRET_ID, override_value);
+        }
+
+        let resolved =
+            resolve_secret_id(ENV_ACK_FALCON_SECRET_ID, DEFAULT_FALCON_SECRET_ID).unwrap();
+        assert_eq!(resolved, override_value);
+
+        // SAFETY: serialized via ENV_LOCK
+        unsafe {
+            std::env::remove_var(ENV_ACK_FALCON_SECRET_ID);
+        }
+    }
+
+    #[test]
+    fn resolve_secret_id_rejects_empty_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: serialized via ENV_LOCK
+        unsafe {
+            std::env::set_var(ENV_ACK_ECDSA_SECRET_ID, "");
+        }
+
+        let result = resolve_secret_id(ENV_ACK_ECDSA_SECRET_ID, DEFAULT_ECDSA_SECRET_ID);
+        assert!(matches!(
+            result,
+            Err(GuardianError::ConfigurationError(message))
+                if message.contains(ENV_ACK_ECDSA_SECRET_ID)
+        ));
+
+        // SAFETY: serialized via ENV_LOCK
+        unsafe {
+            std::env::remove_var(ENV_ACK_ECDSA_SECRET_ID);
+        }
     }
 }

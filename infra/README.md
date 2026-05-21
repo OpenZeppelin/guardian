@@ -148,10 +148,9 @@ For `prod`, create the ACK key secrets once before the first deploy:
 DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
 ```
 
-Normal deploys do not create or rotate ACK keys. The server fetches these prod Secrets Manager entries at startup, imports them into the filesystem keystore, and then signs through the filesystem keystore like every other environment:
+Normal deploys do not create or rotate ACK keys. The server fetches the prod Secrets Manager entries at startup, imports them into the filesystem keystore, and then signs through the filesystem keystore like every other environment.
 
-- `guardian-prod/server/ack-falcon-secret-key`
-- `guardian-prod/server/ack-ecdsa-secret-key`
+By default the secret names follow `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so each stack gets its own pair (`guardian-prod` → `guardian-prod/server/ack-falcon-secret-key`, etc.) and multiple Guardian instances can coexist in the same AWS account. To pin a stack at an existing legacy name, set `GUARDIAN_ACK_FALCON_SECRET_NAME` and `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy` — they flow through to the `guardian_ack_falcon_secret_name` / `guardian_ack_ecdsa_secret_name` Terraform variables and the server's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars.
 
 ### 4. Get Outputs
 

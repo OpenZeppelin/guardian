@@ -292,6 +292,12 @@ build_tf_vars() {
   if [ -n "$GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON" ]; then
     TF_VARS+=("-var" "guardian_operator_public_keys=${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON}")
   fi
+  if [ -n "${GUARDIAN_ACK_FALCON_SECRET_NAME:-}" ]; then
+    TF_VARS+=("-var" "guardian_ack_falcon_secret_name=${GUARDIAN_ACK_FALCON_SECRET_NAME}")
+  fi
+  if [ -n "${GUARDIAN_ACK_ECDSA_SECRET_NAME:-}" ]; then
+    TF_VARS+=("-var" "guardian_ack_ecdsa_secret_name=${GUARDIAN_ACK_ECDSA_SECRET_NAME}")
+  fi
 
   if [ -n "$DOMAIN_NAME" ]; then
     TF_VARS+=("-var" "domain_name=${DOMAIN_NAME}")
@@ -316,11 +322,11 @@ terraform_output_raw() {
 }
 
 ack_falcon_secret_name() {
-  echo "guardian-prod/server/ack-falcon-secret-key"
+  echo "${GUARDIAN_ACK_FALCON_SECRET_NAME:-${STACK_NAME}/server/ack-falcon-secret-key}"
 }
 
 ack_ecdsa_secret_name() {
-  echo "guardian-prod/server/ack-ecdsa-secret-key"
+  echo "${GUARDIAN_ACK_ECDSA_SECRET_NAME:-${STACK_NAME}/server/ack-ecdsa-secret-key}"
 }
 
 secret_exists() {
