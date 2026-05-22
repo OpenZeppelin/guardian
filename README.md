@@ -111,8 +111,6 @@ This default Compose flow uses the filesystem backend. If you need a local Postg
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -d
 ```
 
-`--build` is required the first time because the server image must be rebuilt with the `postgres` Cargo feature enabled.
-
 ### Testing
 
 #### Rust Tests
