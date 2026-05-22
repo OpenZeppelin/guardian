@@ -14,13 +14,14 @@ this doc covers *how* to bootstrap, rotate, and respond to compromise.
 |---|---|---|---|
 | `DATABASE_URL` | Secrets Manager (`<stack>/server/database-url`) | Managed by Terraform | ECS task **execution** role, at task start |
 | RDS Proxy credentials (prod) | Secrets Manager (`<stack>/server/database-credentials`) | Managed by Terraform | RDS Proxy IAM role |
-| ACK signing keys (prod) | Secrets Manager (`<stack>-prod/server/ack-falcon-secret-key`, `…/ack-ecdsa-secret-key`) | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys | ECS task **runtime** role, at server startup |
+| ACK signing keys (prod) | Secrets Manager — fixed IDs `guardian-prod/server/ack-falcon-secret-key` and `guardian-prod/server/ack-ecdsa-secret-key` (hardcoded in [`crates/server/src/ack/secrets_manager.rs:10-11`](../../crates/server/src/ack/secrets_manager.rs#L10)) | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys | ECS task **runtime** role, at server startup |
 | Operator public keys | Secrets Manager (Terraform-managed or pre-existing ARN) | Updated by editing Terraform var or rotating the secret value | ECS task runtime role, on each dashboard challenge **and each authenticated `/dashboard/*` request** (hot-reloaded — no restart needed) |
 | EVM allowed chains + RPC URLs | Secrets Manager (Terraform-managed) | Updated by editing `config/evm/chains.json` and redeploying | ECS task execution role; surfaced as env to the task |
 
-Naming defaults derive from `stack_name`; the trailing `-prod` on ACK secrets
-is historical. Override via `TF_VAR_ack_falcon_secret_name` /
-`TF_VAR_ack_ecdsa_secret_name` if needed.
+The ACK secret IDs are **fixed constants** in the server, Terraform
+(`infra/data.tf`), and `scripts/aws-deploy.sh`. There is no env-var or
+Terraform-variable override path today — changing the names requires
+code changes in all three places.
 
 ## ACK signing keys
 
@@ -47,8 +48,8 @@ What that command does
 
 Verify:
 ```bash
-aws secretsmanager describe-secret --secret-id <stack>-prod/server/ack-falcon-secret-key
-aws secretsmanager describe-secret --secret-id <stack>-prod/server/ack-ecdsa-secret-key
+aws secretsmanager describe-secret --secret-id guardian-prod/server/ack-falcon-secret-key
+aws secretsmanager describe-secret --secret-id guardian-prod/server/ack-ecdsa-secret-key
 ```
 
 Subsequent `aws-deploy.sh deploy` runs assert these secrets exist
@@ -74,10 +75,10 @@ Procedure (planned rotation, e.g. annual):
    ECDSA=$(jq -r .ecdsa_secret_key /tmp/ack-keys.json)
 
    aws secretsmanager update-secret \
-     --secret-id <stack>-prod/server/ack-falcon-secret-key \
+     --secret-id guardian-prod/server/ack-falcon-secret-key \
      --secret-string "$FALCON"
    aws secretsmanager update-secret \
-     --secret-id <stack>-prod/server/ack-ecdsa-secret-key \
+     --secret-id guardian-prod/server/ack-ecdsa-secret-key \
      --secret-string "$ECDSA"
    ```
 4. Force a new ECS deployment so tasks restart and import the new keys:

@@ -16,11 +16,16 @@ Most startup failures are environment misconfiguration. Check in order:
 1. **`DATABASE_URL` missing under `--features postgres`.** The builder
    panics with `"DATABASE_URL environment variable is required"`. Either
    set it or rebuild without the `postgres` feature.
-2. **Filesystem paths missing.** Filesystem builds require
-   `GUARDIAN_STORAGE_PATH` and `GUARDIAN_METADATA_PATH`. Default fallbacks
-   if unset: `/var/guardian/storage`, `/var/guardian/metadata`,
-   `/var/guardian/keystore`. The process must be able to create files in
-   these directories.
+2. **Filesystem paths not writable.** Filesystem builds use
+   `GUARDIAN_STORAGE_PATH`, `GUARDIAN_METADATA_PATH`, and
+   `GUARDIAN_KEYSTORE_PATH` when set, defaulting to
+   `/var/guardian/storage`, `/var/guardian/metadata`, and
+   `/var/guardian/keystore` respectively. Startup fails if the process
+   cannot create or write to those paths — common on dev machines where
+   `/var/guardian` doesn't exist or isn't owned by the running user.
+   Either set the env vars to a writable location or `mkdir -p`
+   `/var/guardian/{storage,metadata,keystore}` with the right
+   permissions.
 3. **Postgres migrations fail.** The Postgres path runs migrations at
    startup. If the DB user lacks `CREATE` permissions, startup fails.
    Grant `CREATE` on the schema or run migrations as a privileged user.
@@ -131,7 +136,7 @@ Operator checks:
 The client tried to apply a delta on top of a state Guardian doesn't
 believe is current. Always recoverable:
 
-```
+```bash
 GET /delta/since?account_id=...&nonce=<last-known-nonce>
 ```
 

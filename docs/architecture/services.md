@@ -254,11 +254,13 @@ particular) can verify the server is the same Guardian they trust.
   and [`ack/miden_ecdsa/`](../../crates/server/src/ack/miden_ecdsa) hold the
   two scheme implementations.
 - [`ack/secrets_manager.rs`](../../crates/server/src/ack/secrets_manager.rs)
-  resolves Secrets Manager IDs (with whitespace-tolerant trimming) and pulls
-  secret payloads into the filesystem keystore at startup. In `dev` keys are
-  auto-generated; in `prod` they are loaded from the Secrets Manager entries
-  named in `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID`
-  (defaulting to `<stack>-prod/server/ack-*-secret-key`).
+  pulls secret payloads into the filesystem keystore at startup. In `dev`
+  keys are auto-generated; in `prod` they are loaded from two **fixed**
+  Secrets Manager IDs hardcoded as constants
+  ([`secrets_manager.rs:10-11`](../../crates/server/src/ack/secrets_manager.rs#L10)):
+  `guardian-prod/server/ack-falcon-secret-key` and
+  `guardian-prod/server/ack-ecdsa-secret-key`. There is no env-var
+  override path; making these configurable would require code changes.
 
 ### Dashboard subsystem
 

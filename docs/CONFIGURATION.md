@@ -40,10 +40,16 @@ the runtime env vars in this document.
 | `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
 | `GUARDIAN_NETWORK_TYPE` | `MidenDevnet` | Miden network identifier (`MidenDevnet`, `MidenTestnet`, etc.). Required only when you need a non-default network. Pins which Miden RPC and on-chain consensus the server speaks to. |
 
-ACK secret IDs (`GUARDIAN_ACK_FALCON_SECRET_ID`,
-`GUARDIAN_ACK_ECDSA_SECRET_ID`) are passed in by Terraform/ECS env in
-prod; defaults derive from `${stack_name}-prod/server/ack-*-secret-key`.
-See [Secrets runbook](./runbooks/secrets.md#ack-signing-keys).
+ACK secret IDs are **not currently env-configurable**. In `prod` the
+server reads from two fixed Secrets Manager IDs hardcoded in
+[`crates/server/src/ack/secrets_manager.rs:10-11`](../crates/server/src/ack/secrets_manager.rs#L10):
+
+- `guardian-prod/server/ack-falcon-secret-key`
+- `guardian-prod/server/ack-ecdsa-secret-key`
+
+Terraform (`infra/data.tf`) and the deploy script
+(`scripts/aws-deploy.sh`) use the same hardcoded names. See
+[Secrets runbook](./runbooks/secrets.md#ack-signing-keys).
 
 ## Runtime — request safety
 

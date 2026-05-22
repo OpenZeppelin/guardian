@@ -84,11 +84,11 @@ Goal: re-establish the server's attestation identity.
    [`aws-deploy.sh:374-398`](../../scripts/aws-deploy.sh#L374)):
    ```bash
    aws secretsmanager put-secret-value \
-     --secret-id <stack>-prod/server/ack-falcon-secret-key \
+     --secret-id guardian-prod/server/ack-falcon-secret-key \
      --secret-string "$(jq -r '.falcon_secret_key' bootstrap-output.json)"
 
    aws secretsmanager put-secret-value \
-     --secret-id <stack>-prod/server/ack-ecdsa-secret-key \
+     --secret-id guardian-prod/server/ack-ecdsa-secret-key \
      --secret-string "$(jq -r '.ecdsa_secret_key' bootstrap-output.json)"
    ```
    If you stored each key as a plain text file instead, use
