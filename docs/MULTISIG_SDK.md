@@ -10,8 +10,6 @@ An SDK for creating and managing multisignature accounts on the Miden network. A
 - [Rust SDK Guide](#rust-sdk-guide)
 - [Use Cases](#use-cases)
 - [Offline Workflow](#offline-workflow)
-- [Error Handling](#error-handling)
-- [Security Best Practices](#security-best-practices)
 - [Releasing](#releasing)
 
 ---
@@ -820,7 +818,7 @@ console.log('Notes consumed, funds now in vault');
 
 ### Breaking Changes
 
-Check the [CHANGELOG](../CHANGELOG.md) for breaking changes between versions.
+Check the [GitHub release notes](https://github.com/OpenZeppelin/guardian/releases) for breaking changes between versions.
 
 ---
 

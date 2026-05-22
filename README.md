@@ -7,9 +7,16 @@
 
 Warning: This is a work in progress.
 
-### Specification
+### Documentation
 
-See the [Specification](spec/index.md) for an overview of the system design. It describes core concepts (State and Delta), components (API, Metadata, Auth, Acknowledger, Network, Storage), and key processes such as canonicalization. If you’re integrating or extending the system, start there to understand invariants, defaults, and extension points.
+- [`docs/`](docs/README.md) — in-repo documentation hub: local
+  development, architecture (services and AWS deployment), operator
+  dashboard, secrets and key-management runbook, and the multisig SDK
+  guide.
+- [`spec/`](spec/index.md) — protocol specification. Core concepts
+  (State and Delta), components (API, Metadata, Auth, Acknowledger,
+  Network, Storage), and key processes such as canonicalization. Start
+  here to understand invariants, defaults, and extension points.
 
 ### Project Structure
 
