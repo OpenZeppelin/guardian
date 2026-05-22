@@ -3,6 +3,7 @@ use guardian_shared::SignatureScheme;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
+use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
 use crate::services::resolve_account;
 use crate::state::AppState;
@@ -26,6 +27,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
+    ensure_account_active_metadata(&resolved.metadata)?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),
@@ -115,4 +117,112 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     Ok(PushDeltaResult {
         delta: result_delta,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
+    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::TimeZone;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn paused_metadata(account_id: &str, cosigner_commitment: String) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![cosigner_commitment],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                    .unwrap(),
+            ),
+            paused_reason: Some("compliance".to_string()),
+        }
+    }
+
+    /// Pause-gate guard: `push_delta` MUST reject before touching
+    /// storage or the network — but only AFTER authentication
+    /// succeeds, so unauthenticated probes cannot leak pause state.
+    #[tokio::test]
+    async fn paused_account_rejected_before_side_effects() {
+        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let storage = MockStorageBackend::new();
+        let network = MockNetworkClient::new();
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(paused_metadata(&account_id, signer_commitment))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network.clone())),
+            Arc::new(metadata.clone()),
+        );
+
+        let params = PushDeltaParams {
+            delta: DeltaObject {
+                account_id: account_id.clone(),
+                ..Default::default()
+            },
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
+        };
+
+        let err = push_delta(&state, params)
+            .await
+            .expect_err("paused account must be rejected");
+        assert!(
+            matches!(err, GuardianError::AccountPaused { ref paused_reason, .. }
+                if paused_reason.as_deref() == Some("compliance")),
+            "unexpected error: {err:?}"
+        );
+
+        assert!(
+            storage.get_submit_delta_calls().is_empty(),
+            "no delta should be submitted when the account is paused"
+        );
+    }
+
+    /// Pause-gate ordering: unauthenticated callers MUST get an auth
+    /// error, NOT `AccountPaused`. Defends against reintroducing the
+    /// pre-auth chokepoint that leaked pause state to probes.
+    #[tokio::test]
+    async fn paused_account_returns_auth_error_for_unauthenticated_caller() {
+        let storage = MockStorageBackend::new();
+        let network = MockNetworkClient::new();
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(paused_metadata("acc-paused", "0xc1".into()))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network.clone())),
+            Arc::new(metadata.clone()),
+        );
+
+        let params = PushDeltaParams {
+            delta: DeltaObject {
+                account_id: "acc-paused".to_string(),
+                ..Default::default()
+            },
+            credentials: Credentials::signature(String::new(), String::new(), 0),
+        };
+
+        let err = push_delta(&state, params)
+            .await
+            .expect_err("unauthenticated paused account must be rejected with auth error");
+        assert!(
+            matches!(err, GuardianError::AuthenticationFailed(_)),
+            "unauthenticated caller must not learn pause state; got: {err:?}"
+        );
+    }
 }

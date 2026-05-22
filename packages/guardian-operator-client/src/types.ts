@@ -29,6 +29,18 @@ export interface GuardianOperatorHttpErrorData {
    * for every other code so existing parsers see no change.
    */
   retryable?: boolean;
+  /**
+   * Populated only for `account_paused` responses. RFC 3339 UTC
+   * timestamp of the original pause.
+   */
+  pausedAt?: string;
+  /**
+   * Populated only for `account_paused`. Reason captured at first
+   * pause; `null` is possible when the server has no recorded reason
+   * (the request body required a reason, but the field is nullable
+   * for forward compatibility).
+   */
+  pausedReason?: string | null;
 }
 
 export interface GuardianOperatorHttpClientOptions {
@@ -88,12 +100,40 @@ export interface DashboardAccountSummary {
   stateStatus: DashboardAccountStateStatus;
   createdAt: string;
   updatedAt: string;
+  /** RFC 3339 UTC timestamp of the original pause; `null` when active. */
+  pausedAt: string | null;
+  /** Reason captured at first pause; `null` when active. */
+  pausedReason: string | null;
 }
 
 export interface DashboardAccountDetail extends DashboardAccountSummary {
   authorizedSignerIds: string[];
   stateCreatedAt: string | null;
   stateUpdatedAt: string | null;
+}
+
+/** Two-state account lifecycle flag. */
+export type AccountStatus = 'active' | 'paused';
+
+export interface PauseAccountResponse {
+  accountId: string;
+  beforeState: AccountStatus;
+  afterState: AccountStatus;
+  pausedAt: string;
+  pausedReason: string;
+}
+
+export interface UnpauseAccountResponse {
+  accountId: string;
+  beforeState: AccountStatus;
+  afterState: AccountStatus;
+  reason: string | null;
+}
+
+/** Typed details carried on the `GUARDIAN_ACCOUNT_PAUSED` error envelope. */
+export interface AccountPausedErrorDetails {
+  pausedAt: string;
+  pausedReason: string | null;
 }
 
 /**
@@ -158,7 +198,12 @@ export type DashboardErrorCode =
   // Feature 006-operator-authz FR-015: the wire string is uppercased
   // per spec to make it visually distinct from the snake_case codes
   // inherited from earlier features. Stable across releases.
-  | 'insufficient_operator_permission';
+  | 'insufficient_operator_permission'
+  // Surfaced from mutating endpoints when the target account is
+  // paused. Exposed as snake_case to match the rest of the
+  // vocabulary; server wire string is `GUARDIAN_ACCOUNT_PAUSED` and
+  // the http.ts mapping layer translates between the two.
+  | 'account_paused';
 
 export interface PagedResult<T> {
   items: T[];

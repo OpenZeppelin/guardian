@@ -6,7 +6,15 @@ export {
   parseErrorBody,
 } from './http.js';
 
-export type { PaginationOptions, ParsedErrorBody } from './http.js';
+export type { ListAccountsOptions, PaginationOptions, ParsedErrorBody } from './http.js';
+
+export {
+  ACCOUNTS_PAUSE,
+  DASHBOARD_READ,
+  POLICIES_WRITE,
+} from './permissions.js';
+
+export type { OperatorPermission } from './permissions.js';
 
 export {
   ACCOUNTS_PAUSE,
@@ -17,6 +25,8 @@ export {
 export type { OperatorPermission } from './permissions.js';
 
 export type {
+  AccountPausedErrorDetails,
+  AccountStatus,
   DashboardAccountDetail,
   DashboardAccountResponse,
   DashboardAccountStateStatus,
@@ -36,7 +46,9 @@ export type {
   OperatorChallenge,
   OperatorChallengeResponse,
   PagedResult,
+  PauseAccountResponse,
   SessionInfoResponse,
+  UnpauseAccountResponse,
   VerifyOperatorRequest,
   VerifyOperatorResponse,
 } from './types.js';

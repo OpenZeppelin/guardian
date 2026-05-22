@@ -287,7 +287,7 @@ async fn test_grpc_sign_delta_proposal_not_found() {
     let dummy_sig = format!("0x{}", "a".repeat(666));
     let sign_proposal_req = SignDeltaProposalRequest {
         account_id: account_id_hex.clone(),
-        commitment: "nonexistent_proposal".to_string(),
+        commitment: format!("0x{}", "cd".repeat(32)),
         signature: Some(ProposalSignature {
             scheme: "falcon".to_string(),
             signature: dummy_sig,

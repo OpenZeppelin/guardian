@@ -100,6 +100,14 @@ resource "aws_ecs_task_definition" "server" {
         {
           name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
           value = local.operator_public_keys_secret_arn
+        },
+        {
+          name  = "GUARDIAN_ACK_FALCON_SECRET_ID"
+          value = local.ack_falcon_secret_name
+        },
+        {
+          name  = "GUARDIAN_ACK_ECDSA_SECRET_ID"
+          value = local.ack_ecdsa_secret_name
         }
         ],
         var.guardian_cors_allowed_origins != "" ? [

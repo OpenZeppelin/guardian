@@ -211,7 +211,7 @@ impl NetworkClient for MockNetworkClient {
         _nonce: u64,
         _delta_payload: &serde_json::Value,
     ) -> Result<String, String> {
-        Ok("mock_proposal_id".to_string())
+        Ok(format!("0x{}", "ab".repeat(32)))
     }
 }
 
@@ -796,6 +796,7 @@ impl MetadataStore for MockMetadataStore {
         &self,
         _limit: u32,
         _cursor: Option<crate::metadata::AccountListCursor>,
+        _paused: Option<bool>,
     ) -> StdResult<Vec<crate::metadata::AccountMetadata>, String> {
         self.list_paged_responses
             .lock()
@@ -838,5 +839,31 @@ impl MetadataStore for MockMetadataStore {
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn set_pause(
+        &self,
+        _account_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> StdResult<crate::services::account_status::PauseTransition, String> {
+        Ok(crate::services::account_status::PauseTransition {
+            before_state: crate::services::account_status::AccountStatus::Active,
+            after_state: crate::services::account_status::AccountStatus::Paused,
+            paused_at: Some(now),
+            paused_reason: Some(reason.to_string()),
+        })
+    }
+
+    async fn clear_pause(
+        &self,
+        _account_id: &str,
+    ) -> StdResult<crate::services::account_status::PauseTransition, String> {
+        Ok(crate::services::account_status::PauseTransition {
+            before_state: crate::services::account_status::AccountStatus::Paused,
+            after_state: crate::services::account_status::AccountStatus::Active,
+            paused_at: None,
+            paused_reason: None,
+        })
     }
 }

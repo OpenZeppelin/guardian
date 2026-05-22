@@ -57,6 +57,10 @@ if (page.nextCursor !== null) {
   });
   console.log(next.items.length);
 }
+
+// Filter by pause state. Omit `paused` for all accounts.
+const pausedOnly = await client.listAccounts({ paused: true });
+const activeOnly = await client.listAccounts({ paused: false });
 ```
 
 ### Fetch One Account
@@ -124,6 +128,30 @@ for (const entry of page.items) {
   );
 }
 ```
+
+### Pause / Unpause Account
+
+Both endpoints require the `accounts:pause` permission and are
+idempotent. Re-pausing an already-paused account returns success with
+the original `pausedAt` and `pausedReason` preserved (first-writer
+wins). `reason` is required on pause (non-empty, ≤ 512 chars) and
+optional on unpause.
+
+```typescript
+const paused = await client.pauseAccount('0x...', 'compliance review');
+console.log(paused.pausedAt, paused.pausedReason);
+
+await client.unpauseAccount('0x...', 'cleared by legal');
+```
+
+While an account is paused, mutating endpoints (delta submission,
+proposal creation, proposal signing) reject with HTTP 409 and code
+`account_paused` (normalized by the client from the server wire code
+`GUARDIAN_ACCOUNT_PAUSED`). Account setup paths (`configureAccount`,
+EVM register) are admin operations and remain available while paused.
+Read endpoints — including `listAccounts({ paused: true })` and
+`getAccount()` — continue to work and surface `pausedAt` /
+`pausedReason` on the response.
 
 ### Cross-Account Delta Feed
 
@@ -254,6 +282,7 @@ FR-028) is:
 | 400 | `invalid_cursor` | tampered, malformed, or stale cursor |
 | 400 | `invalid_limit` | `limit` outside `[1, 500]` |
 | 400 | `invalid_status_filter` | global delta feed `status` filter is unknown or malformed |
+| 409 | `account_paused` | mutating call against a paused account; error details carry `pausedAt` and `pausedReason`. Wire code `GUARDIAN_ACCOUNT_PAUSED` is normalized by the client. |
 | 503 | `data_unavailable` | metadata exists but underlying records cannot be read |
 
 ### Operator Authorization (feature `006-operator-authz`)

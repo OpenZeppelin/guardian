@@ -143,7 +143,7 @@ async fn test_push_delta_unauthorized_cosigner() {
     // Should fail because the public key commitment is not in authorized commitments list
     assert_eq!(
         push_response.status(),
-        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
         "Should reject unauthorized cosigner"
     );
 }

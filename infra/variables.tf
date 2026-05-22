@@ -297,6 +297,18 @@ variable "guardian_evm_rpc_urls_secret_arn" {
   default     = ""
 }
 
+variable "guardian_ack_falcon_secret_name" {
+  description = "Secrets Manager secret name holding the Falcon ACK signing key (prod only). Defaults to $${stack_name}/server/ack-falcon-secret-key when empty; override to pin a stack at a pre-existing legacy secret name."
+  type        = string
+  default     = ""
+}
+
+variable "guardian_ack_ecdsa_secret_name" {
+  description = "Secrets Manager secret name holding the ECDSA ACK signing key (prod only). Defaults to $${stack_name}/server/ack-ecdsa-secret-key when empty; override to pin a stack at a pre-existing legacy secret name."
+  type        = string
+  default     = ""
+}
+
 variable "guardian_evm_rpc_urls" {
   description = "Comma-separated chain_id=url EVM RPC entries; when set, Terraform creates a Secrets Manager secret containing this value"
   type        = string
