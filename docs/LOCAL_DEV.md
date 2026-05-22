@@ -72,7 +72,7 @@ Pool sizing is controlled by `GUARDIAN_DB_POOL_MAX_SIZE` and
 
 ```bash
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
-GUARDIAN_EVM_ENTRYPOINTS=31337=0x... \
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x... \
   cargo run -p guardian-server --features evm --bin server
 ```
 
