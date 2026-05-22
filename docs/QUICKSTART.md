@@ -57,6 +57,6 @@ choice differs.
 | Understand what Guardian *is* before going further | [`CONCEPTS.md`](./CONCEPTS.md) |
 | Switch to Postgres, enable EVM, run without Docker | [`LOCAL_DEV.md`](./LOCAL_DEV.md) |
 | Set every available env var deliberately | [`CONFIGURATION.md`](./CONFIGURATION.md) |
-| Enable the operator dashboard locally | [`dashboard.md`](./dashboard.md) |
+| Enable the operator dashboard locally | [`DASHBOARD.md`](./DASHBOARD.md) |
 | Deploy to AWS | [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md) |
 | Something broke | [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) |

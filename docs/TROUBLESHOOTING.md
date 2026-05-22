@@ -170,7 +170,7 @@ script or Terraform variables rather than disabling rate limiting.
 
 - **Allowlist empty.** Without at least one operator entry, every
   challenge fails. Add an operator (see
-  [`docs/dashboard.md`](./dashboard.md#enrolling-an-operator)).
+  [`docs/DASHBOARD.md`](./DASHBOARD.md#enrolling-an-operator)).
 - **Stale browser session.** Operator sessions are per-task. After a
   multi-task deploy, you may be routed to a task that did not issue your
   cookie. Re-authenticate.
@@ -208,7 +208,7 @@ come from
 | `authentication_failed` | 401 | Clock skew, reused timestamp, modified payload, missing headers. |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
-| `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`dashboard.md`](./dashboard.md#permission-vocabulary). |
+| `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
 ### Resource lookup
 

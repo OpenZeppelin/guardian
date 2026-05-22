@@ -39,7 +39,7 @@ You are an operator / SRE / DevOps.
    place.
 5. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
    rotation, compromise response for the five secret categories.
-6. [Operator dashboard](./dashboard.md) — what it is, enrolling
+6. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
    operators, permission vocabulary, multi-task caveats.
 7. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
    recovery procedures.
@@ -68,7 +68,7 @@ You are a contributor.
 ### I want to *integrate* my own operator dashboard or harness
 
 1. [Concepts](./CONCEPTS.md) — the trust model the dashboard sits inside.
-2. [Operator dashboard](./dashboard.md) — auth domain, permission
+2. [Operator dashboard](./DASHBOARD.md) — auth domain, permission
    vocabulary, allowlist payload shapes.
 3. [`examples/operator-smoke-web`](../examples/operator-smoke-web/README.md)
    — reference harness.
@@ -95,7 +95,7 @@ You are a contributor.
 **Operations**
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
-- [Operator dashboard](./dashboard.md)
+- [Operator dashboard](./DASHBOARD.md)
 
 **SDKs**
 - [Multisig SDK guide](./MULTISIG_SDK.md)

@@ -133,7 +133,7 @@ account-mutation surface is unaffected — only operator endpoints break.
 - [ ] Compare `GET /pubkey` to the value you previously had on file —
       a change here means clients must re-trust.
 - [ ] Audit `/dashboard/info` for `degraded` markers
-      ([`dashboard.md`](../dashboard.md#storage-mode-caveats)).
+      ([`DASHBOARD.md`](../DASHBOARD.md#storage-mode-caveats)).
 - [ ] File a post-mortem with the timeline, blast radius, and any
       gaps surfaced during the restore. Update this runbook with
       lessons learned.

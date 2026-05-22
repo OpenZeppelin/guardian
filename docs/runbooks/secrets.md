@@ -122,7 +122,7 @@ against an **allowlist** of public keys. Two ways to manage the list:
 
 The secret payload is the JSON shape consumed by
 [`dashboard/allowlist.rs`](../../crates/server/src/dashboard/allowlist.rs).
-See [`docs/dashboard.md`](../dashboard.md#enrolling-an-operator) for the
+See [`docs/DASHBOARD.md`](../DASHBOARD.md#enrolling-an-operator) for the
 payload schema and an enrollment walkthrough.
 
 ### Adding or removing an operator

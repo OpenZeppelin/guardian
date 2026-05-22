@@ -66,7 +66,7 @@ See [Secrets runbook](./runbooks/secrets.md#ack-signing-keys).
 | `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value when running ≥2 ECS tasks so cursors validate across replicas. |
 
 Allowlist payload shapes and enrollment flow:
-[`docs/dashboard.md`](./dashboard.md).
+[`docs/DASHBOARD.md`](./DASHBOARD.md).
 
 ## Runtime — EVM (feature-gated)
 
