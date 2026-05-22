@@ -293,3 +293,73 @@ Apply these rules especially to:
   - `examples/demo`
   - `examples/web`
   - any affected docs and tests in the same PR.
+
+## 12) Known Gotchas
+
+These are universal facts about the repo. Re-discovering them costs hours.
+
+- **`cargo test -p guardian-server` can hang silently.** Past sessions have seen
+  the binary produce zero output for 15+ minutes. Workarounds:
+  - Kill stale processes first: `pkill -f 'cargo test'`.
+  - Target a specific module: `cargo test -p guardian-server <module::path>`.
+  - Run the test binary directly from `target/debug/deps/` after a successful
+    compile.
+- **There is no `guardian-server` binary.** The crate exposes two targets:
+  ```bash
+  cargo run -p guardian-server --bin server
+  cargo run -p guardian-server --bin ack-keygen
+  ```
+- **Feature flags matter.** Build with `--features postgres` and
+  `--features postgres,evm` to catch backend-specific breakage. The default
+  backend in dev is `filesystem`.
+- **Metadata store is dual-backend** (filesystem + postgres). Any change to the
+  `MetadataStore` trait must be implemented on **both** backends and on
+  `MockMetadataStore` in `crates/server/src/testing/mocks.rs`.
+- **Auth is surface-specific — there is no single "API key" middleware.**
+  Each surface has its own authenticator:
+  - Cosigner gRPC/HTTP: per-cosigner proof-of-possession against the
+    registered commitment (see `crates/server/src/metadata/auth/` and the
+    `guardian-auth-signature-flows` skill).
+  - Operator dashboard: session cookie via `require_dashboard_session` in
+    `crates/server/src/dashboard/middleware.rs`.
+  - EVM surface (feature-gated): `require_evm_session` in
+    `crates/server/src/api/evm.rs` (challenge → verify → cookie session).
+  - Health and a few public endpoints are intentionally unauthenticated.
+  Do not invent a unified middleware; respect the surface-specific design.
+
+## 13) Security and Commit Hygiene
+
+- **Never commit `.env*` files.** Real environment files carry signer keys and
+  database credentials.
+- **Never commit `infra/**/terraform.tfstate*`, `*.tfstate.backup`, or
+  `.terraform/`.** Live tfstate has been accidentally committed before. Before
+  any infra-touching commit, run `git status` and verify only `*.tf`,
+  `*.tfvars.example`, and README/docs are staged.
+- **Never commit `infra/terraform.tfvars`** (the real one, without
+  `.example`).
+- **API keys, signer keys, and DB passwords** live in AWS Secrets Manager (see
+  the `deploy-guardian-aws` skill and `docs/runbooks/secrets.md`). Never
+  hardcode.
+
+## 14) Repo-Specific Skills
+
+The repo ships markdown skill files under `.agents/skills/<name>/SKILL.md`
+that capture the canonical workflow for common tasks. Prefer them over
+ad-hoc grepping or test selection. Claude Code and other compatible agents
+load them automatically; if your tool does not, read the `SKILL.md` file
+directly.
+
+| Task | Skill |
+|------|-------|
+| Decide what to test for a change | `guardian-validation-matrix` |
+| Map impact of a contract/protocol change | `guardian-change-impact`, `guardian-contract-change` |
+| Touch auth / signature flows | `guardian-auth-signature-flows` |
+| Touch proposal lifecycle | `guardian-multisig-proposal-lifecycle` |
+| Smoke test operator dashboard | `smoke-test-operator-dashboard` |
+| Smoke test EVM proposal support | `smoke-test-evm-proposal-support` |
+| Smoke test TS / Rust multisig SDK | `smoke-test-ts-multisig-sdk`, `smoke-test-rust-multisig-sdk` |
+| Deploy to AWS | `deploy-guardian-aws` |
+| Release SDK packages | `release-guardian-sdk-packages` |
+| Run prod benchmarks | `run-guardian-prod-benchmarks` |
+
+For language hygiene, prefer `rust-best-practices` and `typescript-expert`.
