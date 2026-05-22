@@ -150,7 +150,9 @@ DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
 
 Normal deploys do not create or rotate ACK keys. The server fetches the prod Secrets Manager entries at startup, imports them into the filesystem keystore, and then signs through the filesystem keystore like every other environment.
 
-By default the secret names follow `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so each stack gets its own pair (`guardian-prod` → `guardian-prod/server/ack-falcon-secret-key`, etc.) and multiple Guardian instances can coexist in the same AWS account. To pin a stack at an existing legacy name, set `GUARDIAN_ACK_FALCON_SECRET_NAME` and `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy` — they flow through to the `guardian_ack_falcon_secret_name` / `guardian_ack_ecdsa_secret_name` Terraform variables and the server's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars.
+By default the secret names follow `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so each stack gets its own pair (`guardian-prod` → `guardian-prod/server/ack-falcon-secret-key`, etc.) and multiple Guardian instances can coexist in the same AWS account. To pin a stack at an existing legacy name, set `GUARDIAN_ACK_FALCON_SECRET_NAME` and `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy` — they flow through to the `guardian_ack_falcon_secret_name` / `guardian_ack_ecdsa_secret_name` Terraform variables.
+
+> The ECS task definition receives the resolved name as the server's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars — that is the runtime env the server reads to call Secrets Manager. You do not set those directly when deploying via `scripts/aws-deploy.sh`.
 
 ### 4. Get Outputs
 
