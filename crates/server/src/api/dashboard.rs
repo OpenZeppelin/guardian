@@ -8,11 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::dashboard::cursor::CursorKind;
 use crate::dashboard::{AuthenticatedOperator, extract_cookie};
-use crate::error::Result;
+use crate::error::{GuardianError, Result};
+use crate::services::pause_account::PauseResponse;
+use crate::services::unpause_account::UnpauseResponse;
 use crate::services::{
     DashboardAccountDetail, DashboardAccountSnapshot, DashboardAccountSummary,
     DashboardInfoResponse, PagedResult, get_account_snapshot, get_dashboard_account,
-    get_dashboard_info, list_dashboard_accounts_paged, parse_cursor, parse_limit,
+    get_dashboard_info, list_dashboard_accounts_paged, parse_cursor, parse_limit, pause_account,
+    unpause_account,
 };
 use crate::state::AppState;
 
@@ -76,6 +79,8 @@ pub struct AccountsQuery {
     pub limit: Option<String>,
     #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub paused: Option<bool>,
 }
 
 pub async fn challenge_operator_login(
@@ -147,7 +152,7 @@ pub async fn list_operator_accounts(
         state.dashboard.cursor_secret(),
         CursorKind::AccountList,
     )?;
-    let result = list_dashboard_accounts_paged(&state, limit, cursor).await?;
+    let result = list_dashboard_accounts_paged(&state, limit, cursor, query.paused).await?;
     Ok(Json(result))
 }
 
@@ -200,6 +205,60 @@ pub async fn get_operator_account_snapshot(
 ) -> Result<Json<DashboardAccountSnapshot>> {
     let snapshot = get_account_snapshot(&state, &account_id).await?;
     Ok(Json(snapshot))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PauseAccountRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UnpauseAccountRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn pause_account_handler(
+    State(state): State<AppState>,
+    Extension(operator): Extension<AuthenticatedOperator>,
+    Path(account_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<PauseResponse>> {
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
+    let (_parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1024 * 16)
+        .await
+        .map_err(|_| GuardianError::InvalidInput("failed to read request body".to_string()))?;
+    let body: PauseAccountRequest = serde_json::from_slice(&bytes)
+        .map_err(|e| GuardianError::InvalidInput(format!("malformed pause request body: {e}")))?;
+    let response =
+        pause_account::pause(&state, &operator, &account_id, &body.reason, client_ip).await?;
+    Ok(Json(response))
+}
+
+pub async fn unpause_account_handler(
+    State(state): State<AppState>,
+    Extension(operator): Extension<AuthenticatedOperator>,
+    Path(account_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<UnpauseResponse>> {
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
+    let (_parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1024 * 16)
+        .await
+        .map_err(|_| GuardianError::InvalidInput("failed to read request body".to_string()))?;
+    let reason = if bytes.is_empty() {
+        None
+    } else {
+        let req: UnpauseAccountRequest = serde_json::from_slice(&bytes).map_err(|e| {
+            GuardianError::InvalidInput(format!("malformed unpause request body: {e}"))
+        })?;
+        req.reason
+    };
+    let response =
+        unpause_account::unpause(&state, &operator, &account_id, reason.as_deref(), client_ip)
+            .await?;
+    Ok(Json(response))
 }
 
 #[cfg(test)]
@@ -377,6 +436,8 @@ mod tests {
             updated_at: "2026-05-11T00:00:00Z".to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         };
         state
             .metadata
@@ -913,6 +974,8 @@ mod tests {
             updated_at: updated_at.to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 
@@ -1489,6 +1552,214 @@ mod tests {
             auditor.snapshot().len(),
             0,
             "/session must not produce any admin_actions events",
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Feature 001-account-pausing
+    // POST /dashboard/accounts/{id}/pause and /unpause handler contract.
+    // -----------------------------------------------------------------
+
+    fn pause_uri(account_id: &str) -> String {
+        format!("/dashboard/accounts/{account_id}/pause")
+    }
+
+    fn unpause_uri(account_id: &str) -> String {
+        format!("/dashboard/accounts/{account_id}/unpause")
+    }
+
+    async fn pause_capable_state_and_account() -> (
+        axum::Router,
+        String, // session cookie
+        String, // account_id_hex
+    ) {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(
+                &operator,
+                &[Permission::DashboardRead, Permission::AccountsPause],
+            ),
+        ]));
+        let (_account_id, account_id_hex, _account_json) = load_fixture_account();
+        seed_account(
+            &state,
+            create_metadata(&account_id_hex, "2024-01-02T00:00:00Z"),
+            None,
+        )
+        .await;
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+        (app, cookie, account_id_hex)
+    }
+
+    #[tokio::test]
+    async fn pause_handler_returns_200_and_transition_for_active_account() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "reason": "compliance review" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["account_id"], account_id);
+        assert_eq!(body["before_state"], "active");
+        assert_eq!(body["after_state"], "paused");
+        assert_eq!(body["paused_reason"], "compliance review");
+        assert!(body["paused_at"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn pause_handler_rejects_missing_reason_with_400() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn pause_handler_rejects_empty_reason_with_400() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": "" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn pause_handler_rejects_oversize_reason_with_400() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        let oversize = "x".repeat(crate::services::pause_account::MAX_REASON_LEN + 1);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": oversize }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unpause_handler_accepts_empty_body_and_returns_200() {
+        let (app, cookie, account_id) = pause_capable_state_and_account().await;
+
+        // Pre-pause so the unpause transition is meaningful; idempotent
+        // unpause of an already-active account also returns 200, but
+        // exercising the real transition is more informative.
+        let pause = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": "compliance" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pause.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(unpause_uri(&account_id))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["before_state"], "paused");
+        assert_eq!(body["after_state"], "active");
+        assert!(body["reason"].is_null());
+    }
+
+    #[tokio::test]
+    async fn pause_handler_denies_operator_without_accounts_pause_permission() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[Permission::DashboardRead]),
+        ]));
+        let (_account_id, account_id_hex, _account_json) = load_fixture_account();
+        seed_account(
+            &state,
+            create_metadata(&account_id_hex, "2024-01-02T00:00:00Z"),
+            None,
+        )
+        .await;
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(pause_uri(&account_id_hex))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "reason": "r" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+        assert_eq!(
+            body["missing_permissions"],
+            serde_json::json!(["accounts:pause"])
         );
     }
 }

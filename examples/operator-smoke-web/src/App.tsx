@@ -16,7 +16,19 @@ function formatJson(value: unknown): string {
 
 function normalizeError(error: unknown): string {
   if (error instanceof GuardianOperatorHttpError) {
-    return error.data?.error ?? error.message;
+    const data = error.data;
+    const base = data?.error ?? error.message;
+    // Surface the normalized code + paused-specific details so the
+    // smoke makes the wire→client mapping visible (e.g. server emits
+    // `GUARDIAN_ACCOUNT_PAUSED`, client surfaces `account_paused`
+    // with `pausedAt` / `pausedReason`).
+    if (data?.code === 'account_paused') {
+      return `[${data.code}] ${base} (pausedAt=${data.pausedAt ?? 'null'}, pausedReason=${data.pausedReason ?? 'null'})`;
+    }
+    if (data?.code) {
+      return `[${data.code}] ${base}`;
+    }
+    return base;
   }
 
   if (error instanceof Error) {
@@ -50,6 +62,7 @@ export default function App() {
   const [lastResult, setLastResult] = useState('');
   const [uiError, setUiError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [pauseReason, setPauseReason] = useState('smoke-test');
   const [pagedLimit, setPagedLimit] = useState('2');
   const [pagedAccounts, setPagedAccounts] = useState<DashboardAccountSummary[]>([]);
   const [pagedCursor, setPagedCursor] = useState<string | null>(null);
@@ -165,6 +178,41 @@ export default function App() {
       const response = await client.listAccounts();
       setAccounts(response.items);
       return response;
+    });
+  }
+
+  async function listPausedAccounts() {
+    await runAction('listAccounts(paused=true)', async () => {
+      const response = await client.listAccounts({ paused: true });
+      setAccounts(response.items);
+      return response;
+    });
+  }
+
+  async function listActiveAccounts() {
+    await runAction('listAccounts(paused=false)', async () => {
+      const response = await client.listAccounts({ paused: false });
+      setAccounts(response.items);
+      return response;
+    });
+  }
+
+  async function pauseAccountAction() {
+    await runAction('pauseAccount', () => {
+      const id = accountId.trim();
+      if (!id) throw new Error('Account ID is required');
+      const reason = pauseReason.trim();
+      if (!reason) throw new Error('Pause reason is required');
+      return client.pauseAccount(id, reason);
+    });
+  }
+
+  async function unpauseAccountAction() {
+    await runAction('unpauseAccount', () => {
+      const id = accountId.trim();
+      if (!id) throw new Error('Account ID is required');
+      const reason = pauseReason.trim();
+      return client.unpauseAccount(id, reason || undefined);
     });
   }
 
@@ -337,6 +385,8 @@ export default function App() {
             <button onClick={() => void requestChallenge()}>Request challenge</button>
             <button onClick={() => void login()}>Login</button>
             <button onClick={() => void listAccounts()}>List accounts</button>
+            <button onClick={() => void listPausedAccounts()}>List paused accounts</button>
+            <button onClick={() => void listActiveAccounts()}>List active accounts</button>
             <button onClick={() => void paginateAccounts()}>Paginate accounts</button>
             <button onClick={() => void dashboardInfo()}>Dashboard info</button>
             <button onClick={() => void getSession()}>Get session</button>
@@ -480,6 +530,28 @@ export default function App() {
             <button onClick={() => void listAccountDeltas()}>List account deltas</button>
             <button onClick={() => void listAccountProposals()}>List account proposals</button>
           </div>
+
+          <label>
+            <span>Pause reason</span>
+            <input
+              value={pauseReason}
+              onChange={(event) => setPauseReason(event.target.value)}
+              placeholder="why?"
+            />
+          </label>
+          <div className="actions">
+            <button onClick={() => void pauseAccountAction()}>Pause account</button>
+            <button onClick={() => void unpauseAccountAction()}>Unpause account</button>
+          </div>
+          <p className="hint">
+            Requires <code>accounts:pause</code>. After pausing, run{' '}
+            <strong>List paused accounts</strong> or <strong>Get account</strong>{' '}
+            against the same id — the response should expose{' '}
+            <code>pausedAt</code> and <code>pausedReason</code>. The 409{' '}
+            <code>account_paused</code> path is exercised by mutating endpoints
+            (delta push, proposal create/sign) which this read-only harness does
+            not call directly.
+          </p>
 
           {accounts.length ? (
             <div className="account-list">

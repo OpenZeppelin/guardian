@@ -22,6 +22,15 @@ pub struct AccountMetadata {
     pub has_pending_candidate: bool,
     #[serde(default)]
     pub last_auth_timestamp: Option<i64>,
+    /// UTC timestamp of the first pause request that took effect.
+    /// `None` when active. First-writer-wins: re-pause does not
+    /// update this value.
+    #[serde(default)]
+    pub paused_at: Option<DateTime<Utc>>,
+    /// Operator-supplied reason captured at first pause. `None` when
+    /// active. Required (non-empty, ≤ 512 UTF-8 chars) on pause.
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }
 
 /// Cursor parameters for the paginated account list read. Sort key is
@@ -54,10 +63,16 @@ pub trait MetadataStore: Send + Sync {
     /// the composite index added in migration
     /// `2026-05-10-000002_account_metadata_pagination_index`;
     /// filesystem fans out and sorts in memory.
+    ///
+    /// `paused` filters by pause state when supplied: `Some(true)`
+    /// returns only currently-paused accounts (served by the partial
+    /// index on `paused_at`), `Some(false)` only active accounts,
+    /// `None` returns all.
     async fn list_paged(
         &self,
         limit: u32,
         cursor: Option<AccountListCursor>,
+        paused: Option<bool>,
     ) -> Result<Vec<AccountMetadata>, String>;
 
     /// Update the authentication configuration for an account
@@ -123,4 +138,26 @@ pub trait MetadataStore: Send + Sync {
     /// `commitment` is expected to be a `0x`-prefixed lowercase hex string;
     /// format validation is the caller's responsibility.
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String>;
+
+    /// Atomically transition an account to the paused state.
+    /// First-writer-wins: when the account is already paused, the
+    /// persisted `paused_at` and `paused_reason` are left unchanged.
+    /// Returns the `PauseTransition` describing before/after states so
+    /// the handler can emit the matching audit row without a second
+    /// read. Returns `Err` if the account does not exist.
+    async fn set_pause(
+        &self,
+        account_id: &str,
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<crate::services::account_status::PauseTransition, String>;
+
+    /// Atomically clear the pause state for an account. Idempotent: a
+    /// call against an already-active account is a no-op at the
+    /// persistence level and returns `before_state == after_state ==
+    /// Active`. Returns `Err` if the account does not exist.
+    async fn clear_pause(
+        &self,
+        account_id: &str,
+    ) -> Result<crate::services::account_status::PauseTransition, String>;
 }

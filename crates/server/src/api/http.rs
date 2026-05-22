@@ -162,67 +162,29 @@ pub async fn push_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<serde_json::Value>,
-) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match request_payload_from_value(&payload) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaObject {
-                    account_id: e,
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+) -> Result<Json<DeltaObject>, GuardianError> {
+    let request_payload =
+        request_payload_from_value(&payload).map_err(GuardianError::InvalidInput)?;
 
-    let delta: DeltaObject = match serde_json::from_value(payload) {
-        Ok(delta) => delta,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaObject {
-                    account_id: format!("Invalid delta payload: {e}"),
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+    let delta: DeltaObject = serde_json::from_value(payload)
+        .map_err(|e| GuardianError::InvalidInput(format!("Invalid delta payload: {e}")))?;
 
     let params = PushDeltaParams {
         delta,
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::push_delta(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.delta)),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::push_delta(&state, params).await?;
+    Ok(Json(response.delta))
 }
 
 pub async fn get_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
-) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match request_payload_from_serializable(&query) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaObject {
-                    account_id: e,
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+) -> Result<Json<DeltaObject>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
 
     let params = GetDeltaParams {
         account_id: query.account_id,
@@ -230,35 +192,17 @@ pub async fn get_delta(
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::get_delta(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.delta)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_delta(&state, params).await?;
+    Ok(Json(response.delta))
 }
 
 pub async fn get_delta_since(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<DeltaQuery>,
-) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match request_payload_from_serializable(&query) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaObject {
-                    account_id: e,
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+) -> Result<Json<DeltaObject>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
 
     let params = GetDeltaSinceParams {
         account_id: query.account_id,
@@ -266,51 +210,25 @@ pub async fn get_delta_since(
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::get_delta_since(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.merged_delta)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_delta_since(&state, params).await?;
+    Ok(Json(response.merged_delta))
 }
 
 pub async fn get_state(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<StateQuery>,
-) -> (StatusCode, Json<StateObject>) {
-    let request_payload = match request_payload_from_serializable(&query) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(StateObject {
-                    account_id: e,
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+) -> Result<Json<StateObject>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
 
     let params = GetStateParams {
         account_id: query.account_id,
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::get_state(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.state)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(StateObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_state(&state, params).await?;
+    Ok(Json(response.state))
 }
 
 /// `GET /state/lookup?key_commitment=<hex>` — resolves a Miden public-key
@@ -379,22 +297,9 @@ pub async fn push_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<DeltaProposalRequest>,
-) -> (StatusCode, Json<DeltaProposalResponse>) {
-    let request_payload = match request_payload_from_serializable(&payload) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaProposalResponse {
-                    delta: DeltaObject {
-                        account_id: e,
-                        ..Default::default()
-                    },
-                    commitment: String::new(),
-                }),
-            );
-        }
-    };
+) -> Result<Json<DeltaProposalResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
 
     let params = PushDeltaProposalParams {
         account_id: payload.account_id,
@@ -403,82 +308,39 @@ pub async fn push_delta_proposal(
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::push_delta_proposal(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(DeltaProposalResponse {
-                delta: response.delta,
-                commitment: response.commitment,
-            }),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(DeltaProposalResponse {
-                delta: DeltaObject {
-                    account_id: e.to_string(),
-                    ..Default::default()
-                },
-                commitment: String::new(),
-            }),
-        ),
-    }
+    let response = services::push_delta_proposal(&state, params).await?;
+    Ok(Json(DeltaProposalResponse {
+        delta: response.delta,
+        commitment: response.commitment,
+    }))
 }
 
 pub async fn get_delta_proposals(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<ProposalQuery>,
-) -> (StatusCode, Json<ProposalsResponse>) {
-    let request_payload = match request_payload_from_serializable(&query) {
-        Ok(request_payload) => request_payload,
-        Err(_e) => {
-            return (
-                StatusCode::OK,
-                Json(ProposalsResponse {
-                    proposals: Vec::new(),
-                }),
-            );
-        }
-    };
+) -> Result<Json<ProposalsResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
 
     let params = GetDeltaProposalsParams {
         account_id: query.account_id,
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::get_delta_proposals(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(ProposalsResponse {
-                proposals: response.proposals,
-            }),
-        ),
-        Err(_e) => (
-            StatusCode::OK,
-            Json(ProposalsResponse {
-                proposals: Vec::new(),
-            }),
-        ),
-    }
+    let response = services::get_delta_proposals(&state, params).await?;
+    Ok(Json(ProposalsResponse {
+        proposals: response.proposals,
+    }))
 }
 
 pub async fn get_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<ProposalItemQuery>,
-) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match request_payload_from_serializable(&query) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaObject {
-                    account_id: e,
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+) -> Result<Json<DeltaObject>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
 
     let params = GetDeltaProposalParams {
         account_id: query.account_id,
@@ -486,35 +348,17 @@ pub async fn get_delta_proposal(
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::get_delta_proposal(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.proposal)),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::get_delta_proposal(&state, params).await?;
+    Ok(Json(response.proposal))
 }
 
 pub async fn sign_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<SignProposalRequest>,
-) -> (StatusCode, Json<DeltaObject>) {
-    let request_payload = match request_payload_from_serializable(&payload) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(DeltaObject {
-                    account_id: e,
-                    ..Default::default()
-                }),
-            );
-        }
-    };
+) -> Result<Json<DeltaObject>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
 
     let params = SignDeltaProposalParams {
         account_id: payload.account_id,
@@ -523,16 +367,8 @@ pub async fn sign_delta_proposal(
         credentials: request_payload.apply_to(credentials),
     };
 
-    match services::sign_delta_proposal(&state, params).await {
-        Ok(response) => (StatusCode::OK, Json(response.delta)),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(DeltaObject {
-                account_id: e.to_string(),
-                ..Default::default()
-            }),
-        ),
-    }
+    let response = services::sign_delta_proposal(&state, params).await?;
+    Ok(Json(response.delta))
 }
 
 struct RequestPayloadParts {
@@ -633,6 +469,8 @@ mod tests {
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 
@@ -773,10 +611,11 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &request);
-        let (status, Json(response)) =
-            push_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
+        let Json(response) =
+            push_delta_proposal(State(state), AuthHeader(credentials), Json(request))
+                .await
+                .expect("push_delta_proposal should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.delta.nonce, 1);
         assert!(!response.commitment.is_empty());
     }
@@ -815,10 +654,14 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &request);
-        let (status, _response) =
+        let result =
             push_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
+        let err = match result {
+            Ok(_) => panic!("missing tx_summary should reject"),
+            Err(err) => err,
+        };
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -859,10 +702,11 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, Json(response)) =
-            get_delta_proposals(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) =
+            get_delta_proposals(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .expect("get_delta_proposals should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.proposals.len(), 1);
         assert_eq!(response.proposals[0].account_id, account_id);
     }
@@ -886,10 +730,11 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, Json(response)) =
-            get_delta_proposals(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) =
+            get_delta_proposals(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .expect("get_delta_proposals should succeed with empty result");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.proposals.len(), 0);
     }
 
@@ -931,10 +776,11 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, Json(response)) =
-            get_delta_proposal(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) =
+            get_delta_proposal(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .expect("get_delta_proposal should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
         assert_eq!(response.nonce, 1);
     }
@@ -959,10 +805,13 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, _response) =
-            get_delta_proposal(State(state), AuthHeader(credentials), Query(query)).await;
+        let err =
+            match get_delta_proposal(State(state), AuthHeader(credentials), Query(query)).await {
+                Ok(_) => panic!("get_delta_proposal should fail when proposal is missing"),
+                Err(err) => err,
+            };
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -985,11 +834,16 @@ mod tests {
         let (pubkey, _signature, timestamp) = credentials.as_signature().unwrap();
         let invalid_credentials =
             Credentials::signature(pubkey.to_string(), "0xdeadbeef".to_string(), timestamp);
-        let (status, Json(response)) =
-            get_delta_proposal(State(state), AuthHeader(invalid_credentials), Query(query)).await;
+        let err =
+            match get_delta_proposal(State(state), AuthHeader(invalid_credentials), Query(query))
+                .await
+            {
+                Ok(_) => panic!("get_delta_proposal should fail with invalid credentials"),
+                Err(err) => err,
+            };
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(response.account_id.contains("Authentication failed"));
+        assert_eq!(err.http_status(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(err, GuardianError::AuthenticationFailed(_)));
     }
 
     #[tokio::test]
@@ -1016,10 +870,9 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &request);
-        let (status, _response) =
+        let result =
             sign_delta_proposal(State(state), AuthHeader(credentials), Json(request)).await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(result.is_err(), "sign on missing proposal should fail");
     }
 
     #[tokio::test]
@@ -1047,14 +900,14 @@ mod tests {
 
         let test_delta_value = serde_json::to_value(&test_delta).unwrap();
         let credentials = signed_credentials(&signer, &account_id, &test_delta_value);
-        let (status, Json(response)) = push_delta(
+        let Json(response) = push_delta(
             State(state),
             AuthHeader(credentials),
             Json(test_delta_value),
         )
-        .await;
+        .await
+        .expect("push_delta should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
     }
 
@@ -1079,10 +932,10 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, Json(response)) =
-            get_delta(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) = get_delta(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .expect("get_delta should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
         assert_eq!(response.nonce, 1);
     }
@@ -1107,10 +960,12 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, _response) =
-            get_delta(State(state), AuthHeader(credentials), Query(query)).await;
+        let err = match get_delta(State(state), AuthHeader(credentials), Query(query)).await {
+            Ok(_) => panic!("get_delta should fail when delta is missing"),
+            Err(err) => err,
+        };
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -1138,10 +993,10 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, Json(response)) =
-            get_state(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) = get_state(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .expect("get_state should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
     }
 
@@ -1164,10 +1019,12 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, _response) =
-            get_state(State(state), AuthHeader(credentials), Query(query)).await;
+        let err = match get_state(State(state), AuthHeader(credentials), Query(query)).await {
+            Ok(_) => panic!("get_state should fail when state is missing"),
+            Err(err) => err,
+        };
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -1194,10 +1051,10 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &query);
-        let (status, Json(response)) =
-            get_delta_since(State(state), AuthHeader(credentials), Query(query)).await;
+        let Json(response) = get_delta_since(State(state), AuthHeader(credentials), Query(query))
+            .await
+            .expect("get_delta_since should succeed");
 
-        assert_eq!(status, StatusCode::OK);
         assert_eq!(response.account_id, account_id);
     }
 }

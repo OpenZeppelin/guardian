@@ -207,6 +207,8 @@ mod tests {
             updated_at: "2026-05-11T00:00:00Z".to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 

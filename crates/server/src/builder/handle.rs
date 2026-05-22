@@ -8,7 +8,7 @@ use tower_http::cors::CorsLayer;
 use crate::api::dashboard::{
     challenge_operator_login, get_dashboard_info_handler, get_dashboard_session_handler,
     get_operator_account, get_operator_account_snapshot, list_operator_accounts, logout_operator,
-    verify_operator_login,
+    pause_account_handler, unpause_account_handler, verify_operator_login,
 };
 use crate::api::dashboard_feeds::{
     list_account_deltas_handler, list_account_proposals_handler, list_global_deltas_handler,
@@ -118,6 +118,24 @@ impl ServerHandle {
                     .route("/session", get(get_dashboard_session_handler))
                     .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
                 let dashboard_routes = dashboard_routes.merge(session_router);
+
+                // Per-account pause / unpause endpoints. Same per-route
+                // authz composition as the probe: declares the
+                // `accounts:pause` permission and reuses the session
+                // middleware.
+                let dashboard_routes = {
+                    let accounts_pause_authz =
+                        AuthzState::new(state.clone(), &[Permission::AccountsPause]);
+                    let pause_router = Router::new()
+                        .route("/accounts/{account_id}/pause", post(pause_account_handler))
+                        .route(
+                            "/accounts/{account_id}/unpause",
+                            post(unpause_account_handler),
+                        )
+                        .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
+                        .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+                    dashboard_routes.merge(pause_router)
+                };
 
                 // Feature 006-operator-authz FR-027 / FR-028: the
                 // authz-test-probe Cargo feature gates a single test-only

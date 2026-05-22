@@ -275,6 +275,8 @@ mod tests {
                 updated_at: "2026-05-01T00:00:00Z".into(),
                 has_pending_candidate: false,
                 last_auth_timestamp: None,
+                paused_at: None,
+                paused_reason: None,
             }))
         } else {
             Ok(None)
@@ -402,6 +404,8 @@ mod tests {
                 updated_at: "2026-05-01T00:00:00Z".into(),
                 has_pending_candidate: false,
                 last_auth_timestamp: None,
+                paused_at: None,
+                paused_reason: None,
             })));
         let storage = MockStorageBackend::new()
             .with_list_account_deltas_paged(Err("disk read failed".into()));
@@ -489,6 +493,8 @@ mod tests {
                     updated_at: "2026-05-01T00:00:00Z".into(),
                     has_pending_candidate: false,
                     last_auth_timestamp: None,
+                    paused_at: None,
+                    paused_reason: None,
                 })));
             }
             m

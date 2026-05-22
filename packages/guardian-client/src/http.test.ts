@@ -732,4 +732,86 @@ describe('GuardianHttpError', () => {
     expect(error.message).toContain('Not Found');
     expect(error.name).toBe('GuardianHttpError');
   });
+
+  describe('error envelope contract (account-paused path)', () => {
+    let client: GuardianHttpClient;
+    beforeEach(() => {
+      client = new GuardianHttpClient('http://localhost:3000');
+      mockFetch.mockReset();
+    });
+
+    it('surfaces 409 GUARDIAN_ACCOUNT_PAUSED with a parseable error envelope on pushDeltaProposal', async () => {
+      client.setSigner(mockSigner);
+
+      // The server's GuardianError::AccountPaused → IntoResponse contract.
+      // Locks client/server in lockstep: a regression to the legacy
+      // "(400, {delta: {account_id: 'error text'}})" shape would break this.
+      const envelope = {
+        success: false,
+        code: 'GUARDIAN_ACCOUNT_PAUSED',
+        error: 'Account is paused: compliance review',
+        paused_at: '2026-05-20T10:00:00Z',
+        paused_reason: 'compliance review',
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        text: async () => JSON.stringify(envelope),
+      });
+
+      const request = {
+        accountId: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        deltaPayload: { txSummary: { data: '' }, signatures: [] },
+      };
+
+      const error = await client
+        .pushDeltaProposal(request)
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect((error as GuardianHttpError).status).toBe(409);
+
+      const parsed = JSON.parse((error as GuardianHttpError).body);
+      expect(parsed.success).toBe(false);
+      expect(parsed.code).toBe('GUARDIAN_ACCOUNT_PAUSED');
+      expect(typeof parsed.error).toBe('string');
+      expect(parsed.paused_at).toBe('2026-05-20T10:00:00Z');
+      expect(parsed.paused_reason).toBe('compliance review');
+      // Negative assertion: legacy "stuff error into delta.account_id" shape.
+      expect(parsed.delta).toBeUndefined();
+    });
+
+    it('surfaces 401 AUTHENTICATION_FAILED with a parseable error envelope', async () => {
+      client.setSigner(mockSigner);
+      const envelope = {
+        success: false,
+        code: 'authentication_failed',
+        error: 'Invalid signature',
+      };
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => JSON.stringify(envelope),
+      });
+
+      const error = await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        })
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect((error as GuardianHttpError).status).toBe(401);
+      const parsed = JSON.parse((error as GuardianHttpError).body);
+      expect(parsed.success).toBe(false);
+      expect(parsed.code).toBe('authentication_failed');
+      expect(parsed.delta).toBeUndefined();
+    });
+  });
 });

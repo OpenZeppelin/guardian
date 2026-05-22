@@ -11,6 +11,7 @@ use crate::metadata::AccountMetadata;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::Auth;
 use crate::metadata::network::{evm_account_id, normalize_evm_address};
+use crate::services::account_status::ensure_account_active_metadata;
 use crate::state::AppState;
 
 #[derive(Clone, Debug)]
@@ -50,6 +51,12 @@ pub struct ApproveEvmProposalParams {
     pub session_address: String,
 }
 
+// `register_account` is an admin/setup path and intentionally NOT
+// gated by the pause chokepoint. Pause must not block initial
+// registration — do not add the chokepoint here. Pause state is
+// carried forward from `existing` so a new storage backend cannot
+// accidentally clear it (the field is only mutated by
+// `set_pause`/`clear_pause`).
 pub async fn register_account(
     state: &AppState,
     params: RegisterEvmAccountParams,
@@ -123,7 +130,9 @@ pub async fn register_account(
             created_at,
             updated_at: now,
             has_pending_candidate: false,
-            last_auth_timestamp: existing.and_then(|m| m.last_auth_timestamp),
+            last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
+            paused_at: existing.as_ref().and_then(|m| m.paused_at),
+            paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
         })
         .await
         .map_err(|e| {
@@ -198,6 +207,8 @@ pub async fn create_proposal(
             "initial proposal signature signer does not match proposer".to_string(),
         ));
     }
+
+    ensure_account_active_metadata(&metadata)?;
 
     let proposal_id = crate::evm::contracts::compute_proposal_id(&input)?;
     if let Ok(existing_delta) = state
@@ -311,6 +322,9 @@ pub async fn approve_proposal(
         ));
     }
 
+    let metadata = load_evm_metadata(state, &params.account_id).await?;
+    ensure_account_active_metadata(&metadata)?;
+
     proposal.signatures.push(EvmProposalSignature {
         signer,
         signature,
@@ -355,6 +369,8 @@ pub async fn cancel_proposal(
             "Only the proposal creator can cancel this EVM proposal".to_string(),
         ));
     }
+    let metadata = load_evm_metadata(state, account_id).await?;
+    ensure_account_active_metadata(&metadata)?;
     state
         .storage
         .delete_delta_proposal(account_id, &proposal_id)
@@ -461,4 +477,117 @@ fn is_evm_delta(delta: &DeltaObject) -> bool {
         .get("kind")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|kind| kind == EVM_PROPOSAL_KIND)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::AccountMetadata;
+    use crate::metadata::auth::Auth;
+    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use chrono::TimeZone;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn paused_evm_metadata(account_id: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::EvmEcdsa {
+                signers: vec!["0xsigner".into()],
+            },
+            network_config: crate::metadata::NetworkConfig::Evm {
+                chain_id: 1,
+                account_address: "0x0000000000000000000000000000000000000001".into(),
+                multisig_validator_address: "0x0000000000000000000000000000000000000002".into(),
+            },
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                    .unwrap(),
+            ),
+            paused_reason: Some("compliance".to_string()),
+        }
+    }
+
+    fn state_with_paused(account_id: &str) -> (AppState, MockStorageBackend) {
+        let storage = MockStorageBackend::new();
+        let network = MockNetworkClient::new();
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(paused_evm_metadata(account_id))));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        (state, storage)
+    }
+
+    /// Pause-gate ordering: `create_proposal` runs the pause check
+    /// AFTER signature verification, so an unauthenticated caller
+    /// (here: garbage payload) sees a validation error rather than
+    /// `AccountPaused`. The chokepoint itself is covered by the
+    /// integration tests under `testing/integration/`.
+    #[tokio::test]
+    async fn create_proposal_does_not_leak_pause_state_to_unauthenticated_caller() {
+        let (state, storage) = state_with_paused("0xpaused");
+        let err = create_proposal(
+            &state,
+            CreateEvmProposalParams {
+                account_id: "0xpaused".to_string(),
+                user_op_hash: String::new(),
+                payload: String::new(),
+                nonce: String::new(),
+                ttl_seconds: 0,
+                signature: String::new(),
+                session_address: String::new(),
+            },
+        )
+        .await
+        .expect_err("garbage payload must reject");
+        assert!(
+            !matches!(err, GuardianError::AccountPaused { .. }),
+            "pre-auth garbage must not surface pause state; got: {err:?}"
+        );
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    /// Same ordering assertion for `approve_proposal`.
+    #[tokio::test]
+    async fn approve_proposal_does_not_leak_pause_state_to_unauthenticated_caller() {
+        let (state, storage) = state_with_paused("0xpaused");
+        let err = approve_proposal(
+            &state,
+            ApproveEvmProposalParams {
+                account_id: "0xpaused".to_string(),
+                proposal_id: String::new(),
+                signature: String::new(),
+                session_address: String::new(),
+            },
+        )
+        .await
+        .expect_err("garbage payload must reject");
+        assert!(
+            !matches!(err, GuardianError::AccountPaused { .. }),
+            "pre-auth garbage must not surface pause state; got: {err:?}"
+        );
+        assert!(storage.get_update_delta_proposal_calls().is_empty());
+    }
+
+    /// Same ordering assertion for `cancel_proposal`.
+    #[tokio::test]
+    async fn cancel_proposal_does_not_leak_pause_state_to_unauthenticated_caller() {
+        let (state, storage) = state_with_paused("0xpaused");
+        let err = cancel_proposal(&state, "0xpaused", "0xcommitment", "0xsigner")
+            .await
+            .expect_err("garbage payload must reject");
+        assert!(
+            !matches!(err, GuardianError::AccountPaused { .. }),
+            "pre-auth garbage must not surface pause state; got: {err:?}"
+        );
+        assert!(storage.get_delete_delta_proposal_calls().is_empty());
+    }
 }

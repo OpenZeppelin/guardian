@@ -25,6 +25,10 @@ pub struct DashboardAccountSummary {
     pub state_status: DashboardAccountStateStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub paused_at: Option<String>,
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +44,14 @@ pub struct DashboardAccountDetail {
     pub updated_at: String,
     pub state_created_at: Option<String>,
     pub state_updated_at: Option<String>,
+    /// RFC 3339 UTC timestamp of the original pause; `None` when
+    /// active. Always emitted (active accounts get `null`) for a
+    /// uniform wire shape.
+    #[serde(default)]
+    pub paused_at: Option<String>,
+    /// Reason captured at first pause; `None` when active.
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +72,7 @@ pub async fn list_dashboard_accounts_paged(
     state: &AppState,
     limit: u32,
     cursor: Option<Cursor>,
+    paused: Option<bool>,
 ) -> Result<PagedResult<DashboardAccountSummary>> {
     if let Some(c) = cursor.as_ref()
         && c.kind != CursorKind::AccountList
@@ -87,7 +100,7 @@ pub async fn list_dashboard_accounts_paged(
     let page_size = limit.saturating_add(1);
     let metadatas = state
         .metadata
-        .list_paged(page_size, storage_cursor)
+        .list_paged(page_size, storage_cursor, paused)
         .await
         .map_err(|e| GuardianError::StorageError(format!("Failed to list metadata: {e}")))?;
 
@@ -194,6 +207,8 @@ impl DashboardAccountSummary {
             state_status,
             created_at: metadata.created_at.clone(),
             updated_at: metadata.updated_at.clone(),
+            paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
+            paused_reason: metadata.paused_reason.clone(),
         }
     }
 }
@@ -214,6 +229,8 @@ impl DashboardAccountDetail {
             updated_at: metadata.updated_at.clone(),
             state_created_at: Some(account_state.created_at.clone()),
             state_updated_at: Some(account_state.updated_at.clone()),
+            paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
+            paused_reason: metadata.paused_reason.clone(),
         }
     }
 }
@@ -260,6 +277,8 @@ mod tests {
             updated_at: updated_at.to_string(),
             has_pending_candidate: false,
             last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
         }
     }
 
@@ -323,7 +342,7 @@ mod tests {
         let mut next_cursor: Option<Cursor> = None;
         let mut pages = 0;
         for _ in 0..10 {
-            let page = list_dashboard_accounts_paged(&state, limit, next_cursor)
+            let page = list_dashboard_accounts_paged(&state, limit, next_cursor, None)
                 .await
                 .expect("list");
             for entry in &page.items {
