@@ -143,10 +143,9 @@ For `DEPLOY_STAGE=prod`, bootstrap the ACK secrets once before the first deploy:
 DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
 ```
 
-The normal deploy path does not create or rotate ACK keys. It expects these prod Secrets Manager entries to already exist, and the server reads them directly at startup before importing them into the filesystem keystore:
+The normal deploy path does not create or rotate ACK keys. It expects the prod Secrets Manager entries to already exist, and the server reads them directly at startup before importing them into the filesystem keystore.
 
-- `guardian-prod/server/ack-falcon-secret-key`
-- `guardian-prod/server/ack-ecdsa-secret-key`
+Secret names default to `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so distinct stacks (e.g. `guardian-prod`, `guardian-prod-eu`) automatically resolve to distinct secrets and multiple Guardian deployments can coexist in the same AWS account. Override per stack by setting `GUARDIAN_ACK_FALCON_SECRET_NAME` / `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy`; they flow into Terraform variables and the ECS task definition's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars.
 
 Dashboard operator public keys use a separate optional secret. The easiest
 deployment path is to pass the public keys to Terraform and let it create the

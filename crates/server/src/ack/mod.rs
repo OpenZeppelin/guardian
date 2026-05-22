@@ -120,17 +120,13 @@ mod tests {
     impl AckSecretProvider for MockAckSecretProvider {
         async fn falcon_secret_key(&self) -> Result<FalconSecretKey> {
             self.falcon_secret.clone().ok_or_else(|| {
-                GuardianError::ConfigurationError(
-                    "Secret guardian-prod/server/ack-falcon-secret-key not found".to_string(),
-                )
+                GuardianError::ConfigurationError("falcon ack secret not found".to_string())
             })
         }
 
         async fn ecdsa_secret_key(&self) -> Result<EcdsaSecretKey> {
             self.ecdsa_secret.clone().ok_or_else(|| {
-                GuardianError::ConfigurationError(
-                    "Secret guardian-prod/server/ack-ecdsa-secret-key not found".to_string(),
-                )
+                GuardianError::ConfigurationError("ecdsa ack secret not found".to_string())
             })
         }
     }
@@ -199,7 +195,7 @@ mod tests {
         let result = AckRegistry::from_secret_provider(temp_dir.clone(), &provider).await;
 
         assert!(
-            matches!(result, Err(GuardianError::ConfigurationError(message)) if message.contains("ack-ecdsa-secret-key"))
+            matches!(result, Err(GuardianError::ConfigurationError(message)) if message.contains("ecdsa"))
         );
         std::fs::remove_dir_all(temp_dir).ok();
     }

@@ -149,10 +149,14 @@ GUARDIAN_ENV=prod
 AWS_REGION=us-east-1
 ```
 
-On startup, the server fetches these two fixed Secrets Manager entries once, imports them into `GUARDIAN_KEYSTORE_PATH`, and then uses the normal filesystem keystore for signing:
+On startup, the server fetches two Secrets Manager entries once, imports them into `GUARDIAN_KEYSTORE_PATH`, and then uses the normal filesystem keystore for signing. The secret names are read from:
 
-- `guardian-prod/server/ack-falcon-secret-key`
-- `guardian-prod/server/ack-ecdsa-secret-key`
+- `GUARDIAN_ACK_FALCON_SECRET_ID`
+- `GUARDIAN_ACK_ECDSA_SECRET_ID`
+
+The ECS task definition always injects these from Terraform. Terraform defaults them to `${stack_name}/server/ack-{falcon,ecdsa}-secret-key`, so different stacks naturally get distinct secret names and multiple Guardian instances can coexist in the same AWS account. Override the names explicitly via the `guardian_ack_{falcon,ecdsa}_secret_name` Terraform variables when a stack needs to point at a pre-existing legacy secret.
+
+If you run the server outside ECS with `GUARDIAN_ENV=prod`, set both env vars yourself.
 
 Local and `dev` deployments stay on the filesystem-only path.
 
