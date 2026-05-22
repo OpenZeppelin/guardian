@@ -255,12 +255,13 @@ particular) can verify the server is the same Guardian they trust.
   two scheme implementations.
 - [`ack/secrets_manager.rs`](../../crates/server/src/ack/secrets_manager.rs)
   pulls secret payloads into the filesystem keystore at startup. In `dev`
-  keys are auto-generated; in `prod` they are loaded from two **fixed**
-  Secrets Manager IDs hardcoded as constants
-  ([`secrets_manager.rs:10-11`](../../crates/server/src/ack/secrets_manager.rs#L10)):
-  `guardian-prod/server/ack-falcon-secret-key` and
-  `guardian-prod/server/ack-ecdsa-secret-key`. There is no env-var
-  override path; making these configurable would require code changes.
+  keys are auto-generated; in `prod` they are loaded from the Secrets
+  Manager IDs in `GUARDIAN_ACK_FALCON_SECRET_ID` /
+  `GUARDIAN_ACK_ECDSA_SECRET_ID`, falling back to
+  `guardian-prod/server/ack-{falcon,ecdsa}-secret-key` when unset
+  ([`secrets_manager.rs:10-13`](../../crates/server/src/ack/secrets_manager.rs#L10)).
+  Terraform sets these env vars per stack so multi-stack deployments use
+  scoped IDs.
 
 ### Dashboard subsystem
 

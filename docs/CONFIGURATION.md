@@ -40,16 +40,28 @@ the runtime env vars in this document.
 | `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
 | `GUARDIAN_NETWORK_TYPE` | `MidenDevnet` | Miden network identifier (`MidenDevnet`, `MidenTestnet`, etc.). Required only when you need a non-default network. Pins which Miden RPC and on-chain consensus the server speaks to. |
 
-ACK secret IDs are **not currently env-configurable**. In `prod` the
-server reads from two fixed Secrets Manager IDs hardcoded in
-[`crates/server/src/ack/secrets_manager.rs:10-11`](../crates/server/src/ack/secrets_manager.rs#L10):
+ACK secret IDs are configurable. The server reads two env vars at startup
+and falls back to fixed defaults when they're unset
+([`crates/server/src/ack/secrets_manager.rs:10-13`](../crates/server/src/ack/secrets_manager.rs#L10)):
 
-- `guardian-prod/server/ack-falcon-secret-key`
-- `guardian-prod/server/ack-ecdsa-secret-key`
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_ACK_FALCON_SECRET_ID` | `guardian-prod/server/ack-falcon-secret-key` | Secrets Manager name/ARN for the Falcon ACK secret key. |
+| `GUARDIAN_ACK_ECDSA_SECRET_ID` | `guardian-prod/server/ack-ecdsa-secret-key` | Secrets Manager name/ARN for the ECDSA ACK secret key. |
 
-Terraform (`infra/data.tf`) and the deploy script
-(`scripts/aws-deploy.sh`) use the same hardcoded names. See
-[Secrets runbook](./runbooks/secrets.md#ack-signing-keys).
+> **`_SECRET_ID` (runtime) vs `_SECRET_NAME` (deploy-side):** the server
+> reads `GUARDIAN_ACK_*_SECRET_ID` at startup, but you typically don't
+> set these by hand. The deploy script accepts
+> `GUARDIAN_ACK_*_SECRET_NAME` (see the [Deploy script
+> section](#deploy-script-scriptsaws-deploysh) below), passes it into
+> Terraform as `guardian_ack_*_secret_name`, and Terraform sets the
+> matching `_SECRET_ID` env var on the ECS task. Same value, three
+> places — see the [Secrets runbook](./runbooks/secrets.md#ack-signing-keys)
+> for the full override chain.
+
+In the reference AWS deploy, Terraform sets both `_SECRET_ID` env vars on
+the ECS task to `${stack_name}/server/ack-{falcon,ecdsa}-secret-key` so
+multi-stack deployments get scoped IDs.
 
 ## Runtime — request safety
 
@@ -111,6 +123,8 @@ turns them into Terraform variables or build-time choices.
 | `CLOUDFLARE_ZONE_ID` | _unset_ | Optional Cloudflare zone for CNAME management. |
 | `CLOUDFLARE_API_TOKEN` | _unset_ | Required iff `CLOUDFLARE_ZONE_ID` is set. |
 | `CLOUDFLARE_PROXIED` | `false` | Whether the Cloudflare CNAME should be proxied. |
+| `GUARDIAN_ACK_FALCON_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-falcon-secret-key` | Deploy-side override for the Falcon ACK secret. Passed into Terraform as `guardian_ack_falcon_secret_name` and set on the ECS task as the runtime `GUARDIAN_ACK_FALCON_SECRET_ID`. |
+| `GUARDIAN_ACK_ECDSA_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-ecdsa-secret-key` | Deploy-side override for the ECDSA ACK secret. Same flow as the Falcon entry above. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON` | _unset_ | Inline JSON array of operator pubkeys; Terraform creates the secret from this. Mutually exclusive with `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN`. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN` | _unset_ | ARN of an externally-managed operator pubkeys secret. When set, Terraform does not create one and the task reads from this ARN instead. |
 | `GUARDIAN_EVM_CHAIN_CONFIG_FILE` | _unset_ | Path to a JSON file the deploy script reads to derive `GUARDIAN_EVM_RPC_URLS` (and the bookkeeping `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` Terraform variable). Not read by the server. |

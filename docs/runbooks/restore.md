@@ -24,8 +24,12 @@ stack at least quarterly:
 - [ ] Terraform state files (`infra/terraform.<stack>.<stage>.tfstate`)
       are committed to a private location **outside** the repo and the
       developer machine. Defaults are local-only.
-- [ ] ACK keys (`guardian-prod/server/ack-falcon-secret-key`,
-      `…/ack-ecdsa-secret-key`) have an offline backup. **Losing both
+- [ ] ACK keys have an offline backup. Active secret IDs come from the
+      `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID`
+      env vars on the ECS task; Terraform sets these to
+      `${stack_name}/server/ack-{falcon,ecdsa}-secret-key` by default,
+      with code-level defaults of `guardian-prod/server/ack-*-secret-key`
+      ([secrets runbook](./secrets.md#ack-signing-keys)). **Losing both
       ACK keys breaks every client's trust chain** and forces a full
       re-attestation flow.
 - [ ] Operator allowlist payload is versioned in a place you can
@@ -83,12 +87,15 @@ Goal: re-establish the server's attestation identity.
    value**, not a JSON document — see
    [`aws-deploy.sh:374-398`](../../scripts/aws-deploy.sh#L374)):
    ```bash
+   FALCON_ID="${GUARDIAN_ACK_FALCON_SECRET_NAME:-${TF_VAR_guardian_ack_falcon_secret_name:-${STACK_NAME:-guardian}/server/ack-falcon-secret-key}}"
+   ECDSA_ID="${GUARDIAN_ACK_ECDSA_SECRET_NAME:-${TF_VAR_guardian_ack_ecdsa_secret_name:-${STACK_NAME:-guardian}/server/ack-ecdsa-secret-key}}"
+
    aws secretsmanager put-secret-value \
-     --secret-id guardian-prod/server/ack-falcon-secret-key \
+     --secret-id "$FALCON_ID" \
      --secret-string "$(jq -r '.falcon_secret_key' bootstrap-output.json)"
 
    aws secretsmanager put-secret-value \
-     --secret-id guardian-prod/server/ack-ecdsa-secret-key \
+     --secret-id "$ECDSA_ID" \
      --secret-string "$(jq -r '.ecdsa_secret_key' bootstrap-output.json)"
    ```
    If you stored each key as a plain text file instead, use

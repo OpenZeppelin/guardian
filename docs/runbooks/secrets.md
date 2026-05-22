@@ -14,14 +14,40 @@ this doc covers *how* to bootstrap, rotate, and respond to compromise.
 |---|---|---|---|
 | `DATABASE_URL` | Secrets Manager (`<stack>/server/database-url`) | Managed by Terraform | ECS task **execution** role, at task start |
 | RDS Proxy credentials (prod) | Secrets Manager (`<stack>/server/database-credentials`) | Managed by Terraform | RDS Proxy IAM role |
-| ACK signing keys (prod) | Secrets Manager — fixed IDs `guardian-prod/server/ack-falcon-secret-key` and `guardian-prod/server/ack-ecdsa-secret-key` (hardcoded in [`crates/server/src/ack/secrets_manager.rs:10-11`](../../crates/server/src/ack/secrets_manager.rs#L10)) | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys | ECS task **runtime** role, at server startup |
+| ACK signing keys (prod) | Secrets Manager — IDs selected by `GUARDIAN_ACK_{FALCON,ECDSA}_SECRET_ID` env vars; default `guardian-prod/server/ack-{falcon,ecdsa}-secret-key`; Terraform sets per-stack `${stack_name}/server/ack-{falcon,ecdsa}-secret-key` | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys | ECS task **runtime** role, at server startup |
 | Operator public keys | Secrets Manager (Terraform-managed or pre-existing ARN) | Updated by editing Terraform var or rotating the secret value | ECS task runtime role, on each dashboard challenge **and each authenticated `/dashboard/*` request** (hot-reloaded — no restart needed) |
 | EVM allowed chains + RPC URLs | Secrets Manager (Terraform-managed) | Updated by editing `config/evm/chains.json` and redeploying | ECS task execution role; surfaced as env to the task |
 
-The ACK secret IDs are **fixed constants** in the server, Terraform
-(`infra/data.tf`), and `scripts/aws-deploy.sh`. There is no env-var or
-Terraform-variable override path today — changing the names requires
-code changes in all three places.
+The ACK secret name is one value that travels through three places. They
+have **different variable names by design** — each layer has a distinct
+job — but they always carry the same string:
+
+| Layer | Variable | Lives where | Job |
+|---|---|---|---|
+| 1. Deploy-time | `GUARDIAN_ACK_FALCON_SECRET_NAME` / `_ECDSA_SECRET_NAME` | Your shell when running `scripts/aws-deploy.sh` | Operator-facing override. The script passes it into Terraform. |
+| 2. Terraform | `guardian_ack_falcon_secret_name` / `_ecdsa_secret_name` | [`infra/variables.tf`](../../infra/variables.tf), [`infra/data.tf:104-105`](../../infra/data.tf#L104) | Creates / looks up the Secrets Manager entry and renders the ECS task definition. |
+| 3. Runtime | `GUARDIAN_ACK_FALCON_SECRET_ID` / `_ECDSA_SECRET_ID` | The ECS task env, read by [`secrets_manager.rs:10-13`](../../crates/server/src/ack/secrets_manager.rs#L10) | What the server actually consults at startup. |
+
+Resolution order in each layer:
+
+1. **Deploy env (`_SECRET_NAME`).** If unset, the deploy script falls
+   through to `TF_VAR_guardian_ack_*_secret_name`, then to
+   `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`
+   ([`aws-deploy.sh:324-329`](../../scripts/aws-deploy.sh#L324)).
+2. **Terraform variable.** If unset, defaults to
+   `${stack_name}/server/ack-{falcon,ecdsa}-secret-key`. Renders the ECS
+   task definition with `GUARDIAN_ACK_*_SECRET_ID` set
+   ([`infra/ecs.tf:105-110`](../../infra/ecs.tf#L105)).
+3. **Server runtime env (`_SECRET_ID`).** If unset (unusual — only
+   happens in non-Terraform prod-mode launches), falls back to the
+   code-level defaults `guardian-prod/server/ack-{falcon,ecdsa}-secret-key`.
+
+There is a deliberate drift between the code default
+(`guardian-prod/...`) and the Terraform default (`${stack_name}/...`,
+no `-prod`). In the reference AWS deploy the server always reads the
+Terraform-derived name because the ECS task definition always sets the
+`_SECRET_ID` env var — the code default only matters for hand-rolled
+prod-mode launches.
 
 ## ACK signing keys
 
@@ -46,10 +72,17 @@ What that command does
    except via the `aws secretsmanager create-secret` call).
 3. Creates both secrets in Secrets Manager with the generated values.
 
-Verify:
+Verify. The deploy script resolves the active IDs as
+`${GUARDIAN_ACK_*_SECRET_NAME:-${TF_VAR_guardian_ack_*_secret_name:-${STACK_NAME}/server/ack-*-secret-key}}`
+([`aws-deploy.sh:324-329`](../../scripts/aws-deploy.sh#L324)). Mirror that
+locally:
+
 ```bash
-aws secretsmanager describe-secret --secret-id guardian-prod/server/ack-falcon-secret-key
-aws secretsmanager describe-secret --secret-id guardian-prod/server/ack-ecdsa-secret-key
+FALCON="${GUARDIAN_ACK_FALCON_SECRET_NAME:-${TF_VAR_guardian_ack_falcon_secret_name:-${STACK_NAME:-guardian}/server/ack-falcon-secret-key}}"
+ECDSA="${GUARDIAN_ACK_ECDSA_SECRET_NAME:-${TF_VAR_guardian_ack_ecdsa_secret_name:-${STACK_NAME:-guardian}/server/ack-ecdsa-secret-key}}"
+
+aws secretsmanager describe-secret --secret-id "$FALCON"
+aws secretsmanager describe-secret --secret-id "$ECDSA"
 ```
 
 Subsequent `aws-deploy.sh deploy` runs assert these secrets exist
@@ -69,17 +102,19 @@ Procedure (planned rotation, e.g. annual):
    cargo run --quiet --package guardian-server --bin ack-keygen > /tmp/ack-keys.json
    ```
 3. Put new values into Secrets Manager — `update-secret` creates a new
-   version without disturbing the secret ID:
+   version without disturbing the secret ID. Reuse the same
+   `$FALCON` / `$ECDSA` IDs you resolved in the Verify block above so
+   multi-stack deploys hit the right secret:
    ```bash
-   FALCON=$(jq -r .falcon_secret_key /tmp/ack-keys.json)
-   ECDSA=$(jq -r .ecdsa_secret_key /tmp/ack-keys.json)
+   FALCON_VALUE=$(jq -r .falcon_secret_key /tmp/ack-keys.json)
+   ECDSA_VALUE=$(jq -r .ecdsa_secret_key /tmp/ack-keys.json)
 
    aws secretsmanager update-secret \
-     --secret-id guardian-prod/server/ack-falcon-secret-key \
-     --secret-string "$FALCON"
+     --secret-id "$FALCON" \
+     --secret-string "$FALCON_VALUE"
    aws secretsmanager update-secret \
-     --secret-id guardian-prod/server/ack-ecdsa-secret-key \
-     --secret-string "$ECDSA"
+     --secret-id "$ECDSA" \
+     --secret-string "$ECDSA_VALUE"
    ```
 4. Force a new ECS deployment so tasks restart and import the new keys:
    ```bash

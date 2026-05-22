@@ -136,12 +136,42 @@ load time so a typo surfaces explicitly
 Wire strings are **case-sensitive** and **must not contain whitespace** —
 the parser rejects both.
 
-> **Current scope:** `dashboard:read` gates all read endpoints today.
-> `accounts:pause` and `policies:write` are reserved vocabulary — the
-> allowlist parser accepts and enforces them, but the only endpoint that
-> currently requires `accounts:pause` is the `/dashboard/probe` test route
-> ([`dashboard/probe.rs`](../crates/server/src/dashboard/probe.rs)). The
-> account-pause and policy-write features themselves are not yet shipped.
+> **Current scope:** `dashboard:read` gates all read endpoints.
+> `accounts:pause` gates the pause/unpause endpoints (see [Account
+> pausing](#account-pausing) below). `policies:write` is reserved
+> vocabulary — accepted by the allowlist parser but no endpoint requires
+> it yet.
+
+## Account pausing
+
+Operators holding `accounts:pause` can halt and resume an account's
+state-changing operations. While paused, the server rejects every
+authenticated per-account call with `409 GUARDIAN_ACCOUNT_PAUSED` and
+gRPC `FailedPrecondition`
+([`error.rs:97-101`](../crates/server/src/error.rs#L97)). Read endpoints
+remain available.
+
+| Route | Permission | Body |
+|---|---|---|
+| `POST /dashboard/accounts/{id}/pause` | `accounts:pause` | `{ "reason": "<non-empty string>" }` — required and validated. |
+| `POST /dashboard/accounts/{id}/unpause` | `accounts:pause` | `{ "reason": "<optional string>" }` — optional. |
+
+Both endpoints are **idempotent**: pausing an already-paused account or
+unpausing a not-paused account succeeds without state change. Each
+transition is recorded in the audit log with the operator's commitment,
+the timestamp, and the supplied reason
+([`services/pause_account.rs`](../crates/server/src/services/pause_account.rs),
+[`services/unpause_account.rs`](../crates/server/src/services/unpause_account.rs)).
+
+Pause state lives in the account metadata (`paused_at`,
+`paused_reason`) — survives task restarts and follows the account across
+multi-stack deploys that share metadata storage.
+
+When a paused account is touched by a write path (`PushDelta`,
+`SignDeltaProposal`, `PushDeltaProposal`, …), the server returns
+`GUARDIAN_ACCOUNT_PAUSED` with the original `paused_reason` in the
+response body. See
+[`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#error-code-reference).
 
 ## Allowlist payload
 

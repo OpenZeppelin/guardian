@@ -155,6 +155,21 @@ Symptoms: client reads look "behind reality" relative to Miden. Causes:
 Always compare against Miden before signing high-value transactions; see
 the [client verification checklist](./CONCEPTS.md#client-verification-checklist).
 
+### Account is paused
+
+Every write call against an account returns `409 GUARDIAN_ACCOUNT_PAUSED`
+(gRPC `FailedPrecondition`). Reads still work.
+
+- **Confirm:** check `GET /dashboard/accounts/{id}` — paused accounts
+  report `paused_at` and `paused_reason`.
+- **Resume:** an operator holding `accounts:pause` calls
+  `POST /dashboard/accounts/{id}/unpause` with an optional `{"reason": "..."}`
+  body. The pause/unpause cycle is idempotent and audit-logged. See
+  [`DASHBOARD.md`](./DASHBOARD.md#account-pausing).
+- **Don't bypass:** the pause is enforced server-side at the metadata
+  layer, not in the client. There is no env var or feature flag to
+  disable it.
+
 ### Rate limits triggered
 
 `429` with `code: rate_limit_exceeded` and a `Retry-After` header.
@@ -234,6 +249,7 @@ come from
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
+| `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
 
 ### Validation
 

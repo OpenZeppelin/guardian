@@ -195,6 +195,7 @@ flowchart TB
 | Stale delta (`commitment_mismatch`) | `400` with `code: commitment_mismatch` | `GET /delta/since` → replay canonical chain → retry the local transaction. |
 | Candidate discarded | Delta status flips `candidate` → `discarded` | Refetch state, rebuild and resubmit. Usually means the Miden proof was never submitted or the on-chain commitment diverged. |
 | Operator censors / withholds | Other cosigners see stale state | Use the user's cold key to rotate Guardian; the new operator inherits canonical state from Miden. |
+| Account paused by operator | Every write returns `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
 | Pubkey changed unexpectedly | `/pubkey` returns a key your client doesn't pin | Treat as compromise. Halt, verify rotation through an out-of-band channel. |
 
 ## Provider rotation
