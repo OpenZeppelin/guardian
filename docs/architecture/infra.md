@@ -272,8 +272,10 @@ remains an open production-hardening gap.
   operators apply concurrently.
 - **No WAF, no Shield Advanced.** The ALB is reachable from
   `alb_ingress_cidrs`, default `0.0.0.0/0`.
-- **No RDS read replica, no documented restore runbook.** Backups are
-  configured via `rds_backup_retention_days` but there is no automated DR
-  path or rehearsed restore procedure.
+- **No RDS read replica, no automated DR drill.** Backups are
+  configured via `rds_backup_retention_days` (default 7) and a manual
+  restore checklist lives in
+  [`docs/runbooks/restore.md`](../runbooks/restore.md), but there is no
+  rehearsed, automated DR path.
 - **No KMS-managed Secrets Manager keys.** Secrets use the default AWS-owned
   key. Rotation is manual.

@@ -5,8 +5,14 @@ deployment that runs it.
 
 ## Start here
 
+- [Concepts](./CONCEPTS.md) — what Guardian is, the custody model
+  (3-key multisig), state and delta lifecycle, trust boundaries, failure
+  and recovery model, provider rotation. **Read this first.**
 - [Local development](./LOCAL_DEV.md) — running Guardian on your machine:
   filesystem vs Postgres, feature flags, examples, and end-to-end flow.
+- [Troubleshooting](./TROUBLESHOOTING.md) — common failures organized by
+  symptom, plus a stable error-code reference for every wire `code` the
+  server returns.
 - [`spec/`](../spec/index.md) — protocol specification. Glossary
   (State, Delta, Nonce, Commitment), components, processes, and the API
   contract for each RPC.
@@ -27,6 +33,8 @@ deployment that runs it.
   Terraform variable reference, and troubleshooting.
 - [Secrets and key management](./runbooks/secrets.md) — runbook for the
   five secret categories: bootstrap, rotation, compromise response.
+- [Disaster recovery](./runbooks/restore.md) — restore checklist for
+  RDS, ACK keys, Terraform state, and the operator allowlist.
 - [`infra/README.md`](../infra/README.md) — Terraform-level reference for
   raw `terraform apply` workflows and variable defaults.
 

@@ -2,6 +2,11 @@
 
 An SDK for creating and managing multisignature accounts on the Miden network. Available for both **TypeScript** (web/browser) and **Rust** (native/server) environments.
 
+> New to Guardian? Read [`docs/CONCEPTS.md`](./CONCEPTS.md) for the trust
+> model and state/delta lifecycle, and
+> [`docs/architecture/services.md`](./architecture/services.md) for the
+> server-side surface this SDK targets.
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -715,7 +720,7 @@ let proposal = client.propose_transaction(tx).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
-### Use Case 4: Note Consumption
+### Use Case 3: Note Consumption
 
 Claiming tokens sent to the multisig.
 

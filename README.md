@@ -9,10 +9,12 @@ Warning: This is a work in progress.
 
 ### Documentation
 
-- [`docs/`](docs/README.md) — in-repo documentation hub: local
-  development, architecture (services and AWS deployment), operator
-  dashboard, secrets and key-management runbook, and the multisig SDK
-  guide.
+- [`docs/`](docs/README.md) — in-repo documentation hub. Start with
+  [Concepts](docs/CONCEPTS.md) for the custody model and state/delta
+  lifecycle, then [Local development](docs/LOCAL_DEV.md) and
+  [Troubleshooting](docs/TROUBLESHOOTING.md). Also covers architecture
+  (services and AWS deployment), the operator dashboard, the secrets
+  and disaster-recovery runbooks, and the multisig SDK guide.
 - [`spec/`](spec/index.md) — protocol specification. Core concepts
   (State and Delta), components (API, Metadata, Auth, Acknowledger,
   Network, Storage), and key processes such as canonicalization. Start
@@ -112,7 +114,7 @@ The HTTP server will be available at `http://localhost:3000`
 
 The gRPC server will be available at `localhost:50051`
 
-This default Compose flow uses the filesystem backend. If you need a local Postgres container for benchmark or explicit Postgres-backed runs, use [docker-compose.postgres.yml](/Users/marcos/repos/guardian/docker-compose.postgres.yml) instead.
+This default Compose flow uses the filesystem backend. If you need a local Postgres container for benchmark or explicit Postgres-backed runs, use [docker-compose.postgres.yml](./docker-compose.postgres.yml) instead.
 
 ### Testing
 

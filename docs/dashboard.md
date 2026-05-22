@@ -92,6 +92,35 @@ For multi-replica deployments where you want cursors to validate across
 replicas, set `GUARDIAN_DASHBOARD_CURSOR_SECRET` to a 32-byte hex value
 shared by every task ([`config.rs:38`](../crates/server/src/dashboard/config.rs#L38)).
 
+## Pagination
+
+All list endpoints
+([`services/dashboard_pagination.rs`](../crates/server/src/services/dashboard_pagination.rs))
+share the same query-parameter shape:
+
+- `limit` — integer in `[1, 500]`. Default `50` when omitted or empty.
+  Out-of-range or non-integer values return HTTP 400 `invalid_limit`.
+- `cursor` — opaque, HMAC-signed token returned by the previous page.
+  Signed with the cursor secret (see above); tampered, expired, or
+  wrong-kind cursors return HTTP 400 `invalid_cursor`. Omit to start
+  from the first page.
+
+When `GUARDIAN_DASHBOARD_CURSOR_SECRET` is unset, each task generates a
+random secret at startup. Cursors then become invalid the moment a
+client is routed to a different task — set the env var on any
+multi-replica deployment.
+
+The global-delta feed
+([`GET /dashboard/deltas`](../crates/server/src/api/dashboard_feeds.rs))
+also accepts a `status` filter
+([`services/dashboard_global_deltas.rs`](../crates/server/src/services/dashboard_global_deltas.rs)):
+
+- Allowed values: `candidate`, `canonical`, `discarded` (comma-separated
+  to combine, e.g. `?status=candidate,canonical`).
+- Omitted or empty → all statuses.
+- Duplicates within the filter are silently coalesced.
+- Any other token returns HTTP 400 `invalid_status_filter`.
+
 ## Permission vocabulary
 
 Permissions are server-defined; unknown strings are rejected at allowlist
@@ -102,10 +131,17 @@ load time so a typo surfaces explicitly
 |---|---|
 | `dashboard:read` | Read access to all `/dashboard/*` read endpoints. |
 | `accounts:pause` | Pause/unpause accounts. |
-| `policies:write` | Write account policies (feature #182). |
+| `policies:write` | Write account policies. |
 
 Wire strings are **case-sensitive** and **must not contain whitespace** —
 the parser rejects both.
+
+> **Current scope:** `dashboard:read` gates all read endpoints today.
+> `accounts:pause` and `policies:write` are reserved vocabulary — the
+> allowlist parser accepts and enforces them, but the only endpoint that
+> currently requires `accounts:pause` is the `/dashboard/probe` test route
+> ([`dashboard/probe.rs`](../crates/server/src/dashboard/probe.rs)). The
+> account-pause and policy-write features themselves are not yet shipped.
 
 ## Allowlist payload
 
@@ -133,8 +169,10 @@ The operator allowlist is a Secrets Manager entry whose payload is one of:
 Mixed arrays of bare strings and objects are accepted; duplicate
 `public_key` entries across the file are rejected.
 
-The server resolves the allowlist from one of these env vars at startup
-([`allowlist.rs:70`](../crates/server/src/dashboard/allowlist.rs#L70)):
+The server resolves the allowlist *source* from one of these env vars
+at startup ([`allowlist.rs:70`](../crates/server/src/dashboard/allowlist.rs#L70));
+the contents are re-read per authenticated request, so adding or
+removing operators does not require a task restart:
 
 | Env var | Source |
 |---|---|

@@ -97,13 +97,16 @@ service handlers in
 
 ### Transports — `api/`
 
-Two transports, one set of service handlers.
+Two transports, one set of service handlers. Default ports are `:50051`
+(gRPC) and `:3000` (HTTP/dashboard); both are configurable via the server
+builder.
 
 - **gRPC** ([`api/grpc.rs`](../../crates/server/src/api/grpc.rs)) is the
   primary surface for the Rust client. Schema lives in
-  `crates/server/proto/guardian.proto`.
+  `crates/server/proto/guardian.proto`. Default bind: `:50051`.
 - **HTTP** ([`api/http.rs`](../../crates/server/src/api/http.rs)) hosts the
   REST routes for the TypeScript clients **and** the operator dashboard.
+  Default bind: `:3000`.
   `axum` based. The TS Guardian client (`@openzeppelin/guardian-client`)
   is HTTP-only — it does **not** speak gRPC. This Rust-vs-TS transport
   split is the most common integration pitfall in the codebase.
@@ -358,5 +361,6 @@ Both paths share the same ACK signer when emitting *responses*; only the
 - For build-and-deploy: [`docs/SERVER_AWS_DEPLOY.md`](../SERVER_AWS_DEPLOY.md).
 - For the deployment topology: [`docs/architecture/infra.md`](./infra.md).
 - For the multisig SDK: [`docs/MULTISIG_SDK.md`](../MULTISIG_SDK.md).
-- For protocol-level contracts: `crates/server/proto/guardian.proto` and the
-  `guardian-contract-change` skill notes when touching it.
+- For protocol-level contracts: `crates/server/proto/guardian.proto`. When
+  changing the proto, regenerate language bindings and re-run the SDK smoke
+  tests in `examples/` before publishing.
