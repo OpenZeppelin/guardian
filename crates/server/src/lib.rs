@@ -15,6 +15,7 @@ pub use builder::clock;
 pub use builder::logging;
 pub use builder::state;
 pub mod delta_object;
+pub mod delta_summary;
 pub mod error;
 #[cfg(feature = "evm")]
 pub mod evm;

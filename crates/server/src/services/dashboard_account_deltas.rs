@@ -16,6 +16,9 @@ use serde::Serialize;
 
 use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::delta_summary::{
+    DashboardDeltaCategory, DeltaActivitySummary, classify_delta_payload,
+};
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
@@ -57,6 +60,21 @@ pub struct DashboardDeltaEntry {
     /// carry no metadata blob.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
+
+    /// Closed, stable action-category enumeration. Always present
+    /// (SC-002). Feature 007 / FR-002.
+    pub category: DashboardDeltaCategory,
+
+    /// Optional fine-grained kind echoing
+    /// `delta_payload.metadata.proposal_type`. Serialized as `null`
+    /// (not skipped) so callers see a stable key set on every entry.
+    /// Feature 007 / FR-002.
+    pub kind: Option<String>,
+
+    /// Per-entry derived summary fields (asset / counterparty /
+    /// note counts). Always present; sub-fields are nullable when not
+    /// safely extractable (FR-004).
+    pub summary: DeltaActivitySummary,
 }
 
 /// Decode a [`DeltaStatus`] into the dashboard wire triple
@@ -88,8 +106,14 @@ pub(crate) fn decode_delta_status(
 impl DashboardDeltaEntry {
     /// Build a wire entry from a persisted [`DeltaObject`]. Returns
     /// `None` for `Pending` deltas, which the caller filters out.
+    ///
+    /// Decode / classify failures never drop the entry (FR-004): the
+    /// shared `classify_delta_payload` helper folds malformed payloads
+    /// into `category = Custom`, `kind = None`, and an empty
+    /// [`DeltaActivitySummary`].
     fn from_delta(delta: &DeltaObject) -> Option<Self> {
         let (status, retry_count, status_timestamp) = decode_delta_status(&delta.status)?;
+        let (category, kind, summary) = classify_delta_payload(&delta.delta_payload);
         Some(Self {
             nonce: delta.nonce,
             status,
@@ -98,6 +122,9 @@ impl DashboardDeltaEntry {
             new_commitment: delta.new_commitment.clone(),
             retry_count,
             proposal_type: delta.proposal_type().map(str::to_string),
+            category,
+            kind,
+            summary,
         })
     }
 }
@@ -250,6 +277,102 @@ mod tests {
         let d = canonical(1); // delta_payload is `{}`
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
         assert!(entry.proposal_type.is_none());
+    }
+
+    // --- Feature 007 enrichment tests (FR-002, FR-003, FR-004, SC-002) -----
+
+    #[test]
+    fn from_delta_unrecognized_payload_classifies_as_custom() {
+        // Empty `delta_payload` is the legacy test shape and is not a
+        // recognized TransactionSummary or wrapper — classifier must
+        // still return a non-null category (SC-002) and the entry is
+        // never dropped (FR-004).
+        let d = canonical(1);
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert_eq!(entry.category, DashboardDeltaCategory::Custom);
+        assert!(entry.kind.is_none());
+        assert!(entry.summary.asset.is_none());
+        assert!(entry.summary.counterparty.is_none());
+    }
+
+    #[test]
+    fn from_delta_p2id_multisig_carries_category_kind_and_summary() {
+        let mut d = canonical(2);
+        d.delta_payload = crate::delta_summary::tests::fixtures::multisig_p2id_wrapper();
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert_eq!(entry.category, DashboardDeltaCategory::AssetTransfer);
+        assert_eq!(entry.kind.as_deref(), Some("p2id"));
+        // proposal_type kept for backwards compat — equals `kind`.
+        assert_eq!(entry.proposal_type.as_deref(), Some("p2id"));
+        let asset = entry.summary.asset.expect("p2id metadata surfaces asset");
+        assert_eq!(asset.amount.as_deref(), Some("-100"));
+        let counterparty = entry.summary.counterparty.expect("recipient surfaces");
+        assert_eq!(
+            counterparty.direction,
+            crate::delta_summary::CounterpartyDirection::Out
+        );
+    }
+
+    #[test]
+    fn from_delta_add_signer_multisig_collapses_to_account_storage_change() {
+        let mut d = canonical(3);
+        d.delta_payload = crate::delta_summary::tests::fixtures::multisig_add_signer();
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert_eq!(entry.category, DashboardDeltaCategory::AccountStorageChange);
+        assert_eq!(entry.kind.as_deref(), Some("add_signer"));
+        // No asset for admin operations.
+        assert!(entry.summary.asset.is_none());
+    }
+
+    #[test]
+    fn from_delta_switch_guardian_categorizes_as_guardian_switch() {
+        let mut d = canonical(4);
+        d.delta_payload = crate::delta_summary::tests::fixtures::multisig_switch_guardian();
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert_eq!(entry.category, DashboardDeltaCategory::GuardianSwitch);
+        assert_eq!(entry.kind.as_deref(), Some("switch_guardian"));
+    }
+
+    #[test]
+    fn from_delta_push_delta_raw_summary_has_null_kind() {
+        // Single-key push_delta deltas carry no metadata → `kind` is
+        // null on the wire, but `category` is still derived from
+        // on-chain topology (FR-002b).
+        let mut d = canonical(5);
+        d.delta_payload = crate::delta_summary::tests::fixtures::push_delta_raw_tx_summary();
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert!(entry.kind.is_none());
+        assert_eq!(entry.category, DashboardDeltaCategory::AccountStorageChange);
+        // proposal_type field remains None for backwards compat.
+        assert!(entry.proposal_type.is_none());
+    }
+
+    #[test]
+    fn from_delta_malformed_payload_returns_entry_with_custom_category() {
+        // FR-004: malformed payload still produces a listing entry.
+        let mut d = canonical(6);
+        d.delta_payload = crate::delta_summary::tests::fixtures::malformed_base64();
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("entry never dropped");
+        assert_eq!(entry.category, DashboardDeltaCategory::Custom);
+        assert!(entry.kind.is_none());
+    }
+
+    #[test]
+    fn from_delta_kind_is_serialized_as_null_not_skipped() {
+        // FR-002 requires the listing key set to be stable; `kind`
+        // serializes as `null` when absent (not skipped).
+        let d = canonical(7); // empty payload → no metadata → kind None
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        let serialized = serde_json::to_value(&entry).unwrap();
+        assert!(serialized.get("kind").is_some(), "kind key must be present");
+        assert!(
+            serialized.get("kind").unwrap().is_null(),
+            "kind value must be JSON null when absent, got {:?}",
+            serialized.get("kind"),
+        );
+        // category present too — never null.
+        assert!(serialized.get("category").is_some());
+        assert!(!serialized.get("category").unwrap().is_null());
     }
 
     async fn state_with_n_calls(

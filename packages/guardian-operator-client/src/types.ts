@@ -212,6 +212,55 @@ export interface PagedResult<T> {
 
 export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'discarded';
 
+/**
+ * Closed enumeration of dashboard delta categories. Feature 007 /
+ * FR-002. Adding a value here is a wire-contract change that must
+ * land on the Rust server first.
+ */
+export type DashboardDeltaCategory =
+  | 'asset_transfer'
+  | 'asset_swap'
+  | 'note_consumption'
+  | 'note_creation'
+  | 'account_storage_change'
+  | 'guardian_switch'
+  | 'custom';
+
+export type DeltaAssetKind = 'fungible' | 'non_fungible';
+
+export interface DashboardDeltaAssetSummary {
+  assetId: string;
+  kind: DeltaAssetKind;
+  /** Signed decimal magnitude for fungible holdings (e.g. `"-100"`,
+   * `"+50"`). Omitted for non-fungible holdings — the detail view
+   * carries `added` / `removed` lists instead. */
+  amount?: string;
+}
+
+export type DeltaCounterpartyDirection = 'in' | 'out';
+
+export interface DashboardDeltaCounterpartySummary {
+  accountId: string;
+  direction: DeltaCounterpartyDirection;
+}
+
+export interface DashboardDeltaNoteCounts {
+  input: number;
+  output: number;
+}
+
+/**
+ * Per-entry derived summary fields shown on the listing endpoints.
+ * Feature 007 / FR-003. Sub-fields are nullable when the underlying
+ * payload does not carry them (FR-004); `noteCounts` is always
+ * present.
+ */
+export interface DashboardDeltaActivitySummary {
+  asset: DashboardDeltaAssetSummary | null;
+  counterparty: DashboardDeltaCounterpartySummary | null;
+  noteCounts: DashboardDeltaNoteCounts;
+}
+
 export interface DashboardDeltaEntry {
   nonce: number;
   accountId?: string;
@@ -228,6 +277,23 @@ export interface DashboardDeltaEntry {
    * deltas, which carry no metadata blob.
    */
   proposalType?: string;
+
+  /**
+   * Closed action-category enumeration. Always present on every
+   * listing entry (SC-002). Feature 007 / FR-002.
+   */
+  category: DashboardDeltaCategory;
+
+  /**
+   * Optional fine-grained kind echoing `proposalType` when present.
+   * The wire shape always carries the `kind` key with value `null`
+   * when absent, so this is a `string | null` (not `string |
+   * undefined`) by contract. Feature 007 / FR-002.
+   */
+  kind: string | null;
+
+  /** Per-entry derived summary fields. Feature 007 / FR-003. */
+  summary: DashboardDeltaActivitySummary;
 }
 
 export interface DashboardProposalEntry {

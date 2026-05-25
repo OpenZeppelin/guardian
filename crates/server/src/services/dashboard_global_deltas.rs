@@ -37,6 +37,9 @@ use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_account_deltas::{DashboardDeltaStatus, decode_delta_status};
+use crate::delta_summary::{
+    DashboardDeltaCategory, DeltaActivitySummary, classify_delta_payload,
+};
 use crate::services::dashboard_pagination::{PagedResult, enforce_aggregate_threshold};
 use crate::state::AppState;
 use crate::storage::{DeltaStatusKind, GlobalDeltaCursor};
@@ -59,6 +62,19 @@ pub struct DashboardGlobalDeltaEntry {
     /// Miden `push_delta` writes and EVM deltas.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
+
+    /// Closed action-category enumeration. Always present (SC-002).
+    /// Feature 007 / FR-002.
+    pub category: DashboardDeltaCategory,
+
+    /// Optional fine-grained kind echoing
+    /// `delta_payload.metadata.proposal_type`. Serialized as `null`
+    /// (not skipped) so the global feed entry shape is byte-aligned
+    /// with the per-account feed entry. Feature 007 / FR-002.
+    pub kind: Option<String>,
+
+    /// Per-entry derived summary fields. Feature 007 / FR-003.
+    pub summary: DeltaActivitySummary,
 }
 
 /// Parse a comma-separated `?status=` filter into a typed allow-list
@@ -105,6 +121,10 @@ pub fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<DashboardDelt
 
 fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDeltaEntry> {
     let (status, retry_count, status_timestamp) = decode_delta_status(&delta.status)?;
+    // Lockstep with `DashboardDeltaEntry::from_delta` — every new
+    // listing field must be derived through the same helper so the
+    // two projections cannot drift.
+    let (category, kind, summary) = classify_delta_payload(&delta.delta_payload);
     Some(DashboardGlobalDeltaEntry {
         account_id: account_id.to_string(),
         nonce: delta.nonce,
@@ -114,6 +134,9 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         new_commitment: delta.new_commitment.clone(),
         retry_count,
         proposal_type: delta.proposal_type().map(str::to_string),
+        category,
+        kind,
+        summary,
     })
 }
 
@@ -215,6 +238,7 @@ pub async fn list_global_deltas(
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use crate::delta_object::DeltaStatus;
     use crate::testing::mocks::{MockMetadataStore, MockStorageBackend};
     use std::sync::Arc;
 
@@ -369,5 +393,96 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, GuardianError::DataUnavailable(_)));
         assert_eq!(err.code(), "data_unavailable");
+    }
+
+    // --- Feature 007 enrichment tests (FR-002 + FR-021 lockstep) -----------
+
+    fn canonical_with_payload(
+        account_id: &str,
+        nonce: u64,
+        payload: serde_json::Value,
+    ) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: format!("0xprev{nonce}"),
+            new_commitment: Some(format!("0xnew{nonce}")),
+            delta_payload: payload,
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::Canonical {
+                timestamp: format!("2026-05-25T08:0{nonce}:00Z"),
+            },
+        }
+    }
+
+    #[test]
+    fn entry_from_p2id_multisig_carries_enrichment_fields() {
+        let payload = crate::delta_summary::tests::fixtures::multisig_p2id_wrapper();
+        let d = canonical_with_payload("0xacc1", 1, payload);
+        let entry = entry_from(&d, "0xacc1").expect("canonical delta maps");
+        assert_eq!(entry.category, DashboardDeltaCategory::AssetTransfer);
+        assert_eq!(entry.kind.as_deref(), Some("p2id"));
+        assert_eq!(entry.proposal_type.as_deref(), Some("p2id"));
+        assert!(entry.summary.asset.is_some());
+        assert!(entry.summary.counterparty.is_some());
+    }
+
+    #[test]
+    fn entry_from_unrecognized_payload_falls_back_to_custom() {
+        // FR-004 lockstep: malformed payload yields a listing entry,
+        // not a drop, with `category = Custom` and `kind = None`.
+        let d = canonical_with_payload("0xacc2", 2, serde_json::json!({}));
+        let entry = entry_from(&d, "0xacc2").expect("entry never dropped");
+        assert_eq!(entry.category, DashboardDeltaCategory::Custom);
+        assert!(entry.kind.is_none());
+    }
+
+    #[test]
+    fn entry_from_kind_serializes_as_null_not_skipped() {
+        // FR-002 + lockstep with the per-account entry: `kind` key
+        // is always present on the wire, value is JSON `null` when
+        // absent.
+        let d = canonical_with_payload("0xacc3", 3, serde_json::json!({}));
+        let entry = entry_from(&d, "0xacc3").expect("canonical delta maps");
+        let serialized = serde_json::to_value(&entry).unwrap();
+        assert!(serialized.get("kind").is_some(), "kind key must be present");
+        assert!(serialized.get("kind").unwrap().is_null());
+        assert!(!serialized.get("category").unwrap().is_null());
+        assert_eq!(
+            serialized.get("account_id").and_then(|v| v.as_str()),
+            Some("0xacc3"),
+        );
+    }
+
+    #[test]
+    fn entry_from_cross_account_field_set_matches_per_account_entry() {
+        // Lockstep test: every field on the per-account entry (except
+        // `account_id`) must appear on the global entry too, so the
+        // two shapes never drift. The global entry adds `account_id`.
+        let payload = crate::delta_summary::tests::fixtures::multisig_add_signer();
+        let d = canonical_with_payload("0xacc4", 4, payload);
+        let global_entry = entry_from(&d, "0xacc4").expect("canonical delta maps");
+        let per_account = crate::services::dashboard_account_deltas::DashboardDeltaEntry {
+            nonce: global_entry.nonce,
+            status: global_entry.status.clone(),
+            status_timestamp: global_entry.status_timestamp.clone(),
+            prev_commitment: global_entry.prev_commitment.clone(),
+            new_commitment: global_entry.new_commitment.clone(),
+            retry_count: global_entry.retry_count,
+            proposal_type: global_entry.proposal_type.clone(),
+            category: global_entry.category,
+            kind: global_entry.kind.clone(),
+            summary: global_entry.summary.clone(),
+        };
+        // If this assertion compiles, the per-account struct accepts
+        // every field that the global struct projects (modulo
+        // `account_id`) — the compile itself is the lockstep check.
+        // Asserting on category for the explicit value as well:
+        assert_eq!(
+            per_account.category,
+            DashboardDeltaCategory::AccountStorageChange,
+        );
     }
 }

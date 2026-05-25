@@ -5,8 +5,15 @@ import type {
   DashboardAccountSnapshot,
   DashboardAccountStateStatus,
   DashboardAccountSummary,
+  DashboardDeltaActivitySummary,
+  DashboardDeltaAssetSummary,
+  DashboardDeltaCategory,
+  DashboardDeltaCounterpartySummary,
   DashboardDeltaEntry,
+  DashboardDeltaNoteCounts,
   DashboardDeltaStatus,
+  DeltaAssetKind,
+  DeltaCounterpartyDirection,
   DashboardErrorCode,
   DashboardGlobalDeltaEntry,
   DashboardGlobalProposalEntry,
@@ -1349,6 +1356,19 @@ function parseDeltaEntry(
     statusTimestamp: requireString(record, 'status_timestamp', context),
     prevCommitment: requireString(record, 'prev_commitment', context),
     newCommitment: requireNullableString(record, 'new_commitment', context),
+    // Feature 007: required enrichment fields. `category` is a closed
+    // enum; `kind` is `string | null` (key always present, value
+    // nullable); `summary` is always an object with `noteCounts`
+    // populated (sub-fields are nullable per FR-004).
+    category: parseDeltaCategory(
+      requireString(record, 'category', context),
+      `${context}.category`,
+    ),
+    kind: requireNullableString(record, 'kind', context),
+    summary: parseDeltaActivitySummary(
+      requireField(record, 'summary', context),
+      `${context}.summary`,
+    ),
   };
   if (record.retry_count !== undefined) {
     const retry = record.retry_count;
@@ -1427,6 +1447,116 @@ function parseProposalEntry(
     entry.proposalType = record.proposal_type;
   }
   return entry;
+}
+
+const DELTA_CATEGORY_VALUES: readonly DashboardDeltaCategory[] = [
+  'asset_transfer',
+  'asset_swap',
+  'note_consumption',
+  'note_creation',
+  'account_storage_change',
+  'guardian_switch',
+  'custom',
+];
+
+function parseDeltaCategory(
+  value: string,
+  context: string,
+): DashboardDeltaCategory {
+  if ((DELTA_CATEGORY_VALUES as readonly string[]).includes(value)) {
+    return value as DashboardDeltaCategory;
+  }
+  throw new GuardianOperatorContractError(
+    context,
+    `invalid category "${value}" — expected one of ${DELTA_CATEGORY_VALUES.join(', ')}`,
+  );
+}
+
+function parseDeltaAssetSummary(
+  value: unknown,
+  context: string,
+): DashboardDeltaAssetSummary {
+  const record = asRecord(value, context);
+  const kind = requireString(record, 'kind', context);
+  if (kind !== 'fungible' && kind !== 'non_fungible') {
+    throw new GuardianOperatorContractError(
+      context,
+      `asset kind must be "fungible" or "non_fungible", got "${kind}"`,
+    );
+  }
+  const asset: DashboardDeltaAssetSummary = {
+    assetId: requireString(record, 'asset_id', context),
+    kind: kind as DeltaAssetKind,
+  };
+  if (record.amount !== undefined && record.amount !== null) {
+    if (typeof record.amount !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'asset amount must be a string when present',
+      );
+    }
+    asset.amount = record.amount;
+  }
+  return asset;
+}
+
+function parseDeltaCounterpartySummary(
+  value: unknown,
+  context: string,
+): DashboardDeltaCounterpartySummary {
+  const record = asRecord(value, context);
+  const direction = requireString(record, 'direction', context);
+  if (direction !== 'in' && direction !== 'out') {
+    throw new GuardianOperatorContractError(
+      context,
+      `counterparty direction must be "in" or "out", got "${direction}"`,
+    );
+  }
+  return {
+    accountId: requireString(record, 'account_id', context),
+    direction: direction as DeltaCounterpartyDirection,
+  };
+}
+
+function parseDeltaNoteCounts(
+  value: unknown,
+  context: string,
+): DashboardDeltaNoteCounts {
+  const record = asRecord(value, context);
+  const input = requireInteger(record, 'input', context);
+  const output = requireInteger(record, 'output', context);
+  if (input < 0 || output < 0) {
+    throw new GuardianOperatorContractError(
+      context,
+      'note counts must be non-negative integers',
+    );
+  }
+  return { input, output };
+}
+
+function parseDeltaActivitySummary(
+  value: unknown,
+  context: string,
+): DashboardDeltaActivitySummary {
+  const record = asRecord(value, context);
+  let asset: DashboardDeltaAssetSummary | null = null;
+  // Server serializes absent `asset` either as JSON `null` or omits
+  // the field when it skips serialization; we accept both.
+  if (record.asset !== undefined && record.asset !== null) {
+    asset = parseDeltaAssetSummary(record.asset, `${context}.asset`);
+  }
+  let counterparty: DashboardDeltaCounterpartySummary | null = null;
+  if (record.counterparty !== undefined && record.counterparty !== null) {
+    counterparty = parseDeltaCounterpartySummary(
+      record.counterparty,
+      `${context}.counterparty`,
+    );
+  }
+  const noteCounts = parseDeltaNoteCounts(
+    requireField(record, 'note_counts', context),
+    `${context}.note_counts`,
+  );
+  return { asset, counterparty, noteCounts };
 }
 
 function parseDeltaStatus(
