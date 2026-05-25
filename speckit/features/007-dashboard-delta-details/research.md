@@ -22,39 +22,52 @@ Resolves the open design knobs called out in `spec.md` + the plan's Technical Co
 - `0xMiden/miden-base` `crates/miden-protocol/src/transaction/transaction_id.rs`
 - `0xMiden/miden-base` `crates/miden-protocol/src/transaction/tx_summary.rs`
 
-## Decision 2 — Action classification: hybrid `category` + optional `kind`
+## Decision 2 — Two-layer metadata: derived fields + optional proposal block
 
-**Decision**: Surface both fields on every entry. `category` is a closed enum (`asset_transfer`, `asset_swap`, `note_consumption`, `note_creation`, `account_storage_change`, `guardian_switch`, `custom`), always non-null. `kind` is an open-ended string that echoes `metadata.proposal_type` when present (multisig deltas), null otherwise (single-key push, EVM).
+**Decision (revised 2026-05-25)**: Persist a single `metadata` JSONB blob per delta with two flat layers:
+
+- **Derived layer** (always present when metadata exists): `category` (closed enum), `asset`, `counterparty`, `note_counts`. Represents what the delta actually did on-chain.
+- **Proposal layer** (`proposal`, present only on multisig commits): the operator-stated intent fields from `ProposalMetadataPayload` (proposal_type, recipient/faucet/amount for p2id, note_ids for consume_notes, target_threshold/signer_commitments for admin ops, new_guardian_* for guardian-switch, etc.). Lifted verbatim at push time.
 
 **Rationale**:
-- Stable dashboard taxonomy on `category` lets the UI switch on a fixed set for icons, colors, and filters; growing the enum is a wire-contract event.
-- Open `kind` exposes the fine-grained `proposal_type` (e.g., `add_signer`, `change_threshold`) without forcing the closed enum to grow each time multisig adds a proposal type.
-- Multisig admin operations land in `account_storage_change` for the category and the precise op shows up in `kind`, matching the operator mental model "the account's config changed, specifically X."
+- Two concepts that were previously conflated are now distinct: derived = on-chain truth (always recoverable); proposal = operator intent (only exists when there was a proposal).
+- Future policy evaluation can compare proposal.amount against asset.amount to detect declaration vs. execution mismatch — only possible because the two layers are tracked separately.
+- A previous design carried a top-level `kind` field redundantly with `proposal.proposal_type`; dropped in this revision because `metadata.proposal?.proposal_type` is the single source.
 
 **Mapping rules**:
-- When `metadata.proposal_type` is present (multisig): use the deterministic mapping table in FR-002a; copy `proposal_type` verbatim into `kind`.
-- When absent (single-key push, EVM, malformed metadata): set `kind` to `null` and derive `category` from the on-chain `TransactionSummary` per FR-002b (input/output note kinds + account-delta shape). Fall back to `custom` when no rule matches with confidence.
+- When `proposal.proposal_type` is set: `category` = deterministic mapping (FR-002a); `asset` and `counterparty` seeded from proposal fields for `p2id`.
+- When no matching proposal: `category` inferred from `TransactionSummary` topology (FR-002b); `asset` from first output note's first asset when present; `counterparty` left null.
+- Unknown `proposal_type` strings map to `category = custom` while still preserving the proposal block verbatim.
 
-**Alternatives considered**:
-- 1:1 mirror of `proposal_type` only — leaves single-key push deltas uncategorized.
-- Coarse-only — loses `add_signer` vs. `change_threshold` distinction.
+**Sources**: spec §Clarifications 2026-05-25 session, FR-002 / FR-002a / FR-002b / FR-002c; existing `VALID_PROPOSAL_TYPES` constant at `crates/server/src/services/mod.rs:181`.
 
-**Sources**: spec §Clarifications Q2, FR-002 / FR-002a / FR-002b; existing `VALID_PROPOSAL_TYPES` constant at `crates/server/src/services/mod.rs:181`.
+**MVP scope note — `asset_swap` removed from the enum until detected.** Earlier drafts of feature 007 listed `asset_swap` as a `category` value, but the topology-only inference in `infer_category_from_summary` cannot distinguish a `pswap` output note from a `p2id` output note. Shipping the variant before per-output-note tag detection lands would mean emitting a wire-contract value that's never used (silent dead enum value). The variant has been **removed** from `DashboardDeltaCategory` and the corresponding TS / data-model / contract entries. Deferred follow-up: extend `projection.rs` to inspect output note tags (`P2ID`, `PSWAP`, `MINT`, `BURN` use-case constants from `miden-standards`) and emit `asset_swap` when the first output note is a `pswap`. When that lands, re-add the variant on Rust + TS + spec in lockstep.
 
-## Decision 3 — Where decode happens: dedicated `delta_summary` module
+**Absent-metadata policy (revised 2026-05-25 after reviewer feedback).** When the push pipeline cannot derive metadata (EVM payloads, undecodable `TransactionSummary`, pre-feature-007 historical rows), `metadata` is persisted as `NULL` and omitted on the wire. The server MUST NOT fabricate `category: "custom"` with zeroed `note_counts` for these rows — doing so would lie about historical multisig commits whose actual on-chain activity is non-zero (e.g. a `consume_notes` delta that consumed 1 note would show `note_counts: {0,0}` to operators, contradicting reality). Clients render the absence as "metadata unavailable" so the missing-data signal is preserved.
 
-**Decision**: Create `crates/server/src/delta_summary/` with `decode.rs`, `category.rs`, `projection.rs`. The listing and detail handlers both call into it. Decoding is *on read*; nothing is precomputed or persisted.
+## Decision 3 — Push-time derivation, persisted JSONB
+
+**Decision (revised 2026-05-25)**: Derive `metadata` once at push time in `crates/server/src/services/push_delta.rs` and persist it to a new `metadata JSONB` column on the `deltas` table. Listing endpoints read the column directly — no decode-on-read.
+
+The derivation pipeline lives in `crates/server/src/delta_summary/`:
+- `decode.rs` — extracts `TransactionSummary` + `ProposalMetadata` from the raw payloads.
+- `category.rs` — proposal-type → category mapping and on-chain topology inference.
+- `projection.rs` — note counts + first-output-note deep-decode for asset/counterparty.
+- `build.rs` — orchestrator that combines all the above into a typed `DeltaMetadata`.
 
 **Rationale**:
-- Both endpoints need the same decode pipeline. Sharing keeps inference rules in one place — the place tests target.
-- Keeps `services/dashboard_*.rs` files focused on pagination + cursor + response shaping; decode complexity stays contained.
-- Read-time decode aligns with the "no schema change" constraint; if production telemetry later shows the listing decode cost is meaningful, persisting the projection becomes a follow-up feature without breaking the wire contract.
+- `push_delta` already decodes the `TransactionSummary` for `verify_delta` / `apply_delta`. Computing metadata at the same point is essentially free incremental cost (no new decode pass).
+- Dashboard listings become column reads — no per-request base64 decode + binary deserialize. This was the deferred follow-up flagged in the original (read-time) design.
+- Single source of truth for derivation: any future feature (policy evaluation, alerting) reads from the same persisted blob and cannot drift from the dashboard.
+- Operators see the correct `category` and `proposal` block immediately when a delta lands as Candidate, not after canonicalization (which can take seconds to minutes — see `crates/server/src/builder/canonicalization.rs:21`, default 10s tick + Miden network confirmation time).
 
-**Cost note**: `TransactionSummary` deserialization is bytewise reads of `account_delta + input_notes + output_notes + salt`. The MAST/script-heavy sections are skipped unless the *detail* endpoint specifically asks for them (Decision 5 below). For listing this is light enough not to blow SC-004.
+**Cost shift**:
+- **Push path** gains one classifier call + one proposal lookup (DB read) per write. Both operate on data already in memory; the proposal lookup is the same one canonicalization used to do.
+- **Listing path** loses all decode work. Per-entry cost on a default 50-entry page goes from 50 × `TransactionSummary::from_json` (base64 + binary deserialize with MAST bytes) to 50 × JSON parse of a small typed blob.
 
 **Alternatives considered**:
-- Inline decode in each service file — DRY violation, three copies of the inference table.
-- Decode in `DashboardDeltaEntry::from_delta` — couples the wire-shape type to the decoder; harder to test the inference rules in isolation.
+- Derive at canonicalization. Rejected: candidate-window UX would show every fresh delta as `custom`/null until on-chain confirmation, which can be many seconds (worker tick = 10s default + Miden network confirmation + retries).
+- Derive at read time (original design). Rejected: pays the decode cost on every dashboard view, scales linearly with account history size, and creates the duplication trap with future policy eval.
 
 ## Decision 4 — Vault and storage changes: signed-delta + before/after hybrid
 
@@ -119,7 +132,7 @@ The two variants emit different `code` strings today, so the handler MUST normal
 
 **Documented divergence**: spec FR-020 mentioned "Rust and TypeScript Guardian operator/client surfaces"; this is reframed in the plan's Constitution Check as a TS-only consumer surface. If a Rust operator client is ever added in the future, it would mirror the TS client's shape verbatim — the wire contract authored here is the source of truth.
 
-## Decision 10 — Persisted `delta_payload` has two shapes; decoder normalizes both
+## Decision 10 — Push-time decoder normalizes both `delta_payload` shapes
 
 **Decision**: The shared `delta_summary::decode` module accepts any `&serde_json::Value` and resolves it to a `TransactionSummary` plus an `Option<MultisigMetadata>` via a single normalization step. The normalizer handles two on-disk shapes, distinguished by whether the top-level object has a `tx_summary` field.
 

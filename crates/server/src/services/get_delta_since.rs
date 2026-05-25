@@ -80,6 +80,7 @@ pub async fn get_delta_since(
         ack_pubkey: last_delta.ack_pubkey.clone(),
         ack_scheme: last_delta.ack_scheme.clone(),
         status: last_delta.status.clone(),
+        metadata: last_delta.metadata.clone(),
     };
 
     Ok(GetDeltaSinceResult { merged_delta })

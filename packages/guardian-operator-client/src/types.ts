@@ -219,7 +219,6 @@ export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'discarded';
  */
 export type DashboardDeltaCategory =
   | 'asset_transfer'
-  | 'asset_swap'
   | 'note_consumption'
   | 'note_creation'
   | 'account_storage_change'
@@ -250,15 +249,52 @@ export interface DashboardDeltaNoteCounts {
 }
 
 /**
- * Per-entry derived summary fields shown on the listing endpoints.
- * Feature 007 / FR-003. Sub-fields are nullable when the underlying
- * payload does not carry them (FR-004); `noteCounts` is always
- * present.
+ * Operator-stated proposal intent lifted from the matching
+ * `delta_proposals` row at push time. Present only on multisig
+ * commits. Mirrors `ProposalMetadataPayload` from the multisig client
+ * — fields are present when the proposal carries them and `undefined`
+ * otherwise.
  */
-export interface DashboardDeltaActivitySummary {
-  asset: DashboardDeltaAssetSummary | null;
-  counterparty: DashboardDeltaCounterpartySummary | null;
+export interface DashboardDeltaProposalMetadata {
+  proposalType: string;
+  description?: string;
+  salt?: string;
+  requiredSignatures?: number;
+  // p2id
+  recipientId?: string;
+  faucetId?: string;
+  amount?: string;
+  // consume_notes
+  noteIds?: string[];
+  consumeNotesMetadataVersion?: number;
+  consumeNotesNotes?: string[];
+  // add_signer / remove_signer / change_threshold
+  targetThreshold?: number;
+  signerCommitments?: string[];
+  // switch_guardian
+  newGuardianPubkey?: string;
+  newGuardianEndpoint?: string;
+  // update_procedure_threshold
+  targetProcedure?: string;
+}
+
+/**
+ * Typed metadata blob persisted on the canonical delta row.
+ *
+ * The top-level fields (`category`, `asset`, `counterparty`,
+ * `noteCounts`) are server-derived from the on-chain
+ * `TransactionSummary` and represent **what the delta actually did**.
+ * The optional `proposal` block carries **operator-stated intent**
+ * for multisig commits.
+ *
+ * Feature 007.
+ */
+export interface DashboardDeltaMetadata {
+  category: DashboardDeltaCategory;
+  asset?: DashboardDeltaAssetSummary;
+  counterparty?: DashboardDeltaCounterpartySummary;
   noteCounts: DashboardDeltaNoteCounts;
+  proposal?: DashboardDeltaProposalMetadata;
 }
 
 export interface DashboardDeltaEntry {
@@ -269,31 +305,15 @@ export interface DashboardDeltaEntry {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
-  /**
-   * Multisig proposal type tag carried in
-   * `delta_payload.metadata.proposal_type` on the underlying record
-   * (e.g. `"add_signer"`, `"p2id"`, `"change_threshold"`, ...). Absent
-   * for direct `push_delta` single-key Miden writes and for EVM
-   * deltas, which carry no metadata blob.
-   */
-  proposalType?: string;
 
   /**
-   * Closed action-category enumeration. Always present on every
-   * listing entry (SC-002). Feature 007 / FR-002.
+   * Typed dashboard metadata derived at push time. Feature 007.
+   * Absent (`undefined`) for pre-feature-007 rows whose source proposal
+   * was already deleted, and for EVM deltas. Listings should render
+   * the entry even when this is absent — `category: "custom"` is the
+   * caller's safe default.
    */
-  category: DashboardDeltaCategory;
-
-  /**
-   * Optional fine-grained kind echoing `proposalType` when present.
-   * The wire shape always carries the `kind` key with value `null`
-   * when absent, so this is a `string | null` (not `string |
-   * undefined`) by contract. Feature 007 / FR-002.
-   */
-  kind: string | null;
-
-  /** Per-entry derived summary fields. Feature 007 / FR-003. */
-  summary: DashboardDeltaActivitySummary;
+  metadata?: DashboardDeltaMetadata;
 }
 
 export interface DashboardProposalEntry {

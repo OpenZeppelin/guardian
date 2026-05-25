@@ -196,6 +196,10 @@ pub async fn push_delta_proposal(
             proposer_id,
             cosigner_sigs,
         },
+        // Proposals carry metadata inside `delta_payload.metadata`;
+        // the dedicated column on `deltas` is only populated for
+        // canonical rows (feature 007).
+        metadata: None,
     };
 
     // Store the delta proposal in the proposals directory using the commitment as ID
@@ -306,6 +310,7 @@ mod tests {
                 proposer_id: "0xproposer".to_string(),
                 cosigner_sigs: vec![],
             },
+            metadata: None,
         }
     }
 
@@ -753,6 +758,7 @@ mod tests {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 retry_count: 0,
             },
+            metadata: None,
         };
         let _storage = storage.with_pull_deltas_after(Ok(vec![candidate_delta]));
 

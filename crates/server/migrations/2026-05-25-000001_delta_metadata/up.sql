@@ -1,0 +1,31 @@
+-- Feature 007: typed dashboard metadata persisted at push time.
+--
+-- The `metadata` column stores a typed `DeltaMetadata` JSONB blob
+-- (see `crates/server/src/delta_summary/mod.rs`) derived once at push
+-- time inside `services/push_delta.rs`:
+--
+--   1. `push_delta` already decodes the `TransactionSummary` for
+--      `verify_delta` / `apply_delta`, so the build pipeline reuses
+--      that decode.
+--   2. When a matching `delta_proposals` row exists (multisig commit
+--      path), its `delta_payload.metadata` block is lifted into the
+--      `proposal` sub-object of the typed blob. The TS multisig
+--      client only forwards the inner `tx_summary` when executing,
+--      so this is the one place metadata can be preserved from the
+--      pre-execution proposal storage onto the canonical row.
+--   3. The resulting `DeltaMetadata` is written alongside the
+--      candidate row; canonicalization just flips the status and
+--      never touches `metadata`.
+--
+-- Dashboard listing endpoints read the column directly — no decode
+-- on the read path.
+--
+-- The column is nullable: rows whose `delta_payload` is not a
+-- decodable `TransactionSummary` AND have no matching proposal
+-- (e.g. EVM deltas, corrupted payloads) persist `metadata = NULL`.
+-- Pre-feature-007 historical rows also stay `NULL`; the dashboard
+-- renders these as "metadata unavailable" rather than fabricating
+-- zero-valued fields that would contradict the actual on-chain
+-- history of consume_notes / transfers etc.
+
+ALTER TABLE deltas ADD COLUMN metadata JSONB;

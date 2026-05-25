@@ -223,6 +223,7 @@ mod tests {
             status: DeltaStatus::Canonical {
                 timestamp: format!("2026-05-08T12:00:0{nonce}Z"),
             },
+            metadata: None,
         }
     }
 
@@ -252,6 +253,7 @@ mod tests {
                 proposer_id: "0xproposer".into(),
                 cosigner_sigs,
             },
+            metadata: None,
         }
     }
 

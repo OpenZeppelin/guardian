@@ -37,12 +37,18 @@ Reuses existing `dashboard::authz` middleware (cookie session, `guardian_operato
   "status_timestamp": "2026-05-24T19:30:00Z",
   "prev_commitment":  "0xaaaa...",
   "new_commitment":   "0xbbbb...",
-  "category":         "asset_transfer",
-  "kind":             "p2id",
-  "summary": {
+  "metadata": {
+    "category":     "asset_transfer",
     "asset":        { "asset_id": "0xfaucet...", "kind": "fungible", "amount": "-100" },
     "counterparty": { "account_id": "0xrecipient...", "direction": "out" },
-    "note_counts":  { "input": 0, "output": 1 }
+    "note_counts":  { "input": 0, "output": 1 },
+    "proposal": {
+      "proposal_type":       "p2id",
+      "recipient_id":        "0xrecipient...",
+      "faucet_id":           "0xfaucet...",
+      "amount":              "100",
+      "required_signatures": 2
+    }
   },
 
   "input_notes": [],

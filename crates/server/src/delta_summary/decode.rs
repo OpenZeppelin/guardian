@@ -1,191 +1,60 @@
-//! Payload normalization for the dashboard delta decoder.
+//! Decoders for the inputs that the push-time metadata pipeline
+//! consumes: the persisted `TransactionSummary` blob and the proposal
+//! metadata block that lives in `delta_proposals.delta_payload`.
 //!
-//! See research.md Decision 10 for the two persisted shapes this
-//! resolves.
+//! These are pure decoding helpers — they do not classify, project, or
+//! orchestrate. See `build.rs` for the orchestrator.
 
 use guardian_shared::FromJson;
 use miden_protocol::transaction::TransactionSummary;
 use serde_json::Value;
 
-use super::{DecodeSection, DecodeWarning, MultisigMetadata, NormalizedPayload};
+use super::ProposalMetadata;
 
-/// Normalize a raw `delta_payload` JSON blob into a [`NormalizedPayload`].
+/// Decode a [`TransactionSummary`] from a persisted `delta_payload`
+/// value.
 ///
-/// Returns the normalized value plus any non-fatal warnings encountered
-/// while decoding sub-sections (e.g., malformed metadata that did not
-/// prevent the `tx_summary` decode). A fully-unrecognized payload
-/// returns [`NormalizedPayload::Opaque`] with an empty warning vec —
-/// the "unrecognized payload shape" is the result, not a warning.
-pub fn resolve_payload(payload: &Value) -> (NormalizedPayload, Vec<DecodeWarning>) {
-    if let Some(tx_summary_value) = payload.get("tx_summary") {
-        return resolve_wrapper(tx_summary_value, payload.get("metadata"));
+/// Handles both on-disk shapes per `research.md` Decision 10:
+///
+///   - **Wrapper** (multisig pre-execute): `{ tx_summary: {data: base64}, metadata: {..}, signatures?: [..] }`.
+///     The function unwraps to `tx_summary` and decodes.
+///   - **Raw** (post-execute, single-key, EVM bridge): `{ data: base64 }`.
+///     Decoded directly.
+///
+/// Returns `Err` (a short stable token string) for anything that is not
+/// a recognized shape or fails base64 / binary deserialization. Callers
+/// at the push-time write path can treat that as "no metadata derivable"
+/// and persist `metadata = NULL`.
+pub fn decode_transaction_summary(payload: &Value) -> Result<TransactionSummary, &'static str> {
+    let candidate = payload.get("tx_summary").unwrap_or(payload);
+    TransactionSummary::from_json(candidate).map_err(classify_decode_error)
+}
+
+/// Extract the [`ProposalMetadata`] block from a proposal's persisted
+/// `delta_payload` value. Returns `None` when no metadata block is
+/// present (single-key push deltas) or when the block is malformed.
+///
+/// Input is the proposal's `delta_payload` (the wrapper shape produced
+/// by `normalize_payload` in `crates/server/src/services/mod.rs`), so
+/// metadata lives at `delta_payload.metadata`.
+pub fn decode_proposal_metadata(proposal_payload: &Value) -> Option<ProposalMetadata> {
+    let metadata_value = proposal_payload.get("metadata")?;
+    if metadata_value.is_null() {
+        return None;
     }
-
-    if payload.get("data").and_then(Value::as_str).is_some() {
-        return resolve_raw(payload);
-    }
-
-    (
-        NormalizedPayload::Opaque {
-            reason: "unrecognized_payload_shape",
-        },
-        Vec::new(),
-    )
+    // The wire shape is field-for-field compatible with our typed
+    // struct (snake_case), so serde does the work. A malformed sub-field
+    // just makes the whole block None — listing endpoints fall back to
+    // derived-only metadata in that case.
+    serde_json::from_value::<ProposalMetadata>(metadata_value.clone()).ok()
 }
 
-fn resolve_wrapper(tx_summary_value: &Value, metadata_value: Option<&Value>) -> (NormalizedPayload, Vec<DecodeWarning>) {
-    let mut warnings = Vec::new();
-
-    let summary = match TransactionSummary::from_json(tx_summary_value) {
-        Ok(s) => s,
-        Err(err) => {
-            return (
-                NormalizedPayload::Opaque {
-                    reason: classify_decode_error(&err),
-                },
-                Vec::new(),
-            );
-        }
-    };
-
-    let metadata = metadata_value.and_then(|value| match parse_metadata(value) {
-        Ok(meta) => Some(meta),
-        Err(reason) => {
-            warnings.push(DecodeWarning {
-                section: DecodeSection::Metadata,
-                reason: reason.to_string(),
-            });
-            None
-        }
-    });
-
-    (NormalizedPayload::WithSummary { summary, metadata }, warnings)
-}
-
-fn resolve_raw(payload: &Value) -> (NormalizedPayload, Vec<DecodeWarning>) {
-    match TransactionSummary::from_json(payload) {
-        Ok(summary) => (
-            NormalizedPayload::WithSummary {
-                summary,
-                metadata: None,
-            },
-            Vec::new(),
-        ),
-        Err(err) => (
-            NormalizedPayload::Opaque {
-                reason: classify_decode_error(&err),
-            },
-            Vec::new(),
-        ),
-    }
-}
-
-fn parse_metadata(value: &Value) -> Result<MultisigMetadata, &'static str> {
-    let obj = value.as_object().ok_or("metadata_not_object")?;
-    let proposal_type = obj
-        .get("proposal_type")
-        .and_then(Value::as_str)
-        .ok_or("missing_proposal_type")?
-        .to_string();
-    let recipient_id = obj.get("recipient_id").and_then(Value::as_str).map(str::to_string);
-    let faucet_id = obj.get("faucet_id").and_then(Value::as_str).map(str::to_string);
-    let amount = obj.get("amount").and_then(Value::as_str).map(str::to_string);
-    let note_ids = obj
-        .get("note_ids")
-        .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    Ok(MultisigMetadata {
-        proposal_type,
-        recipient_id,
-        faucet_id,
-        amount,
-        note_ids,
-    })
-}
-
-fn classify_decode_error(err: &str) -> &'static str {
+fn classify_decode_error(err: String) -> &'static str {
     if err.contains("Base64") {
         "malformed_base64"
     } else if err.contains("Missing or invalid 'data' field") {
         "missing_data_field"
     } else {
         "malformed_tx_summary"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::delta_summary::tests::fixtures;
-
-    #[test]
-    fn wrapper_with_valid_summary_resolves_with_metadata() {
-        let payload = fixtures::multisig_p2id_wrapper();
-        let (normalized, warnings) = resolve_payload(&payload);
-        assert!(warnings.is_empty());
-        match normalized {
-            NormalizedPayload::WithSummary { metadata, .. } => {
-                let metadata = metadata.expect("metadata extracted");
-                assert_eq!(metadata.proposal_type, "p2id");
-            }
-            NormalizedPayload::Opaque { reason } => panic!("expected WithSummary, got Opaque({reason})"),
-        }
-    }
-
-    #[test]
-    fn wrapper_with_add_signer_metadata_resolves() {
-        let payload = fixtures::multisig_add_signer();
-        let (normalized, _warnings) = resolve_payload(&payload);
-        match normalized {
-            NormalizedPayload::WithSummary { metadata, .. } => {
-                let metadata = metadata.expect("metadata extracted");
-                assert_eq!(metadata.proposal_type, "add_signer");
-            }
-            NormalizedPayload::Opaque { .. } => panic!("expected WithSummary"),
-        }
-    }
-
-    #[test]
-    fn raw_push_delta_resolves_without_metadata() {
-        let payload = fixtures::push_delta_raw_tx_summary();
-        let (normalized, warnings) = resolve_payload(&payload);
-        assert!(warnings.is_empty());
-        match normalized {
-            NormalizedPayload::WithSummary { metadata, .. } => assert!(metadata.is_none()),
-            NormalizedPayload::Opaque { reason } => panic!("expected WithSummary, got Opaque({reason})"),
-        }
-    }
-
-    #[test]
-    fn evm_placeholder_resolves_opaque() {
-        let payload = fixtures::evm_placeholder();
-        let (normalized, _warnings) = resolve_payload(&payload);
-        match normalized {
-            NormalizedPayload::Opaque { reason } => assert_eq!(reason, "unrecognized_payload_shape"),
-            NormalizedPayload::WithSummary { .. } => panic!("expected Opaque"),
-        }
-    }
-
-    #[test]
-    fn malformed_base64_resolves_opaque_with_decode_reason() {
-        let payload = fixtures::malformed_base64();
-        let (normalized, _warnings) = resolve_payload(&payload);
-        match normalized {
-            NormalizedPayload::Opaque { reason } => assert_eq!(reason, "malformed_base64"),
-            NormalizedPayload::WithSummary { .. } => panic!("expected Opaque"),
-        }
-    }
-
-    #[test]
-    fn switch_guardian_resolves() {
-        let payload = fixtures::multisig_switch_guardian();
-        let (normalized, _warnings) = resolve_payload(&payload);
-        match normalized {
-            NormalizedPayload::WithSummary { metadata, .. } => {
-                assert_eq!(metadata.unwrap().proposal_type, "switch_guardian");
-            }
-            NormalizedPayload::Opaque { .. } => panic!("expected WithSummary"),
-        }
     }
 }

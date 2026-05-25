@@ -51,7 +51,6 @@ function buildOperatorPublicKeysJson(publicKey: string): string {
 
 const DELTA_CATEGORY_LABEL: Record<DashboardDeltaCategory, string> = {
   asset_transfer: 'Asset transfer',
-  asset_swap: 'Asset swap',
   note_consumption: 'Notes consumed',
   note_creation: 'Notes created',
   account_storage_change: 'Account / storage change',
@@ -61,7 +60,6 @@ const DELTA_CATEGORY_LABEL: Record<DashboardDeltaCategory, string> = {
 
 const DELTA_CATEGORY_BADGE: Record<DashboardDeltaCategory, string> = {
   asset_transfer: 'success',
-  asset_swap: 'success',
   note_consumption: 'neutral',
   note_creation: 'neutral',
   account_storage_change: 'warning',
@@ -79,26 +77,39 @@ function isGlobalDeltaEntry(
  * Build a short human-readable one-line summary from an enriched
  * delta entry. This is the rule-of-thumb test from spec.md §SC-001 —
  * "an operator (or downstream renderer) can produce a one-line human
- * summary using only the returned fields." If this helper can do it
- * from `category` + `kind` + `summary`, the feature works.
+ * summary using only the returned fields."
+ *
+ * Reads from `metadata.category`, `metadata.proposal.proposal_type`,
+ * `metadata.asset`, `metadata.counterparty`, and `metadata.note_counts`.
+ * Returns a placeholder when the entry has no `metadata` block
+ * (pre-feature-007 historical rows).
  */
 function describeDelta(
   entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
 ): string {
-  const { category, kind, summary } = entry;
-  switch (category) {
+  const meta = entry.metadata;
+  if (!meta) {
+    // Three cases produce absent metadata: EVM deltas, pre-feature-007
+    // historical rows whose proposal was already deleted, and rows
+    // whose `TransactionSummary` is undecodable. The dashboard does
+    // not fabricate `category: custom` / `note_counts: {0,0}` in
+    // these cases because the source data may actually represent
+    // real activity (e.g. a historical consume_notes whose details
+    // we just don't have indexed).
+    return 'metadata unavailable';
+  }
+  const kind = meta.proposal?.proposalType;
+  switch (meta.category) {
     case 'asset_transfer': {
-      const recipient = summary.counterparty?.accountId ?? 'unknown recipient';
-      const amount = summary.asset?.amount ?? '?';
-      const asset = summary.asset?.assetId ?? 'asset';
+      const recipient = meta.counterparty?.accountId ?? 'unknown recipient';
+      const amount = meta.asset?.amount ?? '?';
+      const asset = meta.asset?.assetId ?? 'asset';
       return `Transferred ${amount} of ${asset} → ${recipient}`;
     }
-    case 'asset_swap':
-      return `Swapped assets (${summary.noteCounts.input} in / ${summary.noteCounts.output} out)`;
     case 'note_consumption':
-      return `Consumed ${summary.noteCounts.input} note${summary.noteCounts.input === 1 ? '' : 's'}`;
+      return `Consumed ${meta.noteCounts.input} note${meta.noteCounts.input === 1 ? '' : 's'}`;
     case 'note_creation':
-      return `Created ${summary.noteCounts.output} note${summary.noteCounts.output === 1 ? '' : 's'}`;
+      return `Created ${meta.noteCounts.output} note${meta.noteCounts.output === 1 ? '' : 's'}`;
     case 'account_storage_change':
       return kind ? `Account change: ${kind}` : 'Account / storage change';
     case 'guardian_switch':
@@ -699,13 +710,14 @@ export default function App() {
           </div>
 
           <p className="hint">
-            Feature 007. Each entry shows the new <code>category</code>,{' '}
-            <code>kind</code>, and <code>summary</code> wire fields alongside
-            the pre-existing <code>nonce</code> / <code>status</code> /{' '}
-            commitments. Use <strong>List account deltas</strong> or{' '}
-            <strong>List global deltas</strong> above to populate this panel.
-            The one-line summary at the top of each card is derived purely
-            from the fields the server returned — no detail endpoint
+            Feature 007. Each entry exposes the new typed{' '}
+            <code>metadata</code> blob: top-level <code>category</code>,{' '}
+            <code>asset</code>, <code>counterparty</code>,{' '}
+            <code>note_counts</code>, plus an optional <code>proposal</code>{' '}
+            block carrying operator-stated intent for multisig commits. Use{' '}
+            <strong>List account deltas</strong> or <strong>List global deltas</strong> to populate
+            this panel. The one-line summary at the top of each card is derived
+            purely from the fields the server returned — no detail endpoint
             required (SC-001).
           </p>
 
@@ -716,17 +728,23 @@ export default function App() {
                   ? delta.accountId
                   : undefined;
                 const cardKey = `${globalAccountId ?? 'acct'}-${delta.nonce}-${index}`;
+                const meta = delta.metadata;
+                const proposal = meta?.proposal;
                 return (
                   <article className="delta-card" key={cardKey}>
                     <header className="delta-card-header">
                       <span className="delta-summary-line">
                         {describeDelta(delta)}
                       </span>
-                      <span
-                        className={`badge ${DELTA_CATEGORY_BADGE[delta.category]}`}
-                      >
-                        {DELTA_CATEGORY_LABEL[delta.category]}
-                      </span>
+                      {meta ? (
+                        <span
+                          className={`badge ${DELTA_CATEGORY_BADGE[meta.category]}`}
+                        >
+                          {DELTA_CATEGORY_LABEL[meta.category]}
+                        </span>
+                      ) : (
+                        <span className="badge neutral">metadata unavailable</span>
+                      )}
                     </header>
 
                     <div className="status-grid compact">
@@ -743,9 +761,11 @@ export default function App() {
                         <strong>{delta.statusTimestamp}</strong>
                       </div>
                       <div>
-                        <span className="label">Kind</span>
+                        <span className="label">Proposal type</span>
                         <strong>
-                          {delta.kind ?? <em className="muted">null</em>}
+                          {proposal?.proposalType ?? (
+                            <em className="muted">none</em>
+                          )}
                         </strong>
                       </div>
                       {globalAccountId ? (
@@ -759,8 +779,9 @@ export default function App() {
                       <div>
                         <span className="label">Input / output notes</span>
                         <strong>
-                          {delta.summary.noteCounts.input} /{' '}
-                          {delta.summary.noteCounts.output}
+                          {meta
+                            ? `${meta.noteCounts.input} / ${meta.noteCounts.output}`
+                            : '—'}
                         </strong>
                       </div>
                     </div>
@@ -769,13 +790,13 @@ export default function App() {
                       <div>
                         <span className="label">Asset</span>
                         <strong>
-                          {delta.summary.asset ? (
+                          {meta?.asset ? (
                             <>
-                              <code>{delta.summary.asset.assetId}</code>
-                              {delta.summary.asset.amount ? (
-                                <> · {delta.summary.asset.amount}</>
+                              <code>{meta.asset.assetId}</code>
+                              {meta.asset.amount ? (
+                                <> · {meta.asset.amount}</>
                               ) : null}
-                              <> · {delta.summary.asset.kind}</>
+                              <> · {meta.asset.kind}</>
                             </>
                           ) : (
                             <em className="muted">none</em>
@@ -785,12 +806,10 @@ export default function App() {
                       <div>
                         <span className="label">Counterparty</span>
                         <strong>
-                          {delta.summary.counterparty ? (
+                          {meta?.counterparty ? (
                             <>
-                              <code>
-                                {delta.summary.counterparty.accountId}
-                              </code>
-                              <> · {delta.summary.counterparty.direction}</>
+                              <code>{meta.counterparty.accountId}</code>
+                              <> · {meta.counterparty.direction}</>
                             </>
                           ) : (
                             <em className="muted">none</em>
@@ -798,6 +817,78 @@ export default function App() {
                         </strong>
                       </div>
                     </div>
+
+                    {proposal ? (
+                      <details className="delta-debug" open>
+                        <summary>Proposal intent</summary>
+                        <div className="status-grid compact">
+                          <div>
+                            <span className="label">proposal_type</span>
+                            <code>{proposal.proposalType}</code>
+                          </div>
+                          {proposal.description ? (
+                            <div>
+                              <span className="label">description</span>
+                              <strong>{proposal.description}</strong>
+                            </div>
+                          ) : null}
+                          {proposal.recipientId ? (
+                            <div>
+                              <span className="label">recipient_id</span>
+                              <code className="wrap">{proposal.recipientId}</code>
+                            </div>
+                          ) : null}
+                          {proposal.faucetId ? (
+                            <div>
+                              <span className="label">faucet_id</span>
+                              <code className="wrap">{proposal.faucetId}</code>
+                            </div>
+                          ) : null}
+                          {proposal.amount ? (
+                            <div>
+                              <span className="label">amount</span>
+                              <strong>{proposal.amount}</strong>
+                            </div>
+                          ) : null}
+                          {typeof proposal.requiredSignatures === 'number' ? (
+                            <div>
+                              <span className="label">required_signatures</span>
+                              <strong>{proposal.requiredSignatures}</strong>
+                            </div>
+                          ) : null}
+                          {typeof proposal.targetThreshold === 'number' ? (
+                            <div>
+                              <span className="label">target_threshold</span>
+                              <strong>{proposal.targetThreshold}</strong>
+                            </div>
+                          ) : null}
+                          {proposal.noteIds && proposal.noteIds.length > 0 ? (
+                            <div>
+                              <span className="label">note_ids</span>
+                              <code className="wrap">
+                                {proposal.noteIds.join(', ')}
+                              </code>
+                            </div>
+                          ) : null}
+                          {proposal.newGuardianPubkey ? (
+                            <div>
+                              <span className="label">new_guardian_pubkey</span>
+                              <code className="wrap">
+                                {proposal.newGuardianPubkey}
+                              </code>
+                            </div>
+                          ) : null}
+                          {proposal.newGuardianEndpoint ? (
+                            <div>
+                              <span className="label">new_guardian_endpoint</span>
+                              <code className="wrap">
+                                {proposal.newGuardianEndpoint}
+                              </code>
+                            </div>
+                          ) : null}
+                        </div>
+                      </details>
+                    ) : null}
 
                     <details className="delta-debug">
                       <summary>Debug commitments</summary>
@@ -816,12 +907,6 @@ export default function App() {
                           <div>
                             <span className="label">retry_count</span>
                             <strong>{delta.retryCount}</strong>
-                          </div>
-                        ) : null}
-                        {delta.proposalType ? (
-                          <div>
-                            <span className="label">proposal_type (legacy)</span>
-                            <code>{delta.proposalType}</code>
                           </div>
                         ) : null}
                       </div>

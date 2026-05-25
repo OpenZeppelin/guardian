@@ -221,6 +221,11 @@ struct DeltaRow {
     status_kind: String,
     #[allow(dead_code)]
     status_timestamp: chrono::DateTime<chrono::Utc>,
+    // Multisig proposal metadata lifted at canonicalization
+    // (feature 007 / migration 2026-05-25-000001). Populated only
+    // for canonical multisig deltas whose source proposal was still
+    // matchable when canonicalization ran.
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Queryable, Selectable)]
@@ -267,6 +272,7 @@ struct NewDelta<'a> {
     status: serde_json::Value,
     status_kind: &'a str,
     status_timestamp: chrono::DateTime<chrono::Utc>,
+    metadata: Option<&'a serde_json::Value>,
 }
 
 #[derive(Insertable, AsChangeset)]
@@ -332,6 +338,9 @@ impl From<DeltaRow> for DeltaObject {
     fn from(row: DeltaRow) -> Self {
         let status: DeltaStatus =
             serde_json::from_value(row.status).unwrap_or_else(|_| DeltaStatus::default());
+        let metadata = row
+            .metadata
+            .and_then(crate::delta_summary::metadata_from_value);
         DeltaObject {
             account_id: row.account_id,
             nonce: row.nonce as u64,
@@ -342,6 +351,7 @@ impl From<DeltaRow> for DeltaObject {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status,
+            metadata,
         }
     }
 }
@@ -360,6 +370,9 @@ impl From<ProposalRow> for DeltaObject {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status,
+            // delta_proposals has no separate metadata column —
+            // the wrapper's `delta_payload.metadata` IS its metadata.
+            metadata: None,
         }
     }
 }
@@ -420,6 +433,11 @@ impl StorageBackend for PostgresService {
         let status_json = serde_json::to_value(&delta.status)
             .map_err(|e| format!("Failed to serialize status: {e}"))?;
         let (status_kind, status_timestamp) = derive_status_columns(&delta.status)?;
+        // Serialize typed metadata back to JSONB.
+        let metadata_json = delta
+            .metadata
+            .as_ref()
+            .map(crate::delta_summary::metadata_to_value);
 
         let new_delta = NewDelta {
             account_id: &delta.account_id,
@@ -431,6 +449,7 @@ impl StorageBackend for PostgresService {
             status: status_json.clone(),
             status_kind,
             status_timestamp,
+            metadata: metadata_json.as_ref(),
         };
 
         diesel::insert_into(deltas::table)
@@ -445,6 +464,7 @@ impl StorageBackend for PostgresService {
                 deltas::status.eq(&status_json),
                 deltas::status_kind.eq(status_kind),
                 deltas::status_timestamp.eq(status_timestamp),
+                deltas::metadata.eq(metadata_json.as_ref()),
             ))
             .execute(&mut conn)
             .await
@@ -1128,6 +1148,7 @@ mod tests {
             status: DeltaStatus::Canonical {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
             },
+            metadata: None,
         }
     }
 

@@ -1,147 +1,215 @@
-//! Shared decoder, classifier, and projector for canonical deltas
-//! surfaced on the operator dashboard.
+//! Typed metadata blob persisted on every canonical delta, plus the
+//! push-time derivation pipeline that builds it.
 //!
-//! Spec reference: feature `007-dashboard-delta-details`,
+//! Spec reference: feature `007-dashboard-delta-details` —
 //! `data-model.md`, `research.md` Decisions 2, 3, 4, 5, 10.
 //!
-//! Public entry points:
-//!   - [`resolve_payload`] turns a raw persisted `delta_payload`
-//!     ([`serde_json::Value`]) into a [`NormalizedPayload`], handling
-//!     both on-disk shapes (multisig wrapper and raw `push_delta`
-//!     `TransactionSummary`).
-//!   - [`classify`] derives the closed `category`, optional `kind`,
-//!     and the listing-level summary from a normalized payload.
-//!   - [`decode_full`] (Phase 4 / US2) projects the full detail-view
-//!     shape; currently a stub that returns empty sections.
+//! ## Architecture
+//!
+//! Each delta carries an optional [`DeltaMetadata`] blob that is
+//! derived once at push time and stored in the `deltas.metadata` JSONB
+//! column. The blob carries:
+//!
+//!   - **Derived fields** (always populated when metadata is non-null):
+//!     `category`, `asset`, `counterparty`, `note_counts`. Reconstructed
+//!     from the persisted `TransactionSummary` and, when available,
+//!     refined from the matching proposal's metadata.
+//!
+//!   - **Proposal block** (`proposal`, populated for multisig pushes
+//!     only): lifted verbatim from the matching `delta_proposals` row
+//!     so operator intent at proposal-creation time is preserved on the
+//!     canonical record for audit, policy evaluation, and detail
+//!     rendering.
+//!
+//! All decoding work happens once at push time inside
+//! [`build_metadata`]. Dashboard listings are pure column reads — no
+//! `TransactionSummary` decode on the hot path.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+pub mod build;
 pub mod category;
 pub mod decode;
 pub mod projection;
 
-pub use category::classify;
-pub use decode::resolve_payload;
-pub use projection::decode_full;
-
-/// One-call helper that resolves and classifies a raw `delta_payload`
-/// in a single step. Used by both listing services
-/// (`dashboard_account_deltas` and `dashboard_global_deltas`) so they
-/// stay in lockstep — every wire-shape change should land here, not in
-/// the two projections.
-///
-/// Listing entries do not surface `DecodeWarning`s (per
-/// `data-model.md`), so this helper drops them. The detail endpoint
-/// uses [`resolve_payload`] + [`classify`] + [`decode_full`] directly
-/// to retain warnings.
-pub fn classify_delta_payload(
-    payload: &serde_json::Value,
-) -> (DashboardDeltaCategory, Option<String>, DeltaActivitySummary) {
-    let (normalized, _warnings) = resolve_payload(payload);
-    classify(&normalized)
-}
+pub use build::{build_metadata, lift_proposal_metadata, metadata_from_value, metadata_to_value};
+pub use category::{category_from_proposal_type, infer_category_from_summary};
+pub use decode::{decode_proposal_metadata, decode_transaction_summary};
+pub use projection::{
+    decode_full, project_asset_and_counterparty_from_output_notes, project_note_counts,
+};
 
 #[cfg(test)]
 pub(crate) mod tests {
     pub mod fixtures;
 }
 
+// ---------------------------------------------------------------------
+// DeltaMetadata — the top-level blob persisted in `deltas.metadata`.
+// ---------------------------------------------------------------------
+
+/// Persisted activity metadata for a canonical delta.
+///
+/// Stored as JSONB in the `deltas.metadata` column. Built once at push
+/// time by [`build_metadata`] from the decoded `TransactionSummary`
+/// plus (for multisig) the matching `delta_proposals` row.
+///
+/// `None` (NULL column) for:
+///   - EVM deltas (no derivation rules yet)
+///   - Pre-feature-007 historical rows that were never reprocessed
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeltaMetadata {
+    /// Closed enum: what the delta did at the coarsest useful level.
+    /// Always present (FR-002, SC-002).
+    pub category: DashboardDeltaCategory,
+
+    /// First asset surfaced in deterministic order. `None` when the
+    /// underlying transaction does not move an asset (e.g. account
+    /// admin operations) or when extraction failed (FR-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<AssetSummary>,
+
+    /// Counterparty of the transaction. `None` for transactions
+    /// without a clear sender/recipient (admin ops, swaps, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterparty: Option<CounterpartySummary>,
+
+    /// Always present.
+    #[serde(default)]
+    pub note_counts: NoteCounts,
+
+    /// Multisig proposal intent lifted from the matching
+    /// `delta_proposals` row at push time. Absent for single-key
+    /// `push_delta`, EVM deltas, and pushes where no matching proposal
+    /// was found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<ProposalMetadata>,
+}
+
 /// Closed, stable enumeration of action categories.
 ///
-/// Adding a value is a wire-contract change (FR-002). Every listing
-/// and detail entry carries a non-null `category` (SC-002).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Adding a value is a wire-contract change (FR-002). Every persisted
+/// metadata blob carries a non-null `category` (SC-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardDeltaCategory {
     AssetTransfer,
-    AssetSwap,
     NoteConsumption,
     NoteCreation,
     AccountStorageChange,
     GuardianSwitch,
     Custom,
 }
+// `AssetSwap` is intentionally absent. Detecting it requires
+// per-note-tag inspection of output notes (matching the Miden `pswap`
+// note tag's use-case constant). Adding the variant before that
+// detection lands would mean shipping a wire-contract value that is
+// never emitted. When pswap detection is implemented in
+// `projection.rs`, `AssetSwap` returns as a wire-contract addition
+// (and the TS / smoke-web / spec must be updated in lockstep).
 
-/// Per-entry derived summary fields surfaced on the listing endpoints.
-///
-/// Each sub-field is `None` when not safely extractable; the listing
-/// entry is still returned (FR-004). `note_counts` is always present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-pub struct DeltaActivitySummary {
-    pub asset: Option<AssetSummary>,
-    pub counterparty: Option<CounterpartySummary>,
-    pub note_counts: NoteCounts,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetSummary {
     pub asset_id: String,
     pub kind: AssetKind,
-    /// Signed decimal magnitude (e.g., `"+100"`, `"-50"`) for fungible;
-    /// `None` for non-fungible holdings where the wire shape uses
-    /// `added` / `removed` lists in the detail view instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Signed decimal magnitude (e.g., `"+100"`, `"-50"`) for fungible
+    /// holdings. Absent for non-fungible holdings where the detail
+    /// view uses `added` / `removed` lists instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssetKind {
     Fungible,
     NonFungible,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CounterpartySummary {
     pub account_id: String,
     pub direction: CounterpartyDirection,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CounterpartyDirection {
     Out,
     In,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct NoteCounts {
+    #[serde(default)]
     pub input: u32,
+    #[serde(default)]
     pub output: u32,
 }
 
-/// Result of normalizing a raw `delta_payload` blob.
-///
-/// Two on-disk shapes are recognized (Decision 10):
-///
-///   1. Multisig wrapper: `{ tx_summary: {data: base64}, metadata: {..}, signatures?: [..] }`
-///   2. Raw `push_delta`: `{ data: base64 }` — the TransactionSummary
-///      JSON shape, persisted directly without a wrapper.
-///
-/// Anything else (EVM deltas, schema drift, malformed base64) becomes
-/// [`NormalizedPayload::Opaque`] and is classified as `custom`.
-pub enum NormalizedPayload {
-    WithSummary {
-        summary: miden_protocol::transaction::TransactionSummary,
-        metadata: Option<MultisigMetadata>,
-    },
-    Opaque {
-        reason: &'static str,
-    },
+// ---------------------------------------------------------------------
+// ProposalMetadata — operator-stated intent, lifted from a matching
+// proposal. Mirrors `ProposalMetadataPayload` in
+// `crates/miden-multisig-client/src/payload.rs` field-for-field.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProposalMetadata {
+    /// One of the validated multisig proposal types (`add_signer`,
+    /// `remove_signer`, `change_threshold`, `update_procedure_threshold`,
+    /// `p2id`, `consume_notes`, `switch_guardian`). Future types added
+    /// to the multisig client may appear here without an enum update —
+    /// this field is intentionally a free string so the dashboard does
+    /// not block on the wire-contract bump (`category` is the closed
+    /// enum, not this).
+    pub proposal_type: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salt: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_signatures: Option<u64>,
+
+    // ---- p2id ----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faucet_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+
+    // ---- consume_notes ----
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consume_notes_metadata_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consume_notes_notes: Vec<String>,
+
+    // ---- add_signer / remove_signer / change_threshold ----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_threshold: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signer_commitments: Vec<String>,
+
+    // ---- switch_guardian ----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_guardian_pubkey: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_guardian_endpoint: Option<String>,
+
+    // ---- update_procedure_threshold ----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_procedure: Option<String>,
 }
 
-/// Lightweight projection of the multisig metadata block carried under
-/// `delta_payload.metadata`. Mirrors the producer in
-/// `crates/miden-multisig-client/src/payload.rs` but only retains the
-/// fields the dashboard needs.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MultisigMetadata {
-    pub proposal_type: String,
-    pub recipient_id: Option<String>,
-    pub faucet_id: Option<String>,
-    pub amount: Option<String>,
-    pub note_ids: Vec<String>,
-}
+// ---------------------------------------------------------------------
+// Detail-view types (kept for future Phase 4 / US2 work — listing path
+// does not build these).
+// ---------------------------------------------------------------------
 
 /// Opt-in flags for the detail endpoint. US2 / Phase 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -149,12 +217,6 @@ pub struct DetailIncludeFlags {
     pub scripts: bool,
     pub raw: bool,
 }
-
-// --- Detail-view types ------------------------------------------------
-//
-// Committed in Phase 2 so the wire contract is fixed, but the projector
-// in `projection.rs` is a stub until US2 (Phase 4). The listing path
-// (US1) never builds these.
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecodedNote {

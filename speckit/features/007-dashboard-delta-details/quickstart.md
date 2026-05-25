@@ -1,12 +1,14 @@
 # Quickstart — Validating feature 007 locally
 
-End-to-end loop for verifying the enriched listing endpoints and the new detail endpoint against a real server. Assumes you've already followed [`docs/QUICKSTART.md`](../../../docs/QUICKSTART.md) once and have the server runnable.
+End-to-end loop for verifying the enriched listing endpoints (and the scaffolded detail endpoint) against a real server. Assumes you've already followed [`docs/QUICKSTART.md`](../../../docs/QUICKSTART.md) once and have the server runnable.
+
+> **2026-05-25 revision** — this feature now adds a new `metadata JSONB` column on `deltas` (migration `2026-05-25-000001_delta_metadata`). Postgres users must `diesel migration run` before exercising the new wire shape. Filesystem-backed dev servers need no migration (serde handles the new field transparently). The listing wire shape changed: the top-level `category` / `kind` / `summary` / `proposal_type` fields from earlier drafts are replaced by a single `metadata` object with derived fields + optional `proposal` block. See `data-model.md` for the authoritative shape.
 
 ## Prerequisites
 
 - Rust toolchain (workspace pin from `rust-toolchain.toml`, currently 1.93.0).
 - Node + npm (for the TS operator client tests).
-- Filesystem-backed dev server is sufficient — no Postgres needed for local validation. See [`docs/LOCAL_DEV.md`](../../../docs/LOCAL_DEV.md) for the Postgres path if you want to exercise it that way.
+- Filesystem-backed dev server is sufficient for local validation. **Postgres users**: run `diesel migration run` against your local DB so the new `metadata` column exists before restarting the server. See [`docs/LOCAL_DEV.md`](../../../docs/LOCAL_DEV.md).
 - A running Guardian server with at least one account that has executed mixed-shape transactions. The `examples/demo` CLI plus the `smoke-test-rust-multisig-sdk` and `smoke-test-ts-multisig-sdk` skills can seed this — see those skills for the canonical procedures.
 - Operator dashboard auth: the dashboard uses a cookie session (`guardian_operator_session`, see `crates/server/src/dashboard/config.rs:7`), not Bearer tokens. Obtain a session by running `auth/challenge` + `auth/verify` per the operator-client README (or via the `smoke-test-operator-dashboard` skill) and export the cookie value as `OPERATOR_SESSION` for the curl examples below. From a logged-in browser, copy the cookie value with DevTools → Application → Cookies.
 
@@ -18,13 +20,11 @@ To exercise category inference, the local store needs at least one canonical del
 |---|---|
 | `asset_transfer` | `examples/demo` → multisig p2id transfer to a recipient |
 | `note_consumption` | `examples/demo` → consume a previously-created note |
-| `account_storage_change` | `examples/demo` → multisig `add_signer` (also exercises the `kind` field) |
+| `account_storage_change` | `examples/demo` → multisig `add_signer` (also exercises the `proposal.proposal_type` field) |
 | `guardian_switch` | `examples/demo` → multisig `switch_guardian` |
 | `note_creation` (no-input variant) | direct `push_delta` of a single-key Miden transaction that only creates a note |
 | `custom` | direct `push_delta` of a transaction whose payload doesn't match any inference rule |
-| `asset_swap` | not in the demo CLI today; smoke-test via a hand-rolled `pswap` note if needed |
 
-`asset_swap` is optional to exercise locally — the inference rule is simple enough that a unit test in `crates/server/src/delta_summary/category.rs` is sufficient evidence.
 
 ## Story 1 — Activity feed (enriched listing)
 
@@ -39,9 +39,11 @@ curl -s -b "guardian_operator_session=$OPERATOR_SESSION" \
 ```
 
 Check per-entry:
-- `category` is one of the seven enum values and is never `null`.
-- `kind` is non-null on multisig-sourced deltas, `null` on single-key push deltas.
-- `summary.note_counts.input` and `.output` are present and correct.
+- Each entry has either a `metadata` object or no `metadata` key at all. "Metadata unavailable" (no `metadata` key) is the expected state only for EVM deltas, pre-feature-007 historical rows, and undecodable payloads.
+- When present, `metadata.category` is one of the seven enum values and is never `null`.
+- `metadata.proposal.proposal_type` is set on multisig-sourced deltas; for single-key push deltas the entire `metadata.proposal` block is absent.
+- `metadata.note_counts.input` and `.output` are present and correct.
+- `metadata.asset` is populated for `p2id` (from proposal metadata for multisig, from the first output note for single-key push).
 - All pre-existing fields (`nonce`, `status`, `prev_commitment`, `new_commitment`, `proposal_type`) are present and unchanged.
 
 ## Story 2 — Detail view

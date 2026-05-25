@@ -313,6 +313,11 @@ impl DeltasProcessorBase {
             );
         }
 
+        // The typed `metadata` blob (derived fields + optional
+        // `proposal` block) is populated at push time by the
+        // push_delta service, so the candidate row already carries it.
+        // Canonicalization just flips the status — no derivation work
+        // needed here.
         let mut canonical_delta = delta.clone();
         canonical_delta.status = DeltaStatus::canonical(now.clone());
 
@@ -337,7 +342,7 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to update metadata: {e}"))
             })?;
 
-        // Delete matching proposal now that delta is canonical
+        // Delete matching proposal now that delta is canonical.
         let proposal_id = {
             let client = self.state.network_client.lock().await;
             client
@@ -477,6 +482,7 @@ mod tests {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status: DeltaStatus::candidate("2024-01-01T00:00:00Z".to_string()),
+            metadata: None,
         }
     }
 
@@ -491,6 +497,7 @@ mod tests {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
+            metadata: None,
         }
     }
 

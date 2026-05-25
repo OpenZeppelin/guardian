@@ -1,22 +1,31 @@
 # Implementation Plan: Dashboard delta activity feed and detail view
 
-**Branch**: `007-dashboard-delta-details` | **Date**: 2026-05-24 | **Spec**: [spec.md](./spec.md)
+**Branch**: `007-dashboard-delta-details` | **Date**: 2026-05-24 (rev 2026-05-25) | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `speckit/features/007-dashboard-delta-details/spec.md`
+
+> **⚠ ARCHITECTURE REVISION 2026-05-25** — this plan was rewritten after the original "decode-on-read, no schema migration" design was found to lose `metadata.proposal_type` for multisig commits (the TS client unwraps the proposal payload before calling `pushDelta`). The current implementation:
+>
+> - **Adds a `metadata JSONB` column** on `deltas` (migration `2026-05-25-000001_delta_metadata`).
+> - **Derives metadata at push time**, not at canonicalization or at read time. The `push_delta` service decodes the `TransactionSummary` (which it already does for `verify_delta` / `apply_delta`), looks up the matching `delta_proposals` row, builds a typed `DeltaMetadata` blob, and persists it. Listings read the column directly.
+> - **Wire shape change** vs. the original plan: top-level `category` / `kind` / `summary` / `proposal_type` fields on `DashboardDeltaEntry` are replaced by a single optional `metadata: DeltaMetadata` object. `kind` is dropped entirely (redundant with `metadata.proposal?.proposal_type`). `proposal_type` legacy field is dropped (recoverable from the same path).
+> - **Detail endpoint (US2)** is still scaffolded but not built; the listing changes ship first.
+>
+> Source of truth for the **new** architecture: `spec.md` §Clarifications 2026-05-25, `research.md` Decisions 2/3/10 (revised), `data-model.md` (rewritten), `contracts/http-list-*-deltas.md` (rewritten). Sections of THIS plan below this banner that describe the original "read-time decode" model are historical context; treat the revised research/data-model/contracts as authoritative.
 
 ## Summary
 
-Enrich the two existing dashboard delta listing endpoints (`GET /dashboard/accounts/{account_id}/deltas`, `GET /dashboard/deltas`) with derived activity fields (action `category`, optional `kind`, asset/recipient/note-count summary) and add a new per-delta detail endpoint (`GET /dashboard/accounts/{account_id}/deltas/{nonce}`) that decodes the persisted `TransactionSummary` into structured input/output notes, vault changes, and storage/account changes. Reference key is the composite `{account_id, nonce}`. No schema migration, no protocol change. Proposals out of scope.
+Persist a typed `DeltaMetadata` blob (closed `category` enum + derived `asset`/`counterparty`/`note_counts` + optional `proposal` block lifted from the matching `delta_proposals` row) on every delta at push time, in a new `metadata JSONB` column. Dashboard listings (`GET /dashboard/accounts/{account_id}/deltas`, `GET /dashboard/deltas`) project the column directly — no decode on the read path. The detail endpoint (`GET /dashboard/accounts/{account_id}/deltas/{nonce}`) is scaffolded for US2. The reference key is `{account_id, nonce}`. Proposals listing/detail surfaces are out of scope.
 
 ## Technical Context
 
 **Language/Version**: Rust 1.93.0 (server, pinned in `rust-toolchain.toml`); TypeScript 5.x (operator client, ESM)
 **Primary Dependencies**: `axum`, `tokio`, `serde`, `serde_json`, `sqlx` (Postgres) + filesystem store for server; `miden-protocol` (`0xMiden/miden-base`) for `TransactionSummary` decode; `base64` for the wrapper-shape payload; existing `dashboard::cursor`, `dashboard::authz`, `services::dashboard_pagination` scaffolding.
-**Storage**: Existing `deltas` table (Postgres + filesystem-backed equivalent). Schema unchanged. Reads only.
+**Storage**: Existing `deltas` table extended with one nullable `metadata JSONB` column (migration `2026-05-25-000001_delta_metadata`). Both Postgres and filesystem backends handle the new field via serde. Push path writes the column; listing path reads it.
 **Testing**: `cargo test` with inline `#[cfg(test)] mod tests` blocks colocated in the service / handler files (the convention used elsewhere in `crates/server`, e.g. the existing `dashboard_account_deltas.rs` test module at the bottom of the file); `vitest` for the TS operator client. No new files under `crates/server/tests/` — that directory is not the repo convention.
 **Target Platform**: Server binary on Linux (containerized); TS operator client consumed by browsers (smoke-web harness) and Node.
 **Project Type**: Web service (`crates/server`) + TypeScript SDK (`packages/guardian-operator-client`).
-**Performance Goals**: SC-004 — enriched listing latency must show no perceptible regression vs. current commitment-only listing on a default page size. Verified by a local Criterion bench seeded with mixed-shape fixtures (Decision 8 in `research.md`), not by the prod benchmark skill.
-**Constraints**: Append-only `deltas` table; read-only feature; no schema migration; no new env vars. (Constitution III is upheld trivially because nothing is written.) Listing endpoints continue to surface the existing `candidate` / `canonical` / `discarded` triplet — *not* a wire-level "canonical only" filter (FR-006 as revised). No new wire field may remove or rename existing fields (FR-021). `category` MUST be non-null on every entry (SC-002). Authorization scoping unchanged from existing dashboard behavior — v1 has no per-account ACL (documented in spec edge case "Operator authorization scope (v1)").
+**Performance Goals**: Push path gains one classifier call + one DB proposal lookup per write (both operating on data the path already had in memory); listing path drops all per-row decode (was: 50× `TransactionSummary::from_json` per default page). Net effect is amortizing once-per-write instead of once-per-listing-page.
+**Constraints**: Push-time metadata derivation is mandatory for any new delta whose `delta_payload` is a decodable `TransactionSummary`. The column is **nullable** for EVM deltas, pre-feature-007 historical rows, and undecodable payloads; clients render absence as "metadata unavailable" rather than fabricating zero-valued fields (SC-002). Listing endpoints continue to surface the existing `candidate` / `canonical` / `discarded` triplet — *not* a wire-level "canonical only" filter (FR-006 as revised). Wire shape: legacy top-level `category` / `kind` / `summary` / `proposal_type` fields are **dropped** from `DashboardDeltaEntry`; consumers read `entry.metadata.*` instead. Authorization scoping unchanged from existing dashboard behavior — v1 has no per-account ACL (documented in spec edge case "Operator authorization scope (v1)").
 **Scale/Scope**: Dashboard pages default to ~50 entries; high-volume accounts may have tens of thousands of canonical deltas; the detail endpoint is a point lookup. No change to pagination behavior.
 
 ## Constitution Check

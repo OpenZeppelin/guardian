@@ -105,10 +105,28 @@ if (info.serviceStatus === 'degraded') {
 
 ### Per-Account Delta Feed
 
+Each entry carries an optional `metadata` blob with the dashboard-ready
+activity fields (feature 007). The blob's top-level fields are
+**derived** from the on-chain `TransactionSummary`; the optional
+`metadata.proposal` block carries **operator-stated intent** lifted
+from the matching multisig proposal.
+
 ```typescript
 const page = await client.listAccountDeltas('0x...', { limit: 50 });
 for (const entry of page.items) {
   console.log(entry.nonce, entry.status, entry.statusTimestamp);
+  if (entry.metadata) {
+    console.log('category:', entry.metadata.category);
+    console.log('notes:', entry.metadata.noteCounts);
+    if (entry.metadata.proposal) {
+      console.log('proposal type:', entry.metadata.proposal.proposalType);
+    }
+  } else {
+    // `metadata` is absent for EVM deltas, pre-feature-007 historical
+    // rows, and undecodable payloads. Render as "metadata unavailable",
+    // not as zero-valued defaults — see DashboardDeltaMetadata jsdoc.
+    console.log('metadata unavailable');
+  }
 }
 ```
 

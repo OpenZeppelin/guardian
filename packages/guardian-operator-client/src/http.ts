@@ -5,12 +5,13 @@ import type {
   DashboardAccountSnapshot,
   DashboardAccountStateStatus,
   DashboardAccountSummary,
-  DashboardDeltaActivitySummary,
   DashboardDeltaAssetSummary,
   DashboardDeltaCategory,
   DashboardDeltaCounterpartySummary,
   DashboardDeltaEntry,
+  DashboardDeltaMetadata,
   DashboardDeltaNoteCounts,
+  DashboardDeltaProposalMetadata,
   DashboardDeltaStatus,
   DeltaAssetKind,
   DeltaCounterpartyDirection,
@@ -1356,19 +1357,6 @@ function parseDeltaEntry(
     statusTimestamp: requireString(record, 'status_timestamp', context),
     prevCommitment: requireString(record, 'prev_commitment', context),
     newCommitment: requireNullableString(record, 'new_commitment', context),
-    // Feature 007: required enrichment fields. `category` is a closed
-    // enum; `kind` is `string | null` (key always present, value
-    // nullable); `summary` is always an object with `noteCounts`
-    // populated (sub-fields are nullable per FR-004).
-    category: parseDeltaCategory(
-      requireString(record, 'category', context),
-      `${context}.category`,
-    ),
-    kind: requireNullableString(record, 'kind', context),
-    summary: parseDeltaActivitySummary(
-      requireField(record, 'summary', context),
-      `${context}.summary`,
-    ),
   };
   if (record.retry_count !== undefined) {
     const retry = record.retry_count;
@@ -1389,14 +1377,8 @@ function parseDeltaEntry(
     }
     entry.accountId = record.account_id;
   }
-  if (record.proposal_type !== undefined) {
-    if (typeof record.proposal_type !== 'string') {
-      throw new GuardianOperatorContractError(
-        context,
-        'proposal_type must be a string when present',
-      );
-    }
-    entry.proposalType = record.proposal_type;
+  if (record.metadata !== undefined && record.metadata !== null) {
+    entry.metadata = parseDeltaMetadata(record.metadata, `${context}.metadata`);
   }
   return entry;
 }
@@ -1451,7 +1433,6 @@ function parseProposalEntry(
 
 const DELTA_CATEGORY_VALUES: readonly DashboardDeltaCategory[] = [
   'asset_transfer',
-  'asset_swap',
   'note_consumption',
   'note_creation',
   'account_storage_change',
@@ -1534,29 +1515,81 @@ function parseDeltaNoteCounts(
   return { input, output };
 }
 
-function parseDeltaActivitySummary(
+function parseDeltaMetadata(
   value: unknown,
   context: string,
-): DashboardDeltaActivitySummary {
+): DashboardDeltaMetadata {
   const record = asRecord(value, context);
-  let asset: DashboardDeltaAssetSummary | null = null;
-  // Server serializes absent `asset` either as JSON `null` or omits
-  // the field when it skips serialization; we accept both.
+  const metadata: DashboardDeltaMetadata = {
+    category: parseDeltaCategory(
+      requireString(record, 'category', context),
+      `${context}.category`,
+    ),
+    noteCounts: parseDeltaNoteCounts(
+      requireField(record, 'note_counts', context),
+      `${context}.note_counts`,
+    ),
+  };
   if (record.asset !== undefined && record.asset !== null) {
-    asset = parseDeltaAssetSummary(record.asset, `${context}.asset`);
+    metadata.asset = parseDeltaAssetSummary(record.asset, `${context}.asset`);
   }
-  let counterparty: DashboardDeltaCounterpartySummary | null = null;
   if (record.counterparty !== undefined && record.counterparty !== null) {
-    counterparty = parseDeltaCounterpartySummary(
+    metadata.counterparty = parseDeltaCounterpartySummary(
       record.counterparty,
       `${context}.counterparty`,
     );
   }
-  const noteCounts = parseDeltaNoteCounts(
-    requireField(record, 'note_counts', context),
-    `${context}.note_counts`,
-  );
-  return { asset, counterparty, noteCounts };
+  if (record.proposal !== undefined && record.proposal !== null) {
+    metadata.proposal = parseDeltaProposalMetadata(
+      record.proposal,
+      `${context}.proposal`,
+    );
+  }
+  return metadata;
+}
+
+function parseDeltaProposalMetadata(
+  value: unknown,
+  context: string,
+): DashboardDeltaProposalMetadata {
+  const record = asRecord(value, context);
+  const proposal: DashboardDeltaProposalMetadata = {
+    proposalType: requireString(record, 'proposal_type', context),
+  };
+  // All other fields are optional; copy them through with light
+  // type checks. Unknown extra keys are ignored so adding a new
+  // proposal-type field on the server doesn't require a TS client
+  // update before consumers see it.
+  if (typeof record.description === 'string') proposal.description = record.description;
+  if (typeof record.salt === 'string') proposal.salt = record.salt;
+  if (typeof record.required_signatures === 'number')
+    proposal.requiredSignatures = record.required_signatures;
+  if (typeof record.recipient_id === 'string') proposal.recipientId = record.recipient_id;
+  if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
+  if (typeof record.amount === 'string') proposal.amount = record.amount;
+  if (Array.isArray(record.note_ids))
+    proposal.noteIds = (record.note_ids as unknown[]).filter(
+      (v): v is string => typeof v === 'string',
+    );
+  if (typeof record.consume_notes_metadata_version === 'number')
+    proposal.consumeNotesMetadataVersion = record.consume_notes_metadata_version;
+  if (Array.isArray(record.consume_notes_notes))
+    proposal.consumeNotesNotes = (record.consume_notes_notes as unknown[]).filter(
+      (v): v is string => typeof v === 'string',
+    );
+  if (typeof record.target_threshold === 'number')
+    proposal.targetThreshold = record.target_threshold;
+  if (Array.isArray(record.signer_commitments))
+    proposal.signerCommitments = (record.signer_commitments as unknown[]).filter(
+      (v): v is string => typeof v === 'string',
+    );
+  if (typeof record.new_guardian_pubkey === 'string')
+    proposal.newGuardianPubkey = record.new_guardian_pubkey;
+  if (typeof record.new_guardian_endpoint === 'string')
+    proposal.newGuardianEndpoint = record.new_guardian_endpoint;
+  if (typeof record.target_procedure === 'string')
+    proposal.targetProcedure = record.target_procedure;
+  return proposal;
 }
 
 function parseDeltaStatus(

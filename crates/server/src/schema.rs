@@ -39,6 +39,11 @@ diesel::table! {
         // columns.
         status_kind -> Text,
         status_timestamp -> Timestamptz,
+        // Multisig proposal metadata lifted at canonicalization
+        // (feature 007 / migration 2026-05-25-000001). NULL for
+        // single-key `push_delta`, EVM deltas, and any pre-migration
+        // canonical row whose source proposal had already been deleted.
+        metadata -> Nullable<Jsonb>,
     }
 }
 

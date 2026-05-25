@@ -133,17 +133,48 @@ pub struct DeltaObject {
     pub ack_pubkey: String,
     pub ack_scheme: String,
     pub status: DeltaStatus,
+    /// Typed dashboard metadata derived at push time
+    /// (feature `007-dashboard-delta-details`). Stored as JSONB in the
+    /// `deltas.metadata` column; this struct is the on-disk shape.
+    ///
+    /// `None` for:
+    ///   - EVM deltas whose `delta_payload` is not a `TransactionSummary`
+    ///   - Pre-feature-007 historical rows that were never reprocessed
+    ///
+    /// See `crates/server/src/delta_summary/mod.rs` for the full
+    /// description of the layered "derived + proposal" shape and the
+    /// push-time pipeline that populates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<crate::delta_summary::DeltaMetadata>,
 }
 
 impl DeltaObject {
-    /// Return the multisig proposal type tag carried in
-    /// `delta_payload.metadata.proposal_type`, if any. Multisig
-    /// proposals (and the deltas they commit) always set this to one of
-    /// the validated values (`add_signer`, `remove_signer`,
-    /// `change_threshold`, `update_procedure_threshold`, `p2id`,
-    /// `consume_notes`, `switch_guardian`). Single-key Miden
-    /// `push_delta` and EVM deltas carry no metadata and return `None`.
+    /// Return the multisig proposal type tag carried by this delta.
+    ///
+    /// Reads from the typed `metadata.proposal` block populated at
+    /// push time for canonical multisig deltas. Falls back to
+    /// `delta_payload.metadata.proposal_type` for two cases the typed
+    /// column does not cover:
+    ///
+    ///   - **Pending proposals** in the `delta_proposals` table. Their
+    ///     `delta_payload` is the wrapper shape with metadata intact,
+    ///     and they intentionally do not populate the dedicated
+    ///     `metadata` column (it's only on the `deltas` table — see
+    ///     `From<ProposalRow> for DeltaObject` in `storage/postgres.rs`).
+    ///   - **Pre-feature-007 historical canonical multisig deltas**
+    ///     whose proposal was already deleted before push-time
+    ///     derivation existed. They have no source for the typed
+    ///     column either; the legacy `delta_payload.metadata` path
+    ///     was the only one and may or may not have been preserved.
+    ///
+    /// Single-key `push_delta` and EVM deltas never carry either
+    /// signal and return `None`.
     pub fn proposal_type(&self) -> Option<&str> {
+        if let Some(meta) = &self.metadata
+            && let Some(p) = &meta.proposal
+        {
+            return Some(p.proposal_type.as_str());
+        }
         self.delta_payload
             .get("metadata")?
             .get("proposal_type")?
@@ -184,6 +215,8 @@ impl<'de> Deserialize<'de> for DeltaObject {
             canonical_at: Option<String>,
             #[serde(default)]
             discarded_at: Option<String>,
+            #[serde(default)]
+            metadata: Option<crate::delta_summary::DeltaMetadata>,
         }
 
         let helper = DeltaObjectHelper::deserialize(deserializer)?;
@@ -210,6 +243,7 @@ impl<'de> Deserialize<'de> for DeltaObject {
             ack_pubkey: helper.ack_pubkey,
             ack_scheme: helper.ack_scheme,
             status,
+            metadata: helper.metadata,
         })
     }
 }
@@ -224,6 +258,77 @@ mod tests {
         let status: DeltaStatus = serde_json::from_str(json).unwrap();
         assert!(status.is_candidate());
         assert_eq!(status.timestamp(), "2025-10-31T21:03:57.489548+00:00");
+    }
+
+    #[test]
+    fn proposal_type_reads_from_typed_metadata_when_present() {
+        use crate::delta_summary::{
+            DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
+        };
+        let mut delta = DeltaObject::default();
+        delta.metadata = Some(DeltaMetadata {
+            category: DashboardDeltaCategory::AssetTransfer,
+            asset: None,
+            counterparty: None,
+            note_counts: NoteCounts::default(),
+            proposal: Some(ProposalMetadata {
+                proposal_type: "p2id".to_string(),
+                ..ProposalMetadata::default()
+            }),
+        });
+        assert_eq!(delta.proposal_type(), Some("p2id"));
+    }
+
+    #[test]
+    fn proposal_type_falls_back_to_delta_payload_metadata_when_typed_column_is_none() {
+        // Regression guard for the proposal-feed read path. Pending
+        // proposals in `delta_proposals` carry intent in the wrapper
+        // `delta_payload.metadata` and never populate the typed
+        // column (the column only exists on `deltas`). The proposal
+        // dashboard reads `proposal_type()` to surface the type tag,
+        // so the fallback is critical.
+        let mut delta = DeltaObject::default();
+        delta.metadata = None;
+        delta.delta_payload = serde_json::json!({
+            "tx_summary": { "data": "AAAA" },
+            "metadata": {
+                "proposal_type": "consume_notes",
+                "note_ids": ["0xnote1"]
+            },
+            "signatures": []
+        });
+        assert_eq!(delta.proposal_type(), Some("consume_notes"));
+    }
+
+    #[test]
+    fn proposal_type_returns_none_when_neither_source_has_it() {
+        let delta = DeltaObject::default();
+        assert!(delta.proposal_type().is_none());
+    }
+
+    #[test]
+    fn proposal_type_typed_column_wins_over_legacy_path() {
+        use crate::delta_summary::{
+            DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
+        };
+        // Hypothetical row that has BOTH the typed column AND a
+        // legacy metadata block in delta_payload. The typed column
+        // is the source of truth.
+        let mut delta = DeltaObject::default();
+        delta.metadata = Some(DeltaMetadata {
+            category: DashboardDeltaCategory::AssetTransfer,
+            asset: None,
+            counterparty: None,
+            note_counts: NoteCounts::default(),
+            proposal: Some(ProposalMetadata {
+                proposal_type: "p2id".to_string(),
+                ..ProposalMetadata::default()
+            }),
+        });
+        delta.delta_payload = serde_json::json!({
+            "metadata": { "proposal_type": "add_signer" }
+        });
+        assert_eq!(delta.proposal_type(), Some("p2id"));
     }
 
     #[test]

@@ -8,6 +8,8 @@ description: "Task list for feature 007 — dashboard delta activity feed and de
 **Input**: Design documents from `/Users/zeljkomarkovic/Documents/Projects/guardian/speckit/features/007-dashboard-delta-details/`
 **Prerequisites**: plan.md ✅, spec.md ✅, research.md ✅, data-model.md ✅, contracts/ ✅, quickstart.md ✅
 
+> **⚠ ARCHITECTURE REVISION 2026-05-25** — this task list was authored against the original "read-time decode, no schema migration" design. The actual implementation pivoted to "push-time derivation with a new `metadata JSONB` column" after the original design was found to lose multisig `proposal_type` (the TS client unwraps the proposal payload before calling `pushDelta`). T001–T018 below correspond to the original Phase 1–3 (foundational `delta_summary` module + listing enrichment); the *outputs* of those tasks were rewritten in the 2026-05-25 pivot, but the original phasing still loosely describes what was done. **Net status**: every task in the MVP scope (T001–T018) is complete, just with the new architecture, plus an additional set of post-pivot tasks (migration, push-time pipeline, typed structs, integration tests) tracked informally. See plan.md banner + research.md Decisions 2/3 for the authoritative design.
+
 **Tests**: Not requested as TDD. Each implementation task includes its inline `#[cfg(test)] mod tests` coverage per the repo convention (no separate `tests/` directory); the Validation Matrix in `plan.md` maps every FR/SC to a concrete test.
 
 **Organization**: One phase per user story so each story can be shipped independently. Foundational `delta_summary` module is shared across all stories.
