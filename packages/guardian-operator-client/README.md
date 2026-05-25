@@ -105,29 +105,55 @@ if (info.serviceStatus === 'degraded') {
 
 ### Per-Account Delta Feed
 
-Each entry carries an optional `metadata` blob with the dashboard-ready
-activity fields (feature 007). The blob's top-level fields are
-**derived** from the on-chain `TransactionSummary`; the optional
-`metadata.proposal` block carries **operator-stated intent** lifted
-from the matching multisig proposal.
+Each entry carries the dashboard-ready activity fields spread directly
+at L1 (feature 007). `category` is the server-curated coarse
+classification; `asset` / `counterparty` / `noteCounts` are derived
+from the on-chain `TransactionSummary`; `proposalType` echoes the
+operator's intent label for multisig commits. All five fields are
+optional — absent fields mean "not derivable from this row" (EVM
+deltas, pre-feature-007 historical rows whose proposal was already
+deleted, or undecodable payloads).
 
 ```typescript
 const page = await client.listAccountDeltas('0x...', { limit: 50 });
 for (const entry of page.items) {
   console.log(entry.nonce, entry.status, entry.statusTimestamp);
-  if (entry.metadata) {
-    console.log('category:', entry.metadata.category);
-    console.log('notes:', entry.metadata.noteCounts);
-    if (entry.metadata.proposal) {
-      console.log('proposal type:', entry.metadata.proposal.proposalType);
+  if (entry.category) {
+    console.log('category:', entry.category);
+    console.log('notes:', entry.noteCounts);
+    if (entry.proposalType) {
+      console.log('proposal type:', entry.proposalType);
+    }
+    if (entry.asset) {
+      console.log('asset:', entry.asset.assetId, entry.asset.amount);
     }
   } else {
-    // `metadata` is absent for EVM deltas, pre-feature-007 historical
-    // rows, and undecodable payloads. Render as "metadata unavailable",
-    // not as zero-valued defaults — see DashboardDeltaMetadata jsdoc.
+    // No dashboard fields → render as "metadata unavailable", not as
+    // zero-valued defaults. Reasons listed above.
     console.log('metadata unavailable');
   }
 }
+```
+
+For the full structured projection of a single delta (decoded input /
+output notes, vault changes, storage changes, plus the full
+`proposal` intent block), call `getAccountDeltaDetail`:
+
+```typescript
+const detail = await client.getAccountDeltaDetail('0x...', entry.nonce);
+console.log('input notes:', detail.inputNotes.length);
+console.log('vault changes:', detail.vaultChanges);
+if (detail.proposal) {
+  console.log('proposal intent:', detail.proposal);
+}
+
+// Debug: include the raw base64 TransactionSummary blob in the
+// response so you can sanity-check the server's projection against
+// the on-disk bytes.
+const debug = await client.getAccountDeltaDetail('0x...', entry.nonce, {
+  includeRaw: true,
+});
+console.log('raw bytes (base64):', debug.rawTransactionSummary);
 ```
 
 ### Per-Account In-Flight Proposals

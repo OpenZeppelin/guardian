@@ -297,6 +297,110 @@ export interface DashboardDeltaMetadata {
   proposal?: DashboardDeltaProposalMetadata;
 }
 
+/**
+ * Coarse note-tag classification surfaced on the detail endpoint's
+ * decoded notes. v1 always emits `'custom'` — per-tag classification
+ * (`p2id`, `pswap`, `mint`, `burn`) is a deferred enhancement tied to
+ * the `asset_swap` category detection. Feature 007 / US2.
+ */
+export type DashboardDeltaNoteTag =
+  | 'p2id'
+  | 'p2ide'
+  | 'pswap'
+  | 'mint'
+  | 'burn'
+  | 'custom';
+
+export interface DashboardDeltaDecodedAsset {
+  assetId: string;
+  kind: DeltaAssetKind;
+  /** Decimal amount as a string (unsigned in note context — direction
+   * is implied by whether this is on an input or output note). */
+  amount?: string;
+}
+
+export interface DashboardDeltaDecodedNote {
+  noteId: string;
+  tag: DashboardDeltaNoteTag;
+  assets: DashboardDeltaDecodedAsset[];
+  sender?: string;
+  recipient?: string;
+}
+
+export type DashboardDeltaVaultChange =
+  | {
+      kind: 'fungible';
+      assetId: string;
+      /** Signed decimal magnitude, e.g. `"-100"`, `"+50"`. */
+      change: string;
+    }
+  | {
+      kind: 'non_fungible';
+      assetId: string;
+      added: string[];
+      removed: string[];
+    };
+
+export interface DashboardDeltaStorageChange {
+  /** Human-readable slot name from Miden's `StorageSlotName`
+   * (e.g. `"consumed_notes"`, `"executed_txs"`). Earlier drafts
+   * mis-named this `slotIndex` and surfaced a numeric `0` for every
+   * entry; the actual identifier is a string. */
+  slotName: string;
+  /** Hex `Word` (64 hex chars + `0x` prefix) before the change.
+   * Omitted in v1 — prior slot values are not in the delta. Reserved
+   * for future prev-commitment state replay. */
+  before?: string | null;
+  /** Hex `Word` (64 hex chars + `0x` prefix) after the change, or
+   * `null` when the slot was cleared. */
+  after: string | null;
+}
+
+export type DashboardDeltaDecodeSection =
+  | 'tx_summary'
+  | 'metadata'
+  | 'input_notes'
+  | 'output_notes'
+  | 'vault'
+  | 'storage';
+
+export interface DashboardDeltaDecodeWarning {
+  section: DashboardDeltaDecodeSection;
+  reason: string;
+}
+
+/**
+ * Wire shape for `GET /dashboard/accounts/{account_id}/deltas/{nonce}`.
+ * Feature 007 / US2.
+ *
+ * Carries push-time `category` and optional multisig `proposal` at L1,
+ * plus structured detail sections decoded at request time from the
+ * persisted `TransactionSummary`. Asset, counterparty, and note counts
+ * are not repeated here — derive them from the decoded sections.
+ */
+export interface DashboardDeltaDetail {
+  accountId: string;
+  nonce: number;
+  status: DashboardDeltaStatus;
+  statusTimestamp: string;
+  prevCommitment: string;
+  newCommitment: string | null;
+  retryCount?: number;
+  /** Server-curated classification from push-time metadata. */
+  category?: DashboardDeltaCategory;
+  /** Operator-stated proposal intent for multisig commits. */
+  proposal?: DashboardDeltaProposalMetadata;
+  inputNotes: DashboardDeltaDecodedNote[];
+  outputNotes: DashboardDeltaDecodedNote[];
+  vaultChanges: DashboardDeltaVaultChange[];
+  storageChanges: DashboardDeltaStorageChange[];
+  /** Present iff one or more sections could not be decoded. The
+   * request still returns 200; the affected sections are empty. */
+  decodeWarnings?: DashboardDeltaDecodeWarning[];
+  /** Present only when the request used `?include=raw` (debug). */
+  rawTransactionSummary?: string;
+}
+
 export interface DashboardDeltaEntry {
   nonce: number;
   accountId?: string;
@@ -306,12 +410,17 @@ export interface DashboardDeltaEntry {
   newCommitment: string | null;
   retryCount?: number;
 
+  /** Push-time enrichment spread to L1 on listing endpoints. */
+  category?: DashboardDeltaCategory;
+  /** Operator intent label (`metadata.proposal.proposal_type` only). */
+  proposalType?: string;
+  asset?: DashboardDeltaAssetSummary;
+  counterparty?: DashboardDeltaCounterpartySummary;
+  noteCounts?: DashboardDeltaNoteCounts;
+
   /**
-   * Typed dashboard metadata derived at push time. Feature 007.
-   * Absent (`undefined`) for pre-feature-007 rows whose source proposal
-   * was already deleted, and for EVM deltas. Listings should render
-   * the entry even when this is absent — `category: "custom"` is the
-   * caller's safe default.
+   * Legacy nested metadata blob. The server listing wire spreads fields
+   * to L1; this remains for backward-compatible parsing only.
    */
   metadata?: DashboardDeltaMetadata;
 }
@@ -394,6 +503,12 @@ export interface DashboardAccountSnapshot {
    * rather than silently display stale data. */
   hasPendingCandidate: boolean;
   vault: DashboardVaultSnapshot;
+}
+
+export interface DeltaDetailOptions {
+  /** When true, requests `?include=raw` so the server may attach the
+   * base64-encoded persisted `TransactionSummary` (debug only). */
+  includeRaw?: boolean;
 }
 
 /**

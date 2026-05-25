@@ -159,7 +159,7 @@ Goal: ship the new detail endpoint and the round-trip key contract.
 - Add `list_account_delta_detail_handler` in `api/dashboard_feeds.rs`; parse the `nonce` segment per FR-009a; map parse failures to `GuardianError::InvalidInput`.
 - Wire the route in the dashboard router builder (path documented in §Handler wiring).
 - Normalize the 404 body so `DeltaNotFound` and `AccountNotFound` are field-level identical (SC-008). The easiest path is to route both to a single error variant at the handler boundary; the explicit approach is a `match` in the handler that maps both into the same `Response`.
-- `?include=scripts` and `?include=raw` are handler-level booleans, parsed from a single `?include=` comma-list query param; default off.
+- No query parameters on the detail endpoint. Note MAST scripts and raw `TransactionSummary` exposure were both dropped from US2 scope (2026-05-25 decision); the detail response always carries the same shape.
 - Add `getAccountDeltaDetail(accountId, nonce, opts)` to the TS operator client.
 - Inline tests cover the 5 user-story-2 acceptance scenarios + the 3 user-story-3 acceptance scenarios + all detail-contract behavioral invariants.
 
@@ -191,7 +191,7 @@ Each requirement / success criterion maps to a concrete test. Mostly inline `#[c
 | FR-010 / FR-011 (detail endpoint shape) | `dashboard_account_delta_detail.rs` inline | Full shape assertion on a p2id delta. |
 | FR-012 (decoded notes) | `delta_summary::projection` unit | Per-note-tag assertion (p2id, p2ide, pswap, mint, burn, custom). |
 | FR-013 / FR-014 (vault + storage changes) | `delta_summary::projection` unit | Fungible signed-delta, non-fungible add/remove, storage slot before/after. |
-| FR-015 (raw debug field) | `dashboard_account_delta_detail.rs` inline | `?include=raw` round-trip; field absent without param. |
+| FR-015 (raw debug field) | n/a — dropped from US2 scope. No test needed. |
 | FR-016 (partial decode warnings) | `dashboard_account_delta_detail.rs` inline | `MALFORMED_BASE64` fixture: `decode_warnings[]` present, other sections still populated. |
 | FR-017 / SC-008 (uniform 404 body) | `dashboard_account_delta_detail.rs` inline | `serde_json::Value` diff of `DeltaNotFound` vs `AccountNotFound` bodies = empty. |
 | FR-018 (400 on malformed nonce) | `dashboard_account_delta_detail.rs` inline | Each malformed-nonce input returns 400, body shape = existing `InvalidInput`. |

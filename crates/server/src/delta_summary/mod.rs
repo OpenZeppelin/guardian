@@ -36,7 +36,8 @@ pub use build::{build_metadata, lift_proposal_metadata, metadata_from_value, met
 pub use category::{category_from_proposal_type, infer_category_from_summary};
 pub use decode::{decode_proposal_metadata, decode_transaction_summary};
 pub use projection::{
-    decode_full, project_asset_and_counterparty_from_output_notes, project_note_counts,
+    decode_full, project_asset_and_counterparty_from_input_notes,
+    project_asset_and_counterparty_from_output_notes, project_note_counts,
 };
 
 #[cfg(test)]
@@ -211,13 +212,6 @@ pub struct ProposalMetadata {
 // does not build these).
 // ---------------------------------------------------------------------
 
-/// Opt-in flags for the detail endpoint. US2 / Phase 4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DetailIncludeFlags {
-    pub scripts: bool,
-    pub raw: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecodedNote {
     pub note_id: String,
@@ -227,8 +221,8 @@ pub struct DecodedNote {
     pub sender: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
+    // Note MAST scripts deliberately not exposed in v1
+    // (US2 scope decision, 2026-05-25).
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -266,8 +260,21 @@ pub enum VaultChange {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StorageChange {
-    pub slot_index: u32,
+    /// Human-readable slot name from
+    /// `miden_protocol::account::StorageSlotName` (e.g.
+    /// `"consumed_notes"`, `"executed_txs"`). Slots are identified by
+    /// name in Miden, not by numeric index — earlier drafts of this
+    /// field misnamed it `slot_index` and dropped the name string.
+    pub slot_name: String,
+    /// Hex-encoded `Word` (64 hex chars + `0x` prefix) of the value
+    /// before the change. Omitted on the wire in v1 — a
+    /// `TransactionSummary` carries only post-change slot values.
+    /// Populating `before` requires reading account storage at
+    /// `prev_commitment` (future enhancement).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub before: Option<String>,
+    /// Hex-encoded `Word` (64 hex chars + `0x` prefix) of the value
+    /// after the change. `None` when the slot was cleared.
     pub after: Option<String>,
 }
 

@@ -11,8 +11,8 @@ use crate::api::dashboard::{
     pause_account_handler, unpause_account_handler, verify_operator_login,
 };
 use crate::api::dashboard_feeds::{
-    list_account_deltas_handler, list_account_proposals_handler, list_global_deltas_handler,
-    list_global_proposals_handler,
+    list_account_delta_detail_handler, list_account_deltas_handler, list_account_proposals_handler,
+    list_global_deltas_handler, list_global_proposals_handler,
 };
 #[cfg(feature = "evm")]
 use crate::api::evm::{
@@ -100,6 +100,10 @@ impl ServerHandle {
                     .route(
                         "/accounts/{account_id}/deltas",
                         get(list_account_deltas_handler),
+                    )
+                    .route(
+                        "/accounts/{account_id}/deltas/{nonce}",
+                        get(list_account_delta_detail_handler),
                     )
                     .route(
                         "/accounts/{account_id}/proposals",

@@ -13,15 +13,7 @@ GET /dashboard/accounts/{account_id}/deltas/{nonce}
 
 ## Query parameters
 
-A single `include` query parameter accepts a comma-separated list of opt-in features:
-
-| Value in `include=` | Effect |
-|---|---|
-| `scripts` | Each decoded note carries an additional `script` field (hex MAST). (Decision 5 in `research.md`, FR-012.) |
-| `raw` | Response carries the top-level `raw_transaction_summary` field (base64 of the persisted `TransactionSummary`). Debug only. (FR-015.) |
-| anything else | Ignored, for forwards compatibility. |
-
-Multiple values may be combined: `?include=scripts,raw`. Default (parameter unset): both fields are absent.
+None. Earlier drafts described `?include=scripts,raw` opt-in fields (decoded note scripts + raw `TransactionSummary` blob); both were dropped from US2 scope on 2026-05-25 as YAGNI. Re-add as a coordinated wire-contract change if/when a debugging surface needs them.
 
 ## Auth
 
@@ -65,13 +57,17 @@ Reuses existing `dashboard::authz` middleware (cookie session, `guardian_operato
     { "asset_id": "0xfaucet...", "kind": "fungible", "change": "-100" }
   ],
 
-  "storage_changes": []
+  "storage_changes": [
+    {
+      "slot_name": "openzeppelin::multisig::threshold_config",
+      "after": "0x0200..."
+    }
+  ]
 }
 ```
 
-When `?include=scripts` is set, each decoded note carries an additional `script` field (hex MAST).
+**Storage changes (v1)**: each entry carries `slot_name` and post-change `after` only. The `before` field is **omitted** — a `TransactionSummary` delta does not include prior slot values. Populating `before` is a future enhancement tied to reading account storage at `prev_commitment`.
 
-When `?include=raw` is set (debug only), the response carries `raw_transaction_summary` (base64).
 
 ## Response — `400 Bad Request`
 
@@ -92,7 +88,6 @@ Per-account operator ACL is not in scope for v1; once added, the "unauthorized f
 1. The response's `nonce` equals the URL segment's `nonce` and the listing entry's `nonce` for the same delta. (FR-008)
 2. The detail endpoint surfaces whatever `status` the delta currently has — no assumption that it is canonical. (Edge case: status transitions after listing.)
 3. `input_notes`, `output_notes`, `vault_changes`, `storage_changes` are always present as arrays (possibly empty), never omitted, never null. (FR-011, US2-AS3)
-4. `script` is absent unless `include=scripts` was requested. (Decision 5 of research.md)
-5. `raw_transaction_summary` is absent unless `include=raw` was requested. (FR-015)
+4. Decoded notes never carry a `script` field; raw `TransactionSummary` is never returned. (US2 scope decision, 2026-05-25.)
 6. If any section partially fails to decode, `decode_warnings[]` is present listing the failed sections, the request still returns `200`, and the other sections remain populated. (FR-016)
 7. An unknown-account request returns a body that's field-level identical to the unknown-nonce case, even though the underlying `GuardianError` variants differ (SC-008). Verified by an integration test that diffs the two response bodies as `serde_json::Value`.

@@ -16,7 +16,9 @@ use serde::Serialize;
 
 use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::delta_summary::DeltaMetadata;
+use crate::delta_summary::{
+    AssetSummary, CounterpartySummary, DashboardDeltaCategory, DeltaMetadata, NoteCounts,
+};
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
@@ -52,13 +54,25 @@ pub struct DashboardDeltaEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
 
-    /// Typed dashboard metadata derived at push time (feature 007).
-    /// Carries `category`, `asset`, `counterparty`, `note_counts`, and
-    /// the optional `proposal` block. `None` on rows that pre-date the
-    /// derivation pipeline (historical multisig deltas whose proposals
-    /// were already deleted) and on EVM deltas.
+    // Feature 007 fields — spread from the persisted `DeltaMetadata`
+    // blob at projection time. All optional: `category` absent means
+    // the row pre-dates the push-time pipeline (historical multisig
+    // whose proposal was deleted) or has an undecodable payload (EVM,
+    // schema drift). Clients render as "metadata unavailable" when
+    // `category` is absent.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<DeltaMetadata>,
+    pub category: Option<DashboardDeltaCategory>,
+    /// `metadata.proposal.proposal_type` string only (no full proposal
+    /// block on listings — see detail endpoint for that). Operator's
+    /// fine-grained intent label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<AssetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counterparty: Option<CounterpartySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_counts: Option<NoteCounts>,
 }
 
 /// Decode a [`DeltaStatus`] into the dashboard wire triple
@@ -91,20 +105,38 @@ impl DashboardDeltaEntry {
     /// Build a wire entry from a persisted [`DeltaObject`]. Returns
     /// `None` for `Pending` deltas, which the caller filters out.
     ///
-    /// `metadata` is read directly from the typed column populated at
-    /// push time — no decode-on-read.
+    /// Metadata fields are spread to L1 from the typed column: the
+    /// row carries `category`, `proposal_type` (string), `asset`,
+    /// `counterparty`, and `note_counts` directly when the column is
+    /// populated — no nested `metadata` wrapper on the wire.
     fn from_delta(delta: &DeltaObject) -> Option<Self> {
         let (status, retry_count, status_timestamp) = decode_delta_status(&delta.status)?;
-        Some(Self {
+        let mut entry = Self {
             nonce: delta.nonce,
             status,
             status_timestamp,
             prev_commitment: delta.prev_commitment.clone(),
             new_commitment: delta.new_commitment.clone(),
             retry_count,
-            metadata: delta.metadata.clone(),
-        })
+            category: None,
+            proposal_type: None,
+            asset: None,
+            counterparty: None,
+            note_counts: None,
+        };
+        if let Some(meta) = delta.metadata.as_ref() {
+            spread_metadata_into_entry(meta, &mut entry);
+        }
+        Some(entry)
     }
+}
+
+fn spread_metadata_into_entry(meta: &DeltaMetadata, entry: &mut DashboardDeltaEntry) {
+    entry.category = Some(meta.category);
+    entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
+    entry.asset = meta.asset.clone();
+    entry.counterparty = meta.counterparty.clone();
+    entry.note_counts = Some(meta.note_counts.clone());
 }
 
 /// List the persisted delta feed for `account_id`, paginated
@@ -250,19 +282,19 @@ mod tests {
     // confirm only the projection contract.
 
     #[test]
-    fn from_delta_omits_metadata_when_delta_has_none() {
-        let d = canonical(1); // metadata: None
+    fn from_delta_omits_enrichment_when_delta_has_none() {
+        let d = canonical(1);
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
-        assert!(entry.metadata.is_none());
+        assert!(entry.category.is_none());
         let serialized = serde_json::to_value(&entry).unwrap();
         assert!(
-            serialized.get("metadata").is_none(),
-            "metadata key skipped when None",
+            serialized.get("category").is_none(),
+            "category key skipped when None",
         );
     }
 
     #[test]
-    fn from_delta_carries_metadata_when_delta_has_some() {
+    fn from_delta_carries_spread_fields_when_delta_has_metadata() {
         use crate::delta_summary::{
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
@@ -281,13 +313,9 @@ mod tests {
             }),
         });
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
-        let meta = entry.metadata.as_ref().expect("metadata projected");
-        assert_eq!(meta.category, DashboardDeltaCategory::AssetTransfer);
-        assert_eq!(
-            meta.proposal.as_ref().map(|p| p.proposal_type.as_str()),
-            Some("p2id"),
-        );
-        assert_eq!(meta.note_counts.output, 1);
+        assert_eq!(entry.category, Some(DashboardDeltaCategory::AssetTransfer));
+        assert_eq!(entry.proposal_type.as_deref(), Some("p2id"));
+        assert_eq!(entry.note_counts.as_ref().map(|c| c.output), Some(1));
     }
 
     async fn state_with_n_calls(

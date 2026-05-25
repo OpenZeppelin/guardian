@@ -35,7 +35,7 @@ use serde::Serialize;
 
 use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::delta_object::DeltaObject;
-use crate::delta_summary::DeltaMetadata;
+use crate::delta_summary::{AssetSummary, CounterpartySummary, DashboardDeltaCategory, NoteCounts};
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_account_deltas::{DashboardDeltaStatus, decode_delta_status};
 use crate::services::dashboard_pagination::{PagedResult, enforce_aggregate_threshold};
@@ -57,10 +57,19 @@ pub struct DashboardGlobalDeltaEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
 
-    /// Typed dashboard metadata derived at push time. Feature 007.
-    /// See [`DashboardDeltaEntry::metadata`] for the full description.
+    // Feature 007 — spread from the persisted DeltaMetadata column;
+    // identical semantics to `DashboardDeltaEntry`. See
+    // `dashboard_account_deltas.rs` for the per-field meanings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<DeltaMetadata>,
+    pub category: Option<DashboardDeltaCategory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<AssetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counterparty: Option<CounterpartySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_counts: Option<NoteCounts>,
 }
 
 /// Parse a comma-separated `?status=` filter into a typed allow-list
@@ -107,7 +116,7 @@ pub fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<DashboardDelt
 
 fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDeltaEntry> {
     let (status, retry_count, status_timestamp) = decode_delta_status(&delta.status)?;
-    Some(DashboardGlobalDeltaEntry {
+    let mut entry = DashboardGlobalDeltaEntry {
         account_id: account_id.to_string(),
         nonce: delta.nonce,
         status,
@@ -115,8 +124,20 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone(),
         retry_count,
-        metadata: delta.metadata.clone(),
-    })
+        category: None,
+        proposal_type: None,
+        asset: None,
+        counterparty: None,
+        note_counts: None,
+    };
+    if let Some(meta) = delta.metadata.as_ref() {
+        entry.category = Some(meta.category);
+        entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
+        entry.asset = meta.asset.clone();
+        entry.counterparty = meta.counterparty.clone();
+        entry.note_counts = Some(meta.note_counts.clone());
+    }
+    Some(entry)
 }
 
 fn map_status_filter(status: &DashboardDeltaStatus) -> DeltaStatusKind {
@@ -402,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_from_carries_metadata_with_account_id() {
+    fn entry_from_carries_spread_fields_with_account_id() {
         use crate::delta_summary::{DashboardDeltaCategory, DeltaMetadata, NoteCounts};
         let metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,
@@ -417,14 +438,13 @@ mod tests {
         let d = canonical_with_metadata("0xacc1", 1, metadata);
         let entry = entry_from(&d, "0xacc1").expect("canonical delta maps");
         assert_eq!(entry.account_id, "0xacc1");
-        let meta = entry.metadata.as_ref().expect("metadata projected");
-        assert_eq!(meta.category, DashboardDeltaCategory::AssetTransfer);
+        assert_eq!(entry.category, Some(DashboardDeltaCategory::AssetTransfer));
     }
 
     #[test]
-    fn entry_from_omits_metadata_when_delta_has_none() {
+    fn entry_from_omits_enrichment_when_delta_has_none() {
         let d = canonical_with_metadata("0xacc2", 2, None);
         let entry = entry_from(&d, "0xacc2").expect("entry never dropped");
-        assert!(entry.metadata.is_none());
+        assert!(entry.category.is_none());
     }
 }

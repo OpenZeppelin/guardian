@@ -51,23 +51,13 @@ Check per-entry:
 Take a `nonce` from a listing entry above. Then:
 
 ```bash
-# Default
 curl -s -b "guardian_operator_session=$OPERATOR_SESSION" \
   "http://localhost:3000/dashboard/accounts/${ACCOUNT_ID}/deltas/${NONCE}" | jq
-
-# With note scripts (debug)
-curl -s -b "guardian_operator_session=$OPERATOR_SESSION" \
-  "http://localhost:3000/dashboard/accounts/${ACCOUNT_ID}/deltas/${NONCE}?include=scripts" | jq
-
-# With raw transaction summary (debug)
-curl -s -b "guardian_operator_session=$OPERATOR_SESSION" \
-  "http://localhost:3000/dashboard/accounts/${ACCOUNT_ID}/deltas/${NONCE}?include=raw" | jq
 ```
 
 Check:
 - `input_notes`, `output_notes`, `vault_changes`, `storage_changes` are all present (possibly empty arrays, never null, never absent).
-- `script` field on decoded notes appears only when `?include=scripts` is set.
-- `raw_transaction_summary` appears only when `?include=raw` is set.
+- Decoded notes carry `note_id`, `tag`, `assets`, and `sender` / `recipient` when applicable. Note MAST scripts are NOT exposed in v1.
 - `decode_warnings[]` appears only when something failed to decode.
 
 ## Story 3 — Key stability
@@ -123,5 +113,5 @@ All server tests live in inline `#[cfg(test)] mod tests` blocks colocated with t
 
 For each story:
 - US1 (P1): listing endpoints carry the new fields on the seeded mix-of-categories account; existing TS tests still pass.
-- US2 (P2): detail endpoint returns the structured projection for at least the `p2id`, `consume_notes`, `add_signer`, and a custom delta; `?include=scripts` and `?include=raw` work; partial-decode case emits `decode_warnings[]`.
+- US2 (P2): detail endpoint returns the structured projection for at least the `p2id`, `consume_notes`, `add_signer`, and a custom delta; partial-decode case emits `decode_warnings[]`.
 - US3 (P2): listing → detail round-trip succeeds; URL malformed cases return `400`; unknown/wrong-account/unauthorized cases return identical `404` bodies.

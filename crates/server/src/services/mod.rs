@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 pub mod account_status;
 mod configure_account;
+mod dashboard_account_delta_detail;
 mod dashboard_account_deltas;
 mod dashboard_account_proposals;
 mod dashboard_account_snapshot;
@@ -34,6 +35,9 @@ pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
 };
 pub use configure_account::{ConfigureAccountParams, ConfigureAccountResult, configure_account};
+pub use dashboard_account_delta_detail::{
+    DashboardDeltaDetail, DetailIncludeFlags, get_account_delta_detail,
+};
 pub use dashboard_account_deltas::{
     DashboardDeltaEntry, DashboardDeltaStatus, list_account_deltas,
 };

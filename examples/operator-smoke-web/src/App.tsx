@@ -5,6 +5,7 @@ import {
   type DashboardAccountDetail,
   type DashboardAccountSummary,
   type DashboardDeltaCategory,
+  type DashboardDeltaDetail,
   type DashboardDeltaEntry,
   type DashboardGlobalDeltaEntry,
   type OperatorChallenge,
@@ -73,32 +74,79 @@ function isGlobalDeltaEntry(
   return typeof entry.accountId === 'string' && entry.accountId.length > 0;
 }
 
+function deltaEnrichment(
+  entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
+) {
+  return {
+    category: entry.category ?? entry.metadata?.category,
+    proposalType: entry.proposalType ?? entry.metadata?.proposal?.proposalType,
+    asset: entry.asset ?? entry.metadata?.asset,
+    counterparty: entry.counterparty ?? entry.metadata?.counterparty,
+    noteCounts: entry.noteCounts ?? entry.metadata?.noteCounts,
+  };
+}
+
+function hasDeltaEnrichment(
+  meta: ReturnType<typeof deltaEnrichment>,
+): boolean {
+  return (
+    meta.category !== undefined ||
+    meta.proposalType !== undefined ||
+    meta.noteCounts !== undefined ||
+    meta.asset !== undefined ||
+    meta.counterparty !== undefined
+  );
+}
+
+function enrichmentBadgeLabel(
+  meta: ReturnType<typeof deltaEnrichment>,
+): string | null {
+  if (meta.category) {
+    return DELTA_CATEGORY_LABEL[meta.category];
+  }
+  if (meta.proposalType) {
+    return meta.proposalType;
+  }
+  return null;
+}
+
+function enrichmentBadgeClass(
+  meta: ReturnType<typeof deltaEnrichment>,
+): string {
+  if (meta.category) {
+    return DELTA_CATEGORY_BADGE[meta.category];
+  }
+  if (meta.proposalType) {
+    return 'neutral';
+  }
+  return 'neutral';
+}
+
 /**
  * Build a short human-readable one-line summary from an enriched
  * delta entry. This is the rule-of-thumb test from spec.md §SC-001 —
  * "an operator (or downstream renderer) can produce a one-line human
  * summary using only the returned fields."
  *
- * Reads from `metadata.category`, `metadata.proposal.proposal_type`,
- * `metadata.asset`, `metadata.counterparty`, and `metadata.note_counts`.
- * Returns a placeholder when the entry has no `metadata` block
- * (pre-feature-007 historical rows).
+ * Reads L1 spread fields (`category`, `proposalType`, `asset`,
+ * `counterparty`, `noteCounts`) with fallback to a legacy nested
+ * `metadata` blob when present.
  */
 function describeDelta(
   entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
 ): string {
-  const meta = entry.metadata;
-  if (!meta) {
-    // Three cases produce absent metadata: EVM deltas, pre-feature-007
-    // historical rows whose proposal was already deleted, and rows
-    // whose `TransactionSummary` is undecodable. The dashboard does
-    // not fabricate `category: custom` / `note_counts: {0,0}` in
-    // these cases because the source data may actually represent
-    // real activity (e.g. a historical consume_notes whose details
-    // we just don't have indexed).
-    return 'metadata unavailable';
+  const meta = deltaEnrichment(entry);
+  if (!hasDeltaEnrichment(meta)) {
+    return 'enrichment unavailable';
   }
-  const kind = meta.proposal?.proposalType;
+  if (!meta.category) {
+    const kind = meta.proposalType;
+    if (kind) {
+      return `Multisig delta (${kind})`;
+    }
+    return 'Enriched delta (category not indexed)';
+  }
+  const kind = meta.proposalType;
   switch (meta.category) {
     case 'asset_transfer': {
       const recipient = meta.counterparty?.accountId ?? 'unknown recipient';
@@ -106,16 +154,28 @@ function describeDelta(
       const asset = meta.asset?.assetId ?? 'asset';
       return `Transferred ${amount} of ${asset} → ${recipient}`;
     }
-    case 'note_consumption':
-      return `Consumed ${meta.noteCounts.input} note${meta.noteCounts.input === 1 ? '' : 's'}`;
+    case 'note_consumption': {
+      const count = meta.noteCounts?.input ?? 0;
+      if (meta.asset?.assetId && meta.asset.amount) {
+        const from = meta.counterparty?.accountId;
+        return from
+          ? `Consumed ${meta.asset.amount} of ${meta.asset.assetId} from ${from}`
+          : `Consumed ${meta.asset.amount} of ${meta.asset.assetId}`;
+      }
+      return `Consumed ${count} note${count === 1 ? '' : 's'}`;
+    }
     case 'note_creation':
-      return `Created ${meta.noteCounts.output} note${meta.noteCounts.output === 1 ? '' : 's'}`;
+      return `Created ${meta.noteCounts?.output ?? 0} note${meta.noteCounts?.output === 1 ? '' : 's'}`;
     case 'account_storage_change':
       return kind ? `Account change: ${kind}` : 'Account / storage change';
     case 'guardian_switch':
       return 'Switched Guardian';
     case 'custom':
       return kind ? `Custom (${kind})` : 'Custom / unknown';
+    default: {
+      const unreachable: never = meta.category;
+      return unreachable;
+    }
   }
 }
 
@@ -158,6 +218,13 @@ export default function App() {
     'account' | 'global' | null
   >(null);
   const [deltaListLabel, setDeltaListLabel] = useState<string>('');
+
+  // Feature 007 / US2: detail endpoint result. Populated by clicking
+  // a delta card's "View detail" button. Cleared when the listing is
+  // refreshed.
+  const [deltaDetail, setDeltaDetail] = useState<DashboardDeltaDetail | null>(
+    null,
+  );
 
   const client = useMemo(
     () =>
@@ -319,6 +386,18 @@ export default function App() {
 
   async function getSession() {
     await runAction('getSession', () => client.getSession());
+  }
+
+  async function fetchDeltaDetail(targetAccountId: string, nonce: number) {
+    await runAction(`getAccountDeltaDetail(${nonce})`, async () => {
+      const detail = await client.getAccountDeltaDetail(targetAccountId, nonce);
+      setDeltaDetail(detail);
+      return detail;
+    });
+  }
+
+  function clearDeltaDetail() {
+    setDeltaDetail(null);
   }
 
   async function listAccountDeltas() {
@@ -710,15 +789,13 @@ export default function App() {
           </div>
 
           <p className="hint">
-            Feature 007. Each entry exposes the new typed{' '}
-            <code>metadata</code> blob: top-level <code>category</code>,{' '}
+            Feature 007. Each listing entry spreads push-time enrichment to
+            L1: <code>category</code>, <code>proposal_type</code>,{' '}
             <code>asset</code>, <code>counterparty</code>,{' '}
-            <code>note_counts</code>, plus an optional <code>proposal</code>{' '}
-            block carrying operator-stated intent for multisig commits. Use{' '}
-            <strong>List account deltas</strong> or <strong>List global deltas</strong> to populate
-            this panel. The one-line summary at the top of each card is derived
-            purely from the fields the server returned — no detail endpoint
-            required (SC-001).
+            <code>note_counts</code>. The detail endpoint adds decoded note /
+            vault / storage sections plus optional multisig{' '}
+            <code>proposal</code>. Use <strong>List account deltas</strong> or{' '}
+            <strong>List global deltas</strong> to populate this panel.
           </p>
 
           {deltaList.length > 0 ? (
@@ -728,24 +805,41 @@ export default function App() {
                   ? delta.accountId
                   : undefined;
                 const cardKey = `${globalAccountId ?? 'acct'}-${delta.nonce}-${index}`;
-                const meta = delta.metadata;
-                const proposal = meta?.proposal;
+                const meta = deltaEnrichment(delta);
+                const proposalType = meta.proposalType;
+                const legacyProposal = delta.metadata?.proposal;
+                // For the per-account feed, the account_id is the one
+                // bound to the request (accountId state). For the
+                // global feed, each entry carries its own.
+                const cardAccountId = globalAccountId ?? accountId.trim();
+                const canFetchDetail = cardAccountId.length > 0;
                 return (
                   <article className="delta-card" key={cardKey}>
                     <header className="delta-card-header">
                       <span className="delta-summary-line">
                         {describeDelta(delta)}
                       </span>
-                      {meta ? (
+                      {enrichmentBadgeLabel(meta) ? (
                         <span
-                          className={`badge ${DELTA_CATEGORY_BADGE[meta.category]}`}
+                          className={`badge ${enrichmentBadgeClass(meta)}`}
                         >
-                          {DELTA_CATEGORY_LABEL[meta.category]}
+                          {enrichmentBadgeLabel(meta)}
                         </span>
                       ) : (
-                        <span className="badge neutral">metadata unavailable</span>
+                        <span className="badge neutral">no enrichment</span>
                       )}
                     </header>
+
+                    <div className="actions">
+                      <button
+                        onClick={() =>
+                          void fetchDeltaDetail(cardAccountId, delta.nonce)
+                        }
+                        disabled={!canFetchDetail}
+                      >
+                        View detail
+                      </button>
+                    </div>
 
                     <div className="status-grid compact">
                       <div>
@@ -763,7 +857,7 @@ export default function App() {
                       <div>
                         <span className="label">Proposal type</span>
                         <strong>
-                          {proposal?.proposalType ?? (
+                          {proposalType ?? (
                             <em className="muted">none</em>
                           )}
                         </strong>
@@ -779,7 +873,7 @@ export default function App() {
                       <div>
                         <span className="label">Input / output notes</span>
                         <strong>
-                          {meta
+                          {meta.noteCounts
                             ? `${meta.noteCounts.input} / ${meta.noteCounts.output}`
                             : '—'}
                         </strong>
@@ -818,71 +912,71 @@ export default function App() {
                       </div>
                     </div>
 
-                    {proposal ? (
+                    {(proposalType ?? legacyProposal) ? (
                       <details className="delta-debug" open>
                         <summary>Proposal intent</summary>
                         <div className="status-grid compact">
                           <div>
                             <span className="label">proposal_type</span>
-                            <code>{proposal.proposalType}</code>
+                            <code>{proposalType ?? legacyProposal?.proposalType}</code>
                           </div>
-                          {proposal.description ? (
+                          {legacyProposal?.description ? (
                             <div>
                               <span className="label">description</span>
-                              <strong>{proposal.description}</strong>
+                              <strong>{legacyProposal.description}</strong>
                             </div>
                           ) : null}
-                          {proposal.recipientId ? (
+                          {legacyProposal?.recipientId ? (
                             <div>
                               <span className="label">recipient_id</span>
-                              <code className="wrap">{proposal.recipientId}</code>
+                              <code className="wrap">{legacyProposal.recipientId}</code>
                             </div>
                           ) : null}
-                          {proposal.faucetId ? (
+                          {legacyProposal?.faucetId ? (
                             <div>
                               <span className="label">faucet_id</span>
-                              <code className="wrap">{proposal.faucetId}</code>
+                              <code className="wrap">{legacyProposal.faucetId}</code>
                             </div>
                           ) : null}
-                          {proposal.amount ? (
+                          {legacyProposal?.amount ? (
                             <div>
                               <span className="label">amount</span>
-                              <strong>{proposal.amount}</strong>
+                              <strong>{legacyProposal.amount}</strong>
                             </div>
                           ) : null}
-                          {typeof proposal.requiredSignatures === 'number' ? (
+                          {typeof legacyProposal?.requiredSignatures === 'number' ? (
                             <div>
                               <span className="label">required_signatures</span>
-                              <strong>{proposal.requiredSignatures}</strong>
+                              <strong>{legacyProposal.requiredSignatures}</strong>
                             </div>
                           ) : null}
-                          {typeof proposal.targetThreshold === 'number' ? (
+                          {typeof legacyProposal?.targetThreshold === 'number' ? (
                             <div>
                               <span className="label">target_threshold</span>
-                              <strong>{proposal.targetThreshold}</strong>
+                              <strong>{legacyProposal.targetThreshold}</strong>
                             </div>
                           ) : null}
-                          {proposal.noteIds && proposal.noteIds.length > 0 ? (
+                          {legacyProposal?.noteIds && legacyProposal.noteIds.length > 0 ? (
                             <div>
                               <span className="label">note_ids</span>
                               <code className="wrap">
-                                {proposal.noteIds.join(', ')}
+                                {legacyProposal.noteIds.join(', ')}
                               </code>
                             </div>
                           ) : null}
-                          {proposal.newGuardianPubkey ? (
+                          {legacyProposal?.newGuardianPubkey ? (
                             <div>
                               <span className="label">new_guardian_pubkey</span>
                               <code className="wrap">
-                                {proposal.newGuardianPubkey}
+                                {legacyProposal.newGuardianPubkey}
                               </code>
                             </div>
                           ) : null}
-                          {proposal.newGuardianEndpoint ? (
+                          {legacyProposal?.newGuardianEndpoint ? (
                             <div>
                               <span className="label">new_guardian_endpoint</span>
                               <code className="wrap">
-                                {proposal.newGuardianEndpoint}
+                                {legacyProposal.newGuardianEndpoint}
                               </code>
                             </div>
                           ) : null}
@@ -917,6 +1011,225 @@ export default function App() {
             </div>
           ) : (
             <p className="hint">No delta feed loaded yet.</p>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Delta detail</h2>
+            <span
+              className={`badge ${deltaDetail ? 'success' : 'neutral'}`}
+            >
+              {deltaDetail
+                ? `${deltaDetail.accountId} · nonce ${deltaDetail.nonce}`
+                : 'not loaded'}
+            </span>
+          </div>
+
+          <p className="hint">
+            Feature 007 / US2. Click <strong>View detail</strong> on any
+            entry in the delta feed above to fetch{' '}
+            <code>
+              GET /dashboard/accounts/&#123;account_id&#125;/deltas/&#123;nonce&#125;
+            </code>{' '}
+            and render the decoded input/output notes, vault changes, and
+            storage changes here.
+          </p>
+
+          {deltaDetail ? (
+            <>
+              <div className="status-grid compact">
+                <div>
+                  <span className="label">Account</span>
+                  <strong>
+                    <code>{deltaDetail.accountId}</code>
+                  </strong>
+                </div>
+                <div>
+                  <span className="label">Nonce</span>
+                  <strong>{deltaDetail.nonce}</strong>
+                </div>
+                <div>
+                  <span className="label">Status</span>
+                  <strong>{deltaDetail.status}</strong>
+                </div>
+                <div>
+                  <span className="label">Category</span>
+                  <strong>
+                    {deltaDetail.category ? (
+                      DELTA_CATEGORY_LABEL[deltaDetail.category]
+                    ) : deltaDetail.proposal?.proposalType ? (
+                      deltaDetail.proposal.proposalType
+                    ) : (
+                      <em className="muted">no category on detail</em>
+                    )}
+                  </strong>
+                </div>
+                <div>
+                  <span className="label">prev_commitment</span>
+                  <code className="wrap">{deltaDetail.prevCommitment}</code>
+                </div>
+                <div>
+                  <span className="label">new_commitment</span>
+                  <code className="wrap">
+                    {deltaDetail.newCommitment ?? 'null'}
+                  </code>
+                </div>
+              </div>
+
+              <h3>Input notes ({deltaDetail.inputNotes.length})</h3>
+              {deltaDetail.inputNotes.length > 0 ? (
+                <div className="delta-list">
+                  {deltaDetail.inputNotes.map((note, idx) => (
+                    <article className="delta-card" key={`in-${idx}-${note.noteId}`}>
+                      <div className="status-grid compact">
+                        <div>
+                          <span className="label">note_id</span>
+                          <code className="wrap">{note.noteId}</code>
+                        </div>
+                        <div>
+                          <span className="label">tag</span>
+                          <strong>{note.tag}</strong>
+                        </div>
+                        {note.sender ? (
+                          <div>
+                            <span className="label">sender</span>
+                            <code className="wrap">{note.sender}</code>
+                          </div>
+                        ) : null}
+                        {note.recipient ? (
+                          <div>
+                            <span className="label">recipient</span>
+                            <code className="wrap">{note.recipient}</code>
+                          </div>
+                        ) : null}
+                        <div>
+                          <span className="label">assets</span>
+                          <strong>
+                            {note.assets.length === 0 ? (
+                              <em className="muted">none</em>
+                            ) : (
+                              note.assets
+                                .map(
+                                  (a) =>
+                                    `${a.assetId.slice(0, 10)}… · ${a.kind}${
+                                      a.amount ? ` · ${a.amount}` : ''
+                                    }`,
+                                )
+                                .join(', ')
+                            )}
+                          </strong>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="hint">No input notes.</p>
+              )}
+
+              <h3>Output notes ({deltaDetail.outputNotes.length})</h3>
+              {deltaDetail.outputNotes.length > 0 ? (
+                <div className="delta-list">
+                  {deltaDetail.outputNotes.map((note, idx) => (
+                    <article className="delta-card" key={`out-${idx}-${note.noteId}`}>
+                      <div className="status-grid compact">
+                        <div>
+                          <span className="label">note_id</span>
+                          <code className="wrap">{note.noteId}</code>
+                        </div>
+                        <div>
+                          <span className="label">tag</span>
+                          <strong>{note.tag}</strong>
+                        </div>
+                        {note.recipient ? (
+                          <div>
+                            <span className="label">recipient</span>
+                            <code className="wrap">{note.recipient}</code>
+                          </div>
+                        ) : null}
+                        <div>
+                          <span className="label">assets</span>
+                          <strong>
+                            {note.assets.length === 0 ? (
+                              <em className="muted">none</em>
+                            ) : (
+                              note.assets
+                                .map(
+                                  (a) =>
+                                    `${a.assetId.slice(0, 10)}… · ${a.kind}${
+                                      a.amount ? ` · ${a.amount}` : ''
+                                    }`,
+                                )
+                                .join(', ')
+                            )}
+                          </strong>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="hint">No output notes.</p>
+              )}
+
+              <h3>Vault changes ({deltaDetail.vaultChanges.length})</h3>
+              {deltaDetail.vaultChanges.length > 0 ? (
+                <ul>
+                  {deltaDetail.vaultChanges.map((change, idx) => (
+                    <li key={`vault-${idx}`}>
+                      <code>{change.assetId}</code> ·{' '}
+                      {change.kind === 'fungible' ? (
+                        <>fungible · {change.change}</>
+                      ) : (
+                        <>
+                          non_fungible · added {change.added.length}, removed{' '}
+                          {change.removed.length}
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="hint">No vault changes.</p>
+              )}
+
+              <h3>
+                Storage changes ({deltaDetail.storageChanges.length})
+              </h3>
+              {deltaDetail.storageChanges.length > 0 ? (
+                <ul>
+                  {deltaDetail.storageChanges.map((change, idx) => (
+                    <li key={`storage-${idx}`}>
+                      slot <strong>{change.slotName}</strong> ·{' '}
+                      <code className="wrap">{change.after ?? 'null'}</code>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="hint">No storage changes.</p>
+              )}
+
+              {deltaDetail.decodeWarnings &&
+              deltaDetail.decodeWarnings.length > 0 ? (
+                <div className="error-box">
+                  <strong>Decode warnings:</strong>
+                  <ul>
+                    {deltaDetail.decodeWarnings.map((w, idx) => (
+                      <li key={`warn-${idx}`}>
+                        <code>{w.section}</code>: {w.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div className="actions">
+                <button onClick={() => clearDeltaDetail()}>Clear detail</button>
+              </div>
+            </>
+          ) : (
+            <p className="hint">No detail loaded.</p>
           )}
         </section>
 

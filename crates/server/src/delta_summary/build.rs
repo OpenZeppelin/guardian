@@ -13,8 +13,8 @@
 //!      type when present, else inferred from topology), `note_counts`
 //!      (from the decoded summary), and `asset` / `counterparty`
 //!      (from proposal metadata when present for `p2id`, falling back
-//!      to a shallow walk of the first output note for single-key
-//!      push).
+//!      to a shallow walk of the first output note, then the first
+//!      input note for consumption-style transactions).
 //!   4. Merge into a [`DeltaMetadata`] and stash on the
 //!      [`DeltaObject`] before persistence.
 //!
@@ -28,7 +28,10 @@ use serde_json::Value;
 
 use super::category::{category_from_proposal_type, infer_category_from_summary};
 use super::decode::{decode_proposal_metadata, decode_transaction_summary};
-use super::projection::{project_asset_and_counterparty_from_output_notes, project_note_counts};
+use super::projection::{
+    project_asset_and_counterparty_from_input_notes,
+    project_asset_and_counterparty_from_output_notes, project_note_counts,
+};
 use super::{
     AssetKind, AssetSummary, CounterpartyDirection, CounterpartySummary, DeltaMetadata,
     ProposalMetadata,
@@ -97,25 +100,32 @@ fn assemble(summary: &TransactionSummary, proposal: Option<ProposalMetadata>) ->
     // Asset / counterparty preference:
     //   1. Proposal metadata is the strongest signal for p2id (operator
     //      declared exactly what they intended to do).
-    //   2. For everything else (single-key push or non-p2id multisig
-    //      ops), fall back to a shallow walk of the first output note.
-    //   3. If neither yields anything, leave them None — the listing
+    //   2. For everything else, walk the first output note (transfers /
+    //      creations).
+    //   3. When still missing, walk the first input note (consumption).
+    //   4. If neither yields anything, leave them None — the listing
     //      entry is still valid per FR-004.
     let (asset_from_proposal_block, counterparty_from_proposal_block) = proposal
         .as_ref()
         .map(|p| (asset_from_proposal(p), counterparty_from_proposal(p)))
         .unwrap_or((None, None));
 
-    let (asset_from_notes, counterparty_from_notes) =
+    let (asset_from_output, counterparty_from_output) =
         if asset_from_proposal_block.is_some() && counterparty_from_proposal_block.is_some() {
-            // Skip the walk if the proposal already gave us both.
             (None, None)
         } else {
             project_asset_and_counterparty_from_output_notes(summary)
         };
 
-    let asset = asset_from_proposal_block.or(asset_from_notes);
-    let counterparty = counterparty_from_proposal_block.or(counterparty_from_notes);
+    let mut asset = asset_from_proposal_block.or(asset_from_output);
+    let mut counterparty = counterparty_from_proposal_block.or(counterparty_from_output);
+
+    if asset.is_none() || counterparty.is_none() {
+        let (asset_from_input, counterparty_from_input) =
+            project_asset_and_counterparty_from_input_notes(summary);
+        asset = asset.or(asset_from_input);
+        counterparty = counterparty.or(counterparty_from_input);
+    }
 
     DeltaMetadata {
         category,
@@ -271,6 +281,73 @@ mod tests {
         assert_eq!(proposal.note_ids.len(), 1);
         assert_eq!(proposal.consume_notes_metadata_version, Some(2));
         assert_eq!(proposal.consume_notes_notes.len(), 1);
+    }
+
+    #[test]
+    fn build_with_consume_notes_and_input_note_surfaces_asset_on_listing() {
+        use guardian_shared::ToJson;
+        use miden_protocol::account::AccountId;
+        use miden_protocol::account::delta::{
+            AccountDelta, AccountStorageDelta, AccountVaultDelta,
+        };
+        use miden_protocol::asset::FungibleAsset;
+        use miden_protocol::crypto::rand::RandomCoin;
+        use miden_protocol::note::NoteType;
+        use miden_protocol::transaction::InputNote;
+        use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+        use miden_protocol::{Felt, Word, ZERO};
+        use miden_standards::note::P2idNote;
+
+        const CONSUMER: &str = "0x9d03b229c1a649905f70588309fe71";
+        const NOTE_SENDER: &str = "0x7bfb0f38b0fafa103f86a805594170";
+        const FAUCET: &str = "0x16f6c85d5652c9200879145bfdda93";
+
+        let sender = AccountId::from_hex(NOTE_SENDER).expect("sender");
+        let consumer = AccountId::from_hex(CONSUMER).expect("consumer");
+        let faucet = AccountId::from_hex(FAUCET).expect("faucet");
+        let asset = FungibleAsset::new(faucet, 100_000_000)
+            .expect("fungible asset")
+            .into();
+        let mut rng = RandomCoin::new(Word::from([9u32, 8, 7, 6]));
+        let note = P2idNote::create(
+            sender,
+            consumer,
+            vec![asset],
+            NoteType::Public,
+            Default::default(),
+            &mut rng,
+        )
+        .expect("p2id note");
+        let delta = AccountDelta::new(
+            consumer,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            Felt::ZERO,
+        )
+        .expect("account delta");
+        let summary = TransactionSummary::new(
+            delta,
+            InputNotes::new(vec![InputNote::unauthenticated(note)]).expect("inputs"),
+            RawOutputNotes::new(Vec::new()).expect("outputs"),
+            Word::from([ZERO; 4]),
+        );
+        let delta_payload = summary.to_json();
+        let proposal_payload = synthetic_proposal_payload(json!({
+            "proposal_type": "consume_notes",
+            "note_ids": ["0xb83a44fe769b101be22cc5fd35ec09292483eb69b2dbc2e4c1b94095cbecf7da"],
+        }));
+        let metadata =
+            build_metadata(&delta_payload, Some(&proposal_payload)).expect("metadata built");
+        assert_eq!(metadata.category, DashboardDeltaCategory::NoteConsumption);
+        let listing_asset = metadata.asset.as_ref().expect("asset from input note");
+        assert_eq!(listing_asset.asset_id, FAUCET);
+        assert_eq!(listing_asset.amount.as_deref(), Some("+100000000"));
+        let cp = metadata
+            .counterparty
+            .as_ref()
+            .expect("note sender counterparty");
+        assert_eq!(cp.account_id, NOTE_SENDER);
+        assert_eq!(cp.direction, CounterpartyDirection::In);
     }
 
     #[test]
