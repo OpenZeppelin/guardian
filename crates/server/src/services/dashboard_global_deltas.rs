@@ -114,7 +114,9 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
         entry.asset = meta.asset.clone();
         entry.counterparty = meta.counterparty.clone();
-        entry.note_counts = Some(meta.note_counts.clone());
+        if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
+            entry.note_counts = Some(meta.note_counts.clone());
+        }
     }
     Some(entry)
 }

@@ -130,7 +130,9 @@ fn spread_metadata_into_entry(meta: &DeltaMetadata, entry: &mut DashboardDeltaEn
     entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
     entry.asset = meta.asset.clone();
     entry.counterparty = meta.counterparty.clone();
-    entry.note_counts = Some(meta.note_counts.clone());
+    if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
+        entry.note_counts = Some(meta.note_counts.clone());
+    }
 }
 
 /// List the persisted delta feed for `account_id`, paginated
@@ -300,6 +302,34 @@ mod tests {
         assert_eq!(entry.category, Some(DashboardDeltaCategory::AssetTransfer));
         assert_eq!(entry.proposal_type.as_deref(), Some("p2id"));
         assert_eq!(entry.note_counts.as_ref().map(|c| c.output), Some(1));
+    }
+
+    #[test]
+    fn from_delta_skips_note_counts_when_zero() {
+        use crate::delta_summary::{
+            DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
+        };
+        let mut d = canonical(2);
+        d.metadata = Some(DeltaMetadata {
+            category: DashboardDeltaCategory::AccountStorageChange,
+            asset: None,
+            counterparty: None,
+            note_counts: NoteCounts {
+                input: 0,
+                output: 0,
+            },
+            proposal: Some(ProposalMetadata {
+                proposal_type: "remove_signer".to_string(),
+                ..ProposalMetadata::default()
+            }),
+        });
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert!(entry.note_counts.is_none());
+        let serialized = serde_json::to_value(&entry).expect("serializes");
+        assert!(
+            serialized.get("note_counts").is_none(),
+            "note_counts key skipped when both input/output are zero",
+        );
     }
 
     async fn state_with_n_calls(
