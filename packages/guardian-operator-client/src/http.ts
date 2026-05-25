@@ -480,12 +480,10 @@ export class GuardianOperatorHttpClient {
   }
 
   /**
-   * Fetch the full detail projection of one canonical delta. Feature
-   * 007 / US2. The nonce is serialized as a canonical base-10 `u64`
-   * URL segment (no leading zeros except for `0`, no hex prefix);
-   * malformed input is rejected by the server with `400 invalid_input`.
-   * Unknown account or unknown nonce both surface as
-   * `404 delta_not_found` with field-level identical bodies (SC-008).
+   * Fetch the full detail projection of one canonical delta. The
+   * nonce is serialized as a canonical base-10 `u64` URL segment;
+   * unknown account and unknown nonce both surface as
+   * `404 delta_not_found`.
    */
   async getAccountDeltaDetail(
     accountId: string,
@@ -1619,10 +1617,6 @@ function parseDeltaProposalMetadata(
   const proposal: DashboardDeltaProposalMetadata = {
     proposalType: requireString(record, 'proposal_type', context),
   };
-  // All other fields are optional; copy them through with light
-  // type checks. Unknown extra keys are ignored so adding a new
-  // proposal-type field on the server doesn't require a TS client
-  // update before consumers see it.
   if (typeof record.description === 'string') proposal.description = record.description;
   if (typeof record.salt === 'string') proposal.salt = record.salt;
   if (typeof record.required_signatures === 'number')

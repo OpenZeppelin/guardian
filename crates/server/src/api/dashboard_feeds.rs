@@ -37,9 +37,8 @@ pub struct FeedQuery {
     pub cursor: Option<String>,
 }
 
-/// `?include=` query parameter for the per-delta detail endpoint
-/// (feature 007 / FR-015). Accepts a comma-separated list of opt-in
-/// features; unknown tokens are ignored for forwards compatibility.
+/// `?include=` query parameter for the per-delta detail endpoint.
+/// Comma-separated list of opt-in features; unknown tokens are ignored.
 #[derive(Debug, Deserialize)]
 pub struct DeltaDetailQuery {
     #[serde(default)]
@@ -79,12 +78,11 @@ pub async fn list_account_deltas_handler(
 }
 
 /// `GET /dashboard/accounts/{account_id}/deltas/{nonce}`. Returns the
-/// full detail projection of one canonical delta (feature 007 / US2).
-/// `{nonce}` MUST be a canonical base-10 `u64` — leading zeros except
-/// for `"0"`, negatives, hex, and other non-decimal inputs are
-/// rejected with [`GuardianError::InvalidInput`] (FR-018). Unknown
-/// account or unknown nonce both map to `DeltaNotFound` so the wire
-/// body is field-level identical (SC-008).
+/// full detail projection of one canonical delta. `{nonce}` MUST be a
+/// canonical base-10 `u64`; leading zeros (except `"0"`), negatives,
+/// hex, and other non-decimal inputs are rejected with
+/// [`GuardianError::InvalidInput`]. Unknown account or unknown nonce
+/// both map to `DeltaNotFound` so the wire body is field-level identical.
 pub async fn list_account_delta_detail_handler(
     State(state): State<AppState>,
     Path((account_id, nonce_str)): Path<(String, String)>,
@@ -97,9 +95,8 @@ pub async fn list_account_delta_detail_handler(
 }
 
 /// Parse the detail endpoint's `?include=` comma-list into
-/// [`DetailIncludeFlags`]. Currently only `raw` is honored (FR-015);
-/// `scripts` and other tokens are accepted but ignored so future
-/// contract extensions do not break existing callers.
+/// [`DetailIncludeFlags`]. Only `raw` is honored; other tokens are
+/// accepted but ignored so future extensions do not break callers.
 pub(crate) fn parse_detail_include_flags(raw: Option<&str>) -> DetailIncludeFlags {
     let Some(raw) = raw else {
         return DetailIncludeFlags::default();
@@ -117,31 +114,26 @@ pub(crate) fn parse_detail_include_flags(raw: Option<&str>) -> DetailIncludeFlag
     flags
 }
 
-/// Parse the `{nonce}` URL segment per FR-009a: canonical base-10
-/// `u64`, no leading zeros except for the literal `"0"`, no hex
-/// prefix, no underscores or other separators, no negatives. Any
-/// deviation is a structural-error response distinct from
-/// `DeltaNotFound`.
+/// Parse the `{nonce}` URL segment: canonical base-10 `u64`, no
+/// leading zeros except for the literal `"0"`, no hex prefix, no
+/// separators, no negatives. Any deviation is a structural error
+/// distinct from `DeltaNotFound`.
 fn parse_canonical_nonce(raw: &str) -> Result<u64> {
     if raw.is_empty() {
         return Err(GuardianError::InvalidInput(
             "nonce path segment is empty".to_string(),
         ));
     }
-    // Reject hex prefix outright — operators or tools that try `0xab`
-    // get a clear error rather than silent parsing.
     if raw.starts_with("0x") || raw.starts_with("0X") {
         return Err(GuardianError::InvalidInput(format!(
             "nonce must be a base-10 unsigned integer (no '0x' prefix), got '{raw}'"
         )));
     }
-    // Reject leading zeros except for the literal "0".
     if raw.len() > 1 && raw.starts_with('0') {
         return Err(GuardianError::InvalidInput(format!(
             "nonce must not have leading zeros, got '{raw}'"
         )));
     }
-    // Reject any character that isn't an ASCII digit.
     if !raw.chars().all(|c| c.is_ascii_digit()) {
         return Err(GuardianError::InvalidInput(format!(
             "nonce must be a base-10 unsigned integer, got '{raw}'"
@@ -213,8 +205,6 @@ pub async fn list_global_proposals_handler(
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod nonce_parse_tests {
-    //! Unit coverage for the `{nonce}` URL segment parser and the
-    //! detail endpoint's `?include=` flag parser.
     use super::{parse_canonical_nonce, parse_detail_include_flags};
     use crate::error::GuardianError;
     use crate::services::DetailIncludeFlags;
@@ -274,7 +264,7 @@ mod nonce_parse_tests {
 
     #[test]
     fn rejects_out_of_u64_range() {
-        assert_invalid("18446744073709551616"); // u64::MAX + 1
+        assert_invalid("18446744073709551616");
     }
 
     #[test]

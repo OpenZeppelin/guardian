@@ -88,13 +88,9 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             .map_err(GuardianError::InvalidDelta)?
     };
 
-    // Look up the matching proposal in `delta_proposals` (if any) so
-    // `build_metadata` can lift its operator-stated intent into the
-    // persisted `metadata.proposal` block. The TS multisig client
-    // calls `pushDelta` with only the unwrapped `tx_summary`, so this
-    // is the one place metadata can be recovered from the
-    // pre-execution proposal storage. Single-key pushes have no
-    // matching proposal — `Ok(None)` is the common path.
+    // Multisig pushes carry only the unwrapped `tx_summary`; lift the
+    // matching proposal's metadata so `build_metadata` can preserve
+    // operator intent. Single-key pushes return `None` here.
     let matching_proposal_payload = lookup_matching_proposal_payload(
         state,
         &params.delta.account_id,
@@ -141,25 +137,11 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     })
 }
 
-/// Look up the matching `delta_proposals` row's `delta_payload` (the
-/// wrapper that carries `metadata`) for the given delta about to be
-/// pushed. Returns `None` if no matching proposal exists — the common
-/// case for single-key push.
-///
-/// Failures at any layer are non-fatal — the push proceeds with the
-/// `proposal` block absent — but they are logged so silent metadata
-/// loss is detectable in production:
-///
-///   - `delta_proposal_id` errors: the persisted `delta_payload` is
-///     not a decodable `TransactionSummary` (EVM, malformed). Logged
-///     at `debug`; this is the expected path for non-Miden payloads.
-///   - `pull_delta_proposal` "not found": no proposal row matched —
-///     the expected path for single-key `push_delta`. Logged at
-///     `debug`.
-///   - `pull_delta_proposal` other errors: a real storage failure
-///     (connection lost, query error). Logged at `warn` with the
-///     full error string so on-call operators can detect "we kept
-///     accepting deltas but lost the operator-stated intent block."
+/// Look up the matching `delta_proposals` row's `delta_payload` for
+/// the delta being pushed. Returns `None` when no proposal matches.
+/// All failure paths are non-fatal so the push proceeds; the
+/// "no match" cases log at `debug`, real storage errors log at `warn`
+/// so silent metadata loss stays detectable in production.
 async fn lookup_matching_proposal_payload(
     state: &AppState,
     account_id: &str,
@@ -189,12 +171,8 @@ async fn lookup_matching_proposal_payload(
     {
         Ok(proposal) => Some(proposal.delta_payload),
         Err(err) => {
-            // Best-effort "not found" detection. Both backends format
-            // the underlying error into a String, so we sniff for the
-            // common shapes Diesel and `tokio::fs` produce. False
-            // positives (a real error containing "not found") would
-            // demote to debug, which is acceptable — the alternative
-            // is silently swallowing the failure.
+            // Both backends format errors as Strings; sniff for the
+            // common "not found" shapes from Diesel and `tokio::fs`.
             let lower = err.to_lowercase();
             let looks_like_not_found = lower.contains("not found")
                 || lower.contains("notfound")
@@ -296,20 +274,10 @@ mod tests {
         );
     }
 
-    /// Pause-gate ordering: unauthenticated callers MUST get an auth
-    /// error, NOT `AccountPaused`. Defends against reintroducing the
-    /// pre-auth chokepoint that leaked pause state to probes.
-    /// End-to-end check that the push-time metadata pipeline:
-    ///   1. Decodes the candidate `TransactionSummary` (from the
-    ///      already-running `verify_delta` / `apply_delta` path).
-    ///   2. Looks up the matching proposal in `delta_proposals`.
-    ///   3. Lifts `proposal.proposal_type` into the typed
-    ///      `DeltaMetadata` blob and persists it on the candidate row.
-    ///   4. Dashboard projection then surfaces it unchanged.
-    ///
-    /// Highest-value test for feature 007's main pivot — locks in the
-    /// "metadata derived at push time, not at canonicalization or
-    /// listing" architecture.
+    /// Push-time metadata pipeline: decode TransactionSummary, look up
+    /// the matching proposal, lift its `proposal_type` into the typed
+    /// `DeltaMetadata`, persist on the candidate row, and verify the
+    /// dashboard projection surfaces it.
     #[tokio::test]
     async fn push_delta_persists_metadata_with_proposal_from_matching_proposal_lookup() {
         use crate::delta_object::DeltaStatus;
@@ -321,15 +289,8 @@ mod tests {
         let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
-        // The candidate delta carries the unwrapped TransactionSummary
-        // shape that the TS multisig client forwards via pushDelta.
         let candidate_payload = create_test_delta_payload(&account_id);
 
-        // Storage returns: an active state on `pull_state`, no pending
-        // candidates on `pull_deltas_after`, and a matching proposal
-        // (wrapper shape with metadata) on `pull_delta_proposal`. The
-        // mock's `delta_proposal_id` returns a stable id, so the
-        // proposal lookup hits this seeded row.
         let proposal_wrapper = serde_json::json!({
             "tx_summary": create_test_delta_payload(&account_id),
             "metadata": {
@@ -420,8 +381,6 @@ mod tests {
             .await
             .expect("push succeeds with valid inputs");
 
-        // The persisted candidate must carry the typed metadata blob
-        // with proposal block lifted from the matching proposal.
         let persisted = storage
             .get_submit_delta_calls()
             .into_iter()
@@ -441,19 +400,12 @@ mod tests {
         assert_eq!(proposal.note_ids.len(), 1);
         assert_eq!(proposal.consume_notes_metadata_version, Some(2));
 
-        // The returned result also carries metadata (handy for callers
-        // that surface the new candidate in the response body).
         assert!(result.delta.metadata.is_some());
-
-        // Proposal-type accessor still works (regression guard for
-        // the fallback path).
         assert_eq!(result.delta.proposal_type(), Some("consume_notes"));
     }
 
-    /// When no matching proposal exists in storage (single-key
-    /// `push_delta` path), the candidate is still persisted with a
-    /// typed `metadata` blob — derived from the `TransactionSummary`
-    /// topology — and the `proposal` block is absent.
+    /// Single-key path: no matching proposal in storage. Candidate is
+    /// still persisted with derived metadata; `proposal` absent.
     #[tokio::test]
     async fn push_delta_persists_metadata_without_proposal_when_lookup_misses() {
         use crate::delta_object::DeltaStatus;
@@ -539,8 +491,6 @@ mod tests {
             .metadata
             .as_ref()
             .expect("metadata persisted from on-chain summary alone");
-        // Empty test summary has no notes → falls through to
-        // account_storage_change via topology inference.
         assert_eq!(
             lifted.category,
             DashboardDeltaCategory::AccountStorageChange

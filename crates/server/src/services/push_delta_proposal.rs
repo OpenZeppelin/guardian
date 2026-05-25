@@ -196,9 +196,6 @@ pub async fn push_delta_proposal(
             proposer_id,
             cosigner_sigs,
         },
-        // Proposals carry metadata inside `delta_payload.metadata`;
-        // the dedicated column on `deltas` is only populated for
-        // canonical rows (feature 007).
         metadata: None,
     };
 

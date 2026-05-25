@@ -122,16 +122,8 @@ function enrichmentBadgeClass(
   return 'neutral';
 }
 
-/**
- * Build a short human-readable one-line summary from an enriched
- * delta entry. This is the rule-of-thumb test from spec.md §SC-001 —
- * "an operator (or downstream renderer) can produce a one-line human
- * summary using only the returned fields."
- *
- * Reads L1 spread fields (`category`, `proposalType`, `asset`,
- * `counterparty`, `noteCounts`) with fallback to a legacy nested
- * `metadata` blob when present.
- */
+/** Build a short one-line summary from an enriched delta entry. Reads
+ * L1 spread fields with fallback to the legacy nested `metadata` blob. */
 function describeDelta(
   entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
 ): string {
@@ -206,11 +198,8 @@ export default function App() {
     discarded: boolean;
   }>({ candidate: false, canonical: false, discarded: false });
 
-  // Feature 007: structured delta-list rendering for the new
-  // category / kind / summary wire fields. We keep the raw JSON dump
-  // (`lastResult`) too, but the panel below surfaces the human-meaningful
-  // fields directly so the harness proves end-to-end that the enrichment
-  // flows from server → TS client → operator UI.
+  // Structured delta-list rendering for the enriched wire fields,
+  // alongside the raw JSON dump in `lastResult`.
   const [deltaList, setDeltaList] = useState<
     (DashboardDeltaEntry | DashboardGlobalDeltaEntry)[]
   >([]);
@@ -219,9 +208,7 @@ export default function App() {
   >(null);
   const [deltaListLabel, setDeltaListLabel] = useState<string>('');
 
-  // Feature 007 / US2: detail endpoint result. Populated by clicking
-  // a delta card's "View detail" button. Cleared when the listing is
-  // refreshed.
+  // Detail endpoint result; cleared when the listing is refreshed.
   const [deltaDetail, setDeltaDetail] = useState<DashboardDeltaDetail | null>(
     null,
   );
@@ -808,9 +795,6 @@ export default function App() {
                 const meta = deltaEnrichment(delta);
                 const proposalType = meta.proposalType;
                 const legacyProposal = delta.metadata?.proposal;
-                // For the per-account feed, the account_id is the one
-                // bound to the request (accountId state). For the
-                // global feed, each entry carries its own.
                 const cardAccountId = globalAccountId ?? accountId.trim();
                 const canFetchDetail = cardAccountId.length > 0;
                 return (

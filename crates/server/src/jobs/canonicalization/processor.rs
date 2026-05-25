@@ -313,11 +313,8 @@ impl DeltasProcessorBase {
             );
         }
 
-        // The typed `metadata` blob (derived fields + optional
-        // `proposal` block) is populated at push time by the
-        // push_delta service, so the candidate row already carries it.
-        // Canonicalization just flips the status — no derivation work
-        // needed here.
+        // The typed `metadata` blob is populated at push time; this
+        // path just flips the status.
         let mut canonical_delta = delta.clone();
         canonical_delta.status = DeltaStatus::canonical(now.clone());
 
@@ -342,7 +339,6 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to update metadata: {e}"))
             })?;
 
-        // Delete matching proposal now that delta is canonical.
         let proposal_id = {
             let client = self.state.network_client.lock().await;
             client

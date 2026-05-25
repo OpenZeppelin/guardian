@@ -213,9 +213,8 @@ export interface PagedResult<T> {
 export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'discarded';
 
 /**
- * Closed enumeration of dashboard delta categories. Feature 007 /
- * FR-002. Adding a value here is a wire-contract change that must
- * land on the Rust server first.
+ * Closed enumeration of dashboard delta categories. Adding a value
+ * here is a wire-contract change that must land on the Rust server first.
  */
 export type DashboardDeltaCategory =
   | 'asset_transfer'
@@ -230,9 +229,9 @@ export type DeltaAssetKind = 'fungible' | 'non_fungible';
 export interface DashboardDeltaAssetSummary {
   assetId: string;
   kind: DeltaAssetKind;
-  /** Signed decimal magnitude for fungible holdings (e.g. `"-100"`,
-   * `"+50"`). Omitted for non-fungible holdings — the detail view
-   * carries `added` / `removed` lists instead. */
+  /** Signed decimal magnitude for fungible holdings (e.g. `"-100"`).
+   * Omitted for non-fungible holdings; the detail view carries
+   * `added` / `removed` lists. */
   amount?: string;
 }
 
@@ -251,43 +250,31 @@ export interface DashboardDeltaNoteCounts {
 /**
  * Operator-stated proposal intent lifted from the matching
  * `delta_proposals` row at push time. Present only on multisig
- * commits. Mirrors `ProposalMetadataPayload` from the multisig client
- * — fields are present when the proposal carries them and `undefined`
- * otherwise.
+ * commits. Mirrors `ProposalMetadataPayload` from the multisig client.
  */
 export interface DashboardDeltaProposalMetadata {
   proposalType: string;
   description?: string;
   salt?: string;
   requiredSignatures?: number;
-  // p2id
   recipientId?: string;
   faucetId?: string;
   amount?: string;
-  // consume_notes
   noteIds?: string[];
   consumeNotesMetadataVersion?: number;
   consumeNotesNotes?: string[];
-  // add_signer / remove_signer / change_threshold
   targetThreshold?: number;
   signerCommitments?: string[];
-  // switch_guardian
   newGuardianPubkey?: string;
   newGuardianEndpoint?: string;
-  // update_procedure_threshold
   targetProcedure?: string;
 }
 
 /**
- * Typed metadata blob persisted on the canonical delta row.
- *
- * The top-level fields (`category`, `asset`, `counterparty`,
- * `noteCounts`) are server-derived from the on-chain
- * `TransactionSummary` and represent **what the delta actually did**.
- * The optional `proposal` block carries **operator-stated intent**
- * for multisig commits.
- *
- * Feature 007.
+ * Typed metadata blob persisted on the canonical delta row. The
+ * top-level fields are server-derived from the on-chain
+ * `TransactionSummary`; the optional `proposal` block carries
+ * operator-stated intent for multisig commits.
  */
 export interface DashboardDeltaMetadata {
   category: DashboardDeltaCategory;
@@ -299,9 +286,7 @@ export interface DashboardDeltaMetadata {
 
 /**
  * Coarse note-tag classification surfaced on the detail endpoint's
- * decoded notes. v1 always emits `'custom'` — per-tag classification
- * (`p2id`, `pswap`, `mint`, `burn`) is a deferred enhancement tied to
- * the `asset_swap` category detection. Feature 007 / US2.
+ * decoded notes.
  */
 export type DashboardDeltaNoteTag =
   | 'p2id'
@@ -314,8 +299,8 @@ export type DashboardDeltaNoteTag =
 export interface DashboardDeltaDecodedAsset {
   assetId: string;
   kind: DeltaAssetKind;
-  /** Decimal amount as a string (unsigned in note context — direction
-   * is implied by whether this is on an input or output note). */
+  /** Decimal amount as a string (unsigned; direction is implied by
+   * whether this note is an input or output). */
   amount?: string;
 }
 
@@ -343,16 +328,12 @@ export type DashboardDeltaVaultChange =
 
 export interface DashboardDeltaStorageChange {
   /** Human-readable slot name from Miden's `StorageSlotName`
-   * (e.g. `"consumed_notes"`, `"executed_txs"`). Earlier drafts
-   * mis-named this `slotIndex` and surfaced a numeric `0` for every
-   * entry; the actual identifier is a string. */
+   * (e.g. `"consumed_notes"`). Slots are identified by name, not
+   * by numeric index. */
   slotName: string;
-  /** Hex `Word` (64 hex chars + `0x` prefix) before the change.
-   * Omitted in v1 — prior slot values are not in the delta. Reserved
-   * for future prev-commitment state replay. */
+  /** Always omitted in v1 — prior slot values are not in the delta. */
   before?: string | null;
-  /** Hex `Word` (64 hex chars + `0x` prefix) after the change, or
-   * `null` when the slot was cleared. */
+  /** Hex `Word` after the change, or `null` when the slot was cleared. */
   after: string | null;
 }
 
@@ -371,12 +352,10 @@ export interface DashboardDeltaDecodeWarning {
 
 /**
  * Wire shape for `GET /dashboard/accounts/{account_id}/deltas/{nonce}`.
- * Feature 007 / US2.
  *
- * Carries push-time `category` and optional multisig `proposal` at L1,
- * plus structured detail sections decoded at request time from the
- * persisted `TransactionSummary`. Asset, counterparty, and note counts
- * are not repeated here — derive them from the decoded sections.
+ * Carries push-time `category` and optional multisig `proposal` at L1
+ * plus structured detail sections decoded at request time. Asset,
+ * counterparty, and note counts are derivable from the decoded sections.
  */
 export interface DashboardDeltaDetail {
   accountId: string;
@@ -394,10 +373,10 @@ export interface DashboardDeltaDetail {
   outputNotes: DashboardDeltaDecodedNote[];
   vaultChanges: DashboardDeltaVaultChange[];
   storageChanges: DashboardDeltaStorageChange[];
-  /** Present iff one or more sections could not be decoded. The
-   * request still returns 200; the affected sections are empty. */
+  /** Non-empty when one or more sections could not be decoded. The
+   * request still returns 200; affected sections are empty. */
   decodeWarnings?: DashboardDeltaDecodeWarning[];
-  /** Present only when the request used `?include=raw` (debug). */
+  /** Present only when the request used `?include=raw`. */
   rawTransactionSummary?: string;
 }
 
@@ -418,10 +397,6 @@ export interface DashboardDeltaEntry {
   counterparty?: DashboardDeltaCounterpartySummary;
   noteCounts?: DashboardDeltaNoteCounts;
 
-  /**
-   * Legacy nested metadata blob. The server listing wire spreads fields
-   * to L1; this remains for backward-compatible parsing only.
-   */
   metadata?: DashboardDeltaMetadata;
 }
 
@@ -506,7 +481,7 @@ export interface DashboardAccountSnapshot {
 }
 
 export interface DeltaDetailOptions {
-  /** When true, requests `?include=raw` so the server may attach the
+  /** When true, requests `?include=raw` so the server attaches the
    * base64-encoded persisted `TransactionSummary` (debug only). */
   includeRaw?: boolean;
 }

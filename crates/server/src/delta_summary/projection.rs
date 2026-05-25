@@ -1,16 +1,6 @@
 //! Projectors that derive structured wire fields from a decoded
-//! [`TransactionSummary`]. Used at push time by `build_metadata` to
-//! populate the `derived` half of [`DeltaMetadata`], and at read time
-//! by [`decode_full`] for the detail endpoint.
-//!
-//! Surfaces:
-//!   - [`project_note_counts`] — cheap, always callable.
-//!   - [`project_asset_and_counterparty_from_output_notes`] — first
-//!     output note (transfers / creations).
-//!   - [`project_asset_and_counterparty_from_input_notes`] — first
-//!     input note (consumption).
-//!   - [`decode_full`] — full detail projection including note tags
-//!     and sender/recipient when derivable from note script + storage.
+//! [`TransactionSummary`]. Used at push time by `build_metadata` and
+//! at read time by [`decode_full`] for the detail endpoint.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
@@ -24,7 +14,6 @@ use super::{
     DecodedNote, NoteCounts, NoteTag, StorageChange, VaultChange,
 };
 
-/// Note input/output counts. Always cheap, always callable.
 pub fn project_note_counts(summary: &TransactionSummary) -> NoteCounts {
     NoteCounts {
         input: summary.input_notes().num_notes() as u32,
@@ -33,21 +22,9 @@ pub fn project_note_counts(summary: &TransactionSummary) -> NoteCounts {
 }
 
 /// Walk the first output note and extract `(asset, counterparty)` for
-/// the listing summary. Best-effort:
-///
-///   - First output note's first asset, when present, is surfaced as
-///     `AssetSummary` (signed `amount` for fungible — negative because
-///     the account *sent* the asset out).
-///   - Counterparty is the output note's `sender` (per `NoteMetadata`).
-///     For an account creating an output note, the sender is the
-///     creating account itself; that's not a useful "counterparty"
-///     from the dashboard perspective, so for single-key push we
-///     leave it `None`. The multisig path overrides counterparty
-///     from `proposal.recipient_id` upstream in `build_metadata`,
-///     which is the right source.
-///
-/// Returns `(None, None)` if there are no output notes, the first one
-/// is empty, or asset extraction fails.
+/// the listing summary. Counterparty is left `None` for single-key
+/// pushes; the multisig path overrides it from `proposal.recipient_id`
+/// upstream in `build_metadata`.
 pub fn project_asset_and_counterparty_from_output_notes(
     summary: &TransactionSummary,
 ) -> (Option<AssetSummary>, Option<CounterpartySummary>) {
@@ -65,27 +42,14 @@ pub fn project_asset_and_counterparty_from_output_notes(
         .next()
         .map(|asset| asset_summary_from_note_asset(asset, false));
 
-    // Counterparty intentionally left None here for single-key push —
-    // the output note's `metadata().sender()` is the creating account
-    // (i.e. us), which is not a useful "counterparty" on the
-    // dashboard. When metadata is available (multisig), build.rs
-    // populates this from `proposal.recipient_id`.
     let counterparty = None;
 
     (asset_summary, counterparty)
 }
 
 /// Walk the first input note and extract `(asset, counterparty)` for
-/// consumption-style transactions. Best-effort:
-///
-///   - First input note's first asset surfaces as `AssetSummary` with
-///     a positive fungible magnitude (the account reclaimed value from
-///     the consumed note).
-///   - Counterparty is the consumed note's original sender with
-///     direction `in`.
-///
-/// Returns `(None, None)` when there are no input notes or extraction
-/// fails.
+/// consumption-style transactions. The note's original sender becomes
+/// the counterparty with direction `in`.
 pub fn project_asset_and_counterparty_from_input_notes(
     summary: &TransactionSummary,
 ) -> (Option<AssetSummary>, Option<CounterpartySummary>) {
@@ -110,25 +74,10 @@ pub fn project_asset_and_counterparty_from_input_notes(
 }
 
 /// Decode the full detail-view projection from a persisted
-/// `TransactionSummary`.
-///
-/// Returns `(input_notes, output_notes, vault_changes, storage_changes, warnings)`.
-///
-/// Per-section behavior:
-///   - **Notes** — `note_id` (hex), standard note tag when the script
-///     matches a Miden standard note, `assets` from `note.assets()`,
-///     and `sender` / `recipient` when derivable from note metadata
-///     and typed storage (P2ID / P2IDE targets).
-///   - **Vault changes** — `added_assets()` and `removed_assets()`
-///     are flat iterators that pre-resolve fungible vs. non-fungible.
-///     Fungible holdings emit signed-decimal `change`; non-fungible
-///     holdings emit `added` / `removed` lists keyed by faucet id.
-///   - **Storage changes** — `values()` iterates `(slot_name, new_word)`
-///     for slot updates. Only `after` is emitted in v1 (`before` is
-///     omitted — prior slot values are not in the delta). Recovering
-///     `before` would require account storage at `prev_commitment`.
-///
-/// MAST scripts are not exposed (US2 scope decision, 2026-05-25).
+/// `TransactionSummary`. Returns `(input_notes, output_notes,
+/// vault_changes, storage_changes, warnings)`. Storage changes carry
+/// only `after`; `before` would require reading storage at
+/// `prev_commitment`. MAST scripts are not exposed.
 pub fn decode_full(
     summary: &TransactionSummary,
 ) -> (
@@ -155,10 +104,6 @@ pub fn decode_full(
     let account_delta = summary.account_delta();
     let vault_changes = project_vault_changes(account_delta);
     let storage_changes = project_storage_changes(account_delta);
-
-    // An entirely-empty projection (no notes, no vault changes, no
-    // storage changes) is a legitimate state for some deltas
-    // (admin ops, Guardian switch) — not an anomaly. No warning.
 
     (
         input_notes,
@@ -276,9 +221,6 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     let vault = delta.vault();
     let mut out: Vec<VaultChange> = Vec::new();
 
-    // Fungibles — `added_assets` + `removed_assets` come pre-classified
-    // as Fungible(_) or NonFungible(_). Group by faucet id and net the
-    // signed delta.
     let mut fungible_net: BTreeMap<String, i128> = BTreeMap::new();
     for asset in vault.added_assets() {
         if let Asset::Fungible(a) = asset {
@@ -297,20 +239,16 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
         let change = if net > 0 {
             format!("+{net}")
         } else {
-            format!("{net}") // already has the leading `-`
+            format!("{net}")
         };
         out.push(VaultChange::Fungible { asset_id, change });
     }
 
-    // Non-fungibles — group added/removed by faucet id; emit per-faucet
-    // lists.
     let mut nf_added: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut nf_removed: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for asset in vault.added_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            // The asset's vault key uniquely identifies it within the
-            // faucet — best-available stable "asset id" string.
             let id = format!("{:?}", a.vault_key());
             nf_added.entry(faucet).or_default().push(id);
         }
@@ -343,9 +281,6 @@ fn project_storage_changes(
     storage
         .values()
         .map(|(slot_name, word)| StorageChange {
-            // `StorageSlotName` is `{ name: Arc<str>, id: StorageSlotId }`
-            // — slots are identified by a human-readable string, not
-            // a numeric index. Surface the name verbatim.
             slot_name: slot_name.as_str().to_string(),
             before: None,
             after: Some(format!("0x{}", hex::encode(word.as_bytes()))),

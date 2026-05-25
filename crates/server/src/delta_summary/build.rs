@@ -1,27 +1,10 @@
 //! Push-time orchestrator that builds the [`DeltaMetadata`] blob.
 //!
-//! The pipeline:
-//!
-//!   1. Decode the `TransactionSummary` from the persisted
-//!      `delta_payload` (the candidate row's payload — either the raw
-//!      `{data: base64}` shape from `push_delta` or the wrapper shape
-//!      from the multisig pre-execute proposal storage path).
-//!   2. If a matching proposal exists in `delta_proposals`, lift its
-//!      `metadata` block into a typed [`ProposalMetadata`]. This is
-//!      the *intent* layer.
-//!   3. Build the *derived* layer: `category` (refined by proposal
-//!      type when present, else inferred from topology), `note_counts`
-//!      (from the decoded summary), and `asset` / `counterparty`
-//!      (from proposal metadata when present for `p2id`, falling back
-//!      to a shallow walk of the first output note, then the first
-//!      input note for consumption-style transactions).
-//!   4. Merge into a [`DeltaMetadata`] and stash on the
-//!      [`DeltaObject`] before persistence.
-//!
+//! Decodes the persisted `TransactionSummary`, optionally lifts a
+//! matching `delta_proposals` row's metadata as operator intent, then
+//! derives `category`, `note_counts`, `asset`, and `counterparty`.
 //! Returns `None` when nothing meaningful can be derived (e.g. EVM
-//! deltas whose `delta_payload` is not a `TransactionSummary`). The
-//! caller persists `metadata: None` (column NULL) in that case;
-//! listings fall back to `category: "custom"` per FR-002b.
+//! deltas); the column is persisted NULL in that case.
 
 use miden_protocol::transaction::TransactionSummary;
 use serde_json::Value;
@@ -39,18 +22,10 @@ use super::{
 
 /// Build the typed [`DeltaMetadata`] blob for a delta being persisted.
 ///
-/// Inputs:
-///   - `delta_payload` — the value being persisted on the new row.
-///     Used to decode the `TransactionSummary`.
-///   - `matching_proposal_payload` — optional payload of a matching
-///     proposal looked up by the caller (push_delta). When `Some`,
-///     drives `proposal_type` → `category` mapping and seeds
-///     `asset` / `counterparty` from the proposal's typed metadata
-///     fields.
-///
-/// Returns `None` when no `TransactionSummary` is decodable from
-/// `delta_payload` AND no proposal metadata exists. In that case
-/// the column should be NULL.
+/// When `matching_proposal_payload` is `Some`, its `proposal_type`
+/// drives `category` and seeds `asset` / `counterparty`. Returns
+/// `None` when no `TransactionSummary` decodes and no proposal
+/// metadata exists — caller persists NULL.
 pub fn build_metadata(
     delta_payload: &Value,
     matching_proposal_payload: Option<&Value>,
@@ -63,10 +38,9 @@ pub fn build_metadata(
         (None, None) => None,
         (Some(summary), proposal) => Some(assemble(&summary, proposal)),
         (None, Some(proposal)) => {
-            // We have intent but no decodable summary — unusual, but
-            // still surface the proposal block with an inferred
-            // category from the proposal_type alone. note_counts
-            // defaults to (0, 0) because we cannot enumerate notes.
+            // Intent without a decodable summary: surface the proposal
+            // block with category inferred from proposal_type alone;
+            // note_counts defaults to (0, 0).
             Some(DeltaMetadata {
                 category: category_from_proposal_type(&proposal.proposal_type),
                 asset: asset_from_proposal(&proposal),
@@ -78,16 +52,10 @@ pub fn build_metadata(
     }
 }
 
-/// Read the [`ProposalMetadata`] from a stored proposal `DeltaObject`'s
-/// `delta_payload`. Public re-export of [`decode_proposal_metadata`]
-/// so callers don't need to reach into the `decode` submodule.
+/// Read the [`ProposalMetadata`] from a stored proposal's `delta_payload`.
 pub fn lift_proposal_metadata(proposal_payload: &Value) -> Option<ProposalMetadata> {
     decode_proposal_metadata(proposal_payload)
 }
-
-// ---------------------------------------------------------------------
-// internals
-// ---------------------------------------------------------------------
 
 fn assemble(summary: &TransactionSummary, proposal: Option<ProposalMetadata>) -> DeltaMetadata {
     let note_counts = project_note_counts(summary);
@@ -97,14 +65,8 @@ fn assemble(summary: &TransactionSummary, proposal: Option<ProposalMetadata>) ->
         None => infer_category_from_summary(summary),
     };
 
-    // Asset / counterparty preference:
-    //   1. Proposal metadata is the strongest signal for p2id (operator
-    //      declared exactly what they intended to do).
-    //   2. For everything else, walk the first output note (transfers /
-    //      creations).
-    //   3. When still missing, walk the first input note (consumption).
-    //   4. If neither yields anything, leave them None — the listing
-    //      entry is still valid per FR-004.
+    // Asset/counterparty preference: proposal metadata (p2id) → first
+    // output note → first input note → None.
     let (asset_from_proposal_block, counterparty_from_proposal_block) = proposal
         .as_ref()
         .map(|p| (asset_from_proposal(p), counterparty_from_proposal(p)))
@@ -161,15 +123,9 @@ fn counterparty_from_proposal(p: &ProposalMetadata) -> Option<CounterpartySummar
         })
 }
 
-// ---------------------------------------------------------------------
-// Convenience wrapper used by the storage-layer From impls — given a
-// `serde_json::Value` lifted out of the JSONB column, deserialize it
-// into the typed `DeltaMetadata`. Returns `None` if the column was
-// missing/null or if the persisted shape no longer matches the typed
-// struct (older rows from before this feature, schema drift).
-// ---------------------------------------------------------------------
-
-/// Parse a JSONB column value into a typed [`DeltaMetadata`].
+/// Parse a JSONB column value into a typed [`DeltaMetadata`]. Returns
+/// `None` for null columns or when the persisted shape no longer
+/// matches the typed struct (schema drift, pre-feature rows).
 pub fn metadata_from_value(value: Value) -> Option<DeltaMetadata> {
     if value.is_null() {
         return None;
@@ -192,8 +148,6 @@ mod tests {
     const TEST_ACCOUNT_ID_HEX: &str = "0x7bfb0f38b0fafa103f86a805594170";
 
     fn synthetic_proposal_payload(metadata: Value) -> Value {
-        // Mirrors the wrapper shape that `delta_proposals.delta_payload`
-        // carries (see `services/mod.rs::normalize_payload`).
         json!({
             "tx_summary": create_test_delta_payload(TEST_ACCOUNT_ID_HEX),
             "metadata": metadata,
@@ -203,9 +157,6 @@ mod tests {
 
     #[test]
     fn build_without_proposal_uses_topology_for_category() {
-        // No proposal → category derived from TransactionSummary
-        // topology alone. Our test summary is empty (no notes), so it
-        // collapses to account_storage_change per FR-002b.
         let delta_payload = create_test_delta_payload(TEST_ACCOUNT_ID_HEX);
         let metadata = build_metadata(&delta_payload, None).expect("metadata built");
         assert_eq!(
@@ -375,9 +326,6 @@ mod tests {
         }));
         let metadata =
             build_metadata(&delta_payload, Some(&proposal_payload)).expect("metadata built");
-        // Unknown proposal_type → category = custom, but the
-        // proposal block is preserved verbatim so downstream callers
-        // can still see what the operator declared.
         assert_eq!(metadata.category, DashboardDeltaCategory::Custom);
         assert_eq!(
             metadata.proposal.as_ref().unwrap().proposal_type,
@@ -387,7 +335,6 @@ mod tests {
 
     #[test]
     fn build_with_undecodable_delta_payload_returns_none() {
-        // EVM-style payload — no TransactionSummary, no proposal.
         let payload = json!({"evm": "0xfeedface"});
         let metadata = build_metadata(&payload, None);
         assert!(metadata.is_none());
@@ -395,9 +342,6 @@ mod tests {
 
     #[test]
     fn build_with_malformed_proposal_metadata_keeps_derived_block() {
-        // Proposal payload exists but its metadata is malformed
-        // (proposal_type missing). We get the derived block from the
-        // TransactionSummary and `proposal = None`.
         let delta_payload = create_test_delta_payload(TEST_ACCOUNT_ID_HEX);
         let proposal_payload = json!({
             "tx_summary": create_test_delta_payload(TEST_ACCOUNT_ID_HEX),
@@ -407,7 +351,6 @@ mod tests {
         let metadata =
             build_metadata(&delta_payload, Some(&proposal_payload)).expect("metadata built");
         assert!(metadata.proposal.is_none());
-        // Derived block still populated via topology.
         assert_eq!(
             metadata.category,
             DashboardDeltaCategory::AccountStorageChange,

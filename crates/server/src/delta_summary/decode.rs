@@ -1,9 +1,5 @@
-//! Decoders for the inputs that the push-time metadata pipeline
-//! consumes: the persisted `TransactionSummary` blob and the proposal
-//! metadata block that lives in `delta_proposals.delta_payload`.
-//!
-//! These are pure decoding helpers — they do not classify, project, or
-//! orchestrate. See `build.rs` for the orchestrator.
+//! Pure decoders for the persisted `TransactionSummary` blob and the
+//! proposal metadata block. See `build.rs` for the orchestrator.
 
 use guardian_shared::FromJson;
 use miden_protocol::transaction::TransactionSummary;
@@ -11,41 +7,24 @@ use serde_json::Value;
 
 use super::ProposalMetadata;
 
-/// Decode a [`TransactionSummary`] from a persisted `delta_payload`
-/// value.
+/// Decode a [`TransactionSummary`] from a persisted `delta_payload`.
 ///
-/// Handles both on-disk shapes per `research.md` Decision 10:
-///
-///   - **Wrapper** (multisig pre-execute): `{ tx_summary: {data: base64}, metadata: {..}, signatures?: [..] }`.
-///     The function unwraps to `tx_summary` and decodes.
-///   - **Raw** (post-execute, single-key, EVM bridge): `{ data: base64 }`.
-///     Decoded directly.
-///
-/// Returns `Err` (a short stable token string) for anything that is not
-/// a recognized shape or fails base64 / binary deserialization. Callers
-/// at the push-time write path can treat that as "no metadata derivable"
-/// and persist `metadata = NULL`.
+/// Handles both shapes: the multisig wrapper `{ tx_summary: {data},
+/// metadata, signatures? }` and the raw `{ data: base64 }`. Returns a
+/// short stable token string on failure.
 pub fn decode_transaction_summary(payload: &Value) -> Result<TransactionSummary, &'static str> {
     let candidate = payload.get("tx_summary").unwrap_or(payload);
     TransactionSummary::from_json(candidate).map_err(classify_decode_error)
 }
 
 /// Extract the [`ProposalMetadata`] block from a proposal's persisted
-/// `delta_payload` value. Returns `None` when no metadata block is
-/// present (single-key push deltas) or when the block is malformed.
-///
-/// Input is the proposal's `delta_payload` (the wrapper shape produced
-/// by `normalize_payload` in `crates/server/src/services/mod.rs`), so
-/// metadata lives at `delta_payload.metadata`.
+/// `delta_payload`. Returns `None` when no metadata block is present
+/// or when the block is malformed.
 pub fn decode_proposal_metadata(proposal_payload: &Value) -> Option<ProposalMetadata> {
     let metadata_value = proposal_payload.get("metadata")?;
     if metadata_value.is_null() {
         return None;
     }
-    // The wire shape is field-for-field compatible with our typed
-    // struct (snake_case), so serde does the work. A malformed sub-field
-    // just makes the whole block None — listing endpoints fall back to
-    // derived-only metadata in that case.
     serde_json::from_value::<ProposalMetadata>(metadata_value.clone()).ok()
 }
 

@@ -198,8 +198,8 @@ mod tests {
     }
 
     /// Build a pending proposal carrying the wrapper-shape
-    /// `delta_payload` with embedded metadata — mirrors what
-    /// `push_delta_proposal::normalize_payload` actually persists.
+    /// `delta_payload` with embedded metadata, mirroring what
+    /// `push_delta_proposal::normalize_payload` persists.
     fn proposal_with_metadata(
         nonce: u64,
         commitment: &str,
@@ -239,18 +239,15 @@ mod tests {
                 proposer_id: "0xproposer".into(),
                 cosigner_sigs,
             },
-            metadata: None, // Pending proposals never populate the
-                            // typed column — it lives only on `deltas`.
+            metadata: None,
         }
     }
 
     #[test]
     fn proposal_type_is_surfaced_from_wrapper_metadata_on_pending_proposals() {
-        // Regression guard: when feature 007 introduced the typed
-        // `metadata` column on `deltas`, the proposal-feed projection
-        // path still relies on `DeltaObject::proposal_type()` reading
-        // from the wrapper `delta_payload.metadata` fallback because
-        // proposals never get the typed column populated.
+        // Pending proposals never populate the typed `metadata` column
+        // (it's only on `deltas`), so `proposal_type()` must fall back
+        // to the wrapper `delta_payload.metadata` path.
         let p = proposal_with_metadata(7, "0xcommit", 1, Some("consume_notes"));
         let auth = Auth::MidenFalconRpo {
             cosigner_commitments: vec!["0xc1".into()],

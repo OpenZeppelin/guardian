@@ -1,21 +1,14 @@
-//! Category inference rules.
-//!
-//! When metadata is present, the proposal's `proposal_type` drives
-//! `category` directly via [`category_from_proposal_type`] (FR-002a).
-//! When metadata is absent (single-key push, EVM, malformed proposal),
-//! [`infer_category_from_summary`] uses the on-chain transaction
-//! topology — input/output note counts plus any decoded note tags —
-//! per FR-002b.
+//! Category inference. When proposal metadata is present, its
+//! `proposal_type` drives `category` directly; otherwise the
+//! transaction's note-count topology is used.
 
 use miden_protocol::transaction::TransactionSummary;
 
 use super::DashboardDeltaCategory;
 
 /// Map an operator-declared `proposal_type` string to its dashboard
-/// `category`. Unknown strings fall back to `Custom` so adding a new
-/// proposal type in the multisig client doesn't break the listing —
-/// it surfaces as `category: "custom"` with the original
-/// `proposal_type` still visible inside the `proposal` block.
+/// `category`. Unknown strings fall back to `Custom` — the original
+/// `proposal_type` remains visible inside the `proposal` block.
 pub fn category_from_proposal_type(proposal_type: &str) -> DashboardDeltaCategory {
     match proposal_type {
         "p2id" => DashboardDeltaCategory::AssetTransfer,
@@ -28,16 +21,9 @@ pub fn category_from_proposal_type(proposal_type: &str) -> DashboardDeltaCategor
     }
 }
 
-/// Infer `category` from the on-chain `TransactionSummary` alone — used
-/// for single-key `push_delta` and EVM-bridge deltas that carry no
-/// metadata (FR-002b).
-///
-/// Heuristic: note-count topology dominates; account-state-only
-/// changes (no notes) land in `account_storage_change`. Deeper
-/// inference (per-note-tag detection of `pswap` for swaps, `p2id` for
-/// transfers) would require walking the output notes — that work lives
-/// in `projection::project_asset_and_counterparty_from_output_notes`
-/// and the category is *upgraded* there if it found a recognized tag.
+/// Infer `category` from the `TransactionSummary` alone, used when no
+/// proposal metadata is available. Note-count topology dominates;
+/// account-state-only changes land in `account_storage_change`.
 pub fn infer_category_from_summary(summary: &TransactionSummary) -> DashboardDeltaCategory {
     let has_input = summary.input_notes().num_notes() > 0;
     let has_output = summary.output_notes().num_notes() > 0;

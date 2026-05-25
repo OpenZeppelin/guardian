@@ -133,17 +133,9 @@ pub struct DeltaObject {
     pub ack_pubkey: String,
     pub ack_scheme: String,
     pub status: DeltaStatus,
-    /// Typed dashboard metadata derived at push time
-    /// (feature `007-dashboard-delta-details`). Stored as JSONB in the
-    /// `deltas.metadata` column; this struct is the on-disk shape.
-    ///
-    /// `None` for:
-    ///   - EVM deltas whose `delta_payload` is not a `TransactionSummary`
-    ///   - Pre-feature-007 historical rows that were never reprocessed
-    ///
-    /// See `crates/server/src/delta_summary/mod.rs` for the full
-    /// description of the layered "derived + proposal" shape and the
-    /// push-time pipeline that populates it.
+    /// Typed dashboard metadata derived at push time. Stored as JSONB
+    /// in the `deltas.metadata` column. `None` for EVM deltas and any
+    /// historical row never reprocessed by the push-time pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<crate::delta_summary::DeltaMetadata>,
 }
@@ -151,24 +143,12 @@ pub struct DeltaObject {
 impl DeltaObject {
     /// Return the multisig proposal type tag carried by this delta.
     ///
-    /// Reads from the typed `metadata.proposal` block populated at
-    /// push time for canonical multisig deltas. Falls back to
-    /// `delta_payload.metadata.proposal_type` for two cases the typed
-    /// column does not cover:
-    ///
-    ///   - **Pending proposals** in the `delta_proposals` table. Their
-    ///     `delta_payload` is the wrapper shape with metadata intact,
-    ///     and they intentionally do not populate the dedicated
-    ///     `metadata` column (it's only on the `deltas` table — see
-    ///     `From<ProposalRow> for DeltaObject` in `storage/postgres.rs`).
-    ///   - **Pre-feature-007 historical canonical multisig deltas**
-    ///     whose proposal was already deleted before push-time
-    ///     derivation existed. They have no source for the typed
-    ///     column either; the legacy `delta_payload.metadata` path
-    ///     was the only one and may or may not have been preserved.
-    ///
-    /// Single-key `push_delta` and EVM deltas never carry either
-    /// signal and return `None`.
+    /// Reads from the typed `metadata.proposal` block when present.
+    /// Falls back to `delta_payload.metadata.proposal_type` for pending
+    /// proposals (the typed column lives only on `deltas`, not
+    /// `delta_proposals`) and for historical canonical multisig rows
+    /// whose source proposal was already deleted when the push-time
+    /// pipeline was introduced.
     pub fn proposal_type(&self) -> Option<&str> {
         if let Some(meta) = &self.metadata
             && let Some(p) = &meta.proposal
@@ -281,12 +261,6 @@ mod tests {
 
     #[test]
     fn proposal_type_falls_back_to_delta_payload_metadata_when_typed_column_is_none() {
-        // Regression guard for the proposal-feed read path. Pending
-        // proposals in `delta_proposals` carry intent in the wrapper
-        // `delta_payload.metadata` and never populate the typed
-        // column (the column only exists on `deltas`). The proposal
-        // dashboard reads `proposal_type()` to surface the type tag,
-        // so the fallback is critical.
         let mut delta = DeltaObject::default();
         delta.metadata = None;
         delta.delta_payload = serde_json::json!({
@@ -311,9 +285,6 @@ mod tests {
         use crate::delta_summary::{
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
-        // Hypothetical row that has BOTH the typed column AND a
-        // legacy metadata block in delta_payload. The typed column
-        // is the source of truth.
         let mut delta = DeltaObject::default();
         delta.metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,

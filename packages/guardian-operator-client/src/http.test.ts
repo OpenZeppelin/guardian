@@ -793,8 +793,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     );
   });
 
-  // --- Feature 007 metadata parsing (FR-002 / FR-003 / FR-004 / SC-002) -
-
   it('parses an enriched p2id multisig entry with L1 spread fields', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({
@@ -901,7 +899,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             status_timestamp: '2026-05-25T08:01:30Z',
             prev_commitment: '0xprev',
             new_commitment: '0xnew',
-            // No `metadata` key at all.
           },
         ],
         next_cursor: null,
@@ -947,7 +944,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             prev_commitment: '0xprev',
             new_commitment: '0xnew',
             metadata: {
-              // category intentionally missing
               note_counts: { input: 0, output: 0 },
             },
           },
@@ -1008,8 +1004,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       /invalid category "unicorn_mode"/,
     );
   });
-
-  // --- Feature 007 / US2: detail endpoint --------------------------
 
   it('fetches a delta detail with full structured projection', async () => {
     mockFetch.mockResolvedValueOnce(
@@ -1197,15 +1191,11 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     expect(detail.storageChanges[0].before).toBeUndefined();
   });
 
-  // T032 / US3 / SC-003: listing→detail round-trip through the client
-  // surface. Locks in the contract that a `nonce` returned by
-  // `listAccountDeltas` resolves the same delta when fed back into
-  // `getAccountDeltaDetail`. Each method has its own dedicated tests;
-  // this one proves the key flows cleanly between them on the client.
+  // The nonce returned by listing must resolve the same delta when
+  // passed back to `getAccountDeltaDetail`.
   it('round-trips a listing entry nonce through getAccountDeltaDetail', async () => {
     const accountId = '0xacc';
     const seededNonce = 42;
-    // First fetch: listing returns one entry with the seeded nonce.
     mockFetch.mockResolvedValueOnce(
       okJson({
         items: [
@@ -1222,7 +1212,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         next_cursor: null,
       }),
     );
-    // Second fetch: detail returns a response keyed by the same nonce.
     mockFetch.mockResolvedValueOnce(
       okJson({
         account_id: accountId,
@@ -1242,17 +1231,14 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
 
     const client = new GuardianOperatorHttpClient('https://guardian.example');
 
-    // Step 1: list.
     const page = await client.listAccountDeltas(accountId);
     const listedNonce = page.items[0].nonce;
     expect(listedNonce).toBe(seededNonce);
 
-    // Step 2: detail with the listed nonce.
     const detail = await client.getAccountDeltaDetail(accountId, listedNonce);
     expect(detail.nonce).toBe(listedNonce);
     expect(detail.accountId).toBe(accountId);
 
-    // The detail URL carries the round-tripped nonce.
     expect(mockFetch).toHaveBeenLastCalledWith(
       `https://guardian.example/dashboard/accounts/${accountId}/deltas/${listedNonce}`,
       expect.objectContaining({ method: 'GET' }),

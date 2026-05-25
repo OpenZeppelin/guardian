@@ -253,8 +253,6 @@ label span {
   overflow-wrap: anywhere;
 }
 
-/* Feature 007 — enriched delta feed */
-
 .delta-list {
   display: grid;
   gap: 0.9rem;

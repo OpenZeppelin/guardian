@@ -118,6 +118,15 @@ You **MUST** consider the user input before proceeding (if not empty).
    - **Integration work**: Database connections, middleware, logging, external services
    - **Polish and validation**: Unit tests, performance optimization, documentation
 
+   **Code style discipline** (overrides any contrary habit from spec-driven prompting):
+   - **No spec IDs in code.** Do not write `FR-002`, `SC-008`, `US2`, `T031`, `feature 007`, or similar cross-references in source comments, doc comments, struct fields, or test names. Cross-references belong in `spec.md` / `plan.md` / `tasks.md` / the PR description — code rots when it carries them. Test names should describe the behavior under test, not the requirement ID.
+   - **Default to no comments.** Only write a comment when the WHY is non-obvious (a hidden constraint, a subtle invariant, a workaround for a specific bug, behavior that would surprise a reader). If removing the comment wouldn't confuse a future reader, don't write it.
+   - **Don't explain WHAT the code does.** Well-named identifiers do that. No "Step 1 / Step 2" procedural comments. No section-divider comments like `// --- Feature X ---`. No comments restating the next few lines.
+   - **Compact doc comments.** Public APIs may carry a docstring, but one or two sentences is the target. Don't write multi-paragraph essays describing every fallback path, every historical alternative, or every wire-shape detail — that lives in the spec.
+   - **No procedural narration.** Don't annotate test bodies with "Step 1: …", "Step 2: …", "First fetch: …", "Second fetch: …". The test code is self-explanatory.
+   - **No "feature X" tagging on struct fields, tests, modules, or CSS sections.** When the feature ships, the tag is dead weight.
+   - Respect repository-level instructions: re-read `CLAUDE.md` / `AGENTS.md` before writing code; those instructions take precedence over the patterns this skill might otherwise suggest.
+
 8. Progress tracking and error handling:
    - Report progress after each completed task
    - Halt execution if any non-parallel task fails
