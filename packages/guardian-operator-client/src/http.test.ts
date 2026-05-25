@@ -1057,11 +1057,12 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     );
   });
 
-  it('serializes a bigint nonce in the URL path', async () => {
+  it('serializes a large safe-integer nonce in the URL path', async () => {
+    const safeNonce = Number.MAX_SAFE_INTEGER;
     mockFetch.mockResolvedValueOnce(
       okJson({
         account_id: '0xacc',
-        nonce: 9_007_199_254_740_993,
+        nonce: safeNonce,
         status: 'canonical',
         status_timestamp: '2026-05-25T09:00:00Z',
         prev_commitment: '0xprev',
@@ -1073,9 +1074,9 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       }),
     );
     const client = new GuardianOperatorHttpClient('https://guardian.example');
-    await client.getAccountDeltaDetail('0xacc', 9_007_199_254_740_993n);
+    await client.getAccountDeltaDetail('0xacc', safeNonce);
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://guardian.example/dashboard/accounts/0xacc/deltas/9007199254740993',
+      `https://guardian.example/dashboard/accounts/0xacc/deltas/${safeNonce}`,
       expect.objectContaining({ method: 'GET' }),
     );
   });

@@ -31,38 +31,33 @@ Reuses existing `dashboard::authz` middleware (cookie session, `guardian_operato
       "prev_commitment": "0xaaaa...",
       "new_commitment":  "0xbbbb...",
 
-      // NEW (this feature) — typed metadata blob derived at push time
-      "metadata": {
-        "category": "asset_transfer",
-        "asset": {
-          "asset_id": "0xfaucet123...",
-          "kind":     "fungible",
-          "amount":   "-100"
-        },
-        "counterparty": {
-          "account_id": "0xrecipient...",
-          "direction":  "out"
-        },
-        "note_counts": { "input": 0, "output": 1 },
-        "proposal": {
-          "proposal_type":       "p2id",
-          "recipient_id":        "0xrecipient...",
-          "faucet_id":           "0xfaucet123...",
-          "amount":              "100",
-          "required_signatures": 2
-        }
-      }
+      // NEW (this feature) — typed metadata fields flattened to L1.
+      // Each field is omitted when absent (no `null` placeholders).
+      "category": "asset_transfer",
+      "proposal_type": "p2id",
+      "asset": {
+        "asset_id": "0xfaucet123...",
+        "kind":     "fungible",
+        "amount":   "-100"
+      },
+      "counterparty": {
+        "account_id": "0xrecipient...",
+        "direction":  "out"
+      },
+      "note_counts": { "input": 0, "output": 1 }
     }
   ],
   "next_cursor": "..."
 }
 ```
 
-Examples per category (all share the same outer envelope):
+The full `proposal` block (recipient_id, faucet_id, amount, required_signatures, target_threshold, signer_commitments, …) lives on the **detail endpoint**, not on listing rows. Listing carries only the lightweight `proposal_type` tag.
 
-- **Multisig `add_signer`**: `metadata.category = "account_storage_change"`, `metadata.proposal.proposal_type = "add_signer"`, `metadata.asset = absent`, `metadata.counterparty = absent`, `metadata.note_counts = {input: 0, output: 0}`. The `metadata.proposal` block carries `target_threshold` + `signer_commitments`.
-- **Single-key push p2id** (no proposal): `metadata.category = "asset_transfer"`, `metadata.proposal = absent`. `metadata.asset` populated from the first output note's first asset; `metadata.counterparty` stays absent for single-key push.
-- **Pre-feature-007 row / EVM**: `metadata = absent`. Listing entry still returned with `nonce`, `status`, commitments intact.
+Examples per category:
+
+- **Multisig `add_signer`**: `category = "account_storage_change"`, `proposal_type = "add_signer"`, `asset` absent, `counterparty` absent, `note_counts` absent (both input/output are zero).
+- **Single-key push p2id** (no proposal): `category = "asset_transfer"`, `proposal_type` absent. `asset` populated from the first output note's first asset; `counterparty` stays absent for single-key push.
+- **Pre-feature-007 row / EVM**: all enrichment fields (`category`, `proposal_type`, `asset`, `counterparty`, `note_counts`) absent. Listing entry still returned with `nonce`, `status`, commitments intact.
 
 ## Response — error cases
 
@@ -70,9 +65,10 @@ Identical to current endpoint. No new error shapes.
 
 ## Behavioural invariants (test these explicitly)
 
-1. When `metadata` is present, `metadata.category` is a value of the closed enum and is never `null`. (SC-002)
-2. `metadata.proposal` is absent for any entry without a matching multisig proposal (single-key push, EVM, pre-feature-007 historical row). Verified by the proposal-lookup-miss path in `services/push_delta.rs` integration tests.
-3. The first asset surfaced in `metadata.asset` is deterministic across calls — derived from the proposal's typed metadata for `p2id` multisig, or from the first output note for single-key push.
-4. `metadata` is **absent** (key omitted) for rows whose `delta_payload` is undecodable AND no matching proposal exists (EVM bridge, pre-feature-007 historical). Clients render this as "metadata unavailable" — they MUST NOT fabricate placeholder field values that would contradict actual on-chain activity.
-5. Pagination (`cursor`, `limit`, `next_cursor`) behaviour is byte-identical to the pre-feature endpoint. (FR-005)
-6. Ordering is `nonce DESC` — unchanged from current behavior (`crates/server/src/services/dashboard_account_deltas.rs`); since `nonce` is per-account monotonic, this is "newest-first" by construction.
+1. When `category` is present it is a value of the closed enum and is never `null`. (SC-002)
+2. `proposal_type` is absent for any entry without a matching multisig proposal (single-key push, EVM, pre-feature-007 historical row).
+3. The first asset surfaced in `asset` is deterministic across calls — derived from the proposal's typed metadata for `p2id` multisig, or from the first output note for single-key push.
+4. All enrichment fields are **absent** (key omitted) for rows whose `delta_payload` is undecodable AND no matching proposal exists (EVM bridge, pre-feature-007 historical). Clients render this as "metadata unavailable" — they MUST NOT fabricate placeholder field values that would contradict actual on-chain activity.
+5. `note_counts` is absent when both `input` and `output` are zero, matching the skip-when-empty rule applied to `asset` and `counterparty`.
+6. Pagination (`cursor`, `limit`, `next_cursor`) behaviour is byte-identical to the pre-feature endpoint. (FR-005)
+7. Ordering is `nonce DESC` — unchanged from current behavior (`crates/server/src/services/dashboard_account_deltas.rs`); since `nonce` is per-account monotonic, this is "newest-first" by construction.

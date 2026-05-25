@@ -487,7 +487,7 @@ export class GuardianOperatorHttpClient {
    */
   async getAccountDeltaDetail(
     accountId: string,
-    nonce: number | bigint,
+    nonce: number,
     options: DeltaDetailOptions = {},
   ): Promise<DashboardDeltaDetail> {
     const encodedAccountId = encodeURIComponent(accountId);

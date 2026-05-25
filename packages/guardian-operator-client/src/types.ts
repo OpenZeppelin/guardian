@@ -359,6 +359,13 @@ export interface DashboardDeltaDecodeWarning {
  */
 export interface DashboardDeltaDetail {
   accountId: string;
+  /**
+   * Per-account monotonic transaction counter. Server type is `u64`,
+   * but the JSON wire encoding is a JSON number and the client parses
+   * it as a JavaScript `number`. Values above `Number.MAX_SAFE_INTEGER`
+   * (2^53 − 1) cannot round-trip without precision loss. Miden account
+   * nonces are not expected to reach this range in practice.
+   */
   nonce: number;
   status: DashboardDeltaStatus;
   statusTimestamp: string;
@@ -381,6 +388,7 @@ export interface DashboardDeltaDetail {
 }
 
 export interface DashboardDeltaEntry {
+  /** See note on `DashboardDeltaDetail.nonce` for the JS-number precision limit. */
   nonce: number;
   accountId?: string;
   status: DashboardDeltaStatus;

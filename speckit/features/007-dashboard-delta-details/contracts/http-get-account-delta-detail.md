@@ -13,7 +13,11 @@ GET /dashboard/accounts/{account_id}/deltas/{nonce}
 
 ## Query parameters
 
-None. Earlier drafts described `?include=scripts,raw` opt-in fields (decoded note scripts + raw `TransactionSummary` blob); both were dropped from US2 scope on 2026-05-25 as YAGNI. Re-add as a coordinated wire-contract change if/when a debugging surface needs them.
+| Name | Values | Effect |
+|------|--------|--------|
+| `include` | `raw` | When set, the response includes `raw_transaction_summary`: a base64-encoded `TransactionSummary` blob for debugging. Omit the parameter to drop this field. |
+
+`?include=scripts` (decoded note scripts) was considered and dropped — not implemented. Add via a coordinated wire-contract change if a use case appears.
 
 ## Auth
 
@@ -29,18 +33,16 @@ Reuses existing `dashboard::authz` middleware (cookie session, `guardian_operato
   "status_timestamp": "2026-05-24T19:30:00Z",
   "prev_commitment":  "0xaaaa...",
   "new_commitment":   "0xbbbb...",
-  "metadata": {
-    "category":     "asset_transfer",
-    "asset":        { "asset_id": "0xfaucet...", "kind": "fungible", "amount": "-100" },
-    "counterparty": { "account_id": "0xrecipient...", "direction": "out" },
-    "note_counts":  { "input": 0, "output": 1 },
-    "proposal": {
-      "proposal_type":       "p2id",
-      "recipient_id":        "0xrecipient...",
-      "faucet_id":           "0xfaucet...",
-      "amount":              "100",
-      "required_signatures": 2
-    }
+  // Typed metadata flattened to L1. Per-section arrays below carry
+  // `asset` / `counterparty` / `note_counts` details, so those are
+  // not duplicated as summary fields on the detail response.
+  "category": "asset_transfer",
+  "proposal": {
+    "proposal_type":       "p2id",
+    "recipient_id":        "0xrecipient...",
+    "faucet_id":           "0xfaucet...",
+    "amount":              "100",
+    "required_signatures": 2
   },
 
   "input_notes": [],
@@ -88,6 +90,6 @@ Per-account operator ACL is not in scope for v1; once added, the "unauthorized f
 1. The response's `nonce` equals the URL segment's `nonce` and the listing entry's `nonce` for the same delta. (FR-008)
 2. The detail endpoint surfaces whatever `status` the delta currently has — no assumption that it is canonical. (Edge case: status transitions after listing.)
 3. `input_notes`, `output_notes`, `vault_changes`, `storage_changes` are always present as arrays (possibly empty), never omitted, never null. (FR-011, US2-AS3)
-4. Decoded notes never carry a `script` field; raw `TransactionSummary` is never returned. (US2 scope decision, 2026-05-25.)
+4. Decoded notes never carry a `script` field. The raw `TransactionSummary` is **not** included by default; it appears as base64-encoded `raw_transaction_summary` only when the caller passes `?include=raw`.
 6. If any section partially fails to decode, `decode_warnings[]` is present listing the failed sections, the request still returns `200`, and the other sections remain populated. (FR-016)
 7. An unknown-account request returns a body that's field-level identical to the unknown-nonce case, even though the underlying `GuardianError` variants differ (SC-008). Verified by an integration test that diffs the two response bodies as `serde_json::Value`.
