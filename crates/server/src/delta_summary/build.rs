@@ -12,8 +12,8 @@ use serde_json::Value;
 use super::category::{category_from_proposal_type, infer_category_from_summary};
 use super::decode::{decode_proposal_metadata, decode_transaction_summary};
 use super::projection::{
-    project_asset_and_counterparty_from_input_notes,
-    project_asset_and_counterparty_from_output_notes, project_note_counts,
+    project_assets_and_counterparty_from_input_notes,
+    project_assets_and_counterparty_from_output_notes, project_note_counts,
 };
 use super::{
     AssetKind, AssetSummary, CounterpartyDirection, CounterpartySummary, DeltaMetadata,
@@ -23,7 +23,7 @@ use super::{
 /// Build the typed [`DeltaMetadata`] blob for a delta being persisted.
 ///
 /// When `matching_proposal_payload` is `Some`, its `proposal_type`
-/// drives `category` and seeds `asset` / `counterparty`. Returns
+/// drives `category` and seeds `assets` / `counterparty`. Returns
 /// `None` when no `TransactionSummary` decodes and no proposal
 /// metadata exists — caller persists NULL.
 pub fn build_metadata(
@@ -43,7 +43,7 @@ pub fn build_metadata(
             // note_counts defaults to (0, 0).
             Some(DeltaMetadata {
                 category: category_from_proposal_type(&proposal.proposal_type),
-                asset: asset_from_proposal(&proposal),
+                assets: asset_from_proposal(&proposal).into_iter().collect(),
                 counterparty: counterparty_from_proposal(&proposal),
                 note_counts: Default::default(),
                 proposal: Some(proposal),
@@ -65,33 +65,34 @@ fn assemble(summary: &TransactionSummary, proposal: Option<ProposalMetadata>) ->
         None => infer_category_from_summary(summary),
     };
 
-    // Asset/counterparty preference: proposal metadata (p2id) → first
-    // output note → first input note → None.
-    let (asset_from_proposal_block, counterparty_from_proposal_block) = proposal
-        .as_ref()
-        .map(|p| (asset_from_proposal(p), counterparty_from_proposal(p)))
-        .unwrap_or((None, None));
+    let proposal_asset = proposal.as_ref().and_then(asset_from_proposal);
+    let proposal_counterparty = proposal.as_ref().and_then(counterparty_from_proposal);
 
-    let (asset_from_output, counterparty_from_output) =
-        if asset_from_proposal_block.is_some() && counterparty_from_proposal_block.is_some() {
-            (None, None)
-        } else {
-            project_asset_and_counterparty_from_output_notes(summary)
-        };
+    let (output_assets, output_counterparty) =
+        project_assets_and_counterparty_from_output_notes(summary);
+    let (input_assets, input_counterparty) =
+        project_assets_and_counterparty_from_input_notes(summary);
 
-    let mut asset = asset_from_proposal_block.or(asset_from_output);
-    let mut counterparty = counterparty_from_proposal_block.or(counterparty_from_output);
+    // Assets: prefer notes (richer, multi-asset aware); fall back to
+    // the proposal's single declared asset only if both note paths are
+    // empty so single-asset p2id intents are still represented.
+    let assets = if !output_assets.is_empty() {
+        output_assets
+    } else if !input_assets.is_empty() {
+        input_assets
+    } else {
+        proposal_asset.into_iter().collect()
+    };
 
-    if asset.is_none() || counterparty.is_none() {
-        let (asset_from_input, counterparty_from_input) =
-            project_asset_and_counterparty_from_input_notes(summary);
-        asset = asset.or(asset_from_input);
-        counterparty = counterparty.or(counterparty_from_input);
-    }
+    // Counterparty stays single-valued: proposal recipient → output
+    // note (always None today) → input note sender.
+    let counterparty = proposal_counterparty
+        .or(output_counterparty)
+        .or(input_counterparty);
 
     DeltaMetadata {
         category,
-        asset,
+        assets,
         counterparty,
         note_counts,
         proposal,
@@ -164,7 +165,7 @@ mod tests {
             DashboardDeltaCategory::AccountStorageChange,
         );
         assert!(metadata.proposal.is_none());
-        assert!(metadata.asset.is_none());
+        assert!(metadata.assets.is_empty());
         assert!(metadata.counterparty.is_none());
         assert_eq!(metadata.note_counts.input, 0);
         assert_eq!(metadata.note_counts.output, 0);
@@ -183,7 +184,8 @@ mod tests {
         let metadata =
             build_metadata(&delta_payload, Some(&proposal_payload)).expect("metadata built");
         assert_eq!(metadata.category, DashboardDeltaCategory::AssetTransfer);
-        let asset = metadata.asset.as_ref().expect("p2id surfaces asset");
+        assert_eq!(metadata.assets.len(), 1, "p2id surfaces a single asset");
+        let asset = &metadata.assets[0];
         assert_eq!(asset.kind, AssetKind::Fungible);
         assert_eq!(asset.amount.as_deref(), Some("-100"));
         let cp = metadata.counterparty.as_ref().expect("recipient surfaces");
@@ -208,7 +210,7 @@ mod tests {
             metadata.category,
             DashboardDeltaCategory::AccountStorageChange,
         );
-        assert!(metadata.asset.is_none());
+        assert!(metadata.assets.is_empty());
         assert!(metadata.counterparty.is_none());
         let proposal = metadata.proposal.as_ref().expect("proposal lifted");
         assert_eq!(proposal.proposal_type, "add_signer");
@@ -290,7 +292,8 @@ mod tests {
         let metadata =
             build_metadata(&delta_payload, Some(&proposal_payload)).expect("metadata built");
         assert_eq!(metadata.category, DashboardDeltaCategory::NoteConsumption);
-        let listing_asset = metadata.asset.as_ref().expect("asset from input note");
+        assert_eq!(metadata.assets.len(), 1, "asset from single input note");
+        let listing_asset = &metadata.assets[0];
         assert_eq!(listing_asset.asset_id, FAUCET);
         assert_eq!(listing_asset.amount.as_deref(), Some("+100000000"));
         let cp = metadata
@@ -361,11 +364,11 @@ mod tests {
     fn metadata_round_trips_through_json() {
         let original = DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,
-            asset: Some(AssetSummary {
+            assets: vec![AssetSummary {
                 asset_id: "0xfaucet".to_string(),
                 kind: AssetKind::Fungible,
                 amount: Some("-100".to_string()),
-            }),
+            }],
             counterparty: Some(CounterpartySummary {
                 account_id: "0xrecipient".to_string(),
                 direction: CounterpartyDirection::Out,

@@ -248,7 +248,7 @@ mod tests {
         let mut delta = DeltaObject::default();
         delta.metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: NoteCounts::default(),
             proposal: Some(ProposalMetadata {
@@ -288,7 +288,7 @@ mod tests {
         let mut delta = DeltaObject::default();
         delta.metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: NoteCounts::default(),
             proposal: Some(ProposalMetadata {

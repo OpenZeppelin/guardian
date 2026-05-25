@@ -278,7 +278,7 @@ export interface DashboardDeltaProposalMetadata {
  */
 export interface DashboardDeltaMetadata {
   category: DashboardDeltaCategory;
-  asset?: DashboardDeltaAssetSummary;
+  assets?: DashboardDeltaAssetSummary[];
   counterparty?: DashboardDeltaCounterpartySummary;
   noteCounts: DashboardDeltaNoteCounts;
   proposal?: DashboardDeltaProposalMetadata;
@@ -401,7 +401,14 @@ export interface DashboardDeltaEntry {
   category?: DashboardDeltaCategory;
   /** Operator intent label (`metadata.proposal.proposal_type` only). */
   proposalType?: string;
-  asset?: DashboardDeltaAssetSummary;
+  /**
+   * Every asset surfaced from the transaction's notes (or, for `p2id`
+   * multisig with no decodable summary, the proposal's single declared
+   * asset). Multi-asset transactions populate every entry so a one-line
+   * row does not show a misleading single-asset summary. Omitted when
+   * empty.
+   */
+  assets?: DashboardDeltaAssetSummary[];
   counterparty?: DashboardDeltaCounterpartySummary;
   noteCounts?: DashboardDeltaNoteCounts;
 

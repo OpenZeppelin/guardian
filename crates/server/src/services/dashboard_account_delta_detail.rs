@@ -352,7 +352,7 @@ mod tests {
         let mut delta = canonical_delta_with_payload(7, payload);
         delta.metadata = Some(crate::delta_summary::DeltaMetadata {
             category: crate::delta_summary::DashboardDeltaCategory::AccountStorageChange,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: crate::delta_summary::NoteCounts::default(),
             proposal: None,

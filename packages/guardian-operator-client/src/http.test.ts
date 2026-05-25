@@ -805,7 +805,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             new_commitment: '0xnew',
             category: 'asset_transfer',
             proposal_type: 'p2id',
-            asset: { asset_id: '0xfaucet', kind: 'fungible', amount: '-100' },
+            assets: [{ asset_id: '0xfaucet', kind: 'fungible', amount: '-100' }],
             counterparty: { account_id: '0xrecipient', direction: 'out' },
             note_counts: { input: 0, output: 1 },
           },
@@ -818,11 +818,13 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     const entry = page.items[0];
     expect(entry.category).toBe('asset_transfer');
     expect(entry.proposalType).toBe('p2id');
-    expect(entry.asset).toEqual({
-      assetId: '0xfaucet',
-      kind: 'fungible',
-      amount: '-100',
-    });
+    expect(entry.assets).toEqual([
+      {
+        assetId: '0xfaucet',
+        kind: 'fungible',
+        amount: '-100',
+      },
+    ]);
     expect(entry.counterparty).toEqual({
       accountId: '0xrecipient',
       direction: 'out',
@@ -830,7 +832,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     expect(entry.noteCounts).toEqual({ input: 0, output: 1 });
   });
 
-  it('parses a consume_notes listing with asset and counterparty at L1', async () => {
+  it('parses a consume_notes listing with assets and counterparty at L1', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({
         items: [
@@ -842,11 +844,13 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             new_commitment: '0xnew',
             category: 'note_consumption',
             proposal_type: 'consume_notes',
-            asset: {
-              asset_id: '0x16f6c85d5652c9200879145bfdda93',
-              kind: 'fungible',
-              amount: '+100000000',
-            },
+            assets: [
+              {
+                asset_id: '0x16f6c85d5652c9200879145bfdda93',
+                kind: 'fungible',
+                amount: '+100000000',
+              },
+            ],
             counterparty: {
               account_id: '0x7bfb0f38b0fafa103f86a805594170',
               direction: 'in',
@@ -859,7 +863,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     );
     const client = new GuardianOperatorHttpClient('https://guardian.example');
     const page = await client.listAccountDeltas('0xacc');
-    expect(page.items[0].asset?.amount).toBe('+100000000');
+    expect(page.items[0].assets?.[0].amount).toBe('+100000000');
     expect(page.items[0].counterparty?.direction).toBe('in');
   });
 
@@ -885,7 +889,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     const entry = page.items[0];
     expect(entry.category).toBe('account_storage_change');
     expect(entry.proposalType).toBeUndefined();
-    expect(entry.asset).toBeUndefined();
+    expect(entry.assets).toBeUndefined();
     expect(entry.counterparty).toBeUndefined();
   });
 

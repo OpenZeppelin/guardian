@@ -47,8 +47,8 @@ pub struct DashboardGlobalDeltaEntry {
     pub category: Option<DashboardDeltaCategory>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub asset: Option<AssetSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterparty: Option<CounterpartySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,14 +105,14 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         retry_count,
         category: None,
         proposal_type: None,
-        asset: None,
+        assets: Vec::new(),
         counterparty: None,
         note_counts: None,
     };
     if let Some(meta) = delta.metadata.as_ref() {
         entry.category = Some(meta.category);
         entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
-        entry.asset = meta.asset.clone();
+        entry.assets = meta.assets.clone();
         entry.counterparty = meta.counterparty.clone();
         if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
             entry.note_counts = Some(meta.note_counts.clone());
@@ -379,7 +379,7 @@ mod tests {
         use crate::delta_summary::{DashboardDeltaCategory, DeltaMetadata, NoteCounts};
         let metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: NoteCounts {
                 input: 0,

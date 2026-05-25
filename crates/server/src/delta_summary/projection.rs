@@ -21,56 +21,51 @@ pub fn project_note_counts(summary: &TransactionSummary) -> NoteCounts {
     }
 }
 
-/// Walk the first output note and extract `(asset, counterparty)` for
-/// the listing summary. Counterparty is left `None` for single-key
-/// pushes; the multisig path overrides it from `proposal.recipient_id`
-/// upstream in `build_metadata`.
-pub fn project_asset_and_counterparty_from_output_notes(
+/// Walk every output note and collect `(assets, counterparty)` for the
+/// listing summary. Every asset on every output note is included so
+/// multi-asset transactions are represented faithfully. Counterparty is
+/// left `None` for single-key pushes; the multisig path overrides it
+/// from `proposal.recipient_id` upstream in `build_metadata`.
+pub fn project_assets_and_counterparty_from_output_notes(
     summary: &TransactionSummary,
-) -> (Option<AssetSummary>, Option<CounterpartySummary>) {
+) -> (Vec<AssetSummary>, Option<CounterpartySummary>) {
     let outputs = summary.output_notes();
-    if outputs.num_notes() == 0 {
-        return (None, None);
-    }
-    let Some(first) = outputs.iter().next() else {
-        return (None, None);
-    };
-
-    let assets = first.assets();
-    let asset_summary = assets
+    let assets: Vec<AssetSummary> = outputs
         .iter()
-        .next()
-        .map(|asset| asset_summary_from_note_asset(asset, false));
-
-    let counterparty = None;
-
-    (asset_summary, counterparty)
+        .flat_map(|note| {
+            note.assets()
+                .iter()
+                .map(|asset| asset_summary_from_note_asset(asset, false))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    (assets, None)
 }
 
-/// Walk the first input note and extract `(asset, counterparty)` for
-/// consumption-style transactions. The note's original sender becomes
-/// the counterparty with direction `in`.
-pub fn project_asset_and_counterparty_from_input_notes(
+/// Walk every input note and collect `(assets, counterparty)` for
+/// consumption-style transactions. Every asset on every input note is
+/// included. The first input note's original sender becomes the
+/// counterparty with direction `in`.
+pub fn project_assets_and_counterparty_from_input_notes(
     summary: &TransactionSummary,
-) -> (Option<AssetSummary>, Option<CounterpartySummary>) {
+) -> (Vec<AssetSummary>, Option<CounterpartySummary>) {
     let inputs = summary.input_notes();
-    if inputs.num_notes() == 0 {
-        return (None, None);
-    }
-    let Some(first) = inputs.iter().next() else {
-        return (None, None);
-    };
-    let note = first.note();
-    let assets = note.assets();
-    let asset_summary = assets
+    let assets: Vec<AssetSummary> = inputs
         .iter()
-        .next()
-        .map(|asset| asset_summary_from_note_asset(asset, true));
-    let counterparty = Some(CounterpartySummary {
-        account_id: account_id_hex(note.metadata().sender()),
+        .flat_map(|input_note| {
+            input_note
+                .note()
+                .assets()
+                .iter()
+                .map(|asset| asset_summary_from_note_asset(asset, true))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let counterparty = inputs.iter().next().map(|input_note| CounterpartySummary {
+        account_id: account_id_hex(input_note.note().metadata().sender()),
         direction: CounterpartyDirection::In,
     });
-    (asset_summary, counterparty)
+    (assets, counterparty)
 }
 
 /// Decode the full detail-view projection from a persisted
@@ -339,10 +334,11 @@ mod tests {
     }
 
     #[test]
-    fn project_input_notes_surfaces_consumed_asset_and_sender_counterparty() {
+    fn project_input_notes_surfaces_consumed_assets_and_sender_counterparty() {
         let summary = summary_with_consumed_p2id_note();
-        let (asset, counterparty) = project_asset_and_counterparty_from_input_notes(&summary);
-        let asset = asset.expect("asset from consumed note");
+        let (assets, counterparty) = project_assets_and_counterparty_from_input_notes(&summary);
+        assert_eq!(assets.len(), 1);
+        let asset = &assets[0];
         assert_eq!(asset.kind, AssetKind::Fungible);
         assert_eq!(asset.asset_id, FAUCET);
         assert_eq!(asset.amount.as_deref(), Some("+100000000"));

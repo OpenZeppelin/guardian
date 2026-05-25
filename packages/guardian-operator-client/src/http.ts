@@ -1429,8 +1429,11 @@ function parseDeltaEntry(
       `${context}.note_counts`,
     );
   }
-  if (record.asset !== undefined && record.asset !== null) {
-    entry.asset = parseDeltaAssetSummary(record.asset, `${context}.asset`);
+  if (record.assets !== undefined) {
+    entry.assets = parseDeltaAssetSummaryArray(
+      record.assets,
+      `${context}.assets`,
+    );
   }
   if (record.counterparty !== undefined && record.counterparty !== null) {
     entry.counterparty = parseDeltaCounterpartySummary(
@@ -1542,6 +1545,18 @@ function parseDeltaAssetSummary(
   return asset;
 }
 
+function parseDeltaAssetSummaryArray(
+  value: unknown,
+  context: string,
+): DashboardDeltaAssetSummary[] {
+  if (!Array.isArray(value)) {
+    throw new GuardianOperatorContractError(context, 'expected an array');
+  }
+  return value.map((item, index) =>
+    parseDeltaAssetSummary(item, `${context}[${index}]`),
+  );
+}
+
 function parseDeltaCounterpartySummary(
   value: unknown,
   context: string,
@@ -1591,8 +1606,11 @@ function parseDeltaMetadata(
       `${context}.note_counts`,
     ),
   };
-  if (record.asset !== undefined && record.asset !== null) {
-    metadata.asset = parseDeltaAssetSummary(record.asset, `${context}.asset`);
+  if (record.assets !== undefined) {
+    metadata.assets = parseDeltaAssetSummaryArray(
+      record.assets,
+      `${context}.assets`,
+    );
   }
   if (record.counterparty !== undefined && record.counterparty !== null) {
     metadata.counterparty = parseDeltaCounterpartySummary(

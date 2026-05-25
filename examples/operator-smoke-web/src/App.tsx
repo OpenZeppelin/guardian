@@ -4,6 +4,7 @@ import {
   GuardianOperatorHttpError,
   type DashboardAccountDetail,
   type DashboardAccountSummary,
+  type DashboardDeltaAssetSummary,
   type DashboardDeltaCategory,
   type DashboardDeltaDetail,
   type DashboardDeltaEntry,
@@ -80,7 +81,7 @@ function deltaEnrichment(
   return {
     category: entry.category ?? entry.metadata?.category,
     proposalType: entry.proposalType ?? entry.metadata?.proposal?.proposalType,
-    asset: entry.asset ?? entry.metadata?.asset,
+    assets: entry.assets ?? entry.metadata?.assets,
     counterparty: entry.counterparty ?? entry.metadata?.counterparty,
     noteCounts: entry.noteCounts ?? entry.metadata?.noteCounts,
   };
@@ -93,9 +94,23 @@ function hasDeltaEnrichment(
     meta.category !== undefined ||
     meta.proposalType !== undefined ||
     meta.noteCounts !== undefined ||
-    meta.asset !== undefined ||
+    (meta.assets !== undefined && meta.assets.length > 0) ||
     meta.counterparty !== undefined
   );
+}
+
+function formatAssetsLine(
+  assets: DashboardDeltaAssetSummary[] | undefined,
+): string | null {
+  if (!assets || assets.length === 0) {
+    return null;
+  }
+  const head = assets
+    .slice(0, 2)
+    .map((a) => `${a.amount ?? '?'} of ${a.assetId}`)
+    .join(', ');
+  const extra = assets.length - 2;
+  return extra > 0 ? `${head} +${extra} more` : head;
 }
 
 function enrichmentBadgeLabel(
@@ -142,17 +157,15 @@ function describeDelta(
   switch (meta.category) {
     case 'asset_transfer': {
       const recipient = meta.counterparty?.accountId ?? 'unknown recipient';
-      const amount = meta.asset?.amount ?? '?';
-      const asset = meta.asset?.assetId ?? 'asset';
-      return `Transferred ${amount} of ${asset} → ${recipient}`;
+      const line = formatAssetsLine(meta.assets) ?? '? of asset';
+      return `Transferred ${line} → ${recipient}`;
     }
     case 'note_consumption': {
       const count = meta.noteCounts?.input ?? 0;
-      if (meta.asset?.assetId && meta.asset.amount) {
+      const line = formatAssetsLine(meta.assets);
+      if (line) {
         const from = meta.counterparty?.accountId;
-        return from
-          ? `Consumed ${meta.asset.amount} of ${meta.asset.assetId} from ${from}`
-          : `Consumed ${meta.asset.amount} of ${meta.asset.assetId}`;
+        return from ? `Consumed ${line} from ${from}` : `Consumed ${line}`;
       }
       return `Consumed ${count} note${count === 1 ? '' : 's'}`;
     }
@@ -866,15 +879,18 @@ export default function App() {
 
                     <div className="status-grid compact">
                       <div>
-                        <span className="label">Asset</span>
+                        <span className="label">Assets</span>
                         <strong>
-                          {meta?.asset ? (
+                          {meta?.assets && meta.assets.length > 0 ? (
                             <>
-                              <code>{meta.asset.assetId}</code>
-                              {meta.asset.amount ? (
-                                <> · {meta.asset.amount}</>
-                              ) : null}
-                              <> · {meta.asset.kind}</>
+                              {meta.assets.map((a, idx) => (
+                                <span key={`${a.assetId}-${idx}`}>
+                                  {idx > 0 ? ', ' : ''}
+                                  <code>{a.assetId}</code>
+                                  {a.amount ? <> · {a.amount}</> : null}
+                                  <> · {a.kind}</>
+                                </span>
+                              ))}
                             </>
                           ) : (
                             <em className="muted">none</em>

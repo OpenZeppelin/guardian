@@ -27,7 +27,7 @@ Each entry is a `DashboardGlobalDeltaEntry` — a `DashboardDeltaEntry` (see [ht
       "account_id":       "0xacct...",
       // ...all DashboardDeltaEntry fields, flattened to L1...
       "category": "asset_transfer",
-      "asset": { "asset_id": "0xfaucet...", "kind": "fungible", "amount": "-25" },
+      "assets": [{ "asset_id": "0xfaucet...", "kind": "fungible", "amount": "-25" }],
       "note_counts": { "input": 1, "output": 1 }
       // no proposal_type — single-key push or non-multisig source
     }

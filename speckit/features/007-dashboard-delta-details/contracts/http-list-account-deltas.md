@@ -35,11 +35,13 @@ Reuses existing `dashboard::authz` middleware (cookie session, `guardian_operato
       // Each field is omitted when absent (no `null` placeholders).
       "category": "asset_transfer",
       "proposal_type": "p2id",
-      "asset": {
-        "asset_id": "0xfaucet123...",
-        "kind":     "fungible",
-        "amount":   "-100"
-      },
+      "assets": [
+        {
+          "asset_id": "0xfaucet123...",
+          "kind":     "fungible",
+          "amount":   "-100"
+        }
+      ],
       "counterparty": {
         "account_id": "0xrecipient...",
         "direction":  "out"
@@ -53,10 +55,13 @@ Reuses existing `dashboard::authz` middleware (cookie session, `guardian_operato
 
 The full `proposal` block (recipient_id, faucet_id, amount, required_signatures, target_threshold, signer_commitments, …) lives on the **detail endpoint**, not on listing rows. Listing carries only the lightweight `proposal_type` tag.
 
+`assets` is **an array** — every extractable asset from the transaction's notes is included so multi-asset transactions are not collapsed to a misleading single entry. The order is deterministic (output notes first in note order, then asset order within each note; falls back to input-note order when no outputs carry assets). Multi-asset transactions therefore look like `assets: [{...}, {...}, ...]` with no truncation. Clients pick their own display strategy (render all, truncate to N, etc.). When no asset can be extracted the field is omitted.
+
 Examples per category:
 
-- **Multisig `add_signer`**: `category = "account_storage_change"`, `proposal_type = "add_signer"`, `asset` absent, `counterparty` absent, `note_counts` absent (both input/output are zero).
-- **Single-key push p2id** (no proposal): `category = "asset_transfer"`, `proposal_type` absent. `asset` populated from the first output note's first asset; `counterparty` stays absent for single-key push.
+- **Multisig `add_signer`**: `category = "account_storage_change"`, `proposal_type = "add_signer"`, `assets` absent, `counterparty` absent, `note_counts` absent (both input/output are zero).
+- **Single-key push p2id** (no proposal): `category = "asset_transfer"`, `proposal_type` absent. `assets` populated from each output note's assets; `counterparty` stays absent for single-key push.
+- **Multi-asset transfer**: `assets` carries one entry per `(note, asset)` pair. The detail endpoint's `vault_changes[]` is the canonical full breakdown if the client needs per-note attribution.
 - **Pre-feature-007 row / EVM**: all enrichment fields (`category`, `proposal_type`, `asset`, `counterparty`, `note_counts`) absent. Listing entry still returned with `nonce`, `status`, commitments intact.
 
 ## Response — error cases
@@ -67,8 +72,8 @@ Identical to current endpoint. No new error shapes.
 
 1. When `category` is present it is a value of the closed enum and is never `null`. (SC-002)
 2. `proposal_type` is absent for any entry without a matching multisig proposal (single-key push, EVM, pre-feature-007 historical row).
-3. The first asset surfaced in `asset` is deterministic across calls — derived from the proposal's typed metadata for `p2id` multisig, or from the first output note for single-key push.
+3. `assets` is an array carrying every extractable asset entry from the transaction's output notes (or input notes when no outputs carry assets). The ordering is deterministic across calls. Single-asset transactions look like `assets: [{...}]`; multi-asset transactions carry one entry per `(note, asset)` pair.
 4. All enrichment fields are **absent** (key omitted) for rows whose `delta_payload` is undecodable AND no matching proposal exists (EVM bridge, pre-feature-007 historical). Clients render this as "metadata unavailable" — they MUST NOT fabricate placeholder field values that would contradict actual on-chain activity.
-5. `note_counts` is absent when both `input` and `output` are zero, matching the skip-when-empty rule applied to `asset` and `counterparty`.
+5. `note_counts` is absent when both `input` and `output` are zero, and `assets` is absent when empty — same skip-when-empty rule applied uniformly to all enrichment fields.
 6. Pagination (`cursor`, `limit`, `next_cursor`) behaviour is byte-identical to the pre-feature endpoint. (FR-005)
 7. Ordering is `nonce DESC` — unchanged from current behavior (`crates/server/src/services/dashboard_account_deltas.rs`); since `nonce` is per-account monotonic, this is "newest-first" by construction.

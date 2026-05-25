@@ -65,8 +65,8 @@ pub struct DashboardDeltaEntry {
     /// on the detail endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub asset: Option<AssetSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterparty: Option<CounterpartySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,7 +114,7 @@ impl DashboardDeltaEntry {
             retry_count,
             category: None,
             proposal_type: None,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: None,
         };
@@ -128,7 +128,7 @@ impl DashboardDeltaEntry {
 fn spread_metadata_into_entry(meta: &DeltaMetadata, entry: &mut DashboardDeltaEntry) {
     entry.category = Some(meta.category);
     entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
-    entry.asset = meta.asset.clone();
+    entry.assets = meta.assets.clone();
     entry.counterparty = meta.counterparty.clone();
     if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
         entry.note_counts = Some(meta.note_counts.clone());
@@ -287,7 +287,7 @@ mod tests {
         let mut d = canonical(2);
         d.metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AssetTransfer,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: NoteCounts {
                 input: 0,
@@ -312,7 +312,7 @@ mod tests {
         let mut d = canonical(2);
         d.metadata = Some(DeltaMetadata {
             category: DashboardDeltaCategory::AccountStorageChange,
-            asset: None,
+            assets: Vec::new(),
             counterparty: None,
             note_counts: NoteCounts {
                 input: 0,

@@ -19,8 +19,8 @@ pub use build::{build_metadata, lift_proposal_metadata, metadata_from_value, met
 pub use category::{category_from_proposal_type, infer_category_from_summary};
 pub use decode::{decode_proposal_metadata, decode_transaction_summary};
 pub use projection::{
-    decode_full, project_asset_and_counterparty_from_input_notes,
-    project_asset_and_counterparty_from_output_notes, project_note_counts,
+    decode_full, project_assets_and_counterparty_from_input_notes,
+    project_assets_and_counterparty_from_output_notes, project_note_counts,
 };
 
 #[cfg(test)]
@@ -35,10 +35,12 @@ pub(crate) mod tests {
 pub struct DeltaMetadata {
     pub category: DashboardDeltaCategory,
 
-    /// First asset surfaced in deterministic order. `None` when the
+    /// Assets surfaced in deterministic order. Empty when the
     /// transaction does not move an asset or extraction failed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asset: Option<AssetSummary>,
+    /// Multi-asset transactions populate every extractable entry so
+    /// clients do not show a misleading single-asset summary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetSummary>,
 
     /// Counterparty of the transaction. `None` for transactions
     /// without a clear sender/recipient (admin ops, swaps, etc.).
