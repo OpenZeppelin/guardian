@@ -4,6 +4,9 @@ import {
   GuardianOperatorHttpError,
   type DashboardAccountDetail,
   type DashboardAccountSummary,
+  type DashboardDeltaCategory,
+  type DashboardDeltaEntry,
+  type DashboardGlobalDeltaEntry,
   type OperatorChallenge,
   type VerifyOperatorResponse,
 } from '@openzeppelin/guardian-operator-client';
@@ -46,6 +49,65 @@ function buildOperatorPublicKeysJson(publicKey: string): string {
   return formatJson([publicKey]);
 }
 
+const DELTA_CATEGORY_LABEL: Record<DashboardDeltaCategory, string> = {
+  asset_transfer: 'Asset transfer',
+  asset_swap: 'Asset swap',
+  note_consumption: 'Notes consumed',
+  note_creation: 'Notes created',
+  account_storage_change: 'Account / storage change',
+  guardian_switch: 'Guardian switch',
+  custom: 'Custom / unknown',
+};
+
+const DELTA_CATEGORY_BADGE: Record<DashboardDeltaCategory, string> = {
+  asset_transfer: 'success',
+  asset_swap: 'success',
+  note_consumption: 'neutral',
+  note_creation: 'neutral',
+  account_storage_change: 'warning',
+  guardian_switch: 'warning',
+  custom: 'neutral',
+};
+
+function isGlobalDeltaEntry(
+  entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
+): entry is DashboardGlobalDeltaEntry {
+  return typeof entry.accountId === 'string' && entry.accountId.length > 0;
+}
+
+/**
+ * Build a short human-readable one-line summary from an enriched
+ * delta entry. This is the rule-of-thumb test from spec.md §SC-001 —
+ * "an operator (or downstream renderer) can produce a one-line human
+ * summary using only the returned fields." If this helper can do it
+ * from `category` + `kind` + `summary`, the feature works.
+ */
+function describeDelta(
+  entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
+): string {
+  const { category, kind, summary } = entry;
+  switch (category) {
+    case 'asset_transfer': {
+      const recipient = summary.counterparty?.accountId ?? 'unknown recipient';
+      const amount = summary.asset?.amount ?? '?';
+      const asset = summary.asset?.assetId ?? 'asset';
+      return `Transferred ${amount} of ${asset} → ${recipient}`;
+    }
+    case 'asset_swap':
+      return `Swapped assets (${summary.noteCounts.input} in / ${summary.noteCounts.output} out)`;
+    case 'note_consumption':
+      return `Consumed ${summary.noteCounts.input} note${summary.noteCounts.input === 1 ? '' : 's'}`;
+    case 'note_creation':
+      return `Created ${summary.noteCounts.output} note${summary.noteCounts.output === 1 ? '' : 's'}`;
+    case 'account_storage_change':
+      return kind ? `Account change: ${kind}` : 'Account / storage change';
+    case 'guardian_switch':
+      return 'Switched Guardian';
+    case 'custom':
+      return kind ? `Custom (${kind})` : 'Custom / unknown';
+  }
+}
+
 function normalizeHex(value: string | null | undefined): string {
   return (value ?? '').trim().toLowerCase();
 }
@@ -72,6 +134,19 @@ export default function App() {
     canonical: boolean;
     discarded: boolean;
   }>({ candidate: false, canonical: false, discarded: false });
+
+  // Feature 007: structured delta-list rendering for the new
+  // category / kind / summary wire fields. We keep the raw JSON dump
+  // (`lastResult`) too, but the panel below surfaces the human-meaningful
+  // fields directly so the harness proves end-to-end that the enrichment
+  // flows from server → TS client → operator UI.
+  const [deltaList, setDeltaList] = useState<
+    (DashboardDeltaEntry | DashboardGlobalDeltaEntry)[]
+  >([]);
+  const [deltaListSource, setDeltaListSource] = useState<
+    'account' | 'global' | null
+  >(null);
+  const [deltaListLabel, setDeltaListLabel] = useState<string>('');
 
   const client = useMemo(
     () =>
@@ -236,10 +311,14 @@ export default function App() {
   }
 
   async function listAccountDeltas() {
-    await runAction('listAccountDeltas', () => {
+    await runAction('listAccountDeltas', async () => {
       const id = accountId.trim();
       if (!id) throw new Error('Account ID is required');
-      return client.listAccountDeltas(id);
+      const page = await client.listAccountDeltas(id);
+      setDeltaList(page.items);
+      setDeltaListSource('account');
+      setDeltaListLabel(`per-account · ${id}`);
+      return page;
     });
   }
 
@@ -260,13 +339,21 @@ export default function App() {
   }
 
   async function listGlobalDeltas() {
-    await runAction('listGlobalDeltas', () => {
+    await runAction('listGlobalDeltas', async () => {
       const selected = (
         ['candidate', 'canonical', 'discarded'] as const
       ).filter((s) => globalDeltaStatusFilter[s]);
-      return client.listGlobalDeltas(
+      const page = await client.listGlobalDeltas(
         selected.length > 0 ? { status: selected } : {},
       );
+      setDeltaList(page.items);
+      setDeltaListSource('global');
+      setDeltaListLabel(
+        selected.length > 0
+          ? `global · status=${selected.join(',')}`
+          : 'global · (no filter)',
+      );
+      return page;
     });
   }
 
@@ -588,6 +675,163 @@ export default function App() {
             </div>
           ) : (
             <p className="hint">No account list loaded yet.</p>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Delta feed (enriched)</h2>
+            <span
+              className={`badge ${
+                deltaListSource === null
+                  ? 'neutral'
+                  : deltaList.length === 0
+                    ? 'warning'
+                    : 'success'
+              }`}
+            >
+              {deltaListSource === null
+                ? 'not loaded'
+                : deltaList.length === 0
+                  ? 'empty page'
+                  : `${deltaList.length} entries · ${deltaListLabel}`}
+            </span>
+          </div>
+
+          <p className="hint">
+            Feature 007. Each entry shows the new <code>category</code>,{' '}
+            <code>kind</code>, and <code>summary</code> wire fields alongside
+            the pre-existing <code>nonce</code> / <code>status</code> /{' '}
+            commitments. Use <strong>List account deltas</strong> or{' '}
+            <strong>List global deltas</strong> above to populate this panel.
+            The one-line summary at the top of each card is derived purely
+            from the fields the server returned — no detail endpoint
+            required (SC-001).
+          </p>
+
+          {deltaList.length > 0 ? (
+            <div className="delta-list">
+              {deltaList.map((delta, index) => {
+                const globalAccountId = isGlobalDeltaEntry(delta)
+                  ? delta.accountId
+                  : undefined;
+                const cardKey = `${globalAccountId ?? 'acct'}-${delta.nonce}-${index}`;
+                return (
+                  <article className="delta-card" key={cardKey}>
+                    <header className="delta-card-header">
+                      <span className="delta-summary-line">
+                        {describeDelta(delta)}
+                      </span>
+                      <span
+                        className={`badge ${DELTA_CATEGORY_BADGE[delta.category]}`}
+                      >
+                        {DELTA_CATEGORY_LABEL[delta.category]}
+                      </span>
+                    </header>
+
+                    <div className="status-grid compact">
+                      <div>
+                        <span className="label">Nonce</span>
+                        <strong>{delta.nonce}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Status</span>
+                        <strong>{delta.status}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Status timestamp</span>
+                        <strong>{delta.statusTimestamp}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Kind</span>
+                        <strong>
+                          {delta.kind ?? <em className="muted">null</em>}
+                        </strong>
+                      </div>
+                      {globalAccountId ? (
+                        <div>
+                          <span className="label">Account</span>
+                          <strong>
+                            <code>{globalAccountId}</code>
+                          </strong>
+                        </div>
+                      ) : null}
+                      <div>
+                        <span className="label">Input / output notes</span>
+                        <strong>
+                          {delta.summary.noteCounts.input} /{' '}
+                          {delta.summary.noteCounts.output}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="status-grid compact">
+                      <div>
+                        <span className="label">Asset</span>
+                        <strong>
+                          {delta.summary.asset ? (
+                            <>
+                              <code>{delta.summary.asset.assetId}</code>
+                              {delta.summary.asset.amount ? (
+                                <> · {delta.summary.asset.amount}</>
+                              ) : null}
+                              <> · {delta.summary.asset.kind}</>
+                            </>
+                          ) : (
+                            <em className="muted">none</em>
+                          )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="label">Counterparty</span>
+                        <strong>
+                          {delta.summary.counterparty ? (
+                            <>
+                              <code>
+                                {delta.summary.counterparty.accountId}
+                              </code>
+                              <> · {delta.summary.counterparty.direction}</>
+                            </>
+                          ) : (
+                            <em className="muted">none</em>
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <details className="delta-debug">
+                      <summary>Debug commitments</summary>
+                      <div className="status-grid compact">
+                        <div>
+                          <span className="label">prev_commitment</span>
+                          <code className="wrap">{delta.prevCommitment}</code>
+                        </div>
+                        <div>
+                          <span className="label">new_commitment</span>
+                          <code className="wrap">
+                            {delta.newCommitment ?? 'null'}
+                          </code>
+                        </div>
+                        {typeof delta.retryCount === 'number' ? (
+                          <div>
+                            <span className="label">retry_count</span>
+                            <strong>{delta.retryCount}</strong>
+                          </div>
+                        ) : null}
+                        {delta.proposalType ? (
+                          <div>
+                            <span className="label">proposal_type (legacy)</span>
+                            <code>{delta.proposalType}</code>
+                          </div>
+                        ) : null}
+                      </div>
+                    </details>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="hint">No delta feed loaded yet.</p>
           )}
         </section>
 
