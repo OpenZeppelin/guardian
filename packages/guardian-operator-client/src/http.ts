@@ -949,7 +949,7 @@ function parseAccountSummary(
   context: string,
 ): DashboardAccountSummary {
   const record = asRecord(value, context);
-  return {
+  const summary: DashboardAccountSummary = {
     accountId: requireString(record, 'account_id', context),
     authScheme: requireString(record, 'auth_scheme', context),
     authorizedSignerCount: requireInteger(record, 'authorized_signer_count', context),
@@ -964,6 +964,16 @@ function parseAccountSummary(
     pausedAt: requireNullableString(record, 'paused_at', context),
     pausedReason: requireNullableString(record, 'paused_reason', context),
   };
+  if (record.account_id_bech32 !== undefined && record.account_id_bech32 !== null) {
+    if (typeof record.account_id_bech32 !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'account_id_bech32 must be a string when present',
+      );
+    }
+    summary.accountIdBech32 = record.account_id_bech32;
+  }
+  return summary;
 }
 
 function parseAccountDetail(

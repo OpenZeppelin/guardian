@@ -742,6 +742,12 @@ export default function App() {
                       {entry.stateStatus}
                     </span>
                   </div>
+                  {entry.accountIdBech32 ? (
+                    <div className="account-card-bech32">
+                      <span className="label">bech32</span>
+                      <code>{entry.accountIdBech32}</code>
+                    </div>
+                  ) : null}
                   <div className="status-grid compact">
                     <div>
                       <span className="label">Scheme</span>

@@ -22,6 +22,20 @@ pub enum MidenNetworkType {
     Testnet,
 }
 
+impl MidenNetworkType {
+    /// Map to the Miden protocol's [`NetworkId`] used by
+    /// `AccountId::to_bech32` / `from_bech32`. `Local` maps to
+    /// `Devnet` since Miden's bech32 HRP set has no dedicated local
+    /// variant — local accounts share Devnet's `mdev` prefix.
+    pub fn to_miden_network_id(self) -> miden_protocol::address::NetworkId {
+        use miden_protocol::address::NetworkId;
+        match self {
+            Self::Local | Self::Devnet => NetworkId::Devnet,
+            Self::Testnet => NetworkId::Testnet,
+        }
+    }
+}
+
 impl NetworkConfig {
     pub fn miden_default() -> Self {
         Self::Miden {

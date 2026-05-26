@@ -93,6 +93,12 @@ export interface SessionInfoResponse {
 
 export interface DashboardAccountSummary {
   accountId: string;
+  /**
+   * Bech32m encoding of the Miden `AccountId` using the network's
+   * HRP (`mm` mainnet, `mtst` testnet, `mdev` devnet/local). Absent
+   * for EVM accounts and any Miden id that fails to parse.
+   */
+  accountIdBech32?: string;
   authScheme: string;
   authorizedSignerCount: number;
   hasPendingCandidate: boolean;

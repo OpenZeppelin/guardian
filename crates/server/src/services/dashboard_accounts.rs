@@ -18,6 +18,12 @@ pub enum DashboardAccountStateStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DashboardAccountSummary {
     pub account_id: String,
+    /// Bech32m encoding of the Miden `AccountId` using the network's
+    /// HRP (e.g. `mtst...`, `mdev...`, `mm...`). `None` for EVM
+    /// accounts (no bech32 in that addressing scheme) and for any
+    /// Miden `account_id` that fails to parse as a 15-byte id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id_bech32: Option<String>,
     pub auth_scheme: String,
     pub authorized_signer_count: usize,
     pub has_pending_candidate: bool,
@@ -34,6 +40,8 @@ pub struct DashboardAccountSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DashboardAccountDetail {
     pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id_bech32: Option<String>,
     pub auth_scheme: String,
     pub authorized_signer_count: usize,
     pub authorized_signer_ids: Vec<String>,
@@ -200,6 +208,7 @@ impl DashboardAccountSummary {
     ) -> Self {
         Self {
             account_id: metadata.account_id.clone(),
+            account_id_bech32: bech32_for_account(metadata),
             auth_scheme: metadata.auth.scheme().to_string(),
             authorized_signer_count: normalized_authorized_signer_ids(&metadata.auth).len(),
             has_pending_candidate: metadata.has_pending_candidate,
@@ -219,6 +228,7 @@ impl DashboardAccountDetail {
 
         Self {
             account_id: metadata.account_id.clone(),
+            account_id_bech32: bech32_for_account(metadata),
             auth_scheme: metadata.auth.scheme().to_string(),
             authorized_signer_count: authorized_signer_ids.len(),
             authorized_signer_ids,
@@ -233,6 +243,23 @@ impl DashboardAccountDetail {
             paused_reason: metadata.paused_reason.clone(),
         }
     }
+}
+
+/// Encode a Miden account_id (hex) as bech32m using the network HRP
+/// from the account's persisted `NetworkConfig`. Returns `None` for
+/// EVM accounts and for any hex that fails to parse as a Miden
+/// `AccountId` (data drift). The HRP set is fixed by the Miden
+/// protocol: `mm` for mainnet, `mtst` for testnet, `mdev` for devnet
+/// (Local is folded into Devnet — Miden has no separate Local HRP).
+fn bech32_for_account(metadata: &AccountMetadata) -> Option<String> {
+    use crate::metadata::NetworkConfig;
+    use miden_protocol::account::AccountId;
+    let network_type = match &metadata.network_config {
+        NetworkConfig::Miden { network_type } => *network_type,
+        NetworkConfig::Evm { .. } => return None,
+    };
+    let account_id = AccountId::from_hex(&metadata.account_id).ok()?;
+    Some(account_id.to_bech32(network_type.to_miden_network_id()))
 }
 
 fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
@@ -259,7 +286,7 @@ mod tests {
     use super::*;
     use crate::ack::AckRegistry;
     use crate::builder::clock::test::MockClock;
-    use crate::metadata::NetworkConfig;
+    use crate::metadata::{MidenNetworkType, NetworkConfig};
     use crate::storage::filesystem::FilesystemService;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient};
     use std::sync::Arc;
@@ -280,6 +307,56 @@ mod tests {
             paused_at: None,
             paused_reason: None,
         }
+    }
+
+    #[test]
+    fn bech32_for_miden_account_encodes_with_network_hrp() {
+        let mut meta = miden_meta("0x7bfb0f38b0fafa103f86a805594170", "2026-05-26T00:00:00Z");
+        meta.network_config = NetworkConfig::Miden {
+            network_type: MidenNetworkType::Testnet,
+        };
+        let bech32 = bech32_for_account(&meta).expect("bech32 encodes for valid miden id");
+        assert!(
+            bech32.starts_with("mtst1"),
+            "testnet HRP expected, got '{bech32}'",
+        );
+
+        meta.network_config = NetworkConfig::Miden {
+            network_type: MidenNetworkType::Local,
+        };
+        let bech32_local = bech32_for_account(&meta).expect("local maps to devnet HRP");
+        assert!(
+            bech32_local.starts_with("mdev1"),
+            "local folds into devnet HRP, got '{bech32_local}'",
+        );
+    }
+
+    #[test]
+    fn bech32_for_evm_account_returns_none() {
+        let meta = AccountMetadata {
+            account_id: "evm:1:0xabc".to_string(),
+            auth: Auth::EvmEcdsa {
+                signers: vec!["0xs1".into()],
+            },
+            network_config: NetworkConfig::Evm {
+                chain_id: 1,
+                account_address: "0xabc".to_string(),
+                multisig_validator_address: "0xdef".to_string(),
+            },
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-26T00:00:00Z".into(),
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
+        };
+        assert!(bech32_for_account(&meta).is_none());
+    }
+
+    #[test]
+    fn bech32_for_unparseable_miden_account_returns_none() {
+        let meta = miden_meta("not-hex", "2026-05-26T00:00:00Z");
+        assert!(bech32_for_account(&meta).is_none());
     }
 
     /// Bug #6 regression: walk multi-page cursor traversal end-to-end
