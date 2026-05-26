@@ -137,8 +137,9 @@ function enrichmentBadgeClass(
   return 'neutral';
 }
 
-/** Build a short one-line summary from an enriched delta entry. Reads
- * L1 spread fields with fallback to the legacy nested `metadata` blob. */
+/** Build a short one-line summary from an enriched delta entry using
+ * the L1 spread fields (`category`, `proposalType`, `assets`,
+ * `counterparty`, `noteCounts`). */
 function describeDelta(
   entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
 ): string {

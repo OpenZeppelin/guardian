@@ -172,13 +172,7 @@ async fn lookup_matching_proposal_payload(
     {
         Ok(proposal) => Some(proposal.delta_payload),
         Err(err) => {
-            // Both backends format errors as Strings; sniff for the
-            // common "not found" shapes from Diesel and `tokio::fs`.
-            let lower = err.to_lowercase();
-            let looks_like_not_found = lower.contains("not found")
-                || lower.contains("notfound")
-                || lower.contains("no such file");
-            if looks_like_not_found {
+            if crate::storage::is_storage_not_found(&err) {
                 tracing::debug!(
                     account_id = %account_id,
                     nonce,

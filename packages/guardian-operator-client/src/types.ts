@@ -326,7 +326,7 @@ export interface DashboardDeltaStorageChange {
   /** Hex `Word` map key for `StorageMap` slot entries; omitted for
    * scalar value slots. For the multisig procedure-threshold overrides
    * map this is the MASM procedure root. */
-  key?: string | null;
+  key?: string;
   /** Always omitted in v1 — prior slot values are not in the delta. */
   before?: string | null;
   /** Hex `Word` after the change, or `null` when the slot was cleared. */

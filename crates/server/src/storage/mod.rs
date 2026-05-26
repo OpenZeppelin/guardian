@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 
+/// Returns `true` when a backend-formatted error string represents a
+/// "row not present" outcome. Both Postgres (Diesel) and the filesystem
+/// backend surface errors as `String`, so callers that need to branch
+/// between "no row" and "real failure" share this heuristic instead of
+/// reimplementing it. Replace with a typed error once `StorageBackend`
+/// stops returning `Result<_, String>`.
+pub fn is_storage_not_found(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("not found") || lower.contains("notfound") || lower.contains("no such file")
+}
+
 /// Stable lifecycle status identifiers used in the typed `status_kind`
 /// column promoted by the Phase A migration. Service-layer callers
 /// pass these to filter and group cross-account aggregates.

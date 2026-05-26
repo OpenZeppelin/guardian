@@ -489,6 +489,12 @@ export class GuardianOperatorHttpClient {
     nonce: number,
     options: DeltaDetailOptions = {},
   ): Promise<DashboardDeltaDetail> {
+    if (!Number.isSafeInteger(nonce) || nonce < 0) {
+      throw new GuardianOperatorContractError(
+        'getAccountDeltaDetail.nonce',
+        `nonce must be a non-negative safe integer, got ${nonce}`,
+      );
+    }
     const encodedAccountId = encodeURIComponent(accountId);
     const url = new URL(
       `dashboard/accounts/${encodedAccountId}/deltas/${nonce.toString()}`,
@@ -1891,8 +1897,8 @@ function parseStorageChange(
     slotName: requireString(record, 'slot_name', context),
     after: requireNullableString(record, 'after', context),
   };
-  if (record.key !== undefined) {
-    change.key = requireNullableString(record, 'key', context);
+  if (record.key !== undefined && record.key !== null) {
+    change.key = requireString(record, 'key', context);
   }
   if (record.before !== undefined) {
     change.before = requireNullableString(record, 'before', context);

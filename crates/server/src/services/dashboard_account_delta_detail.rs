@@ -90,11 +90,7 @@ pub async fn get_account_delta_detail(
         .pull_delta(account_id, nonce)
         .await
         .map_err(|err| {
-            let lower = err.to_lowercase();
-            if lower.contains("not found")
-                || lower.contains("notfound")
-                || lower.contains("no such file")
-            {
+            if crate::storage::is_storage_not_found(&err) {
                 GuardianError::DeltaNotFound {
                     account_id: account_id.to_string(),
                     nonce,
@@ -207,6 +203,7 @@ mod tests {
     use crate::metadata::auth::Auth;
     use crate::testing::helpers::create_test_delta_payload;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use axum::http::StatusCode;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -326,9 +323,30 @@ mod tests {
         )
         .await
         .unwrap_err();
-        let body_a = serde_json::to_value(format!("{err_a:?}")).unwrap();
-        let body_b = serde_json::to_value(format!("{err_b:?}")).unwrap();
+        assert_eq!(err_a.code(), "delta_not_found");
+        assert_eq!(err_a.code(), err_b.code());
+        assert_eq!(err_a.http_status(), err_b.http_status());
+        let (status_a, body_a) = error_response_parts(err_a).await;
+        let (status_b, body_b) = error_response_parts(err_b).await;
+        assert_eq!(status_a, status_b);
         assert_eq!(body_a, body_b);
+        assert_eq!(
+            body_a.get("code").and_then(|v| v.as_str()),
+            Some("delta_not_found")
+        );
+    }
+
+    async fn error_response_parts(err: GuardianError) -> (StatusCode, serde_json::Value) {
+        use axum::body::to_bytes;
+        use axum::response::IntoResponse;
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("error body is valid JSON");
+        (status, json)
     }
 
     #[tokio::test]
