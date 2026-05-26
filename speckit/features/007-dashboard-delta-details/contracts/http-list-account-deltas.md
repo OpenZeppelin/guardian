@@ -4,7 +4,7 @@
 
 ## Path
 
-```
+```text
 GET /dashboard/accounts/{account_id}/deltas
 ```
 
@@ -62,7 +62,7 @@ Examples per category:
 - **Multisig `add_signer`**: `category = "account_storage_change"`, `proposal_type = "add_signer"`, `assets` absent, `counterparty` absent, `note_counts` absent (both input/output are zero).
 - **Single-key push p2id** (no proposal): `category = "asset_transfer"`, `proposal_type` absent. `assets` populated from each output note's assets; `counterparty` stays absent for single-key push.
 - **Multi-asset transfer**: `assets` carries one entry per `(note, asset)` pair. The detail endpoint's `vault_changes[]` is the canonical full breakdown if the client needs per-note attribution.
-- **Pre-feature-007 row / EVM**: all enrichment fields (`category`, `proposal_type`, `asset`, `counterparty`, `note_counts`) absent. Listing entry still returned with `nonce`, `status`, commitments intact.
+- **Pre-feature-007 row / EVM**: all enrichment fields (`category`, `proposal_type`, `assets`, `counterparty`, `note_counts`) absent. Listing entry still returned with `nonce`, `status`, commitments intact.
 
 ## Response — error cases
 

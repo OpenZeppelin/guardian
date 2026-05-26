@@ -4,7 +4,7 @@
 
 ## Path
 
-```
+```text
 GET /dashboard/accounts/{account_id}/deltas/{nonce}
 ```
 

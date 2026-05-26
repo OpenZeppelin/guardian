@@ -1287,6 +1287,22 @@ function requireStringArray(
   });
 }
 
+function assertStringArray(
+  value: unknown[],
+  key: string,
+  context: string,
+): string[] {
+  value.forEach((entry, index) => {
+    if (typeof entry !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        `field "${key}" entry ${index} must be a string`,
+      );
+    }
+  });
+  return value as string[];
+}
+
 // ---------------------------------------------------------------------------
 // Pagination helpers — feature `005-operator-dashboard-metrics`.
 // ---------------------------------------------------------------------------
@@ -1652,21 +1668,27 @@ function parseDeltaProposalMetadata(
   if (typeof record.recipient_id === 'string') proposal.recipientId = record.recipient_id;
   if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
   if (typeof record.amount === 'string') proposal.amount = record.amount;
-  if (Array.isArray(record.note_ids))
-    proposal.noteIds = (record.note_ids as unknown[]).filter(
-      (v): v is string => typeof v === 'string',
+  if (record.note_ids !== undefined)
+    proposal.noteIds = assertStringArray(
+      requireArray(record, 'note_ids', context),
+      'note_ids',
+      context,
     );
   if (typeof record.consume_notes_metadata_version === 'number')
     proposal.consumeNotesMetadataVersion = record.consume_notes_metadata_version;
-  if (Array.isArray(record.consume_notes_notes))
-    proposal.consumeNotesNotes = (record.consume_notes_notes as unknown[]).filter(
-      (v): v is string => typeof v === 'string',
+  if (record.consume_notes_notes !== undefined)
+    proposal.consumeNotesNotes = assertStringArray(
+      requireArray(record, 'consume_notes_notes', context),
+      'consume_notes_notes',
+      context,
     );
   if (typeof record.target_threshold === 'number')
     proposal.targetThreshold = record.target_threshold;
-  if (Array.isArray(record.signer_commitments))
-    proposal.signerCommitments = (record.signer_commitments as unknown[]).filter(
-      (v): v is string => typeof v === 'string',
+  if (record.signer_commitments !== undefined)
+    proposal.signerCommitments = assertStringArray(
+      requireArray(record, 'signer_commitments', context),
+      'signer_commitments',
+      context,
     );
   if (typeof record.new_guardian_pubkey === 'string')
     proposal.newGuardianPubkey = record.new_guardian_pubkey;
@@ -1707,8 +1729,15 @@ function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
       `${ctx}.storage_changes`,
     ),
   };
-  if (typeof record.retry_count === 'number') {
-    detail.retryCount = record.retry_count;
+  if (record.retry_count !== undefined) {
+    const retry = record.retry_count;
+    if (typeof retry !== 'number' || !Number.isInteger(retry) || retry < 0) {
+      throw new GuardianOperatorContractError(
+        ctx,
+        'retry_count must be a non-negative integer when present',
+      );
+    }
+    detail.retryCount = retry;
   }
   if (record.category !== undefined && record.category !== null) {
     detail.category = parseDeltaCategory(
@@ -1844,8 +1873,8 @@ function parseVaultChange(
     return {
       kind: 'non_fungible',
       assetId: requireString(record, 'asset_id', context),
-      added: (added as unknown[]).filter((v): v is string => typeof v === 'string'),
-      removed: (removed as unknown[]).filter((v): v is string => typeof v === 'string'),
+      added: assertStringArray(added as unknown[], 'added', context),
+      removed: assertStringArray(removed as unknown[], 'removed', context),
     };
   }
   throw new GuardianOperatorContractError(
