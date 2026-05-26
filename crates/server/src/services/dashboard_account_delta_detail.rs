@@ -8,8 +8,6 @@
 
 use serde::Serialize;
 
-use base64::Engine;
-
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::delta_summary::{
     DashboardDeltaCategory, DecodeWarning, DecodedNote, ProposalMetadata, StorageChange,
@@ -177,18 +175,16 @@ fn project_delta_to_detail(
 }
 
 /// Extract the base64-encoded `tx_summary.data` from either persisted
-/// shape (multisig wrapper or raw push_delta). Falls back to encoding
-/// the full payload so the operator can still see a debug view.
+/// shape (multisig wrapper or raw push_delta). Returns `None` when the
+/// payload does not contain a raw `TransactionSummary` byte blob (e.g.
+/// EVM-shaped payloads) — callers must not assume the bytes decode to a
+/// Miden `TransactionSummary`.
 fn extract_raw_tx_summary_base64(payload: &serde_json::Value) -> Option<String> {
     let candidate = payload.get("tx_summary").unwrap_or(payload);
     candidate
         .get("data")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .or_else(|| {
-            let bytes = serde_json::to_vec(payload).ok()?;
-            Some(base64::engine::general_purpose::STANDARD.encode(bytes))
-        })
 }
 
 fn fallback_status_triple(status: &DeltaStatus) -> (DashboardDeltaStatus, Option<u32>, String) {

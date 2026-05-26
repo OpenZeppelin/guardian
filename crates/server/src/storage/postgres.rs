@@ -445,6 +445,9 @@ impl StorageBackend for PostgresService {
             metadata: metadata_json.as_ref(),
         };
 
+        use diesel::dsl::sql;
+        use diesel::sql_types::{Jsonb, Nullable};
+
         diesel::insert_into(deltas::table)
             .values(&new_delta)
             .on_conflict((deltas::account_id, deltas::nonce))
@@ -457,7 +460,9 @@ impl StorageBackend for PostgresService {
                 deltas::status.eq(&status_json),
                 deltas::status_kind.eq(status_kind),
                 deltas::status_timestamp.eq(status_timestamp),
-                deltas::metadata.eq(metadata_json.as_ref()),
+                deltas::metadata.eq(sql::<Nullable<Jsonb>>(
+                    "COALESCE(EXCLUDED.metadata, deltas.metadata)",
+                )),
             ))
             .execute(&mut conn)
             .await

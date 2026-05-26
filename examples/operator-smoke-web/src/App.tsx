@@ -797,7 +797,7 @@ export default function App() {
           <p className="hint">
             Feature 007. Each listing entry spreads push-time enrichment to
             L1: <code>category</code>, <code>proposal_type</code>,{' '}
-            <code>asset</code>, <code>counterparty</code>,{' '}
+            <code>assets</code>, <code>counterparty</code>,{' '}
             <code>note_counts</code>. The detail endpoint adds decoded note /
             vault / storage sections plus optional multisig{' '}
             <code>proposal</code>. Use <strong>List account deltas</strong> or{' '}

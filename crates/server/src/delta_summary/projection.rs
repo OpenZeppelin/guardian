@@ -68,20 +68,22 @@ pub fn project_assets_and_counterparty_from_input_notes(
     (assets, counterparty)
 }
 
-/// Decode the full detail-view projection from a persisted
-/// `TransactionSummary`. Returns `(input_notes, output_notes,
-/// vault_changes, storage_changes, warnings)`. Storage changes carry
-/// only `after`; `before` would require reading storage at
-/// `prev_commitment`. MAST scripts are not exposed.
-pub fn decode_full(
-    summary: &TransactionSummary,
-) -> (
+/// Return shape for [`decode_full`]: the five per-section vectors
+/// projected from a persisted `TransactionSummary` in fixed order:
+/// `(input_notes, output_notes, vault_changes, storage_changes, warnings)`.
+pub type DecodedFullSections = (
     Vec<DecodedNote>,
     Vec<DecodedNote>,
     Vec<VaultChange>,
     Vec<StorageChange>,
     Vec<DecodeWarning>,
-) {
+);
+
+/// Decode the full detail-view projection from a persisted
+/// `TransactionSummary`. Storage changes carry only `after`; `before`
+/// would require reading storage at `prev_commitment`. MAST scripts
+/// are not exposed.
+pub fn decode_full(summary: &TransactionSummary) -> DecodedFullSections {
     let warnings: Vec<DecodeWarning> = Vec::new();
 
     let input_notes: Vec<DecodedNote> = summary

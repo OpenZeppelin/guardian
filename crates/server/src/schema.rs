@@ -39,10 +39,15 @@ diesel::table! {
         // columns.
         status_kind -> Text,
         status_timestamp -> Timestamptz,
-        // Multisig proposal metadata lifted at canonicalization
-        // (feature 007 / migration 2026-05-25-000001). NULL for
-        // single-key `push_delta`, EVM deltas, and any pre-migration
-        // canonical row whose source proposal had already been deleted.
+        // Push-time-derived enrichment metadata (feature 007 /
+        // migration 2026-05-25-000001). Written by `push_delta`
+        // before `submit_delta`; canonicalization only flips
+        // `status`/`status_kind` and never touches this column.
+        // NULL for EVM deltas, undecodable payloads, and any
+        // pre-migration row whose source proposal had already been
+        // deleted. The upsert path uses `COALESCE(EXCLUDED.metadata,
+        // deltas.metadata)` so a later status flip never overwrites
+        // an existing typed blob with NULL.
         metadata -> Nullable<Jsonb>,
     }
 }

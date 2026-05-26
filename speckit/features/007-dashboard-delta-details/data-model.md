@@ -82,7 +82,7 @@ The column is **NULL** for:
 
 ### `DashboardDeltaEntry` (listing — extended)
 
-Returned by `GET /dashboard/accounts/{account_id}/deltas` and (with `account_id` added) `GET /dashboard/deltas`. **All fields prior to this feature remain present and unchanged**. The legacy `proposal_type` top-level field has been removed (the value is recoverable from `metadata.proposal?.proposal_type`); see spec §Clarifications 2026-05-25.
+Returned by `GET /dashboard/accounts/{account_id}/deltas` and (with `account_id` added) `GET /dashboard/deltas`. **All fields prior to this feature remain present and unchanged**. The enrichment fields are spread directly at L1 (no nested `metadata` envelope on the wire); the persisted `deltas.metadata` JSONB column is an internal implementation detail. See spec §Clarifications 2026-05-25.
 
 ```text
 {
@@ -94,8 +94,12 @@ Returned by `GET /dashboard/accounts/{account_id}/deltas` and (with `account_id`
   new_commitment:     string | null              // hex Word; null for non-canonical
   retry_count?:       u32                        // present on candidate; omitted otherwise
 
-  // — New field (this feature) —
-  metadata?:          DeltaMetadata              // omitted for pre-feature-007 historical rows and EVM
+  // — Enrichment fields (this feature, spread at L1, all optional) —
+  category?:          DashboardDeltaCategory     // omitted for EVM and pre-feature-007 historical rows
+  proposal_type?:     string                     // multisig intent tag (e.g. "p2id", "consume_notes")
+  assets?:            DashboardDeltaAssetSummary[]
+  counterparty?:      DashboardDeltaCounterparty
+  note_counts?:       NoteCounts                 // omitted when both input and output are zero
 }
 ```
 

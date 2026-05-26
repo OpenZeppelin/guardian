@@ -38,7 +38,7 @@ Each entry is a `DashboardGlobalDeltaEntry` — a `DashboardDeltaEntry` (see [ht
 
 ## Behavioural invariants (test these explicitly)
 
-1. Every entry includes a non-null `account_id` and a non-null `category`. (existing requirement + SC-002)
+1. Every entry includes a non-null `account_id`. The enrichment fields (`category`, `proposal_type`, `assets`, `counterparty`, `note_counts`) are all optional and MAY be absent — EVM deltas and pre-feature-007 historical rows whose source proposal was already deleted carry none of them. When `category` is present it MUST be non-null and a member of the closed enumeration (SC-002). The server MUST NOT fabricate enrichment fields at read time.
 2. The shape inside each entry (excluding the leading `account_id`) is byte-identical to the per-account listing's entry shape. The TS operator client parses both via the same `parseDeltaEntry` function (`packages/guardian-operator-client/src/http.ts:1257`).
 3. Cross-account ordering / pagination behaviour is unchanged from current `dashboard_global_deltas` semantics.
 4. Status filter (`?status=candidate,canonical`) keeps current semantics; no new filterable fields are added in this feature.

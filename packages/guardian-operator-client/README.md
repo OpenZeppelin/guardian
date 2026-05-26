@@ -107,9 +107,9 @@ if (info.serviceStatus === 'degraded') {
 
 Each entry carries the dashboard-ready activity fields spread directly
 at L1 (feature 007). `category` is the server-curated coarse
-classification; `asset` / `counterparty` / `noteCounts` are derived
-from the on-chain `TransactionSummary`; `proposalType` echoes the
-operator's intent label for multisig commits. All five fields are
+classification; `assets` (array) / `counterparty` / `noteCounts` are
+derived from the on-chain `TransactionSummary`; `proposalType` echoes
+the operator's intent label for multisig commits. All five fields are
 optional — absent fields mean "not derivable from this row" (EVM
 deltas, pre-feature-007 historical rows whose proposal was already
 deleted, or undecodable payloads).
@@ -124,8 +124,10 @@ for (const entry of page.items) {
     if (entry.proposalType) {
       console.log('proposal type:', entry.proposalType);
     }
-    if (entry.asset) {
-      console.log('asset:', entry.asset.assetId, entry.asset.amount);
+    if (entry.assets && entry.assets.length > 0) {
+      for (const a of entry.assets) {
+        console.log('asset:', a.assetId, a.amount);
+      }
     }
   } else {
     // No dashboard fields → render as "metadata unavailable", not as

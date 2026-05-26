@@ -1,12 +1,15 @@
-//! Typed metadata blob persisted on every canonical delta and the
-//! push-time pipeline that builds it.
+//! Typed metadata blob persisted on the `deltas` row at push time and
+//! the pipeline that builds it.
 //!
-//! Each delta carries an optional [`DeltaMetadata`] derived once at
-//! push time and stored in the `deltas.metadata` JSONB column. Derived
-//! fields (`category`, `asset`, `counterparty`, `note_counts`) come
-//! from the persisted `TransactionSummary`. The optional `proposal`
-//! block is lifted verbatim from the matching `delta_proposals` row
-//! for multisig pushes. Dashboard listings are pure column reads.
+//! Each delta row (including candidate rows) carries an optional
+//! [`DeltaMetadata`] derived once when `push_delta` runs and stored in
+//! the `deltas.metadata` JSONB column. Canonicalization only flips the
+//! status — it never re-runs derivation. Derived fields (`category`,
+//! `assets`, `counterparty`, `note_counts`) come from the persisted
+//! `TransactionSummary`. The optional `proposal` block is lifted
+//! verbatim from the matching `delta_proposals` row for multisig
+//! pushes. Dashboard listings are pure column reads and spread the
+//! fields to L1 (no nested `metadata` envelope on the wire).
 
 use serde::{Deserialize, Serialize};
 

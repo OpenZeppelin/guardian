@@ -590,7 +590,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             retry_count: 2,
             category: 'account_storage_change',
             proposal_type: 'add_signer',
-            note_counts: { input: 0, output: 0 },
           },
           {
             nonce: 46,
@@ -599,7 +598,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             prev_commitment: '0x6d7e',
             new_commitment: '0x7e8f',
             category: 'custom',
-            note_counts: { input: 0, output: 0 },
           },
           {
             nonce: 45,
@@ -627,11 +625,12 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       retryCount: 2,
       category: 'account_storage_change',
       proposalType: 'add_signer',
-      noteCounts: { input: 0, output: 0 },
     });
+    expect(page.items[0].noteCounts).toBeUndefined();
     expect(page.items[1].retryCount).toBeUndefined();
     expect(page.items[1].category).toBe('custom');
     expect(page.items[1].proposalType).toBeUndefined();
+    expect(page.items[1].noteCounts).toBeUndefined();
     expect(page.items[2].newCommitment).toBeNull();
     expect(page.items[2].category).toBeUndefined();
 
@@ -1364,7 +1363,6 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
             new_commitment: '0xa3b4',
             retry_count: 2,
             category: 'custom',
-            note_counts: { input: 0, output: 0 },
           },
           {
             nonce: 9022,
@@ -1374,7 +1372,6 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
             prev_commitment: '0x6d7e',
             new_commitment: '0x7e8f',
             category: 'custom',
-            note_counts: { input: 0, output: 0 },
           },
         ],
         next_cursor: 'next-token',
@@ -1393,8 +1390,9 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
       newCommitment: '0xa3b4',
       retryCount: 2,
       category: 'custom',
-      noteCounts: { input: 0, output: 0 },
     });
+    expect(page.items[0].noteCounts).toBeUndefined();
+    expect(page.items[1].noteCounts).toBeUndefined();
     expect(page.nextCursor).toBe('next-token');
   });
 
