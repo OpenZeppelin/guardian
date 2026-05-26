@@ -17,7 +17,7 @@ A small HTTP API + browser UI that lets a known set of operators:
 - list and inspect accounts known to this Guardian
 - read per-account and global delta / proposal feeds
 - read account snapshots and metadata
-- (gated by permission) pause/unpause accounts and write policies
+- (gated by permission) pause/unpause accounts
 
 It is **not** part of the per-account gRPC contract — clients of Guardian
 don't talk to it. Only operators do.
@@ -131,7 +131,7 @@ load time so a typo surfaces explicitly
 |---|---|
 | `dashboard:read` | Read access to all `/dashboard/*` read endpoints. |
 | `accounts:pause` | Pause/unpause accounts. |
-| `policies:write` | Write account policies. |
+| `policies:write` | Reserved for future policy writes — no endpoint currently requires it. |
 
 Wire strings are **case-sensitive** and **must not contain whitespace** —
 the parser rejects both.
@@ -145,11 +145,14 @@ the parser rejects both.
 ## Account pausing
 
 Operators holding `accounts:pause` can halt and resume an account's
-state-changing operations. While paused, the server rejects every
-authenticated per-account call with `409 GUARDIAN_ACCOUNT_PAUSED` and
-gRPC `FailedPrecondition`
+state-changing operations. While paused, the server rejects calls on
+the state-transition, proposal, and EVM mutation paths
+(`PushDelta`, `PushDeltaProposal`, `SignDeltaProposal`, and the
+matching EVM proposal/session operations) with `409 GUARDIAN_ACCOUNT_PAUSED`
+and gRPC `FailedPrecondition`
 ([`error.rs:97-101`](../crates/server/src/error.rs#L97)). Read endpoints
-remain available.
+and `ConfigureAccount` remain available so an account can be
+reconfigured while paused.
 
 | Route | Permission | Body |
 |---|---|---|
@@ -199,6 +202,15 @@ The operator allowlist is a Secrets Manager entry whose payload is one of:
 Mixed arrays of bare strings and objects are accepted; duplicate
 `public_key` entries across the file are rejected.
 
+> **Terraform-managed allowlists are limited to the legacy array form.**
+> The `guardian_operator_public_keys` variable is typed `list(string)`
+> and Terraform writes `jsonencode(...)` of the list verbatim
+> ([`infra/operator_secrets.tf:12`](../infra/operator_secrets.tf#L12)),
+> so every entry implicitly gets `dashboard:read` only. To grant
+> `accounts:pause` you must use the object form via a file
+> (`GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE`) or an externally managed
+> secret referenced by `guardian_operator_public_keys_secret_arn`.
+
 The server resolves the allowlist *source* from one of these env vars
 at startup ([`allowlist.rs:70`](../crates/server/src/dashboard/allowlist.rs#L70));
 the contents are re-read per authenticated request, so adding or
@@ -218,8 +230,10 @@ End-to-end procedure for adding operator Alice to a deployed Guardian.
    `examples/operator-smoke-web` README has a UI for this).
 2. Alice gives the public key (hex `0x…`) to the deploying operator.
 3. **Deployer updates the allowlist**:
-   - Terraform-managed: append to `guardian_operator_public_keys` and
-     redeploy (see [Secrets runbook](./runbooks/secrets.md#adding-or-removing-an-operator)).
+   - Terraform-managed: append the bare key to
+     `guardian_operator_public_keys` and redeploy (see [Secrets
+     runbook](./runbooks/secrets.md#adding-or-removing-an-operator)).
+     This path grants `dashboard:read` only.
    - Externally-managed: `aws secretsmanager update-secret` with the new
      payload — no ECS restart required.
 4. **Alice logs in** — challenge → sign → session. The change takes

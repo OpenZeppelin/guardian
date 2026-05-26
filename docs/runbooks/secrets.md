@@ -151,10 +151,14 @@ against an **allowlist** of public keys. Two ways to manage the list:
 
 - **Terraform-managed** — set `guardian_operator_public_keys` in
   Terraform (or `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON` in the deploy env);
-  Terraform creates and maintains the secret.
+  Terraform creates and maintains the secret. The variable is typed
+  `list(string)`, so this path only supports the legacy bare-key
+  array form — every entry implicitly gets `dashboard:read` only.
 - **Pre-existing ARN** — set
   `guardian_operator_public_keys_secret_arn` to an ARN you manage
-  externally. Terraform won't touch the contents.
+  externally. Terraform won't touch the contents. Use this path (or
+  the local `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE`) when you need the
+  object form to grant `accounts:pause` or any future permission.
 
 The secret payload is the JSON shape consumed by
 [`dashboard/allowlist.rs`](../../crates/server/src/dashboard/allowlist.rs).
@@ -223,8 +227,11 @@ Populated by the deploy script from
 `GUARDIAN_SERVER_FEATURES=postgres,evm`.
 
 To add a chain:
-1. Edit `config/evm/chains.json` — add the `chain_id`, RPC URL, and
-   entrypoint address.
+1. Edit `config/evm/chains.json` — append a new entry to `chains` with
+   `chainId`, `name`, `network`, and `rpcUrl`. The `entrypointAddress`
+   is a single top-level field shared by every chain (exposed to the
+   server as `GUARDIAN_EVM_ENTRYPOINT_ADDRESS`) — do not add it
+   per-chain.
 2. `./scripts/aws-deploy.sh deploy` — the script rebuilds the Secrets
    Manager values from the JSON and Terraform updates the secret
    versions.

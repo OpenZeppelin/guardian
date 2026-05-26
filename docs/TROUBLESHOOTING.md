@@ -157,8 +157,10 @@ the [client verification checklist](./CONCEPTS.md#client-verification-checklist)
 
 ### Account is paused
 
-Every write call against an account returns `409 GUARDIAN_ACCOUNT_PAUSED`
-(gRPC `FailedPrecondition`). Reads still work.
+State-transition, proposal, and EVM mutation calls against the account
+(`PushDelta`, `PushDeltaProposal`, `SignDeltaProposal`, and the matching
+EVM proposal/session operations) return `409 GUARDIAN_ACCOUNT_PAUSED`
+(gRPC `FailedPrecondition`). Reads and `ConfigureAccount` still work.
 
 - **Confirm:** check `GET /dashboard/accounts/{id}` — paused accounts
   report `paused_at` and `paused_reason`.

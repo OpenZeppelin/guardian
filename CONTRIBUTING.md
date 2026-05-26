@@ -127,8 +127,9 @@ tooling; otherwise follow the example's README.
 - **Rust:** `cargo fmt` and `cargo clippy --workspace -- -D warnings`.
   Match existing patterns; favour explicit error types over `anyhow` in
   library code (`crates/server`, `crates/client`).
-- **TypeScript:** each package carries its own lint and test scripts;
-  run `npm run lint` (or the equivalent) before pushing.
+- **TypeScript:** each package carries its own scripts; run
+  `npm run typecheck`, `npm test`, and `npm run build` (where defined)
+  before pushing.
 - **Comments:** prefer no comment unless the *why* is non-obvious. Don't
   describe what well-named code already says.
 - **Backwards compatibility:** don't add compatibility shims for behavior
