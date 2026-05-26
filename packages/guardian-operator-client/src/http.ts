@@ -1891,6 +1891,9 @@ function parseStorageChange(
     slotName: requireString(record, 'slot_name', context),
     after: requireNullableString(record, 'after', context),
   };
+  if (record.key !== undefined) {
+    change.key = requireNullableString(record, 'key', context);
+  }
   if (record.before !== undefined) {
     change.before = requireNullableString(record, 'before', context);
   }

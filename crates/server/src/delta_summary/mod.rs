@@ -212,6 +212,12 @@ pub struct StorageChange {
     /// `miden_protocol::account::StorageSlotName` (e.g. `"consumed_notes"`).
     /// Slots are identified by name in Miden, not by numeric index.
     pub slot_name: String,
+    /// Hex-encoded `Word` map key (64 hex chars + `0x` prefix) for
+    /// `StorageMap` slot entries. `None` for scalar value slots. For the
+    /// multisig `proc_threshold_overrides` map (slot 4) this is the
+    /// MASM procedure root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// Hex-encoded `Word` (64 hex chars + `0x` prefix) before the
     /// change. Always omitted in v1 — `TransactionSummary` carries
     /// only post-change values; populating `before` requires reading

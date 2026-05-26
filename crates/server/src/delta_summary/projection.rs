@@ -276,14 +276,26 @@ fn project_storage_changes(
     delta: &miden_protocol::account::delta::AccountDelta,
 ) -> Vec<StorageChange> {
     let storage = delta.storage();
-    storage
+    let mut out: Vec<StorageChange> = storage
         .values()
         .map(|(slot_name, word)| StorageChange {
             slot_name: slot_name.as_str().to_string(),
+            key: None,
             before: None,
             after: Some(format!("0x{}", hex::encode(word.as_bytes()))),
         })
-        .collect()
+        .collect();
+    for (slot_name, map_delta) in storage.maps() {
+        for (map_key, word) in map_delta.entries() {
+            out.push(StorageChange {
+                slot_name: slot_name.as_str().to_string(),
+                key: Some(format!("0x{}", hex::encode(map_key.as_bytes()))),
+                before: None,
+                after: Some(format!("0x{}", hex::encode(word.as_bytes()))),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -368,11 +380,54 @@ mod tests {
     fn storage_change_json_omits_before_when_unpopulated() {
         let change = StorageChange {
             slot_name: "openzeppelin::multisig::threshold_config".to_string(),
+            key: None,
             before: None,
             after: Some("0x0200".to_string()),
         };
         let json = serde_json::to_value(&change).expect("serializable");
         assert!(json.get("before").is_none());
+        assert!(json.get("key").is_none());
         assert_eq!(json.get("after").and_then(|v| v.as_str()), Some("0x0200"));
+    }
+
+    #[test]
+    fn project_storage_changes_emits_one_entry_per_map_key() {
+        use miden_protocol::account::delta::{
+            AccountStorageDelta, StorageMapDelta, StorageSlotDelta,
+        };
+        use miden_protocol::account::{StorageMapKey, StorageSlotName};
+
+        let proc_root =
+            Word::parse("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
+                .expect("proc root");
+        let threshold_word = Word::from([Felt::new(1), ZERO, ZERO, ZERO]);
+
+        let mut map_delta = StorageMapDelta::default();
+        map_delta.insert(StorageMapKey::new(proc_root), threshold_word);
+
+        let slot_name =
+            StorageSlotName::new("openzeppelin::multisig::proc_threshold_overrides").unwrap();
+        let storage =
+            AccountStorageDelta::from_raw([(slot_name, StorageSlotDelta::Map(map_delta))].into());
+        let delta = AccountDelta::new(
+            AccountId::from_hex(CONSUMER).expect("acct"),
+            storage,
+            AccountVaultDelta::default(),
+            Felt::new(1),
+        )
+        .expect("delta");
+
+        let changes = project_storage_changes(&delta);
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(
+            c.slot_name,
+            "openzeppelin::multisig::proc_threshold_overrides"
+        );
+        assert_eq!(
+            c.key.as_deref(),
+            Some("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
+        );
+        assert!(c.after.is_some());
     }
 }
