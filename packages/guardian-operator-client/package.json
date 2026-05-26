@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/guardian-operator-client",
-  "version": "0.14.6",
+  "version": "0.14.7",
   "description": "TypeScript HTTP client for Guardian operator dashboard endpoints",
   "type": "module",
   "main": "./dist/index.js",
