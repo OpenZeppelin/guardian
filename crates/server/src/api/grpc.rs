@@ -104,10 +104,7 @@ impl Guardian for GuardianService {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status: Default::default(),
-            // Inbound deltas never carry the typed metadata blob —
-            // it is derived server-side at push time by `push_delta`
-            // (feature 007). The candidate row gets metadata
-            // populated before persistence.
+            // Derived server-side at push time; never carried inbound.
             metadata: None,
         };
 

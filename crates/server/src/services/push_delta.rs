@@ -88,9 +88,10 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             .map_err(GuardianError::InvalidDelta)?
     };
 
-    // Multisig pushes carry only the unwrapped `tx_summary`; lift the
+    // Unconditional lookup: for multisig pushes this lifts the
     // matching proposal's metadata so `build_metadata` can preserve
-    // operator intent. Single-key pushes return `None` here.
+    // operator intent. For single-key pushes the lookup misses and
+    // returns `None`; the cost is one extra storage read per push.
     let matching_proposal_payload = lookup_matching_proposal_payload(
         state,
         &params.delta.account_id,

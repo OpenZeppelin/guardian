@@ -1286,6 +1286,20 @@ function requireStringArray(
   });
 }
 
+function requireNonNegativeInteger(
+  value: unknown,
+  key: string,
+  context: string,
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new GuardianOperatorContractError(
+      context,
+      `field "${key}" must be a non-negative integer`,
+    );
+  }
+  return value;
+}
+
 function assertStringArray(
   value: unknown[],
   key: string,
@@ -1623,8 +1637,12 @@ function parseDeltaProposalMetadata(
   };
   if (typeof record.description === 'string') proposal.description = record.description;
   if (typeof record.salt === 'string') proposal.salt = record.salt;
-  if (typeof record.required_signatures === 'number')
-    proposal.requiredSignatures = record.required_signatures;
+  if (record.required_signatures !== undefined)
+    proposal.requiredSignatures = requireNonNegativeInteger(
+      record.required_signatures,
+      'required_signatures',
+      context,
+    );
   if (typeof record.recipient_id === 'string') proposal.recipientId = record.recipient_id;
   if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
   if (typeof record.amount === 'string') proposal.amount = record.amount;
@@ -1634,16 +1652,24 @@ function parseDeltaProposalMetadata(
       'note_ids',
       context,
     );
-  if (typeof record.consume_notes_metadata_version === 'number')
-    proposal.consumeNotesMetadataVersion = record.consume_notes_metadata_version;
+  if (record.consume_notes_metadata_version !== undefined)
+    proposal.consumeNotesMetadataVersion = requireNonNegativeInteger(
+      record.consume_notes_metadata_version,
+      'consume_notes_metadata_version',
+      context,
+    );
   if (record.consume_notes_notes !== undefined)
     proposal.consumeNotesNotes = assertStringArray(
       requireArray(record, 'consume_notes_notes', context),
       'consume_notes_notes',
       context,
     );
-  if (typeof record.target_threshold === 'number')
-    proposal.targetThreshold = record.target_threshold;
+  if (record.target_threshold !== undefined)
+    proposal.targetThreshold = requireNonNegativeInteger(
+      record.target_threshold,
+      'target_threshold',
+      context,
+    );
   if (record.signer_commitments !== undefined)
     proposal.signerCommitments = assertStringArray(
       requireArray(record, 'signer_commitments', context),

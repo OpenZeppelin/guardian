@@ -39,15 +39,11 @@ diesel::table! {
         // columns.
         status_kind -> Text,
         status_timestamp -> Timestamptz,
-        // Push-time-derived enrichment metadata (feature 007 /
-        // migration 2026-05-25-000001). Written by `push_delta`
-        // before `submit_delta`; canonicalization only flips
-        // `status`/`status_kind` and never touches this column.
-        // NULL for EVM deltas, undecodable payloads, and any
-        // pre-migration row whose source proposal had already been
-        // deleted. The upsert path uses `COALESCE(EXCLUDED.metadata,
-        // deltas.metadata)` so a later status flip never overwrites
-        // an existing typed blob with NULL.
+        // Push-time-derived enrichment metadata. Written by
+        // `push_delta` before `submit_delta`; canonicalization only
+        // flips status and never touches this column. The upsert
+        // path uses `COALESCE(EXCLUDED.metadata, deltas.metadata)` so
+        // a later status flip never overwrites an existing typed blob.
         metadata -> Nullable<Jsonb>,
     }
 }

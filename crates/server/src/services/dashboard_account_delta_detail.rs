@@ -181,11 +181,10 @@ fn project_delta_to_detail(
     }
 }
 
-/// Extract the base64-encoded `tx_summary.data` from either persisted
-/// shape (multisig wrapper or raw push_delta). Returns `None` when the
-/// payload does not contain a raw `TransactionSummary` byte blob (e.g.
-/// EVM-shaped payloads) — callers must not assume the bytes decode to a
-/// Miden `TransactionSummary`.
+/// Return the string at `tx_summary.data` (multisig wrapper) or
+/// top-level `data` (raw `push_delta`). Returns `None` when neither
+/// location holds a string. Callers must not assume the bytes decode
+/// to a Miden `TransactionSummary`.
 fn extract_raw_tx_summary_base64(payload: &serde_json::Value) -> Option<String> {
     let candidate = payload.get("tx_summary").unwrap_or(payload);
     candidate
