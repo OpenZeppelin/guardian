@@ -405,10 +405,12 @@ mod tests {
         assert_eq!(result.delta.proposal_type(), Some("consume_notes"));
     }
 
-    /// Single-key path: no matching proposal in storage. Candidate is
-    /// still persisted with derived metadata; `proposal` absent.
+    /// Direct push path: no matching proposal in storage. Candidate is
+    /// still persisted with derived metadata; `proposal` absent. This
+    /// is the regression guard for "push_delta does not require
+    /// push_delta_proposal".
     #[tokio::test]
-    async fn push_delta_persists_metadata_without_proposal_when_lookup_misses() {
+    async fn direct_push_delta_succeeds_without_existing_proposal() {
         use crate::delta_object::DeltaStatus;
         use crate::delta_summary::DashboardDeltaCategory;
         use crate::state_object::StateObject;
@@ -501,6 +503,22 @@ mod tests {
             "no matching proposal → no proposal block"
         );
         assert!(persisted.proposal_type().is_none());
+        assert!(
+            storage.get_submit_delta_proposal_calls().is_empty(),
+            "direct push must not create a delta proposal"
+        );
+        assert!(
+            storage.get_update_delta_proposal_calls().is_empty(),
+            "direct push must not update a delta proposal"
+        );
+        assert!(
+            storage.get_delete_delta_proposal_calls().is_empty(),
+            "direct push must not delete a delta proposal"
+        );
+        assert!(
+            !storage.get_pull_delta_proposal_calls().is_empty(),
+            "direct push may probe for matching proposal metadata, but misses are non-fatal"
+        );
     }
 
     #[tokio::test]
