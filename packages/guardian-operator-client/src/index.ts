@@ -16,14 +16,6 @@ export {
 
 export type { OperatorPermission } from './permissions.js';
 
-export {
-  ACCOUNTS_PAUSE,
-  DASHBOARD_READ,
-  POLICIES_WRITE,
-} from './permissions.js';
-
-export type { OperatorPermission } from './permissions.js';
-
 export type {
   AccountPausedErrorDetails,
   AccountStatus,
@@ -31,8 +23,23 @@ export type {
   DashboardAccountResponse,
   DashboardAccountStateStatus,
   DashboardAccountSummary,
+  DashboardDeltaAssetSummary,
+  DashboardDeltaCategory,
+  DashboardDeltaCounterpartySummary,
+  DashboardDeltaDecodeSection,
+  DashboardDeltaDecodeWarning,
+  DashboardDeltaDecodedAsset,
+  DashboardDeltaDecodedNote,
+  DashboardDeltaDetail,
   DashboardDeltaEntry,
+  DashboardDeltaNoteCounts,
+  DashboardDeltaNoteTag,
+  DashboardDeltaProposalMetadata,
   DashboardDeltaStatus,
+  DashboardDeltaStorageChange,
+  DashboardDeltaVaultChange,
+  DeltaAssetKind,
+  DeltaCounterpartyDirection,
   DashboardErrorCode,
   DashboardGlobalDeltaEntry,
   DashboardGlobalDeltaStatusFilter,
@@ -40,6 +47,7 @@ export type {
   DashboardInfoResponse,
   DashboardProposalEntry,
   GlobalDeltasOptions,
+  DeltaDetailOptions,
   GuardianOperatorHttpClientOptions,
   GuardianOperatorHttpErrorData,
   LogoutOperatorResponse,

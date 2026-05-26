@@ -238,6 +238,7 @@ mod tests {
                 proposer_id,
                 cosigner_sigs,
             },
+            metadata: None,
         }
     }
 

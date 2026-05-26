@@ -39,6 +39,12 @@ diesel::table! {
         // columns.
         status_kind -> Text,
         status_timestamp -> Timestamptz,
+        // Push-time-derived enrichment metadata. Written by
+        // `push_delta` before `submit_delta`; canonicalization only
+        // flips status and never touches this column. The upsert
+        // path uses `COALESCE(EXCLUDED.metadata, deltas.metadata)` so
+        // a later status flip never overwrites an existing typed blob.
+        metadata -> Nullable<Jsonb>,
     }
 }
 

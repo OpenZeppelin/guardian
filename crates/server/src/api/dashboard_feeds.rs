@@ -14,11 +14,13 @@ use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
 use crate::dashboard::cursor::CursorKind;
+use crate::error::GuardianError;
 use crate::error::Result;
 use crate::services::{
-    DashboardDeltaEntry, DashboardGlobalDeltaEntry, DashboardGlobalProposalEntry,
-    DashboardProposalEntry, PagedResult, list_account_deltas, list_account_proposals,
-    list_global_deltas, list_global_proposals, parse_cursor, parse_limit, parse_status_filter,
+    DashboardDeltaDetail, DashboardDeltaEntry, DashboardGlobalDeltaEntry,
+    DashboardGlobalProposalEntry, DashboardProposalEntry, DetailIncludeFlags, PagedResult,
+    get_account_delta_detail, list_account_deltas, list_account_proposals, list_global_deltas,
+    list_global_proposals, parse_cursor, parse_limit, parse_status_filter,
 };
 use crate::state::AppState;
 
@@ -33,6 +35,14 @@ pub struct FeedQuery {
     pub limit: Option<String>,
     #[serde(default)]
     pub cursor: Option<String>,
+}
+
+/// `?include=` query parameter for the per-delta detail endpoint.
+/// Comma-separated list of opt-in features; unknown tokens are ignored.
+#[derive(Debug, Deserialize)]
+pub struct DeltaDetailQuery {
+    #[serde(default)]
+    pub include: Option<String>,
 }
 
 /// `?limit=&cursor=&status=` query parameters for the global delta
@@ -65,6 +75,72 @@ pub async fn list_account_deltas_handler(
     )?;
     let result = list_account_deltas(&state, &account_id, limit, cursor).await?;
     Ok(Json(result))
+}
+
+/// `GET /dashboard/accounts/{account_id}/deltas/{nonce}`. Returns the
+/// full detail projection of one canonical delta. `{nonce}` MUST be a
+/// canonical base-10 `u64`; leading zeros (except `"0"`), negatives,
+/// hex, and other non-decimal inputs are rejected with
+/// [`GuardianError::InvalidInput`]. Unknown account or unknown nonce
+/// both map to `DeltaNotFound` so the wire body is field-level identical.
+pub async fn list_account_delta_detail_handler(
+    State(state): State<AppState>,
+    Path((account_id, nonce_str)): Path<(String, String)>,
+    Query(query): Query<DeltaDetailQuery>,
+) -> Result<Json<DashboardDeltaDetail>> {
+    let nonce = parse_canonical_nonce(&nonce_str)?;
+    let include = parse_detail_include_flags(query.include.as_deref());
+    let result = get_account_delta_detail(&state, &account_id, nonce, include).await?;
+    Ok(Json(result))
+}
+
+/// Parse the detail endpoint's `?include=` comma-list into
+/// [`DetailIncludeFlags`]. Only `raw` is honored; other tokens are
+/// accepted but ignored so future extensions do not break callers.
+pub(crate) fn parse_detail_include_flags(raw: Option<&str>) -> DetailIncludeFlags {
+    let Some(raw) = raw else {
+        return DetailIncludeFlags::default();
+    };
+    let mut flags = DetailIncludeFlags::default();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if token == "raw" {
+            flags.raw = true;
+        }
+    }
+    flags
+}
+
+/// Parse the `{nonce}` URL segment: canonical base-10 `u64`, no
+/// leading zeros except for the literal `"0"`, no hex prefix, no
+/// separators, no negatives. Any deviation is a structural error
+/// distinct from `DeltaNotFound`.
+fn parse_canonical_nonce(raw: &str) -> Result<u64> {
+    if raw.is_empty() {
+        return Err(GuardianError::InvalidInput(
+            "nonce path segment is empty".to_string(),
+        ));
+    }
+    if raw.starts_with("0x") || raw.starts_with("0X") {
+        return Err(GuardianError::InvalidInput(format!(
+            "nonce must be a base-10 unsigned integer (no '0x' prefix), got '{raw}'"
+        )));
+    }
+    if raw.len() > 1 && raw.starts_with('0') {
+        return Err(GuardianError::InvalidInput(format!(
+            "nonce must not have leading zeros, got '{raw}'"
+        )));
+    }
+    if !raw.chars().all(|c| c.is_ascii_digit()) {
+        return Err(GuardianError::InvalidInput(format!(
+            "nonce must be a base-10 unsigned integer, got '{raw}'"
+        )));
+    }
+    raw.parse::<u64>()
+        .map_err(|e| GuardianError::InvalidInput(format!("nonce out of u64 range '{raw}': {e}")))
 }
 
 /// `GET /dashboard/accounts/{account_id}/proposals`. Returns the
@@ -125,6 +201,103 @@ pub async fn list_global_proposals_handler(
     )?;
     let result = list_global_proposals(&state, limit, cursor).await?;
     Ok(Json(result))
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod nonce_parse_tests {
+    use super::{parse_canonical_nonce, parse_detail_include_flags};
+    use crate::error::GuardianError;
+    use crate::services::DetailIncludeFlags;
+
+    fn assert_invalid(input: &str) {
+        let err = parse_canonical_nonce(input)
+            .err()
+            .unwrap_or_else(|| panic!("expected InvalidInput for {input:?}"));
+        assert!(
+            matches!(err, GuardianError::InvalidInput(_)),
+            "expected InvalidInput, got {err:?} for {input:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_zero() {
+        assert_eq!(parse_canonical_nonce("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn accepts_typical_u64() {
+        assert_eq!(parse_canonical_nonce("42").unwrap(), 42);
+        assert_eq!(
+            parse_canonical_nonce("18446744073709551615").unwrap(),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert_invalid("");
+    }
+
+    #[test]
+    fn rejects_hex_prefix() {
+        assert_invalid("0xabc");
+        assert_invalid("0X123");
+    }
+
+    #[test]
+    fn rejects_leading_zero() {
+        assert_invalid("01");
+        assert_invalid("007");
+    }
+
+    #[test]
+    fn rejects_negative() {
+        assert_invalid("-1");
+    }
+
+    #[test]
+    fn rejects_non_decimal() {
+        assert_invalid("12a");
+        assert_invalid("1_000");
+        assert_invalid("1.5");
+    }
+
+    #[test]
+    fn rejects_out_of_u64_range() {
+        assert_invalid("18446744073709551616");
+    }
+
+    #[test]
+    fn include_flags_default_when_param_absent() {
+        assert_eq!(
+            parse_detail_include_flags(None),
+            DetailIncludeFlags::default()
+        );
+    }
+
+    #[test]
+    fn include_flags_parses_raw_token() {
+        assert_eq!(
+            parse_detail_include_flags(Some("raw")),
+            DetailIncludeFlags { raw: true }
+        );
+    }
+
+    #[test]
+    fn include_flags_parses_comma_separated_list_with_whitespace() {
+        assert_eq!(
+            parse_detail_include_flags(Some(" scripts , raw ")),
+            DetailIncludeFlags { raw: true }
+        );
+    }
+
+    #[test]
+    fn include_flags_ignores_unknown_tokens() {
+        assert_eq!(
+            parse_detail_include_flags(Some("future_thing,raw,other")),
+            DetailIncludeFlags { raw: true }
+        );
+    }
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -223,6 +396,7 @@ mod tests {
             status: DeltaStatus::Canonical {
                 timestamp: format!("2026-05-08T12:00:0{nonce}Z"),
             },
+            metadata: None,
         }
     }
 
@@ -252,6 +426,7 @@ mod tests {
                 proposer_id: "0xproposer".into(),
                 cosigner_sigs,
             },
+            metadata: None,
         }
     }
 

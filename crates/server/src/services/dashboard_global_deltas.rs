@@ -1,32 +1,18 @@
-//! Global cross-account delta feed dashboard endpoint service.
+//! Global cross-account delta feed.
 //!
-//! Spec reference: `005-operator-dashboard-metrics` FR-031..FR-035, US6.
+//! Returns delta records aggregated across all accounts, ordered by
+//! `status_timestamp DESC` with `(account_id, nonce)` as the stable
+//! tie-breaker. Only persisted lifecycle statuses are surfaced
+//! (`candidate`, `canonical`, `discarded`).
 //!
-//! Returns delta records aggregated across all configured accounts,
-//! ordered by `status_timestamp DESC` with `(account_id, nonce)` as the
-//! stable tie-breaker. Surfaces only the lifecycle statuses persisted
-//! in `deltas` (`candidate`, `canonical`, `discarded`); pending entries
-//! live in `delta_proposals` and are exposed only through the global
-//! proposal feed.
+//! Cursor traversal is stable under concurrent inserts, but an entry
+//! whose `status_timestamp` is bumped mid-traversal MAY be skipped or
+//! repeated.
 //!
-//! ## Cursor stability
-//!
-//! Per FR-005: cursor traversal is stable under concurrent inserts but
-//! an entry whose `status_timestamp` is bumped mid-traversal (e.g. a
-//! candidate transitioning to canonical) MAY be skipped or repeated.
-//! The composite tie-breaker on `(account_id, nonce)` guarantees a
-//! deterministic order within each timestamp bucket.
-//!
-//! ## Filesystem-backend degradation (FR-029)
-//!
-//! On the **filesystem backend**, above the configured
+//! On the filesystem backend, above
 //! `filesystem_aggregate_threshold` (default 1,000 accounts) this
-//! endpoint short-circuits to `GuardianError::DataUnavailable` rather
-//! than fan out across every account directory. The **Postgres
-//! backend** serves this feed from indexed columns and is NOT bounded
-//! by the threshold — `enforce_aggregate_threshold` returns early
-//! when `storage.kind() != Filesystem`. Operators on Postgres should
-//! not expect a threshold-induced 503 from this endpoint.
+//! short-circuits to [`GuardianError::DataUnavailable`]. The Postgres
+//! backend is not bounded by the threshold.
 
 use std::collections::HashSet;
 
@@ -35,6 +21,7 @@ use serde::Serialize;
 
 use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::delta_object::DeltaObject;
+use crate::delta_summary::{AssetSummary, CounterpartySummary, DashboardDeltaCategory, NoteCounts};
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_account_deltas::{DashboardDeltaStatus, decode_delta_status};
 use crate::services::dashboard_pagination::{PagedResult, enforce_aggregate_threshold};
@@ -55,22 +42,28 @@ pub struct DashboardGlobalDeltaEntry {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
-    /// See `DashboardDeltaEntry::proposal_type` — `None` for single-key
-    /// Miden `push_delta` writes and EVM deltas.
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<DashboardDeltaCategory>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counterparty: Option<CounterpartySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_counts: Option<NoteCounts>,
 }
 
 /// Parse a comma-separated `?status=` filter into a typed allow-list
-/// of lifecycle statuses. Unknown or empty entries surface as
-/// [`GuardianError::InvalidStatusFilter`] per FR-033.
+/// of lifecycle statuses. Unknown entries surface as
+/// [`GuardianError::InvalidStatusFilter`]. An empty value behaves like
+/// the parameter being omitted.
 pub fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<DashboardDeltaStatus>>> {
     let Some(s) = raw else {
         return Ok(None);
     };
     if s.is_empty() {
-        // `?status=` with no value behaves like the parameter being
-        // omitted: include every surfaced lifecycle status.
         return Ok(None);
     }
     let mut seen: HashSet<&str> = HashSet::new();
@@ -83,9 +76,6 @@ pub fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<DashboardDelt
             )));
         }
         if !seen.insert(t) {
-            // Duplicate values are silently coalesced — caller intent
-            // is unambiguous and tolerating duplicates is friendlier
-            // than rejecting.
             continue;
         }
         let parsed = match t {
@@ -105,7 +95,7 @@ pub fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<DashboardDelt
 
 fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDeltaEntry> {
     let (status, retry_count, status_timestamp) = decode_delta_status(&delta.status)?;
-    Some(DashboardGlobalDeltaEntry {
+    let mut entry = DashboardGlobalDeltaEntry {
         account_id: account_id.to_string(),
         nonce: delta.nonce,
         status,
@@ -113,8 +103,22 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone(),
         retry_count,
-        proposal_type: delta.proposal_type().map(str::to_string),
-    })
+        category: None,
+        proposal_type: None,
+        assets: Vec::new(),
+        counterparty: None,
+        note_counts: None,
+    };
+    if let Some(meta) = delta.metadata.as_ref() {
+        entry.category = Some(meta.category);
+        entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
+        entry.assets = meta.assets.clone();
+        entry.counterparty = meta.counterparty.clone();
+        if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
+            entry.note_counts = Some(meta.note_counts.clone());
+        }
+    }
+    Some(entry)
 }
 
 fn map_status_filter(status: &DashboardDeltaStatus) -> DeltaStatusKind {
@@ -136,14 +140,10 @@ fn build_storage_cursor(c: &Cursor) -> Option<GlobalDeltaCursor> {
     }
 }
 
-/// List delta records across all configured accounts, paginated
-/// newest-first by `status_timestamp DESC`.
-///
-/// Errors:
-///   - [`GuardianError::DataUnavailable`] when above the configured
-///     filesystem aggregate threshold (FR-029).
-///   - [`GuardianError::InvalidCursor`] if the supplied cursor is for
-///     the wrong endpoint kind.
+/// List delta records across all accounts, paginated newest-first by
+/// `status_timestamp DESC`. Returns `DataUnavailable` above the
+/// filesystem aggregate threshold, and `InvalidCursor` if the cursor
+/// kind does not match.
 pub async fn list_global_deltas(
     state: &AppState,
     limit: u32,
@@ -175,11 +175,9 @@ pub async fn list_global_deltas(
             GuardianError::DataUnavailable(format!("Failed to load global delta feed: {e}"))
         })?;
 
-    // Derive `has_more` from the *raw* storage rows so that if any
-    // row gets dropped by `entry_from` (e.g. an unexpected `Pending`
-    // surfacing on the deltas table), we still emit a cursor when
-    // more rows exist. Deriving from `entries.len()` after
-    // `filter_map` would silently truncate pagination.
+    // Derive `has_more` from the *raw* storage rows so a row dropped
+    // by `entry_from` (e.g. an unexpected Pending on the deltas table)
+    // doesn't silently truncate pagination.
     let limit_us = limit as usize;
     let has_more = rows.len() > limit_us;
 
@@ -215,6 +213,7 @@ pub async fn list_global_deltas(
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use crate::delta_object::DeltaStatus;
     use crate::testing::mocks::{MockMetadataStore, MockStorageBackend};
     use std::sync::Arc;
 
@@ -228,9 +227,8 @@ mod tests {
         use tokio::sync::Mutex;
 
         let metadata = MockMetadataStore::new().with_list(Ok(account_ids));
-        // The mock uses LIFO `.pop()`, so push in reverse order so
-        // that `deltas_per_account[i]` corresponds to
-        // `account_ids[i]` from the caller's perspective.
+        // Mock uses LIFO `.pop()`; push in reverse so index `i` of
+        // `deltas_per_account` aligns with `account_ids[i]`.
         let mut storage = MockStorageBackend::new();
         for d in deltas_per_account.into_iter().rev() {
             storage = storage.with_pull_deltas_after(Ok(d));
@@ -303,9 +301,6 @@ mod tests {
 
     #[test]
     fn parse_status_filter_rejects_pending_value() {
-        // `pending` is a valid lifecycle status but lives in
-        // delta_proposals, not deltas. The global delta feed must
-        // reject it so consumers don't expect it.
         let err = parse_status_filter(Some("pending")).unwrap_err();
         assert!(matches!(err, GuardianError::InvalidStatusFilter(_)));
     }
@@ -315,18 +310,6 @@ mod tests {
         let err = parse_status_filter(Some("candidate,,canonical")).unwrap_err();
         assert!(matches!(err, GuardianError::InvalidStatusFilter(_)));
     }
-
-    // --- list_global_deltas ---
-    //
-    // Sort/filter/pagination behavior moved to the storage layer in
-    // feature `005-operator-dashboard-metrics` Decision 1 (revised).
-    // Coverage for those concerns lives at the storage layer and the
-    // integration tests in `crates/server/src/api/dashboard_feeds.rs`.
-    // The service-layer tests below exercise what the service still
-    // owns: cursor-kind validation and (for backward-compat with the
-    // pre-Decision-1 fixtures that exercised the threshold)
-    // filesystem-threshold short-circuit when above-threshold inventories
-    // bypass the storage call entirely.
 
     #[tokio::test]
     async fn rejects_cursor_with_wrong_kind() {
@@ -340,7 +323,6 @@ mod tests {
 
     #[tokio::test]
     async fn storage_failure_surfaces_as_data_unavailable() {
-        // Storage returns Err; service must map to DataUnavailable.
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
@@ -369,5 +351,52 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, GuardianError::DataUnavailable(_)));
         assert_eq!(err.code(), "data_unavailable");
+    }
+
+    fn canonical_with_metadata(
+        account_id: &str,
+        nonce: u64,
+        metadata: Option<crate::delta_summary::DeltaMetadata>,
+    ) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: format!("0xprev{nonce}"),
+            new_commitment: Some(format!("0xnew{nonce}")),
+            delta_payload: serde_json::json!({}),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::Canonical {
+                timestamp: format!("2026-05-25T08:0{nonce}:00Z"),
+            },
+            metadata,
+        }
+    }
+
+    #[test]
+    fn entry_from_carries_spread_fields_with_account_id() {
+        use crate::delta_summary::{DashboardDeltaCategory, DeltaMetadata, NoteCounts};
+        let metadata = Some(DeltaMetadata {
+            category: DashboardDeltaCategory::AssetTransfer,
+            assets: Vec::new(),
+            counterparty: None,
+            note_counts: NoteCounts {
+                input: 0,
+                output: 1,
+            },
+            proposal: None,
+        });
+        let d = canonical_with_metadata("0xacc1", 1, metadata);
+        let entry = entry_from(&d, "0xacc1").expect("canonical delta maps");
+        assert_eq!(entry.account_id, "0xacc1");
+        assert_eq!(entry.category, Some(DashboardDeltaCategory::AssetTransfer));
+    }
+
+    #[test]
+    fn entry_from_omits_enrichment_when_delta_has_none() {
+        let d = canonical_with_metadata("0xacc2", 2, None);
+        let entry = entry_from(&d, "0xacc2").expect("entry never dropped");
+        assert!(entry.category.is_none());
     }
 }

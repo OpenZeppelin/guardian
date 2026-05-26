@@ -115,6 +115,7 @@ mod tests {
                 proposer_id: commitment.to_string(),
                 cosigner_sigs: vec![],
             },
+            metadata: None,
         }
     }
 

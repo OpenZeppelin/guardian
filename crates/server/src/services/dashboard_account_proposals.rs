@@ -194,6 +194,18 @@ mod tests {
     use std::sync::Arc;
 
     fn proposal(nonce: u64, commitment: &str, sig_count: usize) -> DeltaObject {
+        proposal_with_metadata(nonce, commitment, sig_count, None)
+    }
+
+    /// Build a pending proposal carrying the wrapper-shape
+    /// `delta_payload` with embedded metadata, mirroring what
+    /// `push_delta_proposal::normalize_payload` persists.
+    fn proposal_with_metadata(
+        nonce: u64,
+        commitment: &str,
+        sig_count: usize,
+        proposal_type: Option<&str>,
+    ) -> DeltaObject {
         let cosigner_sigs = (0..sig_count)
             .map(|i| CosignerSignature {
                 signature: guardian_shared::ProposalSignature::from_scheme(
@@ -205,12 +217,20 @@ mod tests {
                 signer_id: format!("0xsigner{i}"),
             })
             .collect();
+        let delta_payload = match proposal_type {
+            Some(pt) => serde_json::json!({
+                "tx_summary": { "data": "AAAA" },
+                "metadata": { "proposal_type": pt },
+                "signatures": []
+            }),
+            None => serde_json::json!({}),
+        };
         DeltaObject {
             account_id: "0xacc".into(),
             nonce,
             prev_commitment: format!("0xprev{nonce}"),
             new_commitment: Some(commitment.to_string()),
-            delta_payload: serde_json::json!({}),
+            delta_payload,
             ack_sig: String::new(),
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
@@ -219,7 +239,33 @@ mod tests {
                 proposer_id: "0xproposer".into(),
                 cosigner_sigs,
             },
+            metadata: None,
         }
+    }
+
+    #[test]
+    fn proposal_type_is_surfaced_from_wrapper_metadata_on_pending_proposals() {
+        // Pending proposals never populate the typed `metadata` column
+        // (it's only on `deltas`), so `proposal_type()` must fall back
+        // to the wrapper `delta_payload.metadata` path.
+        let p = proposal_with_metadata(7, "0xcommit", 1, Some("consume_notes"));
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xc1".into()],
+        };
+        let entry = DashboardProposalEntry::from_record("0xcommit", &p, &auth)
+            .expect("pending proposal projects to entry");
+        assert_eq!(entry.proposal_type.as_deref(), Some("consume_notes"));
+    }
+
+    #[test]
+    fn proposal_type_is_none_when_wrapper_metadata_absent() {
+        let p = proposal_with_metadata(8, "0xcommit", 1, None);
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xc1".into()],
+        };
+        let entry = DashboardProposalEntry::from_record("0xcommit", &p, &auth)
+            .expect("pending proposal projects to entry");
+        assert!(entry.proposal_type.is_none());
     }
 
     fn account_metadata(auth: Auth) -> AccountMetadata {

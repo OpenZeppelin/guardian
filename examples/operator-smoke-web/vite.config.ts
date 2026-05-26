@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => {
         ),
         '@openzeppelin/guardian-operator-client': path.resolve(
           __dirname,
-          '../../packages/guardian-operator-client/dist/index.js',
+          '../../packages/guardian-operator-client/src/index.ts',
         ),
       },
     },

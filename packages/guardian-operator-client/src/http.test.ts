@@ -588,6 +588,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             prev_commitment: '0x7e8f',
             new_commitment: '0xa3b4',
             retry_count: 2,
+            category: 'account_storage_change',
             proposal_type: 'add_signer',
           },
           {
@@ -596,6 +597,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             status_timestamp: '2026-05-08T13:15:20Z',
             prev_commitment: '0x6d7e',
             new_commitment: '0x7e8f',
+            category: 'custom',
           },
           {
             nonce: 45,
@@ -621,11 +623,16 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       prevCommitment: '0x7e8f',
       newCommitment: '0xa3b4',
       retryCount: 2,
+      category: 'account_storage_change',
       proposalType: 'add_signer',
     });
+    expect(page.items[0].noteCounts).toBeUndefined();
     expect(page.items[1].retryCount).toBeUndefined();
+    expect(page.items[1].category).toBe('custom');
     expect(page.items[1].proposalType).toBeUndefined();
+    expect(page.items[1].noteCounts).toBeUndefined();
     expect(page.items[2].newCommitment).toBeNull();
+    expect(page.items[2].category).toBeUndefined();
 
     expect(mockFetch).toHaveBeenCalledWith(
       'https://guardian.example/dashboard/accounts/0xacc/deltas',
@@ -784,6 +791,390 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       expect.objectContaining({ method: 'GET' }),
     );
   });
+
+  it('parses an enriched p2id multisig entry with L1 spread fields', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 100,
+            status: 'canonical',
+            status_timestamp: '2026-05-25T08:00:00Z',
+            prev_commitment: '0xprev',
+            new_commitment: '0xnew',
+            category: 'asset_transfer',
+            proposal_type: 'p2id',
+            assets: [{ asset_id: '0xfaucet', kind: 'fungible', amount: '-100' }],
+            counterparty: { account_id: '0xrecipient', direction: 'out' },
+            note_counts: { input: 0, output: 1 },
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const page = await client.listAccountDeltas('0xacc');
+    const entry = page.items[0];
+    expect(entry.category).toBe('asset_transfer');
+    expect(entry.proposalType).toBe('p2id');
+    expect(entry.assets).toEqual([
+      {
+        assetId: '0xfaucet',
+        kind: 'fungible',
+        amount: '-100',
+      },
+    ]);
+    expect(entry.counterparty).toEqual({
+      accountId: '0xrecipient',
+      direction: 'out',
+    });
+    expect(entry.noteCounts).toEqual({ input: 0, output: 1 });
+  });
+
+  it('parses a consume_notes listing with assets and counterparty at L1', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 0,
+            status: 'canonical',
+            status_timestamp: '2026-05-25T09:16:34Z',
+            prev_commitment: '0xprev',
+            new_commitment: '0xnew',
+            category: 'note_consumption',
+            proposal_type: 'consume_notes',
+            assets: [
+              {
+                asset_id: '0x16f6c85d5652c9200879145bfdda93',
+                kind: 'fungible',
+                amount: '+100000000',
+              },
+            ],
+            counterparty: {
+              account_id: '0x7bfb0f38b0fafa103f86a805594170',
+              direction: 'in',
+            },
+            note_counts: { input: 1, output: 0 },
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const page = await client.listAccountDeltas('0xacc');
+    expect(page.items[0].assets?.[0].amount).toBe('+100000000');
+    expect(page.items[0].counterparty?.direction).toBe('in');
+  });
+
+  it('parses a single-key push entry with no proposal type', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 200,
+            status: 'canonical',
+            status_timestamp: '2026-05-25T08:01:00Z',
+            prev_commitment: '0xprev',
+            new_commitment: '0xnew',
+            category: 'account_storage_change',
+            note_counts: { input: 0, output: 0 },
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const page = await client.listAccountDeltas('0xacc');
+    const entry = page.items[0];
+    expect(entry.category).toBe('account_storage_change');
+    expect(entry.proposalType).toBeUndefined();
+    expect(entry.assets).toBeUndefined();
+    expect(entry.counterparty).toBeUndefined();
+  });
+
+  it('tolerates an entry with no enrichment fields (pre-feature-007 row)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 250,
+            status: 'canonical',
+            status_timestamp: '2026-05-25T08:01:30Z',
+            prev_commitment: '0xprev',
+            new_commitment: '0xnew',
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const page = await client.listAccountDeltas('0xacc');
+    expect(page.items[0].category).toBeUndefined();
+  });
+
+  it('rejects an unknown L1 category value', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 400,
+            status: 'canonical',
+            status_timestamp: '2026-05-25T08:03:00Z',
+            prev_commitment: '0xprev',
+            new_commitment: '0xnew',
+            category: 'unicorn_mode',
+            note_counts: { input: 0, output: 0 },
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.listAccountDeltas('0xacc')).rejects.toThrow(
+      /invalid category "unicorn_mode"/,
+    );
+  });
+
+  it('fetches a delta detail with full structured projection', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xacc',
+        nonce: 42,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T09:00:00Z',
+        prev_commitment: '0xaaaa',
+        new_commitment: '0xbbbb',
+        category: 'asset_transfer',
+        proposal: { proposal_type: 'p2id' },
+        input_notes: [],
+        output_notes: [
+          {
+            note_id: '0xnote1',
+            tag: 'custom',
+            assets: [
+              { asset_id: '0xfaucet', kind: 'fungible', amount: '100' },
+            ],
+            recipient: '0xrecipient',
+          },
+        ],
+        vault_changes: [
+          { kind: 'fungible', asset_id: '0xfaucet', change: '-100' },
+        ],
+        storage_changes: [],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const detail = await client.getAccountDeltaDetail('0xacc', 42);
+    expect(detail.accountId).toBe('0xacc');
+    expect(detail.nonce).toBe(42);
+    expect(detail.category).toBe('asset_transfer');
+    expect(detail.proposal?.proposalType).toBe('p2id');
+    expect(detail.outputNotes).toHaveLength(1);
+    expect(detail.outputNotes[0].assets[0]).toEqual({
+      assetId: '0xfaucet',
+      kind: 'fungible',
+      amount: '100',
+    });
+    expect(detail.outputNotes[0].recipient).toBe('0xrecipient');
+    expect(detail.vaultChanges).toEqual([
+      { kind: 'fungible', assetId: '0xfaucet', change: '-100' },
+    ]);
+    expect(detail.storageChanges).toEqual([]);
+    expect(detail.decodeWarnings).toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts/0xacc/deltas/42',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('serializes a large safe-integer nonce in the URL path', async () => {
+    const safeNonce = Number.MAX_SAFE_INTEGER;
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xacc',
+        nonce: safeNonce,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T09:00:00Z',
+        prev_commitment: '0xprev',
+        new_commitment: '0xnew',
+        input_notes: [],
+        output_notes: [],
+        vault_changes: [],
+        storage_changes: [],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await client.getAccountDeltaDetail('0xacc', safeNonce);
+    expect(mockFetch).toHaveBeenCalledWith(
+      `https://guardian.example/dashboard/accounts/0xacc/deltas/${safeNonce}`,
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('requests ?include=raw when includeRaw is set', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xacc',
+        nonce: 99,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T10:00:00Z',
+        prev_commitment: '0xprev',
+        new_commitment: '0xnew',
+        input_notes: [],
+        output_notes: [],
+        vault_changes: [],
+        storage_changes: [],
+        raw_transaction_summary: 'dGVzdA==',
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const detail = await client.getAccountDeltaDetail('0xacc', 99, {
+      includeRaw: true,
+    });
+    expect(detail.rawTransactionSummary).toBe('dGVzdA==');
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/accounts/0xacc/deltas/99?include=raw',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('surfaces decode_warnings when sections could not be projected', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xacc',
+        nonce: 7,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T09:01:00Z',
+        prev_commitment: '0xp',
+        new_commitment: '0xn',
+        input_notes: [],
+        output_notes: [],
+        vault_changes: [],
+        storage_changes: [],
+        decode_warnings: [
+          { section: 'tx_summary', reason: 'malformed_base64' },
+        ],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const detail = await client.getAccountDeltaDetail('0xacc', 7);
+    expect(detail.decodeWarnings).toEqual([
+      { section: 'tx_summary', reason: 'malformed_base64' },
+    ]);
+  });
+
+  it('rejects an unknown note tag', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xacc',
+        nonce: 8,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T09:02:00Z',
+        prev_commitment: '0xp',
+        new_commitment: '0xn',
+        input_notes: [],
+        output_notes: [
+          {
+            note_id: '0xnote',
+            tag: 'unicorn',
+            assets: [],
+          },
+        ],
+        vault_changes: [],
+        storage_changes: [],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.getAccountDeltaDetail('0xacc', 8)).rejects.toThrow(
+      /unknown note tag "unicorn"/,
+    );
+  });
+
+  it('parses storage_changes without a before field (v1 after-only)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: '0xacc',
+        nonce: 10,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T09:03:00Z',
+        prev_commitment: '0xp',
+        new_commitment: '0xn',
+        category: 'account_storage_change',
+        input_notes: [],
+        output_notes: [],
+        vault_changes: [],
+        storage_changes: [
+          {
+            slot_name: 'openzeppelin::multisig::threshold_config',
+            after: '0x0200',
+          },
+        ],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const detail = await client.getAccountDeltaDetail('0xacc', 10);
+    expect(detail.storageChanges).toEqual([
+      {
+        slotName: 'openzeppelin::multisig::threshold_config',
+        after: '0x0200',
+      },
+    ]);
+    expect(detail.storageChanges[0].before).toBeUndefined();
+  });
+
+  // The nonce returned by listing must resolve the same delta when
+  // passed back to `getAccountDeltaDetail`.
+  it('round-trips a listing entry nonce through getAccountDeltaDetail', async () => {
+    const accountId = '0xacc';
+    const seededNonce = 42;
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: seededNonce,
+            status: 'canonical',
+            status_timestamp: '2026-05-25T08:00:00Z',
+            prev_commitment: '0xprev',
+            new_commitment: '0xnew',
+            category: 'asset_transfer',
+            proposal_type: 'p2id',
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        account_id: accountId,
+        nonce: seededNonce,
+        status: 'canonical',
+        status_timestamp: '2026-05-25T08:00:00Z',
+        prev_commitment: '0xprev',
+        new_commitment: '0xnew',
+        category: 'asset_transfer',
+        proposal: { proposal_type: 'p2id' },
+        input_notes: [],
+        output_notes: [],
+        vault_changes: [],
+        storage_changes: [],
+      }),
+    );
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+
+    const page = await client.listAccountDeltas(accountId);
+    const listedNonce = page.items[0].nonce;
+    expect(listedNonce).toBe(seededNonce);
+
+    const detail = await client.getAccountDeltaDetail(accountId, listedNonce);
+    expect(detail.nonce).toBe(listedNonce);
+    expect(detail.accountId).toBe(accountId);
+
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      `https://guardian.example/dashboard/accounts/${accountId}/deltas/${listedNonce}`,
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
 });
 
 describe('parseErrorBody', () => {
@@ -898,6 +1289,7 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
             prev_commitment: '0x7e8f',
             new_commitment: '0xa3b4',
             retry_count: 2,
+            category: 'custom',
           },
           {
             nonce: 9022,
@@ -906,6 +1298,7 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
             status_timestamp: '2026-05-09T14:21:48Z',
             prev_commitment: '0x6d7e',
             new_commitment: '0x7e8f',
+            category: 'custom',
           },
         ],
         next_cursor: 'next-token',
@@ -923,7 +1316,10 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
       prevCommitment: '0x7e8f',
       newCommitment: '0xa3b4',
       retryCount: 2,
+      category: 'custom',
     });
+    expect(page.items[0].noteCounts).toBeUndefined();
+    expect(page.items[1].noteCounts).toBeUndefined();
     expect(page.nextCursor).toBe('next-token');
   });
 

@@ -112,6 +112,7 @@ mod tests {
                 proposer_id,
                 cosigner_sigs: vec![],
             },
+            metadata: None,
         }
     }
 
@@ -134,6 +135,7 @@ mod tests {
             status: DeltaStatus::Canonical {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
             },
+            metadata: None,
         }
     }
 

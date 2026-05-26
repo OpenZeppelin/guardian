@@ -93,6 +93,12 @@ export interface SessionInfoResponse {
 
 export interface DashboardAccountSummary {
   accountId: string;
+  /**
+   * Bech32m encoding of the Miden `AccountId` using the network's
+   * HRP (`mm` mainnet, `mtst` testnet, `mdev` devnet/local). Absent
+   * for EVM accounts and any Miden id that fails to parse.
+   */
+  accountIdBech32?: string;
   authScheme: string;
   authorizedSignerCount: number;
   hasPendingCandidate: boolean;
@@ -212,7 +218,173 @@ export interface PagedResult<T> {
 
 export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'discarded';
 
+/**
+ * Closed enumeration of dashboard delta categories. Adding a value
+ * here is a wire-contract change that must land on the Rust server first.
+ */
+export type DashboardDeltaCategory =
+  | 'asset_transfer'
+  | 'note_consumption'
+  | 'note_creation'
+  | 'account_storage_change'
+  | 'guardian_switch'
+  | 'custom';
+
+export type DeltaAssetKind = 'fungible' | 'non_fungible';
+
+export interface DashboardDeltaAssetSummary {
+  assetId: string;
+  kind: DeltaAssetKind;
+  /** Signed decimal magnitude for fungible holdings (e.g. `"-100"`).
+   * Omitted for non-fungible holdings; the detail view carries
+   * `added` / `removed` lists. */
+  amount?: string;
+}
+
+export type DeltaCounterpartyDirection = 'in' | 'out';
+
+export interface DashboardDeltaCounterpartySummary {
+  accountId: string;
+  direction: DeltaCounterpartyDirection;
+}
+
+export interface DashboardDeltaNoteCounts {
+  input: number;
+  output: number;
+}
+
+/**
+ * Operator-stated proposal intent lifted from the matching
+ * `delta_proposals` row at push time. Present only on multisig
+ * commits. Mirrors `ProposalMetadataPayload` from the multisig client.
+ */
+export interface DashboardDeltaProposalMetadata {
+  proposalType: string;
+  description?: string;
+  salt?: string;
+  requiredSignatures?: number;
+  recipientId?: string;
+  faucetId?: string;
+  amount?: string;
+  noteIds?: string[];
+  consumeNotesMetadataVersion?: number;
+  consumeNotesNotes?: string[];
+  targetThreshold?: number;
+  signerCommitments?: string[];
+  newGuardianPubkey?: string;
+  newGuardianEndpoint?: string;
+  targetProcedure?: string;
+}
+
+/**
+ * Coarse note-tag classification surfaced on the detail endpoint's
+ * decoded notes.
+ */
+export type DashboardDeltaNoteTag =
+  | 'p2id'
+  | 'p2ide'
+  | 'pswap'
+  | 'mint'
+  | 'burn'
+  | 'custom';
+
+export interface DashboardDeltaDecodedAsset {
+  assetId: string;
+  kind: DeltaAssetKind;
+  /** Decimal amount as a string (unsigned; direction is implied by
+   * whether this note is an input or output). */
+  amount?: string;
+}
+
+export interface DashboardDeltaDecodedNote {
+  noteId: string;
+  tag: DashboardDeltaNoteTag;
+  assets: DashboardDeltaDecodedAsset[];
+  sender?: string;
+  recipient?: string;
+}
+
+export type DashboardDeltaVaultChange =
+  | {
+      kind: 'fungible';
+      assetId: string;
+      /** Signed decimal magnitude, e.g. `"-100"`, `"+50"`. */
+      change: string;
+    }
+  | {
+      kind: 'non_fungible';
+      assetId: string;
+      added: string[];
+      removed: string[];
+    };
+
+export interface DashboardDeltaStorageChange {
+  /** Human-readable slot name from Miden's `StorageSlotName`
+   * (e.g. `"consumed_notes"`). Slots are identified by name, not
+   * by numeric index. */
+  slotName: string;
+  /** Hex `Word` map key for `StorageMap` slot entries; omitted for
+   * scalar value slots. For the multisig procedure-threshold overrides
+   * map this is the MASM procedure root. */
+  key?: string;
+  /** Always omitted in v1 — prior slot values are not in the delta. */
+  before?: string | null;
+  /** Hex `Word` after the change, or `null` when the slot was cleared. */
+  after: string | null;
+}
+
+export type DashboardDeltaDecodeSection =
+  | 'tx_summary'
+  | 'metadata'
+  | 'input_notes'
+  | 'output_notes'
+  | 'vault'
+  | 'storage';
+
+export interface DashboardDeltaDecodeWarning {
+  section: DashboardDeltaDecodeSection;
+  reason: string;
+}
+
+/**
+ * Wire shape for `GET /dashboard/accounts/{account_id}/deltas/{nonce}`.
+ *
+ * Carries push-time `category` and optional multisig `proposal` at L1
+ * plus structured detail sections decoded at request time. Asset,
+ * counterparty, and note counts are derivable from the decoded sections.
+ */
+export interface DashboardDeltaDetail {
+  accountId: string;
+  /**
+   * Per-account monotonic transaction counter. Server type is `u64`,
+   * but the JSON wire encoding is a JSON number and the client parses
+   * it as a JavaScript `number`. Values above `Number.MAX_SAFE_INTEGER`
+   * (2^53 − 1) cannot round-trip without precision loss. Miden account
+   * nonces are not expected to reach this range in practice.
+   */
+  nonce: number;
+  status: DashboardDeltaStatus;
+  statusTimestamp: string;
+  prevCommitment: string;
+  newCommitment: string | null;
+  retryCount?: number;
+  /** Server-curated classification from push-time metadata. */
+  category?: DashboardDeltaCategory;
+  /** Operator-stated proposal intent for multisig commits. */
+  proposal?: DashboardDeltaProposalMetadata;
+  inputNotes: DashboardDeltaDecodedNote[];
+  outputNotes: DashboardDeltaDecodedNote[];
+  vaultChanges: DashboardDeltaVaultChange[];
+  storageChanges: DashboardDeltaStorageChange[];
+  /** Non-empty when one or more sections could not be decoded. The
+   * request still returns 200; affected sections are empty. */
+  decodeWarnings?: DashboardDeltaDecodeWarning[];
+  /** Present only when the request used `?include=raw`. */
+  rawTransactionSummary?: string;
+}
+
 export interface DashboardDeltaEntry {
+  /** See note on `DashboardDeltaDetail.nonce` for the JS-number precision limit. */
   nonce: number;
   accountId?: string;
   status: DashboardDeltaStatus;
@@ -220,14 +392,21 @@ export interface DashboardDeltaEntry {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
-  /**
-   * Multisig proposal type tag carried in
-   * `delta_payload.metadata.proposal_type` on the underlying record
-   * (e.g. `"add_signer"`, `"p2id"`, `"change_threshold"`, ...). Absent
-   * for direct `push_delta` single-key Miden writes and for EVM
-   * deltas, which carry no metadata blob.
-   */
+
+  /** Push-time enrichment spread to L1 on listing endpoints. */
+  category?: DashboardDeltaCategory;
+  /** Operator intent label (`metadata.proposal.proposal_type` only). */
   proposalType?: string;
+  /**
+   * Every asset surfaced from the transaction's notes (or, for `p2id`
+   * multisig with no decodable summary, the proposal's single declared
+   * asset). Multi-asset transactions populate every entry so a one-line
+   * row does not show a misleading single-asset summary. Omitted when
+   * empty.
+   */
+  assets?: DashboardDeltaAssetSummary[];
+  counterparty?: DashboardDeltaCounterpartySummary;
+  noteCounts?: DashboardDeltaNoteCounts;
 }
 
 export interface DashboardProposalEntry {
@@ -308,6 +487,12 @@ export interface DashboardAccountSnapshot {
    * rather than silently display stale data. */
   hasPendingCandidate: boolean;
   vault: DashboardVaultSnapshot;
+}
+
+export interface DeltaDetailOptions {
+  /** When true, requests `?include=raw` so the server attaches the
+   * base64-encoded persisted `TransactionSummary` (debug only). */
+  includeRaw?: boolean;
 }
 
 /**

@@ -161,6 +161,7 @@ impl EvmProposal {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status,
+            metadata: None,
         }
     }
 

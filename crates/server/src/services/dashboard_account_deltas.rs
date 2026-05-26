@@ -16,6 +16,9 @@ use serde::Serialize;
 
 use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::delta_summary::{
+    AssetSummary, CounterpartySummary, DashboardDeltaCategory, DeltaMetadata, NoteCounts,
+};
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
@@ -50,13 +53,24 @@ pub struct DashboardDeltaEntry {
     /// `None` and skipped on `canonical` / `discarded`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
-    /// Multisig proposal type tag carried in
-    /// `delta_payload.metadata.proposal_type`. Present when the delta
-    /// was committed from a multisig proposal; absent for direct
-    /// `push_delta` single-key Miden writes and for EVM deltas, which
-    /// carry no metadata blob.
+
+    /// Spread from the persisted `DeltaMetadata` column. `None` for
+    /// rows that predate the push-time pipeline or carry an undecodable
+    /// payload (EVM, schema drift) — clients render as "metadata
+    /// unavailable".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<DashboardDeltaCategory>,
+    /// Operator's fine-grained intent label
+    /// (`metadata.proposal.proposal_type`). Full proposal block lives
+    /// on the detail endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counterparty: Option<CounterpartySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_counts: Option<NoteCounts>,
 }
 
 /// Decode a [`DeltaStatus`] into the dashboard wire triple
@@ -87,18 +101,37 @@ pub(crate) fn decode_delta_status(
 
 impl DashboardDeltaEntry {
     /// Build a wire entry from a persisted [`DeltaObject`]. Returns
-    /// `None` for `Pending` deltas, which the caller filters out.
+    /// `None` for `Pending` deltas. Metadata is spread to L1 from
+    /// the typed column when present.
     fn from_delta(delta: &DeltaObject) -> Option<Self> {
         let (status, retry_count, status_timestamp) = decode_delta_status(&delta.status)?;
-        Some(Self {
+        let mut entry = Self {
             nonce: delta.nonce,
             status,
             status_timestamp,
             prev_commitment: delta.prev_commitment.clone(),
             new_commitment: delta.new_commitment.clone(),
             retry_count,
-            proposal_type: delta.proposal_type().map(str::to_string),
-        })
+            category: None,
+            proposal_type: None,
+            assets: Vec::new(),
+            counterparty: None,
+            note_counts: None,
+        };
+        if let Some(meta) = delta.metadata.as_ref() {
+            spread_metadata_into_entry(meta, &mut entry);
+        }
+        Some(entry)
+    }
+}
+
+fn spread_metadata_into_entry(meta: &DeltaMetadata, entry: &mut DashboardDeltaEntry) {
+    entry.category = Some(meta.category);
+    entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
+    entry.assets = meta.assets.clone();
+    entry.counterparty = meta.counterparty.clone();
+    if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
+        entry.note_counts = Some(meta.note_counts.clone());
     }
 }
 
@@ -118,8 +151,6 @@ pub async fn list_account_deltas(
     limit: u32,
     cursor: Option<Cursor>,
 ) -> Result<PagedResult<DashboardDeltaEntry>> {
-    // Reject any cursor whose kind doesn't match — defensive; the caller
-    // is expected to have already type-checked via parse_cursor.
     if let Some(c) = cursor.as_ref()
         && c.kind != CursorKind::AccountDeltas
     {
@@ -128,8 +159,8 @@ pub async fn list_account_deltas(
         ));
     }
 
-    // 404 vs 503 disambiguation per FR-022: metadata-missing → 404,
-    // metadata-present-but-storage-fails → 503.
+    // 404 vs 503: metadata-missing → 404, metadata-present but
+    // storage failure → 503.
     let metadata_exists = state
         .metadata
         .get(account_id)
@@ -142,8 +173,8 @@ pub async fn list_account_deltas(
         return Err(GuardianError::AccountNotFound(account_id.to_string()));
     }
 
-    // Fetch one page-plus-one from the storage layer so we can detect
-    // end-of-list and emit a `next_cursor` only when more rows exist.
+    // Fetch one extra row so we can emit `next_cursor` only when
+    // more rows actually exist.
     let storage_cursor = cursor.as_ref().and_then(|c| {
         c.last_nonce
             .map(|last_nonce| AccountDeltaCursor { last_nonce })
@@ -203,6 +234,7 @@ mod tests {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status,
+            metadata: None,
         }
     }
 
@@ -236,20 +268,68 @@ mod tests {
     }
 
     #[test]
-    fn from_delta_extracts_proposal_type_when_metadata_present() {
-        let mut d = canonical(1);
-        d.delta_payload = serde_json::json!({
-            "metadata": { "proposal_type": "add_signer" }
-        });
+    fn from_delta_omits_enrichment_when_delta_has_none() {
+        let d = canonical(1);
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
-        assert_eq!(entry.proposal_type.as_deref(), Some("add_signer"));
+        assert!(entry.category.is_none());
+        let serialized = serde_json::to_value(&entry).unwrap();
+        assert!(
+            serialized.get("category").is_none(),
+            "category key skipped when None",
+        );
     }
 
     #[test]
-    fn from_delta_omits_proposal_type_when_metadata_absent() {
-        let d = canonical(1); // delta_payload is `{}`
+    fn from_delta_carries_spread_fields_when_delta_has_metadata() {
+        use crate::delta_summary::{
+            DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
+        };
+        let mut d = canonical(2);
+        d.metadata = Some(DeltaMetadata {
+            category: DashboardDeltaCategory::AssetTransfer,
+            assets: Vec::new(),
+            counterparty: None,
+            note_counts: NoteCounts {
+                input: 0,
+                output: 1,
+            },
+            proposal: Some(ProposalMetadata {
+                proposal_type: "p2id".to_string(),
+                ..ProposalMetadata::default()
+            }),
+        });
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
-        assert!(entry.proposal_type.is_none());
+        assert_eq!(entry.category, Some(DashboardDeltaCategory::AssetTransfer));
+        assert_eq!(entry.proposal_type.as_deref(), Some("p2id"));
+        assert_eq!(entry.note_counts.as_ref().map(|c| c.output), Some(1));
+    }
+
+    #[test]
+    fn from_delta_skips_note_counts_when_zero() {
+        use crate::delta_summary::{
+            DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
+        };
+        let mut d = canonical(2);
+        d.metadata = Some(DeltaMetadata {
+            category: DashboardDeltaCategory::AccountStorageChange,
+            assets: Vec::new(),
+            counterparty: None,
+            note_counts: NoteCounts {
+                input: 0,
+                output: 0,
+            },
+            proposal: Some(ProposalMetadata {
+                proposal_type: "remove_signer".to_string(),
+                ..ProposalMetadata::default()
+            }),
+        });
+        let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
+        assert!(entry.note_counts.is_none());
+        let serialized = serde_json::to_value(&entry).expect("serializes");
+        assert!(
+            serialized.get("note_counts").is_none(),
+            "note_counts key skipped when both input/output are zero",
+        );
     }
 
     async fn state_with_n_calls(
@@ -330,14 +410,6 @@ mod tests {
         assert!(result.next_cursor.is_none());
     }
 
-    // Sort/filter behavior moved to the storage layer in feature
-    // `005-operator-dashboard-metrics` Decision 1 (revised). Those
-    // are exercised by the storage-layer impls and the integration
-    // tests in `crates/server/src/api/dashboard_feeds.rs`. The
-    // service-layer tests below focus on what the service still
-    // owns: error mapping, cursor-kind validation, and wire-shape
-    // serialization.
-
     #[tokio::test]
     async fn candidate_entries_carry_retry_count() {
         let state = state_with_n_calls(vec![candidate(5, 3)], true, 1).await;
@@ -382,10 +454,7 @@ mod tests {
         assert!(matches!(err, GuardianError::InvalidCursor(_)));
     }
 
-    /// FR-022 / SC-012: when metadata exists but the storage layer
-    /// fails to load deltas for that account, the service must return
-    /// `DataUnavailable` (HTTP 503), distinct from `AccountNotFound`
-    /// (404).
+    /// Metadata-present but storage-failure path returns 503, not 404.
     #[tokio::test]
     async fn returns_503_when_metadata_exists_but_storage_fails() {
         use crate::ack::AckRegistry;
@@ -440,11 +509,9 @@ mod tests {
         );
     }
 
-    /// Bug #1 regression: walk multi-page cursor traversal end-to-end
-    /// against the actual filesystem backend (the mock backend does
-    /// not honor cursor arguments). Asserts no row is skipped or
-    /// repeated. Pre-fix this terminated after one page on Postgres
-    /// because the cursor encoded `nonce` but the storage layer
+    /// Multi-page cursor traversal against the filesystem backend
+    /// (the mock backend does not honor cursor arguments). Regression
+    /// guard for a bug where the cursor encoded `nonce` but Postgres
     /// filtered on the surrogate `id` column.
     #[tokio::test]
     async fn cursor_walks_every_page_no_skip_no_repeat() {
@@ -461,7 +528,6 @@ mod tests {
             .await
             .expect("svc");
 
-        // Seed 23 canonical deltas; page size 5 → 5 pages of 5 + 1 of 3.
         let total: u64 = 23;
         for i in 0..total {
             let delta = DeltaObject {
@@ -476,6 +542,7 @@ mod tests {
                 status: DeltaStatus::Canonical {
                     timestamp: format!("2026-05-08T12:00:{:02}Z", i % 60),
                 },
+                metadata: None,
             };
             svc.submit_delta(&delta).await.expect("submit");
         }
@@ -544,7 +611,6 @@ mod tests {
         }
         assert_eq!(all_nonces.len(), total as usize, "every nonce returned");
         assert_eq!(pages, 5, "ceil(23/5)");
-        // newest-first by nonce, no duplicates, full coverage
         let mut expected: Vec<u64> = (0..total).collect();
         expected.reverse();
         assert_eq!(all_nonces, expected);

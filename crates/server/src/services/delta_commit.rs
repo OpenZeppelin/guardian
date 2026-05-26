@@ -165,6 +165,7 @@ mod tests {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status: DeltaStatus::default(),
+            metadata: None,
         }
     }
 

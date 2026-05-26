@@ -104,6 +104,8 @@ impl Guardian for GuardianService {
             ack_pubkey: String::new(),
             ack_scheme: String::new(),
             status: Default::default(),
+            // Derived server-side at push time; never carried inbound.
+            metadata: None,
         };
 
         let params = PushDeltaParams {
@@ -819,6 +821,7 @@ mod tests {
                 "2024-11-14T12:00:00Z".to_string(),
                 signer.pubkey_hex.clone(),
             ),
+            metadata: None,
         };
 
         let _storage = storage.with_pull_all_delta_proposals(Ok(vec![pending_delta]));
@@ -904,6 +907,7 @@ mod tests {
                 "2024-11-14T12:00:00Z".to_string(),
                 signer.pubkey_hex.clone(),
             ),
+            metadata: None,
         };
 
         let _storage = storage.with_pull_delta_proposal(Ok(pending_delta));

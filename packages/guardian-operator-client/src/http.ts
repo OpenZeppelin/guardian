@@ -5,8 +5,23 @@ import type {
   DashboardAccountSnapshot,
   DashboardAccountStateStatus,
   DashboardAccountSummary,
+  DashboardDeltaAssetSummary,
+  DashboardDeltaCategory,
+  DashboardDeltaCounterpartySummary,
+  DashboardDeltaDecodeSection,
+  DashboardDeltaDecodeWarning,
+  DashboardDeltaDecodedAsset,
+  DashboardDeltaDecodedNote,
+  DashboardDeltaDetail,
   DashboardDeltaEntry,
+  DashboardDeltaNoteCounts,
+  DashboardDeltaNoteTag,
+  DashboardDeltaProposalMetadata,
   DashboardDeltaStatus,
+  DashboardDeltaStorageChange,
+  DashboardDeltaVaultChange,
+  DeltaAssetKind,
+  DeltaCounterpartyDirection,
   DashboardErrorCode,
   DashboardGlobalDeltaEntry,
   DashboardGlobalProposalEntry,
@@ -16,6 +31,7 @@ import type {
   DashboardVaultNonFungibleEntry,
   DashboardVaultSnapshot,
   GlobalDeltasOptions,
+  DeltaDetailOptions,
   GuardianOperatorHttpClientOptions,
   GuardianOperatorHttpErrorData,
   LogoutOperatorResponse,
@@ -460,6 +476,34 @@ export class GuardianOperatorHttpClient {
     );
     applyPaginationParams(url, options);
     return this.request(url, { method: 'GET' }, parseDeltaPage);
+  }
+
+  /**
+   * Fetch the full detail projection of one canonical delta. The
+   * nonce is serialized as a canonical base-10 `u64` URL segment;
+   * unknown account and unknown nonce both surface as
+   * `404 delta_not_found`.
+   */
+  async getAccountDeltaDetail(
+    accountId: string,
+    nonce: number,
+    options: DeltaDetailOptions = {},
+  ): Promise<DashboardDeltaDetail> {
+    if (!Number.isSafeInteger(nonce) || nonce < 0) {
+      throw new GuardianOperatorContractError(
+        'getAccountDeltaDetail.nonce',
+        `nonce must be a non-negative safe integer, got ${nonce}`,
+      );
+    }
+    const encodedAccountId = encodeURIComponent(accountId);
+    const url = new URL(
+      `dashboard/accounts/${encodedAccountId}/deltas/${nonce.toString()}`,
+      this.baseUrl,
+    );
+    if (options.includeRaw) {
+      url.searchParams.set('include', 'raw');
+    }
+    return this.request(url, { method: 'GET' }, parseDeltaDetail);
   }
 
   /**
@@ -910,7 +954,7 @@ function parseAccountSummary(
   context: string,
 ): DashboardAccountSummary {
   const record = asRecord(value, context);
-  return {
+  const summary: DashboardAccountSummary = {
     accountId: requireString(record, 'account_id', context),
     authScheme: requireString(record, 'auth_scheme', context),
     authorizedSignerCount: requireInteger(record, 'authorized_signer_count', context),
@@ -925,6 +969,16 @@ function parseAccountSummary(
     pausedAt: requireNullableString(record, 'paused_at', context),
     pausedReason: requireNullableString(record, 'paused_reason', context),
   };
+  if (record.account_id_bech32 !== undefined && record.account_id_bech32 !== null) {
+    if (typeof record.account_id_bech32 !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'account_id_bech32 must be a string when present',
+      );
+    }
+    summary.accountIdBech32 = record.account_id_bech32;
+  }
+  return summary;
 }
 
 function parseAccountDetail(
@@ -1238,6 +1292,36 @@ function requireStringArray(
   });
 }
 
+function requireNonNegativeInteger(
+  value: unknown,
+  key: string,
+  context: string,
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new GuardianOperatorContractError(
+      context,
+      `field "${key}" must be a non-negative integer`,
+    );
+  }
+  return value;
+}
+
+function assertStringArray(
+  value: unknown[],
+  key: string,
+  context: string,
+): string[] {
+  value.forEach((entry, index) => {
+    if (typeof entry !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        `field "${key}" entry ${index} must be a string`,
+      );
+    }
+  });
+  return value as string[];
+}
+
 // ---------------------------------------------------------------------------
 // Pagination helpers — feature `005-operator-dashboard-metrics`.
 // ---------------------------------------------------------------------------
@@ -1369,6 +1453,12 @@ function parseDeltaEntry(
     }
     entry.accountId = record.account_id;
   }
+  if (record.category !== undefined && record.category !== null) {
+    entry.category = parseDeltaCategory(
+      requireString(record, 'category', context),
+      `${context}.category`,
+    );
+  }
   if (record.proposal_type !== undefined) {
     if (typeof record.proposal_type !== 'string') {
       throw new GuardianOperatorContractError(
@@ -1377,6 +1467,24 @@ function parseDeltaEntry(
       );
     }
     entry.proposalType = record.proposal_type;
+  }
+  if (record.note_counts !== undefined && record.note_counts !== null) {
+    entry.noteCounts = parseDeltaNoteCounts(
+      requireField(record, 'note_counts', context),
+      `${context}.note_counts`,
+    );
+  }
+  if (record.assets !== undefined) {
+    entry.assets = parseDeltaAssetSummaryArray(
+      record.assets,
+      `${context}.assets`,
+    );
+  }
+  if (record.counterparty !== undefined && record.counterparty !== null) {
+    entry.counterparty = parseDeltaCounterpartySummary(
+      record.counterparty,
+      `${context}.counterparty`,
+    );
   }
   return entry;
 }
@@ -1427,6 +1535,402 @@ function parseProposalEntry(
     entry.proposalType = record.proposal_type;
   }
   return entry;
+}
+
+const DELTA_CATEGORY_VALUES: readonly DashboardDeltaCategory[] = [
+  'asset_transfer',
+  'note_consumption',
+  'note_creation',
+  'account_storage_change',
+  'guardian_switch',
+  'custom',
+];
+
+function parseDeltaCategory(
+  value: string,
+  context: string,
+): DashboardDeltaCategory {
+  if ((DELTA_CATEGORY_VALUES as readonly string[]).includes(value)) {
+    return value as DashboardDeltaCategory;
+  }
+  throw new GuardianOperatorContractError(
+    context,
+    `invalid category "${value}" — expected one of ${DELTA_CATEGORY_VALUES.join(', ')}`,
+  );
+}
+
+function parseDeltaAssetSummary(
+  value: unknown,
+  context: string,
+): DashboardDeltaAssetSummary {
+  const record = asRecord(value, context);
+  const kind = requireString(record, 'kind', context);
+  if (kind !== 'fungible' && kind !== 'non_fungible') {
+    throw new GuardianOperatorContractError(
+      context,
+      `asset kind must be "fungible" or "non_fungible", got "${kind}"`,
+    );
+  }
+  const asset: DashboardDeltaAssetSummary = {
+    assetId: requireString(record, 'asset_id', context),
+    kind: kind as DeltaAssetKind,
+  };
+  if (record.amount !== undefined && record.amount !== null) {
+    if (typeof record.amount !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'asset amount must be a string when present',
+      );
+    }
+    asset.amount = record.amount;
+  }
+  return asset;
+}
+
+function parseDeltaAssetSummaryArray(
+  value: unknown,
+  context: string,
+): DashboardDeltaAssetSummary[] {
+  if (!Array.isArray(value)) {
+    throw new GuardianOperatorContractError(context, 'expected an array');
+  }
+  return value.map((item, index) =>
+    parseDeltaAssetSummary(item, `${context}[${index}]`),
+  );
+}
+
+function parseDeltaCounterpartySummary(
+  value: unknown,
+  context: string,
+): DashboardDeltaCounterpartySummary {
+  const record = asRecord(value, context);
+  const direction = requireString(record, 'direction', context);
+  if (direction !== 'in' && direction !== 'out') {
+    throw new GuardianOperatorContractError(
+      context,
+      `counterparty direction must be "in" or "out", got "${direction}"`,
+    );
+  }
+  return {
+    accountId: requireString(record, 'account_id', context),
+    direction: direction as DeltaCounterpartyDirection,
+  };
+}
+
+function parseDeltaNoteCounts(
+  value: unknown,
+  context: string,
+): DashboardDeltaNoteCounts {
+  const record = asRecord(value, context);
+  const input = requireInteger(record, 'input', context);
+  const output = requireInteger(record, 'output', context);
+  if (input < 0 || output < 0) {
+    throw new GuardianOperatorContractError(
+      context,
+      'note counts must be non-negative integers',
+    );
+  }
+  return { input, output };
+}
+
+function parseDeltaProposalMetadata(
+  value: unknown,
+  context: string,
+): DashboardDeltaProposalMetadata {
+  const record = asRecord(value, context);
+  const proposal: DashboardDeltaProposalMetadata = {
+    proposalType: requireString(record, 'proposal_type', context),
+  };
+  if (typeof record.description === 'string') proposal.description = record.description;
+  if (typeof record.salt === 'string') proposal.salt = record.salt;
+  if (record.required_signatures !== undefined)
+    proposal.requiredSignatures = requireNonNegativeInteger(
+      record.required_signatures,
+      'required_signatures',
+      context,
+    );
+  if (typeof record.recipient_id === 'string') proposal.recipientId = record.recipient_id;
+  if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
+  if (typeof record.amount === 'string') proposal.amount = record.amount;
+  if (record.note_ids !== undefined)
+    proposal.noteIds = assertStringArray(
+      requireArray(record, 'note_ids', context),
+      'note_ids',
+      context,
+    );
+  if (record.consume_notes_metadata_version !== undefined)
+    proposal.consumeNotesMetadataVersion = requireNonNegativeInteger(
+      record.consume_notes_metadata_version,
+      'consume_notes_metadata_version',
+      context,
+    );
+  if (record.consume_notes_notes !== undefined)
+    proposal.consumeNotesNotes = assertStringArray(
+      requireArray(record, 'consume_notes_notes', context),
+      'consume_notes_notes',
+      context,
+    );
+  if (record.target_threshold !== undefined)
+    proposal.targetThreshold = requireNonNegativeInteger(
+      record.target_threshold,
+      'target_threshold',
+      context,
+    );
+  if (record.signer_commitments !== undefined)
+    proposal.signerCommitments = assertStringArray(
+      requireArray(record, 'signer_commitments', context),
+      'signer_commitments',
+      context,
+    );
+  if (typeof record.new_guardian_pubkey === 'string')
+    proposal.newGuardianPubkey = record.new_guardian_pubkey;
+  if (typeof record.new_guardian_endpoint === 'string')
+    proposal.newGuardianEndpoint = record.new_guardian_endpoint;
+  if (typeof record.target_procedure === 'string')
+    proposal.targetProcedure = record.target_procedure;
+  return proposal;
+}
+
+function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
+  const ctx = 'delta detail';
+  const record = asRecord(value, ctx);
+  const detail: DashboardDeltaDetail = {
+    accountId: requireString(record, 'account_id', ctx),
+    nonce: requireInteger(record, 'nonce', ctx),
+    status: parseDeltaStatus(
+      requireString(record, 'status', ctx),
+      `${ctx}.status`,
+    ),
+    statusTimestamp: requireString(record, 'status_timestamp', ctx),
+    prevCommitment: requireString(record, 'prev_commitment', ctx),
+    newCommitment: requireNullableString(record, 'new_commitment', ctx),
+    inputNotes: parseDecodedNoteArray(
+      requireField(record, 'input_notes', ctx),
+      `${ctx}.input_notes`,
+    ),
+    outputNotes: parseDecodedNoteArray(
+      requireField(record, 'output_notes', ctx),
+      `${ctx}.output_notes`,
+    ),
+    vaultChanges: parseVaultChangeArray(
+      requireField(record, 'vault_changes', ctx),
+      `${ctx}.vault_changes`,
+    ),
+    storageChanges: parseStorageChangeArray(
+      requireField(record, 'storage_changes', ctx),
+      `${ctx}.storage_changes`,
+    ),
+  };
+  if (record.retry_count !== undefined) {
+    const retry = record.retry_count;
+    if (typeof retry !== 'number' || !Number.isInteger(retry) || retry < 0) {
+      throw new GuardianOperatorContractError(
+        ctx,
+        'retry_count must be a non-negative integer when present',
+      );
+    }
+    detail.retryCount = retry;
+  }
+  if (record.category !== undefined && record.category !== null) {
+    detail.category = parseDeltaCategory(
+      requireString(record, 'category', ctx),
+      `${ctx}.category`,
+    );
+  }
+  if (record.proposal !== undefined && record.proposal !== null) {
+    detail.proposal = parseDeltaProposalMetadata(
+      record.proposal,
+      `${ctx}.proposal`,
+    );
+  }
+  if (Array.isArray(record.decode_warnings) && record.decode_warnings.length > 0) {
+    detail.decodeWarnings = (record.decode_warnings as unknown[]).map((w, i) =>
+      parseDecodeWarning(w, `${ctx}.decode_warnings[${i}]`),
+    );
+  }
+  if (typeof record.raw_transaction_summary === 'string') {
+    detail.rawTransactionSummary = record.raw_transaction_summary;
+  }
+  return detail;
+}
+
+function parseDecodedNoteArray(
+  value: unknown,
+  context: string,
+): DashboardDeltaDecodedNote[] {
+  if (!Array.isArray(value)) {
+    throw new GuardianOperatorContractError(
+      context,
+      'expected an array of decoded notes',
+    );
+  }
+  return value.map((entry, i) => parseDecodedNote(entry, `${context}[${i}]`));
+}
+
+const NOTE_TAG_VALUES: readonly DashboardDeltaNoteTag[] = [
+  'p2id',
+  'p2ide',
+  'pswap',
+  'mint',
+  'burn',
+  'custom',
+];
+
+function parseDecodedNote(
+  value: unknown,
+  context: string,
+): DashboardDeltaDecodedNote {
+  const record = asRecord(value, context);
+  const tag = requireString(record, 'tag', context);
+  if (!(NOTE_TAG_VALUES as readonly string[]).includes(tag)) {
+    throw new GuardianOperatorContractError(
+      context,
+      `unknown note tag "${tag}"`,
+    );
+  }
+  const assets = requireField(record, 'assets', context);
+  if (!Array.isArray(assets)) {
+    throw new GuardianOperatorContractError(
+      context,
+      'assets must be an array',
+    );
+  }
+  const note: DashboardDeltaDecodedNote = {
+    noteId: requireString(record, 'note_id', context),
+    tag: tag as DashboardDeltaNoteTag,
+    assets: assets.map((a, i) =>
+      parseDecodedAsset(a, `${context}.assets[${i}]`),
+    ),
+  };
+  if (typeof record.sender === 'string') note.sender = record.sender;
+  if (typeof record.recipient === 'string') note.recipient = record.recipient;
+  return note;
+}
+
+function parseDecodedAsset(
+  value: unknown,
+  context: string,
+): DashboardDeltaDecodedAsset {
+  const record = asRecord(value, context);
+  const kind = requireString(record, 'kind', context);
+  if (kind !== 'fungible' && kind !== 'non_fungible') {
+    throw new GuardianOperatorContractError(
+      context,
+      `asset kind must be "fungible" or "non_fungible", got "${kind}"`,
+    );
+  }
+  const asset: DashboardDeltaDecodedAsset = {
+    assetId: requireString(record, 'asset_id', context),
+    kind: kind as DeltaAssetKind,
+  };
+  if (typeof record.amount === 'string') asset.amount = record.amount;
+  return asset;
+}
+
+function parseVaultChangeArray(
+  value: unknown,
+  context: string,
+): DashboardDeltaVaultChange[] {
+  if (!Array.isArray(value)) {
+    throw new GuardianOperatorContractError(
+      context,
+      'expected an array of vault changes',
+    );
+  }
+  return value.map((entry, i) => parseVaultChange(entry, `${context}[${i}]`));
+}
+
+function parseVaultChange(
+  value: unknown,
+  context: string,
+): DashboardDeltaVaultChange {
+  const record = asRecord(value, context);
+  const kind = requireString(record, 'kind', context);
+  if (kind === 'fungible') {
+    return {
+      kind: 'fungible',
+      assetId: requireString(record, 'asset_id', context),
+      change: requireString(record, 'change', context),
+    };
+  }
+  if (kind === 'non_fungible') {
+    const added = requireField(record, 'added', context);
+    const removed = requireField(record, 'removed', context);
+    if (!Array.isArray(added) || !Array.isArray(removed)) {
+      throw new GuardianOperatorContractError(
+        context,
+        'non_fungible added/removed must be arrays',
+      );
+    }
+    return {
+      kind: 'non_fungible',
+      assetId: requireString(record, 'asset_id', context),
+      added: assertStringArray(added as unknown[], 'added', context),
+      removed: assertStringArray(removed as unknown[], 'removed', context),
+    };
+  }
+  throw new GuardianOperatorContractError(
+    context,
+    `vault change kind must be "fungible" or "non_fungible", got "${kind}"`,
+  );
+}
+
+function parseStorageChangeArray(
+  value: unknown,
+  context: string,
+): DashboardDeltaStorageChange[] {
+  if (!Array.isArray(value)) {
+    throw new GuardianOperatorContractError(
+      context,
+      'expected an array of storage changes',
+    );
+  }
+  return value.map((entry, i) => parseStorageChange(entry, `${context}[${i}]`));
+}
+
+function parseStorageChange(
+  value: unknown,
+  context: string,
+): DashboardDeltaStorageChange {
+  const record = asRecord(value, context);
+  const change: DashboardDeltaStorageChange = {
+    slotName: requireString(record, 'slot_name', context),
+    after: requireNullableString(record, 'after', context),
+  };
+  if (record.key !== undefined && record.key !== null) {
+    change.key = requireString(record, 'key', context);
+  }
+  if (record.before !== undefined) {
+    change.before = requireNullableString(record, 'before', context);
+  }
+  return change;
+}
+
+const DECODE_SECTION_VALUES: readonly DashboardDeltaDecodeSection[] = [
+  'tx_summary',
+  'metadata',
+  'input_notes',
+  'output_notes',
+  'vault',
+  'storage',
+];
+
+function parseDecodeWarning(
+  value: unknown,
+  context: string,
+): DashboardDeltaDecodeWarning {
+  const record = asRecord(value, context);
+  const section = requireString(record, 'section', context);
+  if (!(DECODE_SECTION_VALUES as readonly string[]).includes(section)) {
+    throw new GuardianOperatorContractError(
+      context,
+      `unknown decode section "${section}"`,
+    );
+  }
+  return {
+    section: section as DashboardDeltaDecodeSection,
+    reason: requireString(record, 'reason', context),
+  };
 }
 
 function parseDeltaStatus(

@@ -50,12 +50,12 @@ pub async fn get_delta_since(
         .filter(|delta| delta.status.is_canonical())
         .collect();
 
-    if deltas.is_empty() {
+    let (Some(first_delta), Some(last_delta)) = (deltas.first(), deltas.last()) else {
         return Err(GuardianError::DeltaNotFound {
             account_id: params.account_id.clone(),
             nonce: params.from_nonce,
         });
-    }
+    };
 
     let delta_payloads: Vec<serde_json::Value> =
         deltas.iter().map(|d| d.delta_payload.clone()).collect();
@@ -67,19 +67,17 @@ pub async fn get_delta_since(
             .map_err(GuardianError::InvalidDelta)?
     };
 
-    let last_delta = deltas.last().unwrap();
-
-    // Merged result is a materialized snapshot; mark as canonical by default
     let merged_delta = DeltaObject {
         account_id: params.account_id,
         nonce: last_delta.nonce,
-        prev_commitment: deltas.first().unwrap().prev_commitment.clone(),
+        prev_commitment: first_delta.prev_commitment.clone(),
         new_commitment: last_delta.new_commitment.clone(),
         delta_payload: merged_payload,
         ack_sig: last_delta.ack_sig.clone(),
         ack_pubkey: last_delta.ack_pubkey.clone(),
         ack_scheme: last_delta.ack_scheme.clone(),
         status: last_delta.status.clone(),
+        metadata: None,
     };
 
     Ok(GetDeltaSinceResult { merged_delta })
