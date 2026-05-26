@@ -79,11 +79,11 @@ function deltaEnrichment(
   entry: DashboardDeltaEntry | DashboardGlobalDeltaEntry,
 ) {
   return {
-    category: entry.category ?? entry.metadata?.category,
-    proposalType: entry.proposalType ?? entry.metadata?.proposal?.proposalType,
-    assets: entry.assets ?? entry.metadata?.assets,
-    counterparty: entry.counterparty ?? entry.metadata?.counterparty,
-    noteCounts: entry.noteCounts ?? entry.metadata?.noteCounts,
+    category: entry.category,
+    proposalType: entry.proposalType,
+    assets: entry.assets,
+    counterparty: entry.counterparty,
+    noteCounts: entry.noteCounts,
   };
 }
 
@@ -813,7 +813,6 @@ export default function App() {
                 const cardKey = `${globalAccountId ?? 'acct'}-${delta.nonce}-${index}`;
                 const meta = deltaEnrichment(delta);
                 const proposalType = meta.proposalType;
-                const legacyProposal = delta.metadata?.proposal;
                 const cardAccountId = globalAccountId ?? accountId.trim();
                 const canFetchDetail = cardAccountId.length > 0;
                 return (
@@ -918,74 +917,18 @@ export default function App() {
                       </div>
                     </div>
 
-                    {(proposalType ?? legacyProposal) ? (
+                    {proposalType ? (
                       <details className="delta-debug" open>
                         <summary>Proposal intent</summary>
                         <div className="status-grid compact">
                           <div>
                             <span className="label">proposal_type</span>
-                            <code>{proposalType ?? legacyProposal?.proposalType}</code>
+                            <code>{proposalType}</code>
                           </div>
-                          {legacyProposal?.description ? (
-                            <div>
-                              <span className="label">description</span>
-                              <strong>{legacyProposal.description}</strong>
-                            </div>
-                          ) : null}
-                          {legacyProposal?.recipientId ? (
-                            <div>
-                              <span className="label">recipient_id</span>
-                              <code className="wrap">{legacyProposal.recipientId}</code>
-                            </div>
-                          ) : null}
-                          {legacyProposal?.faucetId ? (
-                            <div>
-                              <span className="label">faucet_id</span>
-                              <code className="wrap">{legacyProposal.faucetId}</code>
-                            </div>
-                          ) : null}
-                          {legacyProposal?.amount ? (
-                            <div>
-                              <span className="label">amount</span>
-                              <strong>{legacyProposal.amount}</strong>
-                            </div>
-                          ) : null}
-                          {typeof legacyProposal?.requiredSignatures === 'number' ? (
-                            <div>
-                              <span className="label">required_signatures</span>
-                              <strong>{legacyProposal.requiredSignatures}</strong>
-                            </div>
-                          ) : null}
-                          {typeof legacyProposal?.targetThreshold === 'number' ? (
-                            <div>
-                              <span className="label">target_threshold</span>
-                              <strong>{legacyProposal.targetThreshold}</strong>
-                            </div>
-                          ) : null}
-                          {legacyProposal?.noteIds && legacyProposal.noteIds.length > 0 ? (
-                            <div>
-                              <span className="label">note_ids</span>
-                              <code className="wrap">
-                                {legacyProposal.noteIds.join(', ')}
-                              </code>
-                            </div>
-                          ) : null}
-                          {legacyProposal?.newGuardianPubkey ? (
-                            <div>
-                              <span className="label">new_guardian_pubkey</span>
-                              <code className="wrap">
-                                {legacyProposal.newGuardianPubkey}
-                              </code>
-                            </div>
-                          ) : null}
-                          {legacyProposal?.newGuardianEndpoint ? (
-                            <div>
-                              <span className="label">new_guardian_endpoint</span>
-                              <code className="wrap">
-                                {legacyProposal.newGuardianEndpoint}
-                              </code>
-                            </div>
-                          ) : null}
+                          <p className="hint">
+                            Full proposal block lives on the detail
+                            endpoint — click <strong>View detail</strong>.
+                          </p>
                         </div>
                       </details>
                     ) : null}

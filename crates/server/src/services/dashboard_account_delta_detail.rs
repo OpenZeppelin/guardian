@@ -128,7 +128,7 @@ fn project_delta_to_detail(
         None => fallback_status_triple(&delta.status),
     };
 
-    let (input_notes, output_notes, vault_changes, storage_changes, decode_warnings) =
+    let (input_notes, output_notes, vault_changes, storage_changes, mut decode_warnings) =
         match decode_transaction_summary(&delta.delta_payload) {
             Ok(summary) => project_detail_sections(&summary),
             Err(reason) => (
@@ -150,7 +150,14 @@ fn project_delta_to_detail(
         .unwrap_or((None, None));
 
     let raw_transaction_summary = if include.raw {
-        extract_raw_tx_summary_base64(&delta.delta_payload)
+        let extracted = extract_raw_tx_summary_base64(&delta.delta_payload);
+        if extracted.is_none() {
+            decode_warnings.push(DecodeWarning {
+                section: crate::delta_summary::DecodeSection::TxSummary,
+                reason: "raw_unavailable".to_string(),
+            });
+        }
+        extracted
     } else {
         None
     };
@@ -402,6 +409,29 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(with.raw_transaction_summary, Some(raw_b64));
+    }
+
+    #[tokio::test]
+    async fn include_raw_emits_warning_when_payload_has_no_raw_blob() {
+        let delta = canonical_delta_with_payload(12, serde_json::json!({"evm": "0xfeedface"}));
+        let state = build_state(Ok(Some(falcon_metadata())), Ok(delta)).await;
+        let detail = get_account_delta_detail(
+            &state,
+            TEST_ACCOUNT_ID,
+            12,
+            DetailIncludeFlags { raw: true },
+        )
+        .await
+        .expect("response still returns 200");
+        assert!(detail.raw_transaction_summary.is_none());
+        assert!(
+            detail
+                .decode_warnings
+                .iter()
+                .any(|w| w.reason == "raw_unavailable"),
+            "expected a raw_unavailable warning, got {:?}",
+            detail.decode_warnings,
+        );
     }
 
     #[tokio::test]

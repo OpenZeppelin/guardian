@@ -32,7 +32,6 @@ export type {
   DashboardDeltaDecodedNote,
   DashboardDeltaDetail,
   DashboardDeltaEntry,
-  DashboardDeltaMetadata,
   DashboardDeltaNoteCounts,
   DashboardDeltaNoteTag,
   DashboardDeltaProposalMetadata,

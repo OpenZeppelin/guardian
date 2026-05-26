@@ -14,7 +14,6 @@ import type {
   DashboardDeltaDecodedNote,
   DashboardDeltaDetail,
   DashboardDeltaEntry,
-  DashboardDeltaMetadata,
   DashboardDeltaNoteCounts,
   DashboardDeltaNoteTag,
   DashboardDeltaProposalMetadata,
@@ -1467,9 +1466,6 @@ function parseDeltaEntry(
       `${context}.counterparty`,
     );
   }
-  if (record.metadata !== undefined && record.metadata !== null) {
-    entry.metadata = parseDeltaMetadata(record.metadata, `${context}.metadata`);
-  }
   return entry;
 }
 
@@ -1615,42 +1611,6 @@ function parseDeltaNoteCounts(
     );
   }
   return { input, output };
-}
-
-function parseDeltaMetadata(
-  value: unknown,
-  context: string,
-): DashboardDeltaMetadata {
-  const record = asRecord(value, context);
-  const metadata: DashboardDeltaMetadata = {
-    category: parseDeltaCategory(
-      requireString(record, 'category', context),
-      `${context}.category`,
-    ),
-    noteCounts: parseDeltaNoteCounts(
-      requireField(record, 'note_counts', context),
-      `${context}.note_counts`,
-    ),
-  };
-  if (record.assets !== undefined) {
-    metadata.assets = parseDeltaAssetSummaryArray(
-      record.assets,
-      `${context}.assets`,
-    );
-  }
-  if (record.counterparty !== undefined && record.counterparty !== null) {
-    metadata.counterparty = parseDeltaCounterpartySummary(
-      record.counterparty,
-      `${context}.counterparty`,
-    );
-  }
-  if (record.proposal !== undefined && record.proposal !== null) {
-    metadata.proposal = parseDeltaProposalMetadata(
-      record.proposal,
-      `${context}.proposal`,
-    );
-  }
-  return metadata;
 }
 
 function parseDeltaProposalMetadata(

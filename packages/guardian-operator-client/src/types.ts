@@ -277,20 +277,6 @@ export interface DashboardDeltaProposalMetadata {
 }
 
 /**
- * Typed metadata blob persisted on the canonical delta row. The
- * top-level fields are server-derived from the on-chain
- * `TransactionSummary`; the optional `proposal` block carries
- * operator-stated intent for multisig commits.
- */
-export interface DashboardDeltaMetadata {
-  category: DashboardDeltaCategory;
-  assets?: DashboardDeltaAssetSummary[];
-  counterparty?: DashboardDeltaCounterpartySummary;
-  noteCounts: DashboardDeltaNoteCounts;
-  proposal?: DashboardDeltaProposalMetadata;
-}
-
-/**
  * Coarse note-tag classification surfaced on the detail endpoint's
  * decoded notes.
  */
@@ -417,8 +403,6 @@ export interface DashboardDeltaEntry {
   assets?: DashboardDeltaAssetSummary[];
   counterparty?: DashboardDeltaCounterpartySummary;
   noteCounts?: DashboardDeltaNoteCounts;
-
-  metadata?: DashboardDeltaMetadata;
 }
 
 export interface DashboardProposalEntry {

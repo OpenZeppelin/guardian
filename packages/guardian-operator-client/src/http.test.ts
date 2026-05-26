@@ -912,54 +912,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     expect(page.items[0].category).toBeUndefined();
   });
 
-  it('still parses legacy nested metadata blobs when present', async () => {
-    mockFetch.mockResolvedValueOnce(
-      okJson({
-        items: [
-          {
-            nonce: 275,
-            status: 'canonical',
-            status_timestamp: '2026-05-25T08:01:45Z',
-            prev_commitment: '0xprev',
-            new_commitment: '0xnew',
-            metadata: {
-              category: 'custom',
-              note_counts: { input: 0, output: 0 },
-            },
-          },
-        ],
-        next_cursor: null,
-      }),
-    );
-    const client = new GuardianOperatorHttpClient('https://guardian.example');
-    const page = await client.listAccountDeltas('0xacc');
-    expect(page.items[0].metadata?.category).toBe('custom');
-  });
-
-  it('rejects nested metadata missing the required category field', async () => {
-    mockFetch.mockResolvedValueOnce(
-      okJson({
-        items: [
-          {
-            nonce: 300,
-            status: 'canonical',
-            status_timestamp: '2026-05-25T08:02:00Z',
-            prev_commitment: '0xprev',
-            new_commitment: '0xnew',
-            metadata: {
-              note_counts: { input: 0, output: 0 },
-            },
-          },
-        ],
-        next_cursor: null,
-      }),
-    );
-    const client = new GuardianOperatorHttpClient('https://guardian.example');
-    await expect(client.listAccountDeltas('0xacc')).rejects.toThrow(
-      /missing required field "category"/,
-    );
-  });
-
   it('rejects an unknown L1 category value', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({
@@ -972,31 +924,6 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             new_commitment: '0xnew',
             category: 'unicorn_mode',
             note_counts: { input: 0, output: 0 },
-          },
-        ],
-        next_cursor: null,
-      }),
-    );
-    const client = new GuardianOperatorHttpClient('https://guardian.example');
-    await expect(client.listAccountDeltas('0xacc')).rejects.toThrow(
-      /invalid category "unicorn_mode"/,
-    );
-  });
-
-  it('rejects nested metadata with an unknown category value', async () => {
-    mockFetch.mockResolvedValueOnce(
-      okJson({
-        items: [
-          {
-            nonce: 401,
-            status: 'canonical',
-            status_timestamp: '2026-05-25T08:03:01Z',
-            prev_commitment: '0xprev',
-            new_commitment: '0xnew',
-            metadata: {
-              category: 'unicorn_mode',
-              note_counts: { input: 0, output: 0 },
-            },
           },
         ],
         next_cursor: null,

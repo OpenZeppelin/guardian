@@ -4,6 +4,7 @@
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
+use miden_protocol::crypto::utils::Serializable;
 use miden_protocol::note::Note;
 use miden_protocol::note::PartialNote;
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
@@ -246,14 +247,14 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     for asset in vault.added_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            let id = format!("{:?}", a.vault_key());
+            let id = format!("0x{}", hex::encode(a.vault_key().to_bytes()));
             nf_added.entry(faucet).or_default().push(id);
         }
     }
     for asset in vault.removed_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            let id = format!("{:?}", a.vault_key());
+            let id = format!("0x{}", hex::encode(a.vault_key().to_bytes()));
             nf_removed.entry(faucet).or_default().push(id);
         }
     }

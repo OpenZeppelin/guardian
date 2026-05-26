@@ -26,11 +26,6 @@ pub use projection::{
     project_assets_and_counterparty_from_output_notes, project_note_counts,
 };
 
-#[cfg(test)]
-pub(crate) mod tests {
-    pub mod fixtures;
-}
-
 /// Persisted activity metadata for a canonical delta. Stored as JSONB
 /// in the `deltas.metadata` column. `None` for EVM deltas and any
 /// historical row never reprocessed by [`build_metadata`].
