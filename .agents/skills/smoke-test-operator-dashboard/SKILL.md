@@ -23,6 +23,8 @@ Use `examples/operator-smoke-web` as the primary smoke surface for operator auth
    - `packages/guardian-operator-client/src/http.ts`
    - `crates/server/src/api/dashboard.rs`
    - `crates/server/src/dashboard/mod.rs`
+   - `docs/DASHBOARD.md`
+   - `docs/PRODUCTION.md`
 2. Run the focused checks:
    ```bash
    cd packages/guardian-operator-client && npm run typecheck && npm test && npm run build
@@ -119,6 +121,10 @@ Use `GUARDIAN_URL=http://127.0.0.1:3000` for local runs. For deployed runs, use 
 - Empty account list is not a failure by itself; fetch detail only when the list returns an account ID.
 - A server restart clears in-memory sessions; log in again after restart.
 
+## Documentation Impact
+
+When operator auth, permission vocabulary, account API shapes, session/cookie behavior, local smoke setup, or deployed target assumptions change, update the matching dashboard, production, operator-client, and `examples/operator-smoke-web` docs. Use the Documentation Impact Check in `AGENTS.md` for the target files.
+
 ## Report
 
 Report:
@@ -131,5 +137,6 @@ Report:
 - account list count
 - account detail result, or skipped because the list was empty
 - logout result
+- docs checked or updated
 - every error observed, including recovered errors
 - checks that passed and checks skipped with reason

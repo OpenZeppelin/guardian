@@ -51,6 +51,7 @@ If the change touches proposal payloads or account state shapes, also inspect bo
    Proposal metadata, state objects, ack fields, and status transitions are the common triggers.
 6. Update examples and docs when the change is visible to users or integrators.
    Start with `examples/demo`, `examples/smoke-web`, and `examples/web`.
+   Use the Documentation Impact Check in `AGENTS.md` to pick the matching `spec/`, `docs/`, SDK, and example docs.
 7. Run the smallest meaningful validation set, then expand if high-risk.
 
 ## Guardrails
@@ -70,5 +71,6 @@ Report:
 - transport surfaces affected
 - client parity work completed
 - upstream SDK or example fallout
+- docs checked or updated
 - tests and smoke checks run
 - any intentionally skipped propagation with reason

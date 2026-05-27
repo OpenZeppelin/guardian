@@ -15,6 +15,7 @@ Read current source before assuming labels, endpoints, or response shapes:
 - `examples/evm-smoke-web/src/App.tsx`
 - `crates/server/src/api/evm.rs`
 - `crates/server/src/evm/`
+- `speckit/features/001-evm-proposal-support/`
 
 Run the focused checks before manual browser work:
 
@@ -26,6 +27,8 @@ cd examples/evm-smoke-web && npm run typecheck && npm run build
 ```
 
 Use `git diff -- packages/guardian-client crates/client crates/shared` when the user wants the EVM client isolated from the base clients. Those paths should stay unchanged unless a separate contract change requires them.
+
+When EVM endpoints, proposal shapes, chain configuration, session auth, finality behavior, smoke setup, or browser fields change, update the EVM quickstart/spec, `packages/guardian-evm-client` docs, and `examples/evm-smoke-web` guidance as applicable.
 
 ## Local Stack
 
@@ -184,5 +187,6 @@ Report:
 - number of signatures collected and the signer IDs
 - executable payload/signature result
 - browser and wallet used when running the Vite app
+- docs checked or updated
 - every setup or smoke error observed, including recovered errors
 - checks skipped with reason

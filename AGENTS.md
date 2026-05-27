@@ -190,14 +190,29 @@ Before finishing, confirm all are true:
 5. README/docs touched if external behavior changed.
 6. No unrelated file churn.
 
-## 9) Practical Defaults
+## 9) Documentation Impact Check
+
+Do not update docs mechanically for every code edit. Do check and update the matching docs whenever a change affects user-visible behavior, public APIs, SDK methods, auth/signature behavior, configuration, deployment flow, smoke-test workflow, or example startup assumptions.
+
+Common mappings:
+
+- Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
+- Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
+- EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
+- Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`
+- Local dev or test startup -> `README.md`, `CONTRIBUTING.md`, relevant example README or quickstart
+
+When docs are not updated after a visible behavior change, note why in the final report or PR notes.
+
+## 10) Practical Defaults
 
 - Prefer `rg`/`rg --files` for discovery.
 - Keep edits ASCII unless existing file requires otherwise.
 - Keep comments minimal and only where logic is non-obvious.
 - Avoid speculative refactors during bugfixes.
 
-## 10) Versioning Policy
+## 11) Versioning Policy
 
 - Keep crate/package versions aligned with the active Miden dependency line.
 - Current baseline is Miden `0.14.x`; changes must remain compatible with that line unless migration is explicit.
@@ -207,7 +222,7 @@ Before finishing, confirm all are true:
   3. Re-run cross-layer validation (including examples).
   4. Update docs and changelog/release notes to call out the dependency line change.
 
-## 11) Coding Style (Multisig Focus)
+## 12) Coding Style (Multisig Focus)
 
 Apply these rules especially to:
 - `crates/miden-multisig-client`

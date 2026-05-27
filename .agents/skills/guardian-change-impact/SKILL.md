@@ -43,7 +43,9 @@ Prefer current source files over prose docs when they disagree.
    If a lower layer changes, name every upstream layer that must be inspected or updated in the same task.
 4. Choose the smallest sufficient validation set.
    Map the impact classification to the minimum cargo, npm, and manual smoke coverage. Use `guardian-validation-matrix` if the change is already understood and only the verification set needs to be chosen.
-5. Hand off to a narrower skill when appropriate.
+5. Identify documentation impact.
+   Use the Documentation Impact Check in `AGENTS.md` to name the exact docs, specs, SDK references, or example quickstarts that must be checked or updated.
+6. Hand off to a narrower skill when appropriate.
    - Use `guardian-contract-change` for endpoint, payload, or enum changes.
    - Use `guardian-multisig-proposal-lifecycle` for proposal or offline flow changes.
    - Use `guardian-auth-signature-flows` for auth, keystore, Falcon, ECDSA, or ack changes.

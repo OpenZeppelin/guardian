@@ -36,7 +36,9 @@ Read:
    - the change affects proposal lifecycle or canonicalization
    - the change affects browser signers or user-visible examples
 4. Add manual smoke when a lower-layer change is observable in `examples/demo` or `examples/smoke-web`.
-5. Prefer existing specialized skills over duplicating their workflow.
+5. Include a documentation check when the change affects user-visible behavior, configuration, public APIs, SDK methods, auth/signature behavior, deployment, smoke-test workflow, or example startup.
+   Use the Documentation Impact Check in `AGENTS.md` for the target files.
+6. Prefer existing specialized skills over duplicating their workflow.
 
 ## Guardrails
 
@@ -61,6 +63,7 @@ Produce:
 
 - exact ordered commands to run
 - manual smoke required
+- docs to check or update
 - why each command is included
 - what was intentionally skipped
 - next expansion step if the first layer of checks fails

@@ -266,8 +266,8 @@ cat > /tmp/operators.json <<'EOF'
 EOF
 
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/operators.json \
-GUARDIAN_STORAGE_PATH=/tmp/guardian-storage \
-GUARDIAN_METADATA_PATH=/tmp/guardian-metadata \
+GUARDIAN_STORAGE_PATH=.guardian/storage \
+GUARDIAN_METADATA_PATH=.guardian/metadata \
   cargo run --bin server
 ```
 

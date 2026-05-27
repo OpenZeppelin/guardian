@@ -43,7 +43,9 @@ Read the current workflow surface before editing:
 4. Update the nearest example surface.
    - `examples/demo` for Rust flow verification
    - `examples/smoke-web` and `examples/web` for browser flow verification
-5. Validate the minimal affected path first, then expand to adjacent risky paths.
+5. Check documentation impact when lifecycle behavior, public SDK methods, proposal metadata, offline/import/export format, or example startup changes.
+   Start with `docs/MULTISIG_SDK.md`, affected example docs, and the Documentation Impact Check in `AGENTS.md`.
+6. Validate the minimal affected path first, then expand to adjacent risky paths.
 
 ## Guardrails
 
@@ -80,6 +82,7 @@ Report:
 - Rust files updated
 - TypeScript files updated
 - example surfaces updated or checked
+- docs checked or updated
 - lifecycle invariants preserved
 - targeted tests and smoke coverage
 - gaps or skipped paths
