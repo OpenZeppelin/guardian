@@ -40,8 +40,10 @@ pub struct DashboardConfig {
 
 impl DashboardConfig {
     pub fn from_env_for_network(network_type: NetworkType) -> std::result::Result<Self, String> {
-        let mut config = Self::default();
-        config.environment = environment_for_network(network_type).to_string();
+        let mut config = Self {
+            environment: environment_for_network(network_type).to_string(),
+            ..Self::default()
+        };
         if let Ok(secret_hex) = std::env::var("GUARDIAN_DASHBOARD_CURSOR_SECRET") {
             config.cursor_secret_hex = Some(secret_hex);
         }

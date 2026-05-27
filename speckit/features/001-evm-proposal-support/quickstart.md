@@ -50,7 +50,7 @@ POST /evm/accounts
 Expected result:
 
 - Guardian derives `evm:<chain_id>:<account_address>`
-- RPC and EntryPoint are resolved from server env maps
+- RPC endpoints are resolved from the `GUARDIAN_EVM_RPC_URLS` map; the EntryPoint address is read from the single `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` env var
 - `isModuleInstalled(1, validator, 0x)` succeeds
 - the session EOA is a current validator signer
 - signer snapshot and threshold are stored in metadata

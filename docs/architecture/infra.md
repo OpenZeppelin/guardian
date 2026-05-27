@@ -231,7 +231,7 @@ Proxy additionally requires explicit opt-in for unsupported AZs via
 `rds_proxy_subnet_ids` (e.g. `us-east-1e` / `use1-az3` in `us-east-1`).
 
 Security-group chain:
-```
+```text
 internet → alb SG (80/443) → server SG (3000, 50051)
 server SG ─┬─→ postgres SG (5432)            (dev path)
            └─→ rds_proxy SG (5432) → postgres SG (5432)  (prod path)
