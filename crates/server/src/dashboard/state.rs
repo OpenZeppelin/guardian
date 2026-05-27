@@ -18,6 +18,7 @@ use super::types::{
 use super::util::{cookie_date, correlation_id, random_hex, rate_limit_error};
 use crate::error::{GuardianError, Result};
 use crate::middleware::rate_limit::RateLimitStore;
+use crate::network::NetworkType;
 
 #[derive(Clone, Debug)]
 pub struct DashboardState {
@@ -32,8 +33,10 @@ pub struct DashboardState {
 }
 
 impl DashboardState {
-    pub async fn from_env() -> std::result::Result<Self, String> {
-        let config = DashboardConfig::from_env()?;
+    pub async fn from_env_for_network(
+        network_type: NetworkType,
+    ) -> std::result::Result<Self, String> {
+        let config = DashboardConfig::from_env_for_network(network_type)?;
         let allowlist_source = AllowlistSource::from_env().await?;
         let allowlist = allowlist_source.load().await?;
         Self::from_allowlist_source(allowlist_source, allowlist, config)
@@ -491,6 +494,8 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
     use uuid::Uuid;
 
+    use crate::network::NetworkType;
+
     use super::super::allowlist::{
         ENV_OPERATOR_PUBLIC_KEYS_FILE, ENV_OPERATOR_PUBLIC_KEYS_SECRET_ID,
     };
@@ -586,7 +591,7 @@ mod tests {
             EnvVarGuard::set(ENV_OPERATOR_PUBLIC_KEYS_FILE, path.display().to_string());
         let _operator_public_keys_secret = EnvVarGuard::remove(ENV_OPERATOR_PUBLIC_KEYS_SECRET_ID);
 
-        let state = DashboardState::from_env()
+        let state = DashboardState::from_env_for_network(NetworkType::MidenDevnet)
             .await
             .expect("dashboard state should load");
         let now = Utc::now();
@@ -634,7 +639,7 @@ mod tests {
             EnvVarGuard::set(ENV_OPERATOR_PUBLIC_KEYS_FILE, path.display().to_string());
         let _operator_public_keys_secret = EnvVarGuard::remove(ENV_OPERATOR_PUBLIC_KEYS_SECRET_ID);
 
-        let state = DashboardState::from_env()
+        let state = DashboardState::from_env_for_network(NetworkType::MidenDevnet)
             .await
             .expect("dashboard state should load");
         let now = Utc::now();
@@ -701,7 +706,7 @@ mod tests {
             EnvVarGuard::set(ENV_OPERATOR_PUBLIC_KEYS_FILE, path.display().to_string());
         let _operator_public_keys_secret = EnvVarGuard::remove(ENV_OPERATOR_PUBLIC_KEYS_SECRET_ID);
 
-        let state = DashboardState::from_env()
+        let state = DashboardState::from_env_for_network(NetworkType::MidenDevnet)
             .await
             .expect("dashboard state should load");
 

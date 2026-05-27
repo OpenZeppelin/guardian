@@ -295,9 +295,8 @@ When standing up the dashboard for a new stack:
 - [ ] Decide Terraform-managed or externally-managed allowlist.
 - [ ] Add at least one operator with `dashboard:read` before shipping —
       otherwise the dashboard is unreachable.
-- [ ] Set `GUARDIAN_ENVIRONMENT` for the stack
-      (`mainnet` / `testnet` / `staging`) — surfaced on
-      `GET /dashboard/info`.
+- [ ] Set `GUARDIAN_NETWORK_TYPE` for the stack; the dashboard
+      environment reported by `GET /dashboard/info` is derived from it.
 - [ ] If running ≥2 ECS tasks, pin
       `GUARDIAN_DASHBOARD_CURSOR_SECRET` to a shared 32-byte hex value.
 - [ ] Verify a fresh challenge → session round trip from the smoke

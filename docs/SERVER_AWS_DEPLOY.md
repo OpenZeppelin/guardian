@@ -56,6 +56,17 @@ aws sts get-caller-identity
 ./scripts/aws-deploy.sh status
 ```
 
+For a reviewable deployment, split image publishing, planning, and applying:
+
+```bash
+./scripts/aws-deploy.sh build
+./scripts/aws-deploy.sh plan
+./scripts/aws-deploy.sh deploy --skip-build
+./scripts/aws-deploy.sh status
+```
+
+This builds and pushes `${ECR_REPO_NAME}:latest`, plans Terraform against the immutable digest currently behind that tag, then applies using the existing ECR image without rebuilding. If you push a new image after `plan`, rerun `plan` before `deploy --skip-build`.
+
 ## Terraform Variables
 
 If you need to override defaults, use `infra/terraform.tfvars`:
@@ -70,7 +81,9 @@ aws_region = "us-east-1"
 # Optional: derive resource names from a base stack name
 # stack_name = "guardian"
 
-server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server:latest"
+# Only set this when bypassing scripts/aws-deploy.sh. The deploy script resolves
+# ECR latest to an immutable digest and passes server_image_uri via -var.
+# server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server@sha256:<digest>"
 
 # Optional: Postgres credentials (defaults derive from stack_name)
 # postgres_db       = "guardian"
@@ -130,12 +143,43 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 ## Deploy
 
+### Script Commands
+
+| Command | Purpose |
+| --- | --- |
+| `./scripts/aws-deploy.sh build` | Build the Guardian server image and push it to ECR as `latest`. Does not run Terraform. |
+| `./scripts/aws-deploy.sh plan` | Run `terraform plan` using the immutable digest currently behind ECR `latest`. Does not build, push, or apply. |
+| `./scripts/aws-deploy.sh deploy` | Build and push the image, resolve ECR `latest` to an immutable digest, and run `terraform apply`. |
+| `./scripts/aws-deploy.sh deploy --skip-build` | Resolve the existing ECR `latest` image to an immutable digest and run `terraform apply` without rebuilding. |
+| `./scripts/aws-deploy.sh bootstrap-ack-keys` | Create the prod ACK key secrets in Secrets Manager. Refuses to overwrite existing secrets. |
+| `./scripts/aws-deploy.sh status` | Print Terraform outputs for the active `STACK_NAME` and `DEPLOY_STAGE`. |
+| `./scripts/aws-deploy.sh logs` | Tail the deployed server's CloudWatch log group. |
+| `./scripts/aws-deploy.sh cleanup` | Run Terraform destroy for the active `STACK_NAME` and `DEPLOY_STAGE`. |
+
+`--skip-build` is meaningful for `deploy`; `plan` never builds or pushes an image. Use `build` before `plan` for a new stack or whenever ECR does not yet contain `${ECR_REPO_NAME}:latest`.
+
+### One-Step Deploy
+
 ```bash
 ./scripts/aws-deploy.sh deploy
 ```
 
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
 It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
+
+AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; set `GUARDIAN_SERVER_FEATURES=postgres,evm` only when deploying the optional EVM API surface.
+
+### Reviewable Build, Plan, Apply
+
+Use this flow when you want to inspect Terraform changes before applying them:
+
+```bash
+./scripts/aws-deploy.sh build
+./scripts/aws-deploy.sh plan
+./scripts/aws-deploy.sh deploy --skip-build
+```
+
+`build` creates the ECR repository if needed and pushes `${ECR_REPO_NAME}:latest`. Both `plan` and `deploy --skip-build` resolve that tag to an immutable digest before invoking Terraform. Do not rebuild or push a new `latest` between `plan` and `deploy --skip-build` unless you intend to apply a different image; rerun `plan` after any rebuild.
 
 For `DEPLOY_STAGE=prod`, bootstrap the ACK secrets once before the first deploy:
 
@@ -200,7 +244,7 @@ cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
 cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
 ```
 
-Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes:
+Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes, or when you are applying immediately after a reviewed `plan`:
 
 ```bash
 ./scripts/aws-deploy.sh deploy --skip-build

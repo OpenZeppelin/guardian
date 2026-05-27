@@ -406,7 +406,7 @@ impl ServerBuilder {
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
-            None => Arc::new(DashboardState::from_env().await?),
+            None => Arc::new(DashboardState::from_env_for_network(network_type).await?),
         };
         #[cfg(feature = "evm")]
         let evm = Arc::new(EvmAppState::from_env().await?);

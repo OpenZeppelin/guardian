@@ -31,17 +31,19 @@ You are an operator / SRE / DevOps.
 
 1. [Concepts](./CONCEPTS.md) — same starting point; you need the trust
    model to make good ops decisions.
-2. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
+2. [Production guide](./PRODUCTION.md) — supported production shape,
+   readiness checklist, and links to the detailed runbooks.
+3. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
    end-to-end deploy via `scripts/aws-deploy.sh`, stage profiles.
-3. [AWS deployment architecture](./architecture/infra.md) — runtime
+4. [AWS deployment architecture](./architecture/infra.md) — runtime
    topology, AWS resource inventory mapped to each `.tf` file.
-4. [Configuration reference](./CONFIGURATION.md) — every env var in one
+5. [Configuration reference](./CONFIGURATION.md) — every env var in one
    place.
-5. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
-   rotation, compromise response for the five secret categories.
-6. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
+6. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
+   replacement, and compromise response for production secrets.
+7. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
    operators, permission vocabulary, multi-task caveats.
-7. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
+8. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
    recovery procedures.
 
 ### I want to *develop on* Guardian (work in this repo)
@@ -93,6 +95,7 @@ You are a contributor.
 - [`infra/README.md`](../infra/README.md) — Terraform variables
 
 **Operations**
+- [Production guide](./PRODUCTION.md)
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
 - [Operator dashboard](./DASHBOARD.md)

@@ -92,9 +92,10 @@ clients.
 
 ## Testing
 
-Run the validation matched to the layer you changed; the
-`guardian-validation-matrix` skill picks the smallest meaningful set for
-a given change.
+Run the validation matched to the layer you changed. If you are using
+agent tooling, the `guardian-validation-matrix` skill can pick the
+smallest meaningful set for a given change. Otherwise use the matrix
+below and the package READMEs.
 
 Common invocations:
 
@@ -105,15 +106,19 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 
 # TypeScript (per package)
-cd packages/guardian-client && npm test
-cd packages/miden-multisig-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/guardian-operator-client && npm test
+cd packages/guardian-client && npm install && npm test
+cd packages/miden-multisig-client && npm install && npm test
+cd packages/guardian-evm-client && npm install && npm test
+cd packages/guardian-operator-client && npm install && npm test
 
 # Examples (manual)
-cd examples/demo && cargo run             # Rust TUI multisig flow
+cd examples/demo && cargo run --release   # Rust TUI multisig flow
 # smoke-web / operator-smoke-web / evm-smoke-web have their own READMEs
 ```
+
+CI currently enforces the Rust workspace, formatting, and clippy jobs.
+Run the TypeScript package checks locally when you touch TS packages or
+browser examples.
 
 For UI / SDK changes you cannot fully verify with `cargo test` alone,
 run the matching smoke example end to end. The
@@ -124,7 +129,8 @@ tooling; otherwise follow the example's README.
 
 ## Code style
 
-- **Rust:** `cargo fmt` and `cargo clippy --workspace -- -D warnings`.
+- **Rust:** `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
   Match existing patterns; favour explicit error types over `anyhow` in
   library code (`crates/server`, `crates/client`).
 - **TypeScript:** each package carries its own scripts; run

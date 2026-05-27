@@ -222,8 +222,9 @@ sequenceDiagram
 - Optimistic mode (disabled): `push_delta` marks deltas as `canonical` immediately and updates state.
 
 ### Configuration
-- Defaults: delay_seconds = 900 (15m), check_interval_seconds = 60 (1m).
-- Per deployment configurable.
+- Current server builder defaults: submission_grace_period_seconds = 600
+  (10m), check_interval_seconds = 10, max_retries = 48.
+- These values are configured in code, not through server env vars.
 
 ### Worker Behavior
  - Runs every `check_interval_seconds`.

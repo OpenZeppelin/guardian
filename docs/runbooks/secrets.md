@@ -3,7 +3,7 @@
 Operational guide for the secrets Guardian relies on in production.
 Companion to [`docs/architecture/infra.md`](../architecture/infra.md), which
 explains *which* AWS resources hold each secret;
-this doc covers *how* to bootstrap, rotate, and respond to compromise.
+this doc covers *how* to bootstrap, replace, and respond to compromise.
 
 > **Audience:** operators with AWS Secrets Manager and ECS write access for
 > the target Guardian stack.
@@ -14,7 +14,7 @@ this doc covers *how* to bootstrap, rotate, and respond to compromise.
 |---|---|---|---|
 | `DATABASE_URL` | Secrets Manager (`<stack>/server/database-url`) | Managed by Terraform | ECS task **execution** role, at task start |
 | RDS Proxy credentials (prod) | Secrets Manager (`<stack>/server/database-credentials`) | Managed by Terraform | RDS Proxy IAM role |
-| ACK signing keys (prod) | Secrets Manager — IDs selected by `GUARDIAN_ACK_{FALCON,ECDSA}_SECRET_ID` env vars; default `guardian-prod/server/ack-{falcon,ecdsa}-secret-key`; Terraform sets per-stack `${stack_name}/server/ack-{falcon,ecdsa}-secret-key` | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys | ECS task **runtime** role, at server startup |
+| ACK signing keys (prod) | Secrets Manager — IDs selected by `GUARDIAN_ACK_{FALCON,ECDSA}_SECRET_ID` env vars; default `guardian-prod/server/ack-{falcon,ecdsa}-secret-key`; Terraform sets per-stack `${stack_name}/server/ack-{falcon,ecdsa}-secret-key` | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys; replacement is incident/migration work | ECS task **runtime** role, at server startup |
 | Operator public keys | Secrets Manager (Terraform-managed or pre-existing ARN) | Updated by editing Terraform var or rotating the secret value | ECS task runtime role, on each dashboard challenge **and each authenticated `/dashboard/*` request** (hot-reloaded — no restart needed) |
 | EVM allowed chains + RPC URLs | Secrets Manager (Terraform-managed) | Updated by editing `config/evm/chains.json` and redeploying | ECS task execution role; surfaced as env to the task |
 
@@ -54,8 +54,16 @@ prod-mode launches.
 ACK keys (one Falcon, one ECDSA) are Guardian's own response signers.
 Clients pin Guardian's pubkey via `GetPubkey` on first contact and verify
 every response thereafter — **stable identity matters**. Treat ACK key
-rotation the same way you would treat rotating an upstream service's TLS
-identity.
+replacement as a Guardian identity change, not a routine secret rotation.
+
+For Miden multisig accounts, the Guardian commitment is also stored in
+account state. Proposal execution checks the live server commitment
+against that stored account commitment before using a new ACK signature.
+If the Secrets Manager ACK values are replaced without moving accounts to
+the new Guardian commitment, normal proposal execution for existing
+accounts will fail with a Guardian commitment mismatch. A `SwitchGuardian`
+proposal is the account-level migration path for changing that stored
+commitment.
 
 ### Bootstrap (first prod deploy)
 
@@ -89,19 +97,32 @@ Subsequent `aws-deploy.sh deploy` runs assert these secrets exist
 ([`aws-deploy.sh:331`](../../scripts/aws-deploy.sh#L331)) and fail fast
 otherwise.
 
-### Rotation
+### Replacement
 
-ACK rotation is **not** part of the regular deploy cycle. Rotating breaks
-clients that pinned the previous pubkey until they refetch via `GetPubkey`.
+ACK replacement is **not** part of the regular deploy cycle and should not
+be scheduled as a routine annual rotation. Use it when no accounts are
+bound to the old Guardian commitment, when standing up a replacement
+Guardian, or as part of incident response after suspected key exposure.
 
-Procedure (planned rotation, e.g. annual):
+Before replacing ACK values for a live stack, decide how existing accounts
+will be migrated:
 
-1. Announce the rotation window to all consumers that pin a pubkey.
-2. Generate new key material on a trusted host:
+- Prefer a `SwitchGuardian` flow that moves each account to a Guardian
+  endpoint whose `GetPubkey` already returns the new commitment.
+- For emergency compromise response, replacing the secret immediately
+  stops the old identity from signing new ACKs, but existing accounts must
+  still be moved to the new commitment before normal non-switch proposal
+  execution resumes.
+- Downstream clients that cache or pin Guardian identity must refetch
+  `GetPubkey` after the change.
+
+Procedure:
+
+1. Generate new key material on a trusted host:
    ```bash
    cargo run --quiet --package guardian-server --bin ack-keygen > /tmp/ack-keys.json
    ```
-3. Put new values into Secrets Manager — `update-secret` creates a new
+2. Put new values into Secrets Manager — `update-secret` creates a new
    version without disturbing the secret ID. Reuse the same
    `$FALCON` / `$ECDSA` IDs you resolved in the Verify block above so
    multi-stack deploys hit the right secret:
@@ -116,32 +137,35 @@ Procedure (planned rotation, e.g. annual):
      --secret-id "$ECDSA" \
      --secret-string "$ECDSA_VALUE"
    ```
-4. Force a new ECS deployment so tasks restart and import the new keys:
+3. Force a new ECS deployment so tasks restart and import the new keys:
    ```bash
    aws ecs update-service --cluster <stack>-cluster \
      --service <stack>-server --force-new-deployment
    ```
-5. Confirm rotation:
+4. Confirm the replacement:
    ```bash
    curl https://guardian.openzeppelin.com/pubkey
    ```
    Should return the new key material.
-6. Securely shred `/tmp/ack-keys.json`.
+5. Securely shred `/tmp/ack-keys.json`.
 
 ### Compromise response
 
 If you believe an ACK secret leaked:
 
-1. **Immediately** rotate using the procedure above — bypass any change
-   window.
+1. **Immediately** replace the ACK values using the procedure above —
+   bypass any change window.
 2. Revoke any operator AWS credentials that could have read the secret
    (CloudTrail `GetSecretValue` events scoped to those secret ARNs are the
    audit trail).
 3. Force-cycle all tasks (`update-service --force-new-deployment`) so the
    old keys are no longer resident in any task's filesystem keystore.
-4. Inform downstream clients to refetch the pubkey and invalidate cached
+4. Move affected accounts to the new Guardian commitment with the
+   account-level `SwitchGuardian` flow, or keep them paused/unavailable
+   until that migration is complete.
+5. Inform downstream clients to refetch the pubkey and invalidate cached
    verifiers.
-5. File an incident referencing the secret ARN, the rotation timestamp,
+6. File an incident referencing the secret ARN, the replacement timestamp,
    and the CloudTrail evidence.
 
 ## Operator public keys
@@ -250,7 +274,7 @@ relevant principals you should see hitting each secret:
 |---|---|
 | `DATABASE_URL` | ECS task execution role only |
 | `database-credentials` (proxy) | RDS Proxy IAM role only |
-| ACK Falcon / ECDSA | ECS task runtime role (on cold start) + operators running `bootstrap-ack-keys` or rotation |
+| ACK Falcon / ECDSA | ECS task runtime role (on cold start) + operators running `bootstrap-ack-keys` or emergency replacement |
 | Operator pubkeys | ECS task runtime role + operators updating the list |
 | EVM chains / RPCs | ECS task execution role only |
 
@@ -260,7 +284,7 @@ Any other principal touching these secrets is suspicious.
 
 - **No KMS CMK** — Secrets Manager uses the default AWS-owned key. Move
   to a CMK before enabling cross-account access.
-- **No automated rotation lambdas** — all rotations are operator-driven.
+- **No automated rotation lambdas** — secret changes are operator-driven.
 - **No envelope encryption of ACK secret values** — Secrets Manager
   protects the secret at rest; the value itself is the raw key material
   that the server imports into its filesystem keystore on startup.

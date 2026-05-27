@@ -30,6 +30,35 @@ Three decisions when running Guardian locally:
   Miden Devnet endpoint or run one locally; configure via
   `GUARDIAN_NETWORK_TYPE`.
 
+## Environment file
+
+The server calls `dotenvy::dotenv()` on startup, so `cargo run --bin server`
+automatically reads a root `.env` file when one exists. A `.env` file is not
+strictly required for the default filesystem server, but it is recommended for
+local `cargo run` because the built-in filesystem defaults live under
+`/var/guardian`, which may not exist or be writable on a developer machine.
+
+Minimal local `.env`:
+
+```bash
+GUARDIAN_STORAGE_PATH=.guardian/storage
+GUARDIAN_METADATA_PATH=.guardian/metadata
+GUARDIAN_KEYSTORE_PATH=.guardian/keystore
+GUARDIAN_NETWORK_TYPE=MidenDevnet
+RUST_LOG=info
+```
+
+Create the directories once before the first run:
+
+```bash
+mkdir -p .guardian/storage .guardian/metadata .guardian/keystore
+```
+
+Use `.env.example` as a broader template when you need deploy variables,
+Postgres, dashboard operators, or EVM settings. Docker Compose does not inject
+the root `.env` into the server container by default; the checked-in compose
+file already sets the container filesystem paths.
+
 ## Path A — `cargo run` with filesystem (fastest)
 
 ```bash
@@ -37,15 +66,15 @@ cargo run --bin server
 ```
 
 This builds with no extra features and uses the **filesystem** backend.
-Required env (defaults in parentheses):
+Useful env:
 
 | Variable | Notes |
 |---|---|
-| `GUARDIAN_STORAGE_PATH` | Local path for state + deltas. |
-| `GUARDIAN_METADATA_PATH` | Local path for accounts, auth, network. |
-| `GUARDIAN_KEYSTORE_PATH` (`/var/guardian/keystore`) | ACK key files. Auto-generated on first run. |
+| `GUARDIAN_STORAGE_PATH` | Local path for state + deltas. Defaults to `/var/guardian/storage`. |
+| `GUARDIAN_METADATA_PATH` | Local path for accounts, auth, network. Defaults to `/var/guardian/metadata`. |
+| `GUARDIAN_KEYSTORE_PATH` | ACK key files, auto-generated on first run. Defaults to `/var/guardian/keystore`. |
 | `RUST_LOG` (`info`) | `info`, `debug`, or e.g. `server::jobs::canonicalization=debug`. |
-| `GUARDIAN_NETWORK_TYPE` | Miden network name. |
+| `GUARDIAN_NETWORK_TYPE` (`MidenDevnet`) | Miden network name. |
 
 At startup the server emits a warning that audit events will **not** be
 persisted — that's expected for filesystem mode
@@ -84,14 +113,14 @@ setups: `--features postgres,evm`. Pair with an Anvil node — the
 ## Path D — Docker Compose
 
 ```bash
-cp .env.example .env
 docker compose up --build -d
 docker compose logs -f
 ```
 
-This is the default Compose flow — **filesystem backend**, no Postgres. For
-a Postgres-backed compose stack use `docker-compose.postgres.yml`. Endpoints
-are the same as Path A (`:3000`, `:50051`).
+This is the default Compose flow — **filesystem backend**, no Postgres, no
+root `.env` required. For a Postgres-backed compose stack use
+`docker-compose.postgres.yml`. Endpoints are the same as Path A (`:3000`,
+`:50051`).
 
 ## Choosing a feature flag combo
 
@@ -110,7 +139,7 @@ The deploy script builds with `postgres,evm` when the EVM stack is requested
 
 ```bash
 curl http://localhost:3000/                   # liveness
-curl http://localhost:3000/pubkey             # ACK Falcon pubkey
+curl http://localhost:3000/pubkey             # ACK key commitment
 grpcurl -plaintext \
   -import-path crates/server/proto -proto guardian.proto \
   -d '{}' localhost:50051 guardian.Guardian/GetPubkey

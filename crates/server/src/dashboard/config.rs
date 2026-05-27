@@ -1,6 +1,7 @@
 use chrono::Duration;
 
 use crate::middleware::RateLimitConfig;
+use crate::network::NetworkType;
 
 pub(crate) const OPEN_DASHBOARD_DOMAIN: &str = "*";
 pub(crate) const DEFAULT_CANONICAL_DOMAIN: &str = OPEN_DASHBOARD_DOMAIN;
@@ -15,8 +16,7 @@ pub(crate) const DEFAULT_PUBKEY_RATE_PER_MIN: u32 = 30;
 /// deployments, per FR-029 of `005-operator-dashboard-metrics`.
 pub(crate) const DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD: usize = 1_000;
 /// Default deployment environment identifier exposed on
-/// `GET /dashboard/info`. Operators set `GUARDIAN_ENVIRONMENT` to
-/// override (e.g. `mainnet`, `testnet`, `staging`).
+/// `GET /dashboard/info`.
 pub(crate) const DEFAULT_ENVIRONMENT: &str = "testnet";
 
 #[derive(Clone, Debug)]
@@ -39,11 +39,9 @@ pub struct DashboardConfig {
 }
 
 impl DashboardConfig {
-    pub fn from_env() -> std::result::Result<Self, String> {
+    pub fn from_env_for_network(network_type: NetworkType) -> std::result::Result<Self, String> {
         let mut config = Self::default();
-        if let Ok(env) = std::env::var("GUARDIAN_ENVIRONMENT") {
-            config.environment = env;
-        }
+        config.environment = environment_for_network(network_type).to_string();
         if let Ok(secret_hex) = std::env::var("GUARDIAN_DASHBOARD_CURSOR_SECRET") {
             config.cursor_secret_hex = Some(secret_hex);
         }
@@ -64,6 +62,14 @@ impl DashboardConfig {
 
     pub(crate) fn cursor_secret_hex(&self) -> Option<&str> {
         self.cursor_secret_hex.as_deref()
+    }
+}
+
+fn environment_for_network(network_type: NetworkType) -> &'static str {
+    match network_type {
+        NetworkType::MidenTestnet => "testnet",
+        NetworkType::MidenDevnet => "devnet",
+        NetworkType::MidenLocal => "local",
     }
 }
 
@@ -112,6 +118,28 @@ mod tests {
         assert_eq!(
             config.filesystem_aggregate_threshold(),
             DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn environment_is_derived_from_network_type() {
+        assert_eq!(
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet)
+                .unwrap()
+                .environment(),
+            "testnet"
+        );
+        assert_eq!(
+            DashboardConfig::from_env_for_network(NetworkType::MidenDevnet)
+                .unwrap()
+                .environment(),
+            "devnet"
+        );
+        assert_eq!(
+            DashboardConfig::from_env_for_network(NetworkType::MidenLocal)
+                .unwrap()
+                .environment(),
+            "local"
         );
     }
 }

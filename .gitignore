@@ -3,6 +3,7 @@ store.sqlite3
 /keystore/
 miden-client.toml
 templates/
+.guardian/
 .env
 .env.evm
 .env.prod

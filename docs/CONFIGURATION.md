@@ -80,8 +80,10 @@ multi-stack deployments get scoped IDs.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
-| `GUARDIAN_ENVIRONMENT` | `testnet` | Cosmetic string surfaced on `GET /dashboard/info` (`mainnet` / `testnet` / `staging`). |
 | `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value when running ≥2 ECS tasks so cursors validate across replicas. |
+
+`GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
+(`testnet`, `devnet`, or `local`) rather than configured separately.
 
 Allowlist payload shapes and enrollment flow:
 [`docs/DASHBOARD.md`](./DASHBOARD.md).

@@ -271,6 +271,36 @@ console.log('Signers:', detected.signerCommitments);
 console.log('Vault balances:', detected.vaultBalances);
 ```
 
+### Recovering Accounts By Key
+
+Use `recoverByKey` when a wallet has a signing key from an account's
+authorization set but does not know the account ID yet. The helper queries
+Guardian's `/state/lookup` endpoint with proof-of-possession of the key,
+fetches state for each matching account, and returns `(accountId, state)`
+pairs.
+
+```typescript
+const recovered = await client.recoverByKey(signer);
+
+if (recovered.length === 0) {
+  console.log('No account on this Guardian authorizes this key');
+}
+
+for (const { accountId, state } of recovered) {
+  console.log('Recovered account:', accountId);
+  console.log('State commitment:', state.commitment);
+
+  const multisig = await client.load(accountId, signer);
+  // Continue with normal proposal or sync flows.
+}
+```
+
+The signer passed to `recoverByKey` must implement `signLookupMessage`. The
+bundled `FalconSigner`, `EcdsaSigner`, Miden Wallet signer, and Para signer
+support it. Multiple matches are valid: the same key commitment may authorize
+more than one account, and the method returns all matches instead of choosing
+one implicitly.
+
 ### Proposal Operations
 
 #### P2ID Transfer (Send Funds)
@@ -378,6 +408,7 @@ await multisig.executeProposal(signedProposal.id);
 |--------|-------------|
 | `create(config, signer)` | Create new multisig account |
 | `load(accountId, signer)` | Load existing account from GUARDIAN |
+| `recoverByKey(signer)` | Discover accounts that authorize the signer's key and fetch each current state |
 | `guardianClient` | Access to underlying GUARDIAN HTTP client |
 
 #### Multisig
@@ -412,6 +443,7 @@ await multisig.executeProposal(signedProposal.id);
 | `publicKey` | Serialized public key (hex) |
 | `signRequest(id, timestamp, requestPayload)` | Sign account ID + timestamp + request payload digest for auth |
 | `signCommitment(hex)` | Sign commitment/word |
+| `signLookupMessage(timestamp, keyCommitment)` | Sign account-less lookup digest for `recoverByKey` |
 
 #### AccountInspector
 
@@ -488,6 +520,34 @@ println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
 println!("GUARDIAN enabled: {}", account.guardian_enabled()?);
 ```
+
+### Recovering Accounts By Key
+
+Use `recover_by_key` when the configured signer is known but the account ID is
+not. The client signs a lookup-bound authentication message, asks Guardian for
+accounts that authorize the signer's commitment, fetches state for each match,
+and returns `RecoveredAccount` values.
+
+```rust
+let recovered = client.recover_by_key().await?;
+
+if recovered.is_empty() {
+    println!("No account on this Guardian authorizes this key");
+}
+
+for entry in recovered {
+    println!("Recovered account: {}", entry.account_id);
+    println!("State commitment: {}", entry.state.commitment);
+
+    let account_id = AccountId::from_hex(&entry.account_id)?;
+    client.pull_account(account_id).await?;
+    // Continue with normal proposal or sync flows.
+}
+```
+
+An empty list means the key is valid but this Guardian has no account metadata
+that authorizes its commitment. Authentication failures, malformed lookup
+responses, and per-account `get_state` failures are returned as errors.
 
 ### Transaction Types
 
@@ -615,6 +675,7 @@ for note in notes {
 | `account_id()` | Get account ID (Option) |
 | `user_commitment()` | Get user's key commitment |
 | `user_commitment_hex()` | Get commitment as hex |
+| `recover_by_key()` | Discover accounts that authorize the configured signer and fetch each current state |
 | `propose_transaction(tx)` | Create and submit proposal |
 | `propose_with_fallback(tx)` | Online or offline proposal |
 | `list_proposals()` | List pending proposals |

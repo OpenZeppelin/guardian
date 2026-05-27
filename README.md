@@ -13,10 +13,11 @@ Warning: This is a work in progress.
   [Concepts](docs/CONCEPTS.md) for the custody model and state/delta
   lifecycle, then [Quickstart](docs/QUICKSTART.md) (60-second hello)
   or [Local development](docs/LOCAL_DEV.md) (depth). Also covers
+  [Production](docs/PRODUCTION.md) (supported production shape),
   [Configuration](docs/CONFIGURATION.md) (every env var),
   [Troubleshooting](docs/TROUBLESHOOTING.md), architecture (services
-  and AWS deployment), the operator dashboard, the secrets and
-  disaster-recovery runbooks, and the multisig SDK guide.
+  and AWS deployment), the operator dashboard, the secrets runbook, and
+  the multisig SDK guide.
 - [`spec/`](spec/index.md) — protocol specification. Core concepts
   (State and Delta), components (API, Metadata, Auth, Acknowledger,
   Network, Storage), and key processes such as canonicalization. Start
@@ -94,27 +95,23 @@ cargo run -p guardian-server --features evm --bin server
 
 #### Running with Docker Compose
 
-1. Copy `.env.example` to `.env`
-
-```bash
-cp .env.example .env
-```
-
-2. Edit `.env` with your configuration
-
-3. Start the server:
+The default compose file sets the container paths it needs, so a root `.env`
+is not required for this path. Start the server:
 
 ```bash
 docker compose up --build -d
 ```
 
-4. View logs:
+For direct `cargo run` development, create a local `.env` as described in
+[`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md#environment-file).
+
+View logs:
 
 ```bash
 docker compose logs -f
 ```
 
-5. Stop services:
+Stop services:
 
 ```bash
 docker compose down
