@@ -403,14 +403,15 @@ EVM proposal response:
 
 ### GET /dashboard/accounts
 
-- Requires `guardian_operator_session`.
+- Requires `guardian_operator_session` and `dashboard:read`.
 - **Breaking change vs. `003-operator-account-apis`** (feature
   `005-operator-dashboard-metrics` US1 / FR-001..FR-008): the endpoint
   is now always paginated. The previous unparameterized full-inventory
   mode and the `total_count` field are removed. Aggregate inventory
   totals are now exposed only via `GET /dashboard/info`.
 - Query: optional `limit` (default 50, max 500), optional `cursor`
-  (opaque token, from a prior page's `next_cursor`).
+  (opaque token, from a prior page's `next_cursor`), optional `paused`
+  (`true` or `false`) to filter by account pause state.
 - Ordered by `(updated_at DESC, account_id ASC)`. Cursor is stable
   under concurrent inserts; concurrent updates to `updated_at` MAY
   cause an account to be skipped or repeated across a traversal
@@ -418,23 +419,86 @@ EVM proposal response:
   is mutable).
 - 200 envelope: `{ items: DashboardAccountSummary[], next_cursor: string | null }`.
 - Each entry shape unchanged from `003-operator-account-apis` per
-  FR-006 (superset compatibility): `account_id`, `auth_scheme`,
+  FR-006 (superset compatibility) plus pause/account-id helpers:
+  `account_id`, optional `account_id_bech32`, `auth_scheme`,
   `authorized_signer_count`, `has_pending_candidate`,
-  `current_commitment`, `state_status`, `created_at`, `updated_at`.
+  `current_commitment`, `state_status`, `created_at`, `updated_at`,
+  `paused_at`, `paused_reason`.
+  - `account_id_bech32`: Miden Bech32m form for Miden accounts;
+    absent for EVM accounts or unparsable Miden IDs.
+  - `paused_at`: RFC3339 timestamp or `null`.
+  - `paused_reason`: string or `null`.
 - 400: `invalid_limit` for `limit ∉ [1, 500]`; `invalid_cursor` for
   tampered, malformed, or stale cursor.
 - 401: `authentication_failed` for missing or invalid operator session.
+- 403: `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` when the operator
+  lacks `dashboard:read`.
+
+### GET /dashboard/accounts/{account_id}
+
+- Requires `guardian_operator_session` and `dashboard:read`.
+- Returns the account detail directly, with no `{ success, account }`
+  wrapper.
+- 200 shape: `DashboardAccountDetail`, which includes every
+  `DashboardAccountSummary` field plus:
+  - `authorized_signer_ids`: sorted, deduplicated signer commitments
+    or EVM signer addresses.
+  - `state_created_at`: RFC3339 timestamp or `null`.
+  - `state_updated_at`: RFC3339 timestamp or `null`.
+- 404: `account_not_found`.
+- 503: `account_data_unavailable` when metadata exists but the current
+  state row cannot be read.
+
+### POST /dashboard/accounts/{account_id}/pause
+
+- Requires `guardian_operator_session` and `accounts:pause`.
+- Body: `{ "reason": string }`.
+  - `reason` is required, non-empty, and limited to 512 characters.
+- Idempotent. Pausing an already-paused account succeeds and returns
+  the original persisted `paused_at` / `paused_reason`.
+- 200 shape:
+  - `account_id`
+  - `before_state`: `"active" | "paused"`
+  - `after_state`: `"active" | "paused"`; always `"paused"` on
+    success.
+  - `paused_at`: RFC3339 timestamp of the original pause.
+  - `paused_reason`: persisted pause reason.
+- 400: `invalid_input` for malformed body or invalid reason.
+- 403: `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` with
+  `missing_permissions: ["accounts:pause"]` and `retryable: false`.
+- 404: `account_not_found`.
+
+### POST /dashboard/accounts/{account_id}/unpause
+
+- Requires `guardian_operator_session` and `accounts:pause`.
+- Body: empty body or `{ "reason": string | null }`.
+  - When supplied and non-null, `reason` follows the same validation
+    rules as pause.
+- Idempotent. Unpausing an active account succeeds without state
+  change and still emits an audit event.
+- 200 shape:
+  - `account_id`
+  - `before_state`: `"active" | "paused"`
+  - `after_state`: `"active" | "paused"`; always `"active"` on
+    success.
+  - `reason`: string or `null`, echoing the operator-supplied unpause
+    reason.
+- 400: `invalid_input` for malformed body or invalid reason.
+- 403: `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` with
+  `missing_permissions: ["accounts:pause"]` and `retryable: false`.
+- 404: `account_not_found`.
 
 ### GET /dashboard/info
 
-- Requires `guardian_operator_session`.
+- Requires `guardian_operator_session` and `dashboard:read`.
 - Returns a single point-in-time inventory and lifecycle health
   snapshot for the Guardian instance per feature
   `005-operator-dashboard-metrics` US2 / FR-008..FR-012.
 - Response shape:
   - `service_status`: `"healthy" | "degraded"`.
-  - `environment`: deployment environment identifier (e.g.
-    `mainnet`, `testnet`). Set via `GUARDIAN_ENVIRONMENT`.
+  - `environment`: deployment environment identifier derived from
+    `GUARDIAN_NETWORK_TYPE` (currently `testnet`, `devnet`, or
+    `local`).
   - `total_account_count`: total configured accounts.
   - `latest_activity`: greater of the most recent delta status
     timestamp and the most recent in-flight proposal originating
@@ -458,33 +522,111 @@ EVM proposal response:
   full-scanning the on-disk inventory; `total_account_count` is
   always returned.
 - 401: `authentication_failed`.
+- 403: `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` when the operator
+  lacks `dashboard:read`.
+
+### Dashboard Delta Metadata Shapes
+
+The per-account and global delta feeds return `DashboardDeltaEntry`
+objects. The global feed requires `account_id`; the per-account feed
+omits it because the path scopes the account.
+
+Common `DashboardDeltaEntry` fields:
+
+- `account_id`: string, global feed only.
+- `nonce`: per-account `u64`, serialized as a JSON number.
+- `status`: `"candidate" | "canonical" | "discarded"`.
+- `status_timestamp`: RFC3339 timestamp for the current lifecycle
+  status.
+- `prev_commitment`: hex state commitment before the delta.
+- `new_commitment`: hex state commitment after the delta, or `null`.
+- `retry_count`: present only for `candidate` entries.
+- `category`: optional closed enum:
+  `"asset_transfer" | "note_consumption" | "note_creation" |
+  "account_storage_change" | "guardian_switch" | "custom"`.
+- `proposal_type`: optional multisig proposal intent label from
+  `metadata.proposal.proposal_type`.
+- `assets`: optional array of `{ asset_id, kind, amount? }`.
+  - `kind`: `"fungible" | "non_fungible"`.
+  - `amount`: signed decimal string for fungible assets; omitted for
+    non-fungible assets.
+- `counterparty`: optional `{ account_id, direction }`, where
+  `direction` is `"in" | "out"`.
+- `note_counts`: optional `{ input: number, output: number }`.
+
+Delta detail responses additionally use:
+
+- `proposal`: optional object with `proposal_type`, `description`,
+  `salt`, `required_signatures`, `recipient_id`, `faucet_id`,
+  `amount`, `note_ids`, `consume_notes_metadata_version`,
+  `consume_notes_notes`, `target_threshold`, `signer_commitments`,
+  `new_guardian_pubkey`, `new_guardian_endpoint`, and
+  `target_procedure` when available.
+- `input_notes` / `output_notes`: arrays of decoded notes:
+  `{ note_id, tag, assets, sender?, recipient? }`, where `tag` is
+  `"p2id" | "p2ide" | "pswap" | "mint" | "burn" | "custom"`.
+- `vault_changes`: array of tagged entries:
+  - `{ kind: "fungible", asset_id, change }`
+  - `{ kind: "non_fungible", asset_id, added, removed }`
+- `storage_changes`: array of `{ slot_name, key?, before?, after }`.
+- `decode_warnings`: optional array of `{ section, reason }`, where
+  `section` is `"tx_summary" | "metadata" | "input_notes" |
+  "output_notes" | "vault" | "storage"`.
+- `raw_transaction_summary`: optional base64 persisted
+  `TransactionSummary`, present only when requested with
+  `?include=raw`.
 
 ### GET /dashboard/accounts/{account_id}/deltas
 
-- Requires `guardian_operator_session` (operator dashboard auth).
+- Requires `guardian_operator_session` and `dashboard:read`.
 - Query: optional `limit` (default 50, max 500), optional `cursor` (opaque, from a prior page's `next_cursor`).
 - Returns the per-account delta feed, paginated newest-first by `nonce DESC`. The per-account `nonce` is a domain sequence number set at insert and never mutated (it is distinct from the table's `id` bigserial), so cursors are fully stable per FR-005.
 - Surfaces only the lifecycle statuses persisted in `deltas`: `candidate`, `canonical`, `discarded`. `pending` proposals are exposed via `/dashboard/accounts/{id}/proposals`.
 - 200 envelope: `{ items: DashboardDeltaEntry[], next_cursor: string | null }`.
-- Each entry: `{ nonce, status, status_timestamp, prev_commitment, new_commitment | null, retry_count? }`. `retry_count` is present (default `0`) on `candidate` entries only.
+- Each entry uses the richer `DashboardDeltaEntry` shape described in
+  [Dashboard Delta Metadata Shapes](#dashboard-delta-metadata-shapes).
+  `retry_count` is present (default `0`) on `candidate` entries only.
 - 400: `invalid_limit` for `limit ∉ [1, 500]`; `invalid_cursor` for tampered, malformed, or stale cursor.
 - 404: `account_not_found`.
 - 503: `data_unavailable` when metadata exists but delta records cannot be loaded.
 
+### GET /dashboard/accounts/{account_id}/deltas/{nonce}
+
+- Requires `guardian_operator_session` and `dashboard:read`.
+- Path `nonce` must be canonical base-10 `u64`. Empty, negative,
+  hexadecimal, non-decimal, out-of-range, or leading-zero values other
+  than `"0"` are rejected.
+- Query: optional `include=raw`. Unknown `include` tokens are ignored;
+  only `raw` is currently honored.
+- Returns a detail projection for one persisted delta. Unknown account
+  and unknown nonce both map to `delta_not_found` so callers receive the
+  same error body shape.
+- 200 shape: `DashboardDeltaDetail`:
+  `{ account_id, nonce, status, status_timestamp, prev_commitment,
+  new_commitment?, retry_count?, category?, proposal?, input_notes,
+  output_notes, vault_changes, storage_changes, decode_warnings?,
+  raw_transaction_summary? }`.
+- The endpoint returns `200` even when one or more decode sections fail;
+  failed sections are empty and `decode_warnings` carries details.
+- 400: `invalid_input` for malformed `nonce`.
+- 404: `delta_not_found`.
+- 503: `data_unavailable` when metadata exists but the delta record
+  cannot be loaded.
+
 ### GET /dashboard/accounts/{account_id}/proposals
 
-- Requires `guardian_operator_session`.
+- Requires `guardian_operator_session` and `dashboard:read`.
 - Query: optional `limit` (default 50, max 500), optional `cursor`.
 - Returns the in-flight multisig proposal queue for one account (i.e. `DeltaStatus::Pending` rows in `delta_proposals`), paginated newest-first by `(nonce DESC, commitment DESC)` — both fields immutable, fully stable cursors.
 - Single-key Miden accounts and EVM accounts (`Auth::EvmEcdsa`) always return an empty page; EVM proposals do not flow through `delta_proposals` in v1 (see feature `005-operator-dashboard-metrics` FR-017).
 - 200 envelope: `{ items: DashboardProposalEntry[], next_cursor: string | null }`.
-- Each entry: `{ commitment, nonce, proposer_id, originating_timestamp, signatures_collected, signatures_required, prev_commitment, new_commitment | null }`. `signatures_required` is derived from the account's auth policy (`cosigner_commitments.len()` for `MidenFalconRpo` / `MidenEcdsa`).
+- Each entry: `{ commitment, nonce, proposer_id, originating_timestamp, signatures_collected, signatures_required, prev_commitment, new_commitment | null, proposal_type? }`. `signatures_required` is derived from the account's auth policy (`cosigner_commitments.len()` for `MidenFalconRpo` / `MidenEcdsa`).
 - No raw signature bytes and no per-cosigner identity list are exposed (FR-021).
 - Errors mirror the deltas endpoint: 400 `invalid_limit` / `invalid_cursor`, 404 `account_not_found`, 503 `data_unavailable`.
 
 ### GET /dashboard/accounts/{account_id}/snapshot
 
-- Requires `guardian_operator_session`.
+- Requires `guardian_operator_session` and `dashboard:read`.
 - Returns a **decoded snapshot** of Guardian's stored state for one account at the commitment Guardian last canonicalized. v1 surface exposes the Miden `AssetVault` (fungible + non-fungible entries). Spec reference: feature `005-operator-dashboard-metrics` FR-043..FR-046.
 - The endpoint does **not** make live Miden RPC calls, perform cross-account aggregations, or join with delta history — the response is derived purely from `states.state_json` for the given account. New fields land on this response as additive top-level keys derivable from the same stored blob (FR-046).
 - 200 shape:
@@ -500,20 +642,20 @@ EVM proposal response:
 
 ### GET /dashboard/deltas
 
-- Requires `guardian_operator_session`.
+- Requires `guardian_operator_session` and `dashboard:read`.
 - Query: optional `limit` (default 50, max 500), optional `cursor`, optional `status` (comma-separated subset of `{candidate, canonical, discarded}`, e.g. `status=candidate,canonical`).
 - Cross-account delta feed paginated newest-first by `status_timestamp DESC` with `(account_id ASC, nonce ASC)` as the stable tie-breaker. Per FR-005, cursor traversal is stable under concurrent inserts but a delta whose `status_timestamp` is bumped mid-traversal (e.g. `candidate → canonical`) MAY be skipped or repeated.
-- 200 envelope: `{ items: DashboardGlobalDeltaEntry[], next_cursor: string | null }`. Each entry has every field of a per-account delta entry (per US3) plus `account_id`. `pending` entries are not surfaced here — they live on the global proposal feed.
+- 200 envelope: `{ items: DashboardGlobalDeltaEntry[], next_cursor: string | null }`. Each entry uses the richer `DashboardDeltaEntry` shape described in [Dashboard Delta Metadata Shapes](#dashboard-delta-metadata-shapes), with required `account_id`. `pending` entries are not surfaced here — they live on the global proposal feed.
 - 400: `invalid_limit`, `invalid_cursor`, `invalid_status_filter` for unknown values in the `?status=` filter or empty CSV tokens.
 - 503: `data_unavailable` above the configured `filesystem_aggregate_threshold` (default 1,000 accounts) per FR-029, OR when a per-account delta read fails.
 - Smallest priority slice of feature `005-operator-dashboard-metrics` (US6 / FR-031..FR-035, FR-040).
 
 ### GET /dashboard/proposals
 
-- Requires `guardian_operator_session`.
+- Requires `guardian_operator_session` and `dashboard:read`.
 - Query: optional `limit` (default 50, max 500), optional `cursor`. **No** `status` filter — every entry is in-flight by definition (FR-035).
 - Cross-account in-flight proposal feed paginated newest-first by `originating_timestamp DESC` with `(account_id ASC, commitment ASC)` as the stable tie-breaker. Originating timestamp is immutable while the proposal remains in the queue, so cursor traversal is fully stable for the lifetime of a queued proposal.
-- 200 envelope: `{ items: DashboardGlobalProposalEntry[], next_cursor: string | null }`. Each entry has every field of a per-account proposal entry (per US4) plus `account_id`.
+- 200 envelope: `{ items: DashboardGlobalProposalEntry[], next_cursor: string | null }`. Each entry has every field of a per-account proposal entry (per US4), including optional `proposal_type`, plus `account_id`.
 - EVM accounts (`Auth::EvmEcdsa`) do not appear in the feed in v1 (FR-017).
 - 400: `invalid_limit`, `invalid_cursor`. 503: `data_unavailable` above the threshold per FR-029.
 - Smallest priority slice of feature `005-operator-dashboard-metrics` (US7 / FR-035..FR-037, FR-040).
@@ -556,9 +698,17 @@ Stable error codes include:
 - `invalid_cursor` (dashboard pagination, see feature `005-operator-dashboard-metrics`)
 - `invalid_limit`
 - `invalid_status_filter`
+- `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
+- `GUARDIAN_ACCOUNT_PAUSED`
 - `data_unavailable`
 
-HTTP endpoints that return structured error envelopes include `code` when available. gRPC responses include `error_code` in response messages and use matching gRPC status codes for transport errors.
+HTTP endpoints that return structured error envelopes include `code` when available.
+`GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` additionally carries
+`missing_permissions: string[]` and `retryable: false`.
+`GUARDIAN_ACCOUNT_PAUSED` additionally carries `paused_at`,
+`paused_reason`, and `retryable: false`. gRPC responses include
+`error_code` in response messages and use matching gRPC status codes for
+transport errors.
 
 ## gRPC
 

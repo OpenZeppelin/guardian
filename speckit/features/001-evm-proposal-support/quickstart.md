@@ -15,7 +15,7 @@ Expected result:
 
 ```bash
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
-GUARDIAN_EVM_ENTRYPOINTS=31337=0x... \
+GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x... \
 cargo run -p guardian-server --features evm --bin server
 ```
 
@@ -50,7 +50,7 @@ POST /evm/accounts
 Expected result:
 
 - Guardian derives `evm:<chain_id>:<account_address>`
-- RPC and EntryPoint are resolved from server env maps
+- RPC endpoints are resolved from the `GUARDIAN_EVM_RPC_URLS` map; the EntryPoint address is read from the single `GUARDIAN_EVM_ENTRYPOINT_ADDRESS` env var
 - `isModuleInstalled(1, validator, 0x)` succeeds
 - the session EOA is a current validator signer
 - signer snapshot and threshold are stored in metadata

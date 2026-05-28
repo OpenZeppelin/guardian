@@ -8,6 +8,9 @@ description: Deploy, update, inspect, and troubleshoot the repository AWS ECS en
 Read the current source of truth at the start of every task:
 
 - `docs/SERVER_AWS_DEPLOY.md`
+- `docs/PRODUCTION.md`
+- `docs/architecture/infra.md`
+- `docs/runbooks/secrets.md`
 - `scripts/aws-deploy.sh`
 - `infra/variables.tf`
 - `infra/terraform.tfvars.example`
@@ -18,6 +21,8 @@ Trust these sources in this order:
 1. `scripts/aws-deploy.sh` for supported commands, flags, and shell env vars
 2. `infra/*.tf` and `infra/variables.tf` for actual Terraform behavior
 3. `docs/SERVER_AWS_DEPLOY.md` and `infra/README.md` for operator workflow
+
+When deployment commands, Terraform variables, secret names, DNS behavior, runtime defaults, or supported stack topology change, update the matching operator docs in the same task. Use the Documentation Impact Check in `AGENTS.md` to avoid stale deploy guidance.
 
 ## Preflight
 
@@ -167,3 +172,4 @@ Report:
 - Terraform outputs that changed
 - health checks performed
 - blockers found between state, docs, and Terraform code
+- docs checked or updated

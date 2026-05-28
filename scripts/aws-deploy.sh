@@ -6,13 +6,15 @@ set -euo pipefail
 #
 # Commands:
 #   deploy   - Build/push image and run Terraform apply
+#   plan     - Run Terraform plan without building or applying
+#   build    - Build and push the Docker image to ECR
 #   bootstrap-ack-keys - Create the prod ACK key secrets in Secrets Manager
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
 #
 # Options:
-#   --skip-build - Skip Docker build and push (use existing image)
+#   --skip-build - Skip Docker build and push during deploy
 #
 # Optional environment variables:
 #   AWS_REGION            - AWS region (default: us-east-1)
@@ -741,10 +743,12 @@ case "${COMMAND:-}" in
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
+    echo "  ./scripts/aws-deploy.sh build"
+    echo "  ./scripts/aws-deploy.sh plan"
+    echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys"
     echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
-    echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"
     ;;

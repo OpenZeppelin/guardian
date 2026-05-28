@@ -7,25 +7,36 @@ It is optimized for safe, cross-layer changes in a multi-language codebase.
 
 Work from the bottom up:
 
-1. `crates/server` (core system of record)
-2. `crates/client` and `packages/guardian-client` (base Rust/TS clients over GUARDIAN)
-3. `crates/miden-multisig-client` and `packages/miden-multisig-client` (higher-level multisig SDKs)
+1. `crates/server` (core system of record — gRPC, HTTP REST, operator dashboard, optional EVM)
+2. Base clients (one per server surface)
+   - `crates/client` + `packages/guardian-client` (Rust gRPC + TS HTTP REST for the per-account API)
+   - `packages/guardian-operator-client` (TS HTTP client for the operator dashboard surface)
+   - `packages/guardian-evm-client` (TS HTTP client for the feature-gated EVM surface)
+3. Higher-level SDKs
+   - `crates/miden-multisig-client` + `packages/miden-multisig-client` (multisig flow on top of base clients)
 4. `examples/` (verification and debugging surfaces)
-   - `examples/demo` = CLI/TUI multisig flow
-   - `examples/web` = browser multisig flow
+   - `examples/demo` = CLI/TUI multisig flow (Rust)
+   - `examples/web` = browser multisig flow (TS)
    - `examples/rust` = low-level Rust integration examples
+   - `examples/smoke-web` = TS multisig smoke harness
+   - `examples/operator-smoke-web` = operator dashboard auth + account-API smoke harness
+   - `examples/evm-smoke-web` = EVM proposal lifecycle smoke harness
 
-If a behavior changes in a lower layer, verify and propagate impact upward.
+If a behavior changes in a lower layer, verify and propagate impact upward across every relevant base client.
 
 ## 2) Repo Map
 
-- `crates/server`: GUARDIAN server (HTTP + gRPC), storage, metadata, auth, canonicalization jobs
-- `crates/client`: Rust gRPC client SDK
-- `packages/guardian-client`: TS HTTP client SDK
+- `crates/server`: GUARDIAN server — gRPC + HTTP + `/dashboard/*` + feature-gated `/evm/*`, storage, metadata, auth, canonicalization jobs
+- `crates/client`: Rust gRPC client SDK (per-account API)
+- `packages/guardian-client`: TS HTTP REST client SDK (per-account API)
+- `packages/guardian-operator-client`: TS HTTP client for the operator dashboard surface (`/dashboard/*`); session-cookie auth, permission vocabulary
+- `packages/guardian-evm-client`: TS HTTP client for the feature-gated EVM surface (`/evm/*`)
 - `crates/miden-multisig-client`: Rust multisig SDK on top of Miden + GUARDIAN
 - `packages/miden-multisig-client`: TS multisig SDK on top of Miden + GUARDIAN
 - `crates/shared`: shared Rust primitives/utilities
 - `spec/`: system and protocol-level behavior docs
+- `docs/`: contributor- and operator-facing documentation hub (start at `docs/CONCEPTS.md`)
+- `infra/`: Terraform for the AWS reference deployment
 - `examples/`: validation apps and reference flows
 
 ## 3) Core Change Rules
@@ -46,15 +57,19 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
    - HTTP shapes/serialization in server services and API modules
 2. Update Rust client compatibility:
    - `crates/client` (proto, request/response mapping, auth/signature handling)
-3. Update TS client compatibility:
-   - `packages/guardian-client/src/server-types.ts`
-   - request/response adapters and tests
+3. Update TS client compatibility (each affected surface):
+   - `packages/guardian-client/src/server-types.ts` — per-account API
+   - `packages/guardian-operator-client` — when `/dashboard/*` shapes, permission vocabulary, or session/cookie semantics change
+   - `packages/guardian-evm-client` — when `/evm/*` shapes change
+   - request/response adapters and tests in each touched package
 4. Update multisig SDK layers if proposal/state shape changed:
    - `crates/miden-multisig-client`
    - `packages/miden-multisig-client`
-5. Validate via examples:
-   - `examples/demo` for CLI flow
-   - `examples/web` for browser flow
+5. Validate via examples (use the matching smoke harness for the surface you changed):
+   - `examples/demo` for the Rust CLI multisig flow
+   - `examples/web` / `examples/smoke-web` for the TS multisig flow
+   - `examples/operator-smoke-web` for dashboard / operator-client changes
+   - `examples/evm-smoke-web` for EVM proposal flow changes
 6. Run targeted tests, then broader suite.
 
 ## 5) Layer-Specific Guidance
@@ -79,6 +94,20 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 - Keep `server-types.ts` aligned with real server JSON responses.
 - Keep conversion code explicit rather than permissive.
 - Validate error-shape handling (`GuardianHttpError`) when endpoint responses change.
+- This client is HTTP REST against `:3000`; it does **not** speak gRPC. Do not assume parity with `crates/client` at the transport layer.
+
+### TS Operator Client (`packages/guardian-operator-client`)
+
+- Targets the `/dashboard/*` surface, **not** the per-account API. It is a separate auth domain: challenge → Falcon-signed session → cookie, not per-request `x-pubkey`/`x-signature` headers.
+- When the server's permission vocabulary (`dashboard:read`, `accounts:pause`, `policies:write`) or allowlist payload shape changes, update `permissions.ts` and the allowlist parsing tests in the same PR.
+- Validate cookie / session expectations when changing `/dashboard/auth/*` shapes; the operator allowlist is hot-reloaded on every challenge and authenticated request, so don't add restart-required assumptions.
+- The matching smoke harness is `examples/operator-smoke-web`.
+
+### TS EVM Client (`packages/guardian-evm-client`)
+
+- Feature-gated against the server's `evm` build feature. Treat the client as optional in cross-layer changes — only touch it when server `/evm/*` shapes move.
+- The allowed chain set is derived from `GUARDIAN_EVM_RPC_URLS` keys on the server side; the client should not maintain its own allowlist.
+- Validate against `examples/evm-smoke-web` when changing proposal shapes, session auth, or finality logic.
 
 ### Rust Multisig SDK (`crates/miden-multisig-client`)
 
@@ -121,6 +150,8 @@ cargo test -p guardian-server --features e2e
 
 ```bash
 cd packages/guardian-client && npm test
+cd packages/guardian-operator-client && npm test
+cd packages/guardian-evm-client && npm test
 cd packages/miden-multisig-client && npm test
 ```
 
@@ -150,31 +181,48 @@ When touching any high-risk area, add or update tests before finishing.
 Before finishing, confirm all are true:
 
 1. Architecture impact assessed bottom-up (server -> clients -> multisig -> examples).
-2. Protocol/data-shape changes reflected in both Rust and TS stacks.
-   - If server contract changed, updates in `crates/client` and `packages/guardian-client` must be included in the same PR.
+2. Protocol/data-shape changes reflected in every affected client surface.
+   - Per-account API change → `crates/client` **and** `packages/guardian-client` in the same PR.
+   - Dashboard `/dashboard/*` change → `packages/guardian-operator-client` in the same PR.
+   - EVM `/evm/*` change → `packages/guardian-evm-client` in the same PR.
 3. Tests updated where behavior changed.
 4. At least one upstream consumer validated for changed lower-layer behavior.
 5. README/docs touched if external behavior changed.
 6. No unrelated file churn.
 
-## 9) Practical Defaults
+## 9) Documentation Impact Check
+
+Do not update docs mechanically for every code edit. Do check and update the matching docs whenever a change affects user-visible behavior, public APIs, SDK methods, auth/signature behavior, configuration, deployment flow, smoke-test workflow, or example startup assumptions.
+
+Common mappings:
+
+- Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
+- Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
+- EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
+- Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`
+- Local dev or test startup -> `README.md`, `CONTRIBUTING.md`, relevant example README or quickstart
+
+When docs are not updated after a visible behavior change, note why in the final report or PR notes.
+
+## 10) Practical Defaults
 
 - Prefer `rg`/`rg --files` for discovery.
 - Keep edits ASCII unless existing file requires otherwise.
 - Keep comments minimal and only where logic is non-obvious.
 - Avoid speculative refactors during bugfixes.
 
-## 10) Versioning Policy
+## 11) Versioning Policy
 
 - Keep crate/package versions aligned with the active Miden dependency line.
-- Current baseline is Miden `0.13.x`; changes must remain compatible with that line unless migration is explicit.
-- If a change requires moving to a new Miden line (for example `0.14.x`), treat it as a coordinated release task:
+- Current baseline is Miden `0.14.x`; changes must remain compatible with that line unless migration is explicit.
+- If a change requires moving to a new Miden line, treat it as a coordinated release task:
   1. Update workspace/dependency constraints.
   2. Update both multisig SDKs and both base clients as needed.
   3. Re-run cross-layer validation (including examples).
   4. Update docs and changelog/release notes to call out the dependency line change.
 
-## 11) Coding Style (Multisig Focus)
+## 12) Coding Style (Multisig Focus)
 
 Apply these rules especially to:
 - `crates/miden-multisig-client`
