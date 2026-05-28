@@ -14,6 +14,9 @@ services:
       - guardian-storage:/var/guardian/storage
       - guardian-metadata:/var/guardian/metadata
       - guardian-keystore:/var/guardian/keystore
+    env_file:
+      - path: .env
+        required: false
     environment:
       - RUST_LOG=info
       - GUARDIAN_STORAGE_PATH=/var/guardian/storage

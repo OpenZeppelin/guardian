@@ -1,6 +1,16 @@
 version: "3.8"
 
 services:
+  server:
+    build:
+      args:
+        GUARDIAN_SERVER_FEATURES: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+
   postgres:
     image: postgres:16-alpine
     ports:
