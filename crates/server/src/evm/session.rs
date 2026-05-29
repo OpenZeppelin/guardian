@@ -169,7 +169,9 @@ impl EvmSessionState {
         let session = sessions
             .get(&session_digest(token))
             .cloned()
-            .ok_or_else(|| GuardianError::AuthenticationFailed("Invalid EVM session".to_string()))?;
+            .ok_or_else(|| {
+                GuardianError::AuthenticationFailed("Invalid EVM session".to_string())
+            })?;
         Ok(AuthenticatedEvmSession {
             address: session.address,
         })

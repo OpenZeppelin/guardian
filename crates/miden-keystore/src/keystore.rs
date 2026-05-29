@@ -68,13 +68,9 @@ impl<R: RngCore + Send + Sync> FilesystemKeyStore<R> {
 
         let mut writer = BufWriter::new(file);
         let encoded = Zeroizing::new(hex::encode(key_bytes));
-        writer
-            .write_all(encoded.as_bytes())
-            .map_err(|error| {
-                KeyStoreError::StorageError(format!(
-                    "Failed to write key to file {filename}: {error}"
-                ))
-            })?;
+        writer.write_all(encoded.as_bytes()).map_err(|error| {
+            KeyStoreError::StorageError(format!("Failed to write key to file {filename}: {error}"))
+        })?;
 
         writer.flush().map_err(|error| {
             KeyStoreError::StorageError(format!("Failed to flush key file {filename}: {error}"))

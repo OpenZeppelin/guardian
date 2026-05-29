@@ -756,18 +756,17 @@ mod tests {
     #[tokio::test]
     async fn session_lookup_round_trips_via_digest() {
         let operator = TestSigner::new();
-        let state =
-            DashboardState::for_tests(vec![(
-                "operator-1".to_string(),
-                operator.commitment_hex.clone(),
-            )]);
+        let state = DashboardState::for_tests(vec![(
+            "operator-1".to_string(),
+            operator.commitment_hex.clone(),
+        )]);
         let now = Utc::now();
         let challenge = state
             .issue_challenge(&operator.commitment_hex, now)
             .await
             .expect("challenge");
-        let signature = operator
-            .sign_word(Word::from_hex(&challenge.signing_digest).expect("digest"));
+        let signature =
+            operator.sign_word(Word::from_hex(&challenge.signing_digest).expect("digest"));
         let session = state
             .verify(&operator.commitment_hex, &signature, now)
             .await
@@ -786,18 +785,17 @@ mod tests {
     #[tokio::test]
     async fn session_map_never_holds_plaintext_token() {
         let operator = TestSigner::new();
-        let state =
-            DashboardState::for_tests(vec![(
-                "operator-1".to_string(),
-                operator.commitment_hex.clone(),
-            )]);
+        let state = DashboardState::for_tests(vec![(
+            "operator-1".to_string(),
+            operator.commitment_hex.clone(),
+        )]);
         let now = Utc::now();
         let challenge = state
             .issue_challenge(&operator.commitment_hex, now)
             .await
             .expect("challenge");
-        let signature = operator
-            .sign_word(Word::from_hex(&challenge.signing_digest).expect("digest"));
+        let signature =
+            operator.sign_word(Word::from_hex(&challenge.signing_digest).expect("digest"));
         let session = state
             .verify(&operator.commitment_hex, &signature, now)
             .await
