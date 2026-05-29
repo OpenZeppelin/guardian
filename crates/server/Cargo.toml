@@ -28,6 +28,7 @@ rand_chacha = { workspace = true }
 secrecy = { version = "0.10", default-features = false }
 serde = { workspace = true }
 subtle = "2.5"
+url = "2.5"
 zeroize = { version = "1.7", features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

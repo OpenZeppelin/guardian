@@ -1,4 +1,5 @@
 use chrono::Duration;
+use zeroize::Zeroizing;
 
 use crate::dashboard::cursor::CursorSecret;
 use crate::middleware::RateLimitConfig;
@@ -44,7 +45,8 @@ impl DashboardConfig {
     pub fn from_env_for_network(network_type: NetworkType) -> std::result::Result<Self, String> {
         let cursor_secret = std::env::var("GUARDIAN_DASHBOARD_CURSOR_SECRET")
             .ok()
-            .map(|hex| CursorSecret::from_hex(&hex))
+            .map(Zeroizing::new)
+            .map(|hex| CursorSecret::from_hex(hex.as_str()))
             .transpose()
             .map_err(|e| {
                 format!(
@@ -105,7 +107,51 @@ impl Default for DashboardConfig {
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
+    use std::sync::{LazyLock, Mutex};
+
     use super::*;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        // secret-fields-allow: test-only env mutation guarded by ENV_LOCK
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     #[test]
     fn default_filesystem_aggregate_threshold_is_1000() {
@@ -132,7 +178,34 @@ mod tests {
     }
 
     #[test]
+    fn from_env_parses_valid_cursor_secret_hex() {
+        let _guard = EnvVarGuard::set(
+            "GUARDIAN_DASHBOARD_CURSOR_SECRET",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        );
+        let mut config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("parses");
+        assert!(config.take_cursor_secret().is_some());
+        assert!(
+            config.take_cursor_secret().is_none(),
+            "take_cursor_secret must be one-shot"
+        );
+    }
+
+    #[test]
+    fn from_env_rejects_invalid_cursor_secret_hex() {
+        let _guard = EnvVarGuard::set("GUARDIAN_DASHBOARD_CURSOR_SECRET", "not-hex");
+        let err = DashboardConfig::from_env_for_network(NetworkType::MidenTestnet)
+            .expect_err("invalid hex must error");
+        assert!(
+            err.contains("GUARDIAN_DASHBOARD_CURSOR_SECRET"),
+            "error must name the env var: {err}"
+        );
+    }
+
+    #[test]
     fn environment_is_derived_from_network_type() {
+        let _cursor = EnvVarGuard::remove("GUARDIAN_DASHBOARD_CURSOR_SECRET");
         assert_eq!(
             DashboardConfig::from_env_for_network(NetworkType::MidenTestnet)
                 .unwrap()

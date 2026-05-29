@@ -88,6 +88,17 @@ fn credential_url_scheme_and_host_strips_userinfo_and_query() {
 
     let at_in_query = CredentialUrl::new("https://api.example.com/?to=me@host".to_owned());
     assert_eq!(at_in_query.scheme_and_host(), "https://api.example.com");
+
+    // Userinfo without an '@' delimiter (malformed authority): the previous
+    // string-splitting heuristic would treat `alice:secret` as `host:port`
+    // and emit the secret verbatim. Confirm it now renders as <invalid-url>
+    // (port is non-numeric, so url::Url rejects the input).
+    let no_at = CredentialUrl::new("postgres://alice:secret/db".to_owned());
+    let rendered = no_at.scheme_and_host();
+    assert!(
+        !rendered.contains("secret"),
+        "scheme_and_host leaked password portion: {rendered}"
+    );
 }
 
 #[test]

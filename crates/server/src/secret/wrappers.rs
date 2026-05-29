@@ -2,6 +2,7 @@ use std::fmt;
 
 use secrecy::{ExposeSecret, SecretBox};
 use subtle::ConstantTimeEq;
+use url::Url;
 
 pub(crate) struct FixedKey<const N: usize> {
     inner: SecretBox<[u8; N]>,
@@ -168,21 +169,14 @@ impl PartialEq for CredentialUrl {
 impl Eq for CredentialUrl {}
 
 fn scheme_and_host(raw: &str) -> String {
-    let (scheme, rest) = match raw.split_once("://") {
-        Some(parts) => parts,
-        None => return "<invalid-url>".to_owned(),
-    };
-    if scheme.is_empty() {
+    let Ok(url) = Url::parse(raw) else {
         return "<invalid-url>".to_owned();
-    }
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    let host_port = match authority.rsplit_once('@') {
-        Some((_, after)) => after,
-        None => authority,
     };
-    if host_port.is_empty() {
+    let Some(host) = url.host_str() else {
         return "<invalid-url>".to_owned();
+    };
+    match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
     }
-    format!("{scheme}://{host_port}")
 }
