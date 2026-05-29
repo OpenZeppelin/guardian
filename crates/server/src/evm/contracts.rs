@@ -148,7 +148,7 @@ impl EvmContractReader {
 
     fn provider(&self) -> Result<impl alloy::providers::Provider + Clone> {
         let url =
-            self.config.rpc_url.parse().map_err(|e| {
+            self.config.rpc_url.expose_secret().parse().map_err(|e| {
                 GuardianError::InvalidNetworkConfig(format!("invalid RPC URL: {e}"))
             })?;
         Ok(ProviderBuilder::new().connect_http(url))

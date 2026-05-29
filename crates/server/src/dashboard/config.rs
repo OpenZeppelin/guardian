@@ -1,5 +1,6 @@
 use chrono::Duration;
 
+use crate::dashboard::cursor::CursorSecret;
 use crate::middleware::RateLimitConfig;
 use crate::network::NetworkType;
 
@@ -29,25 +30,32 @@ pub struct DashboardConfig {
     pub(crate) commitment_rate_limit: RateLimitConfig,
     pub(crate) filesystem_aggregate_threshold: usize,
     pub(crate) environment: String,
-    /// Optional 32-byte hex-encoded HMAC secret for the dashboard
-    /// cursor codec. When `None`, [`DashboardState`] generates a fresh
-    /// random secret per process — fine for single-replica
-    /// deployments and unit tests; multi-replica deployments must
-    /// pin a shared secret here so cursors validate across replicas.
-    /// Sourced from `GUARDIAN_DASHBOARD_CURSOR_SECRET`.
-    pub(crate) cursor_secret_hex: Option<String>,
+    /// Optional pre-parsed HMAC secret for the dashboard cursor codec.
+    /// When `None`, [`DashboardState`] generates a fresh random secret
+    /// per process — fine for single-replica deployments and unit
+    /// tests; multi-replica deployments must pin a shared secret here
+    /// so cursors validate across replicas. Sourced from
+    /// `GUARDIAN_DASHBOARD_CURSOR_SECRET` (parsed at config-load time
+    /// so no intermediate `String` lives in the config).
+    pub(crate) cursor_secret: Option<CursorSecret>,
 }
 
 impl DashboardConfig {
     pub fn from_env_for_network(network_type: NetworkType) -> std::result::Result<Self, String> {
-        let mut config = Self {
+        let cursor_secret = std::env::var("GUARDIAN_DASHBOARD_CURSOR_SECRET")
+            .ok()
+            .map(|hex| CursorSecret::from_hex(&hex))
+            .transpose()
+            .map_err(|e| {
+                format!(
+                    "GUARDIAN_DASHBOARD_CURSOR_SECRET must be 32 hex-encoded bytes (64 chars): {e}"
+                )
+            })?;
+        Ok(Self {
             environment: environment_for_network(network_type).to_string(),
+            cursor_secret,
             ..Self::default()
-        };
-        if let Ok(secret_hex) = std::env::var("GUARDIAN_DASHBOARD_CURSOR_SECRET") {
-            config.cursor_secret_hex = Some(secret_hex);
-        }
-        Ok(config)
+        })
     }
 
     pub fn for_tests() -> Self {
@@ -62,8 +70,8 @@ impl DashboardConfig {
         &self.environment
     }
 
-    pub(crate) fn cursor_secret_hex(&self) -> Option<&str> {
-        self.cursor_secret_hex.as_deref()
+    pub(crate) fn take_cursor_secret(&mut self) -> Option<CursorSecret> {
+        self.cursor_secret.take()
     }
 }
 
@@ -90,7 +98,7 @@ impl Default for DashboardConfig {
             },
             filesystem_aggregate_threshold: DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD,
             environment: DEFAULT_ENVIRONMENT.to_string(),
-            cursor_secret_hex: None,
+            cursor_secret: None,
         }
     }
 }

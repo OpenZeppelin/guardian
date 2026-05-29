@@ -1,4 +1,5 @@
 use crate::error::{GuardianError, Result};
+use crate::secret::{SecretBytes, SecretString};
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_sdk_secretsmanager::Client;
@@ -39,7 +40,7 @@ impl AwsSecretsManagerProvider {
         })
     }
 
-    async fn secret_string(&self, secret_id: &str) -> Result<String> {
+    async fn secret_string(&self, secret_id: &str) -> Result<SecretString> {
         let response = self
             .client
             .get_secret_value()
@@ -52,11 +53,14 @@ impl AwsSecretsManagerProvider {
                 ))
             })?;
 
-        response.secret_string().map(str::to_owned).ok_or_else(|| {
-            GuardianError::ConfigurationError(format!(
-                "Secret {secret_id} does not contain a secret string value"
-            ))
-        })
+        response
+            .secret_string()
+            .map(|s| SecretString::new(s.to_owned()))
+            .ok_or_else(|| {
+                GuardianError::ConfigurationError(format!(
+                    "Secret {secret_id} does not contain a secret string value"
+                ))
+            })
     }
 
     async fn parsed_secret_key<T, F>(&self, secret_id: &str, parser: F) -> Result<T>
@@ -64,13 +68,15 @@ impl AwsSecretsManagerProvider {
         F: FnOnce(&[u8]) -> std::result::Result<T, String>,
     {
         let secret_hex = self.secret_string(secret_id).await?;
-        let secret_bytes = hex::decode(secret_hex.trim()).map_err(|error| {
-            GuardianError::ConfigurationError(format!(
-                "Secret {secret_id} must contain valid hex-encoded key bytes: {error}"
-            ))
-        })?;
+        let secret_bytes = SecretBytes::new(
+            hex::decode(secret_hex.expose_secret().trim()).map_err(|error| {
+                GuardianError::ConfigurationError(format!(
+                    "Secret {secret_id} must contain valid hex-encoded key bytes: {error}"
+                ))
+            })?,
+        );
 
-        parser(&secret_bytes).map_err(|error| {
+        parser(secret_bytes.expose_secret()).map_err(|error| {
             GuardianError::ConfigurationError(format!(
                 "Secret {secret_id} does not contain a valid key: {error}"
             ))

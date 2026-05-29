@@ -3,10 +3,17 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::error::{GuardianError, Result};
 use crate::metadata::network::normalize_evm_address;
+
+/// SHA-256 digest of the session token used as the storage key, so the
+/// plaintext token is never retained beyond the issuing request.
+fn session_digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
 
 const COOKIE_NAME: &str = "guardian_evm_session";
 const CHALLENGE_TTL_SECS: i64 = 300;
@@ -16,7 +23,7 @@ const MAX_OUTSTANDING_CHALLENGES: usize = 8;
 #[derive(Clone)]
 pub struct EvmSessionState {
     challenges: Arc<Mutex<HashMap<String, Vec<PendingEvmChallenge>>>>,
-    sessions: Arc<Mutex<HashMap<String, EvmSessionRecord>>>,
+    sessions: Arc<Mutex<HashMap<[u8; 32], EvmSessionRecord>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,10 +141,11 @@ impl EvmSessionState {
         let token = random_hex_32();
         let expires_at = now + Duration::seconds(SESSION_TTL_SECS);
         let cookie_header = self.session_cookie_header(&token, expires_at);
+        let session_key = session_digest(&token);
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
         sessions.insert(
-            token,
+            session_key,
             EvmSessionRecord {
                 address: address.clone(),
                 expires_at,
@@ -158,9 +166,10 @@ impl EvmSessionState {
     ) -> Result<AuthenticatedEvmSession> {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
-        let session = sessions.get(token).cloned().ok_or_else(|| {
-            GuardianError::AuthenticationFailed("Invalid EVM session".to_string())
-        })?;
+        let session = sessions
+            .get(&session_digest(token))
+            .cloned()
+            .ok_or_else(|| GuardianError::AuthenticationFailed("Invalid EVM session".to_string()))?;
         Ok(AuthenticatedEvmSession {
             address: session.address,
         })
@@ -170,7 +179,7 @@ impl EvmSessionState {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
         if let Some(token) = token {
-            sessions.remove(token);
+            sessions.remove(&session_digest(token));
         }
     }
 

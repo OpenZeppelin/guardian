@@ -140,6 +140,14 @@ tooling; otherwise follow the example's README.
   describe what well-named code already says.
 - **Backwards compatibility:** don't add compatibility shims for behavior
   the task didn't ask for. See `AGENTS.md` §3, rule 6.
+- **Secrets in server memory:** every long-lived secret-bearing field in
+  `crates/server` must use a wrapper from `crates/server/src/secret/`
+  (`FixedKey<N>`, `SecretBytes`, `SecretString`, `CredentialUrl`). Read a
+  secret-bearing env var and wrap it in a single expression — never bind
+  the raw `String` to a config field or local. Reviewers must confirm this
+  for any new secret-shaped field; the compile-time assertions in
+  `crates/server/src/secret/tests.rs` enforce that wrappers can never be
+  logged (`Display`), serialized (`Serialize`), or placed in a response DTO.
 
 ## Docs
 

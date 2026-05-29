@@ -11,6 +11,7 @@ use crate::metadata::MetadataStore;
 use crate::metadata::filesystem::FilesystemMetadataStore;
 #[cfg(feature = "postgres")]
 use crate::metadata::postgres::PostgresMetadataStore;
+use crate::secret::CredentialUrl;
 use crate::storage::StorageBackend;
 #[cfg(not(feature = "postgres"))]
 use crate::storage::filesystem::FilesystemService;
@@ -29,7 +30,7 @@ const ENV_METADATA_DB_POOL_MAX_SIZE: &str = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE"
 pub struct StorageMetadataBuilder {
     storage_path: Option<PathBuf>,
     metadata_path: Option<PathBuf>,
-    database_url: Option<String>,
+    database_url: Option<CredentialUrl>,
     database_pool_max_size: Option<usize>,
     metadata_pool_max_size: Option<usize>,
 }
@@ -49,8 +50,8 @@ impl StorageMetadataBuilder {
         self
     }
 
-    pub fn database_url(mut self, url: String) -> Self {
-        self.database_url = Some(url);
+    pub(crate) fn database_url(mut self, url: Option<CredentialUrl>) -> Self {
+        self.database_url = url;
         self
     }
 
@@ -76,7 +77,12 @@ impl StorageMetadataBuilder {
                     .unwrap_or_else(|_| "/var/guardian/metadata".to_string())
                     .into(),
             )
-            .database_url(std::env::var("DATABASE_URL").ok().unwrap_or_default())
+            .database_url(
+                std::env::var("DATABASE_URL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .map(CredentialUrl::new),
+            )
     }
 
     pub async fn build(
@@ -93,7 +99,7 @@ impl StorageMetadataBuilder {
         {
             let database_url = self
                 .database_url
-                .filter(|url| !url.is_empty())
+                .filter(|url| !url.expose_secret().is_empty())
                 .ok_or_else(|| "DATABASE_URL environment variable is required".to_string())?;
             let database_pool_max_size = resolve_pool_size(
                 self.database_pool_max_size,
@@ -106,10 +112,10 @@ impl StorageMetadataBuilder {
                 database_pool_max_size,
             )?;
 
-            postgres::run_migrations(&database_url).await?;
-            let storage = PostgresService::new(&database_url, database_pool_max_size).await?;
-            let metadata =
-                PostgresMetadataStore::new(&database_url, metadata_pool_max_size).await?;
+            let raw_url = database_url.expose_secret();
+            postgres::run_migrations(raw_url).await?;
+            let storage = PostgresService::new(raw_url, database_pool_max_size).await?;
+            let metadata = PostgresMetadataStore::new(raw_url, metadata_pool_max_size).await?;
             let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
 
             Ok((Arc::new(storage), Arc::new(metadata), auditor))
@@ -214,8 +220,12 @@ mod tests {
     #[test]
     fn test_database_url_sets_url() {
         let url = "postgres://localhost/test".to_string();
-        let builder = StorageMetadataBuilder::new().database_url(url.clone());
-        assert_eq!(builder.database_url, Some(url));
+        let builder =
+            StorageMetadataBuilder::new().database_url(Some(CredentialUrl::new(url.clone())));
+        assert_eq!(
+            builder.database_url.as_ref().map(|u| u.expose_secret()),
+            Some(url.as_str())
+        );
     }
 
     #[test]
@@ -239,26 +249,37 @@ mod tests {
         let builder = StorageMetadataBuilder::new()
             .storage_path(storage_path.clone())
             .metadata_path(metadata_path.clone())
-            .database_url(database_url.clone())
+            .database_url(Some(CredentialUrl::new(database_url.clone())))
             .database_pool_max_size(24)
             .metadata_pool_max_size(12);
 
         assert_eq!(builder.storage_path, Some(storage_path));
         assert_eq!(builder.metadata_path, Some(metadata_path));
-        assert_eq!(builder.database_url, Some(database_url));
+        assert_eq!(
+            builder.database_url.as_ref().map(|u| u.expose_secret()),
+            Some(database_url.as_str())
+        );
         assert_eq!(builder.database_pool_max_size, Some(24));
         assert_eq!(builder.metadata_pool_max_size, Some(12));
     }
 
     #[test]
     fn test_from_env_returns_builder_with_paths() {
-        // Test that from_env returns a builder with storage_path and metadata_path set
-        // We can't reliably test specific values due to env var state from other tests
+        // Test that from_env returns a builder with storage_path and metadata_path set.
+        // database_url is intentionally None when DATABASE_URL is unset or empty —
+        // the previous "always Some(empty string)" behavior masked a real-absent value.
         let builder = StorageMetadataBuilder::from_env();
 
         assert!(builder.storage_path.is_some());
         assert!(builder.metadata_path.is_some());
-        assert!(builder.database_url.is_some());
+        match std::env::var("DATABASE_URL") {
+            Ok(value) if !value.is_empty() => {
+                assert!(builder.database_url.is_some());
+            }
+            _ => {
+                assert!(builder.database_url.is_none());
+            }
+        }
     }
 
     #[cfg(not(feature = "postgres"))]
@@ -387,7 +408,8 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn test_build_with_empty_database_url_fails() {
-        let builder = StorageMetadataBuilder::new().database_url(String::new());
+        let builder =
+            StorageMetadataBuilder::new().database_url(Some(CredentialUrl::new(String::new())));
 
         let result = builder.build().await;
         assert!(result.is_err());

@@ -135,6 +135,20 @@ turns them into Terraform variables or build-time choices.
 | `GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN` | _unset_ | Same, for the bookkeeping chain-ID list. |
 | `TF_VAR_*` | _unset_ | Any standard Terraform var override; the script passes through. |
 
+## Secrets in env vars — scope of in-process protection
+
+Secret-bearing env vars (`DATABASE_URL`, `GUARDIAN_DASHBOARD_CURSOR_SECRET`,
+`GUARDIAN_EVM_RPC_URLS`) are wrapped at the point of read into
+zero-on-drop, no-`Display`/no-`Serialize` types inside the server
+process, so they cannot accidentally appear in logs, panic messages, or
+serialized responses. **This does not protect the OS process
+environment block** — `/proc/<pid>/environ`, coredumps, fork-inherited
+env, and ECS task-definition `environment` fields all remain visible at
+the OS layer regardless. For the highest-sensitivity material (ACK
+signing keys) prefer the AWS Secrets Manager runtime-fetch path
+(`GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID`),
+which is already how production loads those keys.
+
 ## What's _not_ env-configurable
 
 A few things are deliberately compile-time or builder-API only — knowing
