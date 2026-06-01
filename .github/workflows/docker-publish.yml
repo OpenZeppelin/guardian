@@ -25,13 +25,16 @@ on:
 
 permissions:
   contents: read
+  packages: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: docker-publish
   cancel-in-progress: false
 
 env:
-  DOCKERHUB_IMAGE: openzeppelin/guardian
+  IMAGE: ghcr.io/openzeppelin/guardian
 
 jobs:
   publish:
@@ -84,19 +87,20 @@ jobs:
             echo "full=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Reject already-published version
         if: ${{ !inputs.overwrite }}
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          if docker manifest inspect "${DOCKERHUB_IMAGE}:${VERSION}" > /dev/null 2>&1; then
-            echo "::error::${DOCKERHUB_IMAGE}:${VERSION} already exists. Re-run with overwrite=true to replace it."
+          if docker manifest inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
+            echo "::error::${IMAGE}:${VERSION} already exists. Re-run with overwrite=true to replace it."
             exit 1
           fi
 
@@ -110,7 +114,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ env.IMAGE }}
           flavor: latest=false
           tags: |
             type=raw,value=${{ inputs.version }}
@@ -141,15 +145,12 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      - name: Update Docker Hub description
-        continue-on-error: true
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PAT }}
-          repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: ${{ github.event.repository.description }}
-          readme-filepath: ./README.md
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
       - name: Publish summary
         env:
@@ -159,7 +160,7 @@ jobs:
           SHORT_SHA: ${{ steps.commit.outputs.short }}
         run: |
           {
-            echo "### Published \`${DOCKERHUB_IMAGE}\`"
+            echo "### Published \`${IMAGE}\`"
             echo
             echo "**Digest:** \`${DIGEST}\`"
             echo

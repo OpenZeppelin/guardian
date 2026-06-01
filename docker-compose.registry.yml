@@ -1,21 +1,21 @@
-# Run the published Guardian server image from Docker Hub (no local build).
+# Run the published Guardian server image from GHCR (no local build).
 #
-#   cp .env.hub.example .env.hub        # then set POSTGRES_PASSWORD in it
-#   GUARDIAN_VERSION=v1.2.3 docker compose --env-file .env.hub -f docker-compose.hub.yml up
+#   cp .env.registry.example .env.registry        # then set POSTGRES_PASSWORD in it
+#   GUARDIAN_VERSION=v1.2.3 docker compose --env-file .env.registry -f docker-compose.registry.yml up
 #
 # GUARDIAN_VERSION defaults to :latest. The published image is built with the
 # `postgres` feature, so state/metadata live in Postgres (DATABASE_URL) — the
 # filesystem storage/metadata paths are unused in this mode and intentionally
 # omitted; only the keystore stays on disk.
 #
-# `.env.hub` (gitignored) drives this stack via `--env-file`: Compose reads
+# `.env.registry` (gitignored) drives this stack via `--env-file`: Compose reads
 # POSTGRES_PASSWORD / GUARDIAN_VERSION from it for interpolation, and the server
-# container also loads it (env_file) for runtime config (see .env.hub.example).
+# container also loads it (env_file) for runtime config (see .env.registry.example).
 # The shared repo `.env` (AWS/deploy config) is intentionally NOT used here.
 
 services:
   server:
-    image: openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
     pull_policy: always
     ports:
       - "3000:3000"
@@ -26,12 +26,12 @@ services:
     volumes:
       - guardian-keystore:/var/guardian/keystore
     env_file:
-      - path: .env.hub
+      - path: .env.registry
         required: false
     environment:
       - RUST_LOG=info
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
-      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.hub}@postgres:5432/guardian
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.registry}@postgres:5432/guardian
 
   postgres:
     image: postgres:16-alpine

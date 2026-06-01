@@ -8,12 +8,12 @@ The deployment surface supports two stage profiles:
 
 ## Published Docker images
 
-Prebuilt, versioned server images are published to Docker Hub at
-`openzeppelin/guardian`, so you can pull a known-good image instead of building
-from source:
+Prebuilt, versioned server images are published to the GitHub Container Registry
+(GHCR) at `ghcr.io/openzeppelin/guardian`, so you can pull a known-good image
+instead of building from source:
 
 ```bash
-docker pull openzeppelin/guardian:<version>   # e.g. v1.2.3, or :latest
+docker pull ghcr.io/openzeppelin/guardian:<version>   # e.g. v1.2.3, or :latest
 ```
 
 Images are multi-architecture (`linux/amd64` + `linux/arm64`) and fully
@@ -23,30 +23,30 @@ baked in (see [`docs/CONFIGURATION.md`](./CONFIGURATION.md)):
 ```bash
 docker run --rm -p 3000:3000 -p 50051:50051 \
   --env-file ./guardian.env \
-  openzeppelin/guardian:<version>
+  ghcr.io/openzeppelin/guardian:<version>
 ```
 
-To run the published image with a Postgres backend locally, use the Docker Hub
+To run the published image with a Postgres backend locally, use the registry
 compose file (no local build):
 
 ```bash
-cp .env.hub.example .env.hub          # then set POSTGRES_PASSWORD in .env.hub
-GUARDIAN_VERSION=<version> docker compose --env-file .env.hub -f docker-compose.hub.yml up
+cp .env.registry.example .env.registry          # then set POSTGRES_PASSWORD in .env.registry
+GUARDIAN_VERSION=<version> docker compose --env-file .env.registry -f docker-compose.registry.yml up
 ```
 
-The stack is driven entirely by the gitignored `.env.hub` (see
-`.env.hub.example`): Compose reads `POSTGRES_PASSWORD` / `GUARDIAN_VERSION` from
+The stack is driven entirely by the gitignored `.env.registry` (see
+`.env.registry.example`): Compose reads `POSTGRES_PASSWORD` / `GUARDIAN_VERSION` from
 it for interpolation (via `--env-file`), and the server container loads it for
 runtime config. The shared repo `.env` (AWS/deploy config) is intentionally not
 used here, so this example never mutates it. The repo's default
 `docker-compose.yml` (and the `docker-compose.postgres.yml` override) instead
-build the server from source for contributors; `docker-compose.hub.yml` pulls
+build the server from source for contributors; `docker-compose.registry.yml` pulls
 the published image.
 
 Maintainers publish a version by running the **Docker Publish** GitHub Actions
 workflow (manual dispatch: pick the branch to build from and the version to tag).
 The AWS deploy below still builds and pushes to ECR via `scripts/aws-deploy.sh`;
-consuming the Docker Hub image from the deploy flow is a separate, later change.
+consuming the published GHCR image from the deploy flow is a separate, later change.
 
 ## Prerequisites
 
