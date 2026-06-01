@@ -65,6 +65,7 @@ jobs:
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           ref: ${{ steps.ref.outputs.ref }}
+          persist-credentials: false
 
       - name: Resolve checked-out commit
         id: commit
@@ -154,13 +155,15 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_REF: ${{ steps.ref.outputs.ref }}
+          SHORT_SHA: ${{ steps.commit.outputs.short }}
         run: |
           {
             echo "### Published \`${DOCKERHUB_IMAGE}\`"
             echo
             echo "**Digest:** \`${DIGEST}\`"
             echo
-            echo "**Source ref:** \`${{ steps.ref.outputs.ref }}\` @ \`${{ steps.commit.outputs.short }}\`"
+            echo "**Source ref:** \`${SOURCE_REF}\` @ \`${SHORT_SHA}\`"
             echo
             echo "**Tags:**"
             echo '```'
