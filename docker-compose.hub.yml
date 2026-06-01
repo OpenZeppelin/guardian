@@ -1,0 +1,53 @@
+# Run the published Guardian server image from Docker Hub (no local build).
+#
+#   echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
+#   cp .env.hub.example .env.hub   # optional: extra server config
+#   GUARDIAN_VERSION=v1.2.3 docker compose -f docker-compose.hub.yml up
+#
+# GUARDIAN_VERSION defaults to :latest. The published image is built with the
+# `postgres` feature, so state/metadata live in Postgres (DATABASE_URL) — the
+# filesystem storage/metadata paths are unused in this mode and intentionally
+# omitted. Only the keystore stays on disk.
+#
+# `.env` is used ONLY for Compose interpolation (POSTGRES_PASSWORD, GUARDIAN_VERSION)
+# and is NOT injected into the container — the repo `.env` holds AWS/deploy config
+# unrelated to the server. Server runtime config goes in `.env.hub`
+# (gitignored; see .env.hub.example and docs/CONFIGURATION.md).
+
+services:
+  server:
+    image: openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    pull_policy: always
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+    env_file:
+      - path: .env.hub
+        required: false
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  guardian-keystore:
+  guardian-postgres:
