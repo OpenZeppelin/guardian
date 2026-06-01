@@ -3,7 +3,7 @@
 #   cp .env.registry.example .env.registry        # then set POSTGRES_PASSWORD in it
 #   GUARDIAN_VERSION=v1.2.3 docker compose --env-file .env.registry -f docker-compose.registry.yml up
 #
-# GUARDIAN_VERSION defaults to :latest. The published image is built with the
+# GUARDIAN_VERSION defaults to the `latest` tag. The published image is built with the
 # `postgres` feature, so state/metadata live in Postgres (DATABASE_URL) — the
 # filesystem storage/metadata paths are unused in this mode and intentionally
 # omitted; only the keystore stays on disk.

@@ -13,7 +13,7 @@ Prebuilt, versioned server images are published to the GitHub Container Registry
 instead of building from source:
 
 ```bash
-docker pull ghcr.io/openzeppelin/guardian:<version>   # e.g. v1.2.3, or :latest
+docker pull ghcr.io/openzeppelin/guardian:<version>   # e.g. v1.2.3, or latest
 ```
 
 Images are multi-architecture (`linux/amd64` + `linux/arm64`) and fully
