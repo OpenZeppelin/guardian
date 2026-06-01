@@ -1,18 +1,17 @@
 # Run the published Guardian server image from Docker Hub (no local build).
 #
-#   echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
-#   cp .env.hub.example .env.hub   # optional: extra server config
-#   GUARDIAN_VERSION=v1.2.3 docker compose -f docker-compose.hub.yml up
+#   cp .env.hub.example .env.hub        # then set POSTGRES_PASSWORD in it
+#   GUARDIAN_VERSION=v1.2.3 docker compose --env-file .env.hub -f docker-compose.hub.yml up
 #
 # GUARDIAN_VERSION defaults to :latest. The published image is built with the
 # `postgres` feature, so state/metadata live in Postgres (DATABASE_URL) — the
 # filesystem storage/metadata paths are unused in this mode and intentionally
-# omitted. Only the keystore stays on disk.
+# omitted; only the keystore stays on disk.
 #
-# `.env` is used ONLY for Compose interpolation (POSTGRES_PASSWORD, GUARDIAN_VERSION)
-# and is NOT injected into the container — the repo `.env` holds AWS/deploy config
-# unrelated to the server. Server runtime config goes in `.env.hub`
-# (gitignored; see .env.hub.example and docs/CONFIGURATION.md).
+# `.env.hub` (gitignored) drives this stack via `--env-file`: Compose reads
+# POSTGRES_PASSWORD / GUARDIAN_VERSION from it for interpolation, and the server
+# container also loads it (env_file) for runtime config (see .env.hub.example).
+# The shared repo `.env` (AWS/deploy config) is intentionally NOT used here.
 
 services:
   server:
@@ -32,7 +31,7 @@ services:
     environment:
       - RUST_LOG=info
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
-      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.hub}@postgres:5432/guardian
 
   postgres:
     image: postgres:16-alpine

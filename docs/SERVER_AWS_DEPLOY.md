@@ -30,17 +30,18 @@ To run the published image with a Postgres backend locally, use the Docker Hub
 compose file (no local build):
 
 ```bash
-echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
-cp .env.hub.example .env.hub   # optional: extra server config
-GUARDIAN_VERSION=<version> docker compose -f docker-compose.hub.yml up
+cp .env.hub.example .env.hub          # then set POSTGRES_PASSWORD in .env.hub
+GUARDIAN_VERSION=<version> docker compose --env-file .env.hub -f docker-compose.hub.yml up
 ```
 
-`.env` is used only for Compose interpolation (`POSTGRES_PASSWORD`,
-`GUARDIAN_VERSION`) and is not injected into the container; put server runtime
-config in the gitignored `.env.hub` (see `.env.hub.example`). The
-repo's default `docker-compose.yml` (and the `docker-compose.postgres.yml`
-override) instead build the server from source for contributors;
-`docker-compose.hub.yml` pulls the published image.
+The stack is driven entirely by the gitignored `.env.hub` (see
+`.env.hub.example`): Compose reads `POSTGRES_PASSWORD` / `GUARDIAN_VERSION` from
+it for interpolation (via `--env-file`), and the server container loads it for
+runtime config. The shared repo `.env` (AWS/deploy config) is intentionally not
+used here, so this example never mutates it. The repo's default
+`docker-compose.yml` (and the `docker-compose.postgres.yml` override) instead
+build the server from source for contributors; `docker-compose.hub.yml` pulls
+the published image.
 
 Maintainers publish a version by running the **Docker Publish** GitHub Actions
 workflow (manual dispatch: pick the branch to build from and the version to tag).
