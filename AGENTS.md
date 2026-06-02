@@ -82,6 +82,7 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 - Preserve canonicalization semantics (pending/candidate/canonical/discarded lifecycle).
 - Default local development/test backend is `filesystem` unless a task explicitly requires Postgres.
 - Keep shared server layers network-agnostic. Put Miden/EVM-specific logic in `src/network/*`, and dispatch from services/builders via account network config rather than embedding network-specific assumptions in shared modules.
+- Secret-bearing fields (keys, tokens, credential URLs, DB/RPC URLs) must use a wrapper from `src/secret/` (`FixedKey<N>`, `SecretBytes`, `SecretString`, `CredentialUrl`) — never bind a raw `String`/`Vec<u8>` to a config field or struct. Read-and-wrap in one expression. See `CONTRIBUTING.md` ("Secrets in server memory").
 
 ### Rust GUARDIAN Client (`crates/client`)
 
@@ -173,6 +174,7 @@ Manual policy:
 - Request/response schema drift between server and TS client
 - Multisig threshold/signature counting logic
 - Offline import/export proposal format compatibility
+- Introducing or moving secret material in `crates/server` (must flow through `src/secret/` wrappers)
 
 When touching any high-risk area, add or update tests before finishing.
 
