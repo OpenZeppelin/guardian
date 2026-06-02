@@ -158,7 +158,7 @@ let salt = generate_salt();
 let mut request = build_p2id_transaction_request(
     account.inner(), recipient, vec![asset], salt, std::iter::empty(),
 )?;
-let proposal = client.propose_custom(&request.to_bytes(), "b2agg").await?;
+let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
 
 // Cosigners review and sign through the usual list/sign flow.
 

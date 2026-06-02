@@ -233,7 +233,7 @@ impl MultisigClient {
     /// `TransactionRequest`; `proposal_type` is a free-form, non-empty label
     /// that MUST NOT collide with a built-in type. The integration keeps its own
     /// recipe to execute later via `prepare_custom_execution`.
-    pub async fn propose_custom(
+    pub async fn propose_custom_transaction(
         &mut self,
         transaction_request_bytes: &[u8],
         proposal_type: &str,

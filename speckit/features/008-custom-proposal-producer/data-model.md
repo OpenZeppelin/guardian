@@ -17,7 +17,7 @@ The producer-built transaction, supplied to the SDK as opaque serialized bytes.
   - MUST deserialize into a valid `TransactionRequest` (else FR-016 error).
   - MUST locally execute to yield a `TransactionSummary` (else creation fails, US1.3 / FR-002).
   - At execute, MUST re-derive a summary whose commitment equals the proposal id (FR-007/FR-020).
-- **Lifecycle**: produced by the integration → supplied at `propose_custom` (SDK derives the summary, does not store the transaction request bytes) → the integration keeps its own recipe → re-supplied at `prepare_custom_execution` for the binding check. Not stored by the SDK or server (FR-015).
+- **Lifecycle**: produced by the integration → supplied at `propose_custom_transaction` (SDK derives the summary, does not store the transaction request bytes) → the integration keeps its own recipe → re-supplied at `prepare_custom_execution` for the binding check. Not stored by the SDK or server (FR-015).
 
 ### CustomProposalLabel
 The free-form proposal type string for a producer proposal.
@@ -72,7 +72,7 @@ TransactionRequestBytes ──derive──▶ TransactionSummary ──commitmen
 ## State Transitions (proposal, unchanged lifecycle)
 
 ```
-                 propose_custom (request bytes + label)
+                 propose_custom_transaction (request bytes + label)
    [none] ───────────────────────────────────▶ pending
                                                   │  cosigners sign (existing flow)
                                                   ▼
@@ -84,5 +84,5 @@ TransactionRequestBytes ──derive──▶ TransactionSummary ──commitmen
 ```
 
 Failure transitions (no state change, no side effects — FR-023):
-- `propose_custom` with built-in label, undeserializable transaction request, or non-executable/invalid-for-state tx → **rejected**, nothing registered.
+- `propose_custom_transaction` with built-in label, undeserializable transaction request, or non-executable/invalid-for-state tx → **rejected**, nothing registered.
 - `prepare_custom_execution` on a non-custom proposal, not-ready, undeserializable transaction request, or binding mismatch → **rejected**, no ack request.

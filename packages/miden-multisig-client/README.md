@@ -215,7 +215,7 @@ import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client
 
 // Producer: build a transaction and propose it under a custom label.
 const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
-const proposal = await multisig.proposeCustom(request.serialize(), 'b2agg');
+const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 
 // Cosigners review and sign through the usual signProposal flow.
 
@@ -238,7 +238,7 @@ serialized request. The binding check guarantees the rebuilt transaction matches
 commitment the cosigners signed.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —
-> `proposeCustom` / `propose_custom`, `prepareCustomExecution` /
+> `createCustomProposal` / `propose_custom_transaction`, `prepareCustomExecution` /
 > `prepare_custom_execution`, and `submitTransaction` / `submit_transaction`. The
 > only difference is advice injection: Rust mutates the request's advice map in
 > place (`request.advice_map_mut().extend(advice)`), while the immutable browser

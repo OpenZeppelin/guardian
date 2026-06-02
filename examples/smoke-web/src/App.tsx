@@ -460,11 +460,11 @@ export default function App() {
         <section className="panel">
           <div className="panel-header">
             <h2>Custom Proposal (producer API)</h2>
-            <span className="badge neutral">proposeCustom / prepare</span>
+            <span className="badge neutral">createCustomProposal / prepare</span>
           </div>
           <p className="hero-copy">
             Builds a P2ID transaction request, proposes it under a free-form label via
-            <code> proposeCustom</code>, and (after threshold) executes it via
+            <code> createCustomProposal</code>, and (after threshold) executes it via
             <code> prepareCustomExecution</code> — the harness injects the returned advice into a
             rebuilt request and submits. The recipe below is what the producer keeps to execute.
           </p>

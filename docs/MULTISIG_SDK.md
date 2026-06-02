@@ -194,8 +194,8 @@ its own transaction and drives the create + execute ends; the SDK never
 executes a transaction it does not understand. The model is **symmetric across
 Rust and TypeScript**:
 
-- **Create** — `propose_custom(transaction_request_bytes, proposal_type)` (Rust) /
-  `proposeCustom(transactionRequestBytes, proposalType)` (TS). The bytes are a
+- **Create** — `propose_custom_transaction(transaction_request_bytes, proposal_type)` (Rust) /
+  `createCustomProposal(transactionRequestBytes, proposalType)` (TS). The bytes are a
   serialized transaction request; the SDK derives the summary and pushes the
   proposal with the custom label. They are **not** stored on the server.
   Cosigners then review and sign through the normal flow.

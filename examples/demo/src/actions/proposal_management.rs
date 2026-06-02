@@ -898,7 +898,7 @@ async fn create_proposal_offline(
 
 /// Creates a custom (producer-supplied) proposal. To get a valid serialized
 /// transaction request for the demo, this builds a real P2ID transfer under the
-/// hood, serializes it, and pushes it via `propose_custom` under a custom label.
+/// hood, serializes it, and pushes it via `propose_custom_transaction` under a custom label.
 /// The P2ID recipe (inputs + salt) is cached so the request can be rebuilt and
 /// replayed at execution.
 async fn action_create_custom_proposal(
@@ -944,9 +944,9 @@ async fn action_create_custom_proposal(
 
     print_waiting("Pushing custom proposal to GUARDIAN");
     let proposal = client
-        .propose_custom(&transaction_request_bytes, &label)
+        .propose_custom_transaction(&transaction_request_bytes, &label)
         .await
-        .map_err(|e| format!("propose_custom failed: {}", e))?;
+        .map_err(|e| format!("propose_custom_transaction failed: {}", e))?;
     let proposal_id = proposal.id.clone();
 
     // The integration owns its recipe (build inputs + salt), not the serialized

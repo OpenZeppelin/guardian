@@ -14,7 +14,7 @@ This feature adds **no HTTP/gRPC endpoints** (server unchanged, FR-010). The con
 /// Create a proposal from a producer-built transaction (issue #266).
 /// `transaction_request_bytes`: serialized TransactionRequest bytes; `proposal_type`: free-form,
 /// non-empty, not a modeled label.
-pub async fn propose_custom(&mut self, transaction_request_bytes: &[u8], proposal_type: &str) -> Result<Proposal>;
+pub async fn propose_custom_transaction(&mut self, transaction_request_bytes: &[u8], proposal_type: &str) -> Result<Proposal>;
 
 /// For a threshold-met custom proposal: binding-check the transaction request bytes, fetch the
 /// GUARDIAN ack, and return the advice to inject into the integration's own
@@ -35,7 +35,7 @@ Integration execute flow (Rust): `let advice = client.prepare_custom_execution(i
 ## TypeScript — `Multisig` (`packages/miden-multisig-client/src/multisig.ts`)
 
 ```ts
-proposeCustom(transactionRequestBytes: Uint8Array, proposalType: string, nonce?: number): Promise<Proposal>;
+createCustomProposal(transactionRequestBytes: Uint8Array, proposalType: string, nonce?: number): Promise<Proposal>;
 
 // Binding-check, fetch ack, return advice. Does NOT submit.
 prepareCustomExecution(proposalId: string, transactionRequestBytes: Uint8Array): Promise<AdviceMap>;
@@ -47,7 +47,7 @@ submitTransaction(request: TransactionRequest): Promise<void>;
 Integration execute flow (TS): `const advice = await multisig.prepareCustomExecution(id, transactionRequestBytes); const finalReq = myBuilder.extendAdviceMap(advice).build(); await multisig.submitTransaction(finalReq);`
 
 ## Behavioral contract (both SDKs)
-- `propose_custom` MUST: normalize the label (trim + lowercase) and reject it if empty, not `[a-z0-9_]+`, or a modeled label (FR-001/FR-021); deserialize the bytes (else decode error, FR-016); derive the summary via `execute_for_summary`; package with the label + producer signature; push via the authenticated guardian client; return the proposal. The bytes are **not stored**.
+- `propose_custom_transaction` MUST: normalize the label (trim + lowercase) and reject it if empty, not `[a-z0-9_]+`, or a modeled label (FR-001/FR-021); deserialize the bytes (else decode error, FR-016); derive the summary via `execute_for_summary`; package with the label + producer signature; push via the authenticated guardian client; return the proposal. The bytes are **not stored**.
 - `prepare_custom_execution` MUST: reject a non-custom proposal; if not ready → not-ready error with **no side effects** (FR-008/FR-023); deserialize the bytes (else error); derive the summary and assert `commitment == proposal_id` (else binding-mismatch error, **before** the ack request, FR-007/FR-020/FR-023); fetch the GUARDIAN ack; return the advice. It MUST NOT submit.
 - `execute_proposal`/`executeProposal` on a custom proposal MUST return a clear error pointing to `prepare_custom_execution`.
 - `submit_transaction`/`submitTransaction` is a thin helper that submits an integration-built request (advice already applied) through the SDK's account client; it does not build, interpret, or re-validate the transaction.
@@ -67,7 +67,7 @@ Integration execute flow (TS): `const advice = await multisig.prepareCustomExecu
 | `execute_proposal` on custom | `UnsupportedTransactionType` (→ use prepare) | thrown error | none |
 
 ## Parity assertions (SC-004)
-A shared fixture (transaction request bytes + label) MUST yield, in both SDKs: the same proposal `id`/commitment from `propose_custom`, and the same accept/reject outcome for each row of the error table. Both SDKs expose the same `submit_transaction`/`submitTransaction` helper; only the advice-injection mechanism differs by language (Rust mutates the request's advice map in place; the immutable wasm request is rebuilt via a builder).
+A shared fixture (transaction request bytes + label) MUST yield, in both SDKs: the same proposal `id`/commitment from `propose_custom_transaction`, and the same accept/reject outcome for each row of the error table. Both SDKs expose the same `submit_transaction`/`submitTransaction` helper; only the advice-injection mechanism differs by language (Rust mutates the request's advice map in place; the immutable wasm request is rebuilt via a builder).
 
 ## Out of contract (v1)
 - No pre-built-summary creation input (FR-014).

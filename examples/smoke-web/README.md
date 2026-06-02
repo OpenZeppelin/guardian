@@ -92,7 +92,7 @@ await window.smoke.createProposal({
 
 A custom (`'custom'`-bucket) proposal is created with a free-form label and
 executed by the integration, not the SDK. The producer builds a serialized transaction
-request, proposes it via `proposeCustom`, and after threshold calls
+request, proposes it via `createCustomProposal`, and after threshold calls
 `prepareCustomExecution` to get the validated advice, which the harness injects
 into a rebuilt request before submitting on-chain. The `recipe` returned by
 `createCustomProposal` is what the producer keeps to reproduce the exact

@@ -419,7 +419,7 @@ export async function createCustomP2idProposal(
   );
 
   const created = await createProposalResult(multisig, () =>
-    multisig.proposeCustom(request.serialize(), label, proposalNonce(multisig)));
+    multisig.createCustomProposal(request.serialize(), label, proposalNonce(multisig)));
 
   const recipe: CustomProposalRecipe = {
     proposalId: created.proposal.id,

@@ -229,7 +229,7 @@ impl TransactionType {
     }
 }
 
-/// Proposal type labels the SDK models natively. The producer (`propose_custom`)
+/// Proposal type labels the SDK models natively. The producer (`propose_custom_transaction`)
 /// path rejects these so an opaque transaction can never be mis-routed to a
 /// built-in handler.
 const BUILTIN_PROPOSAL_TYPES: &[&str] = &[

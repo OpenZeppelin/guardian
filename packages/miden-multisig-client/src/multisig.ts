@@ -1020,7 +1020,7 @@ export class Multisig {
    * built-in type. The integration keeps its own recipe to execute later via
    * `prepareCustomExecution`.
    */
-  async proposeCustom(
+  async createCustomProposal(
     transactionRequestBytes: Uint8Array,
     proposalType: string,
     nonce?: number,
