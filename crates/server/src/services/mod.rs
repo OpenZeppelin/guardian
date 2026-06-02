@@ -230,7 +230,8 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
         .ok_or_else(|| {
             GuardianError::InvalidDelta("metadata.proposal_type is required".to_string())
         })?;
-    if proposal_type.trim().is_empty() {
+    let proposal_type = proposal_type.trim();
+    if proposal_type.is_empty() {
         return Err(GuardianError::InvalidDelta(
             "metadata.proposal_type must not be empty".to_string(),
         ));
@@ -340,6 +341,30 @@ mod normalize_tests {
         assert_eq!(
             metadata.get("proposal_type").and_then(Value::as_str),
             Some("b2agg")
+        );
+    }
+
+    #[test]
+    fn normalize_payload_persists_trimmed_proposal_type() {
+        let payload = json!({
+            "tx_summary": { "data": "dGVzdA==" },
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "  b2agg  ",
+                "description": "padded label"
+            }
+        });
+
+        let normalized = normalize_payload(payload).expect("padded type should normalize");
+        let metadata = normalized
+            .get("metadata")
+            .and_then(Value::as_object)
+            .expect("metadata should be an object");
+
+        assert_eq!(
+            metadata.get("proposal_type").and_then(Value::as_str),
+            Some("b2agg"),
+            "the stored proposal_type must be the trimmed value that was validated"
         );
     }
 

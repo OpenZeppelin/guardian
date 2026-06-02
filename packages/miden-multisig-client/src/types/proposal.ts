@@ -92,9 +92,10 @@ export interface P2IdProposalMetadata extends BaseProposalMetadata {
 export interface CustomProposalMetadata extends BaseProposalMetadata {
   proposalType: 'custom';
   /** Original server-defined proposal label, e.g. "b2agg" (issue #266). Mirrors
-   * Rust `ProposalMetadata.proposal_type` so both SDKs expose the real type.
-   * Optional for backward compatibility; the parser always populates it. */
-  rawProposalType?: string;
+   * Rust `ProposalMetadata.proposal_type`; it is what lets a custom proposal
+   * round-trip back to GUARDIAN/export, so it is required in the domain model.
+   * Any wire-level optionality is resolved in the parser/codec boundary. */
+  rawProposalType: string;
 }
 
 export type ProposalMetadata =

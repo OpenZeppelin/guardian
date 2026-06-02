@@ -50,7 +50,7 @@ export class ProposalMetadataCodec {
         };
       case 'custom':
         // Round-trip the original server label rather than the 'custom' bucket.
-        return { ...base, proposalType: metadata.rawProposalType ?? 'custom' };
+        return { ...base, proposalType: metadata.rawProposalType };
     }
   }
 
