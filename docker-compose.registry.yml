@@ -1,0 +1,52 @@
+# Run the published Guardian server image from GHCR (no local build).
+#
+#   cp .env.registry.example .env.registry        # then set POSTGRES_PASSWORD in it
+#   GUARDIAN_VERSION=v1.2.3 docker compose --env-file .env.registry -f docker-compose.registry.yml up
+#
+# GUARDIAN_VERSION defaults to the `latest` tag. The published image is built with the
+# `postgres` feature, so state/metadata live in Postgres (DATABASE_URL) — the
+# filesystem storage/metadata paths are unused in this mode and intentionally
+# omitted; only the keystore stays on disk.
+#
+# `.env.registry` (gitignored) drives this stack via `--env-file`: Compose reads
+# POSTGRES_PASSWORD / GUARDIAN_VERSION from it for interpolation, and the server
+# container also loads it (env_file) for runtime config (see .env.registry.example).
+# The shared repo `.env` (AWS/deploy config) is intentionally NOT used here.
+
+services:
+  server:
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    pull_policy: always
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+    env_file:
+      - path: .env.registry
+        required: false
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.registry}@postgres:5432/guardian
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  guardian-keystore:
+  guardian-postgres:

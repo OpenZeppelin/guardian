@@ -4,6 +4,7 @@
 [![CLA Assistant](https://github.com/OpenZeppelin/guardian/actions/workflows/cla.yml/badge.svg)](https://github.com/OpenZeppelin/guardian/actions/workflows/cla.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/guardian/badge)](https://api.securityscorecards.dev/projects/github.com/OpenZeppelin/guardian)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11427/badge)](https://www.bestpractices.dev/projects/11427)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/OpenZeppelin/guardian)
 
 Warning: This is a work in progress.
 

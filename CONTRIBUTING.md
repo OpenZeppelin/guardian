@@ -159,6 +159,7 @@ If your change is user- or operator-visible, update the matching doc:
 | New error code | [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md) error reference |
 | New runtime behavior | [`docs/CONCEPTS.md`](./docs/CONCEPTS.md) or the relevant architecture doc |
 | Deploy or infra changes | [`docs/SERVER_AWS_DEPLOY.md`](./docs/SERVER_AWS_DEPLOY.md) and [`docs/architecture/infra.md`](./docs/architecture/infra.md) |
+| Published Docker image / publish workflow | [`docs/SERVER_AWS_DEPLOY.md`](./docs/SERVER_AWS_DEPLOY.md) ("Published Docker images"); image at `ghcr.io/openzeppelin/guardian` |
 | Wire contract changes | [`spec/api.md`](./spec/api.md), [`spec/processes.md`](./spec/processes.md) |
 | New SDK feature | [`docs/MULTISIG_SDK.md`](./docs/MULTISIG_SDK.md) where relevant |
 

@@ -9,6 +9,7 @@ templates/
 .env.evm
 .env.prod
 .env.stg
+.env.registry
 
 .cursor/
 .claude/

@@ -1,0 +1,173 @@
+---
+name: Docker Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish, e.g. v1.2.3 (pre-release: v1.2.3-rc.1)"
+        type: string
+        required: true
+      branch:
+        description: "Branch/tag/commit to build from (default: the ref this run was launched from)"
+        type: string
+        required: false
+      features:
+        description: "GUARDIAN_SERVER_FEATURES build arg"
+        type: string
+        required: false
+        default: postgres
+      overwrite:
+        description: "Allow overwriting an already-published version tag"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/openzeppelin/guardian
+
+jobs:
+  publish:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    environment: release
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Validate version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$VERSION'. Expected a tag like v1.2.3 or a pre-release like v1.2.3-rc.1."
+            exit 1
+          fi
+
+      - name: Resolve build ref
+        id: ref
+        env:
+          INPUT_BRANCH: ${{ inputs.branch }}
+          LAUNCH_REF: ${{ github.ref_name }}
+        run: echo "ref=${INPUT_BRANCH:-$LAUNCH_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout build ref
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          persist-credentials: false
+
+      - name: Resolve checked-out commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine full-release flag
+        id: release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$VERSION" == *-* ]]; then
+            echo "full=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reject already-published version
+        if: ${{ !inputs.overwrite }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if docker manifest inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
+            echo "::error::${IMAGE}:${VERSION} already exists. Re-run with overwrite=true to replace it."
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ inputs.version }}
+            type=raw,value=sha-${{ steps.commit.outputs.short }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.full == 'true' }}
+          labels: |
+            org.opencontainers.image.title=guardian
+            org.opencontainers.image.vendor=openzeppelin
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+            org.openzeppelin.guardian.features=${{ inputs.features }}
+            org.openzeppelin.guardian.source-ref=${{ steps.ref.outputs.ref }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: .
+          target: server-runner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            GUARDIAN_SERVER_FEATURES=${{ inputs.features }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_REF: ${{ steps.ref.outputs.ref }}
+          SHORT_SHA: ${{ steps.commit.outputs.short }}
+        run: |
+          {
+            echo "### Published \`${IMAGE}\`"
+            echo
+            echo "**Digest:** \`${DIGEST}\`"
+            echo
+            echo "**Source ref:** \`${SOURCE_REF}\` @ \`${SHORT_SHA}\`"
+            echo
+            echo "**Tags:**"
+            echo '```'
+            echo "${TAGS}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
