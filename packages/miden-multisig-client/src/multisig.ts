@@ -106,7 +106,23 @@ const BUILTIN_PROPOSAL_TYPES = new Set<string>([
   'switch_guardian',
   'consume_notes',
   'p2id',
+  // Reserved: the SDK's internal bucket name for unmodeled types. A producer
+  // must not use it as a custom label, or it would collide with the bucket.
+  'custom',
 ]);
+
+/**
+ * Deserialize producer-supplied transaction request bytes, wrapping any failure
+ * in a stable message that mirrors the Rust SDK's `deserialize_transaction_request`.
+ */
+function deserializeTransactionRequest(bytes: Uint8Array): TransactionRequest {
+  try {
+    return TransactionRequest.deserialize(bytes);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`failed to decode transaction request: ${detail}`);
+  }
+}
 
 export class Multisig {
   account: Account;
@@ -999,13 +1015,13 @@ export class Multisig {
 
   /**
    * Create a proposal from a producer-built transaction the SDK does not model
-   * (issue #266 producer API). `artifact` is a serialized TransactionRequest;
+   * (issue #266 producer API). `transactionRequestBytes` is a serialized TransactionRequest;
    * `proposalType` is a free-form, non-empty label that must not collide with a
    * built-in type. The integration keeps its own recipe to execute later via
    * `prepareCustomExecution`.
    */
   async proposeCustom(
-    artifact: Uint8Array,
+    transactionRequestBytes: Uint8Array,
     proposalType: string,
     nonce?: number,
   ): Promise<Proposal> {
@@ -1025,7 +1041,7 @@ export class Multisig {
     }
 
     const webClient = await this.getRawClient();
-    const request = TransactionRequest.deserialize(artifact);
+    const request = deserializeTransactionRequest(transactionRequestBytes);
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
@@ -1045,14 +1061,14 @@ export class Multisig {
    * acknowledgment) for a ready custom proposal, so an integration can rebuild
    * its transaction with its own recipe and submit (issue #266 producer API).
    *
-   * `artifact` is the serialized transaction request; it is used only to verify
+   * `transactionRequestBytes` is the serialized transaction request; it is used only to verify
    * (binding check) that it reproduces the signed commitment, before the
    * acknowledgment is requested. Returns the advice the integration folds into
    * its rebuilt transaction (`builder.extendAdviceMap(advice)`).
    */
   async prepareCustomExecution(
     proposalId: string,
-    artifact: Uint8Array,
+    transactionRequestBytes: Uint8Array,
   ): Promise<AdviceMap> {
     const normalizedProposalId = normalizeHexWord(proposalId);
     const delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
@@ -1077,7 +1093,9 @@ export class Multisig {
       `Invalid proposal signatures for ${proposalId}`,
     ).entries();
     if (signaturesForExecution.length < effectiveThreshold) {
-      throw new Error('Proposal is not ready for execution. Still pending signatures.');
+      throw new Error(
+        `Proposal is not ready for execution: have ${signaturesForExecution.length} of ${effectiveThreshold} required signatures.`,
+      );
     }
 
     const txSummary = TransactionSummary.deserialize(
@@ -1085,7 +1103,7 @@ export class Multisig {
     );
     const signedCommitmentHex = normalizeHexWord(txSummary.toCommitment().toHex());
 
-    const bindingRequest = TransactionRequest.deserialize(artifact);
+    const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
 
     const webClient = await this.getRawClient();
     const derived = await executeForSummary(webClient, this._accountId, bindingRequest);
@@ -1217,6 +1235,15 @@ export class Multisig {
     await this.verifyProposalMetadataBinding(proposal);
 
     const metadata = proposal.metadata;
+    // Reject custom proposals before any advice assembly or GUARDIAN ack push:
+    // the SDK cannot rebuild an opaque custom transaction, and the rejection
+    // must stay side-effect free (mirrors the Rust early guard in execute_proposal).
+    if (metadata.proposalType === 'custom') {
+      throw new Error(
+        'Cannot execute a custom proposal via executeProposal; use prepareCustomExecution to ' +
+          'get the cosigner + GUARDIAN advice, then submitTransaction with your rebuilt request (issue #266).',
+      );
+    }
     const effectiveThreshold = this.getEffectiveThreshold(metadata.proposalType);
     const signatureContext = `Invalid proposal signatures for ${proposalId}`;
     const signaturesForExecution = new ProposalSignatures(

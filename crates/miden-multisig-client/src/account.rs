@@ -387,6 +387,13 @@ mod tests {
                 .expect("threshold"),
             1
         );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::Custom)
+                .expect("threshold"),
+            2,
+            "custom proposals use the account default threshold"
+        );
     }
 
     #[test]

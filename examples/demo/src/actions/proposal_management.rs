@@ -896,10 +896,11 @@ async fn create_proposal_offline(
 // Helpers - Prompt for transaction type details
 // =============================================================================
 
-/// Creates a custom (producer-supplied) proposal. To get a valid transaction
-/// artifact for the demo, this builds a real P2ID transfer under the hood,
-/// serializes it, and pushes it via `propose_custom` under a custom label. The
-/// canonical artifact is saved so it can be replayed at execution.
+/// Creates a custom (producer-supplied) proposal. To get a valid serialized
+/// transaction request for the demo, this builds a real P2ID transfer under the
+/// hood, serializes it, and pushes it via `propose_custom` under a custom label.
+/// The P2ID recipe (inputs + salt) is cached so the request can be rebuilt and
+/// replayed at execution.
 async fn action_create_custom_proposal(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
@@ -912,7 +913,7 @@ async fn action_create_custom_proposal(
         return Err("proposal_type label is required".to_string());
     }
 
-    print_info("Building a transfer transaction to use as the custom artifact.");
+    print_info("Building a transfer transaction to use as the custom transaction request.");
     let (recipient, faucet_id, amount) = match prompt_p2id(state, editor)? {
         TransactionType::P2ID {
             recipient,
@@ -931,7 +932,7 @@ async fn action_create_custom_proposal(
     let asset =
         FungibleAsset::new(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
     let salt = generate_salt();
-    let artifact = build_p2id_transaction_request(
+    let transaction_request_bytes = build_p2id_transaction_request(
         account.inner(),
         recipient,
         vec![asset.into()],
@@ -943,13 +944,13 @@ async fn action_create_custom_proposal(
 
     print_waiting("Pushing custom proposal to GUARDIAN");
     let proposal = client
-        .propose_custom(&artifact, &label)
+        .propose_custom(&transaction_request_bytes, &label)
         .await
         .map_err(|e| format!("propose_custom failed: {}", e))?;
     let proposal_id = proposal.id.clone();
 
     // The integration owns its recipe (build inputs + salt), not the serialized
-    // transaction; [8] rebuilds the artifact deterministically from these.
+    // transaction; [8] rebuilds the request deterministically from these.
     state.cache_custom_recipe(
         &proposal_id,
         CustomProposalRecipe {

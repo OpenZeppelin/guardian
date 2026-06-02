@@ -438,23 +438,20 @@ export async function prepareAndSubmitCustomProposal(
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingArtifact = buildRequestFromRecipe(recipe).serialize();
-  const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingArtifact);
+  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
+  const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
 
   const finalRequest = buildRequestFromRecipe(recipe, advice);
-
-  const nonceBefore = currentAccountNonce(multisig);
 
   try {
     await multisig.submitTransaction(finalRequest);
   } catch (submitError) {
-    // The on-chain submit can succeed while the local apply step transiently
-    // fails to find the freshly-rewritten account record (autoSync race).
-    // Re-sync and treat it as success only if the account actually advanced.
+    // The local apply step can transiently fail (autoSync race) even when the
+    // on-chain submit succeeded. Re-sync so local state catches up, then surface
+    // the error — a generic nonce bump is not proof THIS submit landed (another
+    // session could advance the account), so the operator should verify via the
+    // refreshed state rather than have a false success swallowed here.
     await multisig.syncState();
-    const nonceAfter = currentAccountNonce(multisig);
-    if (nonceBefore === null || nonceAfter === null || nonceAfter <= nonceBefore) {
-      throw submitError;
-    }
+    throw submitError;
   }
 }

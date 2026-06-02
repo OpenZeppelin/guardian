@@ -49,8 +49,8 @@ describe('ProposalMetadataCodec consume_notes v2 round-trip (issue #229)', () =>
   });
 });
 
-describe('ProposalMetadataCodec unknown proposal types (issue #266)', () => {
-  it('fromGuardian collapses an unmodeled type to the unknown bucket, keeping the raw label', () => {
+describe('ProposalMetadataCodec custom proposal types (issue #266)', () => {
+  it('fromGuardian collapses an unmodeled type to the custom bucket, keeping the raw label', () => {
     const wire: GuardianProposalMetadata = {
       proposalType: 'b2agg',
       description: 'agglayer bridge note',
@@ -60,7 +60,7 @@ describe('ProposalMetadataCodec unknown proposal types (issue #266)', () => {
     expect(md.rawProposalType).toBe('b2agg');
   });
 
-  it('toGuardian round-trips the raw label, not the unknown bucket', () => {
+  it('toGuardian round-trips the raw label, not the custom bucket', () => {
     const md: CustomProposalMetadata = {
       proposalType: 'custom',
       description: 'agglayer bridge note',
@@ -74,7 +74,7 @@ describe('ProposalMetadataCodec unknown proposal types (issue #266)', () => {
     expect(back.rawProposalType).toBe('b2agg');
   });
 
-  it('validate accepts an unknown proposal', () => {
+  it('validate accepts a custom proposal', () => {
     const md: CustomProposalMetadata = {
       proposalType: 'custom',
       description: 'opaque',

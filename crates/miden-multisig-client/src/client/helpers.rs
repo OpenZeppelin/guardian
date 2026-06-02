@@ -196,8 +196,22 @@ impl MultisigClient {
 
         // Custom proposal types (issue #266) have no per-type reconstruction
         // recipe; the id ↔ tx_summary commitment match above is the only
-        // available integrity guarantee for an opaque proposal.
+        // available integrity guarantee for an opaque proposal. Guard the one
+        // piece of transport metadata that gates readiness: a malformed payload
+        // must not declare fewer required signatures than the account threshold,
+        // or it could mark a custom proposal ready with too few cosigners.
         if matches!(proposal.transaction_type, TransactionType::Custom) {
+            let account_threshold = self.require_account()?.threshold()? as usize;
+            let declared = proposal
+                .metadata
+                .required_signatures
+                .unwrap_or(account_threshold);
+            if declared < account_threshold {
+                return Err(MultisigError::InvalidConfig(format!(
+                    "custom proposal {} declares {} required signatures, below the account threshold {}",
+                    proposal.id, declared, account_threshold
+                )));
+            }
             return Ok(());
         }
 

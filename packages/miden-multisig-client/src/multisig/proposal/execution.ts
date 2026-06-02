@@ -359,7 +359,7 @@ async function buildFinalRequest(
     case 'custom':
       throw new Error(
         `Cannot execute a custom proposal type (${metadata.rawProposalType ?? 'custom'}) via the generic SDK; ` +
-          'its transaction must be built by the integration that defined it (issue #266).',
+          'use prepareCustomExecution to get the cosigner + GUARDIAN advice, then submitTransaction with your rebuilt request (issue #266).',
       );
     default: {
       const { request } = await buildUpdateSignersTransactionRequest(

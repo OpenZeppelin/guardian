@@ -469,6 +469,7 @@ export function useSmokeHarness(): {
   );
 
   const clearLoadedAccountState = useCallback(() => {
+    customRecipesRef.current.clear();
     setMultisig(null);
     setGuardianState(null);
     setDetectedConfig(null);
@@ -1146,13 +1147,25 @@ export function useSmokeHarness(): {
           throw new Error('No multisig account is loaded');
         }
 
+        const requestedProposalId = input.proposalId?.trim();
+        if (
+          input.recipe &&
+          requestedProposalId &&
+          input.recipe.proposalId !== requestedProposalId
+        ) {
+          throw new Error('proposalId does not match recipe.proposalId');
+        }
+
         const recipe =
           input.recipe ??
-          (input.proposalId ? customRecipesRef.current.get(input.proposalId.trim()) : undefined);
+          (requestedProposalId ? customRecipesRef.current.get(requestedProposalId) : undefined);
         if (!recipe) {
           throw new Error(
             'No custom proposal recipe found; pass the recipe returned by createCustomProposal',
           );
+        }
+        if (recipe.senderId !== currentMultisig.accountId) {
+          throw new Error('Custom proposal recipe does not belong to the loaded account');
         }
 
         await prepareAndSubmitCustomProposal(currentMultisig, recipe);

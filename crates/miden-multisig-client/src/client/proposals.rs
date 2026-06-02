@@ -229,13 +229,13 @@ impl MultisigClient {
     }
 
     /// Creates a proposal from a producer-built transaction the SDK does not
-    /// model (issue #266 producer API). `artifact` is a serialized
+    /// model (issue #266 producer API). `transaction_request_bytes` is a serialized
     /// `TransactionRequest`; `proposal_type` is a free-form, non-empty label
     /// that MUST NOT collide with a built-in type. The integration keeps its own
     /// recipe to execute later via `prepare_custom_execution`.
     pub async fn propose_custom(
         &mut self,
-        artifact: &[u8],
+        transaction_request_bytes: &[u8],
         proposal_type: &str,
     ) -> Result<Proposal> {
         let proposal_type = proposal_type.trim().to_lowercase();
@@ -264,7 +264,7 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        let tx_request = deserialize_transaction_request(artifact)?;
+        let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
         let tx_summary =
             execute_for_summary(&mut self.miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
@@ -316,14 +316,14 @@ impl MultisigClient {
     /// (`request.advice_map_mut().extend(advice)`) and submits it via its own
     /// Miden client.
     ///
-    /// `artifact` (the serialized transaction request) is used only to verify,
+    /// `transaction_request_bytes` (the serialized transaction request) is used only to verify,
     /// before the acknowledgment is requested, that it reproduces the signed
     /// proposal commitment. On a not-ready proposal or a binding mismatch this
     /// fails before requesting the acknowledgment.
     pub async fn prepare_custom_execution(
         &mut self,
         proposal_id: &str,
-        artifact: &[u8],
+        transaction_request_bytes: &[u8],
     ) -> Result<Vec<SignatureAdvice>> {
         self.sync().await?;
         let account = self.require_account()?.clone();
@@ -349,13 +349,13 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
-        let probe_request = deserialize_transaction_request(artifact)?;
+        let probe_request = deserialize_transaction_request(transaction_request_bytes)?;
         let derived_summary =
             execute_for_summary(&mut self.miden_client, account_id, probe_request).await?;
         let derived_commitment = derived_summary.to_commitment();
         if derived_commitment != tx_summary_commitment {
             return Err(MultisigError::InvalidConfig(format!(
-                "transaction artifact does not match the signed proposal commitment \
+                "transaction request does not match the signed proposal commitment \
                  (expected {}, got {})",
                 word_to_hex(&tx_summary_commitment),
                 word_to_hex(&derived_commitment)
@@ -403,6 +403,10 @@ impl MultisigClient {
     /// its own transaction request (`request.advice_map_mut().extend(advice)`)
     /// and passes it here to finalize.
     pub async fn submit_transaction(&mut self, request: TransactionRequest) -> Result<()> {
+        // Refresh local state first: the account may have advanced between
+        // `prepare_custom_execution` and submit, and submitting against stale
+        // state would reject an otherwise-valid request.
+        self.sync().await?;
         let account_id = self.require_account()?.id();
         self.miden_client
             .submit_new_transaction(account_id, request)

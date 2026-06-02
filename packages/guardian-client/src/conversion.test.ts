@@ -144,6 +144,15 @@ describe('conversion', () => {
       expect(result.proposalType).toBe('b2agg');
     });
 
+    it('preserves an arbitrary custom proposalType on the camelCase→server path (issue #266)', () => {
+      const result = toServerProposalMetadata({
+        proposalType: 'b2agg',
+        description: 'agglayer bridge note',
+      });
+
+      expect(result.proposal_type).toBe('b2agg');
+    });
+
     it('converts DeltaObject', () => {
       const server: ServerDeltaObject = {
         account_id: '0xaccount',

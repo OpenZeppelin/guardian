@@ -135,6 +135,7 @@ impl MultisigError {
             }
             Self::ConsumeNotesMetadataOversize { .. } => Some("consume_notes_metadata_oversize"),
             Self::LegacyConsumeNotesNoteMissing { .. } => Some("consume_notes_legacy_note_missing"),
+            Self::UnsupportedTransactionType(_) => Some("unsupported_transaction_type"),
             _ => None,
         }
     }

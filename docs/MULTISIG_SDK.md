@@ -194,28 +194,28 @@ its own transaction and drives the create + execute ends; the SDK never
 executes a transaction it does not understand. The model is **symmetric across
 Rust and TypeScript**:
 
-- **Create** — `propose_custom(artifact, proposal_type)` (Rust) /
-  `proposeCustom(artifact, proposalType)` (TS). The artifact is a serialized
-  transaction request; the SDK derives the summary and pushes the proposal with
-  the custom label. It is **not** stored on the server. Cosigners then review
-  and sign through the normal flow.
-- **Execute** — `prepare_custom_execution(proposal_id, artifact)` (Rust) /
-  `prepareCustomExecution(proposalId, artifact)` (TS). The SDK verifies the
-  proposal is ready, binding-checks the artifact against the signed commitment
+- **Create** — `propose_custom(transaction_request_bytes, proposal_type)` (Rust) /
+  `proposeCustom(transactionRequestBytes, proposalType)` (TS). The bytes are a
+  serialized transaction request; the SDK derives the summary and pushes the
+  proposal with the custom label. They are **not** stored on the server.
+  Cosigners then review and sign through the normal flow.
+- **Execute** — `prepare_custom_execution(proposal_id, transaction_request_bytes)` (Rust) /
+  `prepareCustomExecution(proposalId, transactionRequestBytes)` (TS). The SDK verifies the
+  proposal is ready, binding-checks the request against the signed commitment
   (before any acknowledgment request), fetches the GUARDIAN ack, and returns the
   **advice** (cosigner signatures + ack). The integration injects that advice
   into its own transaction and submits via its own client:
 
   ```ts
   // TypeScript: rebuild via the integration's builder (the wasm request is immutable)
-  const advice = await multisig.prepareCustomExecution(proposalId, artifactBytes);
+  const advice = await multisig.prepareCustomExecution(proposalId, transactionRequestBytes);
   const finalReq = myBuilder.extendAdviceMap(advice).build();
   await multisig.submitTransaction(finalReq);
   ```
   ```rust
   // Rust: inject into the request's advice map, submit via the SDK helper
-  let advice = client.prepare_custom_execution(&proposal_id, &artifact).await?;
-  let mut req = deserialize_transaction_request(&artifact)?;
+  let advice = client.prepare_custom_execution(&proposal_id, &transaction_request_bytes).await?;
+  let mut req = deserialize_transaction_request(&transaction_request_bytes)?;
   req.advice_map_mut().extend(advice);
   client.submit_transaction(req).await?;
   ```

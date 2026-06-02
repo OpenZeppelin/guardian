@@ -219,9 +219,9 @@ const proposal = await multisig.proposeCustom(request.serialize(), 'b2agg');
 
 // Cosigners review and sign through the usual signProposal flow.
 
-// Producer (once threshold is met): bind-check the artifact and fetch the
+// Producer (once threshold is met): bind-check the request and fetch the
 // validated advice (cosigner signatures + GUARDIAN ack). `prepareCustomExecution`
-// verifies the artifact against the signed commitment *before* the ack request.
+// verifies the request against the signed commitment *before* the ack request.
 const advice = await multisig.prepareCustomExecution(proposal.id, request.serialize());
 
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
@@ -234,7 +234,7 @@ await multisig.submitTransaction(finalRequest);
 
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
-artifact. The binding check guarantees the rebuilt transaction matches the
+serialized request. The binding check guarantees the rebuilt transaction matches the
 commitment the cosigners signed.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { normalizeError } from '@multisig-browser/errors';
 import {
   type CreateProposalInput,
@@ -74,6 +74,18 @@ export default function App() {
   const [uiError, setUiError] = useState<string | null>(null);
   const sessionReady = snapshot.initialized && snapshot.bootStatus === 'ready';
   const accountLoaded = Boolean(snapshot.multisig);
+  // The producer-owned recipe currently held in the form; custom execution is
+  // only possible for the proposal it refers to.
+  const customRecipeProposalId = useMemo(() => {
+    if (!customRecipeJson.trim()) {
+      return null;
+    }
+    try {
+      return (JSON.parse(customRecipeJson) as { proposalId?: string }).proposalId ?? null;
+    } catch {
+      return null;
+    }
+  }, [customRecipeJson]);
   const currentBootBadge = bootBadge(snapshot);
 
   useEffect(() => {
@@ -451,7 +463,7 @@ export default function App() {
             <span className="badge neutral">proposeCustom / prepare</span>
           </div>
           <p className="hero-copy">
-            Builds a P2ID transaction artifact, proposes it under a free-form label via
+            Builds a P2ID transaction request, proposes it under a free-form label via
             <code> proposeCustom</code>, and (after threshold) executes it via
             <code> prepareCustomExecution</code> — the harness injects the returned advice into a
             rebuilt request and submits. The recipe below is what the producer keeps to execute.
@@ -567,10 +579,17 @@ export default function App() {
                   </button>
                   {proposal.metadata.proposalType === 'custom' ? (
                     <button
-                      disabled={!sessionReady}
+                      disabled={!sessionReady || customRecipeProposalId !== proposal.id}
+                      title={
+                        customRecipeProposalId === proposal.id
+                          ? undefined
+                          : 'Paste this proposal’s recipe JSON above to execute it'
+                      }
                       onClick={() => handleExecuteCustomProposal(proposal.id)}
                     >
-                      Execute (custom)
+                      {customRecipeProposalId === proposal.id
+                        ? 'Execute (custom)'
+                        : 'Execute (custom) — no recipe'}
                     </button>
                   ) : (
                     <button

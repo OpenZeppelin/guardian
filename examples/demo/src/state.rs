@@ -153,14 +153,24 @@ impl SessionState {
         self.imported_proposal.take()
     }
 
+    /// Normalizes a proposal id to a stable cache key: lowercase first (so a
+    /// pasted `0X` prefix is handled the same as `0x`), then strip the prefix.
+    fn normalize_recipe_key(proposal_id: &str) -> String {
+        proposal_id
+            .trim()
+            .to_lowercase()
+            .trim_start_matches("0x")
+            .to_string()
+    }
+
     pub fn cache_custom_recipe(&mut self, proposal_id: &str, recipe: CustomProposalRecipe) {
         self.custom_recipes
-            .insert(proposal_id.trim_start_matches("0x").to_lowercase(), recipe);
+            .insert(Self::normalize_recipe_key(proposal_id), recipe);
     }
 
     pub fn get_custom_recipe(&self, proposal_id: &str) -> Option<CustomProposalRecipe> {
         self.custom_recipes
-            .get(&proposal_id.trim_start_matches("0x").to_lowercase())
+            .get(&Self::normalize_recipe_key(proposal_id))
             .cloned()
     }
 }

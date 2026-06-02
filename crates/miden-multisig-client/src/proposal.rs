@@ -240,6 +240,9 @@ const BUILTIN_PROPOSAL_TYPES: &[&str] = &[
     "switch_guardian",
     "consume_notes",
     "p2id",
+    // Reserved: the SDK's internal bucket name for unmodeled types. A producer
+    // must not use it as a custom label, or it would collide with the bucket.
+    "custom",
 ];
 
 pub(crate) fn is_builtin_proposal_type(proposal_type: &str) -> bool {
@@ -1265,10 +1268,11 @@ mod tests {
             "switch_guardian",
             "consume_notes",
             "p2id",
+            "custom",
         ] {
             assert!(
                 is_builtin_proposal_type(label),
-                "{label} should be built-in"
+                "{label} should be reserved"
             );
         }
     }

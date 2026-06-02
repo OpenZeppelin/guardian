@@ -162,9 +162,9 @@ let proposal = client.propose_custom(&request.to_bytes(), "b2agg").await?;
 
 // Cosigners review and sign through the usual list/sign flow.
 
-// Producer (once threshold is met): bind-check the artifact, fetch the validated
+// Producer (once threshold is met): bind-check the request, fetch the validated
 // advice, inject it into the request, and submit. `prepare_custom_execution`
-// verifies the artifact against the signed commitment *before* the GUARDIAN ack.
+// verifies the request against the signed commitment *before* the GUARDIAN ack.
 let advice = client.prepare_custom_execution(&proposal.id, &request.to_bytes()).await?;
 request.advice_map_mut().extend(advice);
 client.submit_transaction(request).await?;
@@ -172,8 +172,8 @@ client.submit_transaction(request).await?;
 
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
-artifact. The binding check guarantees the rebuilt transaction matches the
-commitment the cosigners signed.
+serialized request. The binding check guarantees the rebuilt transaction matches
+the commitment the cosigners signed.
 
 ## Consume-notes metadata versions
 
