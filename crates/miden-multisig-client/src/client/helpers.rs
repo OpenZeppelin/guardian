@@ -194,6 +194,13 @@ impl MultisigClient {
             )));
         }
 
+        // Custom proposal types (issue #266) have no per-type reconstruction
+        // recipe; the id ↔ tx_summary commitment match above is the only
+        // available integrity guarantee for an opaque proposal.
+        if matches!(proposal.transaction_type, TransactionType::Custom) {
+            return Ok(());
+        }
+
         let account = self.require_account()?.clone();
         let salt = proposal.metadata.salt()?;
         let signer_commitments = proposal.metadata.signer_commitments()?;

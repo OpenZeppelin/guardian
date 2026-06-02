@@ -356,9 +356,10 @@ async function buildFinalRequest(
       );
       return request;
     }
-    case 'unknown':
+    case 'custom':
       throw new Error(
-        'Cannot execute proposal with unknown type. The proposal must have been imported without proper metadata.',
+        `Cannot execute a custom proposal type (${metadata.rawProposalType ?? 'custom'}) via the generic SDK; ` +
+          'its transaction must be built by the integration that defined it (issue #266).',
       );
     default: {
       const { request } = await buildUpdateSignersTransactionRequest(

@@ -81,12 +81,15 @@ pub use keystore::{
 };
 
 // Proposals
+pub use execution::SignatureAdvice;
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, Proposal,
     ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
 };
-pub use transaction::ProposalBuilder;
+pub use transaction::{
+    ProposalBuilder, build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
+};
 
 // Export/Import
 pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};

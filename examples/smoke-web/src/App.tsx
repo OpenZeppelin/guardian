@@ -63,6 +63,11 @@ export default function App() {
   const [accountId, setAccountId] = useState('');
   const [stateDataBase64, setStateDataBase64] = useState('');
   const [proposalJson, setProposalJson] = useState(proposalPlaceholder);
+  const [customRecipient, setCustomRecipient] = useState('');
+  const [customFaucet, setCustomFaucet] = useState('');
+  const [customAmount, setCustomAmount] = useState('');
+  const [customLabel, setCustomLabel] = useState('b2agg');
+  const [customRecipeJson, setCustomRecipeJson] = useState('');
   const [importJson, setImportJson] = useState('');
   const [exportedJson, setExportedJson] = useState('');
   const [lastResult, setLastResult] = useState('');
@@ -138,6 +143,31 @@ export default function App() {
   const handleImportProposal = useCallback(async () => {
     await runAction(async () => api.importProposal({ json: importJson }));
   }, [api, importJson, runAction]);
+
+  const handleCreateCustomProposal = useCallback(async () => {
+    await runAction(async () => {
+      const result = await api.createCustomProposal({
+        recipientId: customRecipient,
+        faucetId: customFaucet,
+        amount: customAmount,
+        label: customLabel,
+      });
+      setCustomRecipeJson(formatJson(result.recipe));
+      return result;
+    });
+  }, [api, customAmount, customFaucet, customLabel, customRecipient, runAction]);
+
+  const handleExecuteCustomProposal = useCallback(
+    async (proposalId: string) => {
+      await runAction(async () => {
+        const recipe = customRecipeJson.trim() ? JSON.parse(customRecipeJson) : undefined;
+        return api.executeCustomProposal(
+          recipe && recipe.proposalId === proposalId ? { recipe } : { proposalId },
+        );
+      });
+    },
+    [api, customRecipeJson, runAction],
+  );
 
   return (
     <div className="app-shell">
@@ -417,6 +447,69 @@ export default function App() {
 
         <section className="panel">
           <div className="panel-header">
+            <h2>Custom Proposal (producer API)</h2>
+            <span className="badge neutral">proposeCustom / prepare</span>
+          </div>
+          <p className="hero-copy">
+            Builds a P2ID transaction artifact, proposes it under a free-form label via
+            <code> proposeCustom</code>, and (after threshold) executes it via
+            <code> prepareCustomExecution</code> — the harness injects the returned advice into a
+            rebuilt request and submits. The recipe below is what the producer keeps to execute.
+          </p>
+          <div className="form-grid">
+            <label>
+              <span>Recipient account ID</span>
+              <input
+                value={customRecipient}
+                onChange={(event) => setCustomRecipient(event.target.value)}
+                placeholder="0x..."
+              />
+            </label>
+            <label>
+              <span>Faucet ID</span>
+              <input
+                value={customFaucet}
+                onChange={(event) => setCustomFaucet(event.target.value)}
+                placeholder="0x..."
+              />
+            </label>
+            <label>
+              <span>Amount</span>
+              <input
+                value={customAmount}
+                onChange={(event) => setCustomAmount(event.target.value)}
+                placeholder="100"
+              />
+            </label>
+            <label>
+              <span>Proposal label</span>
+              <input
+                value={customLabel}
+                onChange={(event) => setCustomLabel(event.target.value)}
+                placeholder="b2agg"
+              />
+            </label>
+            <label className="wide">
+              <span>Recipe JSON (kept by producer; used to execute)</span>
+              <textarea
+                value={customRecipeJson}
+                onChange={(event) => setCustomRecipeJson(event.target.value)}
+                placeholder="Recipe appears here after creating a custom proposal."
+              />
+            </label>
+          </div>
+          <div className="actions">
+            <button
+              disabled={!sessionReady || !accountLoaded}
+              onClick={handleCreateCustomProposal}
+            >
+              Create custom proposal
+            </button>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
             <h2>Proposals</h2>
             <span className="badge neutral">{snapshot.proposals.length} cached</span>
           </div>
@@ -472,14 +565,23 @@ export default function App() {
                   >
                     Sign
                   </button>
-                  <button
-                    disabled={!sessionReady}
-                    onClick={() =>
-                      runAction(async () => api.executeProposal({ proposalId: proposal.id }))
-                    }
-                  >
-                    Execute
-                  </button>
+                  {proposal.metadata.proposalType === 'custom' ? (
+                    <button
+                      disabled={!sessionReady}
+                      onClick={() => handleExecuteCustomProposal(proposal.id)}
+                    >
+                      Execute (custom)
+                    </button>
+                  ) : (
+                    <button
+                      disabled={!sessionReady}
+                      onClick={() =>
+                        runAction(async () => api.executeProposal({ proposalId: proposal.id }))
+                      }
+                    >
+                      Execute
+                    </button>
+                  )}
                   <button
                     disabled={!sessionReady}
                     onClick={() =>
@@ -579,6 +681,16 @@ await window.smoke.createProposal({
   commitment: '0x...',
   increaseThreshold: false,
 });
+
+// Custom proposal (producer API): create, sign on cosigner tabs, then execute.
+const { recipe } = await window.smoke.createCustomProposal({
+  recipientId: '0x...',
+  faucetId: '0x...',
+  amount: '100',
+  label: 'b2agg',
+});
+// ...cosigners sign via window.smoke.signProposal({ proposalId: recipe.proposalId })...
+await window.smoke.executeCustomProposal({ recipe });
 
 const matches = await window.smoke.recoverByKey();
 // matches: [{ accountId: '0x...', state: { ... } }, ...]`}

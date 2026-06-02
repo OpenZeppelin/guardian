@@ -133,6 +133,17 @@ describe('conversion', () => {
       expect(result.targetThreshold).toBeUndefined();
     });
 
+    it('preserves an arbitrary custom proposal_type (issue #266)', () => {
+      const server: ServerProposalMetadata = {
+        proposal_type: 'b2agg',
+        description: 'agglayer bridge note',
+      };
+
+      const result = fromServerProposalMetadata(server);
+
+      expect(result.proposalType).toBe('b2agg');
+    });
+
     it('converts DeltaObject', () => {
       const server: ServerDeltaObject = {
         account_id: '0xaccount',

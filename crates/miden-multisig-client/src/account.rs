@@ -143,6 +143,7 @@ impl MultisigAccount {
                 ProcedureName::UpdateProcedureThreshold
             }
             TransactionType::SwitchGuardian { .. } => ProcedureName::UpdateGuardian,
+            TransactionType::Custom => return self.threshold(),
         };
 
         self.effective_threshold_for_procedure(procedure)

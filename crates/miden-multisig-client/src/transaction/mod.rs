@@ -24,6 +24,15 @@ use miden_protocol::{Felt, Word};
 use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 
+/// Deserializes a producer-supplied transaction artifact (issue #266 producer
+/// API). The bytes are the serialized form of a Miden `TransactionRequest`.
+pub fn deserialize_transaction_request(bytes: &[u8]) -> Result<TransactionRequest> {
+    use miden_client::Deserializable;
+    TransactionRequest::read_from_bytes(bytes).map_err(|e| {
+        MultisigError::InvalidConfig(format!("failed to decode transaction artifact: {e}"))
+    })
+}
+
 /// Executes a transaction to get its summary (expects Unauthorized error).
 pub async fn execute_for_summary(
     client: &mut MidenSdkClient,
@@ -63,4 +72,29 @@ pub fn word_to_hex(word: &Word) -> String {
         .flat_map(|felt| felt.as_canonical_u64().to_le_bytes())
         .collect();
     format!("0x{}", hex::encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_transaction_request_rejects_garbage_bytes() {
+        let err = deserialize_transaction_request(&[0xde, 0xad, 0xbe, 0xef])
+            .expect_err("garbage bytes must not deserialize");
+        assert!(
+            err.to_string()
+                .contains("failed to decode transaction artifact")
+        );
+    }
+
+    #[test]
+    fn deserialize_transaction_request_rejects_empty_bytes() {
+        let err =
+            deserialize_transaction_request(&[]).expect_err("empty bytes must not deserialize");
+        assert!(
+            err.to_string()
+                .contains("failed to decode transaction artifact")
+        );
+    }
 }

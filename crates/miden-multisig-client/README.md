@@ -136,6 +136,45 @@ let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
 
+### Custom Proposal Types
+
+GUARDIAN accepts any non-empty `proposal_type`, so an integration can propose a
+transaction the SDK does not model (an agglayer bridge note, an arbitrary dApp
+transaction) under its own label. The SDK normalizes the label to lowercase
+`snake_case` (trims and lowercases it, then requires `[a-z0-9_]+` — the same
+shape as built-in labels like `add_signer`), so `"B2Agg"` becomes `b2agg` and
+`"add signer"` / `"add-signer"` are rejected. Such a proposal buckets to
+`TransactionType::Custom` and keeps its normalized label in
+`ProposalMetadata.proposal_type`. It can be listed, signed, and
+exported/imported through the normal flow, but the generic SDK cannot build its
+on-chain transaction — the integration owns that recipe and drives execution.
+
+```rust
+use miden_client::Serializable;
+use miden_multisig_client::{build_p2id_transaction_request, generate_salt};
+
+// Producer: build a transaction and propose it under a custom label.
+let salt = generate_salt();
+let mut request = build_p2id_transaction_request(
+    account.inner(), recipient, vec![asset], salt, std::iter::empty(),
+)?;
+let proposal = client.propose_custom(&request.to_bytes(), "b2agg").await?;
+
+// Cosigners review and sign through the usual list/sign flow.
+
+// Producer (once threshold is met): bind-check the artifact, fetch the validated
+// advice, inject it into the request, and submit. `prepare_custom_execution`
+// verifies the artifact against the signed commitment *before* the GUARDIAN ack.
+let advice = client.prepare_custom_execution(&proposal.id, &request.to_bytes()).await?;
+request.advice_map_mut().extend(advice);
+client.submit_transaction(request).await?;
+```
+
+The integration keeps only its own recipe (build inputs + salt) so it can
+reproduce the exact transaction at execute time — the SDK does not store the
+artifact. The binding check guarantees the rebuilt transaction matches the
+commitment the cosigners signed.
+
 ## Consume-notes metadata versions
 
 `consume_notes` proposals come in two metadata shapes. The discriminator

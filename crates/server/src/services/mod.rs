@@ -182,16 +182,6 @@ pub async fn resolve_account(
     Ok(ResolvedAccount { metadata, storage })
 }
 
-const VALID_PROPOSAL_TYPES: &[&str] = &[
-    "add_signer",
-    "remove_signer",
-    "change_threshold",
-    "update_procedure_threshold",
-    "switch_guardian",
-    "consume_notes",
-    "p2id",
-];
-
 pub fn normalize_payload(payload: Value) -> Result<Value> {
     let mut obj = payload.as_object().cloned().ok_or_else(|| {
         GuardianError::InvalidDelta("delta_payload must be an object".to_string())
@@ -240,12 +230,10 @@ fn normalize_metadata(metadata: Value) -> Result<Value> {
         .ok_or_else(|| {
             GuardianError::InvalidDelta("metadata.proposal_type is required".to_string())
         })?;
-    if !VALID_PROPOSAL_TYPES.contains(&proposal_type) {
-        return Err(GuardianError::InvalidDelta(format!(
-            "Unknown proposal_type '{}'. Must be one of: {}",
-            proposal_type,
-            VALID_PROPOSAL_TYPES.join(", ")
-        )));
+    if proposal_type.trim().is_empty() {
+        return Err(GuardianError::InvalidDelta(
+            "metadata.proposal_type must not be empty".to_string(),
+        ));
     }
     obj.insert(
         "proposal_type".to_string(),
@@ -329,6 +317,49 @@ mod normalize_tests {
         assert_eq!(
             metadata.get("required_signatures").and_then(Value::as_u64),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn normalize_payload_accepts_custom_proposal_type() {
+        let payload = json!({
+            "tx_summary": { "data": "dGVzdA==" },
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "b2agg",
+                "description": "custom bridge note"
+            }
+        });
+
+        let normalized = normalize_payload(payload).expect("custom type should normalize");
+        let metadata = normalized
+            .get("metadata")
+            .and_then(Value::as_object)
+            .expect("metadata should be an object");
+
+        assert_eq!(
+            metadata.get("proposal_type").and_then(Value::as_str),
+            Some("b2agg")
+        );
+    }
+
+    #[test]
+    fn normalize_payload_rejects_empty_proposal_type() {
+        let payload = json!({
+            "tx_summary": { "data": "dGVzdA==" },
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "   ",
+                "description": "blank"
+            }
+        });
+
+        let error = normalize_payload(payload).expect_err("blank proposal_type must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("proposal_type must not be empty"),
+            "unexpected error: {error}"
         );
     }
 }
