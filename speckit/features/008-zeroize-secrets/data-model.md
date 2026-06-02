@@ -20,8 +20,8 @@ All four wrapper types live in `crates/server/src/secret/wrappers.rs` and re-exp
 | Property | Value |
 |---|---|
 | Inner storage | `secrecy::SecretBox<[u8; N]>` |
-| Constructor | `pub fn new(bytes: [u8; N]) -> Self` |
-| Exposure | `pub fn expose_secret(&self) -> &[u8; N]` |
+| Constructor | `pub(crate) fn new(bytes: [u8; N]) -> Self` |
+| Exposure | `pub(crate) fn expose_secret(&self) -> &[u8; N]` |
 | `Drop` | Zeroizes the `[u8; N]` |
 | `Debug` | Renders `FixedKey<N>(…)` |
 | `Display` | **Not implemented** |
@@ -36,8 +36,8 @@ Used for fixed-size symmetric key material (HMAC keys).
 | Property | Value |
 |---|---|
 | Inner storage | `secrecy::SecretBox<Vec<u8>>` |
-| Constructor | `pub fn new(bytes: Vec<u8>) -> Self` |
-| Exposure | `pub fn expose_secret(&self) -> &[u8]` |
+| Constructor | `pub(crate) fn new(bytes: Vec<u8>) -> Self` |
+| Exposure | `pub(crate) fn expose_secret(&self) -> &[u8]` |
 | `Drop` | Zeroizes the `Vec<u8>` |
 | `Debug` | Renders `SecretBytes(len=N)` |
 | `Display` | **Not implemented** |
@@ -52,8 +52,8 @@ Used for variable-length opaque bytes (cloud-fetched secret material; decoded he
 | Property | Value |
 |---|---|
 | Inner storage | `secrecy::SecretBox<String>` |
-| Constructor | `pub fn new(s: String) -> Self` |
-| Exposure | `pub fn expose_secret(&self) -> &str` |
+| Constructor | `pub(crate) fn new(s: String) -> Self` |
+| Exposure | `pub(crate) fn expose_secret(&self) -> &str` |
 | `Drop` | Zeroizes the `String`'s buffer |
 | `Debug` | Renders `SecretString(len=N)` |
 | `Display` | **Not implemented** |
@@ -68,9 +68,9 @@ Used for variable-length secret string values (the hex secret returned by AWS Se
 | Property | Value |
 |---|---|
 | Inner storage | `secrecy::SecretBox<String>` |
-| Constructor | `pub fn new(url: String) -> Self` |
-| Exposure | `pub fn expose_secret(&self) -> &str` |
-| Additional accessor | `pub fn scheme_and_host(&self) -> String` — returns `scheme://host[:port]` with userinfo, path, and query stripped; safe to log |
+| Constructor | `pub(crate) fn new(url: String) -> Self` |
+| Exposure | `pub(crate) fn expose_secret(&self) -> &str` |
+| Additional accessor | `pub(crate) fn scheme_and_host(&self) -> String` — returns `scheme://host[:port]` with userinfo, path, and query stripped; safe to log |
 | `Drop` | Zeroizes the `String`'s buffer |
 | `Debug` | Renders `CredentialUrl(scheme://host[:port])` (or `CredentialUrl(…)` if parse fails) |
 | `Display` | **Not implemented** |

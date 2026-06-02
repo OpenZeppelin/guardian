@@ -80,6 +80,7 @@ impl StorageMetadataBuilder {
             .database_url(
                 std::env::var("DATABASE_URL")
                     .ok()
+                    .map(|s| s.trim().to_owned())
                     .filter(|s| !s.is_empty())
                     .map(CredentialUrl::new),
             )
@@ -99,7 +100,7 @@ impl StorageMetadataBuilder {
         {
             let database_url = self
                 .database_url
-                .filter(|url| !url.expose_secret().is_empty())
+                .filter(|url| !url.expose_secret().trim().is_empty())
                 .ok_or_else(|| "DATABASE_URL environment variable is required".to_string())?;
             let database_pool_max_size = resolve_pool_size(
                 self.database_pool_max_size,

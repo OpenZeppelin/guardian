@@ -16,12 +16,19 @@
 
 ```rust
 // crates/server/src/secret/mod.rs
-pub(crate) mod ct;
-pub(crate) mod wrappers;
+mod ct;
+mod digest;
+mod wrappers;
 
-pub(crate) use wrappers::{FixedKey, SecretBytes, SecretString, CredentialUrl};
+#[cfg(test)]
 pub(crate) use ct::eq as ct_eq;
+pub(crate) use digest::session_digest;
+pub(crate) use wrappers::{CredentialUrl, FixedKey, SecretBytes, SecretString};
 ```
+
+The submodules are private (`mod`, not `pub(crate) mod`); the crate-internal
+surface is only the re-exported items. `ct_eq` is test-only (`#[cfg(test)]`);
+`session_digest` derives the SHA-256 storage key for a session token.
 
 ## `wrappers::FixedKey<const N: usize>`
 

@@ -3,17 +3,11 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::error::{GuardianError, Result};
 use crate::metadata::network::normalize_evm_address;
-
-/// SHA-256 digest of the session token used as the storage key, so the
-/// plaintext token is never retained beyond the issuing request.
-fn session_digest(token: &str) -> [u8; 32] {
-    Sha256::digest(token.as_bytes()).into()
-}
+use crate::secret::session_digest;
 
 const COOKIE_NAME: &str = "guardian_evm_session";
 const CHALLENGE_TTL_SECS: i64 = 300;

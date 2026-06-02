@@ -4,7 +4,6 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
-use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock};
 
 use super::allowlist::{
@@ -20,13 +19,7 @@ use super::util::{cookie_date, correlation_id, random_hex, rate_limit_error};
 use crate::error::{GuardianError, Result};
 use crate::middleware::rate_limit::RateLimitStore;
 use crate::network::NetworkType;
-
-/// Derive the storage key for a session token. The plaintext token is never
-/// retained in the session map — only this SHA-256 digest is — so a
-/// coredump or heap inspection of the long-lived map yields no tokens.
-fn session_digest(token: &str) -> [u8; 32] {
-    Sha256::digest(token.as_bytes()).into()
-}
+use crate::secret::session_digest;
 
 #[derive(Clone, Debug)]
 pub struct DashboardState {
