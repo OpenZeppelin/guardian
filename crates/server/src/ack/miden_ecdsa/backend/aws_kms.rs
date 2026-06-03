@@ -1,3 +1,15 @@
+//! AWS KMS backend for the ECDSA ACK signer: the private key never enters the
+//! process.
+//!
+//! Miden's `ecdsa_k256_keccak` scheme signs `Keccak256(word)` over secp256k1,
+//! so KMS signs with `MessageType=DIGEST` + `ECDSA_SHA_256` over that digest.
+//! KMS returns a DER signature with no recovery id, which is converted to the
+//! Miden 65-byte form via the public miden-crypto API by brute-forcing the
+//! recovery id against the known public key. Construction runs a startup sign
+//! probe so a missing `kms:Sign` permission or wrong key spec fails fast as a
+//! configuration error rather than at first ACK. The `KmsEcdsaClient` seam lets
+//! unit tests inject a fake without reaching AWS.
+
 use super::EcdsaSignerBackend;
 use crate::error::{GuardianError, Result};
 use async_trait::async_trait;

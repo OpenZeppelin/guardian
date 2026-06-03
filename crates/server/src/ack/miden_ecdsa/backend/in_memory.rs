@@ -1,3 +1,11 @@
+//! Default ECDSA ACK backend: the key is held in process via the filesystem
+//! keystore.
+//!
+//! This is the path existing deployments use — the secret is loaded from the
+//! filesystem keystore (or seeded from Secrets Manager in prod) and signing
+//! happens locally. Hosted backends are the opt-in alternative when the key
+//! must never be memory-resident.
+
 use super::EcdsaSignerBackend;
 use crate::error::Result;
 use async_trait::async_trait;

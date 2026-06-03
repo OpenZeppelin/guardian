@@ -1,3 +1,11 @@
+//! ACK signing: Guardian's own response signers over delta commitments.
+//!
+//! [`AckRegistry`] holds both schemes — Falcon and ECDSA — and signs a delta
+//! with the scheme the request selects. The ECDSA signer is abstracted over a
+//! pluggable backend so its key can live in a hosted service; Falcon stays
+//! concrete. The two are built independently at startup: a hosted ECDSA backend
+//! must not require an ECDSA secret in Secrets Manager that does not exist.
+
 pub mod miden_ecdsa;
 pub mod miden_falcon_rpo;
 mod secrets_manager;

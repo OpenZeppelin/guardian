@@ -1,3 +1,12 @@
+//! Pluggable backends for the ECDSA ACK signer.
+//!
+//! [`EcdsaSignerBackend`] is the runtime seam: it owns the public key and
+//! produces a Miden `ecdsa_k256_keccak` [`Signature`] for a message, whether
+//! the private key lives in process (in-memory) or in a hosted service (AWS
+//! KMS). A new provider is added by implementing the trait and wiring a
+//! variant; the ACK flow never changes. [`EcdsaBackendKind`] is the static
+//! startup selector, not the extensibility boundary.
+
 mod aws_kms;
 mod in_memory;
 

@@ -1,3 +1,10 @@
+//! Turns an [`EcdsaSignerBackend`] into Guardian's ECDSA ACK signatures over
+//! delta transaction commitments.
+//!
+//! A thin wrapper over the backend: it caches the public-key and commitment hex
+//! at construction and delegates the actual signing to the backend, so the
+//! signer is agnostic to where the key lives.
+
 use super::backend::EcdsaSignerBackend;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
