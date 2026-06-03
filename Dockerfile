@@ -1,7 +1,7 @@
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.93.0-bookworm as base-builder
+FROM rust:1.96.0-bookworm as base-builder
 
 # Install protobuf compiler (pinned to specific version)
 RUN apt-get update && apt-get install -y \
@@ -37,7 +37,7 @@ FROM base-builder as benchmark-builder
 RUN cargo build --release --package guardian-prod-benchmarks --bin guardian-prod-benchmarks
 
 # Runtime stage
-FROM debian:bookworm-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 as benchmark-runner
+FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb as benchmark-runner
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -51,7 +51,7 @@ COPY --from=benchmark-builder /app/crates/contracts/masm /app/crates/contracts/m
 ENTRYPOINT ["/app/guardian-prod-benchmarks"]
 
 # Runtime stage
-FROM debian:bookworm-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 as server-runner
+FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb as server-runner
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
