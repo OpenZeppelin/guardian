@@ -63,8 +63,10 @@ use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::error::{GuardianError, Result};
+use crate::secret::FixedKey;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -191,9 +193,9 @@ impl Cursor {
 
 /// Random server-side secret used to HMAC-sign cursors. Generated once
 /// per server startup; cursors do not survive a restart.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CursorSecret {
-    bytes: [u8; CURSOR_SECRET_LEN],
+    key: FixedKey<CURSOR_SECRET_LEN>,
 }
 
 impl CursorSecret {
@@ -203,14 +205,18 @@ impl CursorSecret {
         use rand::RngCore;
         let mut bytes = [0u8; CURSOR_SECRET_LEN];
         rand::rng().fill_bytes(&mut bytes);
-        Self { bytes }
+        Self {
+            key: FixedKey::new(bytes),
+        }
     }
 
     /// Construct a `CursorSecret` from a fixed byte slice. Mainly useful
     /// in tests where a deterministic secret keeps assertions stable.
     #[cfg(test)]
     pub fn from_bytes(bytes: [u8; CURSOR_SECRET_LEN]) -> Self {
-        Self { bytes }
+        Self {
+            key: FixedKey::new(bytes),
+        }
     }
 
     /// Decode a hex-encoded `CursorSecret` (exactly
@@ -219,29 +225,25 @@ impl CursorSecret {
     /// validate across multi-replica deployments.
     pub fn from_hex(hex_str: &str) -> std::result::Result<Self, String> {
         let trimmed = hex_str.trim();
-        let raw = hex::decode(trimmed.strip_prefix("0x").unwrap_or(trimmed))
-            .map_err(|e| format!("invalid hex: {e}"))?;
+        let raw = Zeroizing::new(
+            hex::decode(trimmed.strip_prefix("0x").unwrap_or(trimmed))
+                .map_err(|e| format!("invalid hex: {e}"))?,
+        );
         if raw.len() != CURSOR_SECRET_LEN {
             return Err(format!(
                 "expected {CURSOR_SECRET_LEN} bytes, got {}",
                 raw.len()
             ));
         }
-        let mut bytes = [0u8; CURSOR_SECRET_LEN];
+        let mut bytes = Zeroizing::new([0u8; CURSOR_SECRET_LEN]);
         bytes.copy_from_slice(&raw);
-        Ok(Self { bytes })
+        Ok(Self {
+            key: FixedKey::new(*bytes),
+        })
     }
 
     fn as_slice(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
-impl std::fmt::Debug for CursorSecret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CursorSecret")
-            .field("bytes", &"<redacted>")
-            .finish()
+        self.key.expose_secret()
     }
 }
 
@@ -300,6 +302,8 @@ pub fn decode(encoded: &str, secret: &CursorSecret, expected_kind: CursorKind) -
         GuardianError::ConfigurationError(format!("Failed to initialize HMAC: {e}"))
     })?;
     mac.update(payload);
+    // hmac::Mac::verify_slice is constant-time per RustCrypto, so a network
+    // attacker cannot use response latency to learn the tag one byte at a time.
     mac.verify_slice(tag)
         .map_err(|_| GuardianError::InvalidCursor("cursor signature mismatch".to_string()))?;
 

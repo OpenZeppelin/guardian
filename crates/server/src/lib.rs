@@ -22,6 +22,7 @@ pub mod evm;
 pub mod jobs;
 pub mod metadata;
 pub mod network;
+pub(crate) mod secret;
 pub mod services;
 pub mod state_object;
 pub mod storage;

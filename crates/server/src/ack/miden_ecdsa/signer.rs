@@ -48,6 +48,13 @@ impl MidenEcdsaSigner {
 
 impl MidenEcdsaSigner {
     pub(crate) fn sign_with_server_key(&self, message: Word) -> crate::ack::Result<Signature> {
+        // Verified: miden-crypto 0.23.0 (pulled in by miden-protocol 0.14.5)
+        // implements `impl ZeroizeOnDrop for SecretKey {}` in
+        // src/dsa/ecdsa_k256_keccak/mod.rs (delegating to k256's
+        // ZeroizeOnDrop), so the per-call loaded key material is zeroed
+        // when the signing frame returns. The local file-read buffer inside
+        // miden-keystore is wrapped in zeroize::Zeroizing for the same
+        // reason.
         Ok(self.keystore.ecdsa_sign(self.server_pubkey_word, message)?)
     }
 

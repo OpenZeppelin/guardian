@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::metadata::network::normalize_evm_address;
+use crate::secret::{CredentialUrl, SecretString};
 
 const RPC_URLS_ENV: &str = "GUARDIAN_EVM_RPC_URLS";
 const ENTRYPOINT_ADDRESS_ENV: &str = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS";
@@ -9,7 +10,7 @@ const DEFAULT_ENTRYPOINT_ADDRESS: &str = "0x433709009b8330fda32311df1c2afa402ed8
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmChainConfig {
     pub chain_id: u64,
-    pub rpc_url: String,
+    pub(crate) rpc_url: CredentialUrl,
     pub entrypoint_address: String,
 }
 
@@ -28,7 +29,7 @@ impl EvmChainRegistry {
     }
 
     fn from_rpc_urls(
-        rpc_urls: BTreeMap<u64, String>,
+        rpc_urls: BTreeMap<u64, CredentialUrl>,
         entrypoint_address: &str,
     ) -> Result<Self, String> {
         let entrypoint_address = normalize_evm_address(entrypoint_address)
@@ -36,7 +37,7 @@ impl EvmChainRegistry {
         let mut chains = BTreeMap::new();
 
         for (chain_id, rpc_url) in rpc_urls {
-            if !is_http_url(&rpc_url) {
+            if !is_http_url(rpc_url.expose_secret()) {
                 return Err(format!(
                     "{RPC_URLS_ENV} entry for chain {chain_id} must be an http or https URL"
                 ));
@@ -73,13 +74,15 @@ impl EvmChainRegistry {
     }
 }
 
-fn parse_map(env_var: &str) -> Result<BTreeMap<u64, String>, String> {
+fn parse_map(env_var: &str) -> Result<BTreeMap<u64, CredentialUrl>, String> {
     let Ok(raw) = std::env::var(env_var) else {
         return Ok(BTreeMap::new());
     };
+    let raw = SecretString::new(raw);
 
     let mut values = BTreeMap::new();
     for entry in raw
+        .expose_secret()
         .split(',')
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
@@ -94,7 +97,7 @@ fn parse_map(env_var: &str) -> Result<BTreeMap<u64, String>, String> {
         if chain_id == 0 {
             return Err(format!("{env_var} chain ID must be greater than zero"));
         }
-        values.insert(chain_id, value.trim().to_string());
+        values.insert(chain_id, CredentialUrl::new(value.trim().to_string()));
     }
 
     Ok(values)
@@ -108,11 +111,15 @@ fn is_http_url(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn url(s: &str) -> CredentialUrl {
+        CredentialUrl::new(s.to_string())
+    }
+
     #[test]
     fn registry_indexes_configured_rpc_chains() {
         let registry = EvmChainRegistry::new(vec![EvmChainConfig {
             chain_id: 31337,
-            rpc_url: "http://127.0.0.1:8545".to_string(),
+            rpc_url: url("http://127.0.0.1:8545"),
             entrypoint_address: DEFAULT_ENTRYPOINT_ADDRESS.to_string(),
         }]);
 
@@ -124,11 +131,8 @@ mod tests {
     fn registry_uses_one_entrypoint_address_for_all_rpc_chains() {
         let registry = EvmChainRegistry::from_rpc_urls(
             BTreeMap::from([
-                (1, "https://ethereum-rpc.publicnode.com".to_string()),
-                (
-                    11155111,
-                    "https://ethereum-sepolia-rpc.publicnode.com".to_string(),
-                ),
+                (1, url("https://ethereum-rpc.publicnode.com")),
+                (11155111, url("https://ethereum-sepolia-rpc.publicnode.com")),
             ]),
             DEFAULT_ENTRYPOINT_ADDRESS,
         )
@@ -148,7 +152,7 @@ mod tests {
     #[test]
     fn registry_rejects_invalid_entrypoint_address() {
         let error = EvmChainRegistry::from_rpc_urls(
-            BTreeMap::from([(31337, "http://127.0.0.1:8545".to_string())]),
+            BTreeMap::from([(31337, url("http://127.0.0.1:8545"))]),
             "0x1234",
         )
         .expect_err("invalid EntryPoint address should fail");
@@ -159,7 +163,7 @@ mod tests {
     #[test]
     fn registry_rejects_non_http_rpc_url() {
         let error = EvmChainRegistry::from_rpc_urls(
-            BTreeMap::from([(31337, "ws://127.0.0.1:8545".to_string())]),
+            BTreeMap::from([(31337, url("ws://127.0.0.1:8545"))]),
             DEFAULT_ENTRYPOINT_ADDRESS,
         )
         .expect_err("non-http RPC URL should fail");
