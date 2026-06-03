@@ -9,6 +9,7 @@ set -euo pipefail
 #   plan     - Run Terraform plan without building or applying
 #   build    - Build and push the Docker image to ECR
 #   bootstrap-ack-keys - Create the prod ACK key secrets in Secrets Manager
+#   bootstrap-kms-ecdsa-key - Create the KMS ECDSA ACK signing key + alias (KMS backend)
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
@@ -331,6 +332,18 @@ ack_ecdsa_secret_name() {
   echo "${GUARDIAN_ACK_ECDSA_SECRET_NAME:-${TF_VAR_guardian_ack_ecdsa_secret_name:-${STACK_NAME}/server/ack-ecdsa-secret-key}}"
 }
 
+ack_ecdsa_kms_key_arn() {
+  echo "${TF_VAR_guardian_ack_ecdsa_kms_key_arn:-}"
+}
+
+ecdsa_backend_is_kms() {
+  [ -n "$(ack_ecdsa_kms_key_arn)" ]
+}
+
+ack_ecdsa_kms_alias() {
+  echo "alias/${STACK_NAME}-ack-ecdsa"
+}
+
 secret_exists() {
   local secret_id="$1"
   aws secretsmanager describe-secret --secret-id "$secret_id" --region "$AWS_REGION" >/dev/null 2>&1
@@ -351,6 +364,11 @@ validate_ack_secrets_exist() {
     return 1
   fi
 
+  if ecdsa_backend_is_kms; then
+    log_info "ECDSA ACK signer is KMS-backed ($(ack_ecdsa_kms_key_arn)); skipping Secrets Manager check"
+    return 0
+  fi
+
   if ! secret_exists "$ecdsa_secret_name"; then
     log_error "Missing ECDSA ACK secret ${ecdsa_secret_name}. Run ./scripts/aws-deploy.sh bootstrap-ack-keys first."
     return 1
@@ -360,6 +378,7 @@ validate_ack_secrets_exist() {
 cmd_bootstrap_ack_keys() {
   local falcon_secret_name
   local ecdsa_secret_name
+  local manage_ecdsa_secret=true
   local existing_secrets=()
   local generated_keys
   local falcon_secret_value
@@ -367,10 +386,16 @@ cmd_bootstrap_ack_keys() {
   falcon_secret_name=$(ack_falcon_secret_name)
   ecdsa_secret_name=$(ack_ecdsa_secret_name)
 
+  if ecdsa_backend_is_kms; then
+    manage_ecdsa_secret=false
+    log_info "ECDSA ACK signer is KMS-backed; not creating an ECDSA Secrets Manager secret"
+    log_info "Provision the KMS key with: ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key"
+  fi
+
   if secret_exists "$falcon_secret_name"; then
     existing_secrets+=("$falcon_secret_name")
   fi
-  if secret_exists "$ecdsa_secret_name"; then
+  if [ "$manage_ecdsa_secret" = true ] && secret_exists "$ecdsa_secret_name"; then
     existing_secrets+=("$ecdsa_secret_name")
   fi
 
@@ -382,14 +407,9 @@ cmd_bootstrap_ack_keys() {
   log_info "Generating ACK keys locally..."
   generated_keys=$(cargo run --quiet --package guardian-server --bin ack-keygen)
   falcon_secret_value=$(printf '%s' "$generated_keys" | jq -r '.falcon_secret_key')
-  ecdsa_secret_value=$(printf '%s' "$generated_keys" | jq -r '.ecdsa_secret_key')
 
   if [ -z "$falcon_secret_value" ] || [ "$falcon_secret_value" = "null" ]; then
     log_error "Failed to generate Falcon ACK key material"
-    return 1
-  fi
-  if [ -z "$ecdsa_secret_value" ] || [ "$ecdsa_secret_value" = "null" ]; then
-    log_error "Failed to generate ECDSA ACK key material"
     return 1
   fi
 
@@ -399,13 +419,58 @@ cmd_bootstrap_ack_keys() {
     --secret-string "$falcon_secret_value" \
     --region "$AWS_REGION" >/dev/null
 
-  log_info "Creating ECDSA ACK secret ${ecdsa_secret_name}"
-  aws secretsmanager create-secret \
-    --name "$ecdsa_secret_name" \
-    --secret-string "$ecdsa_secret_value" \
-    --region "$AWS_REGION" >/dev/null
+  if [ "$manage_ecdsa_secret" = true ]; then
+    ecdsa_secret_value=$(printf '%s' "$generated_keys" | jq -r '.ecdsa_secret_key')
+    if [ -z "$ecdsa_secret_value" ] || [ "$ecdsa_secret_value" = "null" ]; then
+      log_error "Failed to generate ECDSA ACK key material"
+      return 1
+    fi
+
+    log_info "Creating ECDSA ACK secret ${ecdsa_secret_name}"
+    aws secretsmanager create-secret \
+      --name "$ecdsa_secret_name" \
+      --secret-string "$ecdsa_secret_value" \
+      --region "$AWS_REGION" >/dev/null
+  fi
 
   log_info "ACK key bootstrap complete"
+}
+
+cmd_bootstrap_kms_ecdsa_key() {
+  local alias_name
+  local key_id
+  local key_arn
+  alias_name=$(ack_ecdsa_kms_alias)
+
+  if aws kms describe-key --key-id "$alias_name" --region "$AWS_REGION" >/dev/null 2>&1; then
+    key_arn=$(aws kms describe-key --key-id "$alias_name" --region "$AWS_REGION" \
+      --query KeyMetadata.Arn --output text)
+    log_error "Refusing to overwrite existing KMS key behind ${alias_name} (${key_arn})"
+    log_error "Retiring an ACK signing key is a SwitchGuardian identity migration, not a re-bootstrap"
+    return 1
+  fi
+
+  log_info "Creating KMS ECDSA ACK signing key (ECC_SECG_P256K1 / SIGN_VERIFY)"
+  key_id=$(aws kms create-key \
+    --key-spec ECC_SECG_P256K1 \
+    --key-usage SIGN_VERIFY \
+    --description "Guardian ${STACK_NAME} ACK ECDSA signer" \
+    --region "$AWS_REGION" \
+    --query KeyMetadata.KeyId --output text)
+
+  log_info "Creating alias ${alias_name}"
+  aws kms create-alias \
+    --alias-name "$alias_name" \
+    --target-key-id "$key_id" \
+    --region "$AWS_REGION"
+
+  key_arn=$(aws kms describe-key --key-id "$key_id" --region "$AWS_REGION" \
+    --query KeyMetadata.Arn --output text)
+
+  log_info "KMS ECDSA ACK key ready: ${key_arn}"
+  log_info "Export this before bootstrap-ack-keys and deploy (the script keys off it"
+  log_info "to skip the ECDSA Secrets Manager secret, and Terraform reads it too):"
+  log_info "  export TF_VAR_guardian_ack_ecdsa_kms_key_arn=\"${key_arn}\""
 }
 
 cmd_build_and_push() {
@@ -692,6 +757,9 @@ case "${COMMAND:-}" in
   bootstrap-ack-keys)
     cmd_bootstrap_ack_keys
     ;;
+  bootstrap-kms-ecdsa-key)
+    cmd_bootstrap_kms_ecdsa_key
+    ;;
   status)
     cmd_status
     ;;
@@ -711,6 +779,7 @@ case "${COMMAND:-}" in
     echo "  plan     Run Terraform plan without building or applying"
     echo "  build    Build and push the Docker image to ECR (no Terraform)"
     echo "  bootstrap-ack-keys  Create the prod ACK key secrets in Secrets Manager"
+    echo "  bootstrap-kms-ecdsa-key  Create the KMS ECDSA ACK signing key + alias (KMS backend)"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"
     echo "  cleanup  Remove all AWS resources"
@@ -747,6 +816,7 @@ case "${COMMAND:-}" in
     echo "  ./scripts/aws-deploy.sh plan"
     echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys"
+    echo "  STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key  # prints the ARN to set"
     echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
