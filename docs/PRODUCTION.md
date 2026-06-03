@@ -67,6 +67,7 @@ Before treating a deployment as production-ready:
 
 | Need | Read |
 |---|---|
+| Step-by-step setup for a specific run mode | [`guides/`](./guides/README.md) |
 | Deploy or update the AWS stack | [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md) |
 | Understand the AWS topology and Terraform ownership | [`architecture/infra.md`](./architecture/infra.md) |
 | Understand server storage modes and why prod uses Postgres | [`architecture/services.md`](./architecture/services.md#storage-modes) |
