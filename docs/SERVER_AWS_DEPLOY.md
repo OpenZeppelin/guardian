@@ -153,10 +153,12 @@ aws_region = "us-east-1"
 # guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
 
 # Optional: hosted ECDSA ACK signer backed by AWS KMS.
-# Grants the ECS task role kms:Sign + kms:GetPublicKey on this key. The key must
-# be ECC_SECG_P256K1 / SIGN_VERIFY. Also set GUARDIAN_ACK_ECDSA_BACKEND=aws-kms and
-# GUARDIAN_ACK_ECDSA_KMS_KEY_ID on the server runtime. The ECDSA Secrets Manager
-# secret is not needed on this path.
+# Setting this is all that is required: Terraform grants the ECS task role
+# kms:Sign + kms:GetPublicKey on the key and injects GUARDIAN_ACK_ECDSA_BACKEND
+# and GUARDIAN_ACK_ECDSA_KMS_KEY_ID into the server runtime. The key must be
+# ECC_SECG_P256K1 / SIGN_VERIFY. On this path the ECDSA Secrets Manager secret is
+# not needed; the Falcon ACK secret bootstrap is unchanged and still required in
+# prod.
 # guardian_ack_ecdsa_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/<key-id>"
 
 # Optional: EVM runtime configuration

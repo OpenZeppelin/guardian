@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use self::secrets_manager::{AckSecretProvider, AwsSecretsManagerProvider};
 
-pub use miden_ecdsa::{
+pub(crate) use miden_ecdsa::{
     AwsKmsEcdsaBackend, EcdsaBackendKind, EcdsaSignerBackend, InMemoryEcdsaBackend,
     MidenEcdsaSigner,
 };
@@ -127,6 +127,7 @@ async fn build_ecdsa_signer<P: AckSecretProvider>(
         }
         EcdsaBackendKind::AwsKms => Arc::new(AwsKmsEcdsaBackend::connect_from_env().await?),
     };
+    tracing::info!(backend = backend.backend_id(), "ECDSA ACK signer ready");
     Ok(MidenEcdsaSigner::new(backend))
 }
 

@@ -14,14 +14,14 @@ use miden_protocol::{transaction::TransactionSummary, utils::serde::Serializable
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct MidenEcdsaSigner {
+pub(crate) struct MidenEcdsaSigner {
     backend: Arc<dyn EcdsaSignerBackend>,
     pubkey_hex: String,
     commitment_hex: String,
 }
 
 impl MidenEcdsaSigner {
-    pub fn new(backend: Arc<dyn EcdsaSignerBackend>) -> Self {
+    pub(crate) fn new(backend: Arc<dyn EcdsaSignerBackend>) -> Self {
         let public_key = backend.public_key();
         let pubkey_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
         let commitment_hex = ecdsa_commitment_hex(public_key);

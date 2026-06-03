@@ -10,8 +10,8 @@
 mod aws_kms;
 mod in_memory;
 
-pub use aws_kms::AwsKmsEcdsaBackend;
-pub use in_memory::InMemoryEcdsaBackend;
+pub(crate) use aws_kms::AwsKmsEcdsaBackend;
+pub(crate) use in_memory::InMemoryEcdsaBackend;
 
 use crate::error::{GuardianError, Result};
 use async_trait::async_trait;
@@ -23,7 +23,7 @@ const BACKEND_IN_MEMORY: &str = "in-memory";
 const BACKEND_AWS_KMS: &str = "aws-kms";
 
 #[async_trait]
-pub trait EcdsaSignerBackend: Send + Sync {
+pub(crate) trait EcdsaSignerBackend: Send + Sync {
     fn public_key(&self) -> &PublicKey;
     async fn sign(&self, message: Word) -> Result<Signature>;
     fn backend_id(&self) -> &'static str;
@@ -34,13 +34,13 @@ pub trait EcdsaSignerBackend: Send + Sync {
 /// here plus an arm in `build_ecdsa_signer`; the enum is the static selection
 /// point, not the extensibility boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EcdsaBackendKind {
+pub(crate) enum EcdsaBackendKind {
     InMemory,
     AwsKms,
 }
 
 impl EcdsaBackendKind {
-    pub fn from_env() -> Result<Self> {
+    pub(crate) fn from_env() -> Result<Self> {
         match std::env::var(ENV_ECDSA_BACKEND) {
             Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
                 "" | BACKEND_IN_MEMORY => Ok(Self::InMemory),
