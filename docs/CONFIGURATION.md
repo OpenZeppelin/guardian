@@ -47,7 +47,29 @@ and falls back to fixed defaults when they're unset
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_ACK_FALCON_SECRET_ID` | `guardian-prod/server/ack-falcon-secret-key` | Secrets Manager name/ARN for the Falcon ACK secret key. |
-| `GUARDIAN_ACK_ECDSA_SECRET_ID` | `guardian-prod/server/ack-ecdsa-secret-key` | Secrets Manager name/ARN for the ECDSA ACK secret key. |
+| `GUARDIAN_ACK_ECDSA_SECRET_ID` | `guardian-prod/server/ack-ecdsa-secret-key` | Secrets Manager name/ARN for the ECDSA ACK secret key. Used only when the ECDSA backend is `in-memory`. |
+
+### Hosted ECDSA signer backend
+
+The ECDSA ACK signer can keep its private key outside the process in a hosted
+backend. Falcon is unaffected and always uses the in-memory path.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_ACK_ECDSA_BACKEND` | `in-memory` | `in-memory` (filesystem keystore, or Secrets Manager when `GUARDIAN_ENV=prod`) or `aws-kms`. An unrecognized value fails startup listing the supported values. |
+| `GUARDIAN_ACK_ECDSA_KMS_KEY_ID` | _unset_ | **Required** when `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms`. KMS key id, ARN, or alias. The key must be `ECC_SECG_P256K1` with usage `SIGN_VERIFY`. |
+
+With `aws-kms`, the server holds only the key handle; the private key never enters
+the process. At startup it fetches the public key, validates the key spec, and
+performs a sign probe to confirm `kms:Sign` permission — failing fast otherwise.
+The ECDSA secret in Secrets Manager (`GUARDIAN_ACK_ECDSA_SECRET_ID`) is **not**
+read on this path. Credentials resolve through the standard AWS chain (the ECS
+task role in production); required IAM is `kms:GetPublicKey` and `kms:Sign` on the
+key.
+
+> Switching an existing deployment from `in-memory` to `aws-kms` means a new
+> keypair, hence a new ECDSA `pubkey`/`commitment`. Re-establish downstream trust
+> accordingly.
 
 > **`_SECRET_ID` (runtime) vs `_SECRET_NAME` (deploy-side):** the server
 > reads `GUARDIAN_ACK_*_SECRET_ID` at startup, but you typically don't

@@ -20,6 +20,20 @@ Production deployments should use:
 - AWS Secrets Manager for ACK signing keys and deploy-time secrets.
 - Explicit `GUARDIAN_CORS_ALLOWED_ORIGINS` for browser clients.
 
+### ECDSA ACK signer: Secrets Manager or KMS
+
+The Falcon and ECDSA ACK keys default to AWS Secrets Manager, which is the
+path existing deployments use and remains fully supported. For the ECDSA signer
+specifically, new production deployments should prefer **AWS KMS**: the private
+key is generated in and never leaves KMS, so it is never resident in the
+Guardian process. Set `guardian_ack_ecdsa_kms_key_arn` and the server uses the
+KMS backend instead of the Secrets Manager secret (Falcon is unaffected).
+
+This is opt-in, not the default, because the KMS key is a distinct keypair:
+switching an existing deployment changes Guardian's ECDSA identity and requires
+the `SwitchGuardian` migration for existing accounts. Create the key and read
+the trade-offs in [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-backend-aws-kms).
+
 Filesystem mode is a local development backend only. It has no durable admin
 audit table, no schema migrations, and cannot safely back multiple ECS tasks.
 
@@ -31,6 +45,10 @@ Before treating a deployment as production-ready:
 - Build with `postgres`, plus `evm` if the EVM API must be served.
 - Bootstrap ACK secrets once with
   `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`.
+- For the ECDSA signer, decide between Secrets Manager (default) and KMS
+  (preferred for new deployments); if using KMS, create the key and set
+  `guardian_ack_ecdsa_kms_key_arn` per
+  [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-backend-aws-kms).
 - Confirm `DATABASE_URL` is supplied through the Terraform-managed RDS secret.
 - Review RDS backup retention, deletion protection, and final snapshot
   settings for the stack.

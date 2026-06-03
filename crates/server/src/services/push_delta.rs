@@ -109,7 +109,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     result_delta.new_commitment = Some(new_commitment.clone());
     result_delta.metadata = derived_metadata;
     let scheme = resolved.metadata.auth.scheme();
-    result_delta = state.ack.ack_delta(result_delta, &scheme)?;
+    result_delta = state.ack.ack_delta(result_delta, &scheme).await?;
     result_delta.ack_pubkey = state.ack.pubkey(&scheme);
     result_delta.ack_scheme = match scheme {
         SignatureScheme::Falcon => "falcon",

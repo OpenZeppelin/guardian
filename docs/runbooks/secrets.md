@@ -65,6 +65,51 @@ accounts will fail with a Guardian commitment mismatch. A `SwitchGuardian`
 proposal is the account-level migration path for changing that stored
 commitment.
 
+### Hosted ECDSA backend (AWS KMS)
+
+The ECDSA ACK signer can be backed by AWS KMS instead of a Secrets Manager
+secret, so the private key never enters the Guardian process. Set
+`GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` and `GUARDIAN_ACK_ECDSA_KMS_KEY_ID` to a KMS
+key with spec `ECC_SECG_P256K1` and usage `SIGN_VERIFY`. Grant the ECS task role
+`kms:GetPublicKey` and `kms:Sign` on the key (Terraform variable
+`guardian_ack_ecdsa_kms_key_arn`). On this path the ECDSA secret in Secrets
+Manager is not used and need not exist; Falcon is unaffected.
+
+Provisioning, rotation, and deletion of the KMS key are performed with the
+provider's own tooling — Guardian only signs with an existing key. Because a KMS
+key is a distinct keypair, moving an existing deployment to KMS (or rotating the
+KMS key) changes Guardian's ECDSA identity and is a Guardian identity change, not
+a routine rotation: the same `SwitchGuardian` migration path described above
+applies to existing accounts.
+
+#### Create the key
+
+The key spec and usage are immutable after creation, and they must match
+exactly — the server fails its startup sign probe otherwise. Create the key
+once, out of band, and keep its lifecycle separate from the Terraform stack so a
+stack teardown never schedules the signing identity for deletion:
+
+```bash
+KEY_ID=$(aws kms create-key \
+  --key-spec ECC_SECG_P256K1 \
+  --key-usage SIGN_VERIFY \
+  --description "Guardian <stack> ACK ECDSA signer" \
+  --query KeyMetadata.KeyId --output text)
+
+aws kms create-alias \
+  --alias-name alias/<stack>-ack-ecdsa \
+  --target-key-id "$KEY_ID"
+```
+
+Then pass the key ARN (or the alias ARN) to Terraform as
+`guardian_ack_ecdsa_kms_key_arn`; the deploy grants the ECS task role
+`kms:GetPublicKey` + `kms:Sign` on it and sets `GUARDIAN_ACK_ECDSA_BACKEND` /
+`GUARDIAN_ACK_ECDSA_KMS_KEY_ID` on the server. KMS does not support automatic
+rotation for asymmetric keys, which is correct here — rotating a signing
+identity is the deliberate `SwitchGuardian` migration above, never automatic. To
+retire a key, schedule deletion only after every account has migrated off the
+old commitment.
+
 ### Bootstrap (first prod deploy)
 
 ```bash

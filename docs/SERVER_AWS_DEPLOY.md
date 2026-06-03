@@ -152,6 +152,13 @@ aws_region = "us-east-1"
 # Optional: existing dashboard operator Falcon public keys secret
 # guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
 
+# Optional: hosted ECDSA ACK signer backed by AWS KMS.
+# Grants the ECS task role kms:Sign + kms:GetPublicKey on this key. The key must
+# be ECC_SECG_P256K1 / SIGN_VERIFY. Also set GUARDIAN_ACK_ECDSA_BACKEND=aws-kms and
+# GUARDIAN_ACK_ECDSA_KMS_KEY_ID on the server runtime. The ECDSA Secrets Manager
+# secret is not needed on this path.
+# guardian_ack_ecdsa_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/<key-id>"
+
 # Optional: EVM runtime configuration
 # guardian_evm_allowed_chain_ids = "1,11155111"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"

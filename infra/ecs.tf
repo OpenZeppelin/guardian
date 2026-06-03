@@ -121,6 +121,16 @@ resource "aws_ecs_task_definition" "server" {
             name  = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS"
             value = var.guardian_evm_entrypoint_address
           }
+        ] : [],
+        var.guardian_ack_ecdsa_kms_key_arn != "" ? [
+          {
+            name  = "GUARDIAN_ACK_ECDSA_BACKEND"
+            value = "aws-kms"
+          },
+          {
+            name  = "GUARDIAN_ACK_ECDSA_KMS_KEY_ID"
+            value = var.guardian_ack_ecdsa_kms_key_arn
+          }
         ] : []
       )
 
