@@ -458,18 +458,26 @@ cmd_bootstrap_kms_ecdsa_key() {
     --region "$AWS_REGION" \
     --query KeyMetadata.KeyId --output text)
 
-  log_info "Creating alias ${alias_name}"
-  aws kms create-alias \
-    --alias-name "$alias_name" \
-    --target-key-id "$key_id" \
-    --region "$AWS_REGION"
-
   key_arn=$(aws kms describe-key --key-id "$key_id" --region "$AWS_REGION" \
     --query KeyMetadata.Arn --output text)
 
+  log_info "Creating alias ${alias_name}"
+  if ! aws kms create-alias \
+    --alias-name "$alias_name" \
+    --target-key-id "$key_id" \
+    --region "$AWS_REGION"; then
+    log_error "Created KMS key ${key_arn} but failed to bind alias ${alias_name}"
+    log_warn "Scheduling the orphaned key for deletion (7-day reversible window)"
+    aws kms schedule-key-deletion \
+      --key-id "$key_id" \
+      --pending-window-in-days 7 \
+      --region "$AWS_REGION" >/dev/null \
+      || log_error "Cleanup failed; delete it manually: aws kms schedule-key-deletion --key-id ${key_id} --pending-window-in-days 7 --region ${AWS_REGION}"
+    return 1
+  fi
+
   log_info "KMS ECDSA ACK key ready: ${key_arn}"
-  log_info "Export this before bootstrap-ack-keys and deploy (the script keys off it"
-  log_info "to skip the ECDSA Secrets Manager secret, and Terraform reads it too):"
+  log_info "Export this before bootstrap-ack-keys and deploy so the script skips the ECDSA Secrets Manager secret (Terraform reads it too):"
   log_info "  export TF_VAR_guardian_ack_ecdsa_kms_key_arn=\"${key_arn}\""
 }
 
