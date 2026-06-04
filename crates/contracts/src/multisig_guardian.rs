@@ -481,10 +481,10 @@ mod tests {
             .build()
             .expect("account");
 
-        assert_eq!(account.id().to_hex(), "0x4c053cea120ba890494eba281a8e5c");
+        assert_eq!(account.id().to_hex(), "0xbb9656eb0cf54e9011b206ed311b0a");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x49f0b7a53c9104ae8b370ac5db29a0ad04348b1aa4b104f5ec260775cf6bd5b9"
+            "0xe67939e39fd360e5b9a69e9632e2d2f898cf5c19275f3d1906d163b3c4e1cd5f"
         );
     }
 }

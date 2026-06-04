@@ -567,7 +567,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         NoteType::Public,
     )?;
 
-    let mock_chain = mock_chain_builder.clone().build().unwrap();
+    let mut mock_chain = mock_chain_builder.clone().build().unwrap();
 
     let salt = Word::from([Felt::new(9); 4]);
     let mut advice_map = AdviceMap::default();
@@ -649,6 +649,9 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         update_approvers_tx.account_delta().nonce_delta(),
         Felt::new(1)
     );
+
+    mock_chain.add_pending_executed_transaction(&update_approvers_tx)?;
+    mock_chain.prove_next_block()?;
 
     let mut updated_multisig_account = multisig_account.clone();
     updated_multisig_account.apply_delta(update_approvers_tx.account_delta())?;
