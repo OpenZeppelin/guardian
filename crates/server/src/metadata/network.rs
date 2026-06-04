@@ -1,7 +1,7 @@
 use crate::api::grpc::guardian::{self, network_config};
 use crate::network::NetworkType;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NetworkConfig {
     Miden {
@@ -14,7 +14,9 @@ pub enum NetworkConfig {
     },
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MidenNetworkType {
     Local,

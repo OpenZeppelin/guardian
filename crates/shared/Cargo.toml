@@ -17,6 +17,7 @@ base64 = { workspace = true }
 rand = "0.8"
 hex = { workspace = true }
 prost = { workspace = true }
+utoipa = { workspace = true }
 
 [dev-dependencies]
 miden-standards = { version = "=0.14.5" }

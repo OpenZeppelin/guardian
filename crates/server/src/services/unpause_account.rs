@@ -13,7 +13,7 @@ use crate::services::account_status::{AccountStatus, PauseTransition};
 use crate::services::pause_account::validate_reason;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct UnpauseResponse {
     pub account_id: String,
     pub before_state: AccountStatus,

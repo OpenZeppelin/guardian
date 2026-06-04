@@ -32,7 +32,7 @@ use crate::storage::{DeltaStatusKind, GlobalDeltaCursor};
 /// Carries every field of a per-account [`DashboardDeltaEntry`] plus
 /// `account_id` so the dashboard can group / link without a second
 /// request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardGlobalDeltaEntry {
     pub account_id: String,
     pub nonce: u64,

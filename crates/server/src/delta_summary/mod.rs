@@ -29,7 +29,7 @@ pub use projection::{
 /// Persisted activity metadata for a canonical delta. Stored as JSONB
 /// in the `deltas.metadata` column. `None` for EVM deltas and any
 /// historical row never reprocessed by [`build_metadata`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DeltaMetadata {
     pub category: DashboardDeltaCategory,
 
@@ -57,7 +57,7 @@ pub struct DeltaMetadata {
 
 /// Closed, stable enumeration of action categories. Adding a value is
 /// a wire-contract change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardDeltaCategory {
     AssetTransfer,
@@ -72,7 +72,7 @@ pub enum DashboardDeltaCategory {
 // is not yet implemented. Adding it before detection lands would ship
 // a wire value that's never emitted.
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AssetSummary {
     pub asset_id: String,
     pub kind: AssetKind,
@@ -83,27 +83,27 @@ pub struct AssetSummary {
     pub amount: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AssetKind {
     Fungible,
     NonFungible,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CounterpartySummary {
     pub account_id: String,
     pub direction: CounterpartyDirection,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CounterpartyDirection {
     Out,
     In,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct NoteCounts {
     #[serde(default)]
     pub input: u32,
@@ -114,7 +114,7 @@ pub struct NoteCounts {
 /// Operator-stated intent lifted from a matching proposal. Mirrors
 /// `ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`
 /// field-for-field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct ProposalMetadata {
     /// One of the validated multisig proposal types (`add_signer`,
     /// `remove_signer`, `change_threshold`, `update_procedure_threshold`,
@@ -162,7 +162,7 @@ pub struct ProposalMetadata {
 
 /// Detail-view types used by the per-delta endpoint; not built by the
 /// listing path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodedNote {
     pub note_id: String,
     pub tag: NoteTag,
@@ -173,7 +173,7 @@ pub struct DecodedNote {
     pub recipient: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteTag {
     P2id,
@@ -184,7 +184,7 @@ pub enum NoteTag {
     Custom,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodedAsset {
     pub asset_id: String,
     pub kind: AssetKind,
@@ -192,7 +192,7 @@ pub struct DecodedAsset {
     pub amount: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VaultChange {
     Fungible {
@@ -206,7 +206,7 @@ pub enum VaultChange {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct StorageChange {
     /// Human-readable slot name from
     /// `miden_protocol::account::StorageSlotName` (e.g. `"consumed_notes"`).
@@ -228,13 +228,13 @@ pub struct StorageChange {
     pub after: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodeWarning {
     pub section: DecodeSection,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DecodeSection {
     TxSummary,

@@ -42,14 +42,14 @@ pub const AGG_IN_FLIGHT_PROPOSAL_COUNT: &str = "in_flight_proposal_count";
 pub const AGG_LATEST_ACTIVITY: &str = "latest_activity";
 pub const AGG_ACCOUNTS_BY_AUTH_METHOD: &str = "accounts_by_auth_method";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardServiceStatus {
     Healthy,
     Degraded,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardDeltaStatusCounts {
     pub candidate: u64,
     pub canonical: u64,
@@ -59,7 +59,7 @@ pub struct DashboardDeltaStatusCounts {
 /// Build identity for the running `guardian-server` binary. Values are
 /// stable for the lifetime of the process; surfaced so operators can
 /// confirm which version/SHA is responding without reading logs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardBuildInfo {
     /// `CARGO_PKG_VERSION` from `guardian-server`.
     pub version: &'static str,
@@ -76,7 +76,7 @@ pub struct DashboardBuildInfo {
 /// Per-account-method canonicalization fan-in configuration. `None`
 /// means the server is running in optimistic mode (deltas are written
 /// directly as canonical and never enter the candidate state).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardCanonicalizationConfig {
     pub check_interval_seconds: u64,
     pub max_retries: u32,
@@ -86,7 +86,7 @@ pub struct DashboardCanonicalizationConfig {
 /// Backend configuration snapshot. Stable for the lifetime of the
 /// process; lets operators distinguish a filesystem dev box from a
 /// postgres-backed prod replica without inspecting environment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardBackendInfo {
     /// `"filesystem"` or `"postgres"` from the cargo feature flag.
     pub storage: &'static str,
@@ -99,7 +99,7 @@ pub struct DashboardBackendInfo {
     pub canonicalization: Option<DashboardCanonicalizationConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardInfoResponse {
     pub service_status: DashboardServiceStatus,
     pub environment: String,

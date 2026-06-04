@@ -26,7 +26,7 @@ use crate::storage::AccountProposalCursor;
 /// One proposal entry in the wire shape per `data-model.md`.
 /// `account_id` is omitted on per-account responses; the global
 /// proposal feed (Phase 9) wraps this with `account_id`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardProposalEntry {
     /// Cryptographic identifier cosigners are signing. Per-account
     /// stable identifier.

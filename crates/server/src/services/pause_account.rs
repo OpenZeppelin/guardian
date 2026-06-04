@@ -19,7 +19,7 @@ use crate::state::AppState;
 
 pub const MAX_REASON_LEN: usize = 512;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct PauseResponse {
     pub account_id: String,
     pub before_state: AccountStatus,

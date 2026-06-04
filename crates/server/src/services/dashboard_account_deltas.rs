@@ -27,7 +27,7 @@ use crate::storage::AccountDeltaCursor;
 /// Lifecycle status surfaced on the per-account delta feed endpoint.
 /// `pending`-status records live in `delta_proposals` and are
 /// surfaced via the proposal queue endpoint instead.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardDeltaStatus {
     Candidate,
@@ -39,7 +39,7 @@ pub enum DashboardDeltaStatus {
 /// `account_id` is omitted on per-account responses (the path scopes
 /// it). The global delta feed (Phase 8) wraps this struct with
 /// `account_id` so a single shape is shared.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardDeltaEntry {
     pub nonce: u64,
     pub status: DashboardDeltaStatus,
