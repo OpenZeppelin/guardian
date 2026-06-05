@@ -213,6 +213,25 @@ variable "rds_engine_version" {
   default     = ""
 }
 
+variable "rds_ca_bundle_path" {
+  description = <<-EOT
+    Container filesystem path to a PEM CA bundle the server trusts when
+    connecting to Postgres. When set, the server DATABASE_URL uses
+    sslmode=verify-full&sslrootcert=<path> (authenticated TLS); when empty it
+    falls back to sslmode=require (encrypted, unverified — current behavior).
+
+    The bundle MUST be mounted into the task container at this path at deploy
+    time (the published image ships no CA bundle). For RDS it MUST contain BOTH
+    the Amazon RDS CA roots AND the Amazon Trust Services roots, because the RDS
+    Proxy endpoint (prod default) presents an ACM certificate chaining to Amazon
+    Trust Services, while a direct instance chains to the RDS CA roots. Mount the
+    bundle before setting this variable (verification fails closed if the file is
+    absent).
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "rds_backup_retention_days" {
   description = "Backup retention in days for RDS"
   type        = number

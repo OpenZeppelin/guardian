@@ -92,10 +92,38 @@ DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian \
 ```
 
 The Postgres path runs SQL migrations on startup
-([`builder/storage.rs:109`](../crates/server/src/builder/storage.rs#L109)) and
+([`builder/storage.rs`](../crates/server/src/builder/storage.rs)) and
 wires `PostgresAuditor` so admin actions land in the `admin_actions` table.
 Pool sizing is controlled by `GUARDIAN_DB_POOL_MAX_SIZE` and
 `GUARDIAN_METADATA_DB_POOL_MAX_SIZE`.
+
+The local compose Postgres uses no TLS, so omit `sslmode` (plaintext). To
+exercise certificate verification locally, run a TLS-enabled Postgres with a
+self-signed CA and point the server at it:
+
+```bash
+# Generate a CA and a server cert whose SAN matches the connection host
+openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
+  -subj "/CN=Test CA" -days 3650
+openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out server.crt -days 3650 -copy_extensions copyext
+# start postgres with ssl=on using server.crt/server.key, then:
+
+# verify-full: chain + hostname (SAN must be localhost)
+DATABASE_URL="postgres://guardian:guardian@localhost:5432/guardian?sslmode=verify-full&sslrootcert=$PWD/ca.pem" \
+  cargo run -p guardian-server --features postgres --bin server
+
+# verify-ca: chain only (hostname not checked)
+DATABASE_URL="postgres://guardian:guardian@localhost:5432/guardian?sslmode=verify-ca&sslrootcert=$PWD/ca.pem" \
+  cargo run -p guardian-server --features postgres --bin server
+```
+
+Expected: correct CA + matching SAN → starts; wrong/empty CA file → fails fast
+with a certificate error; under `verify-full` a SAN ≠ `localhost` is refused
+while the same cert is accepted under `verify-ca`. See the full matrix in
+[CONFIGURATION.md → Database TLS](./CONFIGURATION.md#database-tls).
 
 ## Path C — `cargo run` with EVM support
 

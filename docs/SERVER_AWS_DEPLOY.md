@@ -183,6 +183,47 @@ aws_region = "us-east-1"
 # cloudflare_api_token = "..."
 ```
 
+## Database TLS verification
+
+By default the server `DATABASE_URL` uses `sslmode=require` — the connection is
+encrypted but the RDS certificate is **not verified**. To authenticate the
+database (recommended), set the `rds_ca_bundle_path` Terraform variable to the
+in-container path of a mounted CA bundle; the `DATABASE_URL` then becomes
+`sslmode=verify-full&sslrootcert=<path>` and both the migration and runtime
+connections verify the certificate chain and hostname.
+
+**Combined CA bundle (required for RDS).** Production routes `DATABASE_URL`
+through the **RDS Proxy** endpoint, which presents an AWS Certificate Manager
+certificate that chains to **Amazon Trust Services** roots — *not* the Amazon RDS
+CA roots used by a direct instance. The mounted bundle MUST therefore contain
+**both** root sets so `verify-full` succeeds against either endpoint:
+
+```bash
+# Combine the public Amazon RDS CA bundle with the Amazon Trust Services roots
+curl -sS https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o rds.pem
+# (Amazon Trust Services roots: https://www.amazontrust.com/repository/ )
+cat rds.pem amazon-trust-services-roots.pem > rds-combined-ca.pem
+```
+
+**Delivery (image stays CA-free).** The published image ships no CA bundle so it
+stays provider-neutral. Mount `rds-combined-ca.pem` into the task container at
+deploy time at the path you pass as `rds_ca_bundle_path` (e.g.
+`/etc/guardian/tls/rds-combined-ca.pem`). The application never downloads it.
+
+**Deployment sequencing (avoid breaking startup).** Verifying modes fail closed
+if the bundle is absent, so order the rollout:
+
+1. Mount the combined bundle into the container at the chosen path and deploy
+   with `rds_ca_bundle_path` still unset (stays `sslmode=require`); confirm the
+   file is present and readable.
+2. Set `rds_ca_bundle_path` to that path and redeploy — the server switches to
+   `verify-full`. Migrations (libpq) and the runtime pools verify against the
+   same bundle.
+
+**Rotation.** Replace the mounted bundle (it may hold old and new roots together
+for overlap) and redeploy/restart. No image or code change is required. Always
+ensure the new roots are present before they become the only trusted ones.
+
 ## Deploy
 
 ### Script Commands

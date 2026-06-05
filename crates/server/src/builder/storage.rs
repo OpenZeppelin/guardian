@@ -114,7 +114,8 @@ impl StorageMetadataBuilder {
             )?;
 
             let raw_url = database_url.expose_secret();
-            postgres::run_migrations(raw_url).await?;
+            let migration_url = postgres::preflight_tls(raw_url)?;
+            postgres::run_migrations(&migration_url).await?;
             let storage = PostgresService::new(raw_url, database_pool_max_size).await?;
             let metadata = PostgresMetadataStore::new(raw_url, metadata_pool_max_size).await?;
             let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
