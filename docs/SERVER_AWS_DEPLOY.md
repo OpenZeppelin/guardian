@@ -187,42 +187,88 @@ aws_region = "us-east-1"
 
 By default the server `DATABASE_URL` uses `sslmode=require` — the connection is
 encrypted but the RDS certificate is **not verified**. To authenticate the
-database (recommended), set the `rds_ca_bundle_path` Terraform variable to the
-in-container path of a mounted CA bundle; the `DATABASE_URL` then becomes
-`sslmode=verify-full&sslrootcert=<path>` and both the migration and runtime
-connections verify the certificate chain and hostname.
+database, provide a CA bundle via Secrets Manager and set the
+`rds_ca_bundle_secret_arn` Terraform variable.
+
+> **Migrating an already-deployed stack?** Follow the staged, fail-safe procedure
+> in [`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md) (image-first,
+> staging-before-prod, RDS-Proxy caveat, rollback). The rest of this section is
+> the mechanism reference. The deployment then switches
+`DATABASE_URL` to `sslmode=verify-full&sslrootcert=<mounted path>`, and both the
+migration (libpq) and runtime (rustls) connections verify the certificate chain
+and hostname.
+
+**How delivery works (image stays CA-free).** The published image ships no CA
+bundle. When `rds_ca_bundle_secret_arn` is set, Terraform adds a small
+`rds-ca-initializer` **init container** to the task: it reads the secret, writes
+it to a shared in-task volume, sets permissions, and exits; Fargate won't start
+the Guardian container until it succeeds (`dependsOn: SUCCESS`). The Guardian
+container mounts the same volume read-only and reads the bundle as a plain file.
+The app never calls Secrets Manager and nothing is baked into the image.
 
 **Combined CA bundle (required for RDS).** Production routes `DATABASE_URL`
 through the **RDS Proxy** endpoint, which presents an AWS Certificate Manager
-certificate that chains to **Amazon Trust Services** roots — *not* the Amazon RDS
-CA roots used by a direct instance. The mounted bundle MUST therefore contain
-**both** root sets so `verify-full` succeeds against either endpoint:
+certificate that chains to **Amazon Trust Services** roots (specifically **Amazon
+Root CA 1**) — *not* the Amazon RDS CA roots used by a direct instance. The secret
+MUST therefore contain **both** root sets so `verify-full` succeeds against either
+endpoint.
+
+> **Size limit — do NOT use the global RDS bundle.** Secrets Manager caps a secret
+> value at **64 KiB**. The `global-bundle.pem` (~165 KB) exceeds that and
+> `create-secret` will reject it. Use your **region-specific** RDS bundle (a few
+> KB) plus just **Amazon Root CA 1**, which keeps the combined bundle well under
+> the cap. The Rust loader already supports multiple roots in one PEM.
+
+Build it (mind the newline between files so the PEM blocks don't merge) and store
+it verbatim — plain PEM text, no encoding:
 
 ```bash
-# Combine the public Amazon RDS CA bundle with the Amazon Trust Services roots
-curl -sS https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o rds.pem
-# (Amazon Trust Services roots: https://www.amazontrust.com/repository/ )
-cat rds.pem amazon-trust-services-roots.pem > rds-combined-ca.pem
+# Region-specific RDS bundle (replace us-east-1), ~4-5 KB
+curl -sS https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem -o rds.pem
+# All Amazon Trust Services roots (~6 KB total) — more rotation-tolerant than
+# pinning only the one the RDS Proxy chains to today; still well under 64 KiB.
+: > ats.pem
+for ca in AmazonRootCA1 AmazonRootCA2 AmazonRootCA3 AmazonRootCA4 SFSRootCAG2; do
+  curl -sS "https://www.amazontrust.com/repository/${ca}.pem" >> ats.pem; echo >> ats.pem
+done
+{ cat rds.pem; echo; cat ats.pem; } > rds-combined-ca.pem
+grep -c "BEGIN CERTIFICATE" rds-combined-ca.pem   # sanity: total root count
+test "$(wc -c < rds-combined-ca.pem)" -lt 65536 || echo "WARNING: bundle exceeds the 64 KiB Secrets Manager limit"
+
+aws secretsmanager create-secret \
+  --name guardian-prod/server/rds-ca-bundle \
+  --secret-string file://rds-combined-ca.pem
 ```
 
-**Delivery (image stays CA-free).** The published image ships no CA bundle so it
-stays provider-neutral. Mount `rds-combined-ca.pem` into the task container at
-deploy time at the path you pass as `rds_ca_bundle_path` (e.g.
-`/etc/guardian/tls/rds-combined-ca.pem`). The application never downloads it.
+> **Why Secrets Manager for a public cert?** CA roots aren't confidential, so this
+> is a *consistency* choice — it reuses the same secret-injection plumbing and IAM
+> pattern as `DATABASE_URL` and the ACK keys, with no new mechanism. The trade-offs
+> are the 64 KiB cap above and ~$0.40/secret/month. If a future bundle must exceed
+> 64 KiB, the next step is an S3 object (no size cap) or an EFS access point
+> fetched by the same init container — the Rust/app side would not change.
 
-**Deployment sequencing (avoid breaking startup).** Verifying modes fail closed
-if the bundle is absent, so order the rollout:
+Then set the ARN and apply:
 
-1. Mount the combined bundle into the container at the chosen path and deploy
-   with `rds_ca_bundle_path` still unset (stays `sslmode=require`); confirm the
-   file is present and readable.
-2. Set `rds_ca_bundle_path` to that path and redeploy — the server switches to
-   `verify-full`. Migrations (libpq) and the runtime pools verify against the
-   same bundle.
+```hcl
+rds_ca_bundle_secret_arn = "arn:aws:secretsmanager:REGION:ACCOUNT:secret:guardian-prod/server/rds-ca-bundle-XXXXXX"
+```
 
-**Rotation.** Replace the mounted bundle (it may hold old and new roots together
-for overlap) and redeploy/restart. No image or code change is required. Always
-ensure the new roots are present before they become the only trusted ones.
+The execution role is granted `secretsmanager:GetSecretValue` on that ARN
+automatically. If the bundle is missing or malformed, the init container or the
+server preflight **fails closed** at startup rather than connecting insecurely.
+
+**Rotation.** Update the secret's value (it may hold old and new roots together
+for overlap), then force a new deployment so the init container re-reads the
+secret and rewrites the file. Because the task definition still points at the
+same secret ARN, changing only the secret value does **not** roll tasks on its
+own — force it explicitly:
+
+```bash
+aws ecs update-service --cluster <cluster> --service <service> --force-new-deployment
+```
+
+No image or code change is required; ensure the new roots are present before they
+become the only trusted ones.
 
 ## Deploy
 

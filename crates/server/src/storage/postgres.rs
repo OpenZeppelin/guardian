@@ -1541,12 +1541,84 @@ mod tests {
     }
 
     #[test]
+    fn both_stacks_agree_for_every_supported_mode() {
+        let cases = [
+            ("", false),
+            ("sslmode=disable", false),
+            ("sslmode=require", true),
+            ("sslmode=require&sslrootcert=/etc/ca.pem", true),
+            ("sslmode=verify-ca&sslrootcert=/etc/ca.pem", true),
+            ("sslmode=verify-full&sslrootcert=/etc/ca.pem", true),
+        ];
+        for (query, tls_expected) in cases {
+            let raw = url_with_mode(query);
+            let plan = parse_tls_plan(&raw).unwrap();
+            let sync = normalized_sync_url(&raw, &plan).unwrap();
+            let async_url = sanitized_async_url(&raw, &plan).unwrap();
+
+            let sync_tls = !sync.contains("sslmode=disable");
+            let async_tls = !async_url.contains("sslmode=disable");
+            assert_eq!(sync_tls, tls_expected, "sync TLS for {query:?}");
+            assert_eq!(async_tls, tls_expected, "async TLS for {query:?}");
+
+            let verifying = matches!(plan, TlsPlan::Verify { .. });
+            assert_eq!(
+                sync.contains("sslrootcert"),
+                verifying,
+                "sync trust anchor for {query:?}"
+            );
+            assert!(
+                !async_url.contains("sslrootcert"),
+                "async strips sslrootcert for {query:?}"
+            );
+            assert!(
+                !async_url.contains("verify-"),
+                "async forces require for {query:?}"
+            );
+
+            if !verifying {
+                assert_eq!(
+                    build_tls_client_config(&plan).unwrap().is_some(),
+                    tls_expected,
+                    "async verifier presence for {query:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn preflight_error_does_not_leak_password() {
         let raw = "postgres://guardian:SUPERSECRET@db.example.com/guardian?sslmode=verify-full&sslrootcert=/nonexistent/ca.pem";
         let error = preflight_tls(raw).expect_err("missing CA bundle must fail");
         assert!(
             !error.contains("SUPERSECRET"),
             "error leaked password: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_connect_failure_error_is_password_free() {
+        let raw = "postgres://guardian:SUPERSECRET@127.0.0.1:1/guardian?sslmode=require";
+        let error = build_postgres_pool(raw, 1)
+            .await
+            .err()
+            .expect("connection to a closed port must fail");
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "pool error leaked password: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_connect_failure_error_is_password_free() {
+        let raw = "postgres://guardian:SUPERSECRET@127.0.0.1:1/guardian?sslmode=require";
+        let sync_url = preflight_tls(raw).unwrap();
+        let error = run_migrations(&sync_url)
+            .await
+            .expect_err("migration connection to a closed port must fail");
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "migration error leaked password: {error}"
         );
     }
 

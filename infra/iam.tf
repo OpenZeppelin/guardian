@@ -37,6 +37,9 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
           [
             aws_secretsmanager_secret.database_url.arn
           ],
+          local.ca_bundle_enabled ? [
+            var.rds_ca_bundle_secret_arn
+          ] : [],
           local.evm_allowed_chain_ids_secret_arn != "" ? [
             local.evm_allowed_chain_ids_secret_arn
           ] : [],

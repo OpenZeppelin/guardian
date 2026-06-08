@@ -35,7 +35,9 @@ the runtime env vars in this document.
 ### Database TLS
 
 TLS behavior is driven entirely by the standard libpq parameters in
-`DATABASE_URL`; there is no Guardian-specific TLS env var. The same parameters
+`DATABASE_URL`; there is no Guardian-specific TLS env var. To migrate a deployed
+AWS stack to verified TLS, see
+[`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md). The same parameters
 govern both the synchronous startup-migration connection and the asynchronous
 runtime pools, so they always behave identically.
 

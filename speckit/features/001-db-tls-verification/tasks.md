@@ -90,7 +90,7 @@ different roots; `sslrootcert=system` is rejected with a clear message.
 - [X] T015 [P] [US2] Multi-root bundle test in `crates/server/src/storage/postgres.rs`: a single PEM containing two distinct CA roots loads into the `RootCertStore` and validates certs issued by either (covers the combined RDS + Amazon Trust Services case, FR-009a) — no provider-specific branch.
 - [X] T016 [P] [US2] `sslrootcert=system` rejection test in `crates/server/src/storage/postgres.rs`: asserts fail-fast with the actionable "use an explicit CA bundle file" message (FR-003a).
 - [X] T017 [US2] Update `infra/data.tf` (`database_url`, line ~137) to `...&sslmode=verify-full&sslrootcert=<fixed-container-path>` for the managed deployment (FR-009).
-- [ ] T018 [US2] Update `infra/ecs.tf` to mount the combined CA bundle (Amazon RDS roots + Amazon Trust Services roots) into the task container at the fixed path **at deploy time** (no baked image, no app download — FR-009b); document the path as the single source for `sslrootcert`.
+- [X] T018 [US2] Update `infra/ecs.tf` to mount the combined CA bundle (Amazon RDS roots + Amazon Trust Services roots) into the task container at the fixed path **at deploy time** (no baked image, no app download — FR-009b); document the path as the single source for `sslrootcert`.
 - [X] T019 [P] [US2] Document multi-provider trust configuration in `docs/CONFIGURATION.md`: the `sslmode` ladder, `sslrootcert=<path>`, the `require`+rootcert promotion, and explicit examples for AWS RDS (combined bundle + RDS Proxy note), one other managed provider, and local docker compose (FR-008/FR-010).
 
 **Checkpoint**: Provider-agnostic trust config works; AWS reference is authenticated.
@@ -107,7 +107,7 @@ behave identically on the migration and pool paths.
 server — all on both stacks.
 
 - [X] T020 [P] [US3] Tests in `crates/server/src/storage/postgres.rs` for the non-verifying ladder: absent `sslmode` → plaintext (normalized to `disable`); `disable` → plaintext; `require` w/o rootcert → EncryptOnly resolution (FR-006).
-- [ ] T021 [US3] Cross-stack parity test in `crates/server/src/storage/postgres.rs`: for scenarios in T020, assert `normalized_sync_url` (libpq inputs) and `sanitized_async_url` + resolved level produce the SAME effective behavior (FR-007). Pure/string-level where possible to avoid live deps.
+- [X] T021 [US3] Cross-stack parity test in `crates/server/src/storage/postgres.rs`: for scenarios in T020, assert `normalized_sync_url` (libpq inputs) and `sanitized_async_url` + resolved level produce the SAME effective behavior (FR-007). Pure/string-level where possible to avoid live deps.
 - [ ] T022 [P] [US3] Live `#[ignore]` test: `require` (no rootcert) against a non-TLS server is refused (no silent plaintext downgrade) on the async path, in `crates/server/src/storage/postgres.rs`.
 - [X] T023 [P] [US3] Confirm the existing `detects_sslmode_require` / `ignores_non_tls_database_urls` tests in `crates/server/src/storage/postgres.rs` are updated/replaced to reflect full parsing (no substring check) and still pass.
 
@@ -121,7 +121,7 @@ server — all on both stacks.
 - [X] T025 [P] Add local TLS verification instructions (generate CA/cert, `verify-ca` vs `verify-full`) to `docs/LOCAL_DEV.md`, mirroring quickstart.md.
 - [X] T026 [P] Document the AWS combined-bundle delivery + **CA rotation procedure** (replace mounted bundle + redeploy; new roots present before tightening) in `docs/SERVER_AWS_DEPLOY.md` and/or `docs/runbooks/secrets.md`, including the RDS Proxy (ACM/Amazon Trust Services) caveat.
 - [X] T027 Document the deployment sequencing for FR-009/FR-001c: mount the combined bundle and confirm it is readable BEFORE switching `data.tf` to `verify-full` (avoid breaking ECS→RDS startup).
-- [X] T028 Run `cargo fmt`, `cargo clippy -p guardian-server --features postgres -- -D warnings`, and `cargo test -p guardian-server --features postgres`; fix findings.
+- [X] T028 Run `cargo fmt`, `cargo clippy -p guardian-server --features postgres -- -D warnings`, and `cargo test -p guardian-server --features postgres`; fix findings. NOTE: the TLS code (and its tests) is clippy-clean. `cargo clippy --all-targets -- -D warnings` additionally surfaces 3 `field_reassign_with_default` warnings in `crates/server/src/delta_object.rs` test code — pre-existing on `main`, unrelated to this branch, and intentionally not fixed here (out of scope). Flag in the PR description.
 - [ ] T029 Execute the documented manual smoke (AGENTS.md §6): AWS RDS via the **RDS Proxy endpoint** (proxy enabled AND disabled) + one other managed provider, using the combined bundle — `verify-full` success + a deliberately wrong-CA refusal; record results.
 
 ---

@@ -213,20 +213,34 @@ variable "rds_engine_version" {
   default     = ""
 }
 
-variable "rds_ca_bundle_path" {
+variable "ca_initializer_image" {
   description = <<-EOT
-    Container filesystem path to a PEM CA bundle the server trusts when
-    connecting to Postgres. When set, the server DATABASE_URL uses
-    sslmode=verify-full&sslrootcert=<path> (authenticated TLS); when empty it
-    falls back to sslmode=require (encrypted, unverified — current behavior).
+    Minimal image used by the CA-bundle init container to write the Secrets
+    Manager bundle into the shared volume. Defaults to Alpine from the public ECR
+    mirror (avoids Docker Hub rate limits), digest-pinned for supply-chain
+    consistency with the server Dockerfile. Refresh the digest with:
+    `docker manifest inspect public.ecr.aws/docker/library/alpine:3.20`.
+  EOT
+  type        = string
+  default     = "public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+}
 
-    The bundle MUST be mounted into the task container at this path at deploy
-    time (the published image ships no CA bundle). For RDS it MUST contain BOTH
-    the Amazon RDS CA roots AND the Amazon Trust Services roots, because the RDS
-    Proxy endpoint (prod default) presents an ACM certificate chaining to Amazon
-    Trust Services, while a direct instance chains to the RDS CA roots. Mount the
-    bundle before setting this variable (verification fails closed if the file is
-    absent).
+variable "rds_ca_bundle_secret_arn" {
+  description = <<-EOT
+    ARN of a Secrets Manager secret whose SecretString is a PEM CA bundle the
+    server trusts when connecting to Postgres. When set, an init container writes
+    the bundle into a shared in-task volume and the server DATABASE_URL uses
+    sslmode=verify-full&sslrootcert=<mounted path> (authenticated TLS); when empty
+    the server falls back to sslmode=require (encrypted, unverified).
+
+    The published image ships no CA bundle (it stays provider-neutral); the bundle
+    is delivered at deploy time via the init container, so nothing is baked into
+    the image and the app never fetches it. For RDS the secret MUST contain BOTH
+    the Amazon RDS CA roots AND the Amazon Trust Services roots (concatenated),
+    because the RDS Proxy endpoint (prod default) presents an ACM certificate
+    chaining to Amazon Trust Services while a direct instance chains to the RDS CA
+    roots. Verification fails closed at startup if the bundle is missing or
+    malformed.
   EOT
   type        = string
   default     = ""

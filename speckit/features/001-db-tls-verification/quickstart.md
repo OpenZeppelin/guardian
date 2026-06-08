@@ -67,12 +67,16 @@ Expected:
 ## Tests
 
 ```bash
-# parser/resolver + verifier-selection unit tests
-cargo test -p guardian-server --features postgres tls
+# parser/resolver + verifier + redaction + parity unit tests (the TLS suite)
+cargo test -p guardian-server --features postgres storage::postgres::tests
 
-# full server test suite under postgres feature
+# full server test suite under postgres feature (slow: includes proving-heavy tests)
 cargo test -p guardian-server --features postgres
 ```
+
+> The TLS tests live in `storage::postgres::tests`; there is no test whose name
+> contains `tls`, so `cargo test … tls` matches nothing. The live-only checks
+> (verify-full/verify-ca against a real TLS Postgres) are `#[ignore]`.
 
 ## Troubleshooting
 
