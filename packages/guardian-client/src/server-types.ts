@@ -31,7 +31,10 @@ export type ServerProposalType =
   | 'switch_guardian'
   | 'consume_notes'
   | 'p2id'
-  | 'custom';
+  | 'custom'
+  // The server accepts arbitrary proposal types (issue #266); known literals are
+  // kept for autocomplete while `(string & {})` admits any custom label.
+  | (string & {});
 
 export interface ServerProposalMetadata {
   proposal_type?: ServerProposalType;

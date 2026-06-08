@@ -174,6 +174,72 @@ GUARDIAN is a coordination server that:
 - **Ready**: Threshold met, can be executed
 - **Finalized**: Executed on-chain or discarded
 
+### Custom Proposal Types
+
+Guardian accepts any non-empty `proposal_type`, not just the first-party
+operations (issue #266). A proposal whose type the SDK does not model is
+exposed as the **custom** bucket — `TransactionType::Custom` in Rust,
+`proposalType: 'custom'` in TypeScript — while the label is preserved
+(Rust `ProposalMetadata.proposal_type`, TypeScript `CustomProposalMetadata.rawProposalType`)
+so it can be displayed. The SDK normalizes the label to lowercase `snake_case`
+(trim + lowercase, then require `[a-z0-9_]+` — the same shape as built-in
+labels), so `b2agg` is accepted, `B2Agg` is lowercased to `b2agg`, and
+`add signer` / `add-signer` are rejected. (Normalization is SDK-side; the server
+itself still accepts any non-empty string.)
+
+Custom proposals can be listed, displayed, signed, and exported/imported.
+
+**Producer API (issue #266).** The integration that owns a custom type builds
+its own transaction and drives the create + execute ends; the SDK never
+executes a transaction it does not understand. The model is **symmetric across
+Rust and TypeScript**:
+
+- **Create** — `propose_custom_transaction(transaction_request_bytes, proposal_type)` (Rust) /
+  `createCustomProposal(transactionRequestBytes, proposalType)` (TS). The bytes are a
+  serialized transaction request; the SDK derives the summary and pushes the
+  proposal with the custom label. They are **not** stored on the server.
+  Cosigners then review and sign through the normal flow.
+- **Execute** — `prepare_custom_execution(proposal_id, transaction_request_bytes)` (Rust) /
+  `prepareCustomExecution(proposalId, transactionRequestBytes)` (TS). The SDK verifies the
+  proposal is ready, binding-checks the request against the signed commitment
+  (before any acknowledgment request), fetches the GUARDIAN ack, and returns the
+  **advice** (cosigner signatures + ack). The integration injects that advice
+  into its own transaction and submits via its own client:
+
+  ```ts
+  // TypeScript: rebuild via the integration's builder (the wasm request is immutable)
+  const advice = await multisig.prepareCustomExecution(proposalId, transactionRequestBytes);
+  const finalReq = myBuilder.extendAdviceMap(advice).build();
+  await multisig.submitTransaction(finalReq);
+  ```
+  ```rust
+  // Rust: inject into the request's advice map, submit via the SDK helper
+  let advice = client.prepare_custom_execution(&proposal_id, &transaction_request_bytes).await?;
+  let mut req = deserialize_transaction_request(&transaction_request_bytes)?;
+  req.advice_map_mut().extend(advice);
+  client.submit_transaction(req).await?;
+  ```
+
+The SDK owns the security-critical pieces (binding check, signature + ack
+assembly, ack-after-binding ordering); the integration owns only the
+transaction recipe + submit. `execute_proposal` on a custom type returns a
+clear error pointing to `prepare_custom_execution`. Because the integration must
+rebuild its transaction to execute, **custom execution is performed by a party
+that holds the recipe** (typically the producer), not by an arbitrary cosigner.
+
+The returned advice is keyed by the signer and GUARDIAN commitments
+(domain-separated digests over the signed `tx_summary`), the same keys the
+SDK's own built-in execution uses. Extending a transaction's advice map with it
+therefore does not collide with the transaction's ordinary inputs; the
+integration extends rather than replaces its advice map.
+
+> **Security:** for first-party types the SDK reconstructs the transaction from
+> metadata and checks it against the signed `tx_summary` commitment. For custom
+> types there is no such reconstruction, so the SDK cannot verify that display
+> metadata (e.g. `description`) matches what the transaction actually does.
+> Cosigners must verify the raw `tx_summary` they are signing — not trust the
+> label or description.
+
 ### Offline Workflow
 
 For air-gapped or offline signing scenarios:

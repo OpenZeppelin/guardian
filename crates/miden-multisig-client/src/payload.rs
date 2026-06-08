@@ -230,6 +230,16 @@ impl ProposalPayload {
         self
     }
 
+    /// Sets metadata for a custom (producer-supplied) proposal type whose
+    /// transaction the SDK does not model (issue #266).
+    pub fn with_custom_metadata(mut self, proposal_type: String) -> Self {
+        self.metadata = Some(ProposalMetadataPayload {
+            proposal_type,
+            ..Default::default()
+        });
+        self
+    }
+
     pub fn with_required_signatures(mut self, required_signatures: usize) -> Self {
         let metadata = self
             .metadata

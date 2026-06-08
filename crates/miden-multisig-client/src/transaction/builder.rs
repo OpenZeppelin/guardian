@@ -130,6 +130,9 @@ impl ProposalBuilder {
             TransactionType::UpdateSigners { .. } => Err(MultisigError::InvalidConfig(
                 "Use AddCosigner or RemoveCosigner for signer updates".to_string(),
             )),
+            TransactionType::Custom => Err(MultisigError::UnsupportedTransactionType(
+                "cannot create a proposal for a custom transaction type".to_string(),
+            )),
         }
     }
 

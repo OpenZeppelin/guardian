@@ -83,7 +83,12 @@ impl ProposalStatus {
 }
 
 /// Types of transactions supported by the multisig SDK.
+///
+/// Marked `#[non_exhaustive]` so future proposal types (including evolutions of
+/// the custom-type support, issue #266) can be added without breaking external
+/// crates: downstream `match` statements must already include a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransactionType {
     P2ID {
         recipient: AccountId,
@@ -115,6 +120,13 @@ pub enum TransactionType {
         new_threshold: u32,
         signer_commitments: Vec<Word>,
     },
+    /// A custom proposal whose `proposal_type` the SDK does not model (issue
+    /// #266). Can be parsed, listed, signed, and exported/imported; the original
+    /// label is preserved in `ProposalMetadata.proposal_type`. The generic SDK
+    /// cannot build or execute the on-chain transaction for a custom procedure;
+    /// the integration that owns the recipe drives execution via
+    /// `prepare_custom_execution`.
+    Custom,
 }
 
 impl TransactionType {
@@ -188,6 +200,7 @@ impl TransactionType {
             Self::SwitchGuardian { .. } => Some("switch_guardian"),
             Self::UpdateProcedureThreshold { .. } => Some("update_procedure_threshold"),
             Self::UpdateSigners { .. } => None,
+            Self::Custom => None,
         }
     }
 
@@ -201,6 +214,7 @@ impl TransactionType {
             Self::SwitchGuardian { .. } => "SwitchGuardian",
             Self::UpdateProcedureThreshold { .. } => "UpdateProcedureThreshold",
             Self::UpdateSigners { .. } => "UpdateSigners",
+            Self::Custom => "Custom",
         }
     }
 
@@ -213,6 +227,26 @@ impl TransactionType {
     pub fn requires_guardian_ack(&self) -> bool {
         !self.supports_offline_execution()
     }
+}
+
+/// Proposal type labels the SDK models natively. The producer (`propose_custom_transaction`)
+/// path rejects these so an opaque transaction can never be mis-routed to a
+/// built-in handler.
+const BUILTIN_PROPOSAL_TYPES: &[&str] = &[
+    "add_signer",
+    "remove_signer",
+    "change_threshold",
+    "update_procedure_threshold",
+    "switch_guardian",
+    "consume_notes",
+    "p2id",
+    // Reserved: the SDK's internal bucket name for unmodeled types. A producer
+    // must not use it as a custom label, or it would collide with the bucket.
+    "custom",
+];
+
+pub(crate) fn is_builtin_proposal_type(proposal_type: &str) -> bool {
+    BUILTIN_PROPOSAL_TYPES.contains(&proposal_type)
 }
 
 /// Metadata needed to reconstruct and finalize a proposal.
@@ -434,7 +468,7 @@ impl ProposalMetadata {
                     signer_commitments: proposed_signers,
                 })
             }
-            other => Err(MultisigError::UnknownTransactionType(other.to_string())),
+            _ => Ok(TransactionType::Custom),
         }
     }
 }
@@ -1199,5 +1233,54 @@ mod tests {
 
         let note_ids = metadata.note_ids().expect("should parse");
         assert_eq!(note_ids.len(), 1);
+    }
+
+    #[test]
+    fn to_transaction_type_maps_unmodeled_label_to_custom() {
+        let metadata = ProposalMetadata::default();
+
+        let tx_type = metadata
+            .to_transaction_type("b2agg")
+            .expect("unmodeled proposal type should map to Custom");
+
+        assert_eq!(tx_type, TransactionType::Custom);
+        assert_eq!(tx_type.type_name(), "Custom");
+        assert_eq!(tx_type.proposal_type(), None);
+    }
+
+    #[test]
+    fn to_transaction_type_still_rejects_empty_label() {
+        let metadata = ProposalMetadata::default();
+
+        let err = metadata
+            .to_transaction_type("")
+            .expect_err("empty proposal type must be rejected");
+        assert!(err.to_string().contains("proposal_type is required"));
+    }
+
+    #[test]
+    fn builtin_proposal_types_are_recognized() {
+        for label in [
+            "add_signer",
+            "remove_signer",
+            "change_threshold",
+            "update_procedure_threshold",
+            "switch_guardian",
+            "consume_notes",
+            "p2id",
+            "custom",
+        ] {
+            assert!(
+                is_builtin_proposal_type(label),
+                "{label} should be reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_labels_are_not_builtin() {
+        assert!(!is_builtin_proposal_type("b2agg"));
+        assert!(!is_builtin_proposal_type(""));
+        assert!(!is_builtin_proposal_type("P2ID"));
     }
 }

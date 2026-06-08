@@ -5,14 +5,19 @@
 
 use std::collections::HashSet;
 
-use guardian_shared::ProposalSignature;
+use guardian_shared::{ProposalSignature, ToJson};
+use miden_client::transaction::TransactionRequest;
 
 use super::{MultisigClient, ProposalResult};
 use crate::error::{MultisigError, Result};
-use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
+use crate::execution::{
+    SignatureAdvice, SignatureInput, build_final_transaction_request, collect_signature_advice,
+};
 use crate::keystore::proposal_public_key_hex;
-use crate::proposal::{Proposal, TransactionType};
-use crate::transaction::ProposalBuilder;
+use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
+use crate::transaction::{
+    ProposalBuilder, deserialize_transaction_request, execute_for_summary, word_to_hex,
+};
 
 impl MultisigClient {
     async fn get_proposal(
@@ -138,6 +143,17 @@ impl MultisigClient {
             });
         }
 
+        // Custom proposals (issue #266) have no per-type reconstruction recipe,
+        // so the SDK cannot build/submit them. The integration executes them
+        // with its own recipe using the advice from `prepare_custom_execution`.
+        if matches!(proposal.transaction_type, TransactionType::Custom) {
+            return Err(MultisigError::UnsupportedTransactionType(
+                "custom proposals are executed by the integration; call \
+                 prepare_custom_execution to get the cosigner + GUARDIAN advice"
+                    .to_string(),
+            ));
+        }
+
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         let mut signature_inputs: Vec<SignatureInput> = proposal
@@ -210,6 +226,199 @@ impl MultisigClient {
         // Execute and finalize
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
+    }
+
+    /// Creates a proposal from a producer-built transaction the SDK does not
+    /// model (issue #266 producer API). `transaction_request_bytes` is a serialized
+    /// `TransactionRequest`; `proposal_type` is a free-form, non-empty label
+    /// that MUST NOT collide with a built-in type. The integration keeps its own
+    /// recipe to execute later via `prepare_custom_execution`.
+    pub async fn propose_custom_transaction(
+        &mut self,
+        transaction_request_bytes: &[u8],
+        proposal_type: &str,
+    ) -> Result<Proposal> {
+        let proposal_type = proposal_type.trim().to_lowercase();
+        if proposal_type.is_empty() {
+            return Err(MultisigError::InvalidConfig(
+                "proposal_type must not be empty".to_string(),
+            ));
+        }
+        if !proposal_type
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal_type '{}' must be lowercase snake_case ([a-z0-9_]): no spaces, hyphens, or other characters",
+                proposal_type
+            )));
+        }
+        if is_builtin_proposal_type(&proposal_type) {
+            return Err(MultisigError::UnsupportedTransactionType(format!(
+                "'{}' is a built-in proposal type; use the typed proposal API instead",
+                proposal_type
+            )));
+        }
+
+        self.sync().await?;
+        let account = self.require_account()?.clone();
+        let account_id = account.id();
+
+        let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
+        let tx_summary =
+            execute_for_summary(&mut self.miden_client, account_id, tx_request).await?;
+        let tx_commitment = tx_summary.to_commitment();
+
+        let required_signatures = account.threshold()? as usize;
+
+        let metadata = crate::proposal::ProposalMetadata {
+            tx_summary_json: Some(tx_summary.to_json()),
+            proposal_type: Some(proposal_type.to_string()),
+            required_signatures: Some(required_signatures),
+            signers: vec![self.key_manager.commitment_hex()],
+            ..Default::default()
+        };
+
+        let payload = crate::payload::ProposalPayload::new(&tx_summary)
+            .with_signature(self.key_manager.as_ref(), tx_commitment)
+            .with_custom_metadata(proposal_type.to_string())
+            .with_required_signatures(required_signatures);
+
+        let nonce = account.nonce() + 1;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let response = guardian_client
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
+            .await
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
+
+        let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
+
+        if !proposal
+            .id
+            .trim_start_matches("0x")
+            .eq_ignore_ascii_case(response.commitment.trim_start_matches("0x"))
+        {
+            return Err(MultisigError::GuardianServer(format!(
+                "GUARDIAN returned proposal commitment {} but expected {}",
+                response.commitment, proposal.id
+            )));
+        }
+
+        Ok(proposal)
+    }
+
+    /// Assembles the validated execution advice for a threshold-met custom
+    /// proposal (issue #266 producer API): the cosigner signatures and the
+    /// GUARDIAN acknowledgment, keyed for the transaction's advice map. The
+    /// integration injects this into its own rebuilt transaction request
+    /// (`request.advice_map_mut().extend(advice)`) and submits it via its own
+    /// Miden client.
+    ///
+    /// `transaction_request_bytes` (the serialized transaction request) is used only to verify,
+    /// before the acknowledgment is requested, that it reproduces the signed
+    /// proposal commitment. On a not-ready proposal or a binding mismatch this
+    /// fails before requesting the acknowledgment.
+    pub async fn prepare_custom_execution(
+        &mut self,
+        proposal_id: &str,
+        transaction_request_bytes: &[u8],
+    ) -> Result<Vec<SignatureAdvice>> {
+        self.sync().await?;
+        let account = self.require_account()?.clone();
+        let account_id = account.id();
+
+        let proposal = self.get_proposal(&account_id, proposal_id).await?;
+
+        if !matches!(proposal.transaction_type, TransactionType::Custom) {
+            return Err(MultisigError::UnsupportedTransactionType(
+                "prepare_custom_execution is only for custom proposals; use execute_proposal \
+                 for built-in types"
+                    .to_string(),
+            ));
+        }
+
+        if !proposal.status.is_ready() {
+            let (collected, required) = proposal.signature_counts();
+            return Err(MultisigError::ProposalNotReady {
+                collected,
+                required,
+            });
+        }
+
+        let tx_summary_commitment = proposal.tx_summary.to_commitment();
+
+        let probe_request = deserialize_transaction_request(transaction_request_bytes)?;
+        let derived_summary =
+            execute_for_summary(&mut self.miden_client, account_id, probe_request).await?;
+        let derived_commitment = derived_summary.to_commitment();
+        if derived_commitment != tx_summary_commitment {
+            return Err(MultisigError::InvalidConfig(format!(
+                "transaction request does not match the signed proposal commitment \
+                 (expected {}, got {})",
+                word_to_hex(&tx_summary_commitment),
+                word_to_hex(&derived_commitment)
+            )));
+        }
+
+        let mut signature_inputs: Vec<SignatureInput> = proposal
+            .signatures
+            .into_iter()
+            .map(|signature| SignatureInput {
+                signer_commitment: signature.signer_commitment,
+                signature_hex: signature.signature_hex,
+                scheme: signature.scheme,
+                public_key_hex: signature.public_key_hex,
+            })
+            .collect();
+        signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
+        signature_inputs.dedup_by(|a, b| a.signer_commitment == b.signer_commitment);
+
+        let required_commitments: HashSet<String> =
+            account.cosigner_commitments_hex().into_iter().collect();
+        let mut signature_advice = collect_signature_advice(
+            signature_inputs,
+            &required_commitments,
+            tx_summary_commitment,
+        )?;
+
+        if proposal.transaction_type.requires_guardian_ack() {
+            let guardian_advice = self
+                .get_guardian_ack_signature(
+                    &account,
+                    proposal.nonce,
+                    &derived_summary,
+                    tx_summary_commitment,
+                )
+                .await?;
+            signature_advice.push(guardian_advice);
+        }
+
+        Ok(signature_advice)
+    }
+
+    /// Submits an integration-built transaction on-chain (issue #266 producer
+    /// API). The caller injects the advice from `prepare_custom_execution` into
+    /// its own transaction request (`request.advice_map_mut().extend(advice)`)
+    /// and passes it here to finalize.
+    pub async fn submit_transaction(&mut self, request: TransactionRequest) -> Result<()> {
+        // Refresh local state first: the account may have advanced between
+        // `prepare_custom_execution` and submit, and submitting against stale
+        // state would reject an otherwise-valid request.
+        self.sync().await?;
+        let account_id = self.require_account()?.id();
+        self.miden_client
+            .submit_new_transaction(account_id, request)
+            .await
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!(
+                    "transaction submission failed: {:?}",
+                    e
+                ))
+            })?;
+        let _ = self.miden_client.sync_state().await;
+        Ok(())
     }
 
     /// Creates a proposal for a transaction.
