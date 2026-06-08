@@ -244,6 +244,14 @@ variable "rds_ca_bundle_secret_arn" {
   EOT
   type        = string
   default     = ""
+
+  validation {
+    condition = (
+      var.rds_ca_bundle_secret_arn == "" ||
+      can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", trimspace(var.rds_ca_bundle_secret_arn)))
+    )
+    error_message = "rds_ca_bundle_secret_arn must be empty or a valid Secrets Manager secret ARN."
+  }
 }
 
 variable "rds_backup_retention_days" {

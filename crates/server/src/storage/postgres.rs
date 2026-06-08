@@ -88,16 +88,18 @@ fn single_query_value(url: &Url, key: &str) -> Result<Option<String>, String> {
 }
 
 fn parse_tls_plan(database_url: &str) -> Result<TlsPlan, String> {
-    let url = Url::parse(database_url).map_err(|_| {
-        "DATABASE_URL must be a postgres:// URL (libpq keyword/value strings are not supported)"
-            .to_string()
+    let url = Url::parse(database_url).map_err(|err| {
+        format!(
+            "DATABASE_URL must be a postgres:// or postgresql:// URL \
+             (libpq keyword/value strings are not supported): {err}"
+        )
     })?;
 
     match url.scheme() {
         "postgres" | "postgresql" => {}
         other => {
             return Err(format!(
-                "Unsupported DATABASE_URL scheme '{other}'; expected postgres://"
+                "Unsupported DATABASE_URL scheme '{other}'; expected postgres:// or postgresql://"
             ));
         }
     }

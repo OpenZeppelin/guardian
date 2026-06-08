@@ -131,7 +131,7 @@ container; an execution-role `GetSecretValue` grant for the secret ARN; and
 ./scripts/aws-deploy.sh logs     # init container exited 0; no cert error; migrations ran; server listening
 ```
 
-Expected: `db-cert-init` exits 0 → Postgres reachable → migrations applied → HTTP
+Expected: `rds-ca-initializer` exits 0 → Postgres reachable → migrations applied → HTTP
 listening, with **no** `certificate verify failed`. A crash-looping new task with
 a cert error means the bundle or endpoint is wrong — the old encrypt-only tasks
 keep serving, so fix the secret and re-apply.

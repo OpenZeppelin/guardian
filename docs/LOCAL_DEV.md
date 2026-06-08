@@ -108,7 +108,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
 openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr \
   -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
 openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
-  -out server.crt -days 3650 -copy_extensions copyext
+  -out server.crt -days 3650 -copy_extensions copyall
 # start postgres with ssl=on using server.crt/server.key, then:
 
 # verify-full: chain + hostname (SAN must be localhost)
