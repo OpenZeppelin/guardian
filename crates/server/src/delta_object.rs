@@ -245,32 +245,36 @@ mod tests {
         use crate::delta_summary::{
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
-        let mut delta = DeltaObject::default();
-        delta.metadata = Some(DeltaMetadata {
-            category: DashboardDeltaCategory::AssetTransfer,
-            assets: Vec::new(),
-            counterparty: None,
-            note_counts: NoteCounts::default(),
-            proposal: Some(ProposalMetadata {
-                proposal_type: "p2id".to_string(),
-                ..ProposalMetadata::default()
+        let delta = DeltaObject {
+            metadata: Some(DeltaMetadata {
+                category: DashboardDeltaCategory::AssetTransfer,
+                assets: Vec::new(),
+                counterparty: None,
+                note_counts: NoteCounts::default(),
+                proposal: Some(ProposalMetadata {
+                    proposal_type: "p2id".to_string(),
+                    ..ProposalMetadata::default()
+                }),
             }),
-        });
+            ..Default::default()
+        };
         assert_eq!(delta.proposal_type(), Some("p2id"));
     }
 
     #[test]
     fn proposal_type_falls_back_to_delta_payload_metadata_when_typed_column_is_none() {
-        let mut delta = DeltaObject::default();
-        delta.metadata = None;
-        delta.delta_payload = serde_json::json!({
-            "tx_summary": { "data": "AAAA" },
-            "metadata": {
-                "proposal_type": "consume_notes",
-                "note_ids": ["0xnote1"]
-            },
-            "signatures": []
-        });
+        let delta = DeltaObject {
+            metadata: None,
+            delta_payload: serde_json::json!({
+                "tx_summary": { "data": "AAAA" },
+                "metadata": {
+                    "proposal_type": "consume_notes",
+                    "note_ids": ["0xnote1"]
+                },
+                "signatures": []
+            }),
+            ..Default::default()
+        };
         assert_eq!(delta.proposal_type(), Some("consume_notes"));
     }
 
@@ -285,20 +289,22 @@ mod tests {
         use crate::delta_summary::{
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
-        let mut delta = DeltaObject::default();
-        delta.metadata = Some(DeltaMetadata {
-            category: DashboardDeltaCategory::AssetTransfer,
-            assets: Vec::new(),
-            counterparty: None,
-            note_counts: NoteCounts::default(),
-            proposal: Some(ProposalMetadata {
-                proposal_type: "p2id".to_string(),
-                ..ProposalMetadata::default()
+        let delta = DeltaObject {
+            metadata: Some(DeltaMetadata {
+                category: DashboardDeltaCategory::AssetTransfer,
+                assets: Vec::new(),
+                counterparty: None,
+                note_counts: NoteCounts::default(),
+                proposal: Some(ProposalMetadata {
+                    proposal_type: "p2id".to_string(),
+                    ..ProposalMetadata::default()
+                }),
             }),
-        });
-        delta.delta_payload = serde_json::json!({
-            "metadata": { "proposal_type": "add_signer" }
-        });
+            delta_payload: serde_json::json!({
+                "metadata": { "proposal_type": "add_signer" }
+            }),
+            ..Default::default()
+        };
         assert_eq!(delta.proposal_type(), Some("p2id"));
     }
 
