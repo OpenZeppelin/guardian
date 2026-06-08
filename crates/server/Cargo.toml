@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 async-trait = "0.1"
 aws-config = { version = "=1.5.18", default-features = false, features = ["rt-tokio", "rustls"] }
-aws-sdk-secretsmanager = { version = "=1.75.0", default-features = false, features = ["rt-tokio", "rustls"] }
+aws-sdk-secretsmanager = { version = "=1.103.0", default-features = false, features = ["rt-tokio", "rustls"] }
 axum = "0.8.6"
 alloy = { version = "2.0.1", optional = true }
 base64 = { workspace = true }
