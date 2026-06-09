@@ -190,7 +190,7 @@ The user should usually only need to handle:
 - `cargo login <CRATES_IO_TOKEN>` or equivalent registry auth check
 - `npm whoami` or `npm login`
 - any final publish confirmation the user wants to own
-- git tag creation and push
+- cutting the GitHub Release (`gh release create`), which also triggers the server image build
 
 When auth is missing or unverified, give a short ordered command sequence. Prefer:
 
@@ -205,10 +205,41 @@ If the user has already authenticated, continue with the automated prep and only
 
 After publishing:
 
-- ask the user whether to create and push the release tag
+- ask the user whether to cut the GitHub Release for the tag
 - verify the published versions if the task requires it
 
-Use:
+Cut the release with `gh`. Prefer `--draft` so the user can review notes and the
+tag before anything ships:
+
+```bash
+gh release create v<version> --generate-notes --draft
+```
+
+A **draft** release does not fire the `release: published` event, so the Docker
+Publish workflow stays idle while the draft is reviewed. Publish the draft when
+ready, which is what actually triggers the build:
+
+```bash
+gh release edit v<version> --draft=false
+```
+
+To skip the review step and publish immediately, omit `--draft`:
+
+```bash
+gh release create v<version> --generate-notes
+```
+
+Publishing a GitHub Release auto-triggers the **Docker Publish** workflow, which
+builds and pushes the Guardian server image for that tag. The build waits for
+required-reviewer approval on the `release` environment before it pushes:
+
+- approve the run when the release should also ship a server image
+- decline it for SDK-only releases (the SDK and server share the same `vX.Y.Z`
+  tag line, so every release reaches this gate)
+
+A plain `git tag` + `git push` does **not** create a release and will not trigger
+the server image build. Use it only when the server image is intentionally not
+wanted and no GitHub Release is being cut:
 
 ```bash
 git tag v<version>

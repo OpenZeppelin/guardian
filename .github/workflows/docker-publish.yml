@@ -2,6 +2,8 @@
 name: Docker Publish
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -48,26 +50,48 @@ jobs:
         with:
           egress-policy: audit
 
+      - name: Resolve build parameters
+        id: params
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BRANCH: ${{ inputs.branch }}
+          INPUT_FEATURES: ${{ inputs.features }}
+          INPUT_OVERWRITE: ${{ inputs.overwrite }}
+          LAUNCH_REF: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ "$EVENT" == "release" ]]; then
+            version="$RELEASE_TAG"
+            ref="$RELEASE_TAG"
+            features="postgres"
+            overwrite="false"
+          else
+            version="$INPUT_VERSION"
+            ref="${INPUT_BRANCH:-$LAUNCH_REF}"
+            features="${INPUT_FEATURES:-postgres}"
+            overwrite="$INPUT_OVERWRITE"
+          fi
+          {
+            echo "version=$version"
+            echo "ref=$ref"
+            echo "features=$features"
+            echo "overwrite=$overwrite"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Validate version input
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.params.outputs.version }}
         run: |
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Invalid version '$VERSION'. Expected a tag like v1.2.3 or a pre-release like v1.2.3-rc.1."
             exit 1
           fi
 
-      - name: Resolve build ref
-        id: ref
-        env:
-          INPUT_BRANCH: ${{ inputs.branch }}
-          LAUNCH_REF: ${{ github.ref_name }}
-        run: echo "ref=${INPUT_BRANCH:-$LAUNCH_REF}" >> "$GITHUB_OUTPUT"
-
       - name: Checkout build ref
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
-          ref: ${{ steps.ref.outputs.ref }}
+          ref: ${{ steps.params.outputs.ref }}
           persist-credentials: false
 
       - name: Resolve checked-out commit
@@ -79,7 +103,7 @@ jobs:
       - name: Determine full-release flag
         id: release
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.params.outputs.version }}
         run: |
           if [[ "$VERSION" == *-* ]]; then
             echo "full=false" >> "$GITHUB_OUTPUT"
@@ -95,9 +119,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Reject already-published version
-        if: ${{ !inputs.overwrite }}
+        if: ${{ steps.params.outputs.overwrite != 'true' }}
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.params.outputs.version }}
         run: |
           if docker manifest inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
             echo "::error::${IMAGE}:${VERSION} already exists. Re-run with overwrite=true to replace it."
@@ -117,16 +141,16 @@ jobs:
           images: ${{ env.IMAGE }}
           flavor: latest=false
           tags: |
-            type=raw,value=${{ inputs.version }}
+            type=raw,value=${{ steps.params.outputs.version }}
             type=raw,value=sha-${{ steps.commit.outputs.short }}
             type=raw,value=latest,enable=${{ steps.release.outputs.full == 'true' }}
           labels: |
             org.opencontainers.image.title=guardian
             org.opencontainers.image.vendor=openzeppelin
-            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.version=${{ steps.params.outputs.version }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
-            org.openzeppelin.guardian.features=${{ inputs.features }}
-            org.openzeppelin.guardian.source-ref=${{ steps.ref.outputs.ref }}
+            org.openzeppelin.guardian.features=${{ steps.params.outputs.features }}
+            org.openzeppelin.guardian.source-ref=${{ steps.params.outputs.ref }}
 
       - name: Build and push
         id: build
@@ -137,7 +161,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            GUARDIAN_SERVER_FEATURES=${{ inputs.features }}
+            GUARDIAN_SERVER_FEATURES=${{ steps.params.outputs.features }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -156,7 +180,7 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build.outputs.digest }}
-          SOURCE_REF: ${{ steps.ref.outputs.ref }}
+          SOURCE_REF: ${{ steps.params.outputs.ref }}
           SHORT_SHA: ${{ steps.commit.outputs.short }}
         run: |
           {
