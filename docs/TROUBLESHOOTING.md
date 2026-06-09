@@ -305,6 +305,40 @@ RUST_LOG=server::middleware::auth=debug,server::metadata::auth=debug
 RUST_LOG=server::dashboard=debug
 ```
 
+### Startup configuration banner
+
+At boot, before any listener binds, the server emits a one-shot summary
+of its resolved, non-secret configuration (target
+`server::builder::startup`). Use it to confirm which version, backends,
+network, and signers a process is actually running:
+
+```
+===== Guardian server configuration =====
+Guardian server starting version="0.1.0" git_sha="<sha>" profile="release"
+network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
+storage backend storage=Postgres
+ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
+dashboard operators=0 cursor_secret="ephemeral"
+canonicalization check_interval_seconds=10 max_retries=48 submission_grace_period_seconds=600
+listeners http=3000 grpc=50051
+compiled features features=["postgres"]
+=========================================
+```
+
+Notes:
+
+- Only backend **kinds** and ports appear — never connection strings,
+  KMS key ids, keystore paths, or credentials.
+- `git_sha="unknown"` means the build received no `GUARDIAN_GIT_SHA`
+  build arg and had no git working tree — expected for some Docker
+  builds; not an error.
+- `cursor_secret="ephemeral"` corroborates the separate
+  `GUARDIAN_DASHBOARD_CURSOR_SECRET` warning: multi-replica deployments
+  must set a stable shared secret (see
+  [`CONFIGURATION.md`](./CONFIGURATION.md)).
+- `canonicalization` absent (replaced by an "optimistic mode" line)
+  means deltas are accepted without on-chain verification.
+
 In ECS, container logs flow to the CloudWatch log group named
 `/ecs/<stack>-server` ([`infra/data.tf:88`](../infra/data.tf#L88)). Use ECS Exec
 to attach to a live task when needed:

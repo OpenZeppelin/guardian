@@ -67,6 +67,10 @@ impl AckRegistry {
         }
     }
 
+    pub(crate) fn ecdsa_backend_id(&self) -> &'static str {
+        self.ecdsa.backend_id()
+    }
+
     pub async fn ack_delta(
         &self,
         delta: DeltaObject,

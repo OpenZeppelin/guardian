@@ -40,6 +40,10 @@ impl MidenEcdsaSigner {
         self.commitment_hex.clone()
     }
 
+    pub(crate) fn backend_id(&self) -> &'static str {
+        self.backend.backend_id()
+    }
+
     pub(crate) async fn ack_delta(&self, mut delta: DeltaObject) -> Result<DeltaObject> {
         let tx_summary = TransactionSummary::from_json(&delta.delta_payload).map_err(|e| {
             GuardianError::InvalidDelta(format!("Failed to deserialize TransactionSummary: {e}"))
