@@ -125,6 +125,7 @@ pub struct ErrorResponse {
     post,
     path = "/configure",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     request_body = ConfigureRequest,
     responses(
         (status = 200, description = "Account configured", body = ConfigureResponse),
@@ -185,6 +186,7 @@ pub async fn configure(
     post,
     path = "/delta",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     request_body = DeltaObject,
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
@@ -218,6 +220,7 @@ pub async fn push_delta(
     get,
     path = "/delta",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(DeltaQuery),
     responses(
         (status = 200, description = "Delta found", body = DeltaObject),
@@ -249,6 +252,7 @@ pub async fn get_delta(
     get,
     path = "/delta/since",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(DeltaQuery),
     responses(
         (status = 200, description = "Merged delta", body = DeltaObject),
@@ -279,6 +283,7 @@ pub async fn get_delta_since(
     get,
     path = "/state",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(StateQuery),
     responses(
         (status = 200, description = "Current account state", body = StateObject),
@@ -310,10 +315,13 @@ pub async fn get_state(
     get,
     path = "/state/lookup",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(LookupQuery),
     responses(
         (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
+        (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn lookup(
@@ -392,6 +400,7 @@ pub async fn get_pubkey(
     post,
     path = "/delta/proposal",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     request_body = DeltaProposalRequest,
     responses(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
@@ -427,6 +436,7 @@ pub async fn push_delta_proposal(
     get,
     path = "/delta/proposal",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(ProposalQuery),
     responses(
         (status = 200, description = "Pending proposals", body = ProposalsResponse),
@@ -457,6 +467,7 @@ pub async fn get_delta_proposals(
     get,
     path = "/delta/proposal/single",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(ProposalItemQuery),
     responses(
         (status = 200, description = "Proposal found", body = DeltaObject),
@@ -488,6 +499,7 @@ pub async fn get_delta_proposal(
     put,
     path = "/delta/proposal",
     tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     request_body = SignProposalRequest,
     responses(
         (status = 200, description = "Signature accepted", body = DeltaObject),

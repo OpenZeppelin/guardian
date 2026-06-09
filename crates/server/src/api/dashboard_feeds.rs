@@ -69,6 +69,7 @@ pub struct GlobalDeltasQuery {
     get,
     path = "/dashboard/accounts/{account_id}/deltas",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier"), FeedQuery),
     responses(
         (status = 200, description = "Per-account delta feed page", body = PagedResult<DashboardDeltaEntry>),
@@ -102,6 +103,7 @@ pub async fn list_account_deltas_handler(
     get,
     path = "/dashboard/accounts/{account_id}/deltas/{nonce}",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(
         ("account_id" = String, Path, description = "Account identifier"),
         ("nonce" = u64, Path, description = "Canonical base-10 delta nonce"),
@@ -112,6 +114,7 @@ pub async fn list_account_deltas_handler(
         (status = 400, description = "Malformed nonce", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Delta not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Delta data unavailable", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn list_account_delta_detail_handler(
@@ -182,6 +185,7 @@ fn parse_canonical_nonce(raw: &str) -> Result<u64> {
     get,
     path = "/dashboard/accounts/{account_id}/proposals",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier"), FeedQuery),
     responses(
         (status = 200, description = "Per-account in-flight proposal queue page", body = PagedResult<DashboardProposalEntry>),
@@ -215,6 +219,7 @@ pub async fn list_account_proposals_handler(
     get,
     path = "/dashboard/deltas",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(GlobalDeltasQuery),
     responses(
         (status = 200, description = "Cross-account delta feed page", body = PagedResult<DashboardGlobalDeltaEntry>),
@@ -248,6 +253,7 @@ pub async fn list_global_deltas_handler(
     get,
     path = "/dashboard/proposals",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(FeedQuery),
     responses(
         (status = 200, description = "Cross-account in-flight proposal feed page", body = PagedResult<DashboardGlobalProposalEntry>),

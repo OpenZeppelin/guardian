@@ -4,38 +4,63 @@ Guardian's HTTP API is described by an [OpenAPI 3.1](https://spec.openapis.org/o
 specification generated directly from the server source with
 [`utoipa`](https://docs.rs/utoipa). Because the spec is derived from the
 same `#[utoipa::path]` annotations and `#[derive(ToSchema)]` models the
-handlers use, it cannot drift from the implementation.
+handlers use, it cannot drift from the implementation — and CI fails if
+the committed files fall out of sync (see below).
 
-It covers both HTTP surfaces:
+## Surfaces and files
 
-- the **client** API (tag `client`) consumed by the SDKs and packages, and
-- the operator **dashboard** API (tag `dashboard`).
+Guardian exposes two HTTP surfaces — the **client** API (tag `client`)
+consumed by SDKs/packages and the operator **dashboard** API (tag
+`dashboard`) — plus the feature-gated EVM API (tag `evm`). Four specs are
+committed under [`docs/`](.), generated with the `evm` feature so they
+document every route:
 
-The EVM smart-account API (tag `evm`) is included when the `evm` Cargo
-feature is enabled.
+| File | Contents | Maps to |
+| --- | --- | --- |
+| [`openapi.json`](./openapi.json) | combined client + dashboard + evm | served at runtime |
+| [`openapi-client.json`](./openapi-client.json) | client API only | `packages/guardian-client` |
+| [`openapi-dashboard.json`](./openapi-dashboard.json) | dashboard API only | `packages/guardian-operator-client` |
+| [`openapi-evm.json`](./openapi-evm.json) | EVM API only | `packages/guardian-evm-client` |
 
-## Where it lives
+Splitting per surface keeps SDK generation scoped and avoids exposing
+unrelated schemas to a given client.
 
-- **Checked-in spec:** [`docs/openapi.json`](./openapi.json) — generated
-  with the `evm` feature so it documents every route.
-- **Served at runtime:** `GET /api-docs/openapi.json` on the HTTP server
-  returns the spec for the routes the running binary actually mounts
-  (EVM routes appear only when the server is built with `--features evm`).
+**Served at runtime:** `GET /api-docs/openapi.json` returns the combined
+spec for the routes the running binary actually mounts (EVM routes appear
+only when the server is built with `--features evm`).
 
 Point any OpenAPI tooling — Swagger UI, ReDoc, or a client-SDK
-generator — at either source.
+generator — at any of these.
 
-## Regenerating the checked-in file
+## Authentication
 
-Run the `gen-openapi` binary and write to `docs/openapi.json`. Build with
-`--features evm` so the EVM routes are included:
+The specs declare security schemes so tools render auth correctly:
+
+- **Client API** — three required `apiKey` headers, `x-pubkey`,
+  `x-signature`, `x-timestamp` (see [`spec/api.md`](../spec/api.md)
+  "Miden Request Signing"). Public endpoints (`/pubkey`) carry no
+  requirement.
+- **Dashboard API** — the `guardian_operator_session` cookie
+  (`operator_session`). The login challenge/verify endpoints are public.
+- **EVM API** — the `guardian_evm_session` cookie (`evm_session`). The
+  challenge/verify endpoints are public.
+
+## Regenerating the checked-in files
+
+Run the `gen-openapi` binary with the `evm` feature, writing into
+`docs/`:
 
 ```sh
-cargo run --features evm --bin gen-openapi -- docs/openapi.json
+cargo run --features evm --bin gen-openapi -- docs
 ```
 
-With no path argument the spec is printed to stdout instead.
+To verify the committed files are current without writing (what CI runs):
 
-Regenerate and commit `docs/openapi.json` whenever you add or change an
-HTTP handler, its request/response types, or a model that appears on the
-wire — the same way the proto contract is kept in sync.
+```sh
+cargo run --features evm --bin gen-openapi -- --check docs
+```
+
+Regenerate and commit the specs whenever you add or change an HTTP
+handler, its request/response/query/path types, auth behavior, or a
+model that appears on the wire — the same way the proto contract is kept
+in sync. The `OpenAPI Spec Drift` CI job enforces this.

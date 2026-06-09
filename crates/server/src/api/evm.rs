@@ -170,6 +170,7 @@ pub async fn verify_evm_session(
     post,
     path = "/evm/auth/logout",
     tag = "evm",
+    security(("evm_session" = [])),
     responses(
         (status = 200, description = "Session invalidated", body = LogoutResponse),
     )
@@ -195,11 +196,13 @@ pub async fn logout_evm_session(
     post,
     path = "/evm/accounts",
     tag = "evm",
+    security(("evm_session" = [])),
     request_body = RegisterAccountRequest,
     responses(
         (status = 200, description = "Account registered", body = RegisterAccountResponse),
         (status = 400, description = "Invalid network config", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Session signer not authorized for the account", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn register_evm_account(
@@ -233,11 +236,13 @@ pub async fn register_evm_account(
     post,
     path = "/evm/proposals",
     tag = "evm",
+    security(("evm_session" = [])),
     request_body = CreateProposalRequest,
     responses(
         (status = 200, description = "Proposal created", body = EvmProposal),
         (status = 400, description = "Invalid proposal input", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Session signer not authorized for the account", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn create_evm_proposal(
@@ -267,6 +272,7 @@ pub async fn create_evm_proposal(
     get,
     path = "/evm/proposals",
     tag = "evm",
+    security(("evm_session" = [])),
     params(AccountQuery),
     responses(
         (status = 200, description = "Proposals", body = ListProposalsResponse),
@@ -289,6 +295,7 @@ pub async fn list_evm_proposals(
     get,
     path = "/evm/proposals/{proposal_id}",
     tag = "evm",
+    security(("evm_session" = [])),
     params(("proposal_id" = String, Path, description = "Proposal identifier"), AccountQuery),
     responses(
         (status = 200, description = "Proposal", body = EvmProposal),
@@ -318,12 +325,14 @@ pub async fn get_evm_proposal(
     post,
     path = "/evm/proposals/{proposal_id}/approve",
     tag = "evm",
+    security(("evm_session" = [])),
     params(("proposal_id" = String, Path, description = "Proposal identifier")),
     request_body = ApproveProposalRequest,
     responses(
         (status = 200, description = "Approval recorded", body = EvmProposal),
         (status = 400, description = "Invalid signature", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Session signer not authorized for the account", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -353,6 +362,7 @@ pub async fn approve_evm_proposal(
     get,
     path = "/evm/proposals/{proposal_id}/executable",
     tag = "evm",
+    security(("evm_session" = [])),
     params(("proposal_id" = String, Path, description = "Proposal identifier"), AccountQuery),
     responses(
         (status = 200, description = "Executable proposal", body = ExecutableEvmProposal),
@@ -383,6 +393,7 @@ pub async fn get_executable_evm_proposal(
     post,
     path = "/evm/proposals/{proposal_id}/cancel",
     tag = "evm",
+    security(("evm_session" = [])),
     params(("proposal_id" = String, Path, description = "Proposal identifier")),
     request_body = CancelProposalRequest,
     responses(

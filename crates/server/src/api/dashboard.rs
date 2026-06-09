@@ -155,6 +155,7 @@ pub async fn verify_operator_login(
     post,
     path = "/auth/logout",
     tag = "dashboard",
+    security(("operator_session" = [])),
     responses(
         (status = 200, description = "Session invalidated", body = LogoutOperatorResponse),
     )
@@ -182,6 +183,7 @@ pub async fn logout_operator(
     get,
     path = "/dashboard/accounts",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(AccountsQuery),
     responses(
         (status = 200, description = "Account page", body = PagedResult<DashboardAccountSummary>),
@@ -211,6 +213,7 @@ pub async fn list_operator_accounts(
     get,
     path = "/dashboard/info",
     tag = "dashboard",
+    security(("operator_session" = [])),
     responses(
         (status = 200, description = "Inventory and lifecycle summary", body = DashboardInfoResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
@@ -239,6 +242,7 @@ pub struct SessionInfoResponse {
     get,
     path = "/dashboard/session",
     tag = "dashboard",
+    security(("operator_session" = [])),
     responses(
         (status = 200, description = "Session info", body = SessionInfoResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
@@ -264,11 +268,13 @@ pub async fn get_dashboard_session_handler(
     get,
     path = "/dashboard/accounts/{account_id}",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier")),
     responses(
         (status = 200, description = "Account detail", body = DashboardAccountDetail),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
         (status = 503, description = "Account state unavailable", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -286,12 +292,15 @@ pub async fn get_operator_account(
     get,
     path = "/dashboard/accounts/{account_id}/snapshot",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier")),
     responses(
         (status = 200, description = "Account snapshot", body = DashboardAccountSnapshot),
         (status = 400, description = "Unsupported for this network (e.g. EVM)", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Account state unavailable", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn get_operator_account_snapshot(
@@ -320,6 +329,7 @@ pub struct UnpauseAccountRequest {
     post,
     path = "/dashboard/accounts/{account_id}/pause",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier")),
     request_body = PauseAccountRequest,
     responses(
@@ -354,10 +364,12 @@ pub async fn pause_account_handler(
     post,
     path = "/dashboard/accounts/{account_id}/unpause",
     tag = "dashboard",
+    security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier")),
     request_body = UnpauseAccountRequest,
     responses(
         (status = 200, description = "Account unpaused", body = UnpauseResponse),
+        (status = 400, description = "Invalid reason", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing accounts:pause permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),

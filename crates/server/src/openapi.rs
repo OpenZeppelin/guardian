@@ -2,17 +2,23 @@
 //!
 //! Issue #241. The spec is generated from `#[utoipa::path]` annotations
 //! on the HTTP handlers and `#[derive(utoipa::ToSchema)]` on the wire
-//! models. [`openapi`] returns the assembled document; it is served at
-//! runtime from `GET /api-docs/openapi.json` (see `builder/handle.rs`)
-//! and written to a committed file by the `gen-openapi` binary.
+//! models, so it cannot drift from the implementation.
 //!
 //! Guardian exposes two HTTP surfaces, both documented here: the
 //! **client** API (`tag = "client"`) consumed by SDKs/packages, and the
 //! operator **dashboard** API (`tag = "dashboard"`). The feature-gated
 //! **evm** surface is included when the `evm` feature is on.
+//!
+//! Four documents are produced (see the `gen-openapi` binary):
+//!   - the combined spec ([`openapi`]) served at `GET /api-docs/openapi.json`,
+//!   - a per-surface spec for each of client / dashboard / evm, which map
+//!     to the existing client packages and keep SDK generation scoped.
 
 use serde::Serialize;
-use utoipa::OpenApi;
+use utoipa::{
+    Modify, OpenApi,
+    openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
+};
 
 /// Wire shape of a Guardian error response body. Mirrors the envelope
 /// produced by [`crate::error::GuardianError`]'s `IntoResponse` impl.
@@ -46,19 +52,127 @@ pub struct ApiErrorResponse {
     pub paused_reason: Option<String>,
 }
 
-/// Always-on Guardian API surface: the client API and the operator
-/// dashboard API. EVM routes are merged in separately by [`openapi`]
-/// when the `evm` feature is enabled.
+/// Security scheme name for the signed-request public key header.
+pub const SEC_PUBKEY: &str = "x-pubkey";
+/// Security scheme name for the signed-request signature header.
+pub const SEC_SIGNATURE: &str = "x-signature";
+/// Security scheme name for the signed-request timestamp header.
+pub const SEC_TIMESTAMP: &str = "x-timestamp";
+/// Security scheme name for the operator dashboard session cookie.
+pub const SEC_OPERATOR_SESSION: &str = "operator_session";
+/// Security scheme name for the EVM session cookie.
+pub const SEC_EVM_SESSION: &str = "evm_session";
+
+fn add_client_schemes(components: &mut utoipa::openapi::Components) {
+    // Per-account Miden requests carry three signed headers; all three
+    // are required together (`spec/api.md` "Miden Request Signing").
+    components.add_security_scheme(
+        SEC_PUBKEY,
+        SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("x-pubkey"))),
+    );
+    components.add_security_scheme(
+        SEC_SIGNATURE,
+        SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("x-signature"))),
+    );
+    components.add_security_scheme(
+        SEC_TIMESTAMP,
+        SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("x-timestamp"))),
+    );
+}
+
+fn add_operator_scheme(components: &mut utoipa::openapi::Components) {
+    components.add_security_scheme(
+        SEC_OPERATOR_SESSION,
+        SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(
+            "guardian_operator_session",
+        ))),
+    );
+}
+
+fn add_evm_scheme(components: &mut utoipa::openapi::Components) {
+    components.add_security_scheme(
+        SEC_EVM_SESSION,
+        SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("guardian_evm_session"))),
+    );
+}
+
+/// Registers the signed-header schemes used by the client API.
+pub struct ClientSecurityAddon;
+impl Modify for ClientSecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        add_client_schemes(openapi.components.get_or_insert_with(Default::default));
+    }
+}
+
+/// Registers the operator-session cookie scheme used by the dashboard API.
+pub struct DashboardSecurityAddon;
+impl Modify for DashboardSecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        add_operator_scheme(openapi.components.get_or_insert_with(Default::default));
+    }
+}
+
+/// Registers the EVM-session cookie scheme used by the EVM API.
+pub struct EvmSecurityAddon;
+impl Modify for EvmSecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        add_evm_scheme(openapi.components.get_or_insert_with(Default::default));
+    }
+}
+
+/// Injects the cross-cutting error responses every endpoint can return
+/// from middleware — `429` (rate limit) and `413` (body size limit) —
+/// into every operation, so they need not be repeated in each
+/// `#[utoipa::path]` annotation. Existing per-operation responses for
+/// those codes are left untouched.
+pub struct CommonResponsesAddon;
+impl Modify for CommonResponsesAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{Content, Ref, RefOr, ResponseBuilder};
+
+        let make = |desc: &str| {
+            RefOr::T(
+                ResponseBuilder::new()
+                    .description(desc)
+                    .content(
+                        "application/json",
+                        Content::new(Some(RefOr::Ref(Ref::from_schema_name("ApiErrorResponse")))),
+                    )
+                    .build(),
+            )
+        };
+
+        for item in openapi.paths.paths.values_mut() {
+            let ops = [
+                item.get.as_mut(),
+                item.put.as_mut(),
+                item.post.as_mut(),
+                item.delete.as_mut(),
+                item.patch.as_mut(),
+            ];
+            for op in ops.into_iter().flatten() {
+                op.responses
+                    .responses
+                    .entry("429".to_string())
+                    .or_insert_with(|| make("Rate limit exceeded"));
+                op.responses
+                    .responses
+                    .entry("413".to_string())
+                    .or_insert_with(|| make("Request body exceeds the configured size limit"));
+            }
+        }
+    }
+}
+
+/// Client-facing API surface (signed-header auth).
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "Guardian API",
-        description = "Guardian coordination service HTTP API. Covers the client-facing \
-                       contract consumed by SDKs/packages and the operator dashboard API.",
+        title = "Guardian Client API",
+        description = "Client-facing Guardian HTTP API consumed by SDKs and packages.",
         license(name = "AGPL-3.0", identifier = "AGPL-3.0"),
     ),
     paths(
-        // --- client API ---
         crate::api::http::configure,
         crate::api::http::push_delta,
         crate::api::http::get_delta,
@@ -70,7 +184,22 @@ pub struct ApiErrorResponse {
         crate::api::http::get_delta_proposals,
         crate::api::http::get_delta_proposal,
         crate::api::http::sign_delta_proposal,
-        // --- dashboard API ---
+    ),
+    components(schemas(ApiErrorResponse)),
+    modifiers(&ClientSecurityAddon, &CommonResponsesAddon),
+    tags((name = "client", description = "Client-facing API consumed by SDKs and packages.")),
+)]
+pub struct ClientApiDoc;
+
+/// Operator dashboard API surface (operator-session cookie auth).
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Guardian Dashboard API",
+        description = "Operator dashboard Guardian HTTP API.",
+        license(name = "AGPL-3.0", identifier = "AGPL-3.0"),
+    ),
+    paths(
         crate::api::dashboard::challenge_operator_login,
         crate::api::dashboard::verify_operator_login,
         crate::api::dashboard::logout_operator,
@@ -88,44 +217,84 @@ pub struct ApiErrorResponse {
         crate::api::dashboard_feeds::list_global_proposals_handler,
     ),
     components(schemas(ApiErrorResponse)),
-    tags(
-        (name = "client", description = "Client-facing API consumed by SDKs and packages."),
-        (name = "dashboard", description = "Operator dashboard API."),
-        (name = "evm", description = "EVM smart-account API (available when the `evm` feature is enabled)."),
-    )
+    modifiers(&DashboardSecurityAddon, &CommonResponsesAddon),
+    tags((name = "dashboard", description = "Operator dashboard API.")),
 )]
-pub struct ApiDoc;
+pub struct DashboardApiDoc;
 
-/// Feature-gated EVM API surface, merged into the base document by
-/// [`openapi`] when the `evm` feature is enabled.
+/// Feature-gated EVM API surface (EVM-session cookie auth).
 #[cfg(feature = "evm")]
 #[derive(OpenApi)]
-#[openapi(paths(
-    crate::api::evm::challenge_evm_session,
-    crate::api::evm::verify_evm_session,
-    crate::api::evm::logout_evm_session,
-    crate::api::evm::register_evm_account,
-    crate::api::evm::create_evm_proposal,
-    crate::api::evm::list_evm_proposals,
-    crate::api::evm::get_evm_proposal,
-    crate::api::evm::approve_evm_proposal,
-    crate::api::evm::get_executable_evm_proposal,
-    crate::api::evm::cancel_evm_proposal,
-))]
-struct EvmApiDoc;
+#[openapi(
+    info(
+        title = "Guardian EVM API",
+        description = "EVM smart-account Guardian HTTP API (the `evm` feature).",
+        license(name = "AGPL-3.0", identifier = "AGPL-3.0"),
+    ),
+    paths(
+        crate::api::evm::challenge_evm_session,
+        crate::api::evm::verify_evm_session,
+        crate::api::evm::logout_evm_session,
+        crate::api::evm::register_evm_account,
+        crate::api::evm::create_evm_proposal,
+        crate::api::evm::list_evm_proposals,
+        crate::api::evm::get_evm_proposal,
+        crate::api::evm::approve_evm_proposal,
+        crate::api::evm::get_executable_evm_proposal,
+        crate::api::evm::cancel_evm_proposal,
+    ),
+    components(schemas(ApiErrorResponse)),
+    modifiers(&EvmSecurityAddon, &CommonResponsesAddon),
+    tags((name = "evm", description = "EVM smart-account API.")),
+)]
+pub struct EvmApiDoc;
 
-/// Build the complete OpenAPI document for the running server build.
-/// The version is taken from the crate version at compile time. EVM
-/// paths/schemas are merged in only when the `evm` feature is active so
-/// the spec always reflects the routes actually mounted.
-pub fn openapi() -> utoipa::openapi::OpenApi {
-    let mut doc = ApiDoc::openapi();
+fn with_version(mut doc: utoipa::openapi::OpenApi) -> utoipa::openapi::OpenApi {
     doc.info.version = env!("CARGO_PKG_VERSION").to_string();
+    doc
+}
 
+/// Client-only spec (`docs/openapi-client.json`).
+pub fn client_openapi() -> utoipa::openapi::OpenApi {
+    with_version(ClientApiDoc::openapi())
+}
+
+/// Dashboard-only spec (`docs/openapi-dashboard.json`).
+pub fn dashboard_openapi() -> utoipa::openapi::OpenApi {
+    with_version(DashboardApiDoc::openapi())
+}
+
+/// EVM-only spec (`docs/openapi-evm.json`). Only available when the
+/// `evm` feature is enabled.
+#[cfg(feature = "evm")]
+pub fn evm_openapi() -> utoipa::openapi::OpenApi {
+    with_version(EvmApiDoc::openapi())
+}
+
+/// Build the combined OpenAPI document for the running server build.
+/// EVM paths/schemas are merged in only when the `evm` feature is active
+/// so the spec always reflects the routes actually mounted. Security
+/// schemes for every merged surface are (re)applied explicitly so they
+/// are present regardless of `merge` semantics.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    let mut doc = ClientApiDoc::openapi();
+    doc.merge(DashboardApiDoc::openapi());
     #[cfg(feature = "evm")]
     doc.merge(EvmApiDoc::openapi());
 
-    doc
+    let components = doc.components.get_or_insert_with(Default::default);
+    add_client_schemes(components);
+    add_operator_scheme(components);
+    #[cfg(feature = "evm")]
+    add_evm_scheme(components);
+
+    doc.info.title = "Guardian API".to_string();
+    doc.info.description = Some(
+        "Guardian coordination service HTTP API. Covers the client-facing contract \
+         consumed by SDKs/packages and the operator dashboard API."
+            .to_string(),
+    );
+    with_version(doc)
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -135,7 +304,6 @@ mod tests {
     #[test]
     fn openapi_spec_builds_and_serializes() {
         let doc = openapi();
-        // Serializes to valid JSON.
         let json = serde_json::to_value(&doc).expect("spec serializes to JSON");
         assert_eq!(json["openapi"].as_str().unwrap_or(""), "3.1.0");
 
@@ -168,6 +336,59 @@ mod tests {
             schemas.contains_key("ApiErrorResponse"),
             "error schema missing"
         );
+
+        // Security schemes are registered and applied to authenticated ops.
+        let schemes = json["components"]["securitySchemes"]
+            .as_object()
+            .expect("securitySchemes object");
+        assert!(schemes.contains_key(SEC_PUBKEY), "header scheme missing");
+        assert!(
+            schemes.contains_key(SEC_OPERATOR_SESSION),
+            "operator cookie scheme missing"
+        );
+        // A signed client endpoint requires all three headers.
+        let cfg_sec = &json["paths"]["/configure"]["post"]["security"][0];
+        assert!(cfg_sec.get(SEC_PUBKEY).is_some(), "configure not secured");
+        assert!(cfg_sec.get(SEC_SIGNATURE).is_some());
+        assert!(cfg_sec.get(SEC_TIMESTAMP).is_some());
+        // Public endpoint carries no security requirement.
+        assert!(
+            json["paths"]["/pubkey"]["get"].get("security").is_none(),
+            "/pubkey should be public"
+        );
+    }
+
+    #[test]
+    fn per_surface_specs_are_scoped() {
+        let client = serde_json::to_value(client_openapi()).unwrap();
+        assert!(
+            client["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("/configure")
+        );
+        assert!(
+            !client["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("/dashboard/accounts"),
+            "client spec must not contain dashboard paths"
+        );
+
+        let dash = serde_json::to_value(dashboard_openapi()).unwrap();
+        assert!(
+            dash["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("/dashboard/accounts")
+        );
+        assert!(
+            !dash["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("/configure"),
+            "dashboard spec must not contain client paths"
+        );
     }
 
     #[cfg(feature = "evm")]
@@ -176,5 +397,19 @@ mod tests {
         let json = serde_json::to_value(openapi()).unwrap();
         let paths = json["paths"].as_object().unwrap();
         assert!(paths.contains_key("/evm/proposals"), "evm path missing");
+
+        let evm = serde_json::to_value(evm_openapi()).unwrap();
+        assert!(
+            evm["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("/evm/proposals")
+        );
+        assert!(
+            evm["components"]["securitySchemes"]
+                .as_object()
+                .unwrap()
+                .contains_key(SEC_EVM_SESSION)
+        );
     }
 }
