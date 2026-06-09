@@ -21,8 +21,10 @@ import {
   createAddSignerProposal,
   createChangeThresholdProposal,
   createConsumeNotesProposal,
+  createCustomP2idProposal,
   createMultisigAccount,
   createP2idProposal,
+  prepareAndSubmitCustomProposal,
   createRemoveSignerProposal,
   createSwitchGuardianProposal,
   createUpdateProcedureThresholdProposal,
@@ -54,6 +56,7 @@ import {
   useParaSession,
   verifyStateCommitment,
   type BrowserSessionSnapshot,
+  type CustomProposalRecipe,
   type ExternalWalletState,
   type ResolvedSigner,
   type SignerInfo,
@@ -101,6 +104,18 @@ export type CreateProposalInput =
   | { type: 'p2id'; recipientId: string; faucetId: string; amount: string | number }
   | { type: 'switch_guardian'; newGuardianEndpoint: string; newGuardianPubkey: string };
 
+export interface CreateCustomProposalInput {
+  recipientId: string;
+  faucetId: string;
+  amount: string | number;
+  label: string;
+}
+
+export interface ExecuteCustomProposalInput {
+  proposalId?: string;
+  recipe?: CustomProposalRecipe;
+}
+
 export interface SignProposalOfflineInput {
   proposalId?: string;
   json?: string;
@@ -131,6 +146,12 @@ export interface SmokeApi {
     proposal: ReturnType<typeof serializeProposal>;
     proposals: Array<ReturnType<typeof serializeProposal>>;
   }>;
+  createCustomProposal(input: CreateCustomProposalInput): Promise<{
+    proposal: ReturnType<typeof serializeProposal>;
+    proposals: Array<ReturnType<typeof serializeProposal>>;
+    recipe: CustomProposalRecipe;
+  }>;
+  executeCustomProposal(input: ExecuteCustomProposalInput): Promise<BrowserSessionSnapshot>;
   signProposal(input: { proposalId: string }): Promise<Array<ReturnType<typeof serializeProposal>>>;
   executeProposal(input: { proposalId: string }): Promise<BrowserSessionSnapshot>;
   exportProposal(input: { proposalId: string }): Promise<{ json: string }>;
@@ -350,6 +371,7 @@ export function useSmokeHarness(): {
   const [events, setEvents] = useState<SmokeEventEntry[]>([]);
   const eventIdRef = useRef(0);
   const eventsRef = useRef<SmokeEventEntry[]>([]);
+  const customRecipesRef = useRef<Map<string, CustomProposalRecipe>>(new Map());
   const bootGenerationRef = useRef(0);
   const bootStartedRef = useRef(false);
   const bootTaskRef = useRef<Promise<void> | null>(null);
@@ -447,6 +469,7 @@ export function useSmokeHarness(): {
   );
 
   const clearLoadedAccountState = useCallback(() => {
+    customRecipesRef.current.clear();
     setMultisig(null);
     setGuardianState(null);
     setDetectedConfig(null);
@@ -1075,6 +1098,91 @@ export function useSmokeHarness(): {
     [multisigRef, withCommand],
   );
 
+  const createCustomProposal = useCallback(
+    async (
+      input: CreateCustomProposalInput,
+    ): Promise<{
+      proposal: ReturnType<typeof serializeProposal>;
+      proposals: Array<ReturnType<typeof serializeProposal>>;
+      recipe: CustomProposalRecipe;
+    }> =>
+      withCommand('createCustomProposal', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const label = input.label.trim();
+        if (!label) {
+          throw new Error('Custom proposal label is required');
+        }
+
+        const result = await createCustomP2idProposal(
+          currentMultisig,
+          input.recipientId.trim(),
+          input.faucetId.trim(),
+          BigInt(input.amount),
+          label,
+        );
+
+        customRecipesRef.current.set(result.recipe.proposalId, result.recipe);
+        setProposals(result.proposals);
+
+        return {
+          proposal: serializeProposal(result.proposal),
+          proposals: result.proposals.map(serializeProposal),
+          recipe: result.recipe,
+        };
+      }),
+    [multisigRef, withCommand],
+  );
+
+  const executeCustomProposal = useCallback(
+    async (input: ExecuteCustomProposalInput): Promise<BrowserSessionSnapshot> =>
+      withCommand('executeCustomProposal', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const requestedProposalId = input.proposalId?.trim();
+        if (
+          input.recipe &&
+          requestedProposalId &&
+          input.recipe.proposalId !== requestedProposalId
+        ) {
+          throw new Error('proposalId does not match recipe.proposalId');
+        }
+
+        const recipe =
+          input.recipe ??
+          (requestedProposalId ? customRecipesRef.current.get(requestedProposalId) : undefined);
+        if (!recipe) {
+          throw new Error(
+            'No custom proposal recipe found; pass the recipe returned by createCustomProposal',
+          );
+        }
+        if (recipe.senderId !== currentMultisig.accountId) {
+          throw new Error('Custom proposal recipe does not belong to the loaded account');
+        }
+
+        await prepareAndSubmitCustomProposal(currentMultisig, recipe);
+        customRecipesRef.current.delete(recipe.proposalId);
+
+        const refreshed = await refreshMultisigState(currentMultisig);
+        return buildCurrentSnapshot({
+          guardianState: refreshed.state,
+          detectedConfig: refreshed.config,
+          proposals: refreshed.proposals,
+          consumableNotes: refreshed.notes,
+          lastError: null,
+        });
+      }),
+    [buildCurrentSnapshot, multisigRef, refreshMultisigState, withCommand],
+  );
+
   const signProposal = useCallback(
     async ({
       proposalId,
@@ -1261,6 +1369,8 @@ export function useSmokeHarness(): {
     listConsumableNotes,
     listProposals,
     createProposal,
+    createCustomProposal,
+    executeCustomProposal,
     signProposal,
     executeProposal,
     exportProposal,

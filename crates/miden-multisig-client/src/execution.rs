@@ -221,6 +221,9 @@ pub async fn build_final_transaction_request(
 
             Ok(tx_request)
         }
+        TransactionType::Custom => Err(MultisigError::UnsupportedTransactionType(
+            "cannot build a transaction for a custom proposal type".to_string(),
+        )),
     }
 }
 

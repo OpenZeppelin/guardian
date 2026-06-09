@@ -4,11 +4,13 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
+use miden_client::Serializable;
 use miden_multisig_client::{
-    ensure_hex_prefix, word_from_hex, Asset, ExportedProposal, NoteId, ProcedureName,
-    TransactionType,
+    build_p2id_transaction_request, ensure_hex_prefix, generate_salt, word_from_hex, Asset,
+    ExportedProposal, NoteId, ProcedureName, TransactionType,
 };
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::FungibleAsset;
 use rustyline::DefaultEditor;
 
 use crate::display::{
@@ -16,7 +18,7 @@ use crate::display::{
     shorten_hex,
 };
 use crate::menu::prompt_input;
-use crate::state::SessionState;
+use crate::state::{CustomProposalRecipe, SessionState};
 
 type StateFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + 'a>>;
 
@@ -61,6 +63,16 @@ pub async fn action_proposal_management(
                     print_error(&e);
                 }
             }
+            "7" => {
+                if let Err(e) = action_create_custom_proposal(state, editor).await {
+                    print_error(&e);
+                }
+            }
+            "8" => {
+                if let Err(e) = action_execute_custom_proposal(state, editor).await {
+                    print_error(&e);
+                }
+            }
             "b" | "back" => return Ok(()),
             _ => print_error("Invalid choice"),
         }
@@ -80,6 +92,10 @@ fn print_proposal_menu() {
     println!("  Offline/Export Operations:");
     println!("  [5] Export proposal to file");
     println!("  [6] Import & work with proposal file");
+    println!();
+    println!("  Custom (producer) Operations:");
+    println!("  [7] Create custom proposal (raw)");
+    println!("  [8] Execute custom proposal (raw)");
     println!();
     println!("  [b] Back to main menu");
     println!();
@@ -879,6 +895,133 @@ async fn create_proposal_offline(
 // =============================================================================
 // Helpers - Prompt for transaction type details
 // =============================================================================
+
+/// Creates a custom (producer-supplied) proposal. To get a valid serialized
+/// transaction request for the demo, this builds a real P2ID transfer under the
+/// hood, serializes it, and pushes it via `propose_custom_transaction` under a custom label.
+/// The P2ID recipe (inputs + salt) is cached so the request can be rebuilt and
+/// replayed at execution.
+async fn action_create_custom_proposal(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<(), String> {
+    print_section("Create Custom Proposal (raw)");
+
+    let label = prompt_input(editor, "Custom proposal_type label (e.g. b2agg): ")?;
+    let label = label.trim().to_string();
+    if label.is_empty() {
+        return Err("proposal_type label is required".to_string());
+    }
+
+    print_info("Building a transfer transaction to use as the custom transaction request.");
+    let (recipient, faucet_id, amount) = match prompt_p2id(state, editor)? {
+        TransactionType::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+        } => (recipient, faucet_id, amount),
+        _ => return Err("expected a P2ID transaction".to_string()),
+    };
+
+    let client = state.get_client_mut()?;
+    let account = client
+        .account()
+        .ok_or_else(|| "No account loaded".to_string())?
+        .clone();
+
+    let asset =
+        FungibleAsset::new(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
+    let salt = generate_salt();
+    let transaction_request_bytes = build_p2id_transaction_request(
+        account.inner(),
+        recipient,
+        vec![asset.into()],
+        salt,
+        std::iter::empty(),
+    )
+    .map_err(|e| format!("failed to build transaction: {}", e))?
+    .to_bytes();
+
+    print_waiting("Pushing custom proposal to GUARDIAN");
+    let proposal = client
+        .propose_custom_transaction(&transaction_request_bytes, &label)
+        .await
+        .map_err(|e| format!("propose_custom_transaction failed: {}", e))?;
+    let proposal_id = proposal.id.clone();
+
+    // The integration owns its recipe (build inputs + salt), not the serialized
+    // transaction; [8] rebuilds the request deterministically from these.
+    state.cache_custom_recipe(
+        &proposal_id,
+        CustomProposalRecipe {
+            recipient,
+            faucet_id,
+            amount,
+            salt,
+        },
+    );
+
+    print_success(&format!("Created custom proposal: {}", proposal_id));
+    print_info(&format!("Label: {}", label));
+    print_info("Cosigners view & sign via [2]/[3]; execute it via [8].");
+    Ok(())
+}
+
+/// Executes a custom proposal: gets the validated advice from the SDK
+/// (`prepare_custom_execution`), injects it into the integration's rebuilt
+/// transaction, and submits.
+async fn action_execute_custom_proposal(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<(), String> {
+    print_section("Execute Custom Proposal (raw)");
+
+    let proposal_id = prompt_input(editor, "Proposal ID: ")?;
+    let proposal_id = proposal_id.trim().to_string();
+    if proposal_id.is_empty() {
+        return Err("proposal ID is required".to_string());
+    }
+
+    let recipe = state.get_custom_recipe(&proposal_id).ok_or_else(|| {
+        "no recipe cached for this proposal in the current session; create it via [7] first"
+            .to_string()
+    })?;
+
+    let account = state
+        .get_client()?
+        .account()
+        .ok_or_else(|| "No account loaded".to_string())?
+        .clone();
+    let asset = FungibleAsset::new(recipe.faucet_id, recipe.amount)
+        .map_err(|e| format!("invalid asset: {}", e))?;
+
+    let mut request = build_p2id_transaction_request(
+        account.inner(),
+        recipe.recipient,
+        vec![asset.into()],
+        recipe.salt,
+        std::iter::empty(),
+    )
+    .map_err(|e| format!("failed to rebuild transaction: {}", e))?;
+
+    print_waiting("Preparing custom execution (binding + advice)");
+    let client = state.get_client_mut()?;
+    let advice = client
+        .prepare_custom_execution(&proposal_id, &request.to_bytes())
+        .await
+        .map_err(|e| format!("prepare_custom_execution failed: {}", e))?;
+
+    request.advice_map_mut().extend(advice);
+
+    print_waiting("Submitting custom transaction");
+    client
+        .submit_transaction(request)
+        .await
+        .map_err(|e| format!("submit failed: {}", e))?;
+
+    print_success("Custom proposal executed");
+    Ok(())
+}
 
 fn prompt_add_cosigner(editor: &mut DefaultEditor) -> Result<TransactionType, String> {
     print_info("Enter the new cosigner's commitment:");
