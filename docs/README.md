@@ -33,17 +33,20 @@ You are an operator / SRE / DevOps.
    model to make good ops decisions.
 2. [Production guide](./PRODUCTION.md) — supported production shape,
    readiness checklist, and links to the detailed runbooks.
-3. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
+3. [Guides](./guides/README.md) — task-oriented, end-to-end walkthroughs
+   for running Guardian in a specific mode (e.g. self-hosted Compose with
+   AWS-managed signers).
+4. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
    end-to-end deploy via `scripts/aws-deploy.sh`, stage profiles.
-4. [AWS deployment architecture](./architecture/infra.md) — runtime
+5. [AWS deployment architecture](./architecture/infra.md) — runtime
    topology, AWS resource inventory mapped to each `.tf` file.
-5. [Configuration reference](./CONFIGURATION.md) — every env var in one
+6. [Configuration reference](./CONFIGURATION.md) — every env var in one
    place.
-6. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
+7. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
    replacement, and compromise response for production secrets.
-7. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
+8. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
    operators, permission vocabulary, multi-task caveats.
-8. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
+9. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
    recovery procedures.
 
 ### I want to *develop on* Guardian (work in this repo)
@@ -96,6 +99,7 @@ You are a contributor.
 
 **Operations**
 - [Production guide](./PRODUCTION.md)
+- [Guides](./guides/README.md) — per-mode end-to-end walkthroughs
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
 - [Operator dashboard](./DASHBOARD.md)

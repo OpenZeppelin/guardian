@@ -279,6 +279,12 @@ variable "guardian_evm_allowed_chain_ids_secret_arn" {
   default     = ""
 }
 
+variable "guardian_ack_ecdsa_kms_key_arn" {
+  description = "KMS key ARN for the hosted ECDSA ACK signer backend. When set, the ECS task is granted kms:Sign and kms:GetPublicKey on this key, and the ECDSA ACK secret in Secrets Manager is no longer required."
+  type        = string
+  default     = ""
+}
+
 variable "guardian_evm_allowed_chain_ids" {
   description = "Comma-separated EVM chain IDs allowed by the server; when set, Terraform creates a Secrets Manager secret containing this value"
   type        = string

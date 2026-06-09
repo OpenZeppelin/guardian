@@ -1087,6 +1087,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-kms"
+version = "1.99.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa37c3e267142899d18cb1617258c93ed7a78873e9adff0221838b0e621188be"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.63.6",
+ "aws-smithy-json 0.62.5",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-secretsmanager"
 version = "1.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3029,6 +3053,7 @@ dependencies = [
  "alloy",
  "async-trait",
  "aws-config",
+ "aws-sdk-kms",
  "aws-sdk-secretsmanager",
  "axum",
  "base64",
@@ -3043,6 +3068,7 @@ dependencies = [
  "guardian-shared",
  "hex",
  "hmac 0.12.1",
+ "k256",
  "miden-client",
  "miden-confidential-contracts",
  "miden-keystore",
@@ -3057,6 +3083,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
  "static_assertions",
  "subtle",
  "tempfile",

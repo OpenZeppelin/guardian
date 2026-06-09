@@ -152,6 +152,15 @@ aws_region = "us-east-1"
 # Optional: existing dashboard operator Falcon public keys secret
 # guardian_operator_public_keys_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators"
 
+# Optional: hosted ECDSA ACK signer backed by AWS KMS.
+# Setting this is all that is required: Terraform grants the ECS task role
+# kms:Sign + kms:GetPublicKey on the key and injects GUARDIAN_ACK_ECDSA_BACKEND
+# and GUARDIAN_ACK_ECDSA_KMS_KEY_ID into the server runtime. The key must be
+# ECC_SECG_P256K1 / SIGN_VERIFY. On this path the ECDSA Secrets Manager secret is
+# not needed; the Falcon ACK secret bootstrap is unchanged and still required in
+# prod.
+# guardian_ack_ecdsa_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/<key-id>"
+
 # Optional: EVM runtime configuration
 # guardian_evm_allowed_chain_ids = "1,11155111"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
@@ -193,7 +202,8 @@ aws_region = "us-east-1"
 | `./scripts/aws-deploy.sh plan` | Run `terraform plan` using the immutable digest currently behind ECR `latest`. Does not build, push, or apply. |
 | `./scripts/aws-deploy.sh deploy` | Build and push the image, resolve ECR `latest` to an immutable digest, and run `terraform apply`. |
 | `./scripts/aws-deploy.sh deploy --skip-build` | Resolve the existing ECR `latest` image to an immutable digest and run `terraform apply` without rebuilding. |
-| `./scripts/aws-deploy.sh bootstrap-ack-keys` | Create the prod ACK key secrets in Secrets Manager. Refuses to overwrite existing secrets. |
+| `./scripts/aws-deploy.sh bootstrap-ack-keys` | Create the prod ACK key secrets in Secrets Manager. Refuses to overwrite existing secrets. With `TF_VAR_guardian_ack_ecdsa_kms_key_arn` set, creates only the Falcon secret (ECDSA is KMS-backed). |
+| `./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key` | Create the KMS ECDSA ACK signing key (`ECC_SECG_P256K1` / `SIGN_VERIFY`) and an `alias/${STACK_NAME}-ack-ecdsa` alias, then print the ARN to set. Refuses to overwrite an existing alias. |
 | `./scripts/aws-deploy.sh status` | Print Terraform outputs for the active `STACK_NAME` and `DEPLOY_STAGE`. |
 | `./scripts/aws-deploy.sh logs` | Tail the deployed server's CloudWatch log group. |
 | `./scripts/aws-deploy.sh cleanup` | Run Terraform destroy for the active `STACK_NAME` and `DEPLOY_STAGE`. |
@@ -232,6 +242,21 @@ DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
 The normal deploy path does not create or rotate ACK keys. It expects the prod Secrets Manager entries to already exist, and the server reads them directly at startup before importing them into the filesystem keystore.
 
 Secret names default to `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so distinct stacks (e.g. `guardian-prod`, `guardian-prod-eu`) automatically resolve to distinct secrets and multiple Guardian deployments can coexist in the same AWS account. Override per stack by setting `GUARDIAN_ACK_FALCON_SECRET_NAME` / `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy`; they flow into Terraform variables and the ECS task definition's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars.
+
+#### Prod with a KMS-backed ECDSA signer
+
+To keep the ECDSA private key in AWS KMS (never resident in the server process) while Falcon stays in Secrets Manager, create the key first and export its ARN before the rest of the flow. The script keys off `TF_VAR_guardian_ack_ecdsa_kms_key_arn` (the env var, not `terraform.tfvars`) to skip the ECDSA Secrets Manager secret, so it must be exported **before** `bootstrap-ack-keys` and `deploy`:
+
+```bash
+export DEPLOY_STAGE=prod STACK_NAME=<stack>
+
+./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key                  # creates the key, prints the ARN
+export TF_VAR_guardian_ack_ecdsa_kms_key_arn="arn:aws:kms:...:key/<key-id>"
+./scripts/aws-deploy.sh bootstrap-ack-keys                      # Falcon only; skips ECDSA
+./scripts/aws-deploy.sh deploy
+```
+
+Terraform then grants the ECS task role `kms:Sign` + `kms:GetPublicKey` and injects `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` / `GUARDIAN_ACK_ECDSA_KMS_KEY_ID`. See [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-backend-aws-kms) for key lifecycle, the immutable-spec caveat, and migrating an existing deployment (a new keypair, so a `SwitchGuardian` identity change).
 
 Dashboard operator public keys use a separate optional secret. The easiest
 deployment path is to pass the public keys to Terraform and let it create the

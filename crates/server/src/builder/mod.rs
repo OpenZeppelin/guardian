@@ -10,6 +10,7 @@ pub mod canonicalization;
 pub mod clock;
 pub mod handle;
 pub mod logging;
+pub mod startup;
 pub mod state;
 pub mod storage;
 
@@ -415,10 +416,17 @@ impl ServerBuilder {
             .await
             .map_err(|e| format!("Failed to create network client: {e}"))?;
 
-        tracing::info!(
-            falcon_commitment = %ack.commitment(&SignatureScheme::Falcon),
-            ecdsa_commitment = %ack.commitment(&SignatureScheme::Ecdsa),
-            "Server acknowledgement keys initialized"
+        let startup_info = startup::StartupInfo::new(
+            network_type,
+            storage.kind(),
+            ack.ecdsa_backend_id(),
+            ack.commitment(&SignatureScheme::Falcon),
+            ack.commitment(&SignatureScheme::Ecdsa),
+            self.canonicalization.clone(),
+            dashboard.operator_count().await,
+            dashboard.cursor_secret_configured(),
+            self.http_enabled.then_some(self.http_port),
+            self.grpc_enabled.then_some(self.grpc_port),
         );
 
         let app_state = AppState {
@@ -436,6 +444,7 @@ impl ServerBuilder {
 
         Ok(ServerHandle {
             app_state,
+            startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: self.rate_limit_config,
             body_limit_config: self.body_limit_config,

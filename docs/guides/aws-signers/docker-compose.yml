@@ -1,0 +1,62 @@
+# Self-hosted Guardian via Docker Compose with AWS-managed ACK signers:
+# Postgres for state, AWS Secrets Manager for the Falcon ACK key, and AWS KMS
+# for the ECDSA ACK key (its private key never enters the process).
+#
+# Run from this directory:
+#   cp .env.example .env        # then fill in the values
+#   docker compose up
+#
+# Compose auto-loads .env from this directory for both ${VAR} interpolation and
+# the server's runtime config (env_file). Walkthrough: ./README.md
+# Full server config reference: ../../CONFIGURATION.md
+#
+# GUARDIAN_ENV=prod makes the server load ACK keys from Secrets Manager, so the
+# container needs AWS credentials. This file passes them through from your shell
+# (export them before `up`, e.g. from SSO); a long-lived host should use an
+# instance/task role instead of static keys.
+
+services:
+  server:
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    pull_policy: always
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+      - GUARDIAN_ENV=prod
+      - AWS_REGION=${AWS_REGION:?set AWS_REGION in .env}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - GUARDIAN_ACK_FALCON_SECRET_ID=${GUARDIAN_ACK_FALCON_SECRET_ID:?set GUARDIAN_ACK_FALCON_SECRET_ID in .env}
+      - GUARDIAN_ACK_ECDSA_BACKEND=aws-kms
+      - GUARDIAN_ACK_ECDSA_KMS_KEY_ID=${GUARDIAN_ACK_ECDSA_KMS_KEY_ID:?set GUARDIAN_ACK_ECDSA_KMS_KEY_ID in .env}
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  guardian-keystore:
+  guardian-postgres:
