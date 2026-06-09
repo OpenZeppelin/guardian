@@ -76,7 +76,9 @@ export type ProposalType =
   | 'consume_notes'
   | 'p2id'
   | 'custom'
-  | 'unknown';
+  // Arbitrary server-defined proposal labels (issue #266); known literals are
+  // kept for autocomplete while `(string & {})` admits any custom label.
+  | (string & {});
 
 export interface ProposalMetadata {
   proposalType?: ProposalType;

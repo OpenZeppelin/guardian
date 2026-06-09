@@ -395,6 +395,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_push_delta_proposal_accepts_custom_proposal_type() {
+        // Issue #266: a proposal_type outside the first-party set (e.g. an
+        // agglayer bridge note) must be accepted at ingress — the old
+        // VALID_PROPOSAL_TYPES allowlist used to reject it here.
+        let (state, storage, network, metadata) = create_test_state();
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+
+        let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
+        ))));
+
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            test_commitment.to_string(),
+            account_json.clone(),
+        )));
+
+        let network = network.with_verify_delta(Ok(()));
+        let _network = network.with_validate_credential(Ok(()));
+
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"].clone(),
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "b2agg",
+                "description": "agglayer bridge note"
+            }
+        });
+
+        let params = PushDeltaProposalParams {
+            account_id: account_id.clone(),
+            nonce: 1,
+            delta_payload,
+            credentials: Credentials::signature(
+                test_pubkey.clone(),
+                test_signature.clone(),
+                test_timestamp,
+            ),
+        };
+
+        let result = push_delta_proposal(&state, params).await;
+
+        assert!(
+            result.is_ok(),
+            "custom proposal_type should be accepted, got: {:?}",
+            result
+        );
+        let result = result.unwrap();
+        assert_eq!(result.delta.proposal_type(), Some("b2agg"));
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_push_delta_proposal_success_for_ecdsa() {
         use crate::testing::helpers::TestEcdsaSigner;
         use guardian_shared::auth_request_payload::AuthRequestPayload;

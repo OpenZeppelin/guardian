@@ -2968,7 +2968,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-client"
-version = "0.14.8"
+version = "0.14.9"
 dependencies = [
  "chrono",
  "guardian-shared",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-shared"
-version = "0.14.8"
+version = "0.14.9"
 dependencies = [
  "base64",
  "hex",
@@ -4234,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "miden-confidential-contracts"
-version = "0.14.8"
+version = "0.14.9"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -4524,7 +4524,7 @@ dependencies = [
 
 [[package]]
 name = "miden-multisig-client"
-version = "0.14.8"
+version = "0.14.9"
 dependencies = [
  "anyhow",
  "base64",

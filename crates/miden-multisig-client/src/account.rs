@@ -143,6 +143,7 @@ impl MultisigAccount {
                 ProcedureName::UpdateProcedureThreshold
             }
             TransactionType::SwitchGuardian { .. } => ProcedureName::UpdateGuardian,
+            TransactionType::Custom => return self.threshold(),
         };
 
         self.effective_threshold_for_procedure(procedure)
@@ -385,6 +386,13 @@ mod tests {
                 })
                 .expect("threshold"),
             1
+        );
+        assert_eq!(
+            account
+                .effective_threshold_for_transaction(&TransactionType::Custom)
+                .expect("threshold"),
+            2,
+            "custom proposals use the account default threshold"
         );
     }
 

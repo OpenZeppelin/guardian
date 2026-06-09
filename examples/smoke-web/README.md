@@ -53,6 +53,8 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `listConsumableNotes()`
 - `listProposals()`
 - `createProposal({ type, ...payload })`
+- `createCustomProposal({ recipientId, faucetId, amount, label })`
+- `executeCustomProposal({ proposalId })` or `executeCustomProposal({ recipe })`
 - `signProposal({ proposalId })`
 - `executeProposal({ proposalId })`
 - `exportProposal({ proposalId })`
@@ -86,6 +88,36 @@ await window.smoke.createProposal({
 });
 ```
 
+### Custom proposal producer API
+
+A custom (`'custom'`-bucket) proposal is created with a free-form label and
+executed by the integration, not the SDK. The producer builds a serialized transaction
+request, proposes it via `createCustomProposal`, and after threshold calls
+`prepareCustomExecution` to get the validated advice, which the harness injects
+into a rebuilt request before submitting on-chain. The `recipe` returned by
+`createCustomProposal` is what the producer keeps to reproduce the exact
+transaction at execute time (request inputs + salt).
+
+```js
+// Producer tab: create
+const { recipe } = await window.smoke.createCustomProposal({
+  recipientId: '0x...',
+  faucetId: '0x...',
+  amount: '100',
+  label: 'b2agg',
+});
+
+// Cosigner tabs: sign the proposal like any other
+await window.smoke.signProposal({ proposalId: recipe.proposalId });
+
+// Producer tab: prepare advice + inject + submit
+await window.smoke.executeCustomProposal({ recipe });
+```
+
+The producer tab can also execute by id alone (`executeCustomProposal({
+proposalId })`) when the recipe is still cached in that session; pass `recipe`
+explicitly to drive execution from a fresh session.
+
 ## Verification Targets
 
 Use this harness for manual smoke flows that need:
@@ -93,6 +125,7 @@ Use this harness for manual smoke flows that need:
 - Para or Miden Wallet connectivity checks
 - create/load/register/sync/state verification
 - proposal create/sign/execute loops
+- custom (producer-API) propose/sign/prepare/submit loops
 - offline export/import/sign flows
 - switch-GUARDIAN proposal orchestration
 
