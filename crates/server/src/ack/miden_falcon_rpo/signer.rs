@@ -49,6 +49,13 @@ impl MidenFalconRpoSigner {
 
 impl MidenFalconRpoSigner {
     pub(crate) fn sign_with_server_key(&self, message: Word) -> crate::ack::Result<Signature> {
+        // Verified: miden-crypto 0.23.0 (pulled in by miden-protocol 0.14.5)
+        // implements `impl ZeroizeOnDrop for SecretKey {}` in
+        // src/dsa/falcon512_poseidon2/keys/secret_key.rs (the SecretKey type
+        // here), so the per-call loaded key material is zeroed when the
+        // signing frame returns. The local file-read buffer inside
+        // miden-keystore is wrapped in zeroize::Zeroizing for the same
+        // reason.
         Ok(self.keystore.sign(self.server_pubkey_word, message)?)
     }
 

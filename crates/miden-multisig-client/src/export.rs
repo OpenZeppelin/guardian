@@ -950,6 +950,35 @@ mod tests {
     }
 
     #[test]
+    fn from_proposal_roundtrip_preserves_custom_proposal_type() {
+        let tx_summary = create_test_tx_summary();
+        let proposal = Proposal::new(
+            tx_summary.clone(),
+            1,
+            TransactionType::Custom,
+            ProposalMetadata {
+                tx_summary_json: Some(tx_summary.to_json()),
+                proposal_type: Some("b2agg".to_string()),
+                required_signatures: Some(2),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(proposal.metadata.proposal_type.as_deref(), Some("b2agg"));
+
+        let account_id = AccountId::from_hex(&valid_account_id()).expect("valid account id");
+        let exported = ExportedProposal::from_proposal(&proposal, account_id)
+            .expect("custom proposal should export");
+        assert_eq!(exported.metadata.proposal_type, "b2agg");
+
+        let imported = exported
+            .to_proposal()
+            .expect("custom proposal should import");
+        assert_eq!(imported.transaction_type, TransactionType::Custom);
+        assert_eq!(imported.metadata.proposal_type.as_deref(), Some("b2agg"));
+    }
+
+    #[test]
     fn from_proposal_rejects_ambiguous_update_signers_without_proposal_type() {
         let tx_summary = create_test_tx_summary();
         let proposal = Proposal::new(

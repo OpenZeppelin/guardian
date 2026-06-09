@@ -1,8 +1,21 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{ExportedProposal, MultisigClient, SignatureScheme};
+use miden_protocol::account::AccountId;
+use miden_protocol::Word;
 use tempfile::TempDir;
+
+/// Producer-owned inputs for a custom P2ID proposal. The serialized transaction
+/// is not stored — it is rebuilt deterministically from these at execution.
+#[derive(Clone)]
+pub struct CustomProposalRecipe {
+    pub recipient: AccountId,
+    pub faucet_id: AccountId,
+    pub amount: u64,
+    pub salt: Word,
+}
 
 /// Simplified session state using the MultisigClient SDK.
 pub struct SessionState {
@@ -10,6 +23,9 @@ pub struct SessionState {
     pub account_directory: Arc<TempDir>,
     /// Imported proposal for offline workflow.
     pub imported_proposal: Option<ExportedProposal>,
+    /// Producer-owned custom proposal recipes, kept in-session so the creating
+    /// tab can rebuild and execute without re-supplying the transaction.
+    custom_recipes: HashMap<String, CustomProposalRecipe>,
     /// Signature scheme used by this demo session.
     signature_scheme: SignatureScheme,
     /// Stored endpoints for reinitialization.
@@ -26,6 +42,7 @@ impl SessionState {
             client: None,
             account_directory: Arc::new(account_directory),
             imported_proposal: None,
+            custom_recipes: HashMap::new(),
             signature_scheme: SignatureScheme::Falcon,
             miden_endpoint: None,
             guardian_endpoint: None,
@@ -134,5 +151,26 @@ impl SessionState {
     /// Takes ownership of the imported proposal.
     pub fn take_imported_proposal(&mut self) -> Option<ExportedProposal> {
         self.imported_proposal.take()
+    }
+
+    /// Normalizes a proposal id to a stable cache key: lowercase first (so a
+    /// pasted `0X` prefix is handled the same as `0x`), then strip the prefix.
+    fn normalize_recipe_key(proposal_id: &str) -> String {
+        proposal_id
+            .trim()
+            .to_lowercase()
+            .trim_start_matches("0x")
+            .to_string()
+    }
+
+    pub fn cache_custom_recipe(&mut self, proposal_id: &str, recipe: CustomProposalRecipe) {
+        self.custom_recipes
+            .insert(Self::normalize_recipe_key(proposal_id), recipe);
+    }
+
+    pub fn get_custom_recipe(&self, proposal_id: &str) -> Option<CustomProposalRecipe> {
+        self.custom_recipes
+            .get(&Self::normalize_recipe_key(proposal_id))
+            .cloned()
     }
 }

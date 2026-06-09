@@ -44,6 +44,9 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       toPreparedSignature: () => [1, 2, 3],
     }),
   },
+  TransactionRequest: {
+    deserialize: vi.fn().mockReturnValue({}),
+  },
   AdviceMap: vi.fn().mockImplementation(() => ({
     insert: vi.fn(),
   })),
@@ -3141,6 +3144,142 @@ describe('Multisig', () => {
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
         'Duplicate advice-map key detected',
       );
+    });
+  });
+
+  describe('prepareCustomExecution', () => {
+    const requestBytes = new Uint8Array([9, 8, 7]);
+
+    function customDelta(
+      proposalType: string,
+      cosignerSigs: any[],
+    ): any {
+      return {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: proposalType,
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: cosignerSigs,
+        },
+      };
+    }
+
+    function falconSig(signerId: string): any {
+      return {
+        signer_id: signerId,
+        signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+        timestamp: '2024-01-01T00:00:00Z',
+      };
+    }
+
+    it('rejects a built-in proposal type', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+
+      const builtinDelta = {
+        ...customDelta('change_threshold', [falconSig('0x' + 'a'.repeat(64))]),
+      };
+      builtinDelta.delta_payload.metadata = {
+        proposal_type: 'change_threshold',
+        description: '',
+        target_threshold: 1,
+        signer_commitments: ['0x' + 'a'.repeat(64)],
+      } as any;
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => builtinDelta,
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).rejects.toThrow('prepareCustomExecution is only for custom proposals');
+    });
+
+    it('rejects a proposal that is below its signature threshold', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => customDelta('b2agg', [falconSig('0x' + 'a'.repeat(64))]),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).rejects.toThrow('have 1 of 2 required signatures');
+    });
+
+    it('rejects when the rebuilt request does not reproduce the signed commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+
+      // Signed commitment comes from TransactionSummary.deserialize -> 'c' * 64.
+      // Make the binding request derive a different commitment so the check fails.
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        toCommitment: () => ({
+          toHex: () => '0x' + '9'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => customDelta('b2agg', [falconSig('0x' + 'a'.repeat(64))]),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).rejects.toThrow('Custom proposal binding mismatch');
+    });
+
+    it('fails when GUARDIAN does not return an acknowledgment signature', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+
+      const ready = customDelta('b2agg', [falconSig('0x' + 'a'.repeat(64))]);
+
+      // getDeltaProposal
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ready,
+      });
+      // pushDelta returns no ack_sig
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ...ready, ack_sig: null }),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).rejects.toThrow('GUARDIAN did not return acknowledgment signature');
     });
   });
 

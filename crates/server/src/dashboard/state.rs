@@ -19,6 +19,7 @@ use super::util::{cookie_date, correlation_id, random_hex, rate_limit_error};
 use crate::error::{GuardianError, Result};
 use crate::middleware::rate_limit::RateLimitStore;
 use crate::network::NetworkType;
+use crate::secret::session_digest;
 
 #[derive(Clone, Debug)]
 pub struct DashboardState {
@@ -26,7 +27,7 @@ pub struct DashboardState {
     allowlist_source: AllowlistSource,
     allowlist: Arc<RwLock<OperatorAllowlist>>,
     challenges: Arc<Mutex<HashMap<String, Vec<PendingChallenge>>>>,
-    sessions: Arc<Mutex<HashMap<String, OperatorSessionRecord>>>,
+    sessions: Arc<Mutex<HashMap<[u8; 32], OperatorSessionRecord>>>,
     commitment_rate_limits: RateLimitStore,
     cursor_secret: CursorSecret,
     started_at: DateTime<Utc>,
@@ -258,11 +259,12 @@ impl DashboardState {
         let operator_identity = operator.clone();
         let token = random_hex::<32>();
         let cookie_header = self.session_cookie_header(&token, issued_at, expires_at);
+        let session_key = session_digest(&token);
 
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
         sessions.insert(
-            token,
+            session_key,
             OperatorSessionRecord {
                 operator: operator_identity.clone(),
                 issued_at,
@@ -293,7 +295,8 @@ impl DashboardState {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
 
-        let session = sessions.get(token).cloned().ok_or_else(|| {
+        let session_key = session_digest(token);
+        let session = sessions.get(&session_key).cloned().ok_or_else(|| {
             tracing::warn!(
                 auth_event = "session_rejected",
                 reason = "missing_or_expired",
@@ -312,7 +315,7 @@ impl DashboardState {
             .lookup_allowlisted_operator(&session.operator.commitment)
             .await
         else {
-            sessions.remove(token);
+            sessions.remove(&session_key);
             tracing::warn!(
                 auth_event = "session_rejected",
                 operator_id = %session.operator.operator_id,
@@ -331,7 +334,7 @@ impl DashboardState {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| session.expires_at > now);
         if let Some(token) = token
-            && let Some(session) = sessions.remove(token)
+            && let Some(session) = sessions.remove(&session_digest(token))
         {
             tracing::info!(
                 auth_event = "logout",
@@ -345,30 +348,23 @@ impl DashboardState {
     fn from_allowlist_source(
         allowlist_source: AllowlistSource,
         allowlist: OperatorAllowlist,
-        config: DashboardConfig,
+        mut config: DashboardConfig,
     ) -> std::result::Result<Self, String> {
         tracing::info!(
             auth_event = "allowlist_loaded",
             operator_count = allowlist.len(),
             "Operator allowlist loaded"
         );
-        let cursor_secret = match config.cursor_secret_hex() {
-            Some(hex) => CursorSecret::from_hex(hex).map_err(|e| {
-                format!(
-                    "GUARDIAN_DASHBOARD_CURSOR_SECRET must be 32 hex-encoded bytes (64 chars): {e}"
-                )
-            })?,
-            None => {
-                if !cfg!(test) {
-                    tracing::warn!(
-                        "dashboard cursor secret not configured; generating ephemeral per-process \
-                         secret. Multi-replica deployments must set \
-                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 32-byte hex value."
-                    );
-                }
-                CursorSecret::generate()
+        let cursor_secret = config.take_cursor_secret().unwrap_or_else(|| {
+            if !cfg!(test) {
+                tracing::warn!(
+                    "dashboard cursor secret not configured; generating ephemeral per-process \
+                     secret. Multi-replica deployments must set \
+                     GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 32-byte hex value."
+                );
             }
-        };
+            CursorSecret::generate()
+        });
         Ok(Self {
             commitment_rate_limits: RateLimitStore::new(config.commitment_rate_limit.clone()),
             config,
@@ -508,6 +504,21 @@ mod tests {
     use crate::testing::helpers::TestSigner;
 
     static ENV_LOCK: LazyLock<TokioMutex<()>> = LazyLock::new(|| TokioMutex::new(()));
+
+    /// Pull the bare token out of a `Set-Cookie` header of the form
+    /// `name=token; HttpOnly; ...`. Used by tests that need to replay a
+    /// session token after the digest-keyed storage shape stopped exposing
+    /// raw tokens in the session map.
+    fn parse_token_from_cookie(cookie_header: &str) -> String {
+        let value = cookie_header
+            .split(';')
+            .next()
+            .expect("non-empty cookie header");
+        value
+            .split_once('=')
+            .map(|(_, token)| token.to_string())
+            .expect("cookie has name=value")
+    }
 
     struct EnvVarGuard {
         key: &'static str,
@@ -649,19 +660,11 @@ mod tests {
             .expect("first challenge should succeed");
         let signature_one = operator_one
             .sign_word(Word::from_hex(&challenge_one.signing_digest).expect("digest should parse"));
-        state
+        let session_one = state
             .verify(&operator_one.commitment_hex, &signature_one, now)
             .await
             .expect("first verify should succeed");
-
-        let original_token = {
-            let sessions = state.sessions.lock().await;
-            sessions
-                .keys()
-                .next()
-                .expect("a session token should exist")
-                .clone()
-        };
+        let original_token = parse_token_from_cookie(&session_one.cookie_header);
 
         write_operator_public_keys_file(&path, &[&operator_two.pubkey_hex]);
 
@@ -741,5 +744,63 @@ mod tests {
         );
 
         fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn session_lookup_round_trips_via_digest() {
+        let operator = TestSigner::new();
+        let state = DashboardState::for_tests(vec![(
+            "operator-1".to_string(),
+            operator.commitment_hex.clone(),
+        )]);
+        let now = Utc::now();
+        let challenge = state
+            .issue_challenge(&operator.commitment_hex, now)
+            .await
+            .expect("challenge");
+        let signature =
+            operator.sign_word(Word::from_hex(&challenge.signing_digest).expect("digest"));
+        let session = state
+            .verify(&operator.commitment_hex, &signature, now)
+            .await
+            .expect("verify");
+        let token = parse_token_from_cookie(&session.cookie_header);
+
+        state
+            .authenticate_session(&token, now)
+            .await
+            .expect("session lookup succeeds with original token");
+
+        let mismatched = format!("{token}deadbeef");
+        assert!(state.authenticate_session(&mismatched, now).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn session_map_never_holds_plaintext_token() {
+        let operator = TestSigner::new();
+        let state = DashboardState::for_tests(vec![(
+            "operator-1".to_string(),
+            operator.commitment_hex.clone(),
+        )]);
+        let now = Utc::now();
+        let challenge = state
+            .issue_challenge(&operator.commitment_hex, now)
+            .await
+            .expect("challenge");
+        let signature =
+            operator.sign_word(Word::from_hex(&challenge.signing_digest).expect("digest"));
+        let session = state
+            .verify(&operator.commitment_hex, &signature, now)
+            .await
+            .expect("verify");
+        let token = parse_token_from_cookie(&session.cookie_header);
+
+        let sessions = state.sessions.lock().await;
+        let only_key = sessions.keys().next().expect("session exists");
+        assert_ne!(
+            only_key.as_slice(),
+            token.as_bytes(),
+            "map key must be a digest, not the plaintext token"
+        );
     }
 }

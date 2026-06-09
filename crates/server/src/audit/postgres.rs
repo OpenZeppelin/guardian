@@ -261,12 +261,15 @@ mod tests {
         use diesel::QueryDsl;
         use diesel_async::RunQueryDsl;
 
-        let database_url = std::env::var("DATABASE_URL")
-            .expect("DATABASE_URL must be set; this test is marked #[ignore] by default");
-        crate::storage::postgres::run_migrations(&database_url)
+        let database_url = crate::secret::CredentialUrl::new(
+            std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL must be set; this test is marked #[ignore] by default"),
+        );
+        let raw_url = database_url.expose_secret();
+        crate::storage::postgres::run_migrations(raw_url)
             .await
             .expect("migrations run");
-        let pool = build_postgres_pool_lazy(&database_url, 1).expect("pool builds");
+        let pool = build_postgres_pool_lazy(raw_url, 1).expect("pool builds");
         // Sanity: prove the pool is reachable; if not, abort early
         // with a clear error rather than a confusing trigger failure.
         let _ = pool

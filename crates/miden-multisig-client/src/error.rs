@@ -82,9 +82,16 @@ pub enum MultisigError {
     #[error("transaction executed successfully when failure was expected")]
     UnexpectedSuccess,
 
-    /// Unknown transaction type encountered during parsing.
+    /// Retained for backward compatibility; no longer produced. Unmodeled
+    /// proposal types now parse into `TransactionType::Custom` (issue #266), and
+    /// build/execute failures surface as `UnsupportedTransactionType`.
     #[error("unknown transaction type: {0}")]
     UnknownTransactionType(String),
+
+    /// A custom/unmodeled proposal type cannot be built or executed by the
+    /// generic SDK (issue #266). It can still be parsed, signed, and exported.
+    #[error("unsupported transaction type for this operation: {0}")]
+    UnsupportedTransactionType(String),
 
     /// Invalid filter configuration.
     #[error("invalid filter: {0}")]
@@ -128,6 +135,7 @@ impl MultisigError {
             }
             Self::ConsumeNotesMetadataOversize { .. } => Some("consume_notes_metadata_oversize"),
             Self::LegacyConsumeNotesNoteMissing { .. } => Some("consume_notes_legacy_note_missing"),
+            Self::UnsupportedTransactionType(_) => Some("unsupported_transaction_type"),
             _ => None,
         }
     }

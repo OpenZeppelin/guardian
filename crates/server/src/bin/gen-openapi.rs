@@ -24,6 +24,8 @@ fn specs() -> Vec<(&'static str, String)> {
         doc.to_pretty_json()
             .expect("OpenAPI spec must serialize to JSON")
     };
+    // `mut` is only used under the `evm` feature; without it the vec is final.
+    #[cfg_attr(not(feature = "evm"), allow(unused_mut))]
     let mut out = vec![
         ("openapi.json", json(server::openapi::openapi())),
         (
