@@ -16,11 +16,15 @@ use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use futures_util::FutureExt;
+use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use rustls::{
+    CertificateError, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
+};
 use std::sync::{Arc, Once};
 use tokio_postgres_rustls::MakeRustlsConnect;
+use url::Url;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -57,8 +61,226 @@ impl PostgresService {
     }
 }
 
-fn database_url_requires_tls(database_url: &str) -> bool {
-    database_url.contains("sslmode=require")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifyLevel {
+    Ca,
+    Full,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TlsPlan {
+    Disable,
+    EncryptOnly,
+    Verify { level: VerifyLevel, ca_path: String },
+}
+
+fn single_query_value(url: &Url, key: &str) -> Result<Option<String>, String> {
+    let mut found: Option<String> = None;
+    for (k, v) in url.query_pairs() {
+        if k == key {
+            if found.is_some() {
+                return Err(format!("Duplicate '{key}' in DATABASE_URL"));
+            }
+            found = Some(v.into_owned());
+        }
+    }
+    Ok(found)
+}
+
+fn parse_tls_plan(database_url: &str) -> Result<TlsPlan, String> {
+    let url = Url::parse(database_url).map_err(|err| {
+        format!(
+            "DATABASE_URL must be a postgres:// or postgresql:// URL \
+             (libpq keyword/value strings are not supported): {err}"
+        )
+    })?;
+
+    match url.scheme() {
+        "postgres" | "postgresql" => {}
+        other => {
+            return Err(format!(
+                "Unsupported DATABASE_URL scheme '{other}'; expected postgres:// or postgresql://"
+            ));
+        }
+    }
+
+    if url.host_str().is_some_and(|host| host.contains(',')) {
+        return Err("Multi-host DATABASE_URL is not supported".to_string());
+    }
+
+    let sslmode = single_query_value(&url, "sslmode")?;
+    let sslrootcert = single_query_value(&url, "sslrootcert")?;
+
+    if let Some(path) = sslrootcert.as_deref() {
+        if path.is_empty() {
+            return Err("sslrootcert is set but empty; provide a CA bundle file path".to_string());
+        }
+        if path == "system" {
+            return Err(
+                "sslrootcert=system (host trust store) is not supported; provide an explicit CA bundle file"
+                    .to_string(),
+            );
+        }
+    }
+
+    let plan = match sslmode.as_deref() {
+        None | Some("disable") => TlsPlan::Disable,
+        Some("allow") | Some("prefer") => {
+            return Err(
+                "sslmode 'allow'/'prefer' is not supported (would allow plaintext fallback); use disable, require, verify-ca, or verify-full"
+                    .to_string(),
+            );
+        }
+        Some("require") => match sslrootcert {
+            Some(ca_path) => TlsPlan::Verify {
+                level: VerifyLevel::Ca,
+                ca_path,
+            },
+            None => TlsPlan::EncryptOnly,
+        },
+        Some("verify-ca") => match sslrootcert {
+            Some(ca_path) => TlsPlan::Verify {
+                level: VerifyLevel::Ca,
+                ca_path,
+            },
+            None => {
+                return Err("sslmode=verify-ca requires sslrootcert=<CA bundle path>".to_string());
+            }
+        },
+        Some("verify-full") => match sslrootcert {
+            Some(ca_path) => TlsPlan::Verify {
+                level: VerifyLevel::Full,
+                ca_path,
+            },
+            None => {
+                return Err("sslmode=verify-full requires sslrootcert=<CA bundle path>".to_string());
+            }
+        },
+        Some(other) => return Err(format!("Unrecognized sslmode '{other}'")),
+    };
+
+    Ok(plan)
+}
+
+fn rebuild_url(
+    database_url: &str,
+    sslmode: &str,
+    sslrootcert: Option<&str>,
+) -> Result<String, String> {
+    let mut url =
+        Url::parse(database_url).map_err(|error| format!("Invalid DATABASE_URL: {error}"))?;
+    let preserved: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "sslmode" && key != "sslrootcert")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.clear();
+        for (key, value) in &preserved {
+            pairs.append_pair(key, value);
+        }
+        pairs.append_pair("sslmode", sslmode);
+        if let Some(path) = sslrootcert {
+            pairs.append_pair("sslrootcert", path);
+        }
+    }
+    Ok(url.into())
+}
+
+fn normalized_sync_url(database_url: &str, plan: &TlsPlan) -> Result<String, String> {
+    match plan {
+        TlsPlan::Disable => rebuild_url(database_url, "disable", None),
+        TlsPlan::EncryptOnly => rebuild_url(database_url, "require", None),
+        TlsPlan::Verify {
+            level: VerifyLevel::Ca,
+            ca_path,
+        } => rebuild_url(database_url, "verify-ca", Some(ca_path)),
+        TlsPlan::Verify {
+            level: VerifyLevel::Full,
+            ca_path,
+        } => rebuild_url(database_url, "verify-full", Some(ca_path)),
+    }
+}
+
+fn sanitized_async_url(database_url: &str, plan: &TlsPlan) -> Result<String, String> {
+    match plan {
+        TlsPlan::Disable => rebuild_url(database_url, "disable", None),
+        _ => rebuild_url(database_url, "require", None),
+    }
+}
+
+fn load_root_store(ca_path: &str) -> Result<RootCertStore, String> {
+    let file = std::fs::File::open(ca_path)
+        .map_err(|error| format!("Failed to open CA bundle '{ca_path}': {error}"))?;
+    let mut reader = std::io::BufReader::new(file);
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to parse CA bundle '{ca_path}': {error}"))?;
+    if certs.is_empty() {
+        return Err(format!("CA bundle '{ca_path}' contains no certificates"));
+    }
+    let mut roots = RootCertStore::empty();
+    for cert in certs {
+        roots
+            .add(cert)
+            .map_err(|error| format!("Invalid certificate in CA bundle '{ca_path}': {error}"))?;
+    }
+    Ok(roots)
+}
+
+/// Verifies the certificate chain against the configured roots without
+/// matching the server hostname, implementing `verify-ca` semantics.
+#[derive(Debug)]
+struct ChainOnlyVerifier {
+    inner: Arc<WebPkiServerVerifier>,
+}
+
+impl ServerCertVerifier for ChainOnlyVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
+            Ok(verified) => Ok(verified),
+            Err(rustls::Error::InvalidCertificate(
+                CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. },
+            )) => Ok(ServerCertVerified::assertion()),
+            Err(other) => Err(other),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
 }
 
 fn install_rustls_provider() {
@@ -121,20 +343,54 @@ impl ServerCertVerifier for NoCertificateVerification {
     }
 }
 
-fn build_rustls_config() -> Result<ClientConfig, ConnectionError> {
-    install_rustls_provider();
+fn build_tls_client_config(plan: &TlsPlan) -> Result<Option<Arc<ClientConfig>>, String> {
+    let config = match plan {
+        TlsPlan::Disable => return Ok(None),
+        TlsPlan::EncryptOnly => {
+            install_rustls_provider();
+            ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+                .with_no_client_auth()
+        }
+        TlsPlan::Verify { level, ca_path } => {
+            install_rustls_provider();
+            let roots = load_root_store(ca_path)?;
+            match level {
+                VerifyLevel::Full => ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+                VerifyLevel::Ca => {
+                    let inner = WebPkiServerVerifier::builder(Arc::new(roots))
+                        .build()
+                        .map_err(|error| {
+                            format!("Failed to build certificate verifier: {error}")
+                        })?;
+                    ClientConfig::builder()
+                        .dangerous()
+                        .with_custom_certificate_verifier(Arc::new(ChainOnlyVerifier { inner }))
+                        .with_no_client_auth()
+                }
+            }
+        }
+    };
+    Ok(Some(Arc::new(config)))
+}
 
-    Ok(ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
-        .with_no_client_auth())
+/// Validate the TLS configuration in `DATABASE_URL` and return the
+/// connection string for the synchronous (libpq) migration path. Runs
+/// before any database connection so misconfiguration fails closed.
+pub(crate) fn preflight_tls(database_url: &str) -> Result<String, String> {
+    let plan = parse_tls_plan(database_url)?;
+    build_tls_client_config(&plan)?;
+    normalized_sync_url(database_url, &plan)
 }
 
 async fn establish_tls_connection(
     database_url: &str,
+    config: Arc<ClientConfig>,
 ) -> diesel::ConnectionResult<AsyncPgConnection> {
-    let rustls_config = build_rustls_config()?;
-    let tls = MakeRustlsConnect::new(rustls_config);
+    let tls = MakeRustlsConnect::new((*config).clone());
     let (client, connection) = tokio_postgres::connect(database_url, tls)
         .await
         .map_err(|error| ConnectionError::BadConnection(error.to_string()))?;
@@ -142,26 +398,31 @@ async fn establish_tls_connection(
     AsyncPgConnection::try_from_client_and_connection(client, connection).await
 }
 
-fn postgres_connection_manager(
+fn make_connection_manager(
     database_url: &str,
-) -> AsyncDieselConnectionManager<AsyncPgConnection> {
-    if database_url_requires_tls(database_url) {
-        let mut manager_config = ManagerConfig::default();
-        manager_config.custom_setup = Box::new(|url| establish_tls_connection(url).boxed());
-        AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
-            database_url,
-            manager_config,
-        )
-    } else {
-        AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url)
-    }
+) -> Result<AsyncDieselConnectionManager<AsyncPgConnection>, String> {
+    let plan = parse_tls_plan(database_url)?;
+    let connect_url = sanitized_async_url(database_url, &plan)?;
+    let manager = match build_tls_client_config(&plan)? {
+        None => AsyncDieselConnectionManager::<AsyncPgConnection>::new(connect_url),
+        Some(config) => {
+            let mut manager_config = ManagerConfig::default();
+            manager_config.custom_setup =
+                Box::new(move |url| establish_tls_connection(url, config.clone()).boxed());
+            AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
+                connect_url,
+                manager_config,
+            )
+        }
+    };
+    Ok(manager)
 }
 
 pub(crate) async fn build_postgres_pool(
     database_url: &str,
     pool_max_size: usize,
 ) -> Result<Pool<AsyncPgConnection>, String> {
-    let pool = Pool::builder(postgres_connection_manager(database_url))
+    let pool = Pool::builder(make_connection_manager(database_url)?)
         .max_size(pool_max_size)
         .build()
         .map_err(|error| format!("Failed to create connection pool: {error}"))?;
@@ -183,7 +444,7 @@ pub(crate) fn build_postgres_pool_lazy(
     database_url: &str,
     pool_max_size: usize,
 ) -> Result<Pool<AsyncPgConnection>, String> {
-    Pool::builder(postgres_connection_manager(database_url))
+    Pool::builder(make_connection_manager(database_url)?)
         .max_size(pool_max_size)
         .build()
         .map_err(|error| format!("Failed to create connection pool: {error}"))
@@ -1119,18 +1380,516 @@ impl StorageBackend for PostgresService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn detects_sslmode_require() {
-        assert!(database_url_requires_tls(
-            "postgres://guardian:password@example.com:5432/guardian?sslmode=require",
-        ));
+    fn url_with_mode(query: &str) -> String {
+        if query.is_empty() {
+            "postgres://guardian:pw@db.example.com:5432/guardian".to_string()
+        } else {
+            format!("postgres://guardian:pw@db.example.com:5432/guardian?{query}")
+        }
     }
 
     #[test]
-    fn ignores_non_tls_database_urls() {
-        assert!(!database_url_requires_tls(
-            "postgres://guardian:password@localhost:5432/guardian",
-        ));
+    fn absent_sslmode_is_disable() {
+        assert_eq!(
+            parse_tls_plan(&url_with_mode("")).unwrap(),
+            TlsPlan::Disable
+        );
+    }
+
+    #[test]
+    fn explicit_disable_is_disable() {
+        assert_eq!(
+            parse_tls_plan(&url_with_mode("sslmode=disable")).unwrap(),
+            TlsPlan::Disable
+        );
+    }
+
+    #[test]
+    fn require_without_rootcert_is_encrypt_only() {
+        assert_eq!(
+            parse_tls_plan(&url_with_mode("sslmode=require")).unwrap(),
+            TlsPlan::EncryptOnly
+        );
+    }
+
+    #[test]
+    fn require_with_rootcert_promotes_to_verify_ca() {
+        assert_eq!(
+            parse_tls_plan(&url_with_mode("sslmode=require&sslrootcert=/etc/ca.pem")).unwrap(),
+            TlsPlan::Verify {
+                level: VerifyLevel::Ca,
+                ca_path: "/etc/ca.pem".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn verify_ca_with_rootcert() {
+        assert_eq!(
+            parse_tls_plan(&url_with_mode("sslmode=verify-ca&sslrootcert=/etc/ca.pem")).unwrap(),
+            TlsPlan::Verify {
+                level: VerifyLevel::Ca,
+                ca_path: "/etc/ca.pem".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn verify_full_with_rootcert() {
+        assert_eq!(
+            parse_tls_plan(&url_with_mode(
+                "sslmode=verify-full&sslrootcert=/etc/ca.pem"
+            ))
+            .unwrap(),
+            TlsPlan::Verify {
+                level: VerifyLevel::Full,
+                ca_path: "/etc/ca.pem".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn verify_modes_require_rootcert() {
+        assert!(parse_tls_plan(&url_with_mode("sslmode=verify-ca")).is_err());
+        assert!(parse_tls_plan(&url_with_mode("sslmode=verify-full")).is_err());
+    }
+
+    #[test]
+    fn allow_and_prefer_are_rejected() {
+        assert!(parse_tls_plan(&url_with_mode("sslmode=allow")).is_err());
+        assert!(parse_tls_plan(&url_with_mode("sslmode=prefer")).is_err());
+    }
+
+    #[test]
+    fn unknown_sslmode_is_rejected() {
+        assert!(parse_tls_plan(&url_with_mode("sslmode=banana")).is_err());
+    }
+
+    #[test]
+    fn sslrootcert_system_is_rejected() {
+        assert!(parse_tls_plan(&url_with_mode("sslmode=verify-full&sslrootcert=system")).is_err());
+    }
+
+    #[test]
+    fn empty_sslrootcert_is_rejected() {
+        assert!(parse_tls_plan(&url_with_mode("sslmode=verify-full&sslrootcert=")).is_err());
+    }
+
+    #[test]
+    fn duplicate_params_are_rejected() {
+        assert!(parse_tls_plan(&url_with_mode("sslmode=require&sslmode=disable")).is_err());
+        assert!(
+            parse_tls_plan(&url_with_mode(
+                "sslmode=verify-ca&sslrootcert=/a&sslrootcert=/b"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn non_url_dsn_is_rejected() {
+        assert!(parse_tls_plan("host=db.example.com sslmode=require dbname=guardian").is_err());
+    }
+
+    #[test]
+    fn unsupported_scheme_is_rejected() {
+        assert!(parse_tls_plan("mysql://guardian:pw@db.example.com/guardian").is_err());
+    }
+
+    #[test]
+    fn multi_host_is_rejected() {
+        assert!(
+            parse_tls_plan("postgres://guardian:pw@a.example.com,b.example.com/guardian").is_err()
+        );
+    }
+
+    #[test]
+    fn sync_url_normalizes_absent_to_disable() {
+        let plan = parse_tls_plan(&url_with_mode("")).unwrap();
+        let sync = normalized_sync_url(&url_with_mode(""), &plan).unwrap();
+        assert!(sync.contains("sslmode=disable"));
+        assert!(!sync.contains("sslrootcert"));
+    }
+
+    #[test]
+    fn sync_url_keeps_verify_full_and_rootcert() {
+        let raw = url_with_mode("sslmode=verify-full&sslrootcert=/etc/ca.pem");
+        let plan = parse_tls_plan(&raw).unwrap();
+        let sync = normalized_sync_url(&raw, &plan).unwrap();
+        assert!(sync.contains("sslmode=verify-full"));
+        assert!(
+            sync.contains("sslrootcert=%2Fetc%2Fca.pem")
+                || sync.contains("sslrootcert=/etc/ca.pem")
+        );
+    }
+
+    #[test]
+    fn async_url_forces_require_and_drops_rootcert() {
+        let raw = url_with_mode("sslmode=verify-full&sslrootcert=/etc/ca.pem");
+        let plan = parse_tls_plan(&raw).unwrap();
+        let async_url = sanitized_async_url(&raw, &plan).unwrap();
+        assert!(async_url.contains("sslmode=require"));
+        assert!(!async_url.contains("sslrootcert"));
+        assert!(!async_url.contains("verify-full"));
+        assert!(async_url.contains("db.example.com"));
+    }
+
+    #[test]
+    fn async_url_disable_stays_disable() {
+        let raw = url_with_mode("sslmode=disable");
+        let plan = parse_tls_plan(&raw).unwrap();
+        let async_url = sanitized_async_url(&raw, &plan).unwrap();
+        assert!(async_url.contains("sslmode=disable"));
+    }
+
+    #[test]
+    fn both_stacks_agree_for_every_supported_mode() {
+        let cases = [
+            ("", false),
+            ("sslmode=disable", false),
+            ("sslmode=require", true),
+            ("sslmode=require&sslrootcert=/etc/ca.pem", true),
+            ("sslmode=verify-ca&sslrootcert=/etc/ca.pem", true),
+            ("sslmode=verify-full&sslrootcert=/etc/ca.pem", true),
+        ];
+        for (query, tls_expected) in cases {
+            let raw = url_with_mode(query);
+            let plan = parse_tls_plan(&raw).unwrap();
+            let sync = normalized_sync_url(&raw, &plan).unwrap();
+            let async_url = sanitized_async_url(&raw, &plan).unwrap();
+
+            let sync_tls = !sync.contains("sslmode=disable");
+            let async_tls = !async_url.contains("sslmode=disable");
+            assert_eq!(sync_tls, tls_expected, "sync TLS for {query:?}");
+            assert_eq!(async_tls, tls_expected, "async TLS for {query:?}");
+
+            let verifying = matches!(plan, TlsPlan::Verify { .. });
+            assert_eq!(
+                sync.contains("sslrootcert"),
+                verifying,
+                "sync trust anchor for {query:?}"
+            );
+            assert!(
+                !async_url.contains("sslrootcert"),
+                "async strips sslrootcert for {query:?}"
+            );
+            assert!(
+                !async_url.contains("verify-"),
+                "async forces require for {query:?}"
+            );
+
+            if !verifying {
+                assert_eq!(
+                    build_tls_client_config(&plan).unwrap().is_some(),
+                    tls_expected,
+                    "async verifier presence for {query:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preflight_error_does_not_leak_password() {
+        let raw = "postgres://guardian:SUPERSECRET@db.example.com/guardian?sslmode=verify-full&sslrootcert=/nonexistent/ca.pem";
+        let error = preflight_tls(raw).expect_err("missing CA bundle must fail");
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "error leaked password: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_connect_failure_error_is_password_free() {
+        let raw = "postgres://guardian:SUPERSECRET@127.0.0.1:1/guardian?sslmode=require";
+        let error = build_postgres_pool(raw, 1)
+            .await
+            .err()
+            .expect("connection to a closed port must fail");
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "pool error leaked password: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_connect_failure_error_is_password_free() {
+        let raw = "postgres://guardian:SUPERSECRET@127.0.0.1:1/guardian?sslmode=require";
+        let sync_url = preflight_tls(raw).unwrap();
+        let error = run_migrations(&sync_url)
+            .await
+            .expect_err("migration connection to a closed port must fail");
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "migration error leaked password: {error}"
+        );
+    }
+
+    #[test]
+    fn load_root_store_rejects_non_certificate_file() {
+        let dir = std::env::temp_dir().join(format!("guardian_ca_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("not-a-cert.pem");
+        std::fs::write(&path, b"this is not a certificate").unwrap();
+        let result = load_root_store(path.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_root_store_rejects_missing_file() {
+        assert!(load_root_store("/nonexistent/path/ca.pem").is_err());
+    }
+
+    fn test_now() -> UnixTime {
+        UnixTime::since_unix_epoch(std::time::Duration::from_secs(1_900_000_000))
+    }
+
+    fn gen_ca() -> (rcgen::Certificate, rcgen::KeyPair) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2050, 1, 1);
+        let cert = params.self_signed(&key).unwrap();
+        (cert, key)
+    }
+
+    fn gen_leaf(
+        sans: Vec<rcgen::SanType>,
+        common_name: Option<&str>,
+        ca: &rcgen::Certificate,
+        ca_key: &rcgen::KeyPair,
+    ) -> rcgen::Certificate {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = sans;
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2050, 1, 1);
+        if let Some(cn) = common_name {
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, cn);
+        }
+        params.signed_by(&key, ca, ca_key).unwrap()
+    }
+
+    fn dns_san(name: &str) -> rcgen::SanType {
+        rcgen::SanType::DnsName(name.try_into().unwrap())
+    }
+
+    fn roots_from(cas: &[&rcgen::Certificate]) -> RootCertStore {
+        let mut roots = RootCertStore::empty();
+        for ca in cas {
+            roots.add(ca.der().clone()).unwrap();
+        }
+        roots
+    }
+
+    fn full_verifier(roots: RootCertStore) -> Arc<WebPkiServerVerifier> {
+        install_rustls_provider();
+        WebPkiServerVerifier::builder(Arc::new(roots))
+            .build()
+            .unwrap()
+    }
+
+    fn server_name(name: &str) -> ServerName<'static> {
+        ServerName::try_from(name.to_string()).unwrap()
+    }
+
+    #[test]
+    fn verify_full_accepts_matching_dns_san() {
+        let (ca, ca_key) = gen_ca();
+        let leaf = gen_leaf(vec![dns_san("db.example.com")], None, &ca, &ca_key);
+        let verifier = full_verifier(roots_from(&[&ca]));
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("db.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_full_accepts_matching_ip_san() {
+        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 5));
+        let (ca, ca_key) = gen_ca();
+        let leaf = gen_leaf(vec![rcgen::SanType::IpAddress(ip)], None, &ca, &ca_key);
+        let verifier = full_verifier(roots_from(&[&ca]));
+        assert!(
+            verifier
+                .verify_server_cert(leaf.der(), &[], &server_name("10.0.0.5"), &[], test_now())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_full_rejects_hostname_mismatch() {
+        let (ca, ca_key) = gen_ca();
+        let leaf = gen_leaf(vec![dns_san("db.example.com")], None, &ca, &ca_key);
+        let verifier = full_verifier(roots_from(&[&ca]));
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("evil.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_full_rejects_cn_only_cert() {
+        let (ca, ca_key) = gen_ca();
+        let leaf = gen_leaf(vec![], Some("db.example.com"), &ca, &ca_key);
+        let verifier = full_verifier(roots_from(&[&ca]));
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("db.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_full_rejects_expired_certificate() {
+        let (ca, ca_key) = gen_ca();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = vec![dns_san("db.example.com")];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2021, 1, 1);
+        let leaf = params.signed_by(&key, &ca, &ca_key).unwrap();
+        let verifier = full_verifier(roots_from(&[&ca]));
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("db.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_full_rejects_untrusted_issuer() {
+        let (ca, ca_key) = gen_ca();
+        let (other_ca, _) = gen_ca();
+        let leaf = gen_leaf(vec![dns_san("db.example.com")], None, &ca, &ca_key);
+        let verifier = full_verifier(roots_from(&[&other_ca]));
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("db.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_ca_tolerates_hostname_mismatch() {
+        let (ca, ca_key) = gen_ca();
+        let leaf = gen_leaf(vec![dns_san("db.example.com")], None, &ca, &ca_key);
+        let verifier = ChainOnlyVerifier {
+            inner: full_verifier(roots_from(&[&ca])),
+        };
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("totally-different.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_ca_still_rejects_untrusted_issuer() {
+        let (ca, ca_key) = gen_ca();
+        let (other_ca, _) = gen_ca();
+        let leaf = gen_leaf(vec![dns_san("db.example.com")], None, &ca, &ca_key);
+        let verifier = ChainOnlyVerifier {
+            inner: full_verifier(roots_from(&[&other_ca])),
+        };
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf.der(),
+                    &[],
+                    &server_name("db.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn combined_bundle_validates_certs_from_either_root() {
+        let (ca_a, key_a) = gen_ca();
+        let (ca_b, key_b) = gen_ca();
+        let leaf_a = gen_leaf(vec![dns_san("a.example.com")], None, &ca_a, &key_a);
+        let leaf_b = gen_leaf(vec![dns_san("b.example.com")], None, &ca_b, &key_b);
+        let verifier = full_verifier(roots_from(&[&ca_a, &ca_b]));
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf_a.der(),
+                    &[],
+                    &server_name("a.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_ok()
+        );
+        assert!(
+            verifier
+                .verify_server_cert(
+                    leaf_b.der(),
+                    &[],
+                    &server_name("b.example.com"),
+                    &[],
+                    test_now(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn load_root_store_accepts_multi_root_bundle() {
+        let (ca_a, _) = gen_ca();
+        let (ca_b, _) = gen_ca();
+        let dir = std::env::temp_dir().join(format!("guardian_ca_multi_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("combined.pem");
+        std::fs::write(&path, format!("{}{}", ca_a.pem(), ca_b.pem())).unwrap();
+        let result = load_root_store(path.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(result.unwrap().len(), 2);
     }
 
     fn create_test_delta(account_id: &str, nonce: u64) -> DeltaObject {

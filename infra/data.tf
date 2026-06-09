@@ -134,7 +134,12 @@ locals {
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""
   database_endpoint        = local.effective_rds_proxy_route_database_url ? local.database_proxy_endpoint : local.direct_database_endpoint
 
-  database_url = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?sslmode=require"
+  ca_bundle_enabled        = var.rds_ca_bundle_secret_arn != ""
+  ca_bundle_volume_name    = "guardian-db-ca"
+  ca_bundle_mount_dir      = "/etc/guardian/tls"
+  ca_bundle_container_path = "${local.ca_bundle_mount_dir}/rds-combined-ca.pem"
+  database_sslparams       = local.ca_bundle_enabled ? "sslmode=verify-full&sslrootcert=${local.ca_bundle_container_path}" : "sslmode=require"
+  database_url             = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?${local.database_sslparams}"
 
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""

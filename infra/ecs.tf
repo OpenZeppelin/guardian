@@ -43,117 +43,173 @@ resource "aws_ecs_task_definition" "server" {
     operating_system_family = "LINUX"
   }
 
-  container_definitions = jsonencode([
-    {
-      name      = local.server_container_name
-      image     = var.server_image_uri
-      essential = true
+  dynamic "volume" {
+    for_each = local.ca_bundle_enabled ? [1] : []
+    content {
+      name = local.ca_bundle_volume_name
+    }
+  }
 
-      portMappings = [
-        {
-          containerPort = 3000
-          protocol      = "tcp"
-        },
-        {
-          containerPort = 50051
-          protocol      = "tcp"
-        }
-      ]
-
-      environment = concat([
-        {
-          name  = "RUST_LOG"
-          value = "info"
-        },
-        {
-          name  = "GUARDIAN_NETWORK_TYPE"
-          value = var.server_network_type
-        },
-        {
-          name  = "GUARDIAN_ENV"
-          value = var.deployment_stage
-        },
-        {
-          name  = "AWS_REGION"
-          value = var.aws_region
-        },
-        {
-          name  = "GUARDIAN_RATE_LIMIT_ENABLED"
-          value = tostring(local.effective_guardian_rate_limit_enabled)
-        },
-        {
-          name  = "GUARDIAN_RATE_BURST_PER_SEC"
-          value = tostring(local.effective_guardian_rate_burst_per_sec)
-        },
-        {
-          name  = "GUARDIAN_RATE_PER_MIN"
-          value = tostring(local.effective_guardian_rate_per_min)
-        },
-        {
-          name  = "GUARDIAN_DB_POOL_MAX_SIZE"
-          value = tostring(local.effective_guardian_db_pool_max_size)
-        },
-        {
-          name  = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE"
-          value = tostring(local.effective_guardian_metadata_db_pool_max_size)
-        },
-        {
-          name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
-          value = local.operator_public_keys_secret_arn
-        },
-        {
-          name  = "GUARDIAN_ACK_FALCON_SECRET_ID"
-          value = local.ack_falcon_secret_name
-        },
-        {
-          name  = "GUARDIAN_ACK_ECDSA_SECRET_ID"
-          value = local.ack_ecdsa_secret_name
-        }
-        ],
-        var.guardian_cors_allowed_origins != "" ? [
+  container_definitions = jsonencode(concat(
+    local.ca_bundle_enabled ? [
+      {
+        name      = "rds-ca-initializer"
+        image     = var.ca_initializer_image
+        essential = false
+        command = [
+          "sh", "-c",
+          "printf '%s' \"$CA_BUNDLE\" > ${local.ca_bundle_container_path} && chmod 444 ${local.ca_bundle_container_path}"
+        ]
+        secrets = [
           {
-            name  = "GUARDIAN_CORS_ALLOWED_ORIGINS"
-            value = var.guardian_cors_allowed_origins
+            name      = "CA_BUNDLE"
+            valueFrom = var.rds_ca_bundle_secret_arn
           }
-        ] : [],
-        var.guardian_evm_entrypoint_address != "" ? [
+        ]
+        mountPoints = [
           {
-            name  = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS"
-            value = var.guardian_evm_entrypoint_address
+            sourceVolume  = local.ca_bundle_volume_name
+            containerPath = local.ca_bundle_mount_dir
+            readOnly      = false
           }
-        ] : []
-      )
-
-      secrets = concat([
-        {
-          name      = "DATABASE_URL"
-          valueFrom = aws_secretsmanager_secret.database_url.arn
-        }
-        ],
-        local.evm_allowed_chain_ids_secret_arn != "" ? [
-          {
-            name      = "GUARDIAN_EVM_ALLOWED_CHAIN_IDS"
-            valueFrom = local.evm_allowed_chain_ids_secret_arn
+        ]
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-group"         = aws_cloudwatch_log_group.server.name
+            "awslogs-region"        = var.aws_region
+            "awslogs-stream-prefix" = "ca-init"
           }
-        ] : [],
-        local.evm_rpc_urls_secret_arn != "" ? [
-          {
-            name      = "GUARDIAN_EVM_RPC_URLS"
-            valueFrom = local.evm_rpc_urls_secret_arn
-          }
-        ] : []
-      )
-
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.server.name
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "ecs"
         }
       }
-    }
-  ])
+    ] : [],
+    [
+      {
+        name      = local.server_container_name
+        image     = var.server_image_uri
+        essential = true
+
+        mountPoints = local.ca_bundle_enabled ? [
+          {
+            sourceVolume  = local.ca_bundle_volume_name
+            containerPath = local.ca_bundle_mount_dir
+            readOnly      = true
+          }
+        ] : []
+
+        dependsOn = local.ca_bundle_enabled ? [
+          {
+            containerName = "rds-ca-initializer"
+            condition     = "SUCCESS"
+          }
+        ] : []
+
+        portMappings = [
+          {
+            containerPort = 3000
+            protocol      = "tcp"
+          },
+          {
+            containerPort = 50051
+            protocol      = "tcp"
+          }
+        ]
+
+        environment = concat([
+          {
+            name  = "RUST_LOG"
+            value = "info"
+          },
+          {
+            name  = "GUARDIAN_NETWORK_TYPE"
+            value = var.server_network_type
+          },
+          {
+            name  = "GUARDIAN_ENV"
+            value = var.deployment_stage
+          },
+          {
+            name  = "AWS_REGION"
+            value = var.aws_region
+          },
+          {
+            name  = "GUARDIAN_RATE_LIMIT_ENABLED"
+            value = tostring(local.effective_guardian_rate_limit_enabled)
+          },
+          {
+            name  = "GUARDIAN_RATE_BURST_PER_SEC"
+            value = tostring(local.effective_guardian_rate_burst_per_sec)
+          },
+          {
+            name  = "GUARDIAN_RATE_PER_MIN"
+            value = tostring(local.effective_guardian_rate_per_min)
+          },
+          {
+            name  = "GUARDIAN_DB_POOL_MAX_SIZE"
+            value = tostring(local.effective_guardian_db_pool_max_size)
+          },
+          {
+            name  = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE"
+            value = tostring(local.effective_guardian_metadata_db_pool_max_size)
+          },
+          {
+            name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
+            value = local.operator_public_keys_secret_arn
+          },
+          {
+            name  = "GUARDIAN_ACK_FALCON_SECRET_ID"
+            value = local.ack_falcon_secret_name
+          },
+          {
+            name  = "GUARDIAN_ACK_ECDSA_SECRET_ID"
+            value = local.ack_ecdsa_secret_name
+          }
+          ],
+          var.guardian_cors_allowed_origins != "" ? [
+            {
+              name  = "GUARDIAN_CORS_ALLOWED_ORIGINS"
+              value = var.guardian_cors_allowed_origins
+            }
+          ] : [],
+          var.guardian_evm_entrypoint_address != "" ? [
+            {
+              name  = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS"
+              value = var.guardian_evm_entrypoint_address
+            }
+          ] : []
+        )
+
+        secrets = concat([
+          {
+            name      = "DATABASE_URL"
+            valueFrom = aws_secretsmanager_secret.database_url.arn
+          }
+          ],
+          local.evm_allowed_chain_ids_secret_arn != "" ? [
+            {
+              name      = "GUARDIAN_EVM_ALLOWED_CHAIN_IDS"
+              valueFrom = local.evm_allowed_chain_ids_secret_arn
+            }
+          ] : [],
+          local.evm_rpc_urls_secret_arn != "" ? [
+            {
+              name      = "GUARDIAN_EVM_RPC_URLS"
+              valueFrom = local.evm_rpc_urls_secret_arn
+            }
+          ] : []
+        )
+
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-group"         = aws_cloudwatch_log_group.server.name
+            "awslogs-region"        = var.aws_region
+            "awslogs-stream-prefix" = "ecs"
+          }
+        }
+      }
+    ]
+  ))
 }
 
 # Server ECS service
