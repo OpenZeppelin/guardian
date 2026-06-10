@@ -1,0 +1,80 @@
+# Guardian server + the Miden Dashboard UI (0xMiden/guardian-dashboard) in one
+# self-hosted stack:
+#
+#   - postgres:  state and metadata backend. The published Guardian image is
+#                built with the `postgres` feature, so a database is required.
+#   - server:    the published Guardian image, with a file-based operator
+#                allowlist and a local keystore for the (in-memory) ACK signer.
+#   - dashboard: the Next.js dashboard run from a source clone via the stock
+#                `node` image (the dashboard ships no image of its own).
+#
+# Run from this directory:
+#   cp .env.example .env                 # then fill in the values
+#   cp operators.example.json operators.json
+#   docker compose up
+#
+# Compose auto-loads .env from this directory for both ${VAR} interpolation and
+# each service's runtime config (env_file). Walkthrough: ./README.md
+# Full server config reference: ../../CONFIGURATION.md
+#
+# The dashboard's Next.js backend (not the browser) calls the Guardian server,
+# so it reaches it over the Compose network at http://server:3000 and the
+# server needs no CORS configuration for this topology.
+
+services:
+  server:
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    pull_policy: always
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+      - ./operators.json:/etc/guardian/operators.json:ro
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_NETWORK_TYPE=${GUARDIAN_NETWORK_TYPE:-MidenDevnet}
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/etc/guardian/operators.json
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    image: node:22
+    working_dir: /app
+    depends_on:
+      - server
+    ports:
+      - "3001:3001"
+    volumes:
+      - ${GUARDIAN_DASHBOARD_PATH:-./guardian-dashboard}:/app
+      - dashboard-node-modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- -p 3001 -H 0.0.0.0"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY in .env}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY in .env}
+      - GUARDIAN_ENDPOINTS=${GUARDIAN_ENDPOINTS:?set GUARDIAN_ENDPOINTS in .env}
+
+volumes:
+  guardian-postgres:
+  guardian-keystore:
+  dashboard-node-modules:
