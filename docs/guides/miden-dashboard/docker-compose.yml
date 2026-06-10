@@ -36,7 +36,7 @@ services:
       - ./operators.json:/etc/guardian/operators.json:ro
     environment:
       - RUST_LOG=info
-      - GUARDIAN_NETWORK_TYPE=${GUARDIAN_NETWORK_TYPE:-MidenDevnet}
+      - GUARDIAN_NETWORK_TYPE=${GUARDIAN_NETWORK_TYPE:-MidenTestnet}
       - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
       - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/etc/guardian/operators.json
