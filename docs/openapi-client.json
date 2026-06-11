@@ -15,7 +15,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Configure (register) an account with its authorization set and\ninitial state. Requires a signed `X-Guardian-*` auth header.",
+        "summary": "Configure (register) an account with its authorization set and\ninitial state. Requires the signed `x-pubkey` / `x-signature` /\n`x-timestamp` auth headers.",
         "operationId": "configure",
         "requestBody": {
           "content": {

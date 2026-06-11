@@ -120,7 +120,8 @@ pub struct ErrorResponse {
 }
 
 /// Configure (register) an account with its authorization set and
-/// initial state. Requires a signed `X-Guardian-*` auth header.
+/// initial state. Requires the signed `x-pubkey` / `x-signature` /
+/// `x-timestamp` auth headers.
 #[utoipa::path(
     post,
     path = "/configure",
