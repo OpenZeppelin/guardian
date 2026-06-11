@@ -53,7 +53,7 @@ pub const MAX_LIMIT: u32 = 500;
 
 /// Standard cursor-pagination envelope returned by every paginated
 /// endpoint. `next_cursor` is `None` at end of list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PagedResult<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,

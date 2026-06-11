@@ -1,0 +1,1778 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Guardian Client API",
+    "description": "Client-facing Guardian HTTP API consumed by SDKs and packages.",
+    "license": {
+      "name": "AGPL-3.0",
+      "identifier": "AGPL-3.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/configure": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Configure (register) an account with its authorization set and\ninitial state. Requires the signed `x-pubkey` / `x-signature` /\n`x-timestamp` auth headers.",
+        "operationId": "configure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Account configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigureResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigureResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Fetch the delta for an account at a specific nonce.",
+        "operationId": "get_delta",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Delta found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeltaObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Delta not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Push a signed state delta for a single-key account. The request\nbody is the JSON-encoded [`DeltaObject`] to commit.",
+        "operationId": "push_delta",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeltaObject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Delta accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeltaObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid delta payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicting pending delta/proposal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/proposal": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "List all in-flight multisig proposals for an account.",
+        "operationId": "get_delta_proposals",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending proposals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Add a cosigner signature to an existing multisig proposal. When the\nsignature threshold is reached the proposal is promoted to a delta.",
+        "operationId": "sign_delta_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signature accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeltaObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Proposal already signed by this signer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Create a new multisig delta proposal for cosigners to sign.",
+        "operationId": "push_delta_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeltaProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Proposal created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeltaProposalResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid proposal payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicting / too many pending proposals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/proposal/single": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Fetch a single multisig proposal by its commitment.",
+        "operationId": "get_delta_proposal",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commitment",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposal found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeltaObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/since": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Fetch the merged delta accumulating all changes for an account\nsince (and excluding) the given nonce.",
+        "operationId": "get_delta_since",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Merged delta",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeltaObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No deltas found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/pubkey": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Return the Guardian acknowledgement (ACK) public key / commitment\nfor the requested signature scheme (`falcon` default, or `ecdsa`).",
+        "operationId": "get_pubkey",
+        "parameters": [
+          {
+            "name": "scheme",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ACK public key / commitment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PubkeyResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/state": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Fetch the latest canonical state object for an account.",
+        "operationId": "get_state",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current account state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "State not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/state/lookup": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "`GET /state/lookup?key_commitment=<hex>` — resolves a Miden public-key\ncommitment to the set of account IDs whose authorization set contains it.\nAuthentication is by proof-of-possession against the queried commitment.",
+        "operationId": "lookup",
+        "parameters": [
+          {
+            "name": "key_commitment",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Accounts whose authorization set contains the commitment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LookupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed key commitment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiErrorResponse": {
+        "type": "object",
+        "description": "Wire shape of a Guardian error response body. Mirrors the envelope\nproduced by [`crate::error::GuardianError`]'s `IntoResponse` impl.\nDocumented as the body of every non-2xx response. Optional fields\nare populated only for the error codes that carry them.",
+        "required": [
+          "success",
+          "code",
+          "error"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable, machine-readable error code (e.g. `account_not_found`)."
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable error message."
+          },
+          "missing_permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Lex-sorted permissions the operator lacks. Present only for\n`GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`."
+          },
+          "paused_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 pause timestamp. Present only for\n`GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "retry_after_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds to wait before retrying. Present only for\n`rate_limit_exceeded`.",
+            "minimum": 0
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Always `false` for error responses."
+          }
+        }
+      },
+      "AssetKind": {
+        "type": "string",
+        "enum": [
+          "fungible",
+          "non_fungible"
+        ]
+      },
+      "AssetSummary": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "kind"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Signed decimal magnitude (e.g., `\"+100\"`, `\"-50\"`) for fungible\nholdings. Absent for non-fungible holdings where the detail\nview uses `added` / `removed` lists instead."
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssetKind"
+          }
+        }
+      },
+      "Auth": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Miden Falcon RPO signature scheme",
+            "required": [
+              "MidenFalconRpo"
+            ],
+            "properties": {
+              "MidenFalconRpo": {
+                "type": "object",
+                "description": "Miden Falcon RPO signature scheme",
+                "required": [
+                  "cosigner_commitments"
+                ],
+                "properties": {
+                  "cosigner_commitments": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Miden ECDSA secp256k1 signature scheme",
+            "required": [
+              "MidenEcdsa"
+            ],
+            "properties": {
+              "MidenEcdsa": {
+                "type": "object",
+                "description": "Miden ECDSA secp256k1 signature scheme",
+                "required": [
+                  "cosigner_commitments"
+                ],
+                "properties": {
+                  "cosigner_commitments": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "EVM ECDSA account signer snapshot",
+            "required": [
+              "EvmEcdsa"
+            ],
+            "properties": {
+              "EvmEcdsa": {
+                "type": "object",
+                "description": "EVM ECDSA account signer snapshot",
+                "required": [
+                  "signers"
+                ],
+                "properties": {
+                  "signers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "Authentication and authorization handler\nDefines which signature scheme to use and handles verification\nEach variant contains auth-specific authorization data"
+      },
+      "ConfigureRequest": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "auth",
+          "initial_state"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "auth": {
+            "$ref": "#/components/schemas/Auth"
+          },
+          "initial_state": {
+            "type": "object",
+            "description": "Opaque, schema-free JSON blob describing the initial account state."
+          },
+          "network_config": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NetworkConfig"
+              }
+            ]
+          }
+        }
+      },
+      "ConfigureResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
+        "properties": {
+          "ack_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ack_pubkey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CosignerSignature": {
+        "type": "object",
+        "description": "Cosigner signature entry for delta proposals",
+        "required": [
+          "signature",
+          "timestamp",
+          "signer_id"
+        ],
+        "properties": {
+          "signature": {
+            "$ref": "#/components/schemas/ProposalSignature"
+          },
+          "signer_id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "CounterpartyDirection": {
+        "type": "string",
+        "enum": [
+          "out",
+          "in"
+        ]
+      },
+      "CounterpartySummary": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "direction"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/CounterpartyDirection"
+          }
+        }
+      },
+      "DashboardDeltaCategory": {
+        "type": "string",
+        "description": "Closed, stable enumeration of action categories. Adding a value is\na wire-contract change.",
+        "enum": [
+          "asset_transfer",
+          "note_consumption",
+          "note_creation",
+          "account_storage_change",
+          "guardian_switch",
+          "custom"
+        ]
+      },
+      "DeltaMetadata": {
+        "type": "object",
+        "description": "Persisted activity metadata for a canonical delta. Stored as JSONB\nin the `deltas.metadata` column. `None` for EVM deltas and any\nhistorical row never reprocessed by [`build_metadata`].",
+        "required": [
+          "category"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetSummary"
+            },
+            "description": "Assets surfaced in deterministic order. Empty when the\ntransaction does not move an asset or extraction failed.\nMulti-asset transactions populate every extractable entry so\nclients do not show a misleading single-asset summary."
+          },
+          "category": {
+            "$ref": "#/components/schemas/DashboardDeltaCategory"
+          },
+          "counterparty": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CounterpartySummary",
+                "description": "Counterparty of the transaction. `None` for transactions\nwithout a clear sender/recipient (admin ops, swaps, etc.)."
+              }
+            ]
+          },
+          "note_counts": {
+            "$ref": "#/components/schemas/NoteCounts"
+          },
+          "proposal": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProposalMetadata",
+                "description": "Multisig proposal intent lifted from the matching\n`delta_proposals` row at push time. Absent for single-key\n`push_delta`, EVM deltas, and pushes where no proposal matched."
+              }
+            ]
+          }
+        }
+      },
+      "DeltaObject": {
+        "type": "object",
+        "description": "Delta object",
+        "required": [
+          "account_id",
+          "nonce",
+          "prev_commitment",
+          "delta_payload",
+          "ack_sig",
+          "ack_pubkey",
+          "ack_scheme",
+          "status"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "ack_pubkey": {
+            "type": "string"
+          },
+          "ack_scheme": {
+            "type": "string"
+          },
+          "ack_sig": {
+            "type": "string"
+          },
+          "delta_payload": {
+            "type": "object",
+            "description": "Opaque, schema-free JSON payload describing the state delta."
+          },
+          "metadata": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeltaMetadata",
+                "description": "Typed dashboard metadata derived at push time. Stored as JSONB\nin the `deltas.metadata` column. `None` for EVM deltas and any\nhistorical row never reprocessed by the push-time pipeline."
+              }
+            ]
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "prev_commitment": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeltaStatus"
+          }
+        }
+      },
+      "DeltaProposalRequest": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "nonce",
+          "delta_payload"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "delta_payload": {
+            "type": "object",
+            "description": "Opaque, schema-free multisig proposal payload."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DeltaProposalResponse": {
+        "type": "object",
+        "required": [
+          "delta",
+          "commitment"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/DeltaObject"
+          }
+        }
+      },
+      "DeltaStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "proposer_id",
+              "cosigner_sigs",
+              "status"
+            ],
+            "properties": {
+              "cosigner_sigs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CosignerSignature"
+                }
+              },
+              "proposer_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "status"
+            ],
+            "properties": {
+              "retry_count": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "candidate"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "canonical"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "discarded"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Delta status state machine"
+      },
+      "LookupAccount": {
+        "type": "object",
+        "description": "Single match in a lookup response. Wraps `account_id` so the response shape\ncan be extended in a forward-compatible way (e.g. adding role tags or\nper-account metadata) without breaking existing clients.",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          }
+        }
+      },
+      "LookupResponse": {
+        "type": "object",
+        "required": [
+          "accounts"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LookupAccount"
+            }
+          }
+        }
+      },
+      "MidenNetworkType": {
+        "type": "string",
+        "enum": [
+          "local",
+          "devnet",
+          "testnet"
+        ]
+      },
+      "NetworkConfig": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "network_type",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "miden"
+                ]
+              },
+              "network_type": {
+                "$ref": "#/components/schemas/MidenNetworkType"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "chain_id",
+              "account_address",
+              "multisig_validator_address",
+              "kind"
+            ],
+            "properties": {
+              "account_address": {
+                "type": "string"
+              },
+              "chain_id": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "evm"
+                ]
+              },
+              "multisig_validator_address": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "NoteCounts": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "output": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ProposalMetadata": {
+        "type": "object",
+        "description": "Operator-stated intent lifted from a matching proposal. Mirrors\n`ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`\nfield-for-field.",
+        "required": [
+          "proposal_type"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consume_notes_metadata_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "consume_notes_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "faucet_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "new_guardian_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "new_guardian_pubkey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "proposal_type": {
+            "type": "string",
+            "description": "One of the validated multisig proposal types (`add_signer`,\n`remove_signer`, `change_threshold`, `update_procedure_threshold`,\n`p2id`, `consume_notes`, `switch_guardian`). Free string so new\ntypes from the multisig client don't force a wire-contract bump\nhere — `category` is the closed enum."
+          },
+          "recipient_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required_signatures": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "salt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signer_commitments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target_procedure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_threshold": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ProposalSignature": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "signature",
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "enum": [
+                  "falcon"
+                ]
+              },
+              "signature": {
+                "type": "string",
+                "description": "Hex-encoded Falcon signature"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "signature",
+              "scheme"
+            ],
+            "properties": {
+              "public_key": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Hex-encoded ECDSA public key (required for signature preparation)"
+              },
+              "scheme": {
+                "type": "string",
+                "enum": [
+                  "ecdsa"
+                ]
+              },
+              "signature": {
+                "type": "string",
+                "description": "Hex-encoded ECDSA secp256k1 signature"
+              }
+            }
+          }
+        ],
+        "description": "Signature type for delta proposals"
+      },
+      "ProposalsResponse": {
+        "type": "object",
+        "required": [
+          "proposals"
+        ],
+        "properties": {
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeltaObject"
+            }
+          }
+        }
+      },
+      "PubkeyResponse": {
+        "type": "object",
+        "required": [
+          "commitment"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string"
+          },
+          "pubkey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SignProposalRequest": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "commitment",
+          "signature"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "commitment": {
+            "type": "string"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/ProposalSignature"
+          }
+        }
+      },
+      "StateObject": {
+        "type": "object",
+        "description": "Account state object",
+        "required": [
+          "account_id",
+          "state_json",
+          "commitment",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "auth_scheme": {
+            "type": "string"
+          },
+          "commitment": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "state_json": {
+            "type": "object",
+            "description": "Opaque, schema-free JSON blob describing the account state."
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "x-pubkey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-pubkey"
+      },
+      "x-signature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-signature"
+      },
+      "x-timestamp": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-timestamp"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "client",
+      "description": "Client-facing API consumed by SDKs and packages."
+    }
+  ]
+}

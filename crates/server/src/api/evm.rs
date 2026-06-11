@@ -9,46 +9,49 @@ use crate::error::{GuardianError, Result};
 use crate::evm::{EvmProposal, ExecutableEvmProposal};
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ChallengeQuery {
     pub address: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ChallengeResponse {
     pub address: String,
     pub nonce: String,
     pub issued_at: i64,
     pub expires_at: i64,
+    /// EIP-712 typed-data payload the wallet signs to establish a session.
+    #[schema(value_type = Object)]
     pub typed_data: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct VerifySessionRequest {
     pub address: String,
     pub nonce: String,
     pub signature: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct VerifySessionResponse {
     pub address: String,
     pub expires_at: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LogoutResponse {
     pub success: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RegisterAccountRequest {
     pub chain_id: u64,
     pub account_address: String,
     pub multisig_validator_address: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RegisterAccountResponse {
     pub account_id: String,
     pub chain_id: u64,
@@ -58,12 +61,13 @@ pub struct RegisterAccountResponse {
     pub threshold: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AccountQuery {
     pub account_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateProposalRequest {
     pub account_id: String,
     pub user_op_hash: String,
@@ -73,27 +77,38 @@ pub struct CreateProposalRequest {
     pub signature: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ListProposalsResponse {
     pub proposals: Vec<EvmProposal>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ApproveProposalRequest {
     pub account_id: String,
     pub signature: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CancelProposalRequest {
     pub account_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CancelProposalResponse {
     pub success: bool,
 }
 
+/// Issue an EIP-712 session challenge for an EVM wallet address.
+#[utoipa::path(
+    get,
+    path = "/evm/auth/challenge",
+    tag = "evm",
+    params(ChallengeQuery),
+    responses(
+        (status = 200, description = "Challenge issued", body = ChallengeResponse),
+        (status = 400, description = "Invalid address", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn challenge_evm_session(
     State(state): State<AppState>,
     Query(query): Query<ChallengeQuery>,
@@ -112,6 +127,18 @@ pub async fn challenge_evm_session(
     }))
 }
 
+/// Verify a signed EVM session challenge and establish a session
+/// (sets a session cookie on success).
+#[utoipa::path(
+    post,
+    path = "/evm/auth/verify",
+    tag = "evm",
+    request_body = VerifySessionRequest,
+    responses(
+        (status = 200, description = "Session established", body = VerifySessionResponse),
+        (status = 401, description = "Challenge verification failed", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn verify_evm_session(
     State(state): State<AppState>,
     Json(request): Json<VerifySessionRequest>,
@@ -138,6 +165,16 @@ pub async fn verify_evm_session(
     ))
 }
 
+/// Invalidate the current EVM session and clear the session cookie.
+#[utoipa::path(
+    post,
+    path = "/evm/auth/logout",
+    tag = "evm",
+    security(("evm_session" = [])),
+    responses(
+        (status = 200, description = "Session invalidated", body = LogoutResponse),
+    )
+)]
 pub async fn logout_evm_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -154,6 +191,20 @@ pub async fn logout_evm_session(
     ))
 }
 
+/// Register an EVM smart-account with Guardian (requires an EVM session).
+#[utoipa::path(
+    post,
+    path = "/evm/accounts",
+    tag = "evm",
+    security(("evm_session" = [])),
+    request_body = RegisterAccountRequest,
+    responses(
+        (status = 200, description = "Account registered", body = RegisterAccountResponse),
+        (status = 400, description = "Invalid network config", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Session signer not authorized for the account", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn register_evm_account(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -180,6 +231,20 @@ pub async fn register_evm_account(
     }))
 }
 
+/// Create a new EVM multisig proposal (requires an EVM session).
+#[utoipa::path(
+    post,
+    path = "/evm/proposals",
+    tag = "evm",
+    security(("evm_session" = [])),
+    request_body = CreateProposalRequest,
+    responses(
+        (status = 200, description = "Proposal created", body = EvmProposal),
+        (status = 400, description = "Invalid proposal input", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Session signer not authorized for the account", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn create_evm_proposal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -202,6 +267,18 @@ pub async fn create_evm_proposal(
     Ok(Json(proposal))
 }
 
+/// List EVM proposals for an account (requires an EVM session).
+#[utoipa::path(
+    get,
+    path = "/evm/proposals",
+    tag = "evm",
+    security(("evm_session" = [])),
+    params(AccountQuery),
+    responses(
+        (status = 200, description = "Proposals", body = ListProposalsResponse),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_evm_proposals(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -213,6 +290,19 @@ pub async fn list_evm_proposals(
     Ok(Json(ListProposalsResponse { proposals }))
 }
 
+/// Fetch a single EVM proposal by id (requires an EVM session).
+#[utoipa::path(
+    get,
+    path = "/evm/proposals/{proposal_id}",
+    tag = "evm",
+    security(("evm_session" = [])),
+    params(("proposal_id" = String, Path, description = "Proposal identifier"), AccountQuery),
+    responses(
+        (status = 200, description = "Proposal", body = EvmProposal),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_evm_proposal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -230,6 +320,22 @@ pub async fn get_evm_proposal(
     Ok(Json(proposal))
 }
 
+/// Add an approval signature to an EVM proposal (requires an EVM session).
+#[utoipa::path(
+    post,
+    path = "/evm/proposals/{proposal_id}/approve",
+    tag = "evm",
+    security(("evm_session" = [])),
+    params(("proposal_id" = String, Path, description = "Proposal identifier")),
+    request_body = ApproveProposalRequest,
+    responses(
+        (status = 200, description = "Approval recorded", body = EvmProposal),
+        (status = 400, description = "Invalid signature", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Session signer not authorized for the account", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn approve_evm_proposal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -250,6 +356,21 @@ pub async fn approve_evm_proposal(
     Ok(Json(proposal))
 }
 
+/// Fetch the executable (threshold-met) form of an EVM proposal,
+/// ready for on-chain submission (requires an EVM session).
+#[utoipa::path(
+    get,
+    path = "/evm/proposals/{proposal_id}/executable",
+    tag = "evm",
+    security(("evm_session" = [])),
+    params(("proposal_id" = String, Path, description = "Proposal identifier"), AccountQuery),
+    responses(
+        (status = 200, description = "Executable proposal", body = ExecutableEvmProposal),
+        (status = 400, description = "Proposal not yet executable", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_executable_evm_proposal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -267,6 +388,20 @@ pub async fn get_executable_evm_proposal(
     Ok(Json(executable))
 }
 
+/// Cancel an EVM proposal (requires an EVM session).
+#[utoipa::path(
+    post,
+    path = "/evm/proposals/{proposal_id}/cancel",
+    tag = "evm",
+    security(("evm_session" = [])),
+    params(("proposal_id" = String, Path, description = "Proposal identifier")),
+    request_body = CancelProposalRequest,
+    responses(
+        (status = 200, description = "Proposal cancelled", body = CancelProposalResponse),
+        (status = 401, description = "Missing EVM session", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn cancel_evm_proposal(
     State(state): State<AppState>,
     headers: HeaderMap,

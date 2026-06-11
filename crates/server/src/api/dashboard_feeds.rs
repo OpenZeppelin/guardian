@@ -29,7 +29,8 @@ use crate::state::AppState;
 /// per-account proposals, and global proposals. The global deltas
 /// feed adds a `status` filter and uses its own
 /// [`GlobalDeltasQuery`] below.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct FeedQuery {
     #[serde(default)]
     pub limit: Option<String>,
@@ -39,7 +40,8 @@ pub struct FeedQuery {
 
 /// `?include=` query parameter for the per-delta detail endpoint.
 /// Comma-separated list of opt-in features; unknown tokens are ignored.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DeltaDetailQuery {
     #[serde(default)]
     pub include: Option<String>,
@@ -48,7 +50,8 @@ pub struct DeltaDetailQuery {
 /// `?limit=&cursor=&status=` query parameters for the global delta
 /// feed (FR-031..FR-035). The `status` parameter is comma-separated
 /// (e.g. `status=candidate,canonical`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct GlobalDeltasQuery {
     #[serde(default)]
     pub limit: Option<String>,
@@ -62,6 +65,19 @@ pub struct GlobalDeltasQuery {
 /// per-account delta feed paginated newest-first by `nonce DESC`,
 /// surfacing only `candidate` / `canonical` / `discarded` statuses
 /// (pending lives on the proposal queue endpoint).
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts/{account_id}/deltas",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier"), FeedQuery),
+    responses(
+        (status = 200, description = "Per-account delta feed page", body = PagedResult<DashboardDeltaEntry>),
+        (status = 400, description = "Invalid limit or cursor", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_account_deltas_handler(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -83,6 +99,24 @@ pub async fn list_account_deltas_handler(
 /// hex, and other non-decimal inputs are rejected with
 /// [`GuardianError::InvalidInput`]. Unknown account or unknown nonce
 /// both map to `DeltaNotFound` so the wire body is field-level identical.
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts/{account_id}/deltas/{nonce}",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(
+        ("account_id" = String, Path, description = "Account identifier"),
+        ("nonce" = u64, Path, description = "Canonical base-10 delta nonce"),
+        DeltaDetailQuery,
+    ),
+    responses(
+        (status = 200, description = "Decoded delta detail", body = DashboardDeltaDetail),
+        (status = 400, description = "Malformed nonce", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Delta not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Delta data unavailable", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_account_delta_detail_handler(
     State(state): State<AppState>,
     Path((account_id, nonce_str)): Path<(String, String)>,
@@ -147,6 +181,19 @@ fn parse_canonical_nonce(raw: &str) -> Result<u64> {
 /// in-flight multisig proposal queue for one account, paginated
 /// newest-first by `(nonce DESC, commitment DESC)`. Single-key Miden
 /// and EVM accounts always return an empty page per FR-017.
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts/{account_id}/proposals",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier"), FeedQuery),
+    responses(
+        (status = 200, description = "Per-account in-flight proposal queue page", body = PagedResult<DashboardProposalEntry>),
+        (status = 400, description = "Invalid limit or cursor", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_account_proposals_handler(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -168,6 +215,19 @@ pub async fn list_account_proposals_handler(
 /// discarded}`. Pending entries live on the proposal feed.
 ///
 /// Spec reference: `005-operator-dashboard-metrics` US6, FR-031..FR-035.
+#[utoipa::path(
+    get,
+    path = "/dashboard/deltas",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(GlobalDeltasQuery),
+    responses(
+        (status = 200, description = "Cross-account delta feed page", body = PagedResult<DashboardGlobalDeltaEntry>),
+        (status = 400, description = "Invalid limit, cursor, or status filter", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Aggregate degraded (filesystem threshold exceeded)", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_global_deltas_handler(
     State(state): State<AppState>,
     Query(query): Query<GlobalDeltasQuery>,
@@ -189,6 +249,19 @@ pub async fn list_global_deltas_handler(
 /// accounts do not appear in v1 per FR-017.
 ///
 /// Spec reference: `005-operator-dashboard-metrics` US7, FR-035..FR-037.
+#[utoipa::path(
+    get,
+    path = "/dashboard/proposals",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(FeedQuery),
+    responses(
+        (status = 200, description = "Cross-account in-flight proposal feed page", body = PagedResult<DashboardGlobalProposalEntry>),
+        (status = 400, description = "Invalid limit or cursor", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Aggregate degraded (filesystem threshold exceeded)", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_global_proposals_handler(
     State(state): State<AppState>,
     Query(query): Query<FeedQuery>,

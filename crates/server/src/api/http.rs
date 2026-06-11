@@ -14,12 +14,14 @@ use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::{ProposalSignature, SignatureScheme};
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ConfigureRequest {
     pub account_id: String,
     pub auth: Auth,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_config: Option<NetworkConfig>,
+    /// Opaque, schema-free JSON blob describing the initial account state.
+    #[schema(value_type = Object)]
     pub initial_state: serde_json::Value,
 }
 
@@ -38,18 +40,21 @@ impl From<ConfigureRequest> for ConfigureAccountParams {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DeltaQuery {
     pub account_id: String,
     pub nonce: u64,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct StateQuery {
     pub account_id: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct LookupQuery {
     pub key_commitment: String,
 }
@@ -57,35 +62,39 @@ pub struct LookupQuery {
 /// Single match in a lookup response. Wraps `account_id` so the response shape
 /// can be extended in a forward-compatible way (e.g. adding role tags or
 /// per-account metadata) without breaking existing clients.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LookupAccount {
     pub account_id: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LookupResponse {
     pub accounts: Vec<LookupAccount>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ProposalQuery {
     pub account_id: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ProposalItemQuery {
     pub account_id: String,
     pub commitment: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct DeltaProposalRequest {
     pub account_id: String,
     pub nonce: u64,
+    /// Opaque, schema-free multisig proposal payload.
+    #[schema(value_type = Object)]
     pub delta_payload: serde_json::Value,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct SignProposalRequest {
     pub account_id: String,
     pub commitment: String,
@@ -93,7 +102,7 @@ pub struct SignProposalRequest {
 }
 
 // Response types
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ConfigureResponse {
     pub success: bool,
     pub message: String,
@@ -103,13 +112,27 @@ pub struct ConfigureResponse {
     pub code: Option<&'static str>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ErrorResponse {
     pub success: bool,
     pub code: &'static str,
     pub error: String,
 }
 
+/// Configure (register) an account with its authorization set and
+/// initial state. Requires the signed `x-pubkey` / `x-signature` /
+/// `x-timestamp` auth headers.
+#[utoipa::path(
+    post,
+    path = "/configure",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    request_body = ConfigureRequest,
+    responses(
+        (status = 200, description = "Account configured", body = ConfigureResponse),
+        (status = 400, description = "Invalid request", body = ConfigureResponse),
+    )
+)]
 pub async fn configure(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -158,6 +181,21 @@ pub async fn configure(
     }
 }
 
+/// Push a signed state delta for a single-key account. The request
+/// body is the JSON-encoded [`DeltaObject`] to commit.
+#[utoipa::path(
+    post,
+    path = "/delta",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    request_body = DeltaObject,
+    responses(
+        (status = 200, description = "Delta accepted", body = DeltaObject),
+        (status = 400, description = "Invalid delta payload", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting pending delta/proposal", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn push_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -178,6 +216,19 @@ pub async fn push_delta(
     Ok(Json(response.delta))
 }
 
+/// Fetch the delta for an account at a specific nonce.
+#[utoipa::path(
+    get,
+    path = "/delta",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(DeltaQuery),
+    responses(
+        (status = 200, description = "Delta found", body = DeltaObject),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Delta not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_delta(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -196,6 +247,20 @@ pub async fn get_delta(
     Ok(Json(response.delta))
 }
 
+/// Fetch the merged delta accumulating all changes for an account
+/// since (and excluding) the given nonce.
+#[utoipa::path(
+    get,
+    path = "/delta/since",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(DeltaQuery),
+    responses(
+        (status = 200, description = "Merged delta", body = DeltaObject),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "No deltas found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_delta_since(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -214,6 +279,19 @@ pub async fn get_delta_since(
     Ok(Json(response.merged_delta))
 }
 
+/// Fetch the latest canonical state object for an account.
+#[utoipa::path(
+    get,
+    path = "/state",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(StateQuery),
+    responses(
+        (status = 200, description = "Current account state", body = StateObject),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "State not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_state(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -234,6 +312,19 @@ pub async fn get_state(
 /// `GET /state/lookup?key_commitment=<hex>` — resolves a Miden public-key
 /// commitment to the set of account IDs whose authorization set contains it.
 /// Authentication is by proof-of-possession against the queried commitment.
+#[utoipa::path(
+    get,
+    path = "/state/lookup",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(LookupQuery),
+    responses(
+        (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
+        (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn lookup(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -253,29 +344,41 @@ pub async fn lookup(
     }))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PubkeyResponse {
     pub commitment: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ProposalsResponse {
     pub proposals: Vec<DeltaObject>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DeltaProposalResponse {
     pub delta: DeltaObject,
     pub commitment: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PubkeyQuery {
     pub scheme: Option<String>,
 }
 
+/// Return the Guardian acknowledgement (ACK) public key / commitment
+/// for the requested signature scheme (`falcon` default, or `ecdsa`).
+#[utoipa::path(
+    get,
+    path = "/pubkey",
+    tag = "client",
+    params(PubkeyQuery),
+    responses(
+        (status = 200, description = "ACK public key / commitment", body = PubkeyResponse),
+    )
+)]
 pub async fn get_pubkey(
     State(state): State<AppState>,
     Query(query): Query<PubkeyQuery>,
@@ -293,6 +396,20 @@ pub async fn get_pubkey(
     (StatusCode::OK, Json(PubkeyResponse { commitment, pubkey }))
 }
 
+/// Create a new multisig delta proposal for cosigners to sign.
+#[utoipa::path(
+    post,
+    path = "/delta/proposal",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    request_body = DeltaProposalRequest,
+    responses(
+        (status = 200, description = "Proposal created", body = DeltaProposalResponse),
+        (status = 400, description = "Invalid proposal payload", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting / too many pending proposals", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn push_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -315,6 +432,18 @@ pub async fn push_delta_proposal(
     }))
 }
 
+/// List all in-flight multisig proposals for an account.
+#[utoipa::path(
+    get,
+    path = "/delta/proposal",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(ProposalQuery),
+    responses(
+        (status = 200, description = "Pending proposals", body = ProposalsResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_delta_proposals(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -334,6 +463,19 @@ pub async fn get_delta_proposals(
     }))
 }
 
+/// Fetch a single multisig proposal by its commitment.
+#[utoipa::path(
+    get,
+    path = "/delta/proposal/single",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(ProposalItemQuery),
+    responses(
+        (status = 200, description = "Proposal found", body = DeltaObject),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
@@ -352,6 +494,22 @@ pub async fn get_delta_proposal(
     Ok(Json(response.proposal))
 }
 
+/// Add a cosigner signature to an existing multisig proposal. When the
+/// signature threshold is reached the proposal is promoted to a delta.
+#[utoipa::path(
+    put,
+    path = "/delta/proposal",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    request_body = SignProposalRequest,
+    responses(
+        (status = 200, description = "Signature accepted", body = DeltaObject),
+        (status = 400, description = "Invalid signature", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Proposal already signed by this signer", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn sign_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,

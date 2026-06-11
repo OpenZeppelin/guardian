@@ -55,6 +55,12 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 1. Update server contract source first:
    - gRPC: `crates/server/proto/guardian.proto`
    - HTTP shapes/serialization in server services and API modules
+   - HTTP OpenAPI: any change to an HTTP handler, its request/response/query/path
+     types, auth behavior, or a feature-gated route MUST update the `#[utoipa::path]`
+     annotation and `#[derive(utoipa::ToSchema)]`/`IntoParams` derives, then
+     regenerate the committed specs:
+     `cargo run --features evm --bin gen-openapi -- docs`
+     (CI fails on drift via `cargo run --features evm --bin gen-openapi -- --check docs`).
 2. Update Rust client compatibility:
    - `crates/client` (proto, request/response mapping, auth/signature handling)
 3. Update TS client compatibility (each affected surface):
@@ -78,6 +84,10 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 
 - Keep business logic in `src/services/`; keep transport logic thin in `src/api/`.
 - Respect auth expectations: unauthenticated-only endpoints must remain explicit.
+- Document every HTTP handler with `#[utoipa::path]` (method, path, params, body,
+  per-status responses, and `security(...)` for authenticated routes) and derive
+  `utoipa::ToSchema`/`IntoParams` on its wire types. Regenerate `docs/openapi*.json`
+  after any HTTP contract change; do not hand-edit endpoint shapes into `spec/api.md`.
 - Maintain storage/metadata backend parity (filesystem/postgres where applicable).
 - Preserve canonicalization semantics (pending/candidate/canonical/discarded lifecycle).
 - Default local development/test backend is `filesystem` unless a task explicitly requires Postgres.

@@ -23,7 +23,7 @@ use crate::state::AppState;
 /// metadata column. `note_counts`, `asset`, and `counterparty` are
 /// intentionally omitted — they are derivable from the per-section
 /// arrays below.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardDeltaDetail {
     pub account_id: String,
     pub nonce: u64,

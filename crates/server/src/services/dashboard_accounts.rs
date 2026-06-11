@@ -8,14 +8,14 @@ use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
 use crate::state_object::StateObject;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardAccountStateStatus {
     Available,
     Unavailable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct DashboardAccountSummary {
     pub account_id: String,
     /// Bech32m encoding of the Miden `AccountId` using the network's
@@ -37,7 +37,7 @@ pub struct DashboardAccountSummary {
     pub paused_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct DashboardAccountDetail {
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
