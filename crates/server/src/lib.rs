@@ -21,6 +21,7 @@ pub mod error;
 pub mod evm;
 pub mod jobs;
 pub mod metadata;
+pub mod metrics;
 pub mod network;
 pub mod openapi;
 pub(crate) mod secret;

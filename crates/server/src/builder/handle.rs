@@ -29,6 +29,10 @@ use crate::api::http::{
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
+use crate::metrics::{
+    MetricsConfig, MetricsGrpcLayer, describe_metrics, metrics_router, record_build_info,
+    start_refresher, track_http,
+};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
 use crate::services::start_canonicalization_worker;
 use crate::state::AppState;
@@ -42,6 +46,7 @@ pub struct ServerHandle {
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
     pub(crate) body_limit_config: Option<BodyLimitConfig>,
+    pub(crate) metrics_config: MetricsConfig,
     pub(crate) http_enabled: bool,
     pub(crate) http_port: u16,
     pub(crate) grpc_enabled: bool,
@@ -64,6 +69,60 @@ impl ServerHandle {
         self.startup_info.log();
 
         let mut tasks = Vec::new();
+
+        // Set up the Prometheus integration before the listeners so
+        // requests are never served by an uninstrumented stack. The
+        // global recorder is process-wide and set-once. All wiring is
+        // gated on a successful install: on failure (a recorder is
+        // already installed — repeated run() in one process, e.g. e2e
+        // harnesses), the new recorder's handle would render an empty
+        // registry while instrumentation keeps writing to the
+        // pre-existing global one, so the refresher and listener are
+        // skipped rather than serving misleading data. Tests never
+        // install globally — they scope local recorders.
+        let mut metrics_enabled = self.metrics_config.enabled;
+        if metrics_enabled {
+            let recorder = crate::metrics::build_recorder();
+            let handle = recorder.handle();
+            match metrics::set_global_recorder(recorder) {
+                Ok(()) => {
+                    describe_metrics();
+                    record_build_info();
+
+                    start_refresher(
+                        &self.app_state,
+                        handle.clone(),
+                        self.metrics_config.refresh_interval,
+                    );
+
+                    let router = metrics_router(handle, &self.metrics_config);
+                    let bind_addr = self.metrics_config.bind_addr;
+                    let task = tokio::spawn(async move {
+                        let listener = tokio::net::TcpListener::bind(bind_addr)
+                            .await
+                            .expect("Failed to bind metrics listener");
+
+                        tracing::info!(
+                            address = %listener.local_addr().unwrap(),
+                            "Metrics listener listening"
+                        );
+
+                        axum::serve(listener, router)
+                            .await
+                            .expect("Metrics listener failed");
+                    });
+                    tasks.push(task);
+                }
+                Err(error) => {
+                    metrics_enabled = false;
+                    tracing::warn!(
+                        error = %error,
+                        "metrics recorder already installed; skipping metrics \
+                         listener and refresher for this run"
+                    );
+                }
+            }
+        }
 
         // Start background jobs based on canonicalization config
         if self.app_state.canonicalization.is_some() {
@@ -221,6 +280,14 @@ impl ServerHandle {
                     app = app.layer(cors);
                 }
 
+                // Outermost layer (added last) so rate-limit 429s and
+                // CORS short-circuits are observed too. Router-level
+                // layers run after routing, so MatchedPath is
+                // available for the bounded route label.
+                if metrics_enabled {
+                    app = app.layer(axum::middleware::from_fn(track_http));
+                }
+
                 let addr = format!("0.0.0.0:{port}");
                 let listener = tokio::net::TcpListener::bind(&addr)
                     .await
@@ -263,12 +330,27 @@ impl ServerHandle {
 
                 tracing::info!(address = %addr, "gRPC server listening");
 
-                Server::builder()
-                    .add_service(GuardianServer::new(service))
-                    .add_service(reflection_service)
-                    .serve(addr)
-                    .await
-                    .expect("gRPC server failed");
+                // Mirror the HTTP side: the metrics layer is attached
+                // only when metrics are enabled, so the disabled path
+                // does no wrapping or measurement work at all. The two
+                // arms are duplicated because the layered server is a
+                // different type.
+                if metrics_enabled {
+                    Server::builder()
+                        .layer(MetricsGrpcLayer::new())
+                        .add_service(GuardianServer::new(service))
+                        .add_service(reflection_service)
+                        .serve(addr)
+                        .await
+                        .expect("gRPC server failed");
+                } else {
+                    Server::builder()
+                        .add_service(GuardianServer::new(service))
+                        .add_service(reflection_service)
+                        .serve(addr)
+                        .await
+                        .expect("gRPC server failed");
+                }
             });
 
             tasks.push(task);

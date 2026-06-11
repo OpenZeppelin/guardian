@@ -48,6 +48,14 @@ cargo run -p guardian-server --bin server
 
 If port `3000` is already occupied, inspect the process and reuse it only if it was started with the needed `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE`. Otherwise stop it or use a different server port and set `VITE_GUARDIAN_TARGET`.
 
+Optional metrics verification: add `GUARDIAN_METRICS_ENABLED=true` to the `cargo run` invocation, then after the login flow confirm the auth and dashboard counters moved:
+
+```bash
+curl -s http://127.0.0.1:9464/metrics | grep -E 'guardian_(operator_auth|operator_sessions|http_requests_total)'
+```
+
+Expect `guardian_operator_auth_verifications_total{outcome="ok"}` ≥ 1 after a successful login and `guardian_http_requests_total` entries labelled with `/dashboard/*` route templates (never raw account IDs).
+
 ## Operator UI
 
 For workspace-source smoke:

@@ -95,6 +95,22 @@ pub struct DeltaStatusCounts {
     pub discarded: u64,
 }
 
+/// Point-in-time saturation snapshot of a backend's connection pool.
+/// Returned by [`StorageBackend::pool_status`] for backends that pool
+/// connections (Postgres/deadpool); the metrics refresher publishes it
+/// as gauges so operators can see pool exhaustion building up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PoolStatus {
+    /// Maximum number of connections the pool may hold.
+    pub max_connections: u64,
+    /// Connections currently managed by the pool (in use + idle).
+    pub connections: u64,
+    /// Idle connections ready to be acquired.
+    pub available: u64,
+    /// Tasks currently waiting to acquire a connection.
+    pub pending_acquires: u64,
+}
+
 /// One row returned by the global delta feed. Carries the parent
 /// `account_id` so the dashboard can group/link without an extra
 /// lookup.
@@ -146,6 +162,13 @@ pub trait StorageBackend: Send + Sync {
     /// serves cross-account aggregates over indexed columns and is
     /// not bounded by the threshold.
     fn kind(&self) -> StorageType;
+
+    /// Connection-pool saturation snapshot, for backends that pool
+    /// connections. `None` (the default) for backends without one —
+    /// the filesystem backend has no pool to report on.
+    fn pool_status(&self) -> Option<PoolStatus> {
+        None
+    }
 
     async fn submit_state(&self, state: &StateObject) -> Result<(), String>;
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String>;

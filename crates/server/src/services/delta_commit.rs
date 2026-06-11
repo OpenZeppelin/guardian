@@ -124,6 +124,19 @@ impl DeltaCommitStrategy {
                         proposal_id = %id,
                         "Deleting matching proposal as delta is now canonical"
                     );
+                    // Finalization is the canonical delta + matching
+                    // proposal, not the cleanup delete succeeding —
+                    // count it before attempting the delete. (This
+                    // Optimistic-mode emit and the Candidate-mode one
+                    // in jobs/canonicalization/processor.rs are
+                    // mutually exclusive per deployment, not a
+                    // double-count.)
+                    metrics::counter!(
+                        crate::metrics::names::PROPOSALS_TOTAL,
+                        crate::metrics::names::LABEL_EVENT =>
+                            crate::metrics::labels::ProposalEvent::Finalized.as_str()
+                    )
+                    .increment(1);
                     if let Err(e) = ctx
                         .resolved
                         .storage

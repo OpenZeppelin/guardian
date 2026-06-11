@@ -104,7 +104,14 @@ pub async fn challenge_operator_login(
     let challenge = state
         .dashboard
         .issue_challenge(&query.commitment, state.clock.now())
-        .await?;
+        .await;
+    metrics::counter!(
+        crate::metrics::names::OPERATOR_AUTH_CHALLENGES_TOTAL,
+        crate::metrics::names::LABEL_OUTCOME =>
+            crate::metrics::labels::Outcome::from_ok(challenge.is_ok()).as_str()
+    )
+    .increment(1);
+    let challenge = challenge?;
 
     Ok(Json(OperatorChallengeResponse {
         success: true,
@@ -137,7 +144,15 @@ pub async fn verify_operator_login(
     let session = state
         .dashboard
         .verify(&payload.commitment, &payload.signature, state.clock.now())
-        .await?;
+        .await;
+    metrics::counter!(
+        crate::metrics::names::OPERATOR_AUTH_VERIFICATIONS_TOTAL,
+        crate::metrics::names::LABEL_OUTCOME =>
+            crate::metrics::labels::Outcome::from_ok(session.is_ok()).as_str()
+    )
+    .increment(1);
+    let session = session?;
+    metrics::counter!(crate::metrics::names::OPERATOR_SESSIONS_STARTED_TOTAL).increment(1);
 
     Ok((
         StatusCode::OK,

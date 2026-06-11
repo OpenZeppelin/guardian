@@ -27,7 +27,18 @@ async fn run_worker(state: AppState) {
     loop {
         interval_timer.tick().await;
 
-        if let Err(e) = processor.process_all_accounts().await {
+        let started = std::time::Instant::now();
+        let result = processor.process_all_accounts().await;
+        metrics::histogram!(crate::metrics::names::CANONICALIZATION_RUN_DURATION_SECONDS)
+            .record(started.elapsed().as_secs_f64());
+        metrics::counter!(
+            crate::metrics::names::CANONICALIZATION_RUNS_TOTAL,
+            crate::metrics::names::LABEL_OUTCOME =>
+                crate::metrics::labels::Outcome::from_ok(result.is_ok()).as_str()
+        )
+        .increment(1);
+
+        if let Err(e) = result {
             tracing::error!(error = %e, "Canonicalization worker error");
         }
     }
