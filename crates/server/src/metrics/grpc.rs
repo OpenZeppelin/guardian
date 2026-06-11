@@ -29,18 +29,19 @@ use super::names::{
 /// gRPC status code recorded when a response body is dropped before
 /// its trailers arrive (client cancellation / disconnect).
 const CODE_CANCELLED: i32 = 1;
+/// gRPC status code recorded when no status can be determined
+/// (transport error, or a stream that ended without one).
+const CODE_UNKNOWN: i32 = 2;
 
-/// Tower layer recording per-request gRPC metrics. With
-/// `enabled = false` the layer still wraps (the service type is
-/// fixed at build time) but skips all measurement work.
-#[derive(Debug, Clone)]
-pub struct MetricsGrpcLayer {
-    enabled: bool,
-}
+/// Tower layer recording per-request gRPC metrics. Attached to the
+/// tonic server only when metrics are enabled (mirroring the HTTP
+/// side), so the disabled path does no wrapping or measurement work.
+#[derive(Debug, Clone, Default)]
+pub struct MetricsGrpcLayer;
 
 impl MetricsGrpcLayer {
-    pub fn new(enabled: bool) -> Self {
-        Self { enabled }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -48,17 +49,13 @@ impl<S> Layer<S> for MetricsGrpcLayer {
     type Service = MetricsGrpcService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        MetricsGrpcService {
-            inner,
-            enabled: self.enabled,
-        }
+        MetricsGrpcService { inner }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MetricsGrpcService<S> {
     inner: S,
-    enabled: bool,
 }
 
 impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for MetricsGrpcService<S>
@@ -76,34 +73,33 @@ where
     }
 
     fn call(&mut self, request: http::Request<ReqBody>) -> Self::Future {
-        let tracker = self.enabled.then(|| {
-            let (service, method) = normalize_grpc_method(request.uri().path());
-            GrpcRequestTracker {
-                service: service.to_owned(),
-                method: method.to_owned(),
-                started: Instant::now(),
-                header_code: None,
-            }
-        });
+        let tracker = GrpcRequestTracker::start(request.uri().path());
 
         let future = self.inner.call(request);
         Box::pin(async move {
-            let response = future.await?;
+            let response = match future.await {
+                Ok(response) => response,
+                Err(error) => {
+                    // Transport-level failure: no gRPC status will ever
+                    // arrive. Count it as unknown so the request isn't
+                    // lost (and the in-flight gauge is released).
+                    tracker.record(CODE_UNKNOWN);
+                    return Err(error);
+                }
+            };
 
-            let tracker = tracker.map(|mut tracker| {
-                // Trailers-only responses (immediate errors) surface
-                // grpc-status in the headers; remember it as the
-                // fallback for streams that end without trailers.
-                tracker.header_code = grpc_status_from(response.headers());
-                tracker
-            });
+            // Trailers-only responses (immediate errors) surface
+            // grpc-status in the headers; remember it as the fallback
+            // for streams that end without trailers.
+            let mut tracker = tracker;
+            tracker.header_code = grpc_status_from(response.headers());
 
             let (parts, body) = response.into_parts();
             Ok(http::Response::from_parts(
                 parts,
                 MetricsGrpcBody {
                     inner: body,
-                    tracker,
+                    tracker: Some(tracker),
                 },
             ))
         })
@@ -117,20 +113,50 @@ fn grpc_status_from(headers: &http::HeaderMap) -> Option<i32> {
         .and_then(|value| value.parse().ok())
 }
 
+/// Holds the in-flight gauge slot for one request; decrements on drop
+/// so cancelled requests and transport errors release it too.
+struct InFlightGuard;
+
+impl InFlightGuard {
+    fn acquire() -> Self {
+        metrics::gauge!(super::names::GRPC_REQUESTS_IN_FLIGHT).increment(1.0);
+        Self
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        metrics::gauge!(super::names::GRPC_REQUESTS_IN_FLIGHT).decrement(1.0);
+    }
+}
+
 /// Pending measurement for one in-flight gRPC call. Consumed exactly
-/// once — either at the trailer frame, at end-of-stream, or on drop.
+/// once — either at the trailer frame, at end-of-stream, on transport
+/// error, or on drop. Consuming it releases the in-flight gauge slot.
 struct GrpcRequestTracker {
-    service: String,
-    method: String,
+    service: &'static str,
+    method: &'static str,
     started: Instant,
     header_code: Option<i32>,
+    _in_flight: InFlightGuard,
 }
 
 impl GrpcRequestTracker {
+    fn start(path: &str) -> Self {
+        let (service, method) = normalize_grpc_method(path);
+        Self {
+            service,
+            method,
+            started: Instant::now(),
+            header_code: None,
+            _in_flight: InFlightGuard::acquire(),
+        }
+    }
+
     fn record(self, code: i32) {
         counter!(GRPC_REQUESTS_TOTAL,
-            LABEL_SERVICE => self.service.clone(),
-            LABEL_METHOD => self.method.clone(),
+            LABEL_SERVICE => self.service,
+            LABEL_METHOD => self.method,
             LABEL_CODE => grpc_code_label(code))
         .increment(1);
         histogram!(GRPC_REQUEST_DURATION_SECONDS,
@@ -179,8 +205,8 @@ impl<B: Body> Body for MetricsGrpcBody<B> {
                         .or(tracker.header_code)
                         // Trailers without grpc-status: per spec the
                         // call succeeded only if status is present;
-                        // absence is unmappable → unknown (2).
-                        .unwrap_or(2);
+                        // absence is unmappable.
+                        .unwrap_or(CODE_UNKNOWN);
                     tracker.record(code);
                 }
             }
@@ -188,7 +214,7 @@ impl<B: Body> Body for MetricsGrpcBody<B> {
                 if let Some(tracker) = this.tracker.take() {
                     // Stream ended without trailers: trailers-only
                     // response, status was in the headers.
-                    let code = tracker.header_code.unwrap_or(2);
+                    let code = tracker.header_code.unwrap_or(CODE_UNKNOWN);
                     tracker.record(code);
                 }
             }
@@ -304,48 +330,52 @@ mod tests {
     }
 
     #[test]
-    fn disabled_layer_records_nothing() {
-        let recorder = build_recorder();
-        let handle = recorder.handle();
-        metrics::with_local_recorder(&recorder, || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async {
-                let service = MetricsGrpcLayer::new(false).layer(tower::service_fn(
-                    |_request: http::Request<()>| async {
-                        Ok::<_, Infallible>(
-                            http::Response::builder()
-                                .body(TestBody::with_trailers("0"))
-                                .unwrap(),
-                        )
-                    },
-                ));
-                let response = service
-                    .oneshot(
-                        http::Request::builder()
-                            .uri("/guardian.Guardian/PushDelta")
-                            .body(())
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                drain(response.into_body()).await;
-            });
+    fn unserved_paths_collapse_into_unknown_labels() {
+        let rendered = run_case_with_uri(
+            || {
+                http::Response::builder()
+                    .body(TestBody::with_trailers("12"))
+                    .unwrap()
+            },
+            "/x.Sprayed/Path9999",
+            false,
+        );
+        assert!(
+            rendered.contains(
+                "guardian_grpc_requests_total{service=\"unknown\",method=\"unknown\",\
+                 code=\"unimplemented\"} 1"
+            ),
+            "sprayed path must collapse to unknown labels:\n{rendered}"
+        );
+        assert!(!rendered.contains("Sprayed"));
+    }
+
+    #[test]
+    fn in_flight_gauge_returns_to_zero() {
+        let rendered = run_with(|| {
+            http::Response::builder()
+                .body(TestBody::with_trailers("0"))
+                .unwrap()
         });
-        assert!(!handle.render().contains("guardian_grpc_requests_total"));
+        assert!(
+            rendered.contains("guardian_grpc_requests_in_flight 0"),
+            "in-flight gauge must return to 0 in:\n{rendered}"
+        );
     }
 
     fn run_with(make_response: fn() -> http::Response<TestBody>) -> String {
-        run_case(make_response, false)
+        run_case_with_uri(make_response, "/guardian.Guardian/PushDelta", false)
     }
 
     fn run_with_dropped_body(make_response: fn() -> http::Response<TestBody>) -> String {
-        run_case(make_response, true)
+        run_case_with_uri(make_response, "/guardian.Guardian/PushDelta", true)
     }
 
-    fn run_case(make_response: fn() -> http::Response<TestBody>, drop_body_early: bool) -> String {
+    fn run_case_with_uri(
+        make_response: fn() -> http::Response<TestBody>,
+        uri: &str,
+        drop_body_early: bool,
+    ) -> String {
         let recorder = build_recorder();
         let handle = recorder.handle();
 
@@ -355,18 +385,13 @@ mod tests {
                 .build()
                 .unwrap();
             rt.block_on(async {
-                let service = MetricsGrpcLayer::new(true).layer(tower::service_fn(
+                let service = MetricsGrpcLayer::new().layer(tower::service_fn(
                     move |_request: http::Request<()>| async move {
                         Ok::<_, Infallible>(make_response())
                     },
                 ));
                 let response = service
-                    .oneshot(
-                        http::Request::builder()
-                            .uri("/guardian.Guardian/PushDelta")
-                            .body(())
-                            .unwrap(),
-                    )
+                    .oneshot(http::Request::builder().uri(uri).body(()).unwrap())
                     .await
                     .unwrap();
                 if drop_body_early {

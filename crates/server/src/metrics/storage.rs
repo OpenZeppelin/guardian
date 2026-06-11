@@ -40,9 +40,9 @@ async fn timed<T>(
 ) -> Result<T, String> {
     let started = Instant::now();
     let result = future.await;
-    let outcome = if result.is_ok() { "ok" } else { "error" };
+    let outcome = super::labels::Outcome::from_ok(result.is_ok());
     counter!(STORAGE_OPERATIONS_TOTAL,
-        LABEL_OPERATION => operation, LABEL_OUTCOME => outcome)
+        LABEL_OPERATION => operation, LABEL_OUTCOME => outcome.as_str())
     .increment(1);
     histogram!(STORAGE_OPERATION_DURATION_SECONDS, LABEL_OPERATION => operation)
         .record(started.elapsed().as_secs_f64());
@@ -64,6 +64,10 @@ impl InstrumentedStorage {
 impl StorageBackend for InstrumentedStorage {
     fn kind(&self) -> StorageType {
         self.inner.kind()
+    }
+
+    fn pool_status(&self) -> Option<crate::storage::PoolStatus> {
+        self.inner.pool_status()
     }
 
     async fn submit_state(&self, state: &StateObject) -> Result<(), String> {

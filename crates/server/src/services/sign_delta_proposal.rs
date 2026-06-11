@@ -162,7 +162,8 @@ pub async fn sign_delta_proposal(
         .map_err(GuardianError::StorageError)?;
     metrics::counter!(
         crate::metrics::names::PROPOSALS_TOTAL,
-        crate::metrics::names::LABEL_EVENT => "signed"
+        crate::metrics::names::LABEL_EVENT =>
+            crate::metrics::labels::ProposalEvent::Signed.as_str()
     )
     .increment(1);
 
