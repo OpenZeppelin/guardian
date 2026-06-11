@@ -82,7 +82,10 @@ impl Default for RateLimitConfig {
     }
 }
 
-fn env_flag(key: &str, default_value: bool) -> bool {
+/// Parse a boolean env flag: unset → `default_value`; `0`/`false`/
+/// `no`/`off` (case-insensitive) → false; anything else → true.
+/// Shared by env-driven configs (rate limiting, metrics).
+pub(crate) fn env_flag(key: &str, default_value: bool) -> bool {
     env::var(key)
         .ok()
         .map(|value| {
@@ -341,6 +344,12 @@ where
             match limited {
                 None => inner.call(req).await,
                 Some((limit_type, key)) => {
+                    metrics::counter!(
+                        crate::metrics::names::RATE_LIMIT_REJECTIONS_TOTAL,
+                        crate::metrics::names::LABEL_LIMIT_TYPE => limit_type.as_str()
+                    )
+                    .increment(1);
+
                     let retry_after = match limit_type {
                         RateLimitType::Burst => 1,
                         RateLimitType::Sustained => 60,

@@ -24,6 +24,12 @@ bincode = "1.3"
 chrono = { version = "0.4", features = ["serde"] }
 hex = { workspace = true }
 hmac = "0.12"
+http = "1"
+http-body = "1"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-process = "2.4"
+pin-project-lite = "0.2"
 sha2 = "0.10"
 rand = "0.9"
 rand_chacha = { workspace = true }
@@ -68,7 +74,9 @@ miden-confidential-contracts = { path = "../contracts", optional = true }
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
+bytes = "1"
 futures = "0.3"
+tokio = { workspace = true, features = ["full", "test-util"] }
 k256 = { version = "0.13", features = ["ecdsa", "pkcs8", "std"] }
 static_assertions = "1.1"
 tempfile = { workspace = true }

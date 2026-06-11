@@ -96,6 +96,24 @@ multi-stack deployments get scoped IDs.
 | `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` | `20` | Account-level cap; hitting it returns `pending_proposals_limit`. |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated explicit origins. **Unset → permissive `Any` origin / `Any` methods / `Any` headers, credentials disabled** (suitable for local dev). **Set → strict allowlist with `allow_credentials(true)`** (required for production browser clients). |
 
+## Runtime — metrics (Prometheus)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_METRICS_ENABLED` | `false` | Master switch for the Prometheus integration. When `false` (default) nothing runs: no metrics listener, no recorder, no storage instrumentation, no background refresher. |
+| `GUARDIAN_METRICS_ADDR` | `127.0.0.1:9464` | Bind address of the **dedicated** metrics listener (separate from the API port). Loopback by default; set `0.0.0.0:9464` in containers so a Prometheus sidecar/agent can reach it. Invalid values fall back to the default with a warning. |
+| `GUARDIAN_METRICS_PATH` | `/metrics` | Path serving the Prometheus text exposition on that listener. Must start with `/`. |
+| `GUARDIAN_METRICS_REFRESH_INTERVAL_SECS` | `30` | Cadence of the background task that refreshes slow aggregate gauges (delta status counts, in-flight proposals, account count). Scrapes never query storage directly. |
+| `GUARDIAN_METRICS_BEARER_TOKEN` | _unset_ | Optional shared-secret scrape token. When set, scrapes must send `Authorization: Bearer <token>` (Prometheus `authorization.credentials` in the scrape config); anything else gets `401`. Compared in constant time, held as a non-loggable secret wrapper in process. |
+
+The metrics endpoint is intentionally **not** part of the main API
+router: it bypasses rate limiting and CORS and is protected by network
+isolation first (loopback default / private network / security group),
+the bearer token second, and proxy-terminated TLS where transport
+encryption is required. Never expose it to a public network. The
+exposed metric taxonomy and cardinality rules are documented in
+[`spec/api.md`](../spec/api.md).
+
 ## Runtime — dashboard
 
 | Variable | Default | Notes |

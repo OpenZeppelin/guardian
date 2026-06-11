@@ -730,6 +730,87 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 
 `GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
+## Metrics Endpoint (Prometheus)
+
+The server can expose operational telemetry in the Prometheus text
+exposition format (`text/plain; version=0.0.4`). This surface is
+**operator-only and additive**: it is not part of the client contract,
+is not consumed by any SDK, and does not change any `/dashboard/*`
+behavior.
+
+- **Listener.** `GET <GUARDIAN_METRICS_PATH>` (default `/metrics`) is
+  served on a **dedicated listener** bound to `GUARDIAN_METRICS_ADDR`
+  (default `127.0.0.1:9464`), never on the main API port. The main API
+  router returns `404` for `/metrics`. The metrics listener bypasses
+  rate limiting, CORS, and body limits.
+- **Enablement.** Everything is off unless `GUARDIAN_METRICS_ENABLED=true`:
+  no listener, no recorder, no storage instrumentation, no background
+  refresh task.
+- **Authentication.** When `GUARDIAN_METRICS_BEARER_TOKEN` is set,
+  requests MUST carry `Authorization: Bearer <token>`; missing,
+  malformed, or mismatching credentials receive an empty `401`
+  (constant-time comparison). When unset the endpoint is open and MUST
+  be protected by network isolation (the v1 deployment assumption:
+  private network or reverse proxy, which also terminates TLS).
+- **Scrape cost.** Scrapes serialize in-memory state only. Slow
+  cross-account aggregates (delta status counts, in-flight proposals,
+  account count) are computed by a background refresher every
+  `GUARDIAN_METRICS_REFRESH_INTERVAL_SECS` (default 30) and published
+  as gauges; a scrape never triggers storage reads. Staleness is
+  observable as `time() - guardian_metrics_refresh_timestamp_seconds`;
+  refresh failures increment `guardian_metrics_refresh_failures_total`
+  and leave the previous gauge values in place.
+- **Cardinality.** Label values are strictly bounded: HTTP routes use
+  the route *template* (`/dashboard/accounts/{account_id}`), unmatched
+  paths collapse into `route="unmatched"`, gRPC service/method come
+  from the proto definition, and the remaining labels are small closed
+  enums. Account IDs, nonces, commitments, pubkeys, client IPs, and
+  error strings never appear in labels.
+
+### Metric taxonomy
+
+| Metric | Type | Labels |
+|---|---|---|
+| `guardian_build_info` | gauge (=1) | `version`, `git_commit`, `profile` |
+| `guardian_http_requests_total` | counter | `method`, `route`, `status` |
+| `guardian_http_request_duration_seconds` | histogram | `method`, `route` |
+| `guardian_http_requests_in_flight` | gauge | — |
+| `guardian_grpc_requests_total` | counter | `service`, `method`, `code` |
+| `guardian_grpc_request_duration_seconds` | histogram | `service`, `method` |
+| `guardian_storage_operations_total` | counter | `operation`, `outcome` |
+| `guardian_storage_operation_duration_seconds` | histogram | `operation` |
+| `guardian_canonicalization_runs_total` | counter | `outcome` |
+| `guardian_canonicalization_run_duration_seconds` | histogram | — |
+| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`) |
+| `guardian_canonicalization_retries_total` | counter | — |
+| `guardian_deltas_submitted_total` | counter | `kind` (`delta`/`proposal_commit`) |
+| `guardian_proposals_total` | counter | `event` (`created`/`signed`/`finalized`) |
+| `guardian_operator_auth_challenges_total` | counter | `outcome` |
+| `guardian_operator_auth_verifications_total` | counter | `outcome` |
+| `guardian_operator_sessions_started_total` | counter | — |
+| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`) |
+| `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`discarded`) |
+| `guardian_proposals_in_flight` | gauge | — |
+| `guardian_accounts` | gauge | — |
+| `guardian_metrics_refresh_timestamp_seconds` | gauge | — |
+| `guardian_metrics_refresh_failures_total` | counter | — |
+| `process_*` (CPU, RSS, fds, start time) | standard | — |
+
+Durations use seconds with explicit buckets from 1ms to 10s. The
+authoritative taxonomy (including help text and the enforced label
+allowlist) lives in `crates/server/src/metrics/names.rs`.
+
+Example scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: guardian
+    authorization:
+      credentials: <GUARDIAN_METRICS_BEARER_TOKEN>
+    static_configs:
+      - targets: ["guardian-host:9464"]
+```
+
 ## Idempotency and Ordering
 
 - `push_delta` MAY be retried by clients; identical Miden deltas SHOULD be treated as idempotent when possible.

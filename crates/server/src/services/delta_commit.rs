@@ -124,18 +124,27 @@ impl DeltaCommitStrategy {
                         proposal_id = %id,
                         "Deleting matching proposal as delta is now canonical"
                     );
-                    if let Err(e) = ctx
+                    match ctx
                         .resolved
                         .storage
                         .delete_delta_proposal(&delta.account_id, id)
                         .await
                     {
-                        warn!(
-                            account_id = %delta.account_id,
-                            proposal_id = %id,
-                            error = %e,
-                            "Failed to delete proposal, but continuing"
-                        );
+                        Ok(()) => {
+                            metrics::counter!(
+                                crate::metrics::names::PROPOSALS_TOTAL,
+                                crate::metrics::names::LABEL_EVENT => "finalized"
+                            )
+                            .increment(1);
+                        }
+                        Err(e) => {
+                            warn!(
+                                account_id = %delta.account_id,
+                                proposal_id = %id,
+                                error = %e,
+                                "Failed to delete proposal, but continuing"
+                            );
+                        }
                     }
                 }
 

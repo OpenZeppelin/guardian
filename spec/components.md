@@ -46,6 +46,15 @@ The operator dashboard surface is HTTP-only and lives under `/dashboard/*`. Auth
 - Validates account identifiers and request credentials against network-owned state when applicable.
 - Surfaces suggested auth updates (e.g., rotated cosigner commitments) so metadata remains aligned with the network.
 
+## Observability
+
+- Native Prometheus integration, opt-in via `GUARDIAN_METRICS_ENABLED`.
+- A process-global metrics recorder collects counters, gauges, and histograms from instrumentation across the server: an HTTP middleware on the API router (request rate/latency/in-flight with route-template labels), a tower layer on the gRPC server (per-method counts and latency with the status code read from HTTP/2 trailers), a transparent decorator around the storage backend (per-operation latency and outcomes), and lifecycle counters in the canonicalization worker, proposal services, operator auth handlers, and the rate limiter.
+- The text exposition is served from a dedicated listener (`GUARDIAN_METRICS_ADDR`, loopback by default) on a configurable path, outside the API router and its rate limiting/CORS. Optional shared-secret bearer-token guard (constant-time compare, `401` otherwise); TLS and network reachability are deployment concerns (reverse proxy / private network).
+- Slow cross-account aggregates are published as gauges by a background refresher on a fixed interval; scrapes never read storage. A staleness timestamp gauge and a refresh-failure counter make degraded refresh observable.
+- Label cardinality is strictly bounded by a declared taxonomy (`crates/server/src/metrics/names.rs`) with an enforced label-key allowlist; unbounded identifiers (account IDs, nonces, raw paths, IPs) never become labels.
+- The metrics surface is operator-only and additive — not part of the client SDK contract. See `spec/api.md` (“Metrics Endpoint”) for the endpoint contract and full taxonomy.
+
 ## Storage
 
 - Persists account snapshots and deltas.

@@ -132,6 +132,15 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             &new_commitment,
         )
         .await?;
+    metrics::counter!(
+        crate::metrics::names::DELTAS_SUBMITTED_TOTAL,
+        crate::metrics::names::LABEL_KIND => if matching_proposal_payload.is_some() {
+            "proposal_commit"
+        } else {
+            "delta"
+        }
+    )
+    .increment(1);
 
     Ok(PushDeltaResult {
         delta: result_delta,
