@@ -19,24 +19,25 @@ use crate::services::{
 };
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ChallengeQuery {
     pub commitment: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct VerifyOperatorRequest {
     pub commitment: String,
     pub signature: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OperatorChallengeResponse {
     pub success: bool,
     pub challenge: OperatorChallengeView,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OperatorChallengeView {
     pub domain: String,
     pub commitment: String,
@@ -45,14 +46,14 @@ pub struct OperatorChallengeView {
     pub signing_digest: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct VerifyOperatorResponse {
     pub success: bool,
     pub operator_id: String,
     pub expires_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LogoutOperatorResponse {
     pub success: bool,
 }
@@ -73,7 +74,8 @@ pub struct DashboardAccountsResponse {
 }
 
 /// `?limit=&cursor=` query parameters for the paginated account list.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AccountsQuery {
     #[serde(default)]
     pub limit: Option<String>,
@@ -83,6 +85,18 @@ pub struct AccountsQuery {
     pub paused: Option<bool>,
 }
 
+/// Issue a login challenge for an operator commitment. The operator
+/// signs the returned `signing_digest` and submits it to `/auth/verify`.
+#[utoipa::path(
+    get,
+    path = "/auth/challenge",
+    tag = "dashboard",
+    params(ChallengeQuery),
+    responses(
+        (status = 200, description = "Challenge issued", body = OperatorChallengeResponse),
+        (status = 400, description = "Invalid commitment", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn challenge_operator_login(
     State(state): State<AppState>,
     Query(query): Query<ChallengeQuery>,
@@ -104,6 +118,18 @@ pub async fn challenge_operator_login(
     }))
 }
 
+/// Verify a signed login challenge and establish an operator session
+/// (sets a session cookie on success).
+#[utoipa::path(
+    post,
+    path = "/auth/verify",
+    tag = "dashboard",
+    request_body = VerifyOperatorRequest,
+    responses(
+        (status = 200, description = "Session established", body = VerifyOperatorResponse),
+        (status = 401, description = "Challenge verification failed", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn verify_operator_login(
     State(state): State<AppState>,
     Json(payload): Json<VerifyOperatorRequest>,
@@ -124,6 +150,16 @@ pub async fn verify_operator_login(
     ))
 }
 
+/// Invalidate the current operator session and clear the session cookie.
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    responses(
+        (status = 200, description = "Session invalidated", body = LogoutOperatorResponse),
+    )
+)]
 pub async fn logout_operator(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -141,6 +177,21 @@ pub async fn logout_operator(
     )
 }
 
+/// Paginated list of accounts visible to the operator. Requires the
+/// `dashboard:read` permission and a valid operator session.
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(AccountsQuery),
+    responses(
+        (status = 200, description = "Account page", body = PagedResult<DashboardAccountSummary>),
+        (status = 400, description = "Invalid limit or cursor", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_operator_accounts(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
@@ -158,6 +209,17 @@ pub async fn list_operator_accounts(
 
 /// `GET /dashboard/info` — point-in-time inventory and lifecycle
 /// summary per feature `005-operator-dashboard-metrics` US2.
+#[utoipa::path(
+    get,
+    path = "/dashboard/info",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    responses(
+        (status = 200, description = "Inventory and lifecycle summary", body = DashboardInfoResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_dashboard_info_handler(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
@@ -166,7 +228,7 @@ pub async fn get_dashboard_info_handler(
     Ok(Json(info))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SessionInfoResponse {
     pub operator_id: String,
     pub permissions: Vec<String>,
@@ -174,6 +236,18 @@ pub struct SessionInfoResponse {
 
 // `GET /dashboard/session` — session introspection (US6 / FR-033..FR-036).
 // Bypasses the authz layer so `permissions: []` operators get 200 + [], not 403.
+/// Introspect the current operator session: operator id and the
+/// lex-ordered set of effective permissions.
+#[utoipa::path(
+    get,
+    path = "/dashboard/session",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    responses(
+        (status = 200, description = "Session info", body = SessionInfoResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_dashboard_session_handler(
     Extension(operator): Extension<AuthenticatedOperator>,
 ) -> Json<SessionInfoResponse> {
@@ -189,6 +263,21 @@ pub async fn get_dashboard_session_handler(
     })
 }
 
+/// Fetch the detail view for one account.
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts/{account_id}",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier")),
+    responses(
+        (status = 200, description = "Account detail", body = DashboardAccountDetail),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Account state unavailable", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_operator_account(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
@@ -198,6 +287,22 @@ pub async fn get_operator_account(
     Ok(Json(response.account))
 }
 
+/// Decode and return the current vault snapshot for a Miden account.
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts/{account_id}/snapshot",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier")),
+    responses(
+        (status = 200, description = "Account snapshot", body = DashboardAccountSnapshot),
+        (status = 400, description = "Unsupported for this network (e.g. EVM)", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Account state unavailable", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn get_operator_account_snapshot(
     State(state): State<AppState>,
     Extension(_operator): Extension<AuthenticatedOperator>,
@@ -207,17 +312,34 @@ pub async fn get_operator_account_snapshot(
     Ok(Json(snapshot))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PauseAccountRequest {
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 pub struct UnpauseAccountRequest {
     #[serde(default)]
     pub reason: Option<String>,
 }
 
+/// Pause an account (blocks mutating actions). Requires the
+/// `accounts:pause` permission.
+#[utoipa::path(
+    post,
+    path = "/dashboard/accounts/{account_id}/pause",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier")),
+    request_body = PauseAccountRequest,
+    responses(
+        (status = 200, description = "Account paused", body = PauseResponse),
+        (status = 400, description = "Invalid or missing reason", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing accounts:pause permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn pause_account_handler(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
@@ -236,6 +358,23 @@ pub async fn pause_account_handler(
     Ok(Json(response))
 }
 
+/// Unpause an account (idempotent). Requires the `accounts:pause`
+/// permission. Accepts an optional reason in the body.
+#[utoipa::path(
+    post,
+    path = "/dashboard/accounts/{account_id}/unpause",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier")),
+    request_body = UnpauseAccountRequest,
+    responses(
+        (status = 200, description = "Account unpaused", body = UnpauseResponse),
+        (status = 400, description = "Invalid reason", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing accounts:pause permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn unpause_account_handler(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,

@@ -55,6 +55,12 @@ impl ServerHandle {
             "Hello, World!"
         }
 
+        // Issue #241: serve the auto-generated OpenAPI spec. Unauthenticated
+        // and read-only — it documents the contract, not data.
+        async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
+            axum::Json(crate::openapi::openapi())
+        }
+
         self.startup_info.log();
 
         let mut tasks = Vec::new();
@@ -161,6 +167,7 @@ impl ServerHandle {
 
                 let app = Router::new()
                     .route("/", get(root))
+                    .route("/api-docs/openapi.json", get(openapi_json))
                     .route("/delta", post(push_delta))
                     .route("/delta", get(get_delta))
                     .route("/delta/since", get(get_delta_since))
