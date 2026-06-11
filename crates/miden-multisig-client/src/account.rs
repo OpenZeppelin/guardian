@@ -331,7 +331,7 @@ mod tests {
     fn effective_threshold_for_transaction_maps_to_expected_procedures() {
         let account = build_test_account();
         let account_id =
-            AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").expect("account id");
+            AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("account id");
 
         assert_eq!(
             account

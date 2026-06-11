@@ -20,7 +20,7 @@ fn domain_tag() -> Word {
         for chunk in DOMAIN_TAG_BYTES.chunks(8) {
             let mut chunk_bytes = [0u8; 8];
             chunk_bytes[..chunk.len()].copy_from_slice(chunk);
-            elements.push(Felt::new(u64::from_le_bytes(chunk_bytes)));
+            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(chunk_bytes)));
         }
         Rpo256::hash_elements(&elements)
     })
@@ -71,7 +71,7 @@ impl LookupAuthMessage {
         let tag = domain_tag();
         let tag_elements = tag.as_elements();
         let kc_elements = self.key_commitment.as_elements();
-        let timestamp_felt = Felt::new(self.timestamp_ms as u64);
+        let timestamp_felt = crate::felt::felt_from_u64_reduced(self.timestamp_ms as u64);
         let message_elements: [Felt; 9] = [
             tag_elements[0],
             tag_elements[1],
@@ -98,7 +98,7 @@ mod tests {
     use super::*;
     use crate::auth_request_message::AuthRequestMessage;
     use crate::auth_request_payload::AuthRequestPayload;
-    use miden_protocol::account::AccountId;
+    use miden_protocol::account::{AccountId, AccountIdVersion, AccountType};
 
     fn sample_commitment(seed: u32) -> Word {
         Word::from([
@@ -167,7 +167,7 @@ mod tests {
         let lookup_digest = LookupAuthMessage::new(timestamp, commitment).to_word();
 
         let account_id =
-            AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").expect("valid account id");
+            AccountId::dummy([0x8a; 15], AccountIdVersion::Version1, AccountType::Private);
         let payload = AuthRequestPayload::from_bytes(&commitment.as_bytes());
         let request_digest = AuthRequestMessage::new(account_id, timestamp, payload).to_word();
 
@@ -187,7 +187,7 @@ mod tests {
         for chunk in DOMAIN_TAG_BYTES.chunks(8) {
             let mut bytes = [0u8; 8];
             bytes[..chunk.len()].copy_from_slice(chunk);
-            elements.push(Felt::new(u64::from_le_bytes(bytes)));
+            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(bytes)));
         }
         let expected = Rpo256::hash_elements(&elements);
         assert_eq!(tag, expected);

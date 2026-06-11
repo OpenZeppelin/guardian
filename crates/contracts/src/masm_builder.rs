@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Result, anyhow};
 use miden_protocol::{
     CoreLibrary, ProtocolLib,
-    account::{AccountComponent, AccountComponentMetadata, AccountType, StorageSlot},
+    account::{AccountComponent, AccountComponentMetadata, StorageSlot},
     assembly::{
         Assembler, DefaultSourceManager, Library, Module, ModuleKind, Path as LibraryPath,
         SourceManager,
@@ -74,10 +74,7 @@ fn compile_component(path: &Path, slots: Vec<StorageSlot>) -> Result<AccountComp
     let asm = build_component_assembler()?;
     let code = fs::read_to_string(path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
     let library = compile_to_library(&code, &asm)?;
-    let metadata = AccountComponentMetadata::new(
-        openzeppelin_library_path(path, &masm_root())?,
-        AccountType::all(),
-    );
+    let metadata = AccountComponentMetadata::new(openzeppelin_library_path(path, &masm_root())?);
     let component = AccountComponent::new(library, slots, metadata)
         .map_err(|e| anyhow!("failed to create component: {e}"))?;
 

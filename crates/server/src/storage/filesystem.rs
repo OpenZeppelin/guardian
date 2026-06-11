@@ -992,7 +992,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let state = create_test_state(account_id);
 
         // Submit state
@@ -1022,7 +1022,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let delta = create_test_delta(account_id, 1);
 
         // Submit delta
@@ -1052,7 +1052,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
         // Submit multiple deltas
         for nonce in 1..=5 {
@@ -1086,7 +1086,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
         // Pull deltas when none exist
         let deltas = storage
@@ -1107,7 +1107,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let commitment = "0xabc123";
         let proposal = create_test_delta(account_id, 1);
 
@@ -1137,7 +1137,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
         // Submit multiple proposals
         let commitments = ["0xaaaa", "0xbbbb", "0xcccc"];
@@ -1168,7 +1168,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let commitment = "0xabc123";
         let mut proposal = create_test_delta(account_id, 1);
 
@@ -1204,7 +1204,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let commitment = "0xabc123";
         let proposal = create_test_delta(account_id, 1);
 
@@ -1241,7 +1241,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let commitment = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         // Delete nonexistent proposal should succeed (no-op)
@@ -1259,7 +1259,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let commitment_with_prefix = "0xabc123";
         let commitment_without_prefix = "abc123";
         let proposal = create_test_delta(account_id, 1);
@@ -1292,7 +1292,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let result = storage
             .pull_delta_proposal(account_id, "../../other_account/proposals/abc")
             .await;
@@ -1310,7 +1310,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let delta = create_test_delta(account_id, 1);
 
         // Submit delta
@@ -1346,7 +1346,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
         // Delete nonexistent delta should succeed (no-op)
         let result = storage.delete_delta(account_id, 999).await;
@@ -1363,7 +1363,7 @@ mod tests {
             .await
             .expect("Failed to create storage");
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let mut delta = create_test_delta(account_id, 1);
         delta.status = DeltaStatus::candidate("2024-01-01T00:00:00Z".to_string());
 

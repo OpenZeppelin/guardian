@@ -145,6 +145,7 @@ fn classify_note_tag(note: &Note) -> NoteTag {
         Some(StandardNote::P2ID) => NoteTag::P2id,
         Some(StandardNote::P2IDE) => NoteTag::P2ide,
         Some(StandardNote::SWAP) => NoteTag::Pswap,
+        Some(StandardNote::PSWAP) => NoteTag::Pswap,
         Some(StandardNote::MINT) => NoteTag::Mint,
         Some(StandardNote::BURN) => NoteTag::Burn,
         None => NoteTag::Custom,
@@ -222,12 +223,12 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     let mut fungible_net: BTreeMap<String, i128> = BTreeMap::new();
     for asset in vault.added_assets() {
         if let Asset::Fungible(a) = asset {
-            *fungible_net.entry(a.faucet_id().to_hex()).or_insert(0) += a.amount() as i128;
+            *fungible_net.entry(a.faucet_id().to_hex()).or_insert(0) += a.amount().as_u64() as i128;
         }
     }
     for asset in vault.removed_assets() {
         if let Asset::Fungible(a) = asset {
-            *fungible_net.entry(a.faucet_id().to_hex()).or_insert(0) -= a.amount() as i128;
+            *fungible_net.entry(a.faucet_id().to_hex()).or_insert(0) -= a.amount().as_u64() as i128;
         }
     }
     for (asset_id, net) in fungible_net {
@@ -311,9 +312,9 @@ mod tests {
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::P2idNote;
 
-    const CONSUMER: &str = "0x9d03b229c1a649905f70588309fe71";
-    const NOTE_SENDER: &str = "0x7bfb0f38b0fafa103f86a805594170";
-    const FAUCET: &str = "0x16f6c85d5652c9200879145bfdda93";
+    const CONSUMER: &str = "0x2e2e2e2e2e2e2e012e2e2e2e2e2e2e";
+    const NOTE_SENDER: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+    const FAUCET: &str = "0x3f3f3f3e3f3f3f013f3f3f3f3f3f3f";
 
     fn summary_with_consumed_p2id_note() -> TransactionSummary {
         let sender = AccountId::from_hex(NOTE_SENDER).expect("sender");
@@ -400,7 +401,7 @@ mod tests {
         let proc_root =
             Word::parse("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
                 .expect("proc root");
-        let threshold_word = Word::from([Felt::new(1), ZERO, ZERO, ZERO]);
+        let threshold_word = Word::from([Felt::new_unchecked(1), ZERO, ZERO, ZERO]);
 
         let mut map_delta = StorageMapDelta::default();
         map_delta.insert(StorageMapKey::new(proc_root), threshold_word);
@@ -413,7 +414,7 @@ mod tests {
             AccountId::from_hex(CONSUMER).expect("acct"),
             storage,
             AccountVaultDelta::default(),
-            Felt::new(1),
+            Felt::new_unchecked(1),
         )
         .expect("delta");
 

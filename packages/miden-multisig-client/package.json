@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",
-    "@miden-sdk/miden-sdk": "0.14.5",
+    "@miden-sdk/miden-sdk": "0.15.0-alpha.4",
     "@noble/hashes": "^2.0.1",
     "@openzeppelin/guardian-client": "^0.14.9"
   },

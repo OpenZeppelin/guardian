@@ -53,7 +53,7 @@ mod tests {
         let (secret_key, public_key) = generate_keypair();
 
         // Create a test message (using a Word of 4 field elements)
-        let message: Word = [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)].into();
+        let message: Word = [Felt::new_unchecked(1), Felt::new_unchecked(2), Felt::new_unchecked(3), Felt::new_unchecked(4)].into();
 
         // Sign the message
         let signature = sign_message(&secret_key, message);
@@ -69,11 +69,11 @@ mod tests {
         let (secret_key, public_key) = generate_keypair();
 
         // Create and sign a message
-        let message: Word = [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)].into();
+        let message: Word = [Felt::new_unchecked(1), Felt::new_unchecked(2), Felt::new_unchecked(3), Felt::new_unchecked(4)].into();
         let signature = sign_message(&secret_key, message);
 
         // Try to verify with a different message
-        let wrong_message: Word = [Felt::new(5), Felt::new(6), Felt::new(7), Felt::new(8)].into();
+        let wrong_message: Word = [Felt::new_unchecked(5), Felt::new_unchecked(6), Felt::new_unchecked(7), Felt::new_unchecked(8)].into();
         let is_valid = verify_signature(&public_key, wrong_message, &signature);
         assert!(!is_valid, "Signature should be invalid for wrong message");
     }
@@ -85,7 +85,7 @@ mod tests {
         let (_secret_key2, public_key2) = generate_keypair();
 
         // Sign with first key
-        let message: Word = [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)].into();
+        let message: Word = [Felt::new_unchecked(1), Felt::new_unchecked(2), Felt::new_unchecked(3), Felt::new_unchecked(4)].into();
         let signature = sign_message(&secret_key1, message);
 
         // Try to verify with second public key

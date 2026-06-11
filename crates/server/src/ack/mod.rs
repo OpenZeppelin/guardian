@@ -13,7 +13,7 @@ mod secrets_manager;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use guardian_shared::SignatureScheme;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

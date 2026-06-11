@@ -16,11 +16,11 @@ guardian-shared = { version = "=0.14.9", path = "../shared" }
 miden-confidential-contracts = { version = "=0.14.9", path = "../contracts" }
 
 # Miden
-miden-client = { version = "=0.14.5", features = ["tonic", "testing"] }
-miden-client-sqlite-store = { version = "=0.14.5" }
-miden-protocol = { version = "=0.14.5" }
-miden-tx = { version = "=0.14.5" }
-miden-standards = { version = "=0.14.5" }
+miden-client = { workspace = true, features = ["tonic", "testing"] }
+miden-client-sqlite-store = { workspace = true }
+miden-protocol = { workspace = true }
+miden-tx = { workspace = true }
+miden-standards = { workspace = true }
 
 # Async
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -103,6 +103,6 @@ pub use miden_client::rpc::Endpoint;
 pub use miden_protocol::Word;
 pub use miden_protocol::account::AccountId;
 pub use miden_protocol::asset::Asset;
-pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 pub use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 pub use miden_protocol::note::NoteId;

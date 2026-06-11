@@ -207,7 +207,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    const TEST_ACCOUNT_ID: &str = "0x7bfb0f38b0fafa103f86a805594170";
+    const TEST_ACCOUNT_ID: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
     fn falcon_metadata() -> AccountMetadata {
         AccountMetadata {

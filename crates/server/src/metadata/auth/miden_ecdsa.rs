@@ -199,21 +199,20 @@ fn verify_with_public_key(
 mod tests {
     use super::*;
     use miden_protocol::account::AccountId;
-    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as SecretKey;
     use miden_protocol::utils::serde::Serializable;
 
     #[test]
     fn test_ecdsa_sign_and_verify_account_id_with_timestamp() {
-        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
         let account_id = AccountId::dummy(
             [0u8; 15],
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountImmutableCode,
-            AccountStorageMode::Private,
+            AccountIdVersion::Version1,
+            AccountType::Private,
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
@@ -248,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_verify_with_wrong_pubkey() {
-        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountType};
 
         let secret_key1 = SecretKey::new();
         let secret_key2 = SecretKey::new();
@@ -256,9 +255,8 @@ mod tests {
 
         let account_id = AccountId::dummy(
             [1u8; 15],
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountImmutableCode,
-            AccountStorageMode::Private,
+            AccountIdVersion::Version1,
+            AccountType::Private,
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
@@ -291,16 +289,15 @@ mod tests {
 
     #[test]
     fn test_ecdsa_verify_with_wrong_timestamp() {
-        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
         let account_id = AccountId::dummy(
             [4u8; 15],
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountImmutableCode,
-            AccountStorageMode::Private,
+            AccountIdVersion::Version1,
+            AccountType::Private,
         );
         let account_id_hex = account_id.to_hex();
         let timestamp1: i64 = 1700000000;
@@ -333,16 +330,15 @@ mod tests {
 
     #[test]
     fn test_ecdsa_verify_falls_back_to_provided_pubkey_when_recovery_commitment_mismatches() {
-        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
         let account_id = AccountId::dummy(
             [7u8; 15],
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountImmutableCode,
-            AccountStorageMode::Private,
+            AccountIdVersion::Version1,
+            AccountType::Private,
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
@@ -377,16 +373,15 @@ mod tests {
 
     #[test]
     fn test_ecdsa_verify_with_wrong_payload() {
-        use miden_protocol::account::{AccountIdVersion, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountIdVersion, AccountType};
 
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
         let account_id = AccountId::dummy(
             [8u8; 15],
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountImmutableCode,
-            AccountStorageMode::Private,
+            AccountIdVersion::Version1,
+            AccountType::Private,
         );
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;

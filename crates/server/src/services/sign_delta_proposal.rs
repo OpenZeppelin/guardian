@@ -246,7 +246,7 @@ mod tests {
     async fn test_sign_delta_proposal_success() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
@@ -324,7 +324,7 @@ mod tests {
 
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xabababababababababababababababababababababababababababababababab".to_string();
 
@@ -411,7 +411,7 @@ mod tests {
     async fn test_sign_delta_proposal_second_signature() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
 
@@ -485,7 +485,7 @@ mod tests {
     async fn test_sign_delta_proposal_not_found() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string();
 
@@ -530,7 +530,7 @@ mod tests {
     async fn test_sign_delta_proposal_duplicate_signature() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string();
 
@@ -585,7 +585,7 @@ mod tests {
     async fn test_sign_delta_proposal_unauthorized_signer() {
         let (state, _storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
 
@@ -632,7 +632,7 @@ mod tests {
     async fn test_sign_delta_proposal_storage_error() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
 
@@ -678,7 +678,7 @@ mod tests {
     async fn test_sign_delta_proposal_invalid_commitment_rejected() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
@@ -710,7 +710,7 @@ mod tests {
     async fn test_sign_delta_proposal_rejects_mismatched_account() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0x1111111111111111111111111111111111111111111111111111111111111111".to_string();
 
@@ -760,7 +760,7 @@ mod tests {
     async fn paused_account_rejected_before_proposal_lookup() {
         let (state, storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
@@ -810,7 +810,7 @@ mod tests {
     async fn paused_account_returns_auth_error_for_unauthenticated_caller() {
         let (state, _storage, _network, metadata) = create_test_state();
 
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let mut paused = create_account_metadata(
             account_id.clone(),
             Auth::MidenFalconRpo {

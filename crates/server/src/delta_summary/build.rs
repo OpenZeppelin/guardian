@@ -146,7 +146,7 @@ mod tests {
     use crate::testing::helpers::create_test_delta_payload;
     use serde_json::json;
 
-    const TEST_ACCOUNT_ID_HEX: &str = "0x7bfb0f38b0fafa103f86a805594170";
+    const TEST_ACCOUNT_ID_HEX: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
     fn synthetic_proposal_payload(metadata: Value) -> Value {
         json!({
@@ -251,9 +251,9 @@ mod tests {
         use miden_protocol::{Felt, Word, ZERO};
         use miden_standards::note::P2idNote;
 
-        const CONSUMER: &str = "0x9d03b229c1a649905f70588309fe71";
-        const NOTE_SENDER: &str = "0x7bfb0f38b0fafa103f86a805594170";
-        const FAUCET: &str = "0x16f6c85d5652c9200879145bfdda93";
+        const CONSUMER: &str = "0x2e2e2e2e2e2e2e012e2e2e2e2e2e2e";
+        const NOTE_SENDER: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        const FAUCET: &str = "0x3f3f3f3e3f3f3f013f3f3f3f3f3f3f";
 
         let sender = AccountId::from_hex(NOTE_SENDER).expect("sender");
         let consumer = AccountId::from_hex(CONSUMER).expect("consumer");

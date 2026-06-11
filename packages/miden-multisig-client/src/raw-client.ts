@@ -24,12 +24,12 @@ function isPublicMidenClient(client: RawClientSource): client is MidenClient {
   return 'accounts' in client && 'sync' in client;
 }
 
-export function getRawMidenClient(
+export async function getRawMidenClient(
   client: RawClientSource,
   rpcUrl?: string,
 ): Promise<WasmWebClient> {
   if (!isPublicMidenClient(client)) {
-    return Promise.resolve(client);
+    return client;
   }
 
   const cached = rawClientCache.get(client);
@@ -41,7 +41,7 @@ export function getRawMidenClient(
     resolveMidenRpcEndpoint(rpcUrl),
     undefined,
     undefined,
-    client.storeIdentifier(),
+    await client.storeIdentifier(),
   );
   rawClientCache.set(client, rawClient);
   return rawClient;
@@ -62,7 +62,7 @@ export async function compileTxScript(
   }
 
   const rawClient = await getRawMidenClient(client, rpcUrl);
-  const builder = rawClient.createCodeBuilder();
+  const builder = await rawClient.createCodeBuilder();
   for (const library of libraries) {
     const builtLibrary = builder.buildLibrary(library.namespace, library.code);
     if (library.linking === 'static') {

@@ -631,7 +631,7 @@ mod tests {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
 
         let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);

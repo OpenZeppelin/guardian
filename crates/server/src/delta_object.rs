@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_delta_object_deserialization() {
         let json = r#"{
-            "account_id": "0x2f02fa4c9e787b101bf02bc266db39",
+            "account_id": "0x4a4a4a4a4a4a4a014a4a4a4a4a4a4a",
             "nonce": 0,
             "prev_commitment": "0xdc2820847638d1f15f174ea0657e3228e5b7774be44be1e608e4c64d92eaaaeb",
             "new_commitment": "0x8fa68eabc9817e17900a7f1f705c1ecdeef6ab64c15ca1b66447272fb8fa49b2",

@@ -73,16 +73,16 @@ fn procedure_name_and_component(
 
 fn mock_commitment(seed: u64) -> Word {
     Word::from([
-        Felt::new(seed),
-        Felt::new(seed + 1),
-        Felt::new(seed + 2),
-        Felt::new(seed + 3),
+        Felt::new_unchecked(seed),
+        Felt::new_unchecked(seed + 1),
+        Felt::new_unchecked(seed + 2),
+        Felt::new_unchecked(seed + 3),
     ])
 }
 
 fn main() {
-    let receive_asset = BasicWallet::receive_asset_digest();
-    let send_asset = BasicWallet::move_asset_to_note_digest();
+    let receive_asset: Word = BasicWallet::receive_asset_root().into();
+    let send_asset: Word = BasicWallet::move_asset_to_note_root().into();
 
     let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
     let account = MultisigGuardianBuilder::new(config)

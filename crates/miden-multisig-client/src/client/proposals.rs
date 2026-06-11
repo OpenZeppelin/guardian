@@ -543,7 +543,7 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new(seed), ZERO, ZERO, ZERO]),
+            Word::from([Felt::new_unchecked(seed), ZERO, ZERO, ZERO]),
         )
     }
 
@@ -583,8 +583,8 @@ mod tests {
     #[test]
     fn inline_iteration_selects_by_unique_id_when_nonce_collides() {
         let same_nonce = 42;
-        let delta_a = proposal_delta("0x7bfb0f38b0fafa103f86a805594170", same_nonce, "0xaaa", 1);
-        let delta_b = proposal_delta("0x7bfb0f38b0fafa103f86a805594171", same_nonce, "0xbbb", 2);
+        let delta_a = proposal_delta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", same_nonce, "0xaaa", 1);
+        let delta_b = proposal_delta("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c", same_nonce, "0xbbb", 2);
 
         let target = Proposal::from(&delta_b).expect("proposal parses");
 
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn inline_iteration_rejects_duplicate_ids() {
-        let delta = proposal_delta("0x7bfb0f38b0fafa103f86a805594170", 42, "0xaaa", 1);
+        let delta = proposal_delta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 42, "0xaaa", 1);
         let proposal_id = Proposal::from(&delta).expect("proposal parses").id;
 
         let mut matched: Option<(&DeltaObject, Proposal)> = None;

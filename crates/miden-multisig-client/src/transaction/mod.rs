@@ -60,7 +60,7 @@ pub fn generate_salt() -> Word {
     for (i, chunk) in bytes.chunks(8).enumerate() {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(chunk);
-        felts[i] = Felt::new(u64::from_le_bytes(arr));
+        felts[i] = guardian_shared::felt::felt_from_u64_reduced(u64::from_le_bytes(arr));
     }
     felts.into()
 }

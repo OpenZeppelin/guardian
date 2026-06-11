@@ -209,7 +209,7 @@ mod tests {
     async fn test_configure_account_success() {
         use crate::testing::helpers::generate_falcon_signature;
 
-        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
 
@@ -262,7 +262,7 @@ mod tests {
         use crate::testing::helpers::TestEcdsaSigner;
         use guardian_shared::auth_request_payload::AuthRequestPayload;
 
-        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
         let signer = TestEcdsaSigner::new();
 
         let network_client = MockNetworkClient::new()
@@ -318,7 +318,7 @@ mod tests {
     async fn test_configure_account_already_exists_reconfigures() {
         use crate::testing::helpers::generate_falcon_signature;
 
-        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
 
@@ -377,7 +377,7 @@ mod tests {
     async fn test_configure_account_preserves_existing_pause_state() {
         use crate::testing::helpers::generate_falcon_signature;
 
-        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
 
@@ -437,7 +437,7 @@ mod tests {
     async fn test_configure_account_network_error() {
         use crate::testing::helpers::generate_falcon_signature;
 
-        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
 
@@ -475,7 +475,7 @@ mod tests {
     async fn test_configure_account_unauthorized_guardian_commitment() {
         use crate::testing::helpers::generate_falcon_signature;
 
-        let account_id_hex = "0x069cde0ebf59f29063051ad8a3d32d";
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
 

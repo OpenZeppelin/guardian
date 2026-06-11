@@ -22,10 +22,10 @@ pub fn build_multisig_config_advice(
 
     let mut payload = Vec::with_capacity(4 + signer_commitments.len() * 4);
     payload.extend_from_slice(&[
-        Felt::new(threshold),
-        Felt::new(num_approvers),
-        Felt::new(0),
-        Felt::new(0),
+        Felt::new_unchecked(threshold),
+        Felt::new_unchecked(num_approvers),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
     ]);
 
     for commitment in signer_commitments.iter().rev() {
@@ -48,10 +48,10 @@ pub fn build_procedure_threshold_advice(
     let mut payload = Vec::with_capacity(8);
     payload.extend_from_slice(procedure_root.as_elements());
     payload.extend_from_slice(&[
-        Felt::new(threshold as u64),
-        Felt::new(0),
-        Felt::new(0),
-        Felt::new(0),
+        Felt::new_unchecked(threshold as u64),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
     ]);
 
     let digest = Hasher::hash_elements(&payload);

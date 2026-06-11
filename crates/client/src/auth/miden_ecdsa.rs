@@ -4,7 +4,7 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as SecretKey;
 use miden_protocol::utils::serde::Serializable;
 
 use super::miden_falcon_rpo::account_id_timestamp_to_word;
@@ -70,7 +70,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let signer = EcdsaSigner::new(secret_key);
 
-        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let account_id = AccountId::from_hex("0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a").unwrap();
         let timestamp: i64 = 1700000000;
         let signature_hex = signer.sign_account_id_with_timestamp(&account_id, timestamp);
 
@@ -95,7 +95,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let signer = EcdsaSigner::new(secret_key);
 
-        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let account_id = AccountId::from_hex("0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a").unwrap();
         let timestamp: i64 = 1700000000;
         let payload = AuthRequestPayload::from_json_bytes(br#"{"op":"push_delta"}"#).unwrap();
         let signature_hex = signer.sign_request_message(&account_id, timestamp, payload.clone());

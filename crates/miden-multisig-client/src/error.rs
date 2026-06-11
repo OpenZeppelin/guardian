@@ -147,9 +147,23 @@ impl From<guardian_client::ClientError> for MultisigError {
     }
 }
 
+/// Flattens an error's full `source()` chain into a single string so that
+/// callers see the underlying cause (e.g. the gRPC status behind a terse
+/// "RPC error") instead of only the outermost `Display`.
+pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut message = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
+}
+
 impl From<miden_client::ClientError> for MultisigError {
     fn from(err: miden_client::ClientError) -> Self {
-        MultisigError::MidenClient(err.to_string())
+        MultisigError::MidenClient(error_chain(&err))
     }
 }
 

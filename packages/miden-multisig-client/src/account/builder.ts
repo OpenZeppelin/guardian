@@ -57,7 +57,7 @@ export async function createMultisigAccount(
     ? 'openzeppelin::auth::multisig_ecdsa'
     : 'openzeppelin::auth::multisig';
 
-  const authBuilder = rawClient.createCodeBuilder();
+  const authBuilder = await rawClient.createCodeBuilder();
   authBuilder.linkModule(guardianLibraryPath, guardianMasm);
   authBuilder.linkModule(multisigLibraryPath, multisigMasm);
   const authComponentCode = authBuilder.compileAccountComponentCode(authComponentMasm);

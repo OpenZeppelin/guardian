@@ -150,14 +150,14 @@ mod fixtures {
         storage_delta_1
             .set_map_item(
                 signer_pubkeys_name.clone(),
-                StorageMapKey::new(MidenWord::from([Felt::new(3), ZERO, ZERO, ZERO])),
+                StorageMapKey::new(MidenWord::from([Felt::new_unchecked(3), ZERO, ZERO, ZERO])),
                 commitment_4,
             )
             .expect("Failed to set signer pubkey in delta 1");
         storage_delta_1
             .set_item(
                 threshold_config_name.clone(),
-                MidenWord::from([Felt::new(threshold), Felt::new(4), ZERO, ZERO]),
+                MidenWord::from([Felt::new_unchecked(threshold), Felt::new_unchecked(4), ZERO, ZERO]),
             )
             .expect("Failed to set threshold config in delta 1");
 
@@ -165,7 +165,7 @@ mod fixtures {
             account_id,
             storage_delta_1,
             AccountVaultDelta::default(),
-            Felt::new(1),
+            Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 1");
 
@@ -190,7 +190,7 @@ mod fixtures {
             .set_map_item(
                 &executed_txs_name,
                 StorageMapKey::new(tx_commitment_1),
-                MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
+                MidenWord::from([Felt::new_unchecked(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
@@ -238,14 +238,14 @@ mod fixtures {
         storage_delta_2
             .set_map_item(
                 signer_pubkeys_name.clone(),
-                StorageMapKey::new(MidenWord::from([Felt::new(4), ZERO, ZERO, ZERO])),
+                StorageMapKey::new(MidenWord::from([Felt::new_unchecked(4), ZERO, ZERO, ZERO])),
                 commitment_5,
             )
             .expect("Failed to set signer pubkey in delta 2");
         storage_delta_2
             .set_item(
                 threshold_config_name.clone(),
-                MidenWord::from([Felt::new(threshold), Felt::new(5), ZERO, ZERO]),
+                MidenWord::from([Felt::new_unchecked(threshold), Felt::new_unchecked(5), ZERO, ZERO]),
             )
             .expect("Failed to set threshold config in delta 2");
 
@@ -253,7 +253,7 @@ mod fixtures {
             account_id,
             storage_delta_2,
             AccountVaultDelta::default(),
-            Felt::new(1),
+            Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 2");
 
@@ -276,7 +276,7 @@ mod fixtures {
             .set_map_item(
                 &executed_txs_name,
                 StorageMapKey::new(tx_commitment_2),
-                MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
+                MidenWord::from([Felt::new_unchecked(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 
@@ -318,7 +318,7 @@ mod fixtures {
         storage_delta_3
             .set_item(
                 threshold_config_name.clone(),
-                MidenWord::from([Felt::new(3), Felt::new(5), ZERO, ZERO]),
+                MidenWord::from([Felt::new_unchecked(3), Felt::new_unchecked(5), ZERO, ZERO]),
             )
             .expect("Failed to set threshold config in delta 3");
 
@@ -326,7 +326,7 @@ mod fixtures {
             account_id,
             storage_delta_3,
             AccountVaultDelta::default(),
-            Felt::new(1),
+            Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 3");
 
@@ -349,7 +349,7 @@ mod fixtures {
             .set_map_item(
                 &executed_txs_name,
                 StorageMapKey::new(tx_commitment_3),
-                MidenWord::from([Felt::new(1), ZERO, ZERO, ZERO]),
+                MidenWord::from([Felt::new_unchecked(1), ZERO, ZERO, ZERO]),
             )
             .expect("Failed to apply replay protection");
 

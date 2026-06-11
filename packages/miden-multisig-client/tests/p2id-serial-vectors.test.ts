@@ -1,25 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+
+import { Word } from '@miden-sdk/miden-sdk';
+
+import { deriveP2idSerialNumber } from '../src/transaction/p2id.js';
 
 interface P2idSerialVector {
   name: string;
   seed: string;
   output: string;
 }
-
-const require = createRequire(import.meta.url);
-const sdkEntryPath = require.resolve('@miden-sdk/miden-sdk');
-const sdkDistDir = dirname(sdkEntryPath);
-const sdkWasmPath = join(sdkDistDir, 'assets', 'miden_client_web.wasm');
-
-const { initSync, Word } = await import('@miden-sdk/miden-sdk/lazy');
-initSync({ module: readFileSync(sdkWasmPath) });
-
-const { deriveP2idSerialNumber } = await import('../src/transaction/p2id.js');
 
 function loadVectors(): P2idSerialVector[] {
   const fixturePath = fileURLToPath(

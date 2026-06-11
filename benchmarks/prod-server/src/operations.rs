@@ -26,7 +26,7 @@ pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value>
         *account_id,
         AccountStorageDelta::default(),
         AccountVaultDelta::default(),
-        Felt::new(nonce),
+        Felt::new_unchecked(nonce),
     )
     .map_err(|error| anyhow!("failed to build account delta: {error}"))?;
     let tx_summary = TransactionSummary::new(

@@ -93,9 +93,8 @@ pub fn now_ms() -> i64 {
 pub fn fresh_account_id_hex(seed_byte: u8) -> String {
     AccountId::dummy(
         [seed_byte; 15],
-        miden_protocol::account::AccountIdVersion::Version0,
-        miden_protocol::account::AccountType::RegularAccountImmutableCode,
-        miden_protocol::account::AccountStorageMode::Private,
+        miden_protocol::account::AccountIdVersion::Version1,
+        miden_protocol::account::AccountType::Private,
     )
     .to_hex()
 }

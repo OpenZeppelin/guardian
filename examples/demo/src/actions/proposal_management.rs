@@ -1067,6 +1067,19 @@ fn prompt_remove_cosigner(
     Ok(TransactionType::remove_cosigner(commitment))
 }
 
+/// Parses an account address from either a `0x` hex account ID or a bech32m
+/// address (e.g. `mdev1...`). Miden 0.15 uses bech32m as the canonical
+/// user-facing address format, so faucets and other tools emit that form.
+fn parse_account_address(input: &str) -> Result<AccountId, String> {
+    if input.starts_with("0x") || input.starts_with("0X") {
+        AccountId::from_hex(input).map_err(|e| e.to_string())
+    } else {
+        AccountId::from_bech32(input)
+            .map(|(_, account_id)| account_id)
+            .map_err(|e| e.to_string())
+    }
+}
+
 fn prompt_p2id(
     state: &SessionState,
     editor: &mut DefaultEditor,
@@ -1128,7 +1141,7 @@ fn prompt_p2id(
         .ok_or_else(|| "Invalid selection".to_string())?;
 
     let faucet_id = selected_asset.faucet_id();
-    let max_amount = selected_asset.amount();
+    let max_amount = selected_asset.amount().as_u64();
 
     println!(
         "\nSelected: {} tokens from faucet {}",
@@ -1137,10 +1150,10 @@ fn prompt_p2id(
     );
 
     // Get recipient
-    print_info("Enter the recipient account ID:");
-    let recipient_hex = prompt_input(editor, "  Recipient account ID: ")?;
-    let recipient =
-        AccountId::from_hex(&recipient_hex).map_err(|e| format!("Invalid recipient: {}", e))?;
+    print_info("Enter the recipient address (bech32m, e.g. mdev1..., or 0x hex):");
+    let recipient_input = prompt_input(editor, "  Recipient address: ")?;
+    let recipient = parse_account_address(recipient_input.trim())
+        .map_err(|e| format!("Invalid recipient: {}", e))?;
 
     // Get amount
     print_info(&format!("Enter amount to transfer (max: {}):", max_amount));
@@ -1162,7 +1175,7 @@ fn prompt_p2id(
     }
 
     println!("\nTransfer details:");
-    println!("  Recipient: {}", shorten_hex(&recipient_hex));
+    println!("  Recipient: {}", shorten_hex(recipient_input.trim()));
     println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
     println!("  Amount:    {} / {} available", amount, max_amount);
 

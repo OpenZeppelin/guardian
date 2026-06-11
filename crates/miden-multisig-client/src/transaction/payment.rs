@@ -64,14 +64,14 @@ mod tests {
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
-    use miden_protocol::Felt;
-    use miden_protocol::account::AccountId;
-    use miden_protocol::account::AccountStorageMode;
     use miden_protocol::account::auth::AuthScheme;
-    use miden_protocol::asset::TokenSymbol;
+    use miden_protocol::account::{AccountId, AccountType};
+    use miden_protocol::asset::{AssetAmount, TokenSymbol};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
     use miden_standards::AuthMethod;
-    use miden_standards::account::faucets::create_basic_fungible_faucet;
+    use miden_standards::account::access::AccessControl;
+    use miden_standards::account::faucets::{FungibleFaucet, TokenName, create_fungible_faucet};
+    use miden_standards::account::policies::TokenPolicyManager;
 
     #[test]
     fn build_p2id_transaction_request_uses_custom_send_script() {
@@ -84,21 +84,28 @@ mod tests {
         ))
         .build()
         .unwrap();
-        let faucet = create_basic_fungible_faucet(
+        let faucet_definition = FungibleFaucet::builder()
+            .name(TokenName::new("test token").unwrap())
+            .symbol(TokenSymbol::try_from("TST").unwrap())
+            .decimals(8)
+            .max_supply(AssetAmount::from(1_000_000u32))
+            .build()
+            .unwrap();
+        let faucet = create_fungible_faucet(
             [5u8; 32],
-            TokenSymbol::try_from("TST").unwrap(),
-            8,
-            Felt::from(1_000_000u32),
-            AccountStorageMode::Public,
+            faucet_definition,
+            AccountType::Public,
             AuthMethod::SingleSig {
                 approver: (
                     secret_key.public_key().to_commitment().into(),
                     AuthScheme::Falcon512Poseidon2,
                 ),
             },
+            AccessControl::AuthControlled,
+            TokenPolicyManager::new(),
         )
         .unwrap();
-        let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let asset = miden_protocol::asset::FungibleAsset::new(faucet.id(), 100)
             .unwrap()
             .into();

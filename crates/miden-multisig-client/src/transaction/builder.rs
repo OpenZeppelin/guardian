@@ -711,7 +711,7 @@ mod tests {
 
     fn test_proposal() -> Proposal {
         let account_id =
-            AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").expect("valid account id");
+            AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
             AccountStorageDelta::default(),
@@ -723,7 +723,7 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new(9), ZERO, ZERO, ZERO]),
+            Word::from([Felt::new_unchecked(9), ZERO, ZERO, ZERO]),
         );
 
         Proposal::new(
@@ -731,7 +731,7 @@ mod tests {
             1,
             TransactionType::ConsumeNotes {
                 note_ids: vec![miden_protocol::note::NoteId::from_raw(Word::from([
-                    Felt::new(1),
+                    Felt::new_unchecked(1),
                     ZERO,
                     ZERO,
                     ZERO,

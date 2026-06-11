@@ -1,4 +1,5 @@
 use miden_multisig_client::{Asset, MultisigAccount};
+use miden_protocol::address::NetworkId;
 
 pub fn shorten_hex(hex: &str) -> String {
     if hex.len() <= 12 {
@@ -41,10 +42,14 @@ pub fn print_info(message: &str) {
     println!("ℹ {}", message);
 }
 
-pub fn print_account_info(account: &MultisigAccount) {
+pub fn print_account_info(account: &MultisigAccount, network_id: NetworkId) {
     print_section("Account Information");
     println!("  Account ID:     {}", &account.id().to_hex());
-    println!("  Account Type:   {:?}", account.inner().account_type());
+    println!(
+        "  Address:        {}",
+        account.inner().id().to_bech32(network_id)
+    );
+    println!("  Account Type:   {:?}", account.inner().id().account_type());
     println!("  Nonce:          {}", account.nonce());
 }
 

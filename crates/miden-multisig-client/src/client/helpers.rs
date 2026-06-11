@@ -16,7 +16,7 @@ use miden_protocol::utils::serde::Serializable;
 use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
-use crate::error::{MultisigError, Result};
+use crate::error::{MultisigError, Result, error_chain};
 use crate::execution::build_final_transaction_request;
 use crate::keystore::word_from_hex;
 use crate::proposal::{Proposal, TransactionType};
@@ -51,7 +51,11 @@ impl MultisigClient {
                 ))
             })?;
 
-        Ok(fetched_account.commitment())
+        let fetched_account = fetched_account.ok_or_else(|| {
+            MultisigError::MidenClient(format!("account {} not found on chain", account_id))
+        })?;
+
+        Ok(fetched_account.to_commitment())
     }
 
     pub(crate) async fn try_get_on_chain_account_commitment(
@@ -60,14 +64,15 @@ impl MultisigClient {
     ) -> Result<Option<Word>> {
         let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
         match rpc_client.get_account_details(account_id).await {
-            Ok(fetched_account) => {
-                let commitment = fetched_account.commitment();
+            Ok(Some(fetched_account)) => {
+                let commitment = fetched_account.to_commitment();
                 if commitment == Word::default() {
                     Ok(None)
                 } else {
                     Ok(Some(commitment))
                 }
             }
+            Ok(None) => Ok(None),
             Err(RpcError::RequestError {
                 error_kind: GrpcError::NotFound,
                 ..
@@ -358,20 +363,30 @@ impl MultisigClient {
             .miden_client
             .get_account(account_id)
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to check account: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::MidenClient(format!("failed to check account: {}", error_chain(&e)))
+            })?;
 
         if existing.is_some() {
             self.miden_client
                 .add_account(account, true)
                 .await
                 .map_err(|e| {
-                    MultisigError::MidenClient(format!("failed to update account: {}", e))
+                    MultisigError::MidenClient(format!(
+                        "failed to update account: {}",
+                        error_chain(&e)
+                    ))
                 })?;
         } else {
             self.miden_client
                 .add_account(account, imported)
                 .await
-                .map_err(|e| MultisigError::MidenClient(format!("failed to add account: {}", e)))?;
+                .map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to add account: {}",
+                        error_chain(&e)
+                    ))
+                })?;
         }
 
         Ok(())
@@ -390,7 +405,7 @@ mod tests {
     use super::MultisigClient;
 
     fn tx_summary_json() -> serde_json::Value {
-        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
             account_id,
             AccountStorageDelta::default(),
@@ -435,10 +450,10 @@ mod tests {
 
     #[test]
     fn ensure_proposal_account_id_accepts_matching_account() {
-        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
 
         let result = MultisigClient::ensure_proposal_account_id(
-            "0x7bfb0f38b0fafa103f86a805594170",
+            "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b",
             &account_id,
         );
 
@@ -447,17 +462,17 @@ mod tests {
 
     #[test]
     fn ensure_proposal_account_id_rejects_mismatched_account() {
-        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
 
         let error = MultisigClient::ensure_proposal_account_id(
-            "0x8a65fc5a39e4cd106d648e3eb4ab5f",
+            "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
             &account_id,
         )
         .unwrap_err();
 
         assert_eq!(
             error.to_string(),
-            "invalid configuration: proposal is for account 0x8a65fc5a39e4cd106d648e3eb4ab5f instead of 0x7bfb0f38b0fafa103f86a805594170"
+            "invalid configuration: proposal is for account 0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a instead of 0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"
         );
     }
 }
