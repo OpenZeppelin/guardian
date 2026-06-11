@@ -73,7 +73,7 @@ futures = "0.3"
 k256 = { version = "0.13", features = ["ecdsa", "pkcs8", "std"] }
 static_assertions = "1.1"
 tempfile = { workspace = true }
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4"] }
 miden-standards = { workspace = true }
 
 [features]
