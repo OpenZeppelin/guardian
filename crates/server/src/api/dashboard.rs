@@ -19,13 +19,6 @@ use crate::services::{
 };
 use crate::state::AppState;
 
-/// Bounded `outcome` label value for the operator-auth counters.
-/// Deliberately not the error detail — error strings are unbounded
-/// and excluded from labels by the cardinality policy.
-fn auth_outcome(ok: bool) -> &'static str {
-    if ok { "ok" } else { "error" }
-}
-
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ChallengeQuery {
@@ -114,7 +107,8 @@ pub async fn challenge_operator_login(
         .await;
     metrics::counter!(
         crate::metrics::names::OPERATOR_AUTH_CHALLENGES_TOTAL,
-        crate::metrics::names::LABEL_OUTCOME => auth_outcome(challenge.is_ok())
+        crate::metrics::names::LABEL_OUTCOME =>
+            crate::metrics::labels::Outcome::from_ok(challenge.is_ok()).as_str()
     )
     .increment(1);
     let challenge = challenge?;
@@ -153,7 +147,8 @@ pub async fn verify_operator_login(
         .await;
     metrics::counter!(
         crate::metrics::names::OPERATOR_AUTH_VERIFICATIONS_TOTAL,
-        crate::metrics::names::LABEL_OUTCOME => auth_outcome(session.is_ok())
+        crate::metrics::names::LABEL_OUTCOME =>
+            crate::metrics::labels::Outcome::from_ok(session.is_ok()).as_str()
     )
     .increment(1);
     let session = session?;

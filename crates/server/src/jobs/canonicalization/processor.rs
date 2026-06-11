@@ -14,13 +14,11 @@ pub trait Processor: Send + Sync {
     async fn process_account(&self, account_id: &str) -> Result<()>;
 }
 
-/// Record one candidate-processing outcome. `outcome` is one of the
-/// bounded set: `canonicalized`, `retried`, `discarded`,
-/// `grace_deferred`.
-fn record_candidate_outcome(outcome: &'static str) {
+/// Record one candidate-processing outcome.
+fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
     metrics::counter!(
         crate::metrics::names::CANONICALIZATION_CANDIDATES_TOTAL,
-        crate::metrics::names::LABEL_OUTCOME => outcome
+        crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
     )
     .increment(1);
 }
@@ -184,7 +182,9 @@ impl DeltasProcessorBase {
                         error = %e,
                         "Delta verification failed during submission grace period; will retry without consuming retry budget"
                     );
-                    record_candidate_outcome("grace_deferred");
+                    record_candidate_outcome(
+                        crate::metrics::labels::CandidateOutcome::GraceDeferred,
+                    );
 
                     return Ok(());
                 }
@@ -209,7 +209,7 @@ impl DeltasProcessorBase {
                         .map_err(|e| {
                             GuardianError::StorageError(format!("Failed to delete delta: {e}"))
                         })?;
-                    record_candidate_outcome("discarded");
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
 
                     // Clear the pending candidate flag after discard
                     if let Err(e) = self
@@ -244,7 +244,7 @@ impl DeltasProcessorBase {
                                 "Failed to update delta status: {e}"
                             ))
                         })?;
-                    record_candidate_outcome("retried");
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Retried);
                     metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL)
                         .increment(1);
                 }
@@ -372,29 +372,31 @@ impl DeltasProcessorBase {
                 proposal_id = %id,
                 "Deleting matching proposal as delta is now canonical"
             );
-            match storage_backend
+            // The proposal is finalized the moment its delta became
+            // canonical with a matching proposal found — the delete
+            // below is cleanup, so the event counts regardless of the
+            // delete outcome (failures stay visible via
+            // storage_operations_total{operation="delete_delta_proposal"}).
+            metrics::counter!(
+                crate::metrics::names::PROPOSALS_TOTAL,
+                crate::metrics::names::LABEL_EVENT =>
+                    crate::metrics::labels::ProposalEvent::Finalized.as_str()
+            )
+            .increment(1);
+            if let Err(e) = storage_backend
                 .delete_delta_proposal(&delta.account_id, id)
                 .await
             {
-                Ok(()) => {
-                    metrics::counter!(
-                        crate::metrics::names::PROPOSALS_TOTAL,
-                        crate::metrics::names::LABEL_EVENT => "finalized"
-                    )
-                    .increment(1);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        account_id = %delta.account_id,
-                        proposal_id = %id,
-                        error = %e,
-                        "Failed to delete proposal, but continuing"
-                    );
-                }
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    proposal_id = %id,
+                    error = %e,
+                    "Failed to delete proposal, but continuing"
+                );
             }
         }
 
-        record_candidate_outcome("canonicalized");
+        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Canonicalized);
         Ok(())
     }
 }

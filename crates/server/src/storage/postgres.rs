@@ -377,6 +377,16 @@ impl StorageBackend for PostgresService {
         StorageType::Postgres
     }
 
+    fn pool_status(&self) -> Option<crate::storage::PoolStatus> {
+        let status = self.pool.status();
+        Some(crate::storage::PoolStatus {
+            max_connections: status.max_size as u64,
+            connections: status.size as u64,
+            available: status.available as u64,
+            pending_acquires: status.waiting as u64,
+        })
+    }
+
     async fn submit_state(&self, state: &StateObject) -> Result<(), String> {
         let mut conn = self
             .pool

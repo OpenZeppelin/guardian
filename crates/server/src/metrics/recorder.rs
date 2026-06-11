@@ -24,6 +24,14 @@ const DURATION_BUCKETS: &[f64] = &[
     0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
+/// A canonicalization run is a full pass over all accounts with
+/// pending candidates and routinely exceeds the request-scale buckets
+/// above — it gets its own range up to 5 minutes so the histogram
+/// doesn't saturate at +Inf under its normal workload.
+const CANONICALIZATION_RUN_BUCKETS: &[f64] = &[
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -33,6 +41,13 @@ pub fn build_recorder() -> PrometheusRecorder {
             DURATION_BUCKETS,
         )
         .expect("static duration buckets are non-empty")
+        // Full-name matchers take precedence over suffix matchers, so
+        // this overrides the request-scale rule for the run histogram.
+        .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_RUN_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static canonicalization buckets are non-empty")
         .build_recorder()
 }
 
@@ -80,6 +95,27 @@ mod tests {
         assert!(rendered.contains("guardian_build_info{"));
         assert!(rendered.contains(&format!("version=\"{}\"", build_info::VERSION)));
         assert!(rendered.contains("} 1"));
+    }
+
+    #[test]
+    fn canonicalization_run_histogram_uses_extended_buckets() {
+        let recorder = build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            metrics::histogram!(names::CANONICALIZATION_RUN_DURATION_SECONDS).record(45.0);
+        });
+
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("guardian_canonicalization_run_duration_seconds_bucket{le=\"300\"}"),
+            "expected extended buckets in:\n{rendered}"
+        );
+        // A 45s run must land in a finite bucket, not only +Inf.
+        assert!(
+            rendered.contains("guardian_canonicalization_run_duration_seconds_bucket{le=\"60\"} 1"),
+            "45s sample must fall in the le=60 bucket:\n{rendered}"
+        );
     }
 
     #[test]

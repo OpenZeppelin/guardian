@@ -436,10 +436,14 @@ behavior.
   and leave the previous gauge values in place.
 - **Cardinality.** Label values are strictly bounded: HTTP routes use
   the route *template* (`/dashboard/accounts/{account_id}`), unmatched
-  paths collapse into `route="unmatched"`, gRPC service/method come
-  from the proto definition, and the remaining labels are small closed
-  enums. Account IDs, nonces, commitments, pubkeys, client IPs, and
-  error strings never appear in labels.
+  paths collapse into `route="unmatched"`, gRPC service/method are
+  matched against an allowlist generated from the proto definition
+  (anything unserved collapses into `service="unknown"`, so
+  path-spraying clients cannot mint time series), and the remaining
+  labels are small closed enums declared in
+  `crates/server/src/metrics/labels.rs`. Account IDs, nonces,
+  commitments, pubkeys, client IPs, and error strings never appear in
+  labels.
 
 ### Metric taxonomy
 
@@ -451,13 +455,17 @@ behavior.
 | `guardian_http_requests_in_flight` | gauge | — |
 | `guardian_grpc_requests_total` | counter | `service`, `method`, `code` |
 | `guardian_grpc_request_duration_seconds` | histogram | `service`, `method` |
+| `guardian_grpc_requests_in_flight` | gauge | — |
+| `guardian_miden_rpc_requests_total` | counter | `operation`, `outcome` |
+| `guardian_miden_rpc_duration_seconds` | histogram | `operation` |
 | `guardian_storage_operations_total` | counter | `operation`, `outcome` |
 | `guardian_storage_operation_duration_seconds` | histogram | `operation` |
+| `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | — (postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`) |
 | `guardian_canonicalization_retries_total` | counter | — |
-| `guardian_deltas_submitted_total` | counter | `kind` (`delta`/`proposal_commit`) |
+| `guardian_deltas_submitted_total` | counter | `kind` (`direct`/`proposal_commit`) |
 | `guardian_proposals_total` | counter | `event` (`created`/`signed`/`finalized`) |
 | `guardian_operator_auth_challenges_total` | counter | `outcome` |
 | `guardian_operator_auth_verifications_total` | counter | `outcome` |
@@ -466,13 +474,17 @@ behavior.
 | `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`discarded`) |
 | `guardian_proposals_in_flight` | gauge | — |
 | `guardian_accounts` | gauge | — |
+| `guardian_accounts_created_total` | counter | `kind` (`miden`/`evm`) |
 | `guardian_metrics_refresh_timestamp_seconds` | gauge | — |
 | `guardian_metrics_refresh_failures_total` | counter | — |
 | `process_*` (CPU, RSS, fds, start time) | standard | — |
 
-Durations use seconds with explicit buckets from 1ms to 10s. The
+Durations use seconds with explicit buckets from 1ms to 10s, except
+`guardian_canonicalization_run_duration_seconds` (a full pass over all
+accounts) which uses extended buckets up to 5 minutes. The
 authoritative taxonomy (including help text and the enforced label
-allowlist) lives in `crates/server/src/metrics/names.rs`.
+allowlist) lives in `crates/server/src/metrics/names.rs`; the closed
+label value sets live in `crates/server/src/metrics/labels.rs`.
 
 Example scrape config:
 

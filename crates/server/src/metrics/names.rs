@@ -23,11 +23,24 @@ pub const HTTP_REQUESTS_IN_FLIGHT: &str = "guardian_http_requests_in_flight";
 
 pub const GRPC_REQUESTS_TOTAL: &str = "guardian_grpc_requests_total";
 pub const GRPC_REQUEST_DURATION_SECONDS: &str = "guardian_grpc_request_duration_seconds";
+pub const GRPC_REQUESTS_IN_FLIGHT: &str = "guardian_grpc_requests_in_flight";
 
 // --- Storage backend ---------------------------------------------------
 
 pub const STORAGE_OPERATIONS_TOTAL: &str = "guardian_storage_operations_total";
 pub const STORAGE_OPERATION_DURATION_SECONDS: &str = "guardian_storage_operation_duration_seconds";
+
+// --- DB connection pool (postgres builds; set by the refresher) ----------
+
+pub const DB_POOL_CONNECTIONS_MAX: &str = "guardian_db_pool_connections_max";
+pub const DB_POOL_CONNECTIONS: &str = "guardian_db_pool_connections";
+pub const DB_POOL_CONNECTIONS_AVAILABLE: &str = "guardian_db_pool_connections_available";
+pub const DB_POOL_PENDING_ACQUIRES: &str = "guardian_db_pool_pending_acquires";
+
+// --- Miden RPC (outbound calls to the chain node) -------------------------
+
+pub const MIDEN_RPC_REQUESTS_TOTAL: &str = "guardian_miden_rpc_requests_total";
+pub const MIDEN_RPC_DURATION_SECONDS: &str = "guardian_miden_rpc_duration_seconds";
 
 // --- Canonicalization jobs ----------------------------------------------
 
@@ -54,6 +67,7 @@ pub const RATE_LIMIT_REJECTIONS_TOTAL: &str = "guardian_rate_limit_rejections_to
 pub const DELTAS_GAUGE: &str = "guardian_deltas";
 pub const PROPOSALS_IN_FLIGHT: &str = "guardian_proposals_in_flight";
 pub const ACCOUNTS_GAUGE: &str = "guardian_accounts";
+pub const ACCOUNTS_CREATED_TOTAL: &str = "guardian_accounts_created_total";
 pub const METRICS_REFRESH_TIMESTAMP_SECONDS: &str = "guardian_metrics_refresh_timestamp_seconds";
 pub const METRICS_REFRESH_FAILURES_TOTAL: &str = "guardian_metrics_refresh_failures_total";
 
@@ -153,6 +167,24 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "gRPC request latency in seconds, by service and method.",
     },
     MetricDef {
+        name: GRPC_REQUESTS_IN_FLIGHT,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "gRPC requests currently being served (response not yet complete).",
+    },
+    MetricDef {
+        name: MIDEN_RPC_REQUESTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OPERATION, LABEL_OUTCOME],
+        help: "Outbound RPC calls to the Miden chain node, by operation and outcome.",
+    },
+    MetricDef {
+        name: MIDEN_RPC_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[LABEL_OPERATION],
+        help: "Outbound Miden chain-node RPC latency in seconds, by operation.",
+    },
+    MetricDef {
         name: STORAGE_OPERATIONS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OPERATION, LABEL_OUTCOME],
@@ -163,6 +195,35 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Histogram,
         labels: &[LABEL_OPERATION],
         help: "Storage backend operation latency in seconds, by operation name.",
+    },
+    MetricDef {
+        name: DB_POOL_CONNECTIONS_MAX,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Maximum size of the database connection pool (postgres builds). \
+               Refreshed asynchronously.",
+    },
+    MetricDef {
+        name: DB_POOL_CONNECTIONS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Database connections currently managed by the pool, in use or idle \
+               (postgres builds). Refreshed asynchronously.",
+    },
+    MetricDef {
+        name: DB_POOL_CONNECTIONS_AVAILABLE,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Idle database connections ready to be acquired (postgres builds). \
+               Refreshed asynchronously.",
+    },
+    MetricDef {
+        name: DB_POOL_PENDING_ACQUIRES,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Tasks currently waiting to acquire a database connection — sustained \
+               nonzero values indicate pool exhaustion (postgres builds). Refreshed \
+               asynchronously.",
     },
     MetricDef {
         name: CANONICALIZATION_RUNS_TOTAL,
@@ -193,14 +254,13 @@ pub const REGISTRY: &[MetricDef] = &[
         name: DELTAS_SUBMITTED_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_KIND],
-        help: "Deltas accepted by the server, by submission kind (delta, proposal_commit).",
+        help: "Deltas successfully submitted, by kind (direct, proposal_commit).",
     },
     MetricDef {
         name: PROPOSALS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_EVENT],
-        help: "Multisig proposal lifecycle events (created, signed, threshold_reached, \
-               finalized).",
+        help: "Multisig proposal lifecycle events (created, signed, finalized).",
     },
     MetricDef {
         name: OPERATOR_AUTH_CHALLENGES_TOTAL,
@@ -247,6 +307,14 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Accounts configured on this guardian instance. Refreshed asynchronously.",
     },
     MetricDef {
+        name: ACCOUNTS_CREATED_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_KIND],
+        help: "Accounts created on this instance since process start, by network kind \
+               (miden, evm). Counter complement of the guardian_accounts gauge so \
+               rate()/increase() work.",
+    },
+    MetricDef {
         name: METRICS_REFRESH_TIMESTAMP_SECONDS,
         kind: MetricKind::Gauge,
         labels: &[],
@@ -286,17 +354,51 @@ pub fn normalize_method(method: &axum::http::Method) -> &'static str {
     }
 }
 
-/// Split a gRPC request path (`/package.Service/Method`) into bounded
-/// `(service, method)` label values. Paths that do not have the
-/// expected two-segment shape collapse into `("unknown", "unknown")`.
-pub fn normalize_grpc_method(path: &str) -> (&str, &str) {
+/// Every `(service, method)` pair the gRPC listener serves. The
+/// metrics layer wraps the tonic server *before* routing, so unrouted
+/// requests with attacker-controlled paths reach it too — labels MUST
+/// come from this closed set, never from the raw path. Keep in sync
+/// with `proto/guardian.proto` (the `grpc_label_allowlist_covers_proto`
+/// test enforces the Guardian service half).
+const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
+    ("guardian.Guardian", "Configure"),
+    ("guardian.Guardian", "PushDelta"),
+    ("guardian.Guardian", "GetDelta"),
+    ("guardian.Guardian", "GetDeltaSince"),
+    ("guardian.Guardian", "GetState"),
+    ("guardian.Guardian", "GetPubkey"),
+    ("guardian.Guardian", "PushDeltaProposal"),
+    ("guardian.Guardian", "GetDeltaProposals"),
+    ("guardian.Guardian", "GetDeltaProposal"),
+    ("guardian.Guardian", "SignDeltaProposal"),
+    ("guardian.Guardian", "GetAccountByKeyCommitment"),
+    // Served alongside Guardian via tonic-reflection (v1 and v1alpha).
+    (
+        "grpc.reflection.v1.ServerReflection",
+        "ServerReflectionInfo",
+    ),
+    (
+        "grpc.reflection.v1alpha.ServerReflection",
+        "ServerReflectionInfo",
+    ),
+];
+
+/// Map a gRPC request path (`/package.Service/Method`) to bounded
+/// `(service, method)` label values via the [`KNOWN_GRPC_METHODS`]
+/// allowlist. Anything not on the allowlist — malformed paths AND
+/// well-formed paths for methods this server does not serve — collapses
+/// into the single `("unknown", "unknown")` series, so path-spraying
+/// clients cannot mint time series.
+pub fn normalize_grpc_method(path: &str) -> (&'static str, &'static str) {
     let mut parts = path.trim_start_matches('/').splitn(2, '/');
-    match (parts.next(), parts.next()) {
-        (Some(service), Some(method)) if !service.is_empty() && !method.is_empty() => {
-            (service, method)
-        }
-        _ => ("unknown", "unknown"),
+    if let (Some(service), Some(method)) = (parts.next(), parts.next())
+        && let Some((known_service, known_method)) = KNOWN_GRPC_METHODS
+            .iter()
+            .find(|(s, m)| *s == service && *m == method)
+    {
+        return (known_service, known_method);
     }
+    ("unknown", "unknown")
 }
 
 /// Canonical lowercase label value for a numeric gRPC status code.
@@ -352,19 +454,62 @@ mod tests {
     }
 
     #[test]
-    fn normalize_grpc_method_splits_service_and_method() {
+    fn normalize_grpc_method_passes_allowlisted_methods() {
         assert_eq!(
             normalize_grpc_method("/guardian.Guardian/PushDelta"),
             ("guardian.Guardian", "PushDelta")
         );
+        assert_eq!(
+            normalize_grpc_method("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo"),
+            (
+                "grpc.reflection.v1.ServerReflection",
+                "ServerReflectionInfo"
+            )
+        );
     }
 
     #[test]
-    fn normalize_grpc_method_collapses_unknown_shapes() {
+    fn normalize_grpc_method_collapses_unknown_shapes_and_unserved_methods() {
         assert_eq!(normalize_grpc_method(""), ("unknown", "unknown"));
         assert_eq!(normalize_grpc_method("/"), ("unknown", "unknown"));
         assert_eq!(normalize_grpc_method("/no-method"), ("unknown", "unknown"));
         assert_eq!(normalize_grpc_method("/svc/"), ("unknown", "unknown"));
+        // Well-formed but unserved: attacker-controlled segments must
+        // not become label values (metric-cardinality DoS).
+        assert_eq!(
+            normalize_grpc_method("/x.Sprayed/Path9999"),
+            ("unknown", "unknown")
+        );
+        assert_eq!(
+            normalize_grpc_method("/guardian.Guardian/NoSuchMethod"),
+            ("unknown", "unknown")
+        );
+    }
+
+    /// The allowlist must cover exactly the Guardian methods declared
+    /// in the proto file, so it cannot silently drift when methods are
+    /// added or removed.
+    #[test]
+    fn grpc_label_allowlist_covers_proto() {
+        let proto = include_str!("../../proto/guardian.proto");
+        let proto_methods: HashSet<&str> = proto
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim_start();
+                line.strip_prefix("rpc ")
+                    .and_then(|rest| rest.split('(').next())
+                    .map(str::trim)
+            })
+            .collect();
+        let allowlisted: HashSet<&str> = KNOWN_GRPC_METHODS
+            .iter()
+            .filter(|(service, _)| *service == "guardian.Guardian")
+            .map(|(_, method)| *method)
+            .collect();
+        assert_eq!(
+            allowlisted, proto_methods,
+            "KNOWN_GRPC_METHODS out of sync with proto/guardian.proto"
+        );
     }
 
     #[test]

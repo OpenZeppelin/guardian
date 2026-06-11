@@ -144,6 +144,17 @@ pub async fn register_account(
             GuardianError::StorageError(format!("Failed to store metadata: {e}"))
         })?;
 
+    // Count only first-time registrations — re-registering refreshes
+    // the signer snapshot of an existing account.
+    if existing.is_none() {
+        metrics::counter!(
+            crate::metrics::names::ACCOUNTS_CREATED_TOTAL,
+            crate::metrics::names::LABEL_KIND =>
+                crate::metrics::labels::AccountKind::Evm.as_str()
+        )
+        .increment(1);
+    }
+
     Ok(RegisterEvmAccountResult {
         account_id,
         chain_id,

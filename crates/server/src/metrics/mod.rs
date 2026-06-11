@@ -20,6 +20,7 @@
 pub mod config;
 pub mod grpc;
 pub mod http;
+pub mod labels;
 pub mod names;
 pub mod recorder;
 pub mod refresher;

@@ -124,27 +124,31 @@ impl DeltaCommitStrategy {
                         proposal_id = %id,
                         "Deleting matching proposal as delta is now canonical"
                     );
-                    match ctx
+                    // Finalization is the canonical delta + matching
+                    // proposal, not the cleanup delete succeeding —
+                    // count it before attempting the delete. (This
+                    // Optimistic-mode emit and the Candidate-mode one
+                    // in jobs/canonicalization/processor.rs are
+                    // mutually exclusive per deployment, not a
+                    // double-count.)
+                    metrics::counter!(
+                        crate::metrics::names::PROPOSALS_TOTAL,
+                        crate::metrics::names::LABEL_EVENT =>
+                            crate::metrics::labels::ProposalEvent::Finalized.as_str()
+                    )
+                    .increment(1);
+                    if let Err(e) = ctx
                         .resolved
                         .storage
                         .delete_delta_proposal(&delta.account_id, id)
                         .await
                     {
-                        Ok(()) => {
-                            metrics::counter!(
-                                crate::metrics::names::PROPOSALS_TOTAL,
-                                crate::metrics::names::LABEL_EVENT => "finalized"
-                            )
-                            .increment(1);
-                        }
-                        Err(e) => {
-                            warn!(
-                                account_id = %delta.account_id,
-                                proposal_id = %id,
-                                error = %e,
-                                "Failed to delete proposal, but continuing"
-                            );
-                        }
+                        warn!(
+                            account_id = %delta.account_id,
+                            proposal_id = %id,
+                            error = %e,
+                            "Failed to delete proposal, but continuing"
+                        );
                     }
                 }
 

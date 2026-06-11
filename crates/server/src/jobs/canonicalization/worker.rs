@@ -33,7 +33,8 @@ async fn run_worker(state: AppState) {
             .record(started.elapsed().as_secs_f64());
         metrics::counter!(
             crate::metrics::names::CANONICALIZATION_RUNS_TOTAL,
-            crate::metrics::names::LABEL_OUTCOME => if result.is_ok() { "ok" } else { "error" }
+            crate::metrics::names::LABEL_OUTCOME =>
+                crate::metrics::labels::Outcome::from_ok(result.is_ok()).as_str()
         )
         .increment(1);
 

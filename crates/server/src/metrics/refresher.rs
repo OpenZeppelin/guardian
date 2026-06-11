@@ -18,13 +18,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::names::{
-    ACCOUNTS_GAUGE, DELTAS_GAUGE, LABEL_STATUS, METRICS_REFRESH_FAILURES_TOTAL,
+    ACCOUNTS_GAUGE, DB_POOL_CONNECTIONS, DB_POOL_CONNECTIONS_AVAILABLE, DB_POOL_CONNECTIONS_MAX,
+    DB_POOL_PENDING_ACQUIRES, DELTAS_GAUGE, LABEL_STATUS, METRICS_REFRESH_FAILURES_TOTAL,
     METRICS_REFRESH_TIMESTAMP_SECONDS, PROPOSALS_IN_FLIGHT,
 };
 use crate::builder::clock::Clock;
 use crate::metadata::MetadataStore;
 use crate::state::AppState;
-use crate::storage::{DeltaStatusCounts, StorageBackend};
+use crate::storage::{DeltaStatusCounts, PoolStatus, StorageBackend};
 
 /// One round of slow-aggregate values, decoupled from gauge writes.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +33,8 @@ pub struct RefreshSnapshot {
     pub delta_counts: DeltaStatusCounts,
     pub in_flight_proposals: u64,
     pub accounts_total: u64,
+    /// `None` for backends without a connection pool (filesystem).
+    pub pool: Option<PoolStatus>,
     pub fetched_at_unix_seconds: f64,
 }
 
@@ -47,11 +50,13 @@ pub async fn fetch_snapshot(
     let delta_counts = storage.count_deltas_by_status().await?;
     let in_flight_proposals = storage.count_in_flight_proposals().await?;
     let accounts_total = metadata.list().await?.len() as u64;
+    let pool = storage.pool_status();
 
     Ok(RefreshSnapshot {
         delta_counts,
         in_flight_proposals,
         accounts_total,
+        pool,
         fetched_at_unix_seconds: clock.now().timestamp() as f64,
     })
 }
@@ -64,6 +69,12 @@ pub fn apply_snapshot(snapshot: &RefreshSnapshot) {
     gauge!(DELTAS_GAUGE, LABEL_STATUS => "discarded").set(snapshot.delta_counts.discarded as f64);
     gauge!(PROPOSALS_IN_FLIGHT).set(snapshot.in_flight_proposals as f64);
     gauge!(ACCOUNTS_GAUGE).set(snapshot.accounts_total as f64);
+    if let Some(pool) = &snapshot.pool {
+        gauge!(DB_POOL_CONNECTIONS_MAX).set(pool.max_connections as f64);
+        gauge!(DB_POOL_CONNECTIONS).set(pool.connections as f64);
+        gauge!(DB_POOL_CONNECTIONS_AVAILABLE).set(pool.available as f64);
+        gauge!(DB_POOL_PENDING_ACQUIRES).set(pool.pending_acquires as f64);
+    }
     gauge!(METRICS_REFRESH_TIMESTAMP_SECONDS).set(snapshot.fetched_at_unix_seconds);
 }
 
@@ -160,6 +171,7 @@ mod tests {
         assert_eq!(snapshot.delta_counts.discarded, 1);
         assert_eq!(snapshot.in_flight_proposals, 7);
         assert_eq!(snapshot.accounts_total, 3);
+        assert_eq!(snapshot.pool, None, "mock backend reports no pool");
         assert_eq!(
             snapshot.fetched_at_unix_seconds,
             MockClock::fixed("2026-06-10T12:00:00Z").now().timestamp() as f64
@@ -194,6 +206,7 @@ mod tests {
             },
             in_flight_proposals: 4,
             accounts_total: 12,
+            pool: None,
             fetched_at_unix_seconds: 1_780_000_000.0,
         };
 
@@ -206,6 +219,36 @@ mod tests {
         assert!(rendered.contains("guardian_proposals_in_flight 4"));
         assert!(rendered.contains("guardian_accounts 12"));
         assert!(rendered.contains("guardian_metrics_refresh_timestamp_seconds 1780000000"));
+        assert!(
+            !rendered.contains("guardian_db_pool"),
+            "pool gauges must not appear for poolless backends:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn apply_snapshot_publishes_pool_gauges_when_present() {
+        let recorder = build_recorder();
+        let handle = recorder.handle();
+        let snapshot = RefreshSnapshot {
+            delta_counts: DeltaStatusCounts::default(),
+            in_flight_proposals: 0,
+            accounts_total: 0,
+            pool: Some(PoolStatus {
+                max_connections: 16,
+                connections: 10,
+                available: 3,
+                pending_acquires: 2,
+            }),
+            fetched_at_unix_seconds: 1_780_000_000.0,
+        };
+
+        metrics::with_local_recorder(&recorder, || apply_snapshot(&snapshot));
+
+        let rendered = handle.render();
+        assert!(rendered.contains("guardian_db_pool_connections_max 16"));
+        assert!(rendered.contains("guardian_db_pool_connections 10"));
+        assert!(rendered.contains("guardian_db_pool_connections_available 3"));
+        assert!(rendered.contains("guardian_db_pool_pending_acquires 2"));
     }
 
     /// Ticking cadence: the loop fetches immediately, then once per
