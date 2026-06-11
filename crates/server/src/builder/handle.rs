@@ -27,6 +27,7 @@ use crate::api::http::{
     configure, get_delta, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
     get_state, lookup, push_delta, push_delta_proposal, sign_delta_proposal,
 };
+use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
 use crate::services::start_canonicalization_worker;
@@ -37,6 +38,7 @@ use crate::state::AppState;
 /// Provides methods to run the server with the configured settings.
 pub struct ServerHandle {
     pub(crate) app_state: AppState,
+    pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
     pub(crate) body_limit_config: Option<BodyLimitConfig>,
@@ -59,16 +61,13 @@ impl ServerHandle {
             axum::Json(crate::openapi::openapi())
         }
 
+        self.startup_info.log();
+
         let mut tasks = Vec::new();
 
         // Start background jobs based on canonicalization config
-        if let Some(config) = &self.app_state.canonicalization {
-            tracing::info!(
-                check_interval_seconds = config.check_interval_seconds,
-                max_retries = config.max_retries,
-                submission_grace_period_seconds = config.submission_grace_period_seconds,
-                "Starting canonicalization worker"
-            );
+        if self.app_state.canonicalization.is_some() {
+            tracing::info!("Starting canonicalization worker");
             start_canonicalization_worker(self.app_state.clone());
         } else {
             tracing::info!(

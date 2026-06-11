@@ -81,9 +81,32 @@ resource "aws_iam_role_policy" "ecs_task_ack_secrets" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
+        Resource = concat(
+          [data.aws_secretsmanager_secret.ack_falcon[0].arn],
+          var.guardian_ack_ecdsa_kms_key_arn == "" ? [data.aws_secretsmanager_secret.ack_ecdsa[0].arn] : []
+        )
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "ecs_task_ack_ecdsa_kms" {
+  count = var.guardian_ack_ecdsa_kms_key_arn != "" ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-ack-ecdsa-kms"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:GetPublicKey",
+          "kms:Sign"
+        ]
         Resource = [
-          data.aws_secretsmanager_secret.ack_falcon[0].arn,
-          data.aws_secretsmanager_secret.ack_ecdsa[0].arn
+          var.guardian_ack_ecdsa_kms_key_arn
         ]
       }
     ]
