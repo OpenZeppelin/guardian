@@ -254,6 +254,9 @@ pub struct MockStorageBackend {
         Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ProposalRecord>, String>>>>,
     pub count_deltas_by_status_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::DeltaStatusCounts, String>>>>,
+    /// Number of `count_deltas_by_status` invocations; the metrics
+    /// refresher tests assert ticking cadence against this.
+    pub count_deltas_by_status_calls: Arc<StdMutex<u64>>,
     pub count_in_flight_proposals_responses: Arc<StdMutex<Vec<StdResult<u64, String>>>>,
     pub latest_activity_timestamp_responses:
         Arc<StdMutex<Vec<StdResult<Option<chrono::DateTime<chrono::Utc>>, String>>>>,
@@ -642,6 +645,7 @@ impl StorageBackend for MockStorageBackend {
     }
 
     async fn count_deltas_by_status(&self) -> Result<crate::storage::DeltaStatusCounts, String> {
+        *self.count_deltas_by_status_calls.lock().unwrap() += 1;
         self.count_deltas_by_status_responses
             .lock()
             .unwrap()

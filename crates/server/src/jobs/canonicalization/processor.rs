@@ -14,6 +14,17 @@ pub trait Processor: Send + Sync {
     async fn process_account(&self, account_id: &str) -> Result<()>;
 }
 
+/// Record one candidate-processing outcome. `outcome` is one of the
+/// bounded set: `canonicalized`, `retried`, `discarded`,
+/// `grace_deferred`.
+fn record_candidate_outcome(outcome: &'static str) {
+    metrics::counter!(
+        crate::metrics::names::CANONICALIZATION_CANDIDATES_TOTAL,
+        crate::metrics::names::LABEL_OUTCOME => outcome
+    )
+    .increment(1);
+}
+
 fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
     let mut candidates: Vec<DeltaObject> = deltas
         .iter()
@@ -173,6 +184,7 @@ impl DeltasProcessorBase {
                         error = %e,
                         "Delta verification failed during submission grace period; will retry without consuming retry budget"
                     );
+                    record_candidate_outcome("grace_deferred");
 
                     return Ok(());
                 }
@@ -197,6 +209,7 @@ impl DeltasProcessorBase {
                         .map_err(|e| {
                             GuardianError::StorageError(format!("Failed to delete delta: {e}"))
                         })?;
+                    record_candidate_outcome("discarded");
 
                     // Clear the pending candidate flag after discard
                     if let Err(e) = self
@@ -231,6 +244,9 @@ impl DeltasProcessorBase {
                                 "Failed to update delta status: {e}"
                             ))
                         })?;
+                    record_candidate_outcome("retried");
+                    metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL)
+                        .increment(1);
                 }
 
                 Ok(())
@@ -356,19 +372,29 @@ impl DeltasProcessorBase {
                 proposal_id = %id,
                 "Deleting matching proposal as delta is now canonical"
             );
-            if let Err(e) = storage_backend
+            match storage_backend
                 .delete_delta_proposal(&delta.account_id, id)
                 .await
             {
-                tracing::warn!(
-                    account_id = %delta.account_id,
-                    proposal_id = %id,
-                    error = %e,
-                    "Failed to delete proposal, but continuing"
-                );
+                Ok(()) => {
+                    metrics::counter!(
+                        crate::metrics::names::PROPOSALS_TOTAL,
+                        crate::metrics::names::LABEL_EVENT => "finalized"
+                    )
+                    .increment(1);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        account_id = %delta.account_id,
+                        proposal_id = %id,
+                        error = %e,
+                        "Failed to delete proposal, but continuing"
+                    );
+                }
             }
         }
 
+        record_candidate_outcome("canonicalized");
         Ok(())
     }
 }

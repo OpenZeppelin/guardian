@@ -216,6 +216,11 @@ pub async fn push_delta_proposal(
         signer_count = stored_signer_count,
         "push_delta_proposal stored"
     );
+    metrics::counter!(
+        crate::metrics::names::PROPOSALS_TOTAL,
+        crate::metrics::names::LABEL_EVENT => "created"
+    )
+    .increment(1);
 
     Ok(PushDeltaProposalResult {
         delta: delta_proposal.clone(),

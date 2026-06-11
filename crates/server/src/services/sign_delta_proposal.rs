@@ -160,6 +160,11 @@ pub async fn sign_delta_proposal(
         .update_delta_proposal(&normalized_commitment, &delta_proposal)
         .await
         .map_err(GuardianError::StorageError)?;
+    metrics::counter!(
+        crate::metrics::names::PROPOSALS_TOTAL,
+        crate::metrics::names::LABEL_EVENT => "signed"
+    )
+    .increment(1);
 
     Ok(SignDeltaProposalResult {
         delta: delta_proposal.clone(),
