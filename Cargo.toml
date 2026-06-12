@@ -65,7 +65,7 @@ chrono = "0.4"
 miden-protocol = "0.15.3"
 miden-standards = "0.15.3"
 miden-tx = "0.15.3"
-miden-node-proto = { git = "https://github.com/0xMiden/node.git", rev = "6649a4ce774bc842c08e6bdc314f6ddafb816282" }
+miden-node-proto ="0.15.0"
 miden-testing = "0.15.3"
-miden-client = { git = "https://github.com/0xMiden/miden-client.git", rev = "ed94b05d6faba126187e141f1ed8e85ca85a1652" }
-miden-client-sqlite-store = { git = "https://github.com/0xMiden/miden-client.git", rev = "ed94b05d6faba126187e141f1ed8e85ca85a1652" }
+miden-client = { git = "https://github.com/0xMiden/miden-client.git", rev = "edf39b26494bbd3843af9417b9832816d2712df7" }
+miden-client-sqlite-store = { git = "https://github.com/0xMiden/miden-client.git", rev = "edf39b26494bbd3843af9417b9832816d2712df7" }
