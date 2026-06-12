@@ -5,9 +5,7 @@ use tonic::{
     Request,
 };
 
-pub use miden_node_proto::generated::{
-    account, blockchain, note, primitives, rpc, transaction,
-};
+pub use miden_node_proto::generated::{account, blockchain, note, primitives, rpc, transaction};
 pub use rpc::api_client::ApiClient;
 
 /// Simple wrapper around the tonic-generated ApiClient

@@ -157,7 +157,12 @@ mod fixtures {
         storage_delta_1
             .set_item(
                 threshold_config_name.clone(),
-                MidenWord::from([Felt::new_unchecked(threshold), Felt::new_unchecked(4), ZERO, ZERO]),
+                MidenWord::from([
+                    Felt::new_unchecked(threshold),
+                    Felt::new_unchecked(4),
+                    ZERO,
+                    ZERO,
+                ]),
             )
             .expect("Failed to set threshold config in delta 1");
 
@@ -245,7 +250,12 @@ mod fixtures {
         storage_delta_2
             .set_item(
                 threshold_config_name.clone(),
-                MidenWord::from([Felt::new_unchecked(threshold), Felt::new_unchecked(5), ZERO, ZERO]),
+                MidenWord::from([
+                    Felt::new_unchecked(threshold),
+                    Felt::new_unchecked(5),
+                    ZERO,
+                    ZERO,
+                ]),
             )
             .expect("Failed to set threshold config in delta 2");
 

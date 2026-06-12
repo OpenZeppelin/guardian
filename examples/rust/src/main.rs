@@ -322,7 +322,12 @@ async fn main() -> ClientResult<()> {
             }
         };
 
-        let salt = Word::from([Felt::new_unchecked(42), Felt::new_unchecked(0), Felt::new_unchecked(0), Felt::new_unchecked(0)]);
+        let salt = Word::from([
+            Felt::new_unchecked(42),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
 
         let (tx_request, _config_hash) = match multisig::build_update_signers_transaction_request(
             3,

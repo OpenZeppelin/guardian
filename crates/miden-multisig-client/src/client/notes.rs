@@ -120,7 +120,9 @@ impl MultisigClient {
                 });
                 if can_consume_now {
                     Some(ConsumableNote {
-                        id: record.id().expect("consumable note record has a committed note id"),
+                        id: record
+                            .id()
+                            .expect("consumable note record has a committed note id"),
                         assets: record.assets().iter().cloned().collect(),
                     })
                 } else {
@@ -149,7 +151,9 @@ impl MultisigClient {
             .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
             .map(|(record, relevances)| {
                 let note = ConsumableNote {
-                    id: record.id().expect("consumable note record has a committed note id"),
+                    id: record
+                        .id()
+                        .expect("consumable note record has a committed note id"),
                     assets: record.assets().iter().cloned().collect(),
                 };
                 let statuses: Vec<(AccountId, String)> = relevances
@@ -177,7 +181,9 @@ impl MultisigClient {
             .into_iter()
             .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
             .map(|(record, _)| ConsumableNote {
-                id: record.id().expect("consumable note record has a committed note id"),
+                id: record
+                    .id()
+                    .expect("consumable note record has a committed note id"),
                 assets: record.assets().iter().cloned().collect(),
             })
             .collect();

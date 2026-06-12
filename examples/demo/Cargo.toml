@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 miden-multisig-client = { path = "../../crates/miden-multisig-client" }
 
-miden-client = { workspace = true, features = ["tonic", "testing"] }
+miden-client = { workspace = true, features = ["tonic"] }
 miden-protocol = { workspace = true }
 
 tokio = { workspace = true, features = ["full"] }

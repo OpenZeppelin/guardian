@@ -20,7 +20,9 @@ fn domain_tag() -> Word {
         for chunk in DOMAIN_TAG_BYTES.chunks(8) {
             let mut chunk_bytes = [0u8; 8];
             chunk_bytes[..chunk.len()].copy_from_slice(chunk);
-            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(chunk_bytes)));
+            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(
+                chunk_bytes,
+            )));
         }
         Rpo256::hash_elements(&elements)
     })
@@ -187,7 +189,9 @@ mod tests {
         for chunk in DOMAIN_TAG_BYTES.chunks(8) {
             let mut bytes = [0u8; 8];
             bytes[..chunk.len()].copy_from_slice(chunk);
-            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(bytes)));
+            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(
+                bytes,
+            )));
         }
         let expected = Rpo256::hash_elements(&elements);
         assert_eq!(tag, expected);

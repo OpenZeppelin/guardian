@@ -215,7 +215,12 @@ mod tests {
     #[test]
     fn test_hash_pub_key() {
         use miden_protocol::Felt;
-        let pub_key = [Felt::new_unchecked(1), Felt::new_unchecked(2), Felt::new_unchecked(3), Felt::new_unchecked(4)];
+        let pub_key = [
+            Felt::new_unchecked(1),
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(3),
+            Felt::new_unchecked(4),
+        ];
         let hash1 = hash_pub_key(pub_key.into());
         let hash2 = hash_pub_key(pub_key.into());
 

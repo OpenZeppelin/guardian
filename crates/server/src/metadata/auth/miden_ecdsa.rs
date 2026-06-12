@@ -209,11 +209,8 @@ mod tests {
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
-        let account_id = AccountId::dummy(
-            [0u8; 15],
-            AccountIdVersion::Version1,
-            AccountType::Private,
-        );
+        let account_id =
+            AccountId::dummy([0u8; 15], AccountIdVersion::Version1, AccountType::Private);
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
         let request_payload = AuthRequestPayload::empty();
@@ -253,11 +250,8 @@ mod tests {
         let secret_key2 = SecretKey::new();
         let public_key2 = secret_key2.public_key();
 
-        let account_id = AccountId::dummy(
-            [1u8; 15],
-            AccountIdVersion::Version1,
-            AccountType::Private,
-        );
+        let account_id =
+            AccountId::dummy([1u8; 15], AccountIdVersion::Version1, AccountType::Private);
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
         let request_payload = AuthRequestPayload::empty();
@@ -294,11 +288,8 @@ mod tests {
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
-        let account_id = AccountId::dummy(
-            [4u8; 15],
-            AccountIdVersion::Version1,
-            AccountType::Private,
-        );
+        let account_id =
+            AccountId::dummy([4u8; 15], AccountIdVersion::Version1, AccountType::Private);
         let account_id_hex = account_id.to_hex();
         let timestamp1: i64 = 1700000000;
         let timestamp2: i64 = 1700000001;
@@ -335,11 +326,8 @@ mod tests {
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
-        let account_id = AccountId::dummy(
-            [7u8; 15],
-            AccountIdVersion::Version1,
-            AccountType::Private,
-        );
+        let account_id =
+            AccountId::dummy([7u8; 15], AccountIdVersion::Version1, AccountType::Private);
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
         let request_payload = AuthRequestPayload::empty();
@@ -378,11 +366,8 @@ mod tests {
         let secret_key = SecretKey::new();
         let public_key = secret_key.public_key();
 
-        let account_id = AccountId::dummy(
-            [8u8; 15],
-            AccountIdVersion::Version1,
-            AccountType::Private,
-        );
+        let account_id =
+            AccountId::dummy([8u8; 15], AccountIdVersion::Version1, AccountType::Private);
         let account_id_hex = account_id.to_hex();
         let timestamp: i64 = 1700000000;
 

@@ -49,7 +49,10 @@ pub fn print_account_info(account: &MultisigAccount, network_id: NetworkId) {
         "  Address:        {}",
         account.inner().id().to_bech32(network_id)
     );
-    println!("  Account Type:   {:?}", account.inner().id().account_type());
+    println!(
+        "  Account Type:   {:?}",
+        account.inner().id().account_type()
+    );
     println!("  Nonce:          {}", account.nonce());
 }
 

@@ -4,12 +4,12 @@ use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::FungibleAsset;
 use miden_protocol::note::NoteId;
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
+use crate::execution::build_transfer_asset;
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
 use crate::payload::ProposalPayload;
@@ -363,9 +363,8 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
-        // Create the fungible asset
-        let asset = FungibleAsset::new(faucet_id, amount)
-            .map_err(|e| MultisigError::InvalidConfig(format!("failed to create asset: {}", e)))?;
+        // Create the fungible asset, preserving the held asset's callback flag.
+        let asset = build_transfer_asset(account.inner(), faucet_id, amount)?;
 
         // Generate salt for replay protection
         let salt = generate_salt();

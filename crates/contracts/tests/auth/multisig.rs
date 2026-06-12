@@ -681,7 +681,10 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         .unwrap();
 
     assert_eq!(threshold_config_storage[0], Felt::new_unchecked(threshold));
-    assert_eq!(threshold_config_storage[1], Felt::new_unchecked(num_of_approvers));
+    assert_eq!(
+        threshold_config_storage[1],
+        Felt::new_unchecked(num_of_approvers)
+    );
 
     Ok(())
 }
@@ -819,7 +822,13 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     let mut updated_multisig_account = multisig_account.clone();
     updated_multisig_account.apply_delta(update_guardian_public_key_tx.account_delta())?;
 
-    let storage_key = [Felt::new_unchecked(0), Felt::new_unchecked(0), Felt::new_unchecked(0), Felt::new_unchecked(0)].into();
+    let storage_key = [
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+    ]
+    .into();
 
     // Verify the guardian public key was actually updated in storage
     let guardian_public_key_name = StorageSlotName::new(GUARDIAN_PUBLIC_KEY_SLOT).unwrap();
@@ -1065,7 +1074,11 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     let account = MultisigGuardianBuilder::new(config)
         .with_seed([7u8; 32])
         .build()?;
-    println!("REPRO account nonce = {:?}, seed_present = {}", account.nonce(), account.seed().is_some());
+    println!(
+        "REPRO account nonce = {:?}, seed_present = {}",
+        account.nonce(),
+        account.seed().is_some()
+    );
 
     // Empty chain; the account is NOT pre-committed.
     let mock_chain = MockChainBuilder::new().build().unwrap();
@@ -1101,8 +1114,8 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     end
     "#,
         )?;
-    let advice_inputs = AdviceInputs::default()
-        .with_map(advice_map.into_iter().map(|(k, v)| (k, v.to_vec())));
+    let advice_inputs =
+        AdviceInputs::default().with_map(advice_map.into_iter().map(|(k, v)| (k, v.to_vec())));
 
     let result = mock_chain
         .build_tx_context(account.clone(), &[], &[])?

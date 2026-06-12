@@ -11,7 +11,9 @@ use crate::error::Result;
 use async_trait::async_trait;
 use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore};
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, SigningKey as SecretKey, Signature};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey, Signature, SigningKey as SecretKey,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
