@@ -22,6 +22,7 @@ storage, or network), not after Compose.
 | Guide | Mode |
 |---|---|
 | [AWS-managed ACK signers](./aws-signers/README.md) | Self-hosted Compose: Postgres + Secrets Manager (Falcon) + KMS (ECDSA) |
+| [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 
 ## Adding a guide
 

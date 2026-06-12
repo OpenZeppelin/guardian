@@ -10,6 +10,8 @@ templates/
 .env.prod
 .env.stg
 .env.registry
+docs/guides/miden-dashboard/operators.json
+docs/guides/miden-dashboard/guardian-dashboard/
 
 .cursor/
 .claude/
