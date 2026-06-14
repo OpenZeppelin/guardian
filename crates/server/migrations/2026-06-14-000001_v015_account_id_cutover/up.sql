@@ -1,0 +1,21 @@
+-- Miden 0.15 account-ID cutover purge.
+--
+-- Miden 0.15 invalidated account ID version 0 (0xMiden/protocol#2842): encoded
+-- version `0` is now rejected, so every pre-0.15 (v0) account ID -- and every
+-- serialized AccountDelta / TransactionSummary blob that embeds one -- fails to
+-- deserialize under 0.15 with `\`0\` is not a known account ID version`. A v0 ID
+-- is a proof-of-work-derived commitment with no v1 equivalent, so there is no
+-- in-place migration. The Miden team confirmed pre-0.15 data can be dropped.
+--
+-- This one-time cutover clears all per-account operational data so 0.15 starts
+-- from a clean, v1-only state. It runs once on the first 0.15 deploy, before any
+-- v1 account can be created. The append-only `admin_actions` forensic audit
+-- trail is deliberately preserved.
+--
+-- Note: this covers the Postgres backend only. Filesystem-backend deployments
+-- clear pre-0.15 data by removing the storage data directory.
+--
+-- IRREVERSIBLE: truncated rows cannot be restored (see down.sql). No foreign
+-- keys reference these tables, so no CASCADE is required.
+
+TRUNCATE TABLE states, deltas, delta_proposals, account_metadata RESTART IDENTITY;

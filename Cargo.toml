@@ -67,5 +67,5 @@ miden-standards = "0.15.3"
 miden-tx = "0.15.3"
 miden-node-proto ="0.15.0"
 miden-testing = "0.15.3"
-miden-client = { git = "https://github.com/0xMiden/miden-client.git", rev = "edf39b26494bbd3843af9417b9832816d2712df7" }
-miden-client-sqlite-store = { git = "https://github.com/0xMiden/miden-client.git", rev = "edf39b26494bbd3843af9417b9832816d2712df7" }
+miden-client = "0.15.0"
+miden-client-sqlite-store = "0.15.0"
