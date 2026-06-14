@@ -879,7 +879,14 @@ export class Multisig {
       );
 
       if (canConsumeNow) {
-        const noteId = inputNote.id().toString();
+        // Miden 0.15: InputNoteRecord.id() is `NoteId | undefined` (partial,
+        // metadata-less notes have no id yet). A consumable note carries full
+        // metadata, but guard to satisfy the type and skip any id-less record.
+        const id = inputNote.id();
+        if (id === undefined) {
+          continue;
+        }
+        const noteId = id.toString();
         const details = inputNote.details();
         const fungibleAssets = details.assets().fungibleAssets();
 

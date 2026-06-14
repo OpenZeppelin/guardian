@@ -7,7 +7,6 @@
 import {
   AccountBuilder,
   AccountComponent,
-  AccountType,
   AccountStorageMode,
   type MidenClient,
 } from '@miden-sdk/miden-sdk';
@@ -75,8 +74,11 @@ export async function createMultisigAccount(
     ? AccountStorageMode.public()
     : AccountStorageMode.private();
 
+  // Miden 0.15: the account-ID no longer encodes regular/faucet or code
+  // mutability. `AccountType` collapsed to visibility (Private/Public), which is
+  // set via `storageMode()`; a multisig is "regular" by virtue of not being a
+  // faucet. The former `.accountType(RegularAccountUpdatableCode)` call is gone.
   const accountBuilder = new AccountBuilder(seed)
-    .accountType(AccountType.RegularAccountUpdatableCode)
     .storageMode(storageMode)
     .withAuthComponent(authComponent)
     .withBasicWalletComponent();

@@ -8,8 +8,11 @@ import { defineConfig } from 'vitest/config';
 // production, so tests must exercise that same build. Alias the bare specifier
 // to the WASM entry (matching `@miden-sdk/miden-sdk/lazy`) and initialize its
 // WASM module once in `setupFiles`.
+//
+// 0.15.0 split dist into single-thread (`st`) / multi-thread (`mt`) builds; the
+// WASM single-thread lazy entry is `dist/st/index.js` (was `dist/index.js`).
 const midenWasmEntry = fileURLToPath(
-  new URL('./node_modules/@miden-sdk/miden-sdk/dist/index.js', import.meta.url),
+  new URL('./node_modules/@miden-sdk/miden-sdk/dist/st/index.js', import.meta.url),
 );
 
 export default defineConfig({

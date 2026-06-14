@@ -6,4 +6,7 @@ import { initSync } from '@miden-sdk/miden-sdk/lazy';
 
 const require = createRequire(import.meta.url);
 const sdkRootDir = dirname(require.resolve('@miden-sdk/miden-sdk/package.json'));
-initSync({ module: readFileSync(join(sdkRootDir, 'dist', 'assets', 'miden_client_web.wasm')) });
+// 0.15.0 moved the WASM asset under the single-thread build dir (was dist/assets).
+initSync({
+  module: readFileSync(join(sdkRootDir, 'dist', 'st', 'assets', 'miden_client_web.wasm')),
+});
