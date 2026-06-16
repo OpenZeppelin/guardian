@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # Fixed uid so the provisioned dashboard can reference this datasource
+    # directly without a template-variable picker.
+    uid: guardian-prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

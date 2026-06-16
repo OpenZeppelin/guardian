@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: guardian
+    metrics_path: /metrics
+    static_configs:
+      # guardian-server's metrics listener. With the server run on the
+      # host via `cargo run`, GUARDIAN_METRICS_ADDR defaults to
+      # 127.0.0.1:9464 — reachable from this container as
+      # host.docker.internal:9464. If you run the server inside Docker on
+      # the same compose network instead, change this to
+      # `server:9464` and drop the extra_hosts mapping in
+      # docker-compose.yml.
+      - targets: ["host.docker.internal:9464"]
+    # Matches `GUARDIAN_METRICS_BEARER_TOKEN=devtoken` on the server. This
+    # is a throwaway DEV token — in production use `credentials_file:`
+    # pointing at a mounted secret instead of an inline value, and never
+    # commit a real token.
+    authorization:
+      type: Bearer
+      credentials: devtoken
