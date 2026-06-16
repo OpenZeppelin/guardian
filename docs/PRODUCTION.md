@@ -50,6 +50,10 @@ Before treating a deployment as production-ready:
   `guardian_ack_ecdsa_kms_key_arn` per
   [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-backend-aws-kms).
 - Confirm `DATABASE_URL` is supplied through the Terraform-managed RDS secret.
+- Optionally enable storage encryption at rest: run
+  `./scripts/aws-deploy.sh bootstrap-storage-encryption-key`, then deploy with
+  `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set, against an empty store (the 0.15
+  cutover is the natural window). See "Storage encryption" below.
 - Review RDS backup retention, deletion protection, and final snapshot
   settings for the stack.
 - Set `GUARDIAN_CORS_ALLOWED_ORIGINS` to the exact browser origins that need
@@ -62,6 +66,34 @@ Before treating a deployment as production-ready:
   tasks.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
+
+## Storage encryption
+
+Guardian can encrypt the sensitive stored payloads (account state, delta and
+proposal payloads) at rest, above whatever disk-level encryption the database
+already provides. It is opt-in: set a key source and the server encrypts; set
+none and behavior is unchanged.
+
+- Production key source: AWS Secrets Manager, holding
+  `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`. On the standard
+  stack, `./scripts/aws-deploy.sh bootstrap-storage-encryption-key` creates it and
+  a deploy with `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set wires
+  `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` plus the task-role
+  `secretsmanager:GetSecretValue` grant (same pattern as the ACK keys). `AWS_REGION`
+  is reused.
+- Enable against an **empty** store. The server writes a one-time marker on the
+  first encrypted write and then refuses to mix plaintext and ciphertext, so it
+  fails fast if a key is configured against a store that already holds plaintext
+  records. The Miden 0.15 cutover (which truncates account data) is the natural
+  enablement window.
+- Startup is fail-fast: a missing/malformed/wrong-length key, or more than one
+  key source, prevents startup rather than degrading to plaintext.
+- Key rotation: add a new entry to `keys` and move `active`; keep the old key so
+  existing records still decrypt. Bulk re-encryption tooling is not yet provided.
+
+Full configuration and a dev walkthrough are in
+[`CONFIGURATION.md`](./CONFIGURATION.md#storage-encryption-at-rest) and the
+[storage-encryption quickstart](../speckit/features/001-storage-encryption/quickstart.md).
 
 ## Where details live
 

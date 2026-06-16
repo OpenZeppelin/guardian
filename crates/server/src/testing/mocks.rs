@@ -16,6 +16,14 @@ type PullDeltasResult = StdResult<Vec<DeltaObject>, String>;
 type GetMetadataResult = StdResult<Option<crate::metadata::AccountMetadata>, String>;
 type ListResult = StdResult<Vec<String>, String>;
 
+fn delta_to_proposal_record(proposal: DeltaObject) -> crate::storage::ProposalRecord {
+    crate::storage::ProposalRecord {
+        account_id: proposal.account_id.clone(),
+        commitment: proposal.new_commitment.clone().unwrap_or_default(),
+        proposal,
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct MockNetworkClient {
     pub verify_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -531,7 +539,10 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Err("Mock: No proposal found".to_string()))
     }
 
-    async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_all_delta_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<crate::storage::ProposalRecord>, String> {
         self.pull_all_delta_proposals_calls
             .lock()
             .unwrap()
@@ -541,6 +552,12 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
+            .map(|proposals| {
+                proposals
+                    .into_iter()
+                    .map(delta_to_proposal_record)
+                    .collect()
+            })
     }
 
     async fn update_delta_proposal(

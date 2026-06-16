@@ -114,6 +114,7 @@ pub struct ProposalRecord {
     pub commitment: String,
     pub proposal: DeltaObject,
 }
+pub(crate) mod encryption;
 pub mod filesystem;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -224,11 +225,17 @@ pub trait StorageBackend: Send + Sync {
         account_id: &str,
         commitment: &str,
     ) -> Result<DeltaObject, String>;
-    async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String>;
-    async fn pull_pending_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_all_delta_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String>;
+    async fn pull_pending_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
         let mut proposals = self.pull_all_delta_proposals(account_id).await?;
-        proposals.retain(|proposal| proposal.status.is_pending());
-        proposals.sort_by_key(|proposal| proposal.nonce);
+        proposals.retain(|record| record.proposal.status.is_pending());
+        proposals.sort_by_key(|record| record.proposal.nonce);
         Ok(proposals)
     }
     async fn update_delta_proposal(

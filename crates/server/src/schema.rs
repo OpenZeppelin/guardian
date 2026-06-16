@@ -108,4 +108,14 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    /// Single-row store-level encryption marker. Its presence indicates the
+    /// store is encrypted.
+    storage_encryption_marker (id) {
+        id -> Bool,
+        scheme_version -> Int2,
+        init_kid -> Text,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(states, deltas, delta_proposals, account_metadata,);

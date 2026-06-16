@@ -49,6 +49,46 @@ and falls back to fixed defaults when they're unset
 | `GUARDIAN_ACK_FALCON_SECRET_ID` | `guardian-prod/server/ack-falcon-secret-key` | Secrets Manager name/ARN for the Falcon ACK secret key. |
 | `GUARDIAN_ACK_ECDSA_SECRET_ID` | `guardian-prod/server/ack-ecdsa-secret-key` | Secrets Manager name/ARN for the ECDSA ACK secret key. Used only when the ECDSA backend is `in-memory`. |
 
+### Storage encryption at rest
+
+Application-layer encryption of the sensitive stored payloads (account state,
+delta and proposal payloads). It is **opt-in by key-source presence** — configure
+a key and the server encrypts; configure none and it stores plaintext exactly as
+before. Routing/index fields (account id, nonce, commitments, status, timestamps)
+always stay plaintext. See the [storage-encryption quickstart](../speckit/features/001-storage-encryption/quickstart.md).
+
+**Which variable do I set?** Choose **one key source** — the dev key for local
+work, or the Secrets Manager secret for production. You never set both (doing so
+is a startup error). `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` is **not** a key — it is
+an optional label, and most users leave it unset.
+
+**Key sources** (set exactly one; presence is what turns encryption on):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY` | _unset_ | **Dev key source.** The actual 32-byte key, base64-encoded (`openssl rand -base64 32`). |
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` | _unset_ | **Prod key source.** AWS Secrets Manager name/ARN of a secret holding a structured `{ "active": kid, "keys": { kid: base64-32-bytes } }` document (one or more keys). Reuses `AWS_REGION`. |
+
+**Optional label:**
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` | `k1` | Only used with the dev key source. Sets the key id (`kid`) recorded on each encrypted record so the key can be identified later. The default is fine for almost everyone — leave it unset unless you specifically need the dev key's id to match an id used elsewhere. (With Secrets Manager the ids come from the secret's `keys`/`active` fields instead, so this variable is ignored.) |
+
+Every encrypted record stores the `kid` of the key that wrote it, and on read the
+key is resolved by that id — this is what lets Secrets Manager hold several keys
+and rotate them (add a new key, repoint `active`, keep the old key so existing
+records still decrypt). The dev key source holds a single key, so it cannot do
+multi-key rotation reads; that is a production capability.
+
+Rules: configure **exactly one** key source (both set → startup error). When a key
+source is set the server validates it at startup and fails fast on a
+missing/malformed/wrong-length key — it never silently falls back to plaintext.
+Encryption is fixed for a populated store: the server records a marker on the
+first encrypted write and refuses to mix plaintext and ciphertext, so enable it
+against an empty store (e.g. after the Miden 0.15 cutover). Switching an existing
+store requires an explicit re-encryption migration (not yet provided).
+
 ### Hosted ECDSA signer backend
 
 The ECDSA ACK signer can keep its private key outside the process in a hosted

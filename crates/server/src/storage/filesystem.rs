@@ -1,6 +1,7 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
+use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
     GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
@@ -186,22 +187,32 @@ impl FilesystemService {
         &self,
         account_id: &str,
     ) -> Result<Vec<(String, DeltaObject)>, String> {
-        let mut out = Vec::new();
+        Ok(self
+            .load_proposal_records(account_id)
+            .await?
+            .into_iter()
+            .filter(|record| record.proposal.status.is_pending())
+            .map(|record| (record.commitment, record.proposal))
+            .collect())
+    }
+
+    /// Walk the per-account proposals directory and return one
+    /// [`ProposalRecord`] per `<commitment>.json` file, propagating any
+    /// read/parse/decrypt failure so callers never see a partial list.
+    async fn load_proposal_records(&self, account_id: &str) -> Result<Vec<ProposalRecord>, String> {
+        let mut proposals = Vec::new();
         for filename in self.list_proposal_filenames(account_id).await? {
             let Some(commitment) = filename.strip_suffix(".json") else {
                 continue;
             };
-            match self.pull_delta_proposal(account_id, commitment).await {
-                Ok(proposal) if proposal.status.is_pending() => {
-                    out.push((commitment.to_string(), proposal));
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!("Failed to load proposal {}: {}", filename, e);
-                }
-            }
+            let proposal = self.pull_delta_proposal(account_id, commitment).await?;
+            proposals.push(ProposalRecord {
+                account_id: account_id.to_string(),
+                commitment: commitment.to_string(),
+                proposal,
+            });
         }
-        Ok(out)
+        Ok(proposals)
     }
 
     /// Count the number of account directories under `app_path`. An
@@ -541,43 +552,20 @@ impl StorageBackend for FilesystemService {
         Ok(proposal)
     }
 
-    async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
-        let proposal_filenames = self.list_proposal_filenames(account_id).await?;
-
-        let mut proposals = Vec::new();
-        for filename in proposal_filenames {
-            if let Some(commitment) = filename.strip_suffix(".json") {
-                match self.pull_delta_proposal(account_id, commitment).await {
-                    Ok(proposal) => proposals.push(proposal),
-                    Err(e) => {
-                        // Log error but continue loading other proposals
-                        tracing::warn!("Failed to load proposal {}: {}", filename, e);
-                    }
-                }
-            }
-        }
-
-        // Proposals will be sorted and filtered by the service layer
-        Ok(proposals)
+    async fn pull_all_delta_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
+        self.load_proposal_records(account_id).await
     }
 
-    async fn pull_pending_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
-        let proposal_filenames = self.list_proposal_filenames(account_id).await?;
-        let mut proposals = Vec::new();
-
-        for filename in proposal_filenames {
-            if let Some(commitment) = filename.strip_suffix(".json") {
-                match self.pull_delta_proposal(account_id, commitment).await {
-                    Ok(proposal) if proposal.status.is_pending() => proposals.push(proposal),
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("Failed to load proposal {}: {}", filename, e);
-                    }
-                }
-            }
-        }
-
-        proposals.sort_by_key(|proposal| proposal.nonce);
+    async fn pull_pending_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
+        let mut proposals = self.load_proposal_records(account_id).await?;
+        proposals.retain(|record| record.proposal.status.is_pending());
+        proposals.sort_by_key(|record| record.proposal.nonce);
         Ok(proposals)
     }
 
@@ -895,8 +883,8 @@ impl StorageBackend for FilesystemService {
                 }
             }
             let proposals = self.pull_pending_proposals(account_id).await?;
-            for proposal in proposals {
-                if let Some(ts) = parse_status_timestamp(proposal.status.timestamp()) {
+            for record in proposals {
+                if let Some(ts) = parse_status_timestamp(record.proposal.status.timestamp()) {
                     latest = match latest {
                         None => Some(ts),
                         Some(existing) if ts > existing => Some(ts),
@@ -938,6 +926,44 @@ impl FilesystemService {
         }
         ids.sort();
         Ok(ids)
+    }
+}
+
+const ENCRYPTION_MARKER_FILE: &str = ".encryption-marker.json";
+
+#[async_trait]
+impl MarkerStore for FilesystemService {
+    async fn read_encryption_marker(&self) -> Result<Option<EncryptionMarker>, String> {
+        let path = self.app_path.join(ENCRYPTION_MARKER_FILE);
+        match fs::read_to_string(&path).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|e| format!("Failed to parse encryption marker: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("Failed to read encryption marker: {e}")),
+        }
+    }
+
+    async fn write_encryption_marker(&self, marker: &EncryptionMarker) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(marker)
+            .map_err(|e| format!("Failed to serialize encryption marker: {e}"))?;
+        self.write(&self.app_path.join(ENCRYPTION_MARKER_FILE), &content)
+            .await
+    }
+
+    async fn has_payload_records(&self) -> Result<bool, String> {
+        for account_id in self.fanout_account_ids().await? {
+            if self.get_state_path(&account_id).exists() {
+                return Ok(true);
+            }
+            if !self.list_delta_filenames(&account_id).await?.is_empty() {
+                return Ok(true);
+            }
+            if !self.list_proposal_filenames(&account_id).await?.is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
