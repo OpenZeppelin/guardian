@@ -460,7 +460,7 @@ behavior.
 | `guardian_miden_rpc_duration_seconds` | histogram | `operation` |
 | `guardian_storage_operations_total` | counter | `operation`, `outcome` |
 | `guardian_storage_operation_duration_seconds` | histogram | `operation` |
-| `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | — (postgres builds) |
+| `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`) |

@@ -90,6 +90,25 @@ impl CandidateOutcome {
     }
 }
 
+/// Which connection pool a `guardian_db_pool_*` gauge describes. The
+/// server runs two independent Postgres pools with separately-tunable
+/// sizes: `storage` (delta/state, canonicalization) and `metadata`
+/// (account metadata, dashboard listings, operator auth, audit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolKind {
+    Storage,
+    Metadata,
+}
+
+impl PoolKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Storage => "storage",
+            Self::Metadata => "metadata",
+        }
+    }
+}
+
 /// Account network kind (`guardian_accounts_created_total`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountKind {
@@ -127,6 +146,8 @@ mod tests {
             CandidateOutcome::Discarded.as_str(),
             CandidateOutcome::GraceDeferred.as_str(),
             AccountKind::Miden.as_str(),
+            PoolKind::Storage.as_str(),
+            PoolKind::Metadata.as_str(),
         ];
         for value in all {
             assert!(

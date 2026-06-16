@@ -17,10 +17,11 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::labels::PoolKind;
 use super::names::{
     ACCOUNTS_GAUGE, DB_POOL_CONNECTIONS, DB_POOL_CONNECTIONS_AVAILABLE, DB_POOL_CONNECTIONS_MAX,
-    DB_POOL_PENDING_ACQUIRES, DELTAS_GAUGE, LABEL_STATUS, METRICS_REFRESH_FAILURES_TOTAL,
-    METRICS_REFRESH_TIMESTAMP_SECONDS, PROPOSALS_IN_FLIGHT,
+    DB_POOL_PENDING_ACQUIRES, DELTAS_GAUGE, LABEL_POOL, LABEL_STATUS,
+    METRICS_REFRESH_FAILURES_TOTAL, METRICS_REFRESH_TIMESTAMP_SECONDS, PROPOSALS_IN_FLIGHT,
 };
 use crate::builder::clock::Clock;
 use crate::metadata::MetadataStore;
@@ -33,8 +34,10 @@ pub struct RefreshSnapshot {
     pub delta_counts: DeltaStatusCounts,
     pub in_flight_proposals: u64,
     pub accounts_total: u64,
-    /// `None` for backends without a connection pool (filesystem).
-    pub pool: Option<PoolStatus>,
+    /// Connection-pool snapshots by pool. Empty for poolless backends
+    /// (filesystem); on Postgres carries both the `storage` and
+    /// `metadata` pools, which are sized and saturated independently.
+    pub pools: Vec<(PoolKind, PoolStatus)>,
     pub fetched_at_unix_seconds: f64,
 }
 
@@ -50,13 +53,20 @@ pub async fn fetch_snapshot(
     let delta_counts = storage.count_deltas_by_status().await?;
     let in_flight_proposals = storage.count_in_flight_proposals().await?;
     let accounts_total = metadata.list().await?.len() as u64;
-    let pool = storage.pool_status();
+
+    let mut pools = Vec::new();
+    if let Some(status) = storage.pool_status() {
+        pools.push((PoolKind::Storage, status));
+    }
+    if let Some(status) = metadata.pool_status() {
+        pools.push((PoolKind::Metadata, status));
+    }
 
     Ok(RefreshSnapshot {
         delta_counts,
         in_flight_proposals,
         accounts_total,
-        pool,
+        pools,
         fetched_at_unix_seconds: clock.now().timestamp() as f64,
     })
 }
@@ -69,11 +79,13 @@ pub fn apply_snapshot(snapshot: &RefreshSnapshot) {
     gauge!(DELTAS_GAUGE, LABEL_STATUS => "discarded").set(snapshot.delta_counts.discarded as f64);
     gauge!(PROPOSALS_IN_FLIGHT).set(snapshot.in_flight_proposals as f64);
     gauge!(ACCOUNTS_GAUGE).set(snapshot.accounts_total as f64);
-    if let Some(pool) = &snapshot.pool {
-        gauge!(DB_POOL_CONNECTIONS_MAX).set(pool.max_connections as f64);
-        gauge!(DB_POOL_CONNECTIONS).set(pool.connections as f64);
-        gauge!(DB_POOL_CONNECTIONS_AVAILABLE).set(pool.available as f64);
-        gauge!(DB_POOL_PENDING_ACQUIRES).set(pool.pending_acquires as f64);
+    for (kind, pool) in &snapshot.pools {
+        let pool_label = kind.as_str();
+        gauge!(DB_POOL_CONNECTIONS_MAX, LABEL_POOL => pool_label).set(pool.max_connections as f64);
+        gauge!(DB_POOL_CONNECTIONS, LABEL_POOL => pool_label).set(pool.connections as f64);
+        gauge!(DB_POOL_CONNECTIONS_AVAILABLE, LABEL_POOL => pool_label).set(pool.available as f64);
+        gauge!(DB_POOL_PENDING_ACQUIRES, LABEL_POOL => pool_label)
+            .set(pool.pending_acquires as f64);
     }
     gauge!(METRICS_REFRESH_TIMESTAMP_SECONDS).set(snapshot.fetched_at_unix_seconds);
 }
@@ -171,10 +183,60 @@ mod tests {
         assert_eq!(snapshot.delta_counts.discarded, 1);
         assert_eq!(snapshot.in_flight_proposals, 7);
         assert_eq!(snapshot.accounts_total, 3);
-        assert_eq!(snapshot.pool, None, "mock backend reports no pool");
+        assert!(
+            snapshot.pools.is_empty(),
+            "mocks report no pools by default"
+        );
         assert_eq!(
             snapshot.fetched_at_unix_seconds,
             MockClock::fixed("2026-06-10T12:00:00Z").now().timestamp() as f64
+        );
+    }
+
+    #[test]
+    fn fetch_snapshot_gathers_both_storage_and_metadata_pools() {
+        let storage = MockStorageBackend::new().with_pool_status(PoolStatus {
+            max_connections: 16,
+            connections: 8,
+            available: 5,
+            pending_acquires: 0,
+        });
+        let metadata = MockMetadataStore::new().with_pool_status(PoolStatus {
+            max_connections: 4,
+            connections: 4,
+            available: 0,
+            pending_acquires: 3,
+        });
+
+        let storage: Arc<dyn StorageBackend> = Arc::new(storage);
+        let metadata: Arc<dyn MetadataStore> = Arc::new(metadata);
+        let clock: Arc<dyn Clock> = Arc::new(MockClock::default());
+
+        let snapshot =
+            block_on(async { fetch_snapshot(&storage, &metadata, &clock).await.unwrap() });
+
+        assert_eq!(
+            snapshot.pools,
+            vec![
+                (
+                    PoolKind::Storage,
+                    PoolStatus {
+                        max_connections: 16,
+                        connections: 8,
+                        available: 5,
+                        pending_acquires: 0,
+                    }
+                ),
+                (
+                    PoolKind::Metadata,
+                    PoolStatus {
+                        max_connections: 4,
+                        connections: 4,
+                        available: 0,
+                        pending_acquires: 3,
+                    }
+                ),
+            ]
         );
     }
 
@@ -206,7 +268,7 @@ mod tests {
             },
             in_flight_proposals: 4,
             accounts_total: 12,
-            pool: None,
+            pools: Vec::new(),
             fetched_at_unix_seconds: 1_780_000_000.0,
         };
 
@@ -226,29 +288,48 @@ mod tests {
     }
 
     #[test]
-    fn apply_snapshot_publishes_pool_gauges_when_present() {
+    fn apply_snapshot_publishes_labeled_pool_gauges_for_both_pools() {
         let recorder = build_recorder();
         let handle = recorder.handle();
         let snapshot = RefreshSnapshot {
             delta_counts: DeltaStatusCounts::default(),
             in_flight_proposals: 0,
             accounts_total: 0,
-            pool: Some(PoolStatus {
-                max_connections: 16,
-                connections: 10,
-                available: 3,
-                pending_acquires: 2,
-            }),
+            pools: vec![
+                (
+                    PoolKind::Storage,
+                    PoolStatus {
+                        max_connections: 16,
+                        connections: 10,
+                        available: 3,
+                        pending_acquires: 2,
+                    },
+                ),
+                (
+                    PoolKind::Metadata,
+                    PoolStatus {
+                        max_connections: 4,
+                        connections: 4,
+                        available: 0,
+                        pending_acquires: 5,
+                    },
+                ),
+            ],
             fetched_at_unix_seconds: 1_780_000_000.0,
         };
 
         metrics::with_local_recorder(&recorder, || apply_snapshot(&snapshot));
 
         let rendered = handle.render();
-        assert!(rendered.contains("guardian_db_pool_connections_max 16"));
-        assert!(rendered.contains("guardian_db_pool_connections 10"));
-        assert!(rendered.contains("guardian_db_pool_connections_available 3"));
-        assert!(rendered.contains("guardian_db_pool_pending_acquires 2"));
+        // Storage pool.
+        assert!(rendered.contains("guardian_db_pool_connections_max{pool=\"storage\"} 16"));
+        assert!(rendered.contains("guardian_db_pool_connections{pool=\"storage\"} 10"));
+        assert!(rendered.contains("guardian_db_pool_connections_available{pool=\"storage\"} 3"));
+        assert!(rendered.contains("guardian_db_pool_pending_acquires{pool=\"storage\"} 2"));
+        // Metadata pool — the interactive paths the reviewer flagged
+        // (auth, dashboard, audit) saturating independently.
+        assert!(rendered.contains("guardian_db_pool_connections_max{pool=\"metadata\"} 4"));
+        assert!(rendered.contains("guardian_db_pool_pending_acquires{pool=\"metadata\"} 5"));
     }
 
     /// Ticking cadence: the loop fetches immediately, then once per

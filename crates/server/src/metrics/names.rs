@@ -87,6 +87,7 @@ pub const LABEL_OUTCOME: &str = "outcome";
 pub const LABEL_KIND: &str = "kind";
 pub const LABEL_EVENT: &str = "event";
 pub const LABEL_LIMIT_TYPE: &str = "limit_type";
+pub const LABEL_POOL: &str = "pool";
 pub const LABEL_VERSION: &str = "version";
 pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
@@ -105,6 +106,7 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_KIND,
     LABEL_EVENT,
     LABEL_LIMIT_TYPE,
+    LABEL_POOL,
     LABEL_VERSION,
     LABEL_GIT_COMMIT,
     LABEL_PROFILE,
@@ -199,31 +201,31 @@ pub const REGISTRY: &[MetricDef] = &[
     MetricDef {
         name: DB_POOL_CONNECTIONS_MAX,
         kind: MetricKind::Gauge,
-        labels: &[],
-        help: "Maximum size of the database connection pool (postgres builds). \
-               Refreshed asynchronously.",
+        labels: &[LABEL_POOL],
+        help: "Maximum size of the database connection pool, by pool (storage, \
+               metadata; postgres builds). Refreshed asynchronously.",
     },
     MetricDef {
         name: DB_POOL_CONNECTIONS,
         kind: MetricKind::Gauge,
-        labels: &[],
-        help: "Database connections currently managed by the pool, in use or idle \
-               (postgres builds). Refreshed asynchronously.",
+        labels: &[LABEL_POOL],
+        help: "Database connections currently managed by the pool, in use or idle, \
+               by pool (postgres builds). Refreshed asynchronously.",
     },
     MetricDef {
         name: DB_POOL_CONNECTIONS_AVAILABLE,
         kind: MetricKind::Gauge,
-        labels: &[],
-        help: "Idle database connections ready to be acquired (postgres builds). \
-               Refreshed asynchronously.",
+        labels: &[LABEL_POOL],
+        help: "Idle database connections ready to be acquired, by pool (postgres \
+               builds). Refreshed asynchronously.",
     },
     MetricDef {
         name: DB_POOL_PENDING_ACQUIRES,
         kind: MetricKind::Gauge,
-        labels: &[],
-        help: "Tasks currently waiting to acquire a database connection — sustained \
-               nonzero values indicate pool exhaustion (postgres builds). Refreshed \
-               asynchronously.",
+        labels: &[LABEL_POOL],
+        help: "Tasks currently waiting to acquire a database connection, by pool — \
+               sustained nonzero values indicate pool exhaustion (postgres builds). \
+               Refreshed asynchronously.",
     },
     MetricDef {
         name: CANONICALIZATION_RUNS_TOTAL,
