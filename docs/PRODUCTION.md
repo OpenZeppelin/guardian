@@ -62,6 +62,11 @@ Before treating a deployment as production-ready:
   tasks.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
+- If Prometheus scraping is wanted, set `GUARDIAN_METRICS_ENABLED=true`,
+  bind `GUARDIAN_METRICS_ADDR=0.0.0.0:9464` (containers), keep the port
+  reachable only from the scraper's network, and set
+  `GUARDIAN_METRICS_BEARER_TOKEN`. See
+  [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--metrics-prometheus).
 
 ## Where details live
 

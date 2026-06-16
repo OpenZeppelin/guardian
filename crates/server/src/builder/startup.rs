@@ -13,6 +13,7 @@ use crate::build_info;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::network::NetworkType;
 use crate::storage::StorageType;
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StartupInfo {
@@ -26,6 +27,7 @@ pub(crate) struct StartupInfo {
     cursor_secret_configured: bool,
     http_port: Option<u16>,
     grpc_port: Option<u16>,
+    metrics_addr: Option<SocketAddr>,
 }
 
 impl StartupInfo {
@@ -41,6 +43,7 @@ impl StartupInfo {
         cursor_secret_configured: bool,
         http_port: Option<u16>,
         grpc_port: Option<u16>,
+        metrics_addr: Option<SocketAddr>,
     ) -> Self {
         Self {
             network,
@@ -53,6 +56,7 @@ impl StartupInfo {
             cursor_secret_configured,
             http_port,
             grpc_port,
+            metrics_addr,
         }
     }
 
@@ -100,6 +104,10 @@ impl StartupInfo {
         tracing::info!(
             http = %port_label(self.http_port),
             grpc = %port_label(self.grpc_port),
+            metrics = %self
+                .metrics_addr
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|| "disabled".to_string()),
             "listeners"
         );
         tracing::info!(features = ?compiled_features(), "compiled features");
@@ -146,6 +154,7 @@ mod tests {
             true,
             Some(3000),
             Some(50051),
+            Some("127.0.0.1:9464".parse().unwrap()),
         );
 
         assert_eq!(info.network, NetworkType::MidenDevnet);
@@ -157,6 +166,7 @@ mod tests {
         assert!(info.cursor_secret_configured);
         assert_eq!(info.http_port, Some(3000));
         assert_eq!(info.grpc_port, Some(50051));
+        assert_eq!(info.metrics_addr, Some("127.0.0.1:9464".parse().unwrap()));
         assert_eq!(
             info.canonicalization.as_ref().map(|c| c.max_retries),
             Some(48)
@@ -174,6 +184,7 @@ mod tests {
             None,
             0,
             false,
+            None,
             None,
             None,
         );
