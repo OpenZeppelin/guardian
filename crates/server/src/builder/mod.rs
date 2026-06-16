@@ -23,6 +23,7 @@ use crate::dashboard::DashboardState;
 use crate::evm::EvmAppState;
 use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
+use crate::metrics::{InstrumentedStorage, MetricsConfig};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
 use crate::network::{NetworkType, miden::MidenNetworkClient};
 use crate::state::AppState;
@@ -44,6 +45,7 @@ pub struct ServerBuilder {
     cors_layer: Option<tower_http::cors::CorsLayer>,
     rate_limit_config: Option<RateLimitConfig>,
     body_limit_config: Option<BodyLimitConfig>,
+    metrics_config: Option<MetricsConfig>,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -65,6 +67,7 @@ impl ServerBuilder {
             cors_layer: None,
             rate_limit_config: None,
             body_limit_config: None,
+            metrics_config: None,
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -351,6 +354,30 @@ impl ServerBuilder {
         self
     }
 
+    /// Configure the Prometheus metrics integration
+    ///
+    /// When enabled, the server exposes a Prometheus text exposition on
+    /// a dedicated listener, instruments the HTTP/gRPC request paths
+    /// and the storage backend, and runs a background refresher for
+    /// slow aggregate gauges. Disabled by default.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use server::builder::ServerBuilder;
+    /// use server::metrics::MetricsConfig;
+    ///
+    /// // Load from environment (GUARDIAN_METRICS_ENABLED,
+    /// // GUARDIAN_METRICS_ADDR, GUARDIAN_METRICS_PATH,
+    /// // GUARDIAN_METRICS_REFRESH_INTERVAL_SECS,
+    /// // GUARDIAN_METRICS_BEARER_TOKEN)
+    /// let builder = ServerBuilder::new()
+    ///     .with_metrics(MetricsConfig::from_env());
+    /// ```
+    pub fn with_metrics(mut self, config: MetricsConfig) -> Self {
+        self.metrics_config = Some(config);
+        self
+    }
+
     /// Build the server handle
     ///
     /// Validates that all required components are configured and returns
@@ -396,6 +423,16 @@ impl ServerBuilder {
             .storage
             .ok_or("Storage backend not set. Use .storage(Arc::new(...))")?;
 
+        // Resolve metrics config before AppState construction so the
+        // storage decorator covers every consumer (HTTP, gRPC,
+        // dashboard services, canonicalization worker).
+        let metrics_config = self.metrics_config.unwrap_or_else(MetricsConfig::from_env);
+        let storage: Arc<dyn StorageBackend> = if metrics_config.enabled {
+            Arc::new(InstrumentedStorage::new(storage))
+        } else {
+            storage
+        };
+
         let metadata = self
             .metadata
             .ok_or("Metadata store not set. Use .metadata(...)")?;
@@ -427,6 +464,7 @@ impl ServerBuilder {
             dashboard.cursor_secret_configured(),
             self.http_enabled.then_some(self.http_port),
             self.grpc_enabled.then_some(self.grpc_port),
+            metrics_config.enabled.then_some(metrics_config.bind_addr),
         );
 
         let app_state = AppState {
@@ -448,6 +486,7 @@ impl ServerBuilder {
             cors_layer: self.cors_layer,
             rate_limit_config: self.rate_limit_config,
             body_limit_config: self.body_limit_config,
+            metrics_config,
             http_enabled: self.http_enabled,
             http_port: self.http_port,
             grpc_enabled: self.grpc_enabled,

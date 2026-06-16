@@ -97,6 +97,16 @@ impl TryFrom<MetadataRow> for AccountMetadata {
 
 #[async_trait]
 impl MetadataStore for PostgresMetadataStore {
+    fn pool_status(&self) -> Option<crate::storage::PoolStatus> {
+        let status = self.pool.status();
+        Some(crate::storage::PoolStatus {
+            max_connections: status.max_size as u64,
+            connections: status.size as u64,
+            available: status.available as u64,
+            pending_acquires: status.waiting as u64,
+        })
+    }
+
     async fn get(&self, account_id: &str) -> Result<Option<AccountMetadata>, String> {
         let mut conn = self
             .pool

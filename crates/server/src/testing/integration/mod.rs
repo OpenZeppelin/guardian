@@ -7,6 +7,7 @@ mod error_envelope_http;
 mod lookup_grpc;
 mod lookup_helpers;
 mod lookup_http;
+mod metrics_http;
 mod miden_rpc_integration;
 mod proposals_grpc;
 mod proposals_http;
