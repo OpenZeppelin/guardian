@@ -24,16 +24,19 @@
     "typecheck": "npm run generate:masm && tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "npm run generate:masm && vitest run",
-    "test:watch": "npm run generate:masm && vitest"
+    "test:watch": "npm run generate:masm && vitest",
+    "test:browser": "playwright test --config playwright.config.ts"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.7",
     "@miden-sdk/miden-sdk": "^0.15.0",
+    "@noble/curves": "^1.9.7",
     "@noble/hashes": "^2.0.1",
     "@openzeppelin/guardian-client": "^0.14.9"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "typescript": "^5.7.2",
+    "vite": "^5.4.21",
     "vitest": "^2.1.8"
   },
   "engines": {

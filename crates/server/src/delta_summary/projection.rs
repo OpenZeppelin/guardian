@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn storage_change_json_omits_before_when_unpopulated() {
         let change = StorageChange {
-            slot_name: "openzeppelin::multisig::threshold_config".to_string(),
+            slot_name: "miden::standards::auth::multisig::threshold_config".to_string(),
             key: None,
             before: None,
             after: Some("0x0200".to_string()),
@@ -407,7 +407,7 @@ mod tests {
         map_delta.insert(StorageMapKey::new(proc_root), threshold_word);
 
         let slot_name =
-            StorageSlotName::new("openzeppelin::multisig::proc_threshold_overrides").unwrap();
+            StorageSlotName::new("miden::standards::auth::multisig::procedure_thresholds").unwrap();
         let storage =
             AccountStorageDelta::from_raw([(slot_name, StorageSlotDelta::Map(map_delta))].into());
         let delta = AccountDelta::new(
@@ -423,7 +423,7 @@ mod tests {
         let c = &changes[0];
         assert_eq!(
             c.slot_name,
-            "openzeppelin::multisig::proc_threshold_overrides"
+            "miden::standards::auth::multisig::procedure_thresholds"
         );
         assert_eq!(
             c.key.as_deref(),

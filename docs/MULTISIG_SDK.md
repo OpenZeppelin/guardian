@@ -64,7 +64,6 @@ const config = {
   threshold: 1,
   signerCommitments: [signer.commitment, cosigner1Commitment, cosigner2Commitment],
   guardianCommitment,
-  guardianEnabled: true,
 };
 const multisig = await client.create(config, signer);
 await multisig.registerOnGuardian();
@@ -307,7 +306,6 @@ const config: MultisigConfig = {
     '0x5678...efgh',                        // Cosigner 2
   ],
   guardianCommitment,                            // GUARDIAN server commitment
-  guardianEnabled: true,
 };
 
 // Create the account
@@ -522,7 +520,6 @@ Returns `DetectedMultisigConfig`:
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
-- `guardianEnabled`: boolean
 - `guardianCommitment`: string
 - `vaultBalances`: { faucetId, amount }[]
 
@@ -584,7 +581,7 @@ client.sync().await?;
 // Inspect account
 println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
-println!("GUARDIAN enabled: {}", account.guardian_enabled()?);
+println!("GUARDIAN commitment: {:?}", account.guardian_commitment()?);
 ```
 
 ### Recovering Accounts By Key
@@ -767,7 +764,6 @@ for note in notes {
 | `cosigner_commitments()` | List of commitments (Word) |
 | `cosigner_commitments_hex()` | List as hex strings |
 | `is_cosigner(commitment)` | Check if commitment is signer |
-| `guardian_enabled()` | GUARDIAN integration enabled |
 | `guardian_commitment()` | GUARDIAN server commitment |
 
 #### TransactionType
@@ -803,7 +799,6 @@ const config = {
   threshold: 2,
   signerCommitments: [ceoCommitment, cfoCommitment, cooCommitment],
   guardianCommitment,
-  guardianEnabled: true,
 };
 
 const treasury = await client.create(config, ceoSigner);

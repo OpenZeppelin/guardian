@@ -63,6 +63,35 @@ Before treating a deployment as production-ready:
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
 
+## Upgrading to Miden 0.15
+
+> **One-time, irreversible: the first 0.15 deploy wipes all pre-0.15 account
+> data.** Miden 0.15 changed account-ID derivation (v0 → v1) and Guardian's
+> custody account now uses the upstream `miden-standards` guarded-multisig
+> component, so stored 0.14 account states, deltas, proposals, and metadata
+> can no longer be deserialized or recomputed. They cannot be migrated.
+
+What happens on the first 0.15 startup (Postgres backend):
+
+- The embedded cutover migration
+  `2026-06-14-000001_v015_account_id_cutover` runs automatically via
+  `run_pending_migrations` and `TRUNCATE`s `states`, `deltas`,
+  `delta_proposals`, and `account_metadata`.
+- The append-only `admin_actions` audit table is **preserved** (it is
+  DB-trigger protected and carries no un-deserializable account state).
+- The migration is irreversible — its `down.sql` is a no-op. There is no
+  partial-salvage path.
+
+Operator actions:
+
+- **Back up the database before deploying 0.15** if any pre-0.15 record must
+  be retained for audit outside `admin_actions`.
+- After the upgrade, existing accounts must be **recreated** on 0.15; there is
+  no in-place account migration. Users re-establish custody accounts (new v1
+  IDs) and re-register them on the Guardian.
+- Filesystem-backed deployments have no migration step — remove the data
+  directory instead.
+
 ## Where details live
 
 | Need | Read |

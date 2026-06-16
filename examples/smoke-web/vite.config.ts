@@ -9,10 +9,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@multisig-browser': path.resolve(__dirname, '../_shared/multisig-browser/src'),
-      '@miden-sdk/miden-sdk': path.resolve(
-        __dirname,
-        'node_modules/@miden-sdk/miden-sdk/dist/index.js',
-      ),
+      '@miden-sdk/miden-sdk': path.resolve(__dirname, 'miden-sdk-compat.mjs'),
       '@openzeppelin/guardian-client': path.resolve(
         __dirname,
         '../../packages/guardian-client/dist/index.js',

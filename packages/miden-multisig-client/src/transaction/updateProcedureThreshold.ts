@@ -10,16 +10,11 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import {
-  MULTISIG_ECDSA_MASM,
-  MULTISIG_MASM,
-} from '../account/masm/auth.js';
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
-import type { SignatureScheme } from '../types.js';
 
 function buildProcedureThresholdAdvice(
   procedure: ProcedureName,
@@ -41,30 +36,23 @@ async function buildUpdateProcedureThresholdScript(
   client: MidenClient | WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
-  signatureScheme: SignatureScheme,
   midenRpcEndpoint?: string,
 ): Promise<TransactionScript> {
-  const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
 
   const scriptSource = `
-use oz_multisig::multisig
+use miden::standards::auth::multisig
 
 begin
     push.${procedureRoot}
     push.${threshold}
-    call.multisig::update_procedure_threshold
+    call.multisig::set_procedure_threshold
     dropw
     drop
 end
   `;
 
-  return compileTxScript(
-    client,
-    scriptSource,
-    [{ namespace: 'oz_multisig::multisig', code: multisigMasm }],
-    midenRpcEndpoint,
-  );
+  return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
 }
 
 export async function buildUpdateProcedureThresholdTransactionRequest(
@@ -73,14 +61,12 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
   threshold: number,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
-  const signatureScheme = options.signatureScheme ?? 'falcon';
   const { configHash } = buildProcedureThresholdAdvice(procedure, threshold);
 
   const script = await buildUpdateProcedureThresholdScript(
     client,
     procedure,
     threshold,
-    signatureScheme,
     options.midenRpcEndpoint,
   );
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();

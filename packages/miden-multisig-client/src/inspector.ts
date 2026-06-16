@@ -7,17 +7,16 @@ import { base64ToUint8Array } from './utils/encoding.js';
 import { wordElementToBigInt, wordToHex } from './utils/word.js';
 import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
 
-// Storage slot names matching the MASM definitions
+// Upstream `AuthGuardedMultisig` storage slot names (miden::standards::auth::*).
 const MULTISIG_SLOT_NAMES = {
-  THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
-  SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
-  EXECUTED_TRANSACTIONS: 'openzeppelin::multisig::executed_transactions',
-  PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
+  THRESHOLD_CONFIG: 'miden::standards::auth::multisig::threshold_config',
+  SIGNER_PUBLIC_KEYS: 'miden::standards::auth::multisig::approver_public_keys',
+  EXECUTED_TRANSACTIONS: 'miden::standards::auth::multisig::executed_transactions',
+  PROCEDURE_THRESHOLDS: 'miden::standards::auth::multisig::procedure_thresholds',
 } as const;
 
 const GUARDIAN_SLOT_NAMES = {
-  SELECTOR: 'openzeppelin::guardian::selector',
-  PUBLIC_KEY: 'openzeppelin::guardian::public_key',
+  PUBLIC_KEY: 'miden::standards::auth::guardian::pub_key',
 } as const;
 
 export interface VaultBalance {
@@ -29,7 +28,6 @@ export interface DetectedMultisigConfig {
   threshold: number;
   numSigners: number;
   signerCommitments: string[];
-  guardianEnabled: boolean;
   guardianCommitment: string | null;
   vaultBalances: VaultBalance[];
   procedureThresholds: Map<ProcedureName, number>;
@@ -90,20 +88,15 @@ export class AccountInspector {
       }
     }
 
-    let guardianEnabled = false;
+    // The upstream guarded-multisig has no enable/disable selector — the guardian is
+    // always present. Read its public key directly from the guardian pub_key slot.
     let guardianCommitment: string | null = null;
 
     try {
-      const guardianSlot0 = storage.getItem(GUARDIAN_SLOT_NAMES.SELECTOR) as Word;
-      const selector = Number(wordElementToBigInt(guardianSlot0, 0));
-      guardianEnabled = selector === 1;
-
-      if (guardianEnabled) {
-        const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
-        const guardianKey = storage.getMapItem(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, zeroKey) as Word;
-        if (guardianKey) {
-          guardianCommitment = wordToHex(guardianKey);
-        }
+      const zeroKey = new Word(new BigUint64Array([0n, 0n, 0n, 0n]));
+      const guardianKey = storage.getMapItem(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, zeroKey) as Word;
+      if (guardianKey) {
+        guardianCommitment = wordToHex(guardianKey);
       }
     } catch (error) {
       console.warn(error);
@@ -146,7 +139,6 @@ export class AccountInspector {
       threshold,
       numSigners,
       signerCommitments,
-      guardianEnabled,
       guardianCommitment,
       vaultBalances,
       procedureThresholds,

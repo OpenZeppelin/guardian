@@ -15,9 +15,9 @@ mod fixtures {
     use std::fs;
 
     // Storage slot names (matching multisig_guardian.rs)
-    const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
-    const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
-    const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
+    const THRESHOLD_CONFIG_SLOT: &str = "miden::standards::auth::multisig::threshold_config";
+    const SIGNER_PUBKEYS_SLOT: &str = "miden::standards::auth::multisig::approver_public_keys";
+    const EXECUTED_TXS_SLOT: &str = "miden::standards::auth::multisig::executed_transactions";
 
     fn create_multisig_guardian_account(
         threshold: u64,

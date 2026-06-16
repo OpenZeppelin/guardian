@@ -565,6 +565,7 @@ impl ProposalBuilder {
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
+            key_manager.scheme(),
             salt,
             std::iter::empty(),
         )?;

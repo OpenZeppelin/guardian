@@ -221,6 +221,7 @@ pub async fn build_final_transaction_request(
         TransactionType::SwitchGuardian { new_commitment, .. } => {
             crate::transaction::build_update_guardian_transaction_request(
                 *new_commitment,
+                scheme,
                 salt,
                 signature_advice,
             )

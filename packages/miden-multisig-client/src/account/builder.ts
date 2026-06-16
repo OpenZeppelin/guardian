@@ -9,21 +9,35 @@ import {
   AccountComponent,
   AccountStorageMode,
   type MidenClient,
+  type WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
 import { getRawMidenClient } from '../raw-client.js';
 import { buildMultisigStorageSlots, buildGuardianStorageSlots } from './storage.js';
-import {
-  MULTISIG_ECDSA_MASM,
-  MULTISIG_MASM,
-  GUARDIAN_ECDSA_MASM,
-  GUARDIAN_MASM,
-} from './masm/auth.js';
-import {
-  MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM,
-  MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM,
-} from './masm/account-components/auth.js';
+import { GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM } from './masm/account-components/auth.js';
 import { normalizeSignerCommitment } from '../utils/signature.js';
+
+/**
+ * Builds the upstream guarded-multisig auth `AccountComponent` from a config, using the
+ * given code builder to compile the vendored MASM. Pure with respect to network/store —
+ * callers supply the raw WASM client only for its assembler.
+ */
+function buildGuardedMultisigComponent(
+  authBuilder: Awaited<ReturnType<WasmWebClient['createCodeBuilder']>>,
+  config: MultisigConfig,
+): AccountComponent {
+  const authSlots = [
+    ...buildMultisigStorageSlots(config),
+    ...buildGuardianStorageSlots(config),
+  ];
+  // The web SDK assembler already provides the upstream `miden::standards::auth::*` library
+  // modules, so they are NOT linked here (linking would raise a duplicate-definition error).
+  // Only the guarded-multisig account component itself is compiled.
+  const authComponentCode = authBuilder.compileAccountComponentCode(
+    GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM,
+  );
+  return AccountComponent.compile(authComponentCode, authSlots).withSupportsAllTypes();
+}
 
 /**
  * Creates a multisig account with GUARDIAN authentication.
@@ -38,31 +52,10 @@ export async function createMultisigAccount(
   midenRpcEndpoint?: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
-  const signatureScheme = config.signatureScheme ?? 'falcon';
   const rawClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
-  const authSlots = [
-    ...buildMultisigStorageSlots(config),
-    ...buildGuardianStorageSlots(config),
-  ];
-  const guardianMasm = signatureScheme === 'ecdsa' ? GUARDIAN_ECDSA_MASM : GUARDIAN_MASM;
-  const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
-  const authComponentMasm = signatureScheme === 'ecdsa'
-    ? MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM
-    : MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM;
-  const guardianLibraryPath = signatureScheme === 'ecdsa'
-    ? 'openzeppelin::auth::guardian_ecdsa'
-    : 'openzeppelin::auth::guardian';
-  const multisigLibraryPath = signatureScheme === 'ecdsa'
-    ? 'openzeppelin::auth::multisig_ecdsa'
-    : 'openzeppelin::auth::multisig';
 
   const authBuilder = await rawClient.createCodeBuilder();
-  authBuilder.linkModule(guardianLibraryPath, guardianMasm);
-  authBuilder.linkModule(multisigLibraryPath, multisigMasm);
-  const authComponentCode = authBuilder.compileAccountComponentCode(authComponentMasm);
-  const authComponent = AccountComponent
-    .compile(authComponentCode, authSlots)
-    .withSupportsAllTypes();
+  const authComponent = buildGuardedMultisigComponent(authBuilder, config);
 
   let seed = config.seed;
   // Generate random seed if not provided
@@ -83,7 +76,7 @@ export async function createMultisigAccount(
     .withAuthComponent(authComponent)
     .withBasicWalletComponent();
 
-  const result = accountBuilder.build();
+  const result = accountBuilder.buildWithoutSchemaCommitment();
 
   await midenClient.accounts.insert({ account: result.account, overwrite: false });
 
@@ -123,6 +116,11 @@ export function validateMultisigConfig(config: MultisigConfig): void {
   }
   if (!config.guardianCommitment) {
     throw new Error('GUARDIAN commitment is required');
+  }
+  // Upstream `AuthGuardedMultisigConfig::new` rejects a guardian equal to any approver; mirror
+  // that invariant here so the TS builder cannot create an account the Rust SDK would reject.
+  if (signerCommitments.has(normalizeSignerCommitment(config.guardianCommitment))) {
+    throw new Error('GUARDIAN commitment must be different from all signer commitments');
   }
 
   // Validate procedure thresholds if provided

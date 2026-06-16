@@ -5,13 +5,17 @@
 use miden_protocol::Word;
 
 /// Procedure names that can be used for threshold overrides.
+///
+/// Roots are sourced from the upstream `AuthGuardedMultisig` + `BasicWallet`
+/// procedures via `cargo run --example procedure_roots -- --json` (typescript_hex
+/// encoding). The upstream component has no standalone `verify_guardian` procedure;
+/// guardian verification is internal to `auth_tx_guarded_multisig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProcedureName {
     UpdateSigners,
     UpdateProcedureThreshold,
     AuthTx,
     UpdateGuardian,
-    VerifyGuardian,
     SendAsset,
     ReceiveAsset,
 }
@@ -19,27 +23,30 @@ pub enum ProcedureName {
 impl ProcedureName {
     /// Get the procedure root for this procedure name.
     ///
-    /// These roots are deterministic based on the MASM bytecode.
+    /// These roots are deterministic based on the upstream MASM bytecode.
     pub fn root(&self) -> Word {
         match self {
+            // update_signers_and_threshold
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x5f7faab89e7f67eba8c9c83bffef53b95452cb76c2d75dff1e158b18d6f38487",
+                "0xe60215c664714037ad08811093b3685a6ace65c78351263473298cce9c7600e3",
             ),
+            // set_procedure_threshold
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
-                "0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67",
+                "0x9bee1ea89c844874d7f3c63bba52b277a429679028dc3a4e27c54db6cf4f158d",
             ),
+            // auth_tx_guarded_multisig
             ProcedureName::AuthTx => procedure_root_word(
-                "0x841bba7204d80cd5f704da202fa54e968455547e37a926ff111dae4241f34d05",
+                "0xd7b760e20ccbf6f8428538a155f2ef636326b1fcf246c3a34da2cd3a73de77cd",
             ),
+            // update_guardian_public_key
             ProcedureName::UpdateGuardian => procedure_root_word(
-                "0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96",
+                "0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675",
             ),
-            ProcedureName::VerifyGuardian => procedure_root_word(
-                "0x575715e002db8217ac68425f46cf4f3299888dcd87b9c5aa46d3bfd32cbc9c01",
-            ),
+            // BasicWallet::move_asset_to_note
             ProcedureName::SendAsset => procedure_root_word(
                 "0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4",
             ),
+            // BasicWallet::receive_asset
             ProcedureName::ReceiveAsset => procedure_root_word(
                 "0x6170fd6d682d91777b551fd866258f43cc657f1291f8f071500f4e56e9c153da",
             ),
@@ -53,7 +60,6 @@ impl ProcedureName {
             ProcedureName::UpdateProcedureThreshold,
             ProcedureName::AuthTx,
             ProcedureName::UpdateGuardian,
-            ProcedureName::VerifyGuardian,
             ProcedureName::SendAsset,
             ProcedureName::ReceiveAsset,
         ]
@@ -98,7 +104,6 @@ impl std::fmt::Display for ProcedureName {
             ProcedureName::UpdateProcedureThreshold => write!(f, "update_procedure_threshold"),
             ProcedureName::AuthTx => write!(f, "auth_tx"),
             ProcedureName::UpdateGuardian => write!(f, "update_guardian"),
-            ProcedureName::VerifyGuardian => write!(f, "verify_guardian"),
             ProcedureName::SendAsset => write!(f, "send_asset"),
             ProcedureName::ReceiveAsset => write!(f, "receive_asset"),
         }
@@ -114,7 +119,6 @@ impl std::str::FromStr for ProcedureName {
             "update_procedure_threshold" => Ok(ProcedureName::UpdateProcedureThreshold),
             "auth_tx" => Ok(ProcedureName::AuthTx),
             "update_guardian" => Ok(ProcedureName::UpdateGuardian),
-            "verify_guardian" => Ok(ProcedureName::VerifyGuardian),
             "send_asset" => Ok(ProcedureName::SendAsset),
             "receive_asset" => Ok(ProcedureName::ReceiveAsset),
             _ => Err(format!("unknown procedure name: {}", s)),
@@ -157,6 +161,53 @@ mod tests {
         for name in ProcedureName::all() {
             let _root = name.root();
         }
+    }
+
+    /// Custody-critical guard: each hardcoded root MUST match the live upstream
+    /// `AuthGuardedMultisig` / `BasicWallet` procedure root. A mismatch means a
+    /// per-procedure threshold override would be stored under the wrong key and
+    /// silently ignored at authentication time.
+    #[test]
+    fn procedure_roots_match_upstream_component() {
+        use miden_standards::account::auth::AuthGuardedMultisig;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let auth_code = AuthGuardedMultisig::code();
+        let upstream_root = |masm_name: &str| -> Word {
+            let export = auth_code
+                .exports()
+                .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
+                .unwrap_or_else(|| panic!("upstream procedure `{masm_name}` not found"));
+            auth_code
+                .get_procedure_root_by_path(&*export.path)
+                .expect("root by path")
+                .into()
+        };
+
+        assert_eq!(
+            ProcedureName::UpdateSigners.root(),
+            upstream_root("update_signers_and_threshold")
+        );
+        assert_eq!(
+            ProcedureName::UpdateProcedureThreshold.root(),
+            upstream_root("set_procedure_threshold")
+        );
+        assert_eq!(
+            ProcedureName::AuthTx.root(),
+            upstream_root("auth_tx_guarded_multisig")
+        );
+        assert_eq!(
+            ProcedureName::UpdateGuardian.root(),
+            upstream_root("update_guardian_public_key")
+        );
+        assert_eq!(
+            ProcedureName::SendAsset.root(),
+            Word::from(BasicWallet::move_asset_to_note_root())
+        );
+        assert_eq!(
+            ProcedureName::ReceiveAsset.root(),
+            Word::from(BasicWallet::receive_asset_root())
+        );
     }
 
     #[test]

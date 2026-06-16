@@ -3,24 +3,30 @@
 use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
-use miden_confidential_contracts::masm_builder::{
-    get_multisig_ecdsa_library, get_multisig_library,
-};
+use miden_protocol::assembly::Library;
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::StandardsLib;
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
 
 /// Builds the multisig configuration advice map entry.
 ///
+/// Layout matches the upstream `update_signers_and_threshold` reader: a config
+/// header word `[threshold, num_approvers, 0, 0]` followed by each approver as an
+/// interleaved `[PUB_KEY(4), SCHEME_ID(4)]` pair, iterated in reverse index order.
+/// Every approver carries the account's single signature scheme.
+///
 /// Returns (config_hash, config_values) tuple.
 pub fn build_multisig_config_advice(
     threshold: u64,
     signer_commitments: &[Word],
+    scheme: SignatureScheme,
 ) -> (Word, Vec<Felt>) {
     let num_approvers = signer_commitments.len() as u64;
+    let scheme_id = Felt::new_unchecked(scheme.auth_scheme_id());
 
-    let mut payload = Vec::with_capacity(4 + signer_commitments.len() * 4);
+    let mut payload = Vec::with_capacity(4 + signer_commitments.len() * 8);
     payload.extend_from_slice(&[
         Felt::new_unchecked(threshold),
         Felt::new_unchecked(num_approvers),
@@ -30,6 +36,12 @@ pub fn build_multisig_config_advice(
 
     for commitment in signer_commitments.iter().rev() {
         payload.extend_from_slice(commitment.as_elements());
+        payload.extend_from_slice(&[
+            scheme_id,
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
     }
 
     let digest = Hasher::hash_elements(&payload);
@@ -60,24 +72,21 @@ pub fn build_procedure_threshold_advice(
 }
 
 /// Builds the update_signers transaction script.
-pub fn build_update_signers_script(scheme: SignatureScheme) -> Result<TransactionScript> {
-    let multisig_library = match scheme {
-        SignatureScheme::Falcon => get_multisig_library(),
-        SignatureScheme::Ecdsa => get_multisig_ecdsa_library(),
-    }
-    .map_err(|e| {
-        MultisigError::TransactionExecution(format!("failed to get multisig library: {}", e))
-    })?;
+pub fn build_update_signers_script(_scheme: SignatureScheme) -> Result<TransactionScript> {
+    // Upstream guarded-multisig exposes a single scheme-agnostic library; the
+    // per-signer scheme lives in account storage, so the script no longer branches
+    // on `scheme` (param retained for caller API stability).
+    let standards_lib: Library = StandardsLib::default().into();
 
     let tx_script_code = "
-        use oz_multisig::multisig
+        use miden::standards::auth::multisig
         begin
             call.multisig::update_signers_and_threshold
         end
     ";
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(multisig_library)
+        .with_dynamically_linked_library(standards_lib)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(tx_script_code)
         .map_err(|e| {
@@ -100,7 +109,8 @@ pub fn build_update_signers_transaction_request<I>(
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let (config_hash, config_values) = build_multisig_config_advice(threshold, signer_commitments);
+    let (config_hash, config_values) =
+        build_multisig_config_advice(threshold, signer_commitments, scheme);
     let script = build_update_signers_script(scheme)?;
 
     let request = TransactionRequestBuilder::new()
@@ -118,24 +128,18 @@ where
 pub fn build_update_procedure_threshold_script(
     procedure: ProcedureName,
     threshold: u32,
-    scheme: SignatureScheme,
+    _scheme: SignatureScheme,
 ) -> Result<TransactionScript> {
-    let multisig_library = match scheme {
-        SignatureScheme::Falcon => get_multisig_library(),
-        SignatureScheme::Ecdsa => get_multisig_ecdsa_library(),
-    }
-    .map_err(|e| {
-        MultisigError::TransactionExecution(format!("failed to get multisig library: {}", e))
-    })?;
+    let standards_lib: Library = StandardsLib::default().into();
 
     let procedure_root = procedure.root();
     let tx_script_code = format!(
         r#"
-        use oz_multisig::multisig
+        use miden::standards::auth::multisig
         begin
             push.{procedure_root}
             push.{threshold}
-            call.multisig::update_procedure_threshold
+            call.multisig::set_procedure_threshold
             dropw
             drop
         end
@@ -143,7 +147,7 @@ pub fn build_update_procedure_threshold_script(
     );
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(multisig_library)
+        .with_dynamically_linked_library(standards_lib)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(&tx_script_code)
         .map_err(|e| {
@@ -166,11 +170,12 @@ pub fn build_update_procedure_threshold_transaction_request<I>(
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let (config_hash, _) = build_procedure_threshold_advice(procedure, threshold);
+    let (config_hash, config_values) = build_procedure_threshold_advice(procedure, threshold);
     let script = build_update_procedure_threshold_script(procedure, threshold, scheme)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
+        .extend_advice_map([(config_hash, config_values)])
         .extend_advice_map(extra_advice)
         .auth_arg(salt)
         .build()?;
