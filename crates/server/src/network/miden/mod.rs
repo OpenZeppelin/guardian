@@ -182,9 +182,46 @@ impl NetworkClient for MidenNetworkClient {
         };
 
         let inspector = MidenAccountInspector::new(&account);
-        let has_guardian_auth = inspector.has_guardian_auth();
+        // Gate on multisig, not GUARDIAN: the replay-protection map is a multisig mechanism
+        // populated by the multisig auth on-chain regardless of GUARDIAN state. A SwitchGuardian
+        // disables GUARDIAN (`disable_guardian` clears the selector), which would make a
+        // GUARDIAN-gated check skip this adjustment and produce a commitment that omits the
+        // executed-transactions entry the chain actually recorded.
+        let is_multisig = inspector.has_multisig_auth();
+        let has_guardian_component = inspector.has_guardian_component();
 
-        if has_guardian_auth {
+        if has_guardian_component {
+            // `verify_guardian_signature` unconditionally calls `enable_guardian` at the end of
+            // authentication, so after any successful transaction the GUARDIAN selector is ON.
+            // The abort (no-signature) summary GUARDIAN stores as the delta captures the selector
+            // as it stood when authentication aborted — and a SwitchGuardian's
+            // `update_guardian_public_key` disables it mid-script — so we must re-enable it here
+            // to match the on-chain commitment, just like the replay-protection entry below.
+            const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
+            const GUARDIAN_ON: [u32; 4] = [1, 0, 0, 0];
+
+            let slot_name = StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME)
+                .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
+
+            account
+                .storage_mut()
+                .set_item(&slot_name, Word::from(GUARDIAN_ON))
+                .map_err(|e| {
+                    tracing::error!(
+                        account_id = %account.id().to_hex(),
+                        error = %e,
+                        "Failed to re-enable GUARDIAN selector"
+                    );
+                    format!("Failed to re-enable GUARDIAN selector: {e}")
+                })?;
+
+            tracing::debug!(
+                account_id = %account.id().to_hex(),
+                "Re-enabled GUARDIAN selector to mirror enable_guardian"
+            );
+        }
+
+        if is_multisig {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
             // This affects determinism on simulations as the simulation won't pass the authentication,
             // therefore, the transaction won't be added to the mapping.

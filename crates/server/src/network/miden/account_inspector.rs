@@ -99,6 +99,27 @@ impl<'a> MidenAccountInspector<'a> {
         selector_value == guardian_on
     }
 
+    /// Check if the account is an OpenZeppelin multisig by the presence of its threshold-config
+    /// slot. Unlike [`Self::has_guardian_auth`], this does not depend on the GUARDIAN selector,
+    /// so it stays true even after a `SwitchGuardian` disables GUARDIAN verification. The
+    /// multisig replay-protection map (`executed_transactions`) is populated by the multisig auth
+    /// regardless of GUARDIAN state, so this is the correct gate for the replay-protection
+    /// adjustment.
+    pub fn has_multisig_auth(&self) -> bool {
+        self.get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)
+            .is_some()
+    }
+
+    /// Check if the account has a GUARDIAN component at all (regardless of whether GUARDIAN is
+    /// currently enabled) by the presence of the GUARDIAN selector slot. Unlike
+    /// [`Self::has_guardian_auth`], this stays true even when the selector is OFF — needed to
+    /// mirror the unconditional `enable_guardian` that `verify_guardian_signature` runs at the end
+    /// of authentication, which leaves the selector ON after any successful transaction even if a
+    /// script (e.g. a guardian-key switch) disabled it mid-execution.
+    pub fn has_guardian_component(&self) -> bool {
+        self.get_item_by_name(OZ_GUARDIAN_SELECTOR).is_some()
+    }
+
     /// Extract GUARDIAN public key commitment from the OpenZeppelin GUARDIAN public key map.
     /// Requires the exact slot name `openzeppelin::guardian::public_key`.
     pub fn extract_guardian_public_key(&self) -> Option<String> {

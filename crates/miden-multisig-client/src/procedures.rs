@@ -23,7 +23,7 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x5f7faab89e7f67eba8c9c83bffef53b95452cb76c2d75dff1e158b18d6f38487",
+                "0x34963b067dbba634e57b416bc2f2a9a8d4ac24147f40b2900148c9ba44774274",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
                 "0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67",
@@ -35,7 +35,7 @@ impl ProcedureName {
                 "0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96",
             ),
             ProcedureName::VerifyGuardian => procedure_root_word(
-                "0x575715e002db8217ac68425f46cf4f3299888dcd87b9c5aa46d3bfd32cbc9c01",
+                "0xe6a8a62d37117f55a79b5345aa3d263ab16e973d486bac9a1612663dfdecf82d",
             ),
             ProcedureName::SendAsset => procedure_root_word(
                 "0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4",
@@ -129,6 +129,63 @@ fn procedure_root_word(hex_str: &str) -> Word {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procedure_roots_match_compiled_account() {
+        use miden_confidential_contracts::multisig_guardian::{
+            MultisigGuardianBuilder, MultisigGuardianConfig,
+        };
+        use miden_protocol::{Felt, Word};
+
+        let commit = |s: u64| {
+            Word::from([
+                Felt::new_unchecked(s),
+                Felt::new_unchecked(s + 1),
+                Felt::new_unchecked(s + 2),
+                Felt::new_unchecked(s + 3),
+            ])
+        };
+        let config = MultisigGuardianConfig::new(1, vec![commit(1)], commit(10));
+        let account = MultisigGuardianBuilder::new(config)
+            .with_seed([42u8; 32])
+            .build()
+            .expect("build account");
+
+        let roots: Vec<Word> = account
+            .code()
+            .procedures()
+            .iter()
+            .map(|p| *p.mast_root())
+            .collect();
+
+        assert_eq!(
+            ProcedureName::UpdateSigners.root(),
+            roots[0],
+            "update_signers"
+        );
+        assert_eq!(
+            ProcedureName::UpdateProcedureThreshold.root(),
+            roots[1],
+            "update_procedure_threshold"
+        );
+        assert_eq!(
+            ProcedureName::UpdateGuardian.root(),
+            roots[2],
+            "update_guardian"
+        );
+        assert_eq!(ProcedureName::AuthTx.root(), roots[3], "auth_tx");
+        assert_eq!(
+            ProcedureName::VerifyGuardian.root(),
+            roots[4],
+            "verify_guardian"
+        );
+        assert_eq!(ProcedureName::SendAsset.root(), roots[5], "send_asset");
+        assert_eq!(
+            ProcedureName::ReceiveAsset.root(),
+            roots[6],
+            "receive_asset"
+        );
+    }
 
     #[test]
     fn procedure_threshold_new_creates_correctly() {

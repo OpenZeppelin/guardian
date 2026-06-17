@@ -66,10 +66,9 @@ impl MultisigClient {
                 RpcError::RequestError {
                     error_kind: GrpcError::NotFound,
                     ..
-                } => MultisigError::MidenClient(format!(
-                    "account {} not found on chain",
-                    account_id
-                )),
+                } => {
+                    MultisigError::MidenClient(format!("account {} not found on chain", account_id))
+                }
                 other => MultisigError::MidenClient(format!(
                     "failed to fetch on-chain commitment for account {}: {}",
                     account_id, other
@@ -349,9 +348,16 @@ impl MultisigClient {
                     ))
                 })?;
 
-            let proven = self.miden_client.prove_transaction(&tx_result).await.map_err(|e| {
-                MultisigError::TransactionExecution(format!("transaction proving failed: {:?}", e))
-            })?;
+            let proven = self
+                .miden_client
+                .prove_transaction(&tx_result)
+                .await
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "transaction proving failed: {:?}",
+                        e
+                    ))
+                })?;
 
             self.miden_client
                 .submit_proven_transaction(proven, &tx_result)
@@ -417,21 +423,27 @@ impl MultisigClient {
                 })?
         };
 
-        // Update GUARDIAN endpoint if this was a SwitchGuardian transaction, then register on new GUARDIAN
+        // Update GUARDIAN endpoint if this was a SwitchGuardian transaction.
         if let Some(endpoint) = new_guardian_endpoint {
+            // Only register on the new server when actually moving to a *different* GUARDIAN: a
+            // new server does not yet track this account, so it needs a fresh registration. When
+            // the endpoint is unchanged, the GUARDIAN already tracks the account and the switch
+            // delta pushed during execution will be canonicalized — writing the `deltas` entry,
+            // advancing the stored state, and deleting the proposal. Re-registering in that case
+            // would overwrite the pre-switch base and make canonicalization apply the delta on
+            // top of an already-advanced state.
+            let switching_endpoint = endpoint != self.guardian_endpoint;
             self.guardian_endpoint = endpoint;
+            self.account = Some(MultisigAccount::new(updated_account.clone()));
 
-            // Refresh the local account after switching to the new GUARDIAN endpoint.
-            let multisig_account = MultisigAccount::new(updated_account.clone());
-            self.account = Some(multisig_account);
-
-            // Register the updated account on the new GUARDIAN server
-            self.register_on_guardian().await.map_err(|e| {
-                MultisigError::GuardianServer(format!(
-                    "transaction executed successfully but failed to register on new GUARDIAN: {}",
-                    e
-                ))
-            })?;
+            if switching_endpoint {
+                self.register_on_guardian().await.map_err(|e| {
+                    MultisigError::GuardianServer(format!(
+                        "transaction executed successfully but failed to register on new GUARDIAN: {}",
+                        e
+                    ))
+                })?;
+            }
         } else {
             let multisig_account = MultisigAccount::new(updated_account);
             self.account = Some(multisig_account);

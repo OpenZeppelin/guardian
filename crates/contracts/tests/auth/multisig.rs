@@ -5,7 +5,9 @@ use miden_confidential_contracts::masm_builder::{
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
-use miden_protocol::account::{Account, AccountType, StorageSlotName, auth::AuthSecretKey};
+use miden_protocol::account::{
+    Account, AccountType, StorageMapKey, StorageSlotName, auth::AuthSecretKey,
+};
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
@@ -1003,6 +1005,190 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     assert_eq!(
         storage_item, expected_word,
         "GUARDIAN Public key doesn't match expected value"
+    );
+
+    Ok(())
+}
+
+/// Reproduces the GUARDIAN canonicalization divergence: the server rebuilds the post-switch
+/// account from the *abort* TransactionSummary (the no-signature simulation that GUARDIAN stores
+/// as the delta) plus the artificial replay-protection entry, and that reconstruction must match
+/// the account produced by the *real* (signed) execution. This mirrors GUARDIAN's `apply_delta`
+/// for a GUARDIAN-enabled account (as in the demo) and diffs the result slot by slot so the
+/// divergent slot is named on failure.
+#[tokio::test]
+async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyhow::Result<()> {
+    const GUARDIAN_SELECTOR_SLOT: &str = "openzeppelin::guardian::selector";
+    const GUARDIAN_SCHEME_ID_SLOT: &str = "openzeppelin::guardian::scheme_id";
+    const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
+
+    let (_secret_keys, public_keys, authenticators, _gsk, guardian_public_key, _gauth) =
+        setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    // GUARDIAN ON, matching the demo's default account configuration.
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+
+    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let salt = Word::from([Felt::new_unchecked(7); 4]);
+
+    let (_nsk, new_guardian_public_key, _nauth) = setup_keys_and_authenticator_for_guardian()?;
+    let advice_inputs = AdviceInputs::default().with_stack(
+        new_guardian_public_key
+            .to_commitment()
+            .as_elements()
+            .iter()
+            .copied(),
+    );
+
+    let guardian_library = get_guardian_library()?;
+    let tx_script_code = r#"
+    use oz_guardian::guardian
+    begin
+        call.guardian::update_guardian_public_key
+    end
+    "#;
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&guardian_library)?
+        .compile_tx_script(tx_script_code)?;
+
+    // Abort (no-signature) execution: this is the TransactionSummary GUARDIAN stores as the delta.
+    let abort_summary = match mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .tx_script(tx_script.clone())
+        .extend_advice_inputs(advice_inputs.clone())
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await
+        .unwrap_err()
+    {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = abort_summary.as_ref().to_commitment();
+    let abort_delta = abort_summary.as_ref().account_delta().clone();
+
+    let signing = SigningInputs::TransactionSummary(abort_summary);
+    let sig_1 = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &signing)
+        .await?;
+    let sig_2 = authenticators[1]
+        .get_signature(public_keys[1].to_commitment().into(), &signing)
+        .await?;
+
+    // Real signed execution: the authoritative on-chain result.
+    let executed_tx = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .tx_script(tx_script)
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .auth_args(salt)
+        .extend_advice_inputs(advice_inputs)
+        .build()?
+        .execute()
+        .await
+        .unwrap();
+
+    let mut executed_account = multisig_account.clone();
+    executed_account.apply_delta(executed_tx.account_delta())?;
+
+    // Reconstruct exactly as the GUARDIAN server's `apply_delta` does: build from the abort delta
+    // (full-state -> try_from, else apply incremental), then add the replay-protection entry.
+    let mut server_account = if abort_delta.is_full_state() {
+        Account::try_from(&abort_delta)?
+    } else {
+        let mut acc = multisig_account.clone();
+        acc.apply_delta(&abort_delta)?;
+        acc
+    };
+    let exec_txs_slot = StorageSlotName::new(EXECUTED_TXS_SLOT).unwrap();
+    server_account.storage_mut().set_map_item(
+        &exec_txs_slot,
+        StorageMapKey::new(msg),
+        Word::from([1u32, 0, 0, 0]),
+    )?;
+    // Mirror enable_guardian: re-enable the selector that the switch script disabled.
+    server_account.storage_mut().set_item(
+        &StorageSlotName::new(GUARDIAN_SELECTOR_SLOT).unwrap(),
+        Word::from([1u32, 0, 0, 0]),
+    )?;
+
+    // Diff the slots that the switch + auth touch, so a failure names the divergent slot.
+    let slot = |name: &str| StorageSlotName::new(name).unwrap();
+    let key0: Word = [Felt::new_unchecked(0); 4].into();
+
+    assert_eq!(
+        server_account.nonce(),
+        executed_account.nonce(),
+        "nonce diverges"
+    );
+    assert_eq!(
+        server_account
+            .storage()
+            .get_item(&slot(GUARDIAN_SELECTOR_SLOT))
+            .unwrap(),
+        executed_account
+            .storage()
+            .get_item(&slot(GUARDIAN_SELECTOR_SLOT))
+            .unwrap(),
+        "guardian selector diverges (abort=disabled vs executed=re-enabled?)"
+    );
+    assert_eq!(
+        server_account
+            .storage()
+            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), key0)
+            .unwrap(),
+        executed_account
+            .storage()
+            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), key0)
+            .unwrap(),
+        "guardian public key diverges"
+    );
+    assert_eq!(
+        server_account
+            .storage()
+            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), key0)
+            .unwrap(),
+        executed_account
+            .storage()
+            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), key0)
+            .unwrap(),
+        "guardian scheme id diverges"
+    );
+    assert_eq!(
+        server_account
+            .storage()
+            .get_map_item(&exec_txs_slot, msg)
+            .unwrap(),
+        executed_account
+            .storage()
+            .get_map_item(&exec_txs_slot, msg)
+            .unwrap(),
+        "executed_transactions replay entry diverges"
+    );
+    assert_eq!(
+        server_account
+            .storage()
+            .get_item(&slot(THRESHOLD_CONFIG_SLOT))
+            .unwrap(),
+        executed_account
+            .storage()
+            .get_item(&slot(THRESHOLD_CONFIG_SLOT))
+            .unwrap(),
+        "threshold config diverges"
+    );
+    assert_eq!(
+        server_account.to_commitment(),
+        executed_account.to_commitment(),
+        "overall account commitment diverges"
     );
 
     Ok(())

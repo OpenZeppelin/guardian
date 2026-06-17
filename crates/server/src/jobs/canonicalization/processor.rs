@@ -198,6 +198,38 @@ impl DeltasProcessorBase {
                             GuardianError::StorageError(format!("Failed to delete delta: {e}"))
                         })?;
 
+                    // Delete the matching proposal too. The candidate is being discarded, so the
+                    // proposal can never be canonicalized; leaving it would strand it as `pending`
+                    // forever and let clients re-submit a stale intent.
+                    let proposal_id = {
+                        let client = self.state.network_client.lock().await;
+                        client
+                            .delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload)
+                            .ok()
+                    };
+                    if let Some(ref id) = proposal_id
+                        && let Ok(_existing_proposal) = storage_backend
+                            .pull_delta_proposal(&delta.account_id, id)
+                            .await
+                    {
+                        tracing::warn!(
+                            account_id = %delta.account_id,
+                            proposal_id = %id,
+                            "Deleting matching proposal as its delta was discarded"
+                        );
+                        if let Err(e) = storage_backend
+                            .delete_delta_proposal(&delta.account_id, id)
+                            .await
+                        {
+                            tracing::warn!(
+                                account_id = %delta.account_id,
+                                proposal_id = %id,
+                                error = %e,
+                                "Failed to delete proposal after discard, but continuing"
+                            );
+                        }
+                    }
+
                     // Clear the pending candidate flag after discard
                     if let Err(e) = self
                         .state
