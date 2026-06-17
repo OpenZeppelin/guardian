@@ -26,6 +26,9 @@ COPY examples ./examples
 # Build for release (only server)
 FROM base-builder as server-builder
 
+# build.rs reads this to stamp the git commit; the build context has no .git to fall back on.
+ARG GUARDIAN_GIT_SHA
+
 RUN if [ -n "$GUARDIAN_SERVER_FEATURES" ]; then \
       cargo build --release --package guardian-server --bin server --features "$GUARDIAN_SERVER_FEATURES"; \
     else \
