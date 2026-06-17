@@ -3097,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-server"
-version = "0.1.0"
+version = "0.14.9"
 dependencies = [
  "alloy",
  "async-trait",
