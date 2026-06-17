@@ -540,6 +540,167 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Regression test for cosigner removal (2-of-2 -> 1-of-1).
+///
+/// Reproduces the divergence where the local account kept the removed signer
+/// (showing "1-of-2") after a remove-cosigner execution while the on-chain
+/// state correctly dropped it. Removing a signer runs `cleanup_pubkey_mapping`,
+/// which clears the removed index's map entry; this asserts the executed
+/// transaction's account delta, applied in-process, actually clears it.
+#[tokio::test]
+async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
+    let (
+        _secret_keys,
+        public_keys,
+        authenticators,
+        _guardian_secret_key,
+        guardian_public_key,
+        guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+
+    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let salt = Word::from([Felt::new_unchecked(3); 4]);
+
+    // New config: 1-of-1, keeping only the first existing signer.
+    let threshold = 1u64;
+    let num_of_approvers = 1u64;
+    let kept_keys = [public_keys[0].clone()];
+
+    let mut config_and_pubkeys_vector = vec![
+        Felt::new_unchecked(threshold),
+        Felt::new_unchecked(num_of_approvers),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+    ];
+    for public_key in kept_keys.iter().rev() {
+        let key_word: Word = public_key.to_commitment();
+        config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
+    }
+
+    let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys_vector);
+
+    let mut advice_map = AdviceMap::default();
+    advice_map.insert(multisig_config_hash, config_and_pubkeys_vector);
+
+    let multisig_library = get_multisig_library()?;
+    let tx_script_code = r#"
+    use oz_multisig::multisig
+    begin
+        call.multisig::update_signers_and_threshold
+    end
+    "#;
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&multisig_library)?
+        .compile_tx_script(tx_script_code)?;
+
+    let advice_inputs = AdviceInputs::default()
+        .with_map(advice_map.clone().into_iter().map(|(k, v)| (k, v.to_vec())));
+
+    let tx_context_init = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .tx_script(tx_script.clone())
+        .tx_script_args(multisig_config_hash)
+        .extend_advice_inputs(advice_inputs.clone())
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+
+    let sig_1 = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let sig_2 = authenticators[1]
+        .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
+        .await?;
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    let remove_tx = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .tx_script(tx_script)
+        .tx_script_args(multisig_config_hash)
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
+        .auth_args(salt)
+        .extend_advice_inputs(advice_inputs)
+        .build()?
+        .execute()
+        .await
+        .unwrap();
+
+    let mut updated_multisig_account = multisig_account.clone();
+    updated_multisig_account.apply_delta(remove_tx.account_delta())?;
+
+    let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
+
+    let key_0: Word = [
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+    ]
+    .into();
+    assert_eq!(
+        updated_multisig_account
+            .storage()
+            .get_map_item(&signer_pubkeys_name, key_0)
+            .unwrap(),
+        public_keys[0].to_commitment(),
+        "kept signer must remain at index 0"
+    );
+
+    let key_1: Word = [
+        Felt::new_unchecked(1),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+    ]
+    .into();
+    assert_eq!(
+        updated_multisig_account
+            .storage()
+            .get_map_item(&signer_pubkeys_name, key_1)
+            .unwrap(),
+        Word::default(),
+        "removed signer entry at index 1 must be cleared from local storage"
+    );
+
+    let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT).unwrap();
+    let threshold_config_storage = updated_multisig_account
+        .storage()
+        .get_item(&threshold_config_name)
+        .unwrap();
+    assert_eq!(
+        threshold_config_storage[0],
+        Felt::new_unchecked(threshold),
+        "threshold must be updated to 1"
+    );
+    assert_eq!(
+        threshold_config_storage[1],
+        Felt::new_unchecked(num_of_approvers),
+        "num approvers must be updated to 1"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::Result<()> {
     let (
