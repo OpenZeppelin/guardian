@@ -119,10 +119,8 @@ impl MultisigClient {
                         )
                 });
                 if can_consume_now {
-                    Some(ConsumableNote {
-                        id: record
-                            .id()
-                            .expect("consumable note record has a committed note id"),
+                    record.id().map(|id| ConsumableNote {
+                        id,
                         assets: record.assets().iter().cloned().collect(),
                     })
                 } else {
@@ -149,18 +147,16 @@ impl MultisigClient {
         let result = notes
             .into_iter()
             .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
-            .map(|(record, relevances)| {
+            .filter_map(|(record, relevances)| {
                 let note = ConsumableNote {
-                    id: record
-                        .id()
-                        .expect("consumable note record has a committed note id"),
+                    id: record.id()?,
                     assets: record.assets().iter().cloned().collect(),
                 };
                 let statuses: Vec<(AccountId, String)> = relevances
                     .into_iter()
                     .map(|(id, status)| (id, format!("{:?}", status)))
                     .collect();
-                (note, statuses)
+                Some((note, statuses))
             })
             .collect();
 
@@ -180,11 +176,11 @@ impl MultisigClient {
         let result = notes
             .into_iter()
             .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
-            .map(|(record, _)| ConsumableNote {
-                id: record
-                    .id()
-                    .expect("consumable note record has a committed note id"),
-                assets: record.assets().iter().cloned().collect(),
+            .filter_map(|(record, _)| {
+                Some(ConsumableNote {
+                    id: record.id()?,
+                    assets: record.assets().iter().cloned().collect(),
+                })
             })
             .collect();
 
