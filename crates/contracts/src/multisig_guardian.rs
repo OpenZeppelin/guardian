@@ -478,10 +478,10 @@ mod tests {
         // Regenerated after the auth-contract MASM changes on the 0.15 branch (the
         // same changes that shifted the procedure roots); re-verify the TS builder
         // against these when validating smoke-web.
-        assert_eq!(account.id().to_hex(), "0x7d380d8ba03e81e179d8e48110c6a3");
+        assert_eq!(account.id().to_hex(), "0xc42d3ebf2d6ac86103906b4a71b642");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x95eefe1ebdd56526e2ca72a43d449e26ba32e95a6fb1a49c87859d75a4eadc7a"
+            "0xf3e34ccf284ed0d9defc573d8ae7ab2d136f11dc65937939294b6155f62588c2"
         );
     }
 }
