@@ -10,7 +10,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.1.0
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -29,7 +29,7 @@ services:
     image: grafana/grafana:11.4.0
     ports:
       # Host 3001 to avoid clashing with guardian-server's HTTP port 3000.
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
