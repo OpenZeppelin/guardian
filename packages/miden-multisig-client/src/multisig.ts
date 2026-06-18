@@ -739,19 +739,10 @@ export class Multisig {
       description: `Switch GUARDIAN to ${newGuardianEndpoint}`,
     };
 
-    const proposalId = computeCommitmentFromTxSummary(summaryBase64);
-    const proposal: Proposal = {
-      id: proposalId,
-      accountId: this._accountId,
-      nonce: proposalNonce,
-      status: 'pending',
-      txSummary: summaryBase64,
-      signatures: [],
-      metadata,
-    };
-
-    this.proposals.set(proposal.id, proposal);
-    return proposal;
+    // Push to GUARDIAN like every other proposal type (it was previously stored
+    // only in the local map, so it showed in the UI but sign/execute — which fetch
+    // from GUARDIAN — couldn't find it). SwitchGuardian is a regular delta proposal.
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
   }
 
   /**
@@ -981,6 +972,30 @@ export class Multisig {
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
         throw new Error('Switch GUARDIAN proposal metadata is incomplete after execution');
+      }
+
+      // Record the executed delta on the CURRENT (pre-switch) GUARDIAN so it is
+      // canonicalized — producing a `deltas` entry and clearing the pending
+      // proposal, exactly like every other proposal type (whose delta is pushed
+      // during request preparation). SwitchGuardian does not need the old
+      // GUARDIAN's ack in the transaction, so this push is purely for
+      // canonicalization; the returned ack is discarded. Must run BEFORE
+      // `setGuardianClient` repoints `this.guardian` to the new endpoint below.
+      // Best-effort: switching away from an unreachable GUARDIAN must still
+      // succeed, so any error here is swallowed (mirrors the Rust execute path).
+      try {
+        const normalizedProposalId = normalizeHexWord(proposal.id);
+        const switchDelta = await this.guardian.getDeltaProposal(
+          this._accountId,
+          normalizedProposalId,
+        );
+        await this.guardian.pushDelta({
+          ...switchDelta,
+          deltaPayload: switchDelta.deltaPayload.txSummary,
+        });
+      } catch {
+        // Canonicalization on the pre-switch GUARDIAN is best-effort and must not
+        // block the endpoint switch (e.g. the old GUARDIAN may be unreachable).
       }
 
       try {
@@ -1560,6 +1575,28 @@ export class Multisig {
       // Custom proposals (issue #266) have no per-type reconstruction recipe;
       // the id ↔ tx_summary commitment match above is the only available
       // integrity guarantee for an opaque proposal.
+      return txSummaryCommitment;
+    }
+
+    if (proposal.metadata.proposalType === 'switch_guardian') {
+      // SwitchGuardian cannot be metadata-bound by re-execution in the browser
+      // SDK: the `update_guardian_public_key` script disables the guardian as a
+      // side effect, and the WASM client's `executeForSummary` leaves that change
+      // applied to the in-session account. Any subsequent re-execution therefore
+      // runs against an account whose guardian storage is already mutated and
+      // reconstructs a *different* (smaller) delta, producing a false
+      // "metadata does not match tx_summary" rejection — even for a proposal this
+      // client itself just built. The native Rust client does not exhibit this
+      // (its `execute_for_summary` does not mutate), so this is an intentional,
+      // documented divergence rather than silent drift.
+      //
+      // The id ↔ tx_summary commitment match above still binds the proposal to
+      // its summary, and the endpoint ↔ pubkey commitment is independently
+      // verified at propose/execute time (`verifyGuardianEndpointCommitment`), so
+      // the routing the metadata drives is checked elsewhere. This mirrors the
+      // `custom` exemption above. SwitchGuardian is also vault/storage-distinct
+      // from the storage-config family (add/remove signer, threshold), which only
+      // touch the multisig component and reconstruct faithfully.
       return txSummaryCommitment;
     }
 

@@ -1300,6 +1300,24 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: multisig.accountId,
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
 
       const proposal = await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianPubkey);
 
@@ -1360,6 +1378,24 @@ describe('Multisig', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ commitment: newGuardianCommitment }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: multisig.accountId,
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
       });
 
       await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianCommitment);
@@ -2194,11 +2230,10 @@ describe('Multisig', () => {
       const newGuardianPubkey = '0x' + '1'.repeat(64);
       const finalRequest = { kind: 'final-switch-guardian-request' };
 
+      // switch_guardian is exempt from binding re-execution (the browser SDK's
+      // executeForSummary mutates the in-session guardian account, so re-deriving
+      // would diverge), so only the single final-request build happens here.
       vi.mocked(buildUpdateGuardianTransactionRequest)
-        .mockResolvedValueOnce({
-          request: { kind: 'verify-switch-guardian-request' },
-          salt: { toHex: () => '0x' + 'd'.repeat(64) },
-        } as any)
         .mockResolvedValueOnce({
           request: finalRequest,
           salt: { toHex: () => '0x' + 'd'.repeat(64) },
@@ -2998,6 +3033,94 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
+      // Best-effort canonicalization push to the pre-switch GUARDIAN:
+      // getDeltaProposal then pushDelta, before re-registering on the new endpoint.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'switch_guardian',
+              new_guardian_pubkey: newGuardianPubkey,
+              new_guardian_endpoint: 'http://new-guardian.com',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          ack_sig: '0x' + '6'.repeat(130),
+          ack_pubkey: '0x' + 'f'.repeat(64),
+          ack_scheme: 'falcon',
+        }),
+      });
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+      });
+      mockWebClient.transactions.submit.mockResolvedValueOnce({});
+
+      await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('should still switch GUARDIAN when the pre-switch canonicalization push fails', async () => {
+      // Best-effort canonicalization: if the old GUARDIAN is unreachable when we
+      // try to record the executed delta, the endpoint switch must still succeed.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ commitment: newGuardianPubkey }),
+      });
+      // getDeltaProposal against the old GUARDIAN fails — must be swallowed.
+      mockFetch.mockRejectedValueOnce(new Error('pre-switch GUARDIAN unreachable'));
       mockWebClient.getAccount.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });

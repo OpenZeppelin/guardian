@@ -472,14 +472,16 @@ mod tests {
             .build()
             .expect("account");
 
-        // Updated for the Miden 0.15 account model (Private/Public account type,
-        // v1 account IDs). The TypeScript/browser builder MUST be re-verified
-        // against these values once it migrates to 0.15 — they are a cross-SDK
-        // parity contract, not just a Rust regression guard.
-        assert_eq!(account.id().to_hex(), "0xc6f6629630a17321393f8fd449b0ea");
+        // Cross-SDK parity contract, not just a Rust regression guard: the
+        // TypeScript/browser builder MUST produce these same identity values for
+        // the same inputs (signer + guardian commitments, seed [9; 32]).
+        // Regenerated after the auth-contract MASM changes on the 0.15 branch (the
+        // same changes that shifted the procedure roots); re-verify the TS builder
+        // against these when validating smoke-web.
+        assert_eq!(account.id().to_hex(), "0x7d380d8ba03e81e179d8e48110c6a3");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x2cfdec1a62f4137d5a6bc0fd8c97670eb19a98c1f3297c20f352c317f4ed7219"
+            "0x95eefe1ebdd56526e2ca72a43d449e26ba32e95a6fb1a49c87859d75a4eadc7a"
         );
     }
 }

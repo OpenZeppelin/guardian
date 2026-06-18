@@ -11,11 +11,11 @@
  * human-readable encoding and should not be copied into this table.
  */
 export const PROCEDURE_ROOTS = {
-  update_signers: '0x5f7faab89e7f67eba8c9c83bffef53b95452cb76c2d75dff1e158b18d6f38487',
+  update_signers: '0x34963b067dbba634e57b416bc2f2a9a8d4ac24147f40b2900148c9ba44774274',
   update_procedure_threshold: '0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67',
   auth_tx: '0x841bba7204d80cd5f704da202fa54e968455547e37a926ff111dae4241f34d05',
   update_guardian: '0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96',
-  verify_guardian: '0x575715e002db8217ac68425f46cf4f3299888dcd87b9c5aa46d3bfd32cbc9c01',
+  verify_guardian: '0xe6a8a62d37117f55a79b5345aa3d263ab16e973d486bac9a1612663dfdecf82d',
   send_asset: '0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4',
   receive_asset: '0x6170fd6d682d91777b551fd866258f43cc657f1291f8f071500f4e56e9c153da',
 } as const;
