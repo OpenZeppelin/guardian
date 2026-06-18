@@ -892,6 +892,47 @@
           }
         ]
       }
+    },
+    "/status": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, and uptime.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "Server liveness, version, and environment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1747,6 +1788,46 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "description": "Response body for `GET /status`. Safe to expose unauthenticated.",
+        "required": [
+          "status",
+          "version",
+          "git_commit",
+          "environment",
+          "started_at",
+          "uptime_seconds"
+        ],
+        "properties": {
+          "environment": {
+            "type": "string",
+            "description": "Deployment environment / network label, e.g. `\"testnet\"`. Same\nvalue surfaced on `GET /dashboard/info`."
+          },
+          "git_commit": {
+            "type": "string",
+            "description": "Short git SHA at build time (`\"unknown\"` when unavailable)."
+          },
+          "started_at": {
+            "type": "string",
+            "description": "RFC 3339 wall-clock time the process started."
+          },
+          "status": {
+            "type": "string",
+            "description": "Constant `\"ok\"`. A 200 response is itself the liveness signal."
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Whole seconds since `started_at`; clamped to 0 on clock skew.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string",
+            "description": "`CARGO_PKG_VERSION` of `guardian-server`."
           }
         }
       }
