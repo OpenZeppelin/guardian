@@ -21,10 +21,7 @@ import { randomWord } from '../utils/random.js';
 import type { SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-function buildMultisigConfigAdvice(
-  threshold: number,
-  signerCommitments: string[],
-): { configHash: Word; payload: FeltArray } {
+function buildMultisigConfigFelts(threshold: number, signerCommitments: string[]): Felt[] {
   const numApprovers = signerCommitments.length;
   const felts: Felt[] = [
     new Felt(BigInt(threshold)),
@@ -36,8 +33,21 @@ function buildMultisigConfigAdvice(
     const word = WordType.fromHex(normalizeHexWord(commitment));
     felts.push(...word.toFelts());
   }
-  const payload = new FeltArray(felts);
-  const configHash = Poseidon2.hashElements(payload);
+  return felts;
+}
+
+function buildMultisigConfigAdvice(
+  threshold: number,
+  signerCommitments: string[],
+): { configHash: Word; payload: FeltArray } {
+  // `Poseidon2.hashElements` takes its `FeltArray` by value and frees the JS
+  // wrapper (wasm-bindgen). Hash one FeltArray and return a separate, freshly
+  // built one as the advice payload — reusing the hashed FeltArray surfaces as
+  // "null pointer passed to rust" at the later `advice.insert`.
+  const configHash = Poseidon2.hashElements(
+    new FeltArray(buildMultisigConfigFelts(threshold, signerCommitments)),
+  );
+  const payload = new FeltArray(buildMultisigConfigFelts(threshold, signerCommitments));
   return { configHash, payload };
 }
 
