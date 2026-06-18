@@ -6,14 +6,14 @@ use crate::metadata::network::normalize_evm_address;
 
 pub const EVM_PROPOSAL_KIND: &str = "evm";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EvmProposalSignature {
     pub signer: String,
     pub signature: String,
     pub signed_at: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EvmProposal {
     pub proposal_id: String,
     pub account_id: String,
@@ -39,7 +39,7 @@ pub struct EvmProposalFilter {
     pub validator_address: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ExecutableEvmProposal {
     pub hash: String,
     pub payload: String,

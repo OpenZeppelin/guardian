@@ -90,18 +90,32 @@ impl NetworkClient for MidenNetworkClient {
         let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
-        let on_chain_commitment = self
-            .client
-            .get_account_commitment(&account_id)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    account_id = %account_id.to_hex(),
-                    error = %e,
-                    "Failed to fetch account commitment from Miden network"
-                );
-                format!("Failed to verify account '{account_id}' on Miden network: {e}")
-            })?;
+        // Outbound chain-node RPC — the upstream dependency this
+        // server's availability hangs on, so it gets its own metric
+        // (`operation` is the static RPC method name, a closed set).
+        let rpc_started = std::time::Instant::now();
+        let rpc_result = self.client.get_account_commitment(&account_id).await;
+        metrics::counter!(
+            crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
+            crate::metrics::names::LABEL_OPERATION => "get_account_commitment",
+            crate::metrics::names::LABEL_OUTCOME =>
+                crate::metrics::labels::Outcome::from_ok(rpc_result.is_ok()).as_str()
+        )
+        .increment(1);
+        metrics::histogram!(
+            crate::metrics::names::MIDEN_RPC_DURATION_SECONDS,
+            crate::metrics::names::LABEL_OPERATION => "get_account_commitment"
+        )
+        .record(rpc_started.elapsed().as_secs_f64());
+
+        let on_chain_commitment = rpc_result.map_err(|e| {
+            tracing::error!(
+                account_id = %account_id.to_hex(),
+                error = %e,
+                "Failed to fetch account commitment from Miden network"
+            );
+            format!("Failed to verify account '{account_id}' on Miden network: {e}")
+        })?;
 
         if local_commitment_hex != on_chain_commitment {
             tracing::error!(

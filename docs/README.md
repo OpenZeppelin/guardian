@@ -22,7 +22,10 @@ You are an SDK consumer or integrator.
    client: account creation, proposal lifecycle, offline signing.
 4. [`spec/api.md`](../spec/api.md) — wire-level API contract (auth
    headers, request signing, data shapes).
-5. [Troubleshooting](./TROUBLESHOOTING.md) — error code reference for
+5. [OpenAPI specification](./OPENAPI.md) — machine-readable OpenAPI 3.1
+   spec ([`docs/openapi.json`](./openapi.json)) for Swagger UI / ReDoc /
+   client generators.
+6. [Troubleshooting](./TROUBLESHOOTING.md) — error code reference for
    anything your SDK surfaces.
 
 ### I want to *run* Guardian (deploy and operate)
@@ -94,6 +97,7 @@ You are a contributor.
 
 **Reference**
 - [Configuration (env vars)](./CONFIGURATION.md)
+- [OpenAPI specification](./OPENAPI.md) — HTTP API spec ([`openapi.json`](./openapi.json))
 - [`spec/`](../spec/index.md) — protocol specification
 - [`infra/README.md`](../infra/README.md) — Terraform variables
 
