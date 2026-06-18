@@ -2230,9 +2230,8 @@ describe('Multisig', () => {
       const newGuardianPubkey = '0x' + '1'.repeat(64);
       const finalRequest = { kind: 'final-switch-guardian-request' };
 
-      // switch_guardian is exempt from binding re-execution (the browser SDK's
-      // executeForSummary mutates the in-session guardian account, so re-deriving
-      // would diverge), so only the single final-request build happens here.
+      // switch_guardian is exempt from binding re-execution, so only the single
+      // final-request build happens here.
       vi.mocked(buildUpdateGuardianTransactionRequest)
         .mockResolvedValueOnce({
           request: finalRequest,
@@ -3033,8 +3032,7 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
-      // Best-effort canonicalization push to the pre-switch GUARDIAN:
-      // getDeltaProposal then pushDelta, before re-registering on the new endpoint.
+      // Pre-switch canonicalization push: getDeltaProposal then pushDelta.
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -3082,8 +3080,6 @@ describe('Multisig', () => {
     });
 
     it('should still switch GUARDIAN when the pre-switch canonicalization push fails', async () => {
-      // Best-effort canonicalization: if the old GUARDIAN is unreachable when we
-      // try to record the executed delta, the endpoint switch must still succeed.
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],

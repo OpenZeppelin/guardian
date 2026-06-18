@@ -23,10 +23,8 @@ use crate::keystore::word_from_hex;
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::word_to_hex;
 
-/// Whether a transaction's local account state must be rebuilt from the proven delta rather than
-/// read back from miden-client's store after submission. True for storage-config transactions
-/// (no notes), which miden-client persists incorrectly for private accounts; false for
-/// note-bearing transactions, whose standard path preserves note and nullifier tracking.
+/// True for note-less storage-config transactions, whose post-submit state miden-client persists
+/// incorrectly for private accounts, so local state must be rebuilt from the proven delta instead.
 fn rebuilds_local_state_from_delta(transaction_type: &TransactionType) -> bool {
     match transaction_type {
         TransactionType::AddCosigner { .. }
@@ -314,14 +312,10 @@ impl MultisigClient {
                 None
             };
 
-        // Storage-config transactions (signer/threshold/guardian changes) modify account storage
-        // but carry no notes. For these, miden-client's standard submit path corrupts local state
-        // for private accounts: its post-submit account reflects storage-map *value* changes but
-        // not *clears* (e.g. a removed cosigner lingers), and the submit stages SMT roots that
-        // block a corrective overwrite. We instead drive the pipeline manually — execute, prove,
-        // submit to the network (no local store mutation) — then rebuild the account from the
-        // proven delta and write it to the store ourselves. Note-bearing transactions (transfers,
-        // note consumption) keep the standard path so note and nullifier tracking is preserved.
+        // For note-less storage-config changes on private accounts, miden-client's standard submit
+        // path leaves stale local state (cleared storage-map entries linger) and stages SMT roots
+        // that block a corrective overwrite, so drive the pipeline manually and rebuild from the
+        // proven delta. Note-bearing transactions keep the standard path to preserve note tracking.
         let updated_account: Account = if rebuilds_local_state_from_delta(transaction_type) {
             let base_account: Account = self
                 .miden_client
@@ -369,8 +363,7 @@ impl MultisigClient {
                     ))
                 })?;
 
-            // Rebuild from the proven delta. A full-state delta (produced for private accounts)
-            // converts directly into the account; an incremental delta applies to the base.
+            // A full-state delta (private accounts) converts directly; an incremental one applies.
             let account_delta = tx_result.account_delta();
             let rebuilt: Account = if account_delta.is_full_state() {
                 Account::try_from(account_delta).map_err(|e| {
@@ -423,15 +416,10 @@ impl MultisigClient {
                 })?
         };
 
-        // Update GUARDIAN endpoint if this was a SwitchGuardian transaction.
         if let Some(endpoint) = new_guardian_endpoint {
-            // Only register on the new server when actually moving to a *different* GUARDIAN: a
-            // new server does not yet track this account, so it needs a fresh registration. When
-            // the endpoint is unchanged, the GUARDIAN already tracks the account and the switch
-            // delta pushed during execution will be canonicalized — writing the `deltas` entry,
-            // advancing the stored state, and deleting the proposal. Re-registering in that case
-            // would overwrite the pre-switch base and make canonicalization apply the delta on
-            // top of an already-advanced state.
+            // Only register when actually moving to a different GUARDIAN, which does not yet track
+            // this account. On an unchanged endpoint the pushed switch delta canonicalizes normally;
+            // re-registering would overwrite the pre-switch base and double-apply the delta.
             let switching_endpoint = endpoint != self.guardian_endpoint;
             self.guardian_endpoint = endpoint;
             self.account = Some(MultisigAccount::new(updated_account.clone()));

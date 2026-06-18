@@ -36,10 +36,9 @@ function buildProcedureThresholdAdvice(
   procedure: ProcedureName,
   threshold: number,
 ): { configHash: Word; payload: FeltArray } {
-  // `Poseidon2.hashElements` takes its `FeltArray` by value and frees the JS
-  // wrapper (wasm-bindgen). Hash one FeltArray and return a separate, freshly
-  // built one as the advice payload — reusing the hashed FeltArray surfaces as
-  // "null pointer passed to rust" at the later `advice.insert`.
+  // `Poseidon2.hashElements` consumes (frees) its `FeltArray` by value, so the
+  // advice payload must be a freshly built one — reusing the hashed array
+  // surfaces as "null pointer passed to rust" at the later `advice.insert`.
   const configHash = Poseidon2.hashElements(
     new FeltArray(buildProcedureThresholdFelts(procedure, threshold)),
   );

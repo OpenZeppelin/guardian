@@ -85,17 +85,11 @@ pub fn collect_signature_advice(
     Ok(advice)
 }
 
-/// Builds the fungible asset to transfer, preserving the callback flag of the
-/// asset as it is held in the sender's vault.
+/// Builds the fungible asset to transfer, sourcing the callback flag from the held asset.
 ///
-/// In Miden 0.15 the asset callback flag is part of the vault key, so an asset
-/// minted by a policy-enabled faucet (callbacks `Enabled`) has a different vault
-/// key than one rebuilt with the default `Disabled` flag. Rebuilding the asset
-/// from `faucet_id` and `amount` alone would produce a key that does not match
-/// the held asset, and the transfer would abort at execution. The callback flag
-/// is therefore sourced from the held asset; when the faucet is not present in
-/// the vault the default flag is used and execution surfaces the missing-asset
-/// error.
+/// In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
+/// `faucet_id`/`amount` with the default flag would not match the held asset and the transfer would
+/// abort. When the faucet is absent the default flag is used, surfacing the missing-asset error.
 pub fn build_transfer_asset(
     account: &Account,
     faucet_id: AccountId,

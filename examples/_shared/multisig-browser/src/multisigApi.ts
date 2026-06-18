@@ -108,11 +108,8 @@ function currentAccountNonce(multisig: Multisig): number | null {
 
 function proposalNonce(multisig: Multisig): number | undefined {
   const nonce = currentAccountNonce(multisig);
-  // Match the Rust client convention: a proposal's nonce is the account's NEXT
-  // nonce (current + 1) — the nonce the account will have after the tx executes.
-  // Using the current nonce made fresh-account proposals land at nonce 0, which the
-  // Rust client's `proposal.nonce <= account.nonce()` staleness filter and execute
-  // guard then treated as already-executed (hiding/rejecting them cross-client).
+  // Proposal nonce is the account's next nonce (current + 1), matching the Rust
+  // client's `proposal.nonce <= account.nonce()` staleness filter.
   return nonce === null ? undefined : nonce + 1;
 }
 
@@ -129,8 +126,8 @@ export function filterVisibleProposals(
       return false;
     }
 
-    // `<=` (not `<`) to match the next-nonce convention above and the Rust client:
-    // a proposal at nonce N is consumed once the account reaches nonce N.
+    // `<=` matches the next-nonce convention: a proposal at nonce N is consumed
+    // once the account reaches nonce N.
     if (accountNonce !== null && proposal.nonce <= accountNonce) {
       return false;
     }

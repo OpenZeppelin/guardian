@@ -74,10 +74,8 @@ export async function createMultisigAccount(
     ? AccountStorageMode.public()
     : AccountStorageMode.private();
 
-  // Miden 0.15: the account-ID no longer encodes regular/faucet or code
-  // mutability. `AccountType` collapsed to visibility (Private/Public), which is
-  // set via `storageMode()`; a multisig is "regular" by virtue of not being a
-  // faucet. The former `.accountType(RegularAccountUpdatableCode)` call is gone.
+  // Miden 0.15: the account-ID no longer encodes account type; visibility is set
+  // via `storageMode()`, so the former `.accountType(...)` call is gone.
   const accountBuilder = new AccountBuilder(seed)
     .storageMode(storageMode)
     .withAuthComponent(authComponent)

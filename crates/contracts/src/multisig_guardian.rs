@@ -472,12 +472,9 @@ mod tests {
             .build()
             .expect("account");
 
-        // Cross-SDK parity contract, not just a Rust regression guard: the
-        // TypeScript/browser builder MUST produce these same identity values for
-        // the same inputs (signer + guardian commitments, seed [9; 32]).
-        // Regenerated after the auth-contract MASM changes on the 0.15 branch (the
-        // same changes that shifted the procedure roots); re-verify the TS builder
-        // against these when validating smoke-web.
+        // Cross-SDK parity contract: the TypeScript builder must produce these
+        // same identity values for the same inputs. Re-verify it against these
+        // when validating smoke-web.
         assert_eq!(account.id().to_hex(), "0xc42d3ebf2d6ac86103906b4a71b642");
         assert_eq!(
             account.to_commitment().into_hex(),

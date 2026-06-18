@@ -29,11 +29,10 @@ const V015_CUTOVER_MIGRATION: &str = "v015_account_id_cutover";
 
 /// Run database migrations. Call once at application startup.
 ///
-/// Under the `evm` feature the one-time Miden 0.15 account-ID cutover purge
-/// (`*_v015_account_id_cutover`) is recorded as applied without executing its
-/// `TRUNCATE`: EVM deployments never held pre-0.15 Miden v0 account IDs, so the
-/// purge would only destroy live EVM data. Recording it keeps the migration
-/// ledger consistent so it is never reconsidered on a later boot.
+/// Under the `evm` feature the Miden 0.15 account-ID cutover purge
+/// (`*_v015_account_id_cutover`) is recorded as applied without running its
+/// `TRUNCATE`, since EVM deployments hold no pre-0.15 Miden v0 account IDs and
+/// the purge would only destroy live EVM data.
 pub async fn run_migrations(database_url: &str) -> Result<(), String> {
     let url = database_url.to_string();
     tokio::task::spawn_blocking(move || {

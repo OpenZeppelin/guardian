@@ -66,11 +66,9 @@ impl MultisigClient {
             Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
             let proposal = Proposal::from(delta)?;
 
-            // Skip stale proposals. A proposal at nonce N is only executable while the account
-            // is at nonce N-1; once the committed nonce reaches N, the proposal is already
-            // executed (or superseded by a competing proposal at the same nonce). GUARDIAN may
-            // still report it as pending until canonicalization prunes it, so filter here to
-            // avoid surfacing or re-executing it.
+            // Skip stale proposals: one whose nonce is not above the committed nonce has already
+            // been executed or superseded, but GUARDIAN may still report it pending until
+            // canonicalization prunes it.
             if proposal.nonce <= current_nonce {
                 continue;
             }
@@ -147,10 +145,9 @@ impl MultisigClient {
 
         let proposal = self.get_proposal(&account_id, proposal_id).await?;
 
-        // Reject stale proposals. After `sync()` the account holds the committed nonce; a
-        // proposal whose nonce is not strictly greater has already been executed or superseded.
-        // Executing it would build a fresh transaction at the current nonce, double-applying the
-        // intent and corrupting the nonce/delta sequence GUARDIAN tracks for canonicalization.
+        // Reject stale proposals: a nonce not strictly above the committed nonce has already been
+        // executed or superseded, and re-executing would double-apply the intent and corrupt the
+        // nonce/delta sequence GUARDIAN tracks for canonicalization.
         if proposal.nonce <= account.nonce() {
             return Err(MultisigError::InvalidConfig(format!(
                 "proposal nonce {} is not greater than the current account nonce {}; \
@@ -220,13 +217,10 @@ impl MultisigClient {
                 .await?;
             signature_advice.push(guardian_advice);
         } else {
-            // SwitchGuardian does not require the (old) GUARDIAN's ack signature in the
-            // transaction, but we still push the delta to the current GUARDIAN so it is recorded
-            // and canonicalized — producing a `deltas` entry and deleting the matching proposal,
-            // exactly like every other proposal type. The endpoint is only switched afterwards
-            // (in `finalize_transaction`), so this records on the pre-switch GUARDIAN that tracks
-            // the account. Best-effort: switching away from an unreachable GUARDIAN must still
-            // succeed, so the returned ack and any error are intentionally discarded.
+            // SwitchGuardian needs no ack in the transaction, but the delta is still pushed to the
+            // pre-switch GUARDIAN (the switch happens later in `finalize_transaction`) so it gets
+            // canonicalized like any other proposal. Best-effort: an unreachable GUARDIAN must not
+            // block the switch, so the ack and any error are discarded.
             let _ = self
                 .get_guardian_ack_signature(
                     &account,

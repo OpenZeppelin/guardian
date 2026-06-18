@@ -211,9 +211,9 @@ impl DeltasProcessorBase {
                         })?;
                     record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
 
-                    // Delete the matching proposal too. The candidate is being discarded, so the
-                    // proposal can never be canonicalized; leaving it would strand it as `pending`
-                    // forever and let clients re-submit a stale intent.
+                    // A discarded candidate can never be canonicalized, so delete its proposal:
+                    // leaving it would strand it as `pending` forever and let clients re-submit a
+                    // stale intent.
                     let proposal_id = {
                         let client = self.state.network_client.lock().await;
                         client

@@ -542,13 +542,10 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Regression test for cosigner removal (2-of-2 -> 1-of-1).
-///
-/// Reproduces the divergence where the local account kept the removed signer
-/// (showing "1-of-2") after a remove-cosigner execution while the on-chain
-/// state correctly dropped it. Removing a signer runs `cleanup_pubkey_mapping`,
-/// which clears the removed index's map entry; this asserts the executed
-/// transaction's account delta, applied in-process, actually clears it.
+/// Regression test for cosigner removal (2-of-2 -> 1-of-1): the locally-applied
+/// account delta must drop the removed signer rather than keep it (the "1-of-2"
+/// divergence). Removal runs `cleanup_pubkey_mapping`, which clears the removed
+/// index's map entry.
 #[tokio::test]
 async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     let (
@@ -570,7 +567,6 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
 
     let salt = Word::from([Felt::new_unchecked(3); 4]);
 
-    // New config: 1-of-1, keeping only the first existing signer.
     let threshold = 1u64;
     let num_of_approvers = 1u64;
     let kept_keys = [public_keys[0].clone()];
@@ -1013,12 +1009,10 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Reproduces the GUARDIAN canonicalization divergence: the server rebuilds the post-switch
-/// account from the *abort* TransactionSummary (the no-signature simulation that GUARDIAN stores
-/// as the delta) plus the artificial replay-protection entry, and that reconstruction must match
-/// the account produced by the *real* (signed) execution. This mirrors GUARDIAN's `apply_delta`
-/// for a GUARDIAN-enabled account (as in the demo) and diffs the result slot by slot so the
-/// divergent slot is named on failure.
+/// Reproduces the GUARDIAN canonicalization divergence: the server's reconstruction
+/// from the abort TransactionSummary (plus the replay-protection entry and re-enabled
+/// selector) must match the account produced by the real signed execution. Slots are
+/// diffed individually so a failure names the divergent slot.
 #[tokio::test]
 async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyhow::Result<()> {
     const GUARDIAN_SELECTOR_SLOT: &str = "openzeppelin::guardian::selector";
@@ -1028,7 +1022,6 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
     let (_secret_keys, public_keys, authenticators, _gsk, guardian_public_key, _gauth) =
         setup_keys_and_authenticators_with_guardian(2, 2)?;
 
-    // GUARDIAN ON, matching the demo's default account configuration.
     let multisig_account =
         create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
 
@@ -1059,7 +1052,7 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
         .with_dynamically_linked_library(&guardian_library)?
         .compile_tx_script(tx_script_code)?;
 
-    // Abort (no-signature) execution: this is the TransactionSummary GUARDIAN stores as the delta.
+    // No-signature execution: the TransactionSummary GUARDIAN stores as the delta.
     let abort_summary = match mock_chain
         .build_tx_context(multisig_account.id(), &[], &[])?
         .authenticator(None)
@@ -1103,8 +1096,8 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
     let mut executed_account = multisig_account.clone();
     executed_account.apply_delta(executed_tx.account_delta())?;
 
-    // Reconstruct exactly as the GUARDIAN server's `apply_delta` does: build from the abort delta
-    // (full-state -> try_from, else apply incremental), then add the replay-protection entry.
+    // Reconstruct as the GUARDIAN server's `apply_delta` does, then add the
+    // replay-protection entry.
     let mut server_account = if abort_delta.is_full_state() {
         Account::try_from(&abort_delta)?
     } else {
@@ -1405,17 +1398,16 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
     Ok(())
 }
 
-// Reproduction: add-cosigner proposal creation on a FRESH (build(), nonce-0,
-// never-deployed) guarded multisig account — mirrors the demo path, which fails
-// against a real node with "value for key ... not present in the advice map".
-// The passing add-signer test above uses build_existing() + a pre-committed
-// account; this isolates the brand-new-account variable.
+// Reproduction: add-cosigner on a fresh (build(), never-deployed) guarded account,
+// mirroring the demo path that fails against a real node with "value for key ...
+// not present in the advice map". Isolates the brand-new-account variable that the
+// build_existing() add-signer test above does not exercise.
 #[tokio::test]
 async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     let (_sk, public_keys, _auth, _gsk, guardian_public_key, _gauth) =
         setup_keys_and_authenticators_with_guardian(1, 1)?;
 
-    // Fresh account: build() => nonce 0, carries its creation seed, NOT deployed.
+    // Fresh account: nonce 0, carries its creation seed, not deployed.
     let config = MultisigGuardianConfig::new(
         1,
         vec![public_keys[0].to_commitment()],
@@ -1430,11 +1422,9 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         account.seed().is_some()
     );
 
-    // Empty chain; the account is NOT pre-committed.
     let mock_chain = MockChainBuilder::new().build().unwrap();
 
-    // Build the update_signers advice exactly like build_multisig_config_advice:
-    // new signer set [signer, new_signer], threshold kept at 1.
+    // update_signers advice built like build_multisig_config_advice.
     let salt = Word::from([Felt::new_unchecked(9); 4]);
     let (_nsk, new_public_keys, _na) = setup_keys_and_authenticators(2, 2)?;
     let threshold = 1u64;
@@ -1478,10 +1468,8 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         .execute()
         .await;
 
-    // The contract + kernel executor correctly produce Unauthorized (carrying the
-    // tx summary to be signed) for a fresh, undeployed account with no signatures.
-    // This confirms the demo's "advice map key not present" abort is NOT a contract
-    // issue — it originates in the miden-client real-node execution input setup.
+    // Unauthorized here (not the advice-map abort) confirms the demo failure is not
+    // a contract issue but originates in miden-client's real-node execution setup.
     match result {
         Err(TransactionExecutorError::Unauthorized(_)) => Ok(()),
         Ok(_) => anyhow::bail!("expected Unauthorized, got success"),
