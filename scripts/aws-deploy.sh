@@ -399,10 +399,44 @@ validate_storage_encryption_secret_exists() {
   fi
 
   local secret_name
+  local secret_string
+  local active_kid
+  local active_key_b64
+  local decoded_len
   secret_name=$(storage_encryption_secret_name)
 
   if ! secret_exists "$secret_name"; then
     log_error "Storage encryption is enabled but secret ${secret_name} is missing. Run ./scripts/aws-deploy.sh bootstrap-storage-encryption-key first."
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    log_error "jq is required to validate the storage encryption key document"
+    return 1
+  fi
+
+  secret_string=$(aws secretsmanager get-secret-value \
+    --secret-id "$secret_name" \
+    --region "$AWS_REGION" \
+    --query SecretString \
+    --output text 2>/dev/null) || {
+    log_error "Failed to read storage encryption secret ${secret_name}"
+    return 1
+  }
+
+  active_kid=$(jq -er '.active' <<<"$secret_string") || {
+    log_error "Storage encryption secret ${secret_name} is invalid: missing .active"
+    return 1
+  }
+
+  active_key_b64=$(jq -er --arg kid "$active_kid" '.keys[$kid]' <<<"$secret_string") || {
+    log_error "Storage encryption secret ${secret_name} is invalid: .keys does not contain active kid '${active_kid}'"
+    return 1
+  }
+
+  decoded_len=$(printf '%s' "$active_key_b64" | base64 --decode 2>/dev/null | wc -c | tr -d ' ')
+  if [ "$decoded_len" != "32" ]; then
+    log_error "Storage encryption secret ${secret_name} is invalid: active key must decode to 32 bytes"
     return 1
   fi
 }

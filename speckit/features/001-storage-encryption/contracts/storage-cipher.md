@@ -7,16 +7,19 @@ below are the internal Rust trait boundaries the implementation must honor, in
 ## `StorageKeyProvider`
 
 ```rust
-#[async_trait]
 pub trait StorageKeyProvider: Send + Sync {
     /// `kid` stamped onto envelopes for new writes.
     fn active_key_id(&self) -> &str;
 
     /// Resolve the 32-byte key for a given envelope `kid`.
     /// Unknown `kid` MUST return an error (FR-011), never a wrong key.
-    async fn key(&self, kid: &str) -> Result<FixedKey<32>, KeyProviderError>;
+    fn key(&self, kid: &str) -> Result<FixedKey<32>, KeyProviderError>;
 }
 ```
+
+Keys are resolved synchronously: a provider loads and caches its `kid → key`
+map at construction (startup), so `key()` is a pure in-memory lookup with no
+per-call key-store round-trip (R4).
 
 Implementations (v1):
 - `EnvKeyProvider` — `GUARDIAN_STORAGE_ENCRYPTION_KEY` (base64-encoded 32 bytes).
@@ -42,22 +45,22 @@ are diagnosable without exposing key/plaintext material:
 
 ```rust
 pub enum KeyProviderError {
-    MissingKeySource,        // none configured (caller treats as "encryption off")
-    MultipleKeySources,      // >1 configured — ambiguous (FR-009)
-    InvalidKeyEncoding,      // base64 decode failed
-    InvalidKeyLength,        // decoded != 32 bytes
-    MalformedSecret,         // structured secret unparsable / missing `active`/`keys`
-    UnknownKeyId(String),    // envelope `kid` not in provider (FR-011)
-    KeyStoreUnavailable,     // Secrets Manager fetch failed at startup
+    MultipleKeySources,           // >1 configured — ambiguous (FR-009)
+    InvalidKeyEncoding,           // base64 decode failed
+    InvalidKeyLength,             // decoded != 32 bytes
+    MalformedSecret,              // structured secret unparsable / missing `active`/`keys`
+    UnknownKeyId(String),         // envelope `kid` not in provider (FR-011)
+    KeyStoreUnavailable(String),  // Secrets Manager fetch failed at startup
 }
 
 pub enum CipherError {
-    NotAnEnvelope,           // payload is not a valid envelope (FR-010)
-    UnsupportedVersion(u8),  // envelope `v` not understood
-    UnsupportedAlgorithm,    // envelope `alg` not understood
-    InvalidNonce,            // nonce wrong length / undecodable
-    DecryptionFailed,        // AEAD auth/tag failure: tamper, wrong key, or AAD mismatch
-    KeyProvider(KeyProviderError), // propagated key resolution failure (e.g. UnknownKeyId)
+    NotAnEnvelope,                // payload is not a valid envelope (FR-010)
+    UnsupportedVersion(u8),       // envelope `v` not understood
+    UnsupportedAlgorithm(String), // envelope `alg` not understood
+    InvalidNonce,                 // nonce wrong length / undecodable
+    DecryptionFailed,             // AEAD auth/tag failure: tamper, wrong key, or AAD mismatch
+    EncryptionFailed,             // AEAD seal failure
+    KeyProvider(KeyProviderError),// propagated key resolution failure (e.g. UnknownKeyId)
 }
 ```
 
