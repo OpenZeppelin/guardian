@@ -28,8 +28,6 @@ FROM base-builder as server-builder
 
 # build.rs reads this to stamp the git commit; the build context has no .git to fall back on.
 ARG GUARDIAN_GIT_SHA
-# Also expose as ENV so a SHA change reliably invalidates the build cache.
-ENV GUARDIAN_GIT_SHA=${GUARDIAN_GIT_SHA}
 
 RUN if [ -n "$GUARDIAN_SERVER_FEATURES" ]; then \
       cargo build --release --package guardian-server --bin server --features "$GUARDIAN_SERVER_FEATURES"; \

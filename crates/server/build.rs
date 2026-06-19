@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let git_sha = std::env::var("GUARDIAN_GIT_SHA")
         .ok()
+        .filter(|s| !s.is_empty())
         .or_else(|| {
             Command::new("git")
                 .args(["rev-parse", "--short=12", "HEAD"])
