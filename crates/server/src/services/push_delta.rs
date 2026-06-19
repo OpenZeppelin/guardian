@@ -109,7 +109,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     result_delta.new_commitment = Some(new_commitment.clone());
     result_delta.metadata = derived_metadata;
     let scheme = resolved.metadata.auth.scheme();
-    result_delta = state.ack.ack_delta(result_delta, &scheme)?;
+    result_delta = state.ack.ack_delta(result_delta, &scheme).await?;
     result_delta.ack_pubkey = state.ack.pubkey(&scheme);
     result_delta.ack_scheme = match scheme {
         SignatureScheme::Falcon => "falcon",
@@ -132,6 +132,21 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             &new_commitment,
         )
         .await?;
+    // Caveat: `lookup_matching_proposal_payload` swallows storage
+    // errors to `None` (non-fatal by design), so under storage faults
+    // a proposal commit can be labeled `direct`. Acceptable skew — the
+    // underlying fault is visible via
+    // storage_operations_total{outcome="error"}.
+    let kind = if matching_proposal_payload.is_some() {
+        crate::metrics::labels::DeltaKind::ProposalCommit
+    } else {
+        crate::metrics::labels::DeltaKind::Direct
+    };
+    metrics::counter!(
+        crate::metrics::names::DELTAS_SUBMITTED_TOTAL,
+        crate::metrics::names::LABEL_KIND => kind.as_str()
+    )
+    .increment(1);
 
     Ok(PushDeltaResult {
         delta: result_delta,

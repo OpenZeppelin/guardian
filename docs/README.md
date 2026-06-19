@@ -22,7 +22,10 @@ You are an SDK consumer or integrator.
    client: account creation, proposal lifecycle, offline signing.
 4. [`spec/api.md`](../spec/api.md) — wire-level API contract (auth
    headers, request signing, data shapes).
-5. [Troubleshooting](./TROUBLESHOOTING.md) — error code reference for
+5. [OpenAPI specification](./OPENAPI.md) — machine-readable OpenAPI 3.1
+   spec ([`docs/openapi.json`](./openapi.json)) for Swagger UI / ReDoc /
+   client generators.
+6. [Troubleshooting](./TROUBLESHOOTING.md) — error code reference for
    anything your SDK surfaces.
 
 ### I want to *run* Guardian (deploy and operate)
@@ -33,17 +36,20 @@ You are an operator / SRE / DevOps.
    model to make good ops decisions.
 2. [Production guide](./PRODUCTION.md) — supported production shape,
    readiness checklist, and links to the detailed runbooks.
-3. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
+3. [Guides](./guides/README.md) — task-oriented, end-to-end walkthroughs
+   for running Guardian in a specific mode (e.g. self-hosted Compose with
+   AWS-managed signers).
+4. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
    end-to-end deploy via `scripts/aws-deploy.sh`, stage profiles.
-4. [AWS deployment architecture](./architecture/infra.md) — runtime
+5. [AWS deployment architecture](./architecture/infra.md) — runtime
    topology, AWS resource inventory mapped to each `.tf` file.
-5. [Configuration reference](./CONFIGURATION.md) — every env var in one
+6. [Configuration reference](./CONFIGURATION.md) — every env var in one
    place.
-6. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
+7. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
    replacement, and compromise response for production secrets.
-7. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
+8. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
    operators, permission vocabulary, multi-task caveats.
-8. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
+9. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
    recovery procedures.
 
 ### I want to *develop on* Guardian (work in this repo)
@@ -91,11 +97,13 @@ You are a contributor.
 
 **Reference**
 - [Configuration (env vars)](./CONFIGURATION.md)
+- [OpenAPI specification](./OPENAPI.md) — HTTP API spec ([`openapi.json`](./openapi.json))
 - [`spec/`](../spec/index.md) — protocol specification
 - [`infra/README.md`](../infra/README.md) — Terraform variables
 
 **Operations**
 - [Production guide](./PRODUCTION.md)
+- [Guides](./guides/README.md) — per-mode end-to-end walkthroughs
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
 - [Enabling verified database TLS](./runbooks/enable-db-tls.md)

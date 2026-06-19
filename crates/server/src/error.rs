@@ -117,16 +117,6 @@ pub type Result<T> = std::result::Result<T, GuardianError>;
 /// Result type alias for Miden Falcon RPO signing operations
 pub type MidenFalconRpoResult<T> = std::result::Result<T, MidenFalconRpoError>;
 
-/// Signing-specific error type for Miden ECDSA operations
-#[derive(Debug)]
-pub enum MidenEcdsaError {
-    StorageError(String),
-    DecodingError(String),
-}
-
-/// Result type alias for Miden ECDSA signing operations
-pub type MidenEcdsaResult<T> = std::result::Result<T, MidenEcdsaError>;
-
 impl GuardianError {
     pub fn http_status(&self) -> StatusCode {
         match self {
@@ -510,35 +500,6 @@ impl From<miden_keystore::KeyStoreError> for MidenFalconRpoError {
     }
 }
 
-impl fmt::Display for MidenEcdsaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MidenEcdsaError::StorageError(msg) => write!(f, "ECDSA storage error: {msg}"),
-            MidenEcdsaError::DecodingError(msg) => write!(f, "ECDSA decoding error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for MidenEcdsaError {}
-
-impl From<MidenEcdsaError> for GuardianError {
-    fn from(err: MidenEcdsaError) -> Self {
-        GuardianError::SigningError(err.to_string())
-    }
-}
-
-impl From<miden_keystore::KeyStoreError> for MidenEcdsaError {
-    fn from(err: miden_keystore::KeyStoreError) -> Self {
-        match err {
-            miden_keystore::KeyStoreError::StorageError(msg) => MidenEcdsaError::StorageError(msg),
-            miden_keystore::KeyStoreError::DecodingError(msg) => {
-                MidenEcdsaError::DecodingError(msg)
-            }
-            miden_keystore::KeyStoreError::KeyNotFound(msg) => MidenEcdsaError::StorageError(msg),
-        }
-    }
-}
-
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
@@ -884,14 +845,6 @@ mod tests {
     }
 
     #[test]
-    fn from_miden_ecdsa_error() {
-        let err = MidenEcdsaError::DecodingError("decode fail".into());
-        let guardian: GuardianError = err.into();
-        assert!(matches!(guardian, GuardianError::SigningError(_)));
-        assert!(guardian.to_string().contains("decode fail"));
-    }
-
-    #[test]
     fn from_keystore_error_to_guardian() {
         let err = miden_keystore::KeyStoreError::KeyNotFound("key123".into());
         let guardian: GuardianError = err.into();
@@ -911,22 +864,6 @@ mod tests {
             MidenFalconRpoError::DecodingError("y".into())
                 .to_string()
                 .contains("Decoding error")
-        );
-    }
-
-    // --- MidenEcdsaError Display ---
-
-    #[test]
-    fn ecdsa_error_display() {
-        assert!(
-            MidenEcdsaError::StorageError("x".into())
-                .to_string()
-                .contains("ECDSA storage error")
-        );
-        assert!(
-            MidenEcdsaError::DecodingError("y".into())
-                .to_string()
-                .contains("ECDSA decoding error")
         );
     }
 
@@ -951,29 +888,6 @@ mod tests {
         let err = miden_keystore::KeyStoreError::KeyNotFound("k".into());
         let falcon: MidenFalconRpoError = err.into();
         assert!(matches!(falcon, MidenFalconRpoError::StorageError(_)));
-    }
-
-    // --- KeyStoreError -> MidenEcdsaError ---
-
-    #[test]
-    fn keystore_error_to_ecdsa_storage() {
-        let err = miden_keystore::KeyStoreError::StorageError("s".into());
-        let ecdsa: MidenEcdsaError = err.into();
-        assert!(matches!(ecdsa, MidenEcdsaError::StorageError(_)));
-    }
-
-    #[test]
-    fn keystore_error_to_ecdsa_decoding() {
-        let err = miden_keystore::KeyStoreError::DecodingError("d".into());
-        let ecdsa: MidenEcdsaError = err.into();
-        assert!(matches!(ecdsa, MidenEcdsaError::DecodingError(_)));
-    }
-
-    #[test]
-    fn keystore_error_to_ecdsa_key_not_found() {
-        let err = miden_keystore::KeyStoreError::KeyNotFound("k".into());
-        let ecdsa: MidenEcdsaError = err.into();
-        assert!(matches!(ecdsa, MidenEcdsaError::StorageError(_)));
     }
 
     // --- IntoResponse / tonic::Status ---

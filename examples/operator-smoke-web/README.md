@@ -33,6 +33,20 @@ cargo run -p guardian-server --bin server
 By default the UI uses `/guardian` as the base URL and the Vite dev proxy
 forwards it to `http://127.0.0.1:3000`.
 
+To watch Prometheus metrics move while exercising the smoke flow, add
+`GUARDIAN_METRICS_ENABLED=true` (and optionally
+`GUARDIAN_METRICS_REFRESH_INTERVAL_SECS=5`) to the `cargo run`
+invocation above, then:
+
+```bash
+curl -s http://127.0.0.1:9464/metrics | grep -E 'guardian_(operator_auth|http_requests_total)'
+```
+
+Login attempts show up under `guardian_operator_auth_*` and every
+dashboard call under `guardian_http_requests_total` (labelled by route
+template). See `docs/CONFIGURATION.md` ("Runtime — metrics") for the
+full configuration surface.
+
 To point at a different Guardian target:
 
 ```bash

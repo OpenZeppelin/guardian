@@ -1,0 +1,3230 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Guardian Dashboard API",
+    "description": "Operator dashboard Guardian HTTP API.",
+    "license": {
+      "name": "AGPL-3.0",
+      "identifier": "AGPL-3.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/auth/challenge": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Issue a login challenge for an operator commitment. The operator\nsigns the returned `signing_digest` and submits it to `/auth/verify`.",
+        "operationId": "challenge_operator_login",
+        "parameters": [
+          {
+            "name": "commitment",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Challenge issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorChallengeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid commitment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Invalidate the current operator session and clear the session cookie.",
+        "operationId": "logout_operator",
+        "responses": {
+          "200": {
+            "description": "Session invalidated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutOperatorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/auth/verify": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Verify a signed login challenge and establish an operator session\n(sets a session cookie on success).",
+        "operationId": "verify_operator_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOperatorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session established",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyOperatorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Challenge verification failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/accounts": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Paginated list of accounts visible to the operator. Requires the\n`dashboard:read` permission and a valid operator session.",
+        "operationId": "list_operator_accounts",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paused",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_DashboardAccountSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Fetch the detail view for one account.",
+        "operationId": "get_operator_account",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardAccountDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Account state unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/deltas": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/accounts/{account_id}/deltas`. Returns the\nper-account delta feed paginated newest-first by `nonce DESC`,\nsurfacing only `candidate` / `canonical` / `discarded` statuses\n(pending lives on the proposal queue endpoint).",
+        "operationId": "list_account_deltas_handler",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-account delta feed page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_DashboardDeltaEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/deltas/{nonce}": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/accounts/{account_id}/deltas/{nonce}`. Returns the\nfull detail projection of one canonical delta. `{nonce}` MUST be a\ncanonical base-10 `u64`; leading zeros (except `\"0\"`), negatives,\nhex, and other non-decimal inputs are rejected with\n[`GuardianError::InvalidInput`]. Unknown account or unknown nonce\nboth map to `DeltaNotFound` so the wire body is field-level identical.",
+        "operationId": "list_account_delta_detail_handler",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "path",
+            "description": "Canonical base-10 delta nonce",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Decoded delta detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardDeltaDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed nonce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Delta not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Delta data unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/pause": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Pause an account (blocks mutating actions). Requires the\n`accounts:pause` permission.",
+        "operationId": "pause_account_handler",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Account paused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PauseResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or missing reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing accounts:pause permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/proposals": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/accounts/{account_id}/proposals`. Returns the\nin-flight multisig proposal queue for one account, paginated\nnewest-first by `(nonce DESC, commitment DESC)`. Single-key Miden\nand EVM accounts always return an empty page per FR-017.",
+        "operationId": "list_account_proposals_handler",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-account in-flight proposal queue page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_DashboardProposalEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/snapshot": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Decode and return the current vault snapshot for a Miden account.",
+        "operationId": "get_operator_account_snapshot",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardAccountSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unsupported for this network (e.g. EVM)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Account state unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/unpause": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Unpause an account (idempotent). Requires the `accounts:pause`\npermission. Accepts an optional reason in the body.",
+        "operationId": "unpause_account_handler",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnpauseAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Account unpaused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpauseResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing accounts:pause permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/deltas": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/deltas`. Cross-account delta feed paginated\nnewest-first by `status_timestamp DESC`. Optional comma-separated\n`status` filter restricts to a subset of `{candidate, canonical,\ndiscarded}`. Pending entries live on the proposal feed.",
+        "description": "Spec reference: `005-operator-dashboard-metrics` US6, FR-031..FR-035.",
+        "operationId": "list_global_deltas_handler",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cross-account delta feed page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_DashboardGlobalDeltaEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit, cursor, or status filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Aggregate degraded (filesystem threshold exceeded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/info": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/info` — point-in-time inventory and lifecycle\nsummary per feature `005-operator-dashboard-metrics` US2.",
+        "operationId": "get_dashboard_info_handler",
+        "responses": {
+          "200": {
+            "description": "Inventory and lifecycle summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardInfoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/proposals": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/proposals`. Cross-account in-flight proposal feed\npaginated newest-first by `originating_timestamp DESC`. Takes no\n`status` filter — every entry is in-flight by definition. EVM\naccounts do not appear in v1 per FR-017.",
+        "description": "Spec reference: `005-operator-dashboard-metrics` US7, FR-035..FR-037.",
+        "operationId": "list_global_proposals_handler",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cross-account in-flight proposal feed page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_DashboardGlobalProposalEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Aggregate degraded (filesystem threshold exceeded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/session": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Introspect the current operator session: operator id and the\nlex-ordered set of effective permissions.",
+        "operationId": "get_dashboard_session_handler",
+        "responses": {
+          "200": {
+            "description": "Session info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "paused"
+        ]
+      },
+      "ApiErrorResponse": {
+        "type": "object",
+        "description": "Wire shape of a Guardian error response body. Mirrors the envelope\nproduced by [`crate::error::GuardianError`]'s `IntoResponse` impl.\nDocumented as the body of every non-2xx response. Optional fields\nare populated only for the error codes that carry them.",
+        "required": [
+          "success",
+          "code",
+          "error"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable, machine-readable error code (e.g. `account_not_found`)."
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable error message."
+          },
+          "missing_permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Lex-sorted permissions the operator lacks. Present only for\n`GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`."
+          },
+          "paused_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 pause timestamp. Present only for\n`GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "retry_after_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds to wait before retrying. Present only for\n`rate_limit_exceeded`.",
+            "minimum": 0
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Always `false` for error responses."
+          }
+        }
+      },
+      "AssetKind": {
+        "type": "string",
+        "enum": [
+          "fungible",
+          "non_fungible"
+        ]
+      },
+      "AssetSummary": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "kind"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Signed decimal magnitude (e.g., `\"+100\"`, `\"-50\"`) for fungible\nholdings. Absent for non-fungible holdings where the detail\nview uses `added` / `removed` lists instead."
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssetKind"
+          }
+        }
+      },
+      "CounterpartyDirection": {
+        "type": "string",
+        "enum": [
+          "out",
+          "in"
+        ]
+      },
+      "CounterpartySummary": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "direction"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/CounterpartyDirection"
+          }
+        }
+      },
+      "DashboardAccountDetail": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "auth_scheme",
+          "authorized_signer_count",
+          "authorized_signer_ids",
+          "has_pending_candidate",
+          "state_status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "account_id_bech32": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_scheme": {
+            "type": "string"
+          },
+          "authorized_signer_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "authorized_signer_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "current_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_pending_candidate": {
+            "type": "boolean"
+          },
+          "paused_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 UTC timestamp of the original pause; `None` when\nactive. Always emitted (active accounts get `null`) for a\nuniform wire shape."
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reason captured at first pause; `None` when active."
+          },
+          "state_created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_status": {
+            "$ref": "#/components/schemas/DashboardAccountStateStatus"
+          },
+          "state_updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardAccountSnapshot": {
+        "type": "object",
+        "required": [
+          "commitment",
+          "updated_at",
+          "has_pending_candidate",
+          "vault"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string",
+            "description": "Commitment of the state the snapshot was decoded from. Equals\n`DashboardAccountDetail::current_commitment` for the same\naccount at the same point in time; callers can correlate the\nsnapshot with a delta feed entry by matching on this hex."
+          },
+          "has_pending_candidate": {
+            "type": "boolean",
+            "description": "True when the account has a candidate delta in flight that has\nnot yet been canonicalized. The snapshot decodes the *current\ncanonical state*, not the candidate's projected state — when\nthis flag is `true` the vault content here may already be\nstale relative to the chain. Clients SHOULD surface this in\nthe UI rather than silently displaying stale data."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "RFC3339 wall-clock time of the underlying state row's\n`updated_at` column — i.e. when Guardian last persisted the\ncanonicalized state this snapshot was decoded from. Equals\n`DashboardAccountDetail::state_updated_at` for the same account\nat the same point in time."
+          },
+          "vault": {
+            "$ref": "#/components/schemas/DashboardVaultSnapshot"
+          }
+        }
+      },
+      "DashboardAccountStateStatus": {
+        "type": "string",
+        "enum": [
+          "available",
+          "unavailable"
+        ]
+      },
+      "DashboardAccountSummary": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "auth_scheme",
+          "authorized_signer_count",
+          "has_pending_candidate",
+          "state_status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "account_id_bech32": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bech32m encoding of the Miden `AccountId` using the network's\nHRP (e.g. `mtst...`, `mdev...`, `mm...`). `None` for EVM\naccounts (no bech32 in that addressing scheme) and for any\nMiden `account_id` that fails to parse as a 15-byte id."
+          },
+          "auth_scheme": {
+            "type": "string"
+          },
+          "authorized_signer_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "current_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_pending_candidate": {
+            "type": "boolean"
+          },
+          "paused_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_status": {
+            "$ref": "#/components/schemas/DashboardAccountStateStatus"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardBackendInfo": {
+        "type": "object",
+        "description": "Backend configuration snapshot. Stable for the lifetime of the\nprocess; lets operators distinguish a filesystem dev box from a\npostgres-backed prod replica without inspecting environment.",
+        "required": [
+          "storage",
+          "supported_ack_schemes"
+        ],
+        "properties": {
+          "canonicalization": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardCanonicalizationConfig",
+                "description": "`None` when running in optimistic-commit mode; `Some(_)` when\nthe canonicalization worker is active."
+              }
+            ]
+          },
+          "storage": {
+            "type": "string",
+            "description": "`\"filesystem\"` or `\"postgres\"` from the cargo feature flag."
+          },
+          "supported_ack_schemes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Acknowledgement signature schemes wired into the server's\n`AckRegistry`. Stable order (alphabetic) so clients can rely on\nthe listing."
+          }
+        }
+      },
+      "DashboardBuildInfo": {
+        "type": "object",
+        "description": "Build identity for the running `guardian-server` binary. Values are\nstable for the lifetime of the process; surfaced so operators can\nconfirm which version/SHA is responding without reading logs.",
+        "required": [
+          "version",
+          "git_commit",
+          "profile",
+          "started_at"
+        ],
+        "properties": {
+          "git_commit": {
+            "type": "string",
+            "description": "Short git SHA at build time. `\"unknown\"` when neither\n`GUARDIAN_GIT_SHA` nor a working tree git repo were available\nto `build.rs`."
+          },
+          "profile": {
+            "type": "string",
+            "description": "`\"debug\"` or `\"release\"` based on `cfg!(debug_assertions)`."
+          },
+          "started_at": {
+            "type": "string",
+            "description": "Wall-clock time the server initialized its dashboard state."
+          },
+          "version": {
+            "type": "string",
+            "description": "`CARGO_PKG_VERSION` from `guardian-server`."
+          }
+        }
+      },
+      "DashboardCanonicalizationConfig": {
+        "type": "object",
+        "description": "Per-account-method canonicalization fan-in configuration. `None`\nmeans the server is running in optimistic mode (deltas are written\ndirectly as canonical and never enter the candidate state).",
+        "required": [
+          "check_interval_seconds",
+          "max_retries",
+          "submission_grace_period_seconds"
+        ],
+        "properties": {
+          "check_interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_retries": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "submission_grace_period_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardDeltaCategory": {
+        "type": "string",
+        "description": "Closed, stable enumeration of action categories. Adding a value is\na wire-contract change.",
+        "enum": [
+          "asset_transfer",
+          "note_consumption",
+          "note_creation",
+          "account_storage_change",
+          "guardian_switch",
+          "custom"
+        ]
+      },
+      "DashboardDeltaDetail": {
+        "type": "object",
+        "description": "Wire shape for `GET /dashboard/accounts/{account_id}/deltas/{nonce}`.\n\n`category` and `proposal` are spread to L1 from the persisted\nmetadata column. `note_counts`, `asset`, and `counterparty` are\nintentionally omitted — they are derivable from the per-section\narrays below.",
+        "required": [
+          "account_id",
+          "nonce",
+          "status",
+          "status_timestamp",
+          "prev_commitment",
+          "input_notes",
+          "output_notes",
+          "vault_changes",
+          "storage_changes"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "category": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardDeltaCategory"
+              }
+            ]
+          },
+          "decode_warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodeWarning"
+            },
+            "description": "Non-empty when one or more sections could not be decoded. The\nrequest still returns 200; affected sections are empty."
+          },
+          "input_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "prev_commitment": {
+            "type": "string"
+          },
+          "proposal": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProposalMetadata"
+              }
+            ]
+          },
+          "raw_transaction_summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Base64-encoded raw `TransactionSummary` blob. Present only\nwhen the caller requested `?include=raw` (debug-only)."
+          },
+          "retry_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_timestamp": {
+            "type": "string"
+          },
+          "storage_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StorageChange"
+            }
+          },
+          "vault_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VaultChange"
+            }
+          }
+        }
+      },
+      "DashboardDeltaEntry": {
+        "type": "object",
+        "description": "One entry in the delta feed wire shape per `data-model.md`.\n`account_id` is omitted on per-account responses (the path scopes\nit). The global delta feed (Phase 8) wraps this struct with\n`account_id` so a single shape is shared.",
+        "required": [
+          "nonce",
+          "status",
+          "status_timestamp",
+          "prev_commitment"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetSummary"
+            }
+          },
+          "category": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardDeltaCategory",
+                "description": "Spread from the persisted `DeltaMetadata` column. `None` for\nrows that predate the push-time pipeline or carry an undecodable\npayload (EVM, schema drift) — clients render as \"metadata\nunavailable\"."
+              }
+            ]
+          },
+          "counterparty": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CounterpartySummary"
+              }
+            ]
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` is serialized as `null` rather than skipped, since the\nspec exposes `new_commitment: string | null` (e.g. for a\ndiscarded delta that did not produce a resulting commitment)."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "note_counts": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NoteCounts"
+              }
+            ]
+          },
+          "prev_commitment": {
+            "type": "string"
+          },
+          "proposal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator's fine-grained intent label\n(`metadata.proposal.proposal_type`). Full proposal block lives\non the detail endpoint."
+          },
+          "retry_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `discarded`.",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardDeltaStatus": {
+        "type": "string",
+        "description": "Lifecycle status surfaced on the per-account delta feed endpoint.\n`pending`-status records live in `delta_proposals` and are\nsurfaced via the proposal queue endpoint instead.",
+        "enum": [
+          "candidate",
+          "canonical",
+          "discarded"
+        ]
+      },
+      "DashboardDeltaStatusCounts": {
+        "type": "object",
+        "required": [
+          "candidate",
+          "canonical",
+          "discarded"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "canonical": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "discarded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardGlobalDeltaEntry": {
+        "type": "object",
+        "description": "One entry in the global delta feed wire shape per `data-model.md`.\nCarries every field of a per-account [`DashboardDeltaEntry`] plus\n`account_id` so the dashboard can group / link without a second\nrequest.",
+        "required": [
+          "account_id",
+          "nonce",
+          "status",
+          "status_timestamp",
+          "prev_commitment"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetSummary"
+            }
+          },
+          "category": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardDeltaCategory"
+              }
+            ]
+          },
+          "counterparty": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CounterpartySummary"
+              }
+            ]
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "note_counts": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NoteCounts"
+              }
+            ]
+          },
+          "prev_commitment": {
+            "type": "string"
+          },
+          "proposal_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retry_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardGlobalProposalEntry": {
+        "type": "object",
+        "description": "One entry in the global proposal feed wire shape per\n`data-model.md`. Includes every field of the per-account\nproposal entry plus `account_id`.",
+        "required": [
+          "account_id",
+          "commitment",
+          "nonce",
+          "proposer_id",
+          "originating_timestamp",
+          "signatures_collected",
+          "signatures_required",
+          "prev_commitment"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "commitment": {
+            "type": "string"
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "originating_timestamp": {
+            "type": "string"
+          },
+          "prev_commitment": {
+            "type": "string"
+          },
+          "proposal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "See `DashboardProposalEntry::proposal_type` — in practice always\npopulated for in-flight multisig proposals on this endpoint."
+          },
+          "proposer_id": {
+            "type": "string"
+          },
+          "signatures_collected": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "signatures_required": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardInfoResponse": {
+        "type": "object",
+        "required": [
+          "service_status",
+          "environment",
+          "build",
+          "backend",
+          "total_account_count",
+          "accounts_by_auth_method",
+          "delta_status_counts",
+          "in_flight_proposal_count",
+          "degraded_aggregates"
+        ],
+        "properties": {
+          "accounts_by_auth_method": {
+            "type": "object",
+            "description": "Counts of accounts grouped by stable `Auth::method_label()`.\nKeys never collide with internal enum names. Absent when the\naggregate is marked degraded (see `degraded_aggregates`).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "backend": {
+            "$ref": "#/components/schemas/DashboardBackendInfo"
+          },
+          "build": {
+            "$ref": "#/components/schemas/DashboardBuildInfo"
+          },
+          "degraded_aggregates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of aggregates that returned a degraded marker on this\nresponse. Stable strings — clients branch on these to decide\nwhether to retry or rely on the partial value."
+          },
+          "delta_status_counts": {
+            "$ref": "#/components/schemas/DashboardDeltaStatusCounts"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "in_flight_proposal_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "latest_activity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Greater of the most recent delta status timestamp and the most\nrecent proposal originating timestamp across all accounts;\n`None` (serialized as `null`) when the inventory has produced\nno activity yet, OR when this aggregate is degraded."
+          },
+          "service_status": {
+            "$ref": "#/components/schemas/DashboardServiceStatus"
+          },
+          "total_account_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardProposalEntry": {
+        "type": "object",
+        "description": "One proposal entry in the wire shape per `data-model.md`.\n`account_id` is omitted on per-account responses; the global\nproposal feed (Phase 9) wraps this with `account_id`.",
+        "required": [
+          "commitment",
+          "nonce",
+          "proposer_id",
+          "originating_timestamp",
+          "signatures_collected",
+          "signatures_required",
+          "prev_commitment"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string",
+            "description": "Cryptographic identifier cosigners are signing. Per-account\nstable identifier."
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hex string when present; `null` for proposals that did not\ndeclare a target commitment."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "originating_timestamp": {
+            "type": "string"
+          },
+          "prev_commitment": {
+            "type": "string"
+          },
+          "proposal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Multisig proposal type tag from\n`delta_payload.metadata.proposal_type`. In practice this is\nalways populated for in-flight proposals on this endpoint\n(validated on push); the field is `Option` to remain defensive\nagainst legacy or malformed records."
+          },
+          "proposer_id": {
+            "type": "string"
+          },
+          "signatures_collected": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "signatures_required": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardServiceStatus": {
+        "type": "string",
+        "enum": [
+          "healthy",
+          "degraded"
+        ]
+      },
+      "DashboardVaultFungibleEntry": {
+        "type": "object",
+        "description": "One fungible asset entry in the vault snapshot. `amount` is a string\nto keep `u64`-precision values safe across JS (`Number.MAX_SAFE_INTEGER`\nis 2^53 − 1). Decimal handling is a dashboard-client concern.",
+        "required": [
+          "faucet_id",
+          "amount"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string"
+          },
+          "faucet_id": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardVaultNonFungibleEntry": {
+        "type": "object",
+        "description": "One non-fungible asset entry. `vault_key` is the canonical Miden\nidentifier for the asset within the vault.",
+        "required": [
+          "faucet_id",
+          "vault_key"
+        ],
+        "properties": {
+          "faucet_id": {
+            "type": "string"
+          },
+          "vault_key": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardVaultSnapshot": {
+        "type": "object",
+        "required": [
+          "fungible",
+          "non_fungible"
+        ],
+        "properties": {
+          "fungible": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardVaultFungibleEntry"
+            }
+          },
+          "non_fungible": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardVaultNonFungibleEntry"
+            }
+          }
+        }
+      },
+      "DecodeSection": {
+        "type": "string",
+        "enum": [
+          "tx_summary",
+          "metadata",
+          "input_notes",
+          "output_notes",
+          "vault",
+          "storage"
+        ]
+      },
+      "DecodeWarning": {
+        "type": "object",
+        "required": [
+          "section",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "section": {
+            "$ref": "#/components/schemas/DecodeSection"
+          }
+        }
+      },
+      "DecodedAsset": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "kind"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssetKind"
+          }
+        }
+      },
+      "DecodedNote": {
+        "type": "object",
+        "description": "Detail-view types used by the per-delta endpoint; not built by the\nlisting path.",
+        "required": [
+          "note_id",
+          "tag",
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedAsset"
+            }
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tag": {
+            "$ref": "#/components/schemas/NoteTag"
+          }
+        }
+      },
+      "LogoutOperatorResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "NoteCounts": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "output": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "NoteTag": {
+        "type": "string",
+        "enum": [
+          "p2id",
+          "p2ide",
+          "pswap",
+          "mint",
+          "burn",
+          "custom"
+        ]
+      },
+      "OperatorChallengeResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "challenge"
+        ],
+        "properties": {
+          "challenge": {
+            "$ref": "#/components/schemas/OperatorChallengeView"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "OperatorChallengeView": {
+        "type": "object",
+        "required": [
+          "domain",
+          "commitment",
+          "nonce",
+          "expires_at",
+          "signing_digest"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "signing_digest": {
+            "type": "string"
+          }
+        }
+      },
+      "PagedResult_DashboardAccountSummary": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "account_id",
+                "auth_scheme",
+                "authorized_signer_count",
+                "has_pending_candidate",
+                "state_status",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "account_id": {
+                  "type": "string"
+                },
+                "account_id_bech32": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Bech32m encoding of the Miden `AccountId` using the network's\nHRP (e.g. `mtst...`, `mdev...`, `mm...`). `None` for EVM\naccounts (no bech32 in that addressing scheme) and for any\nMiden `account_id` that fails to parse as a 15-byte id."
+                },
+                "auth_scheme": {
+                  "type": "string"
+                },
+                "authorized_signer_count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "current_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "has_pending_candidate": {
+                  "type": "boolean"
+                },
+                "paused_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "paused_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "state_status": {
+                  "$ref": "#/components/schemas/DashboardAccountStateStatus"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PagedResult_DashboardDeltaEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One entry in the delta feed wire shape per `data-model.md`.\n`account_id` is omitted on per-account responses (the path scopes\nit). The global delta feed (Phase 8) wraps this struct with\n`account_id` so a single shape is shared.",
+              "required": [
+                "nonce",
+                "status",
+                "status_timestamp",
+                "prev_commitment"
+              ],
+              "properties": {
+                "assets": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AssetSummary"
+                  }
+                },
+                "category": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DashboardDeltaCategory",
+                      "description": "Spread from the persisted `DeltaMetadata` column. `None` for\nrows that predate the push-time pipeline or carry an undecodable\npayload (EVM, schema drift) — clients render as \"metadata\nunavailable\"."
+                    }
+                  ]
+                },
+                "counterparty": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CounterpartySummary"
+                    }
+                  ]
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`None` is serialized as `null` rather than skipped, since the\nspec exposes `new_commitment: string | null` (e.g. for a\ndiscarded delta that did not produce a resulting commitment)."
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "note_counts": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/NoteCounts"
+                    }
+                  ]
+                },
+                "prev_commitment": {
+                  "type": "string"
+                },
+                "proposal_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Operator's fine-grained intent label\n(`metadata.proposal.proposal_type`). Full proposal block lives\non the detail endpoint."
+                },
+                "retry_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `discarded`.",
+                  "minimum": 0
+                },
+                "status": {
+                  "$ref": "#/components/schemas/DashboardDeltaStatus"
+                },
+                "status_timestamp": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PagedResult_DashboardGlobalDeltaEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One entry in the global delta feed wire shape per `data-model.md`.\nCarries every field of a per-account [`DashboardDeltaEntry`] plus\n`account_id` so the dashboard can group / link without a second\nrequest.",
+              "required": [
+                "account_id",
+                "nonce",
+                "status",
+                "status_timestamp",
+                "prev_commitment"
+              ],
+              "properties": {
+                "account_id": {
+                  "type": "string"
+                },
+                "assets": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AssetSummary"
+                  }
+                },
+                "category": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DashboardDeltaCategory"
+                    }
+                  ]
+                },
+                "counterparty": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CounterpartySummary"
+                    }
+                  ]
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "note_counts": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/NoteCounts"
+                    }
+                  ]
+                },
+                "prev_commitment": {
+                  "type": "string"
+                },
+                "proposal_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "retry_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "status": {
+                  "$ref": "#/components/schemas/DashboardDeltaStatus"
+                },
+                "status_timestamp": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PagedResult_DashboardGlobalProposalEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One entry in the global proposal feed wire shape per\n`data-model.md`. Includes every field of the per-account\nproposal entry plus `account_id`.",
+              "required": [
+                "account_id",
+                "commitment",
+                "nonce",
+                "proposer_id",
+                "originating_timestamp",
+                "signatures_collected",
+                "signatures_required",
+                "prev_commitment"
+              ],
+              "properties": {
+                "account_id": {
+                  "type": "string"
+                },
+                "commitment": {
+                  "type": "string"
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "originating_timestamp": {
+                  "type": "string"
+                },
+                "prev_commitment": {
+                  "type": "string"
+                },
+                "proposal_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "See `DashboardProposalEntry::proposal_type` — in practice always\npopulated for in-flight multisig proposals on this endpoint."
+                },
+                "proposer_id": {
+                  "type": "string"
+                },
+                "signatures_collected": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "signatures_required": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PagedResult_DashboardProposalEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One proposal entry in the wire shape per `data-model.md`.\n`account_id` is omitted on per-account responses; the global\nproposal feed (Phase 9) wraps this with `account_id`.",
+              "required": [
+                "commitment",
+                "nonce",
+                "proposer_id",
+                "originating_timestamp",
+                "signatures_collected",
+                "signatures_required",
+                "prev_commitment"
+              ],
+              "properties": {
+                "commitment": {
+                  "type": "string",
+                  "description": "Cryptographic identifier cosigners are signing. Per-account\nstable identifier."
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Hex string when present; `null` for proposals that did not\ndeclare a target commitment."
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "originating_timestamp": {
+                  "type": "string"
+                },
+                "prev_commitment": {
+                  "type": "string"
+                },
+                "proposal_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Multisig proposal type tag from\n`delta_payload.metadata.proposal_type`. In practice this is\nalways populated for in-flight proposals on this endpoint\n(validated on push); the field is `Option` to remain defensive\nagainst legacy or malformed records."
+                },
+                "proposer_id": {
+                  "type": "string"
+                },
+                "signatures_collected": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "signatures_required": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PauseAccountRequest": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "PauseResponse": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "before_state",
+          "after_state",
+          "paused_at",
+          "paused_reason"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "after_state": {
+            "$ref": "#/components/schemas/AccountStatus"
+          },
+          "before_state": {
+            "$ref": "#/components/schemas/AccountStatus"
+          },
+          "paused_at": {
+            "type": "string"
+          },
+          "paused_reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ProposalMetadata": {
+        "type": "object",
+        "description": "Operator-stated intent lifted from a matching proposal. Mirrors\n`ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`\nfield-for-field.",
+        "required": [
+          "proposal_type"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consume_notes_metadata_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "consume_notes_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "faucet_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "new_guardian_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "new_guardian_pubkey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "proposal_type": {
+            "type": "string",
+            "description": "One of the validated multisig proposal types (`add_signer`,\n`remove_signer`, `change_threshold`, `update_procedure_threshold`,\n`p2id`, `consume_notes`, `switch_guardian`). Free string so new\ntypes from the multisig client don't force a wire-contract bump\nhere — `category` is the closed enum."
+          },
+          "recipient_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required_signatures": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "salt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signer_commitments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target_procedure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_threshold": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SessionInfoResponse": {
+        "type": "object",
+        "required": [
+          "operator_id",
+          "permissions"
+        ],
+        "properties": {
+          "operator_id": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "StorageChange": {
+        "type": "object",
+        "required": [
+          "slot_name"
+        ],
+        "properties": {
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hex-encoded `Word` after the change. `None` when the slot was cleared."
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hex-encoded `Word` (64 hex chars + `0x` prefix) before the\nchange. Always omitted in v1 — `TransactionSummary` carries\nonly post-change values; populating `before` requires reading\nstorage at `prev_commitment`."
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hex-encoded `Word` map key (64 hex chars + `0x` prefix) for\n`StorageMap` slot entries. `None` for scalar value slots. For the\nmultisig `proc_threshold_overrides` map (slot 4) this is the\nMASM procedure root."
+          },
+          "slot_name": {
+            "type": "string",
+            "description": "Human-readable slot name from\n`miden_protocol::account::StorageSlotName` (e.g. `\"consumed_notes\"`).\nSlots are identified by name in Miden, not by numeric index."
+          }
+        }
+      },
+      "UnpauseAccountRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UnpauseResponse": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "before_state",
+          "after_state"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "after_state": {
+            "$ref": "#/components/schemas/AccountStatus"
+          },
+          "before_state": {
+            "$ref": "#/components/schemas/AccountStatus"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "VaultChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "asset_id",
+              "change",
+              "kind"
+            ],
+            "properties": {
+              "asset_id": {
+                "type": "string"
+              },
+              "change": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fungible"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "asset_id",
+              "added",
+              "removed",
+              "kind"
+            ],
+            "properties": {
+              "added": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "asset_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "non_fungible"
+                ]
+              },
+              "removed": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "VerifyOperatorRequest": {
+        "type": "object",
+        "required": [
+          "commitment",
+          "signature"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        }
+      },
+      "VerifyOperatorResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "operator_id",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "operator_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "operator_session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "guardian_operator_session"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "dashboard",
+      "description": "Operator dashboard API."
+    }
+  ]
+}

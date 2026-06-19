@@ -30,6 +30,7 @@ pub struct DashboardState {
     sessions: Arc<Mutex<HashMap<[u8; 32], OperatorSessionRecord>>>,
     commitment_rate_limits: RateLimitStore,
     cursor_secret: CursorSecret,
+    cursor_secret_configured: bool,
     started_at: DateTime<Utc>,
 }
 
@@ -355,7 +356,9 @@ impl DashboardState {
             operator_count = allowlist.len(),
             "Operator allowlist loaded"
         );
-        let cursor_secret = config.take_cursor_secret().unwrap_or_else(|| {
+        let configured_cursor_secret = config.take_cursor_secret();
+        let cursor_secret_configured = configured_cursor_secret.is_some();
+        let cursor_secret = configured_cursor_secret.unwrap_or_else(|| {
             if !cfg!(test) {
                 tracing::warn!(
                     "dashboard cursor secret not configured; generating ephemeral per-process \
@@ -373,6 +376,7 @@ impl DashboardState {
             challenges: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cursor_secret,
+            cursor_secret_configured,
             started_at: Utc::now(),
         })
     }
@@ -381,6 +385,20 @@ impl DashboardState {
     /// `crate::dashboard::cursor`. Generated once per server startup.
     pub fn cursor_secret(&self) -> &CursorSecret {
         &self.cursor_secret
+    }
+
+    /// Number of operators in the active allowlist. Surfaced in the
+    /// startup configuration summary.
+    pub async fn operator_count(&self) -> usize {
+        self.allowlist.read().await.len()
+    }
+
+    /// Whether the pagination cursor secret was supplied via
+    /// configuration (`true`) or generated ephemerally for this process
+    /// (`false`). Surfaced in the startup configuration summary; the
+    /// ephemeral case also emits a multi-replica warning at startup.
+    pub fn cursor_secret_configured(&self) -> bool {
+        self.cursor_secret_configured
     }
 
     /// Filesystem-backed cross-account aggregate threshold from

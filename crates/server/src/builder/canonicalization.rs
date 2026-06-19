@@ -3,7 +3,7 @@ use std::time::Duration;
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
 /// When None: deltas are immediately saved as canonical (optimistic mode)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalizationConfig {
     /// How often the worker checks for deltas to canonicalize (in seconds)
     pub check_interval_seconds: u64,

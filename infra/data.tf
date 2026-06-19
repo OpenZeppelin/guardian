@@ -7,7 +7,7 @@ data "aws_secretsmanager_secret" "ack_falcon" {
 }
 
 data "aws_secretsmanager_secret" "ack_ecdsa" {
-  count = var.deployment_stage == "prod" ? 1 : 0
+  count = var.deployment_stage == "prod" && var.guardian_ack_ecdsa_kms_key_arn == "" ? 1 : 0
   name  = local.ack_ecdsa_secret_name
 }
 

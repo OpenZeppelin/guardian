@@ -18,7 +18,7 @@ pub use credentials::{AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP
 /// Authentication and authorization handler
 /// Defines which signature scheme to use and handles verification
 /// Each variant contains auth-specific authorization data
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub enum Auth {
     /// Miden Falcon RPO signature scheme
     MidenFalconRpo { cosigner_commitments: Vec<String> },

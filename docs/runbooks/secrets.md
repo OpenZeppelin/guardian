@@ -65,20 +65,107 @@ accounts will fail with a Guardian commitment mismatch. A `SwitchGuardian`
 proposal is the account-level migration path for changing that stored
 commitment.
 
+### Hosted ECDSA backend (AWS KMS)
+
+The ECDSA ACK signer can be backed by AWS KMS instead of a Secrets Manager
+secret, so the private key never enters the Guardian process. Set
+`GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` and `GUARDIAN_ACK_ECDSA_KMS_KEY_ID` to a KMS
+key with spec `ECC_SECG_P256K1` and usage `SIGN_VERIFY`. Grant the ECS task role
+`kms:GetPublicKey` and `kms:Sign` on the key (Terraform variable
+`guardian_ack_ecdsa_kms_key_arn`). On this path the ECDSA secret in Secrets
+Manager is not used and need not exist; Falcon is unaffected.
+
+Provisioning, rotation, and deletion of the KMS key are performed with the
+provider's own tooling — Guardian only signs with an existing key. Because a KMS
+key is a distinct keypair, moving an existing deployment to KMS (or rotating the
+KMS key) changes Guardian's ECDSA identity and is a Guardian identity change, not
+a routine rotation: the same `SwitchGuardian` migration path described above
+applies to existing accounts.
+
+#### Create the key
+
+The key spec and usage are immutable after creation, and they must match
+exactly — the server fails its startup sign probe otherwise. Create the key
+once, out of band, and keep its lifecycle separate from the Terraform stack so a
+stack teardown never schedules the signing identity for deletion.
+
+The deploy script creates the key with the correct spec and an
+`alias/<stack>-ack-ecdsa` alias, refusing to overwrite an existing one, and
+prints the ARN to set:
+
+```bash
+STACK_NAME=<stack> ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key
+```
+
+Or do it by hand:
+
+```bash
+KEY_ID=$(aws kms create-key \
+  --key-spec ECC_SECG_P256K1 \
+  --key-usage SIGN_VERIFY \
+  --description "Guardian <stack> ACK ECDSA signer" \
+  --query KeyMetadata.KeyId --output text)
+
+aws kms create-alias \
+  --alias-name alias/<stack>-ack-ecdsa \
+  --target-key-id "$KEY_ID"
+```
+
+Then pass the key ARN (or the alias ARN) to Terraform as
+`guardian_ack_ecdsa_kms_key_arn`; the deploy grants the ECS task role
+`kms:GetPublicKey` + `kms:Sign` on it and sets `GUARDIAN_ACK_ECDSA_BACKEND` /
+`GUARDIAN_ACK_ECDSA_KMS_KEY_ID` on the server. KMS does not support automatic
+rotation for asymmetric keys, which is correct here — rotating a signing
+identity is the deliberate `SwitchGuardian` migration above, never automatic. To
+retire a key, schedule deletion only after every account has migrated off the
+old commitment.
+
+#### Prod deploy: KMS ECDSA + Secrets Manager Falcon
+
+The full sequence for a prod deploy where ECDSA is KMS-backed and Falcon stays
+in Secrets Manager. Order matters: the deploy script keys off
+`TF_VAR_guardian_ack_ecdsa_kms_key_arn` (the env var, not `terraform.tfvars`) to
+decide whether to create and require the ECDSA Secrets Manager secret, so it
+must be exported **before** `bootstrap-ack-keys` and `deploy`.
+
+```bash
+export DEPLOY_STAGE=prod STACK_NAME=<stack>
+
+# 1. Create the KMS key; copy the printed ARN.
+./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key
+
+# 2. Export it so the script and Terraform both see KMS mode.
+export TF_VAR_guardian_ack_ecdsa_kms_key_arn="arn:aws:kms:...:key/<key-id>"
+
+# 3. Bootstrap ACK secrets. With the ARN exported this creates only the
+#    Falcon secret and skips ECDSA.
+./scripts/aws-deploy.sh bootstrap-ack-keys
+
+# 4. Deploy. Terraform grants the task role kms:Sign + kms:GetPublicKey and
+#    injects GUARDIAN_ACK_ECDSA_BACKEND / GUARDIAN_ACK_ECDSA_KMS_KEY_ID.
+./scripts/aws-deploy.sh deploy
+```
+
+If the ARN is set in `terraform.tfvars` but not exported, Terraform still uses
+KMS, but `bootstrap-ack-keys` would create an unused ECDSA secret and `deploy`
+would fail validation demanding it — so export it.
+
 ### Bootstrap (first prod deploy)
 
 ```bash
 DEPLOY_STAGE=prod STACK_NAME=<stack> ./scripts/aws-deploy.sh bootstrap-ack-keys
 ```
 
-What that command does
-([`scripts/aws-deploy.sh:352`](../../scripts/aws-deploy.sh#L352)):
+What that command does ([`scripts/aws-deploy.sh`](../../scripts/aws-deploy.sh)):
 
-1. Refuses to run if either secret already exists.
+1. Refuses to run if a secret it would create already exists.
 2. Generates key material locally via
    `cargo run --bin ack-keygen` (no key ever leaves the operator's host
    except via the `aws secretsmanager create-secret` call).
-3. Creates both secrets in Secrets Manager with the generated values.
+3. Creates the Falcon and ECDSA secrets in Secrets Manager with the generated
+   values. When the ECDSA signer is KMS-backed
+   (`TF_VAR_guardian_ack_ecdsa_kms_key_arn` set), it creates only the Falcon
+   secret and skips ECDSA — use `bootstrap-kms-ecdsa-key` for the KMS key.
 
 Verify. The deploy script resolves the active IDs as
 `${GUARDIAN_ACK_*_SECRET_NAME:-${TF_VAR_guardian_ack_*_secret_name:-${STACK_NAME}/server/ack-*-secret-key}}`
