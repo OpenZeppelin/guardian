@@ -290,6 +290,20 @@ impl MultisigClient {
     /// Finalizes a transaction by executing it on-chain and updating local state.
     ///
     /// This handles the common post-execution logic for all proposal types.
+    ///
+    /// Note-less storage-config changes on private accounts take a manual
+    /// execute/prove/submit pipeline and rebuild the account from the proven
+    /// delta: the standard submit path otherwise leaves stale local state
+    /// (cleared storage-map entries linger) and stages SMT roots that block a
+    /// corrective overwrite. Note-bearing transactions keep the standard path to
+    /// preserve note tracking. A full-state delta (private accounts) converts
+    /// directly into the account; an incremental delta is applied onto the base.
+    ///
+    /// For a `SwitchGuardian` the new endpoint is registered only when it
+    /// actually differs from the current one. On an unchanged endpoint the
+    /// pushed switch delta canonicalizes normally; re-registering would overwrite
+    /// the pre-switch base and double-apply the delta. Post-submit `sync_state`
+    /// failures are ignored because GUARDIAN may not have canonicalized yet.
     pub(crate) async fn finalize_transaction(
         &mut self,
         account_id: AccountId,
@@ -304,7 +318,6 @@ impl MultisigClient {
             verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
         }
 
-        // Capture the new GUARDIAN endpoint if this is a SwitchGuardian transaction
         let new_guardian_endpoint =
             if let TransactionType::SwitchGuardian { new_endpoint, .. } = transaction_type {
                 Some(new_endpoint.clone())
@@ -312,10 +325,6 @@ impl MultisigClient {
                 None
             };
 
-        // For note-less storage-config changes on private accounts, miden-client's standard submit
-        // path leaves stale local state (cleared storage-map entries linger) and stages SMT roots
-        // that block a corrective overwrite, so drive the pipeline manually and rebuild from the
-        // proven delta. Note-bearing transactions keep the standard path to preserve note tracking.
         let updated_account: Account = if rebuilds_local_state_from_delta(transaction_type) {
             let base_account: Account = self
                 .miden_client
@@ -363,7 +372,6 @@ impl MultisigClient {
                     ))
                 })?;
 
-            // A full-state delta (private accounts) converts directly; an incremental one applies.
             let account_delta = tx_result.account_delta();
             let rebuilt: Account = if account_delta.is_full_state() {
                 Account::try_from(account_delta).map_err(|e| {
@@ -385,9 +393,7 @@ impl MultisigClient {
 
             self.add_or_update_account(&rebuilt, true).await?;
 
-            if let Err(_e) = self.miden_client.sync_state().await {
-                // Intentionally ignored, GUARDIAN may not have canonicalized yet.
-            }
+            let _ = self.miden_client.sync_state().await;
 
             rebuilt
         } else {
@@ -401,9 +407,7 @@ impl MultisigClient {
                     ))
                 })?;
 
-            if let Err(_e) = self.miden_client.sync_state().await {
-                // Intentionally ignored, GUARDIAN may not have canonicalized yet.
-            }
+            let _ = self.miden_client.sync_state().await;
 
             self.miden_client
                 .get_account(account_id)
@@ -417,9 +421,6 @@ impl MultisigClient {
         };
 
         if let Some(endpoint) = new_guardian_endpoint {
-            // Only register when actually moving to a different GUARDIAN, which does not yet track
-            // this account. On an unchanged endpoint the pushed switch delta canonicalizes normally;
-            // re-registering would overwrite the pre-switch base and double-apply the delta.
             let switching_endpoint = endpoint != self.guardian_endpoint;
             self.guardian_endpoint = endpoint;
             self.account = Some(MultisigAccount::new(updated_account.clone()));

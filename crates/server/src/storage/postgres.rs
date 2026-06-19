@@ -24,41 +24,15 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-/// Name fragment identifying the Miden 0.15 account-ID cutover purge migration.
-const V015_CUTOVER_MIGRATION: &str = "v015_account_id_cutover";
-
 /// Run database migrations. Call once at application startup.
-///
-/// Under the `evm` feature the Miden 0.15 account-ID cutover purge
-/// (`*_v015_account_id_cutover`) is recorded as applied without running its
-/// `TRUNCATE`, since EVM deployments hold no pre-0.15 Miden v0 account IDs and
-/// the purge would only destroy live EVM data.
 pub async fn run_migrations(database_url: &str) -> Result<(), String> {
     let url = database_url.to_string();
     tokio::task::spawn_blocking(move || {
         let mut conn = PgConnection::establish(&url)
             .map_err(|e| format!("Failed to connect for migrations: {e}"))?;
 
-        let pending = conn
-            .pending_migrations(MIGRATIONS)
-            .map_err(|e| format!("Failed to list pending migrations: {e}"))?;
-
-        for migration in pending {
-            let name = migration.name().to_string();
-            if cfg!(feature = "evm") && name.contains(V015_CUTOVER_MIGRATION) {
-                let version = migration.name().version().to_string();
-                diesel::RunQueryDsl::execute(
-                    diesel::sql_query(format!(
-                        "INSERT INTO __diesel_schema_migrations (version) VALUES ('{version}')"
-                    )),
-                    &mut conn,
-                )
-                .map_err(|e| format!("Failed to record skipped {name}: {e}"))?;
-                continue;
-            }
-            conn.run_migration(&*migration)
-                .map_err(|e| format!("Failed to run migration {name}: {e}"))?;
-        }
+        conn.run_pending_migrations(MIGRATIONS)
+            .map_err(|e| format!("Failed to run migrations: {e}"))?;
 
         Ok::<(), String>(())
     })
