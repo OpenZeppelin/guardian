@@ -29,7 +29,7 @@ impl MidenNetworkClient {
     /// unit tests that exercise the pure serialization/delta paths
     /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`)
     /// which never issue an RPC.
-    #[cfg(test)]
+    #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
     fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
             .expect("lazy client construction is infallible for a valid endpoint");
@@ -218,7 +218,11 @@ impl NetworkClient for MidenNetworkClient {
             // `verify_guardian_signature` always runs `enable_guardian`, so the selector is ON
             // after any successful transaction. The abort summary stored as the delta can capture
             // it OFF (a SwitchGuardian disables it mid-script), so re-enable here to match the
-            // on-chain commitment.
+            // on-chain commitment. This invariant — that the selector is always ON post-tx — is
+            // load-bearing; the parity regression test
+            // `test_switch_guardian_server_reconstruction_matches_execution`
+            // (crates/contracts/tests/auth/multisig.rs) pins it. If a contract path is ever added
+            // that leaves the selector OFF after a successful tx, this reconstruction must change.
             const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
             const GUARDIAN_ON: [u32; 4] = [1, 0, 0, 0];
 
