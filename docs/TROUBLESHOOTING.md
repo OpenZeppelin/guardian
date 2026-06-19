@@ -37,6 +37,19 @@ Most startup failures are environment misconfiguration. Check in order:
    dashboard, set `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` (prod) or
    `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` (local). Without either, the
    dashboard is unreachable.
+6. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
+   closed before migrations run. Map the error:
+   - error naming `sslmode` (`allow`/`prefer` or an unknown value) → choose an
+     explicit mode: `disable`, `require`, `verify-ca`, or `verify-full`.
+   - error naming `sslrootcert` (missing/unreadable/empty file, or `system`) →
+     mount a readable PEM CA bundle and point `sslrootcert=<path>` at it
+     (`sslrootcert=system` is unsupported).
+   - connection refused with a certificate-verification error → wrong CA for the
+     server, an expired certificate, or (under `verify-full`) a hostname that
+     doesn't match the certificate's SAN. For AWS RDS Proxy, ensure the bundle
+     includes the Amazon Trust Services roots, not only the RDS CA roots.
+   - works under `verify-ca` but fails under `verify-full` → hostname/SAN
+     mismatch with the endpoint. See [Database TLS](./CONFIGURATION.md#database-tls).
 
 ### Guardian public key changes unexpectedly
 
