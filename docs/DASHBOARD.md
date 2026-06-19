@@ -253,7 +253,12 @@ Same shape, no restart:
 
 ## Local development
 
-Use [`examples/operator-smoke-web`](../examples/operator-smoke-web) — it
+To run the real operator UI ([`0xMiden/guardian-dashboard`](https://github.com/0xMiden/guardian-dashboard))
+against a local server with Docker Compose, follow
+[`guides/miden-dashboard`](./guides/miden-dashboard/README.md).
+
+For a lightweight check of the API itself, use
+[`examples/operator-smoke-web`](../examples/operator-smoke-web) — it
 runs a browser harness that exercises challenge issuance, signed-session
 issuance, and the account listing endpoints against either a local server
 or a remote Guardian.

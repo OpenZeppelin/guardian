@@ -110,6 +110,7 @@ Full configuration and a dev walkthrough are in
 | Understand server storage modes and why prod uses Postgres | [`architecture/services.md`](./architecture/services.md#storage-modes) |
 | Check runtime and deploy-time env vars | [`CONFIGURATION.md`](./CONFIGURATION.md) |
 | Bootstrap, replace, or respond to ACK/operator/EVM secret issues | [`runbooks/secrets.md`](./runbooks/secrets.md) |
+| Migrate a deployed stack to verified database TLS | [`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md) |
 | Configure dashboard operators and permissions | [`DASHBOARD.md`](./DASHBOARD.md) |
 | Diagnose deploy/runtime failures | [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) |
 
