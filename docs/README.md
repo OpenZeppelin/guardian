@@ -106,6 +106,7 @@ You are a contributor.
 - [Guides](./guides/README.md) — per-mode end-to-end walkthroughs
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
+- [Enabling verified database TLS](./runbooks/enable-db-tls.md)
 - [Operator dashboard](./DASHBOARD.md)
 
 **SDKs**
