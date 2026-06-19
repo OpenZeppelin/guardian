@@ -162,6 +162,7 @@ jobs:
           push: true
           build-args: |
             GUARDIAN_SERVER_FEATURES=${{ steps.params.outputs.features }}
+            GUARDIAN_GIT_SHA=${{ steps.commit.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
