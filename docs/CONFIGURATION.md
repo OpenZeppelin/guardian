@@ -156,7 +156,9 @@ isolation first (loopback default / private network / security group),
 the bearer token second, and proxy-terminated TLS where transport
 encryption is required. Never expose it to a public network. The
 exposed metric taxonomy and cardinality rules are documented in
-[`spec/api.md`](../spec/api.md).
+[`spec/api.md`](../spec/api.md); see the
+[Observability guide](./guides/observability/README.md) for scraping and a
+one-command Grafana dashboard stack.
 
 ## Runtime — dashboard
 

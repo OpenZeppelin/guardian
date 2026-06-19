@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: guardian
+    metrics_path: /metrics
+    static_configs:
+      # The `server` service's metrics listener, reached over the internal
+      # Compose network (port 9464 is not published to the host). To scrape a
+      # guardian-server running on the host instead (e.g. `cargo run`), point
+      # this at `host.docker.internal:9464` and add an `extra_hosts` mapping
+      # for it on this service.
+      - targets: ["server:9464"]
+    # Matches GUARDIAN_METRICS_BEARER_TOKEN on the server. `devtoken` is a
+    # throwaway for this local stack — in production use `credentials_file:`
+    # pointing at a mounted secret instead of an inline value, and never
+    # commit a real token.
+    authorization:
+      type: Bearer
+      credentials: devtoken

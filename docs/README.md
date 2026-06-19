@@ -45,12 +45,14 @@ You are an operator / SRE / DevOps.
    topology, AWS resource inventory mapped to each `.tf` file.
 6. [Configuration reference](./CONFIGURATION.md) — every env var in one
    place.
-7. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
+7. [Observability](./guides/observability/README.md) — enabling and scraping
+   Prometheus metrics, with a one-command Grafana dashboard stack.
+8. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
    replacement, and compromise response for production secrets.
-8. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
+9. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
    operators, permission vocabulary, multi-task caveats.
-9. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
-   recovery procedures.
+10. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
+    recovery procedures.
 
 ### I want to *develop on* Guardian (work in this repo)
 
@@ -105,6 +107,7 @@ You are a contributor.
 
 **Operations**
 - [Production guide](./PRODUCTION.md)
+- [Observability](./guides/observability/README.md) — Prometheus metrics + Grafana dashboard stack
 - [Guides](./guides/README.md) — per-mode end-to-end walkthroughs
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
