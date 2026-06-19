@@ -99,6 +99,7 @@ jobs:
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short12=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Determine full-release flag
         id: release
@@ -162,7 +163,7 @@ jobs:
           push: true
           build-args: |
             GUARDIAN_SERVER_FEATURES=${{ steps.params.outputs.features }}
-            GUARDIAN_GIT_SHA=${{ steps.commit.outputs.sha }}
+            GUARDIAN_GIT_SHA=${{ steps.commit.outputs.short12 }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
