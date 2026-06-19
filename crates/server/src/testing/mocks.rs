@@ -223,6 +223,9 @@ pub struct MockStorageBackend {
     /// asserting filesystem-degraded behavior set this to
     /// `Filesystem` via [`Self::with_kind`].
     pub kind: Option<crate::storage::StorageType>,
+    /// Reported by [`StorageBackend::pool_status`]. Defaults to `None`
+    /// (no pool); set via [`Self::with_pool_status`].
+    pub pool_status: Option<crate::storage::PoolStatus>,
     pub submit_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_state_calls: Arc<StdMutex<Vec<StateObject>>>,
     pub submit_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -254,6 +257,9 @@ pub struct MockStorageBackend {
         Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ProposalRecord>, String>>>>,
     pub count_deltas_by_status_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::DeltaStatusCounts, String>>>>,
+    /// Number of `count_deltas_by_status` invocations; the metrics
+    /// refresher tests assert ticking cadence against this.
+    pub count_deltas_by_status_calls: Arc<StdMutex<u64>>,
     pub count_in_flight_proposals_responses: Arc<StdMutex<Vec<StdResult<u64, String>>>>,
     pub latest_activity_timestamp_responses:
         Arc<StdMutex<Vec<StdResult<Option<chrono::DateTime<chrono::Utc>>, String>>>>,
@@ -266,6 +272,11 @@ impl MockStorageBackend {
 
     pub fn with_kind(mut self, kind: crate::storage::StorageType) -> Self {
         self.kind = Some(kind);
+        self
+    }
+
+    pub fn with_pool_status(mut self, status: crate::storage::PoolStatus) -> Self {
+        self.pool_status = Some(status);
         self
     }
 
@@ -451,6 +462,10 @@ impl StorageBackend for MockStorageBackend {
         self.kind
             .clone()
             .unwrap_or(crate::storage::StorageType::Postgres)
+    }
+
+    fn pool_status(&self) -> Option<crate::storage::PoolStatus> {
+        self.pool_status
     }
 
     async fn submit_state(&self, state: &StateObject) -> StdResult<(), String> {
@@ -642,6 +657,7 @@ impl StorageBackend for MockStorageBackend {
     }
 
     async fn count_deltas_by_status(&self) -> Result<crate::storage::DeltaStatusCounts, String> {
+        *self.count_deltas_by_status_calls.lock().unwrap() += 1;
         self.count_deltas_by_status_responses
             .lock()
             .unwrap()
@@ -682,6 +698,9 @@ pub struct MockMetadataStore {
     pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub find_by_cosigner_commitment_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
+    /// Reported by [`MetadataStore::pool_status`]. Defaults to `None`;
+    /// set via [`Self::with_pool_status`].
+    pub pool_status: Option<crate::storage::PoolStatus>,
 }
 
 impl MockMetadataStore {
@@ -704,6 +723,11 @@ impl MockMetadataStore {
 
     pub fn with_list(self, response: StdResult<Vec<String>, String>) -> Self {
         self.list_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_pool_status(mut self, status: crate::storage::PoolStatus) -> Self {
+        self.pool_status = Some(status);
         self
     }
 
@@ -763,6 +787,10 @@ impl MockMetadataStore {
 
 #[async_trait]
 impl MetadataStore for MockMetadataStore {
+    fn pool_status(&self) -> Option<crate::storage::PoolStatus> {
+        self.pool_status
+    }
+
     async fn get(
         &self,
         account_id: &str,

@@ -47,6 +47,15 @@ pub struct AccountListCursor {
 /// Metadata store trait for managing account metadata
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
+    /// Connection-pool saturation snapshot for the metadata pool,
+    /// which is independent of the storage pool and also backs the
+    /// audit writer, operator auth, and dashboard listings. `None`
+    /// (the default) for backends without a pool — the filesystem
+    /// store has none.
+    fn pool_status(&self) -> Option<crate::storage::PoolStatus> {
+        None
+    }
+
     /// Get metadata for a specific account
     async fn get(&self, account_id: &str) -> Result<Option<AccountMetadata>, String>;
 

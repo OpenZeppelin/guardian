@@ -14,6 +14,15 @@ pub trait Processor: Send + Sync {
     async fn process_account(&self, account_id: &str) -> Result<()>;
 }
 
+/// Record one candidate-processing outcome.
+fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
+    metrics::counter!(
+        crate::metrics::names::CANONICALIZATION_CANDIDATES_TOTAL,
+        crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
+    )
+    .increment(1);
+}
+
 fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
     let mut candidates: Vec<DeltaObject> = deltas
         .iter()
@@ -173,6 +182,9 @@ impl DeltasProcessorBase {
                         error = %e,
                         "Delta verification failed during submission grace period; will retry without consuming retry budget"
                     );
+                    record_candidate_outcome(
+                        crate::metrics::labels::CandidateOutcome::GraceDeferred,
+                    );
 
                     return Ok(());
                 }
@@ -197,6 +209,7 @@ impl DeltasProcessorBase {
                         .map_err(|e| {
                             GuardianError::StorageError(format!("Failed to delete delta: {e}"))
                         })?;
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
 
                     // Clear the pending candidate flag after discard
                     if let Err(e) = self
@@ -231,6 +244,9 @@ impl DeltasProcessorBase {
                                 "Failed to update delta status: {e}"
                             ))
                         })?;
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Retried);
+                    metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL)
+                        .increment(1);
                 }
 
                 Ok(())
@@ -356,6 +372,17 @@ impl DeltasProcessorBase {
                 proposal_id = %id,
                 "Deleting matching proposal as delta is now canonical"
             );
+            // The proposal is finalized the moment its delta became
+            // canonical with a matching proposal found — the delete
+            // below is cleanup, so the event counts regardless of the
+            // delete outcome (failures stay visible via
+            // storage_operations_total{operation="delete_delta_proposal"}).
+            metrics::counter!(
+                crate::metrics::names::PROPOSALS_TOTAL,
+                crate::metrics::names::LABEL_EVENT =>
+                    crate::metrics::labels::ProposalEvent::Finalized.as_str()
+            )
+            .increment(1);
             if let Err(e) = storage_backend
                 .delete_delta_proposal(&delta.account_id, id)
                 .await
@@ -369,6 +396,7 @@ impl DeltasProcessorBase {
             }
         }
 
+        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Canonicalized);
         Ok(())
     }
 }

@@ -160,6 +160,17 @@ pub async fn configure_account(
         GuardianError::StorageError(format!("Failed to store metadata: {e}"))
     })?;
 
+    // Count only first-time creations — /configure also serves
+    // reconfiguration of existing accounts.
+    if existing.is_none() {
+        metrics::counter!(
+            crate::metrics::names::ACCOUNTS_CREATED_TOTAL,
+            crate::metrics::names::LABEL_KIND =>
+                crate::metrics::labels::AccountKind::Miden.as_str()
+        )
+        .increment(1);
+    }
+
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
         ack_pubkey: state.ack.pubkey(&scheme),

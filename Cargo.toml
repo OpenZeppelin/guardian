@@ -60,6 +60,9 @@ assert_matches = "1.5"
 rstest = "0.26"
 futures = "0.3"
 chrono = "0.4"
+# OpenAPI spec generation (issue #241). `axum_extras` enables richer
+# parameter inference for axum `Query`/`Path` extractors.
+utoipa = { version = "5", features = ["axum_extras"] }
 
 # Miden
 miden-protocol = "0.14.5"

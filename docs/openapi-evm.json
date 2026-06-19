@@ -1,0 +1,1217 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Guardian EVM API",
+    "description": "EVM smart-account Guardian HTTP API (the `evm` feature).",
+    "license": {
+      "name": "AGPL-3.0",
+      "identifier": "AGPL-3.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/evm/accounts": {
+      "post": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Register an EVM smart-account with Guardian (requires an EVM session).",
+        "operationId": "register_evm_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Account registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterAccountResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid network config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session signer not authorized for the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    },
+    "/evm/auth/challenge": {
+      "get": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Issue an EIP-712 session challenge for an EVM wallet address.",
+        "operationId": "challenge_evm_session",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Challenge issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChallengeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/evm/auth/logout": {
+      "post": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Invalidate the current EVM session and clear the session cookie.",
+        "operationId": "logout_evm_session",
+        "responses": {
+          "200": {
+            "description": "Session invalidated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    },
+    "/evm/auth/verify": {
+      "post": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Verify a signed EVM session challenge and establish a session\n(sets a session cookie on success).",
+        "operationId": "verify_evm_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifySessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session established",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifySessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Challenge verification failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/evm/proposals": {
+      "get": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "List EVM proposals for an account (requires an EVM session).",
+        "operationId": "list_evm_proposals",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListProposalsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Create a new EVM multisig proposal (requires an EVM session).",
+        "operationId": "create_evm_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Proposal created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvmProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid proposal input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session signer not authorized for the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    },
+    "/evm/proposals/{proposal_id}": {
+      "get": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Fetch a single EVM proposal by id (requires an EVM session).",
+        "operationId": "get_evm_proposal",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "description": "Proposal identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvmProposal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    },
+    "/evm/proposals/{proposal_id}/approve": {
+      "post": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Add an approval signature to an EVM proposal (requires an EVM session).",
+        "operationId": "approve_evm_proposal",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "description": "Proposal identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Approval recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvmProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session signer not authorized for the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    },
+    "/evm/proposals/{proposal_id}/cancel": {
+      "post": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Cancel an EVM proposal (requires an EVM session).",
+        "operationId": "cancel_evm_proposal",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "description": "Proposal identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Proposal cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelProposalResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    },
+    "/evm/proposals/{proposal_id}/executable": {
+      "get": {
+        "tags": [
+          "evm"
+        ],
+        "summary": "Fetch the executable (threshold-met) form of an EVM proposal,\nready for on-chain submission (requires an EVM session).",
+        "operationId": "get_executable_evm_proposal",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "description": "Proposal identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Executable proposal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutableEvmProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Proposal not yet executable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing EVM session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "evm_session": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiErrorResponse": {
+        "type": "object",
+        "description": "Wire shape of a Guardian error response body. Mirrors the envelope\nproduced by [`crate::error::GuardianError`]'s `IntoResponse` impl.\nDocumented as the body of every non-2xx response. Optional fields\nare populated only for the error codes that carry them.",
+        "required": [
+          "success",
+          "code",
+          "error"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable, machine-readable error code (e.g. `account_not_found`)."
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable error message."
+          },
+          "missing_permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Lex-sorted permissions the operator lacks. Present only for\n`GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`."
+          },
+          "paused_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 pause timestamp. Present only for\n`GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "retry_after_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds to wait before retrying. Present only for\n`rate_limit_exceeded`.",
+            "minimum": 0
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Always `false` for error responses."
+          }
+        }
+      },
+      "ApproveProposalRequest": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "signature"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        }
+      },
+      "CancelProposalRequest": {
+        "type": "object",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CancelProposalResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ChallengeResponse": {
+        "type": "object",
+        "required": [
+          "address",
+          "nonce",
+          "issued_at",
+          "expires_at",
+          "typed_data"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "issued_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "typed_data": {
+            "type": "object",
+            "description": "EIP-712 typed-data payload the wallet signs to establish a session."
+          }
+        }
+      },
+      "CreateProposalRequest": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "user_op_hash",
+          "payload",
+          "nonce",
+          "ttl_seconds",
+          "signature"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "user_op_hash": {
+            "type": "string"
+          }
+        }
+      },
+      "EvmProposal": {
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "account_id",
+          "chain_id",
+          "smart_account_address",
+          "validator_address",
+          "user_op_hash",
+          "payload",
+          "nonce",
+          "nonce_key",
+          "proposer",
+          "signer_snapshot",
+          "threshold",
+          "signatures",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "chain_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "nonce_key": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "proposer": {
+            "type": "string"
+          },
+          "signatures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvmProposalSignature"
+            }
+          },
+          "signer_snapshot": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "smart_account_address": {
+            "type": "string"
+          },
+          "threshold": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "user_op_hash": {
+            "type": "string"
+          },
+          "validator_address": {
+            "type": "string"
+          }
+        }
+      },
+      "EvmProposalSignature": {
+        "type": "object",
+        "required": [
+          "signer",
+          "signature",
+          "signed_at"
+        ],
+        "properties": {
+          "signature": {
+            "type": "string"
+          },
+          "signed_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "signer": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutableEvmProposal": {
+        "type": "object",
+        "required": [
+          "hash",
+          "payload",
+          "signatures",
+          "signers"
+        ],
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "signatures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "signers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ListProposalsResponse": {
+        "type": "object",
+        "required": [
+          "proposals"
+        ],
+        "properties": {
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvmProposal"
+            }
+          }
+        }
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RegisterAccountRequest": {
+        "type": "object",
+        "required": [
+          "chain_id",
+          "account_address",
+          "multisig_validator_address"
+        ],
+        "properties": {
+          "account_address": {
+            "type": "string"
+          },
+          "chain_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "multisig_validator_address": {
+            "type": "string"
+          }
+        }
+      },
+      "RegisterAccountResponse": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "chain_id",
+          "account_address",
+          "multisig_validator_address",
+          "signers",
+          "threshold"
+        ],
+        "properties": {
+          "account_address": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "chain_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "multisig_validator_address": {
+            "type": "string"
+          },
+          "signers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "threshold": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VerifySessionRequest": {
+        "type": "object",
+        "required": [
+          "address",
+          "nonce",
+          "signature"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        }
+      },
+      "VerifySessionResponse": {
+        "type": "object",
+        "required": [
+          "address",
+          "expires_at"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "evm_session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "guardian_evm_session"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "evm",
+      "description": "EVM smart-account API."
+    }
+  ]
+}

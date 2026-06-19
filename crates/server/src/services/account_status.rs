@@ -15,7 +15,7 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::AccountMetadata;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountStatus {
     Active,

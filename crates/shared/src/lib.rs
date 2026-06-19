@@ -17,7 +17,7 @@ pub mod lookup_auth_message;
 use crate::hex::FromHex;
 
 /// Supported signature schemes
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SignatureScheme {
     Falcon,
@@ -133,7 +133,7 @@ fn parse_ecdsa_public_key_hex(
 }
 
 /// Signature type for delta proposals
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "scheme", rename_all = "snake_case")]
 pub enum ProposalSignature {
     Falcon {

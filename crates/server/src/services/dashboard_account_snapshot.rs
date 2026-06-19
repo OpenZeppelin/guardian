@@ -25,7 +25,7 @@ use crate::state::AppState;
 /// One fungible asset entry in the vault snapshot. `amount` is a string
 /// to keep `u64`-precision values safe across JS (`Number.MAX_SAFE_INTEGER`
 /// is 2^53 − 1). Decimal handling is a dashboard-client concern.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardVaultFungibleEntry {
     pub faucet_id: String,
     pub amount: String,
@@ -33,19 +33,19 @@ pub struct DashboardVaultFungibleEntry {
 
 /// One non-fungible asset entry. `vault_key` is the canonical Miden
 /// identifier for the asset within the vault.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardVaultNonFungibleEntry {
     pub faucet_id: String,
     pub vault_key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, utoipa::ToSchema)]
 pub struct DashboardVaultSnapshot {
     pub fungible: Vec<DashboardVaultFungibleEntry>,
     pub non_fungible: Vec<DashboardVaultNonFungibleEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardAccountSnapshot {
     /// Commitment of the state the snapshot was decoded from. Equals
     /// `DashboardAccountDetail::current_commitment` for the same

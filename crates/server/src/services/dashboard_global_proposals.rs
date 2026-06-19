@@ -48,7 +48,7 @@ use crate::storage::GlobalProposalCursor;
 /// One entry in the global proposal feed wire shape per
 /// `data-model.md`. Includes every field of the per-account
 /// proposal entry plus `account_id`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardGlobalProposalEntry {
     pub account_id: String,
     pub commitment: String,

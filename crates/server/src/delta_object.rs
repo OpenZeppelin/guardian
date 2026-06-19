@@ -2,7 +2,7 @@ pub use guardian_shared::ProposalSignature;
 use serde::{Deserialize, Serialize};
 
 /// Cosigner signature entry for delta proposals
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, utoipa::ToSchema)]
 pub struct CosignerSignature {
     pub signature: ProposalSignature,
     pub timestamp: String,
@@ -10,7 +10,7 @@ pub struct CosignerSignature {
 }
 
 /// Delta status state machine
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DeltaStatus {
     Pending {
@@ -121,13 +121,15 @@ impl Default for DeltaStatus {
 }
 
 /// Delta object
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, Clone, Debug, Default, utoipa::ToSchema)]
 pub struct DeltaObject {
     pub account_id: String,
     pub nonce: u64,
     pub prev_commitment: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_commitment: Option<String>,
+    /// Opaque, schema-free JSON payload describing the state delta.
+    #[schema(value_type = Object)]
     pub delta_payload: serde_json::Value,
     pub ack_sig: String,
     pub ack_pubkey: String,

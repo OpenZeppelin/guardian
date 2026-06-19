@@ -44,7 +44,24 @@ build the server from source for contributors; `docker-compose.registry.yml` pul
 the published image.
 
 Maintainers publish a version by running the **Docker Publish** GitHub Actions
-workflow (manual dispatch: pick the branch to build from and the version to tag).
+workflow one of two ways:
+
+- **On a GitHub Release.** Publishing a release auto-triggers the workflow: the
+  version and build ref come from the release tag, the build uses the `postgres`
+  feature, and an existing tag is never overwritten. The build first **waits for
+  required-reviewer approval** on the `release` environment before it pushes —
+  approve releases that should ship a server image, and decline ones that should
+  not (e.g. SDK-only releases that share the same `vX.Y.Z` tag line). A release
+  tag that does not match `vMAJOR.MINOR.PATCH[-prerelease]` fails the workflow.
+  Cutting the release as a **draft** (`gh release create … --draft`) does not
+  trigger the workflow — review it first, then publish the draft to start the build.
+- **Manual dispatch.** Pick the branch/tag/commit to build from, the version to
+  tag, the build features, and whether to overwrite an existing tag — for
+  off-release or one-off builds.
+
+In both cases a version containing `-` (e.g. `v1.2.3-rc.1`) is treated as a
+pre-release and does not move the `latest` tag.
+
 The AWS deploy below still builds and pushes to ECR via `scripts/aws-deploy.sh`;
 consuming the published GHCR image from the deploy flow is a separate, later change.
 
