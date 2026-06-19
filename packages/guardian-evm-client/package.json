@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/guardian-evm-client",
-  "version": "0.14.5",
+  "version": "0.15.0-rc.0",
   "description": "TypeScript EVM client for Guardian server proposal workflows",
   "type": "module",
   "main": "./dist/index.js",
