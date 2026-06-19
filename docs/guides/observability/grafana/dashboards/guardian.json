@@ -1,7 +1,7 @@
 {
   "uid": "guardian-overview",
   "title": "Guardian \u2014 Server Overview",
-  "description": "Operational overview of a guardian-server's Prometheus metrics. See docs/OBSERVABILITY.md and spec/api.md (Metrics Endpoint) for the taxonomy.",
+  "description": "Operational overview of a guardian-server's Prometheus metrics. See docs/guides/observability/ and spec/api.md (Metrics Endpoint) for the taxonomy.",
   "tags": [
     "guardian",
     "prometheus",

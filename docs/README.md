@@ -45,8 +45,8 @@ You are an operator / SRE / DevOps.
    topology, AWS resource inventory mapped to each `.tf` file.
 6. [Configuration reference](./CONFIGURATION.md) — every env var in one
    place.
-7. [Observability](./OBSERVABILITY.md) — enabling and scraping Prometheus
-   metrics, plus an example Grafana dashboard.
+7. [Observability](./guides/observability/README.md) — enabling and scraping
+   Prometheus metrics, with a one-command Grafana dashboard stack.
 8. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
    replacement, and compromise response for production secrets.
 9. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
@@ -105,7 +105,7 @@ You are a contributor.
 
 **Operations**
 - [Production guide](./PRODUCTION.md)
-- [Observability](./OBSERVABILITY.md) — Prometheus metrics + example Grafana dashboard
+- [Observability](./guides/observability/README.md) — Prometheus metrics + Grafana dashboard stack
 - [Guides](./guides/README.md) — per-mode end-to-end walkthroughs
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
@@ -127,8 +127,7 @@ You are a contributor.
   — authoritative wire contract for the gRPC API.
 - [`examples/`](../examples) — runnable harnesses (`demo`, `smoke-web`,
   `operator-smoke-web`, `evm-smoke-web`, `web`) that exercise each SDK
-  end-to-end, plus [`observability`](../examples/observability/README.md)
-  (Prometheus + Grafana stack).
+  end-to-end.
 - [`infra/`](../infra) — Terraform configuration for the AWS stack.
 - [`scripts/aws-deploy.sh`](../scripts/aws-deploy.sh) — deploy entry
   point that wires env vars into Terraform.

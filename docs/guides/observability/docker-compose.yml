@@ -1,0 +1,93 @@
+# Local observability stack: a Guardian server with Prometheus metrics
+# enabled, scraped by Prometheus and visualized in a pre-provisioned Grafana
+# dashboard — all in one `docker compose up`.
+#
+# Run from this directory:
+#   cp .env.example .env        # optional — defaults work as-is
+#   docker compose up
+#
+# Compose auto-loads .env from this directory. Walkthrough: ./README.md
+# Full server config reference: ../../CONFIGURATION.md
+#
+# Ports are bound to 127.0.0.1 (loopback): this is a local dev stack, and
+# Grafana runs with anonymous admin access — do not expose it on a routable
+# interface. The metrics listener (9464) is not published at all; only
+# Prometheus reaches it on the internal Compose network.
+
+services:
+  server:
+    # Built from this repo's Dockerfile so the image always includes the
+    # current code (and thus the Prometheus metrics feature). The default
+    # published image is Postgres-only; an empty features arg selects the
+    # filesystem backend, which keeps this stack to a single command with no
+    # database. First `up` compiles the server (a few minutes); later runs
+    # reuse the cached image.
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+      args:
+        GUARDIAN_SERVER_FEATURES: ""
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:50051:50051"
+    volumes:
+      - guardian-storage:/var/guardian/storage
+      - guardian-metadata:/var/guardian/metadata
+      - guardian-keystore:/var/guardian/keystore
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_STORAGE_PATH=/var/guardian/storage
+      - GUARDIAN_METADATA_PATH=/var/guardian/metadata
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      # Metrics on, bound so the Prometheus container can reach it over the
+      # internal network. The bearer token matches prometheus/prometheus.yml;
+      # `devtoken` is a throwaway for this local stack (see README).
+      - GUARDIAN_METRICS_ENABLED=true
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
+      - GUARDIAN_METRICS_BEARER_TOKEN=devtoken
+      - GUARDIAN_METRICS_REFRESH_INTERVAL_SECS=15
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - server
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      # 3001 avoids clashing with the server's HTTP port 3000.
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Zero-friction local viewing: open http://localhost:3001 and land
+      # straight on the dashboard, no login. DEV ONLY — never enable
+      # anonymous admin on a Grafana reachable by anyone else.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_USERS_DEFAULT_THEME=dark
+    depends_on:
+      - prometheus
+
+volumes:
+  guardian-storage:
+  guardian-metadata:
+  guardian-keystore:
+  prometheus-data:
+  grafana-data:

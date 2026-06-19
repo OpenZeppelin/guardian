@@ -22,6 +22,7 @@ storage, or network), not after Compose.
 | Guide | Mode |
 |---|---|
 | [AWS-managed ACK signers](./aws-signers/README.md) | Self-hosted Compose: Postgres + Secrets Manager (Falcon) + KMS (ECDSA) |
+| [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
 
 ## Adding a guide
 
