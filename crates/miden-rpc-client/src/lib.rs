@@ -30,6 +30,20 @@ impl MidenRpcClient {
         Ok(Self { client })
     }
 
+    /// Builds a client over a lazily-created channel that is never proactively
+    /// connected and skips TLS root loading. This lets pure, non-RPC call paths
+    /// be unit-tested without a network or a system certificate store; issuing
+    /// an actual RPC on the resulting client will fail to connect.
+    pub fn lazy_unconnected(endpoint: impl Into<String>) -> Result<Self, String> {
+        let channel = Channel::from_shared(endpoint.into())
+            .map_err(|e| format!("Invalid endpoint: {e}"))?
+            .connect_lazy();
+
+        Ok(Self {
+            client: ApiClient::new(channel),
+        })
+    }
+
     /// Get the underlying tonic ApiClient for full access to all RPC methods:
     pub fn client_mut(&mut self) -> &mut ApiClient<Channel> {
         &mut self.client
@@ -76,7 +90,7 @@ impl MidenRpcClient {
         self.client
             .submit_proven_tx(Request::new(request))
             .await
-            .map_err(|e| format!("SubmitProvenTransaction RPC failed: {e}"))?;
+            .map_err(|e| format!("SubmitProvenTx RPC failed: {e}"))?;
 
         Ok(())
     }

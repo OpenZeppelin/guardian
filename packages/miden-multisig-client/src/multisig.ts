@@ -739,19 +739,9 @@ export class Multisig {
       description: `Switch GUARDIAN to ${newGuardianEndpoint}`,
     };
 
-    const proposalId = computeCommitmentFromTxSummary(summaryBase64);
-    const proposal: Proposal = {
-      id: proposalId,
-      accountId: this._accountId,
-      nonce: proposalNonce,
-      status: 'pending',
-      txSummary: summaryBase64,
-      signatures: [],
-      metadata,
-    };
-
-    this.proposals.set(proposal.id, proposal);
-    return proposal;
+    // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
+    // sign/execute (which fetch from GUARDIAN) can find it.
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
   }
 
   /**
@@ -879,9 +869,7 @@ export class Multisig {
       );
 
       if (canConsumeNow) {
-        // Miden 0.15: InputNoteRecord.id() is `NoteId | undefined` (partial,
-        // metadata-less notes have no id yet). A consumable note carries full
-        // metadata, but guard to satisfy the type and skip any id-less record.
+        // Miden 0.15: InputNoteRecord.id() is `NoteId | undefined`; skip id-less records.
         const id = inputNote.id();
         if (id === undefined) {
           continue;
@@ -981,6 +969,24 @@ export class Multisig {
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
         throw new Error('Switch GUARDIAN proposal metadata is incomplete after execution');
+      }
+
+      // Canonicalize the executed delta on the pre-switch GUARDIAN (clears the
+      // pending proposal). Must run before `this.guardian` is repointed below.
+      // Best-effort: an unreachable old GUARDIAN must not block the switch, so
+      // errors are swallowed (mirrors the Rust execute path).
+      try {
+        const normalizedProposalId = normalizeHexWord(proposal.id);
+        const switchDelta = await this.guardian.getDeltaProposal(
+          this._accountId,
+          normalizedProposalId,
+        );
+        await this.guardian.pushDelta({
+          ...switchDelta,
+          deltaPayload: switchDelta.deltaPayload.txSummary,
+        });
+      } catch {
+        // best-effort; see above
       }
 
       try {
@@ -1560,6 +1566,17 @@ export class Multisig {
       // Custom proposals (issue #266) have no per-type reconstruction recipe;
       // the id ↔ tx_summary commitment match above is the only available
       // integrity guarantee for an opaque proposal.
+      return txSummaryCommitment;
+    }
+
+    if (proposal.metadata.proposalType === 'switch_guardian') {
+      // Exempt from binding re-execution (mirrors the `custom` exemption above).
+      // The WASM `executeForSummary` leaves the guardian-disabling side effect
+      // applied to the in-session account, so re-execution reconstructs a smaller
+      // delta and falsely rejects with "metadata does not match tx_summary". The
+      // native Rust client does not mutate, so this is an intentional divergence.
+      // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
+      // at propose/execute time still bind the proposal.
       return txSummaryCommitment;
     }
 

@@ -2,15 +2,10 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 
-// The 0.15 miden-sdk ships two builds: a native napi build (resolved by the
-// "node" condition) that omits WASM-only helpers like `Poseidon2`/`FeltArray`,
-// and the WASM build used in browsers. The SDK is consumed as the WASM build in
-// production, so tests must exercise that same build. Alias the bare specifier
-// to the WASM entry (matching `@miden-sdk/miden-sdk/lazy`) and initialize its
-// WASM module once in `setupFiles`.
-//
-// 0.15.0 split dist into single-thread (`st`) / multi-thread (`mt`) builds; the
-// WASM single-thread lazy entry is `dist/st/index.js` (was `dist/index.js`).
+// Tests must run against the WASM build (used in production), not the native
+// napi build that the "node" condition resolves, which omits `Poseidon2`/
+// `FeltArray`. Alias the bare specifier to the WASM single-thread entry and
+// initialize its module in `setupFiles`.
 const midenWasmEntry = fileURLToPath(
   new URL('./node_modules/@miden-sdk/miden-sdk/dist/st/index.js', import.meta.url),
 );

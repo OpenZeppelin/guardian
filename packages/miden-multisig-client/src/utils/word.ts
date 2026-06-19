@@ -4,12 +4,15 @@ export function wordToHex(word: Word): string {
   return word.toHex();
 }
 
-export function wordElementToBigInt(
-  word: { toFelts: () => Array<{ asInt: () => bigint }> },
-  index: number,
-): bigint {
-  const felts = word.toFelts();
-  return index >= 0 && index < felts.length ? felts[index].asInt() : 0n;
+export function wordElementToBigInt(word: Word, index: number): bigint {
+  if (index < 0 || index > 3) {
+    return 0n;
+  }
+  // The wallet-embedded 0.15 SDK lacks `toU64s()` on storage-read Words; fall
+  // back to `toFelts()`, which has the same element order.
+  const elements: BigUint64Array | bigint[] =
+    typeof word.toU64s === 'function' ? word.toU64s() : word.toFelts().map(f => f.asInt());
+  return index < elements.length ? elements[index] : 0n;
 }
 
 export function wordToBytes(word: { toFelts: () => Array<{ asInt: () => bigint }> }): Uint8Array {

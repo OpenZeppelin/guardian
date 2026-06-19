@@ -108,7 +108,9 @@ function currentAccountNonce(multisig: Multisig): number | null {
 
 function proposalNonce(multisig: Multisig): number | undefined {
   const nonce = currentAccountNonce(multisig);
-  return nonce === null ? undefined : nonce;
+  // Proposal nonce is the account's next nonce (current + 1), matching the Rust
+  // client's `proposal.nonce <= account.nonce()` staleness filter.
+  return nonce === null ? undefined : nonce + 1;
 }
 
 export function filterVisibleProposals(
@@ -124,7 +126,9 @@ export function filterVisibleProposals(
       return false;
     }
 
-    if (accountNonce !== null && proposal.nonce < accountNonce) {
+    // `<=` matches the next-nonce convention: a proposal at nonce N is consumed
+    // once the account reaches nonce N.
+    if (accountNonce !== null && proposal.nonce <= accountNonce) {
       return false;
     }
 

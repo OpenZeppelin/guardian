@@ -363,7 +363,6 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
-        // Create the fungible asset, preserving the held asset's callback flag.
         let asset = build_transfer_asset(account.inner(), faucet_id, amount)?;
 
         // Generate salt for replay protection
