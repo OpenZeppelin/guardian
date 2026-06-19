@@ -36,7 +36,7 @@ impl ProcedureName {
             ),
             // auth_tx_guarded_multisig
             ProcedureName::AuthTx => procedure_root_word(
-                "0xd7b760e20ccbf6f8428538a155f2ef636326b1fcf246c3a34da2cd3a73de77cd",
+                "0x08f59357487cebf34c4557dd9fc32cecb82d9f7b3d3bba213a68a9729e463260",
             ),
             // update_guardian_public_key
             ProcedureName::UpdateGuardian => procedure_root_word(
