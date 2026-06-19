@@ -4,12 +4,12 @@ use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::FungibleAsset;
 use miden_protocol::note::NoteId;
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
+use crate::execution::build_transfer_asset;
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
 use crate::payload::ProposalPayload;
@@ -363,9 +363,7 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
-        // Create the fungible asset
-        let asset = FungibleAsset::new(faucet_id, amount)
-            .map_err(|e| MultisigError::InvalidConfig(format!("failed to create asset: {}", e)))?;
+        let asset = build_transfer_asset(account.inner(), faucet_id, amount)?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
@@ -711,7 +709,7 @@ mod tests {
 
     fn test_proposal() -> Proposal {
         let account_id =
-            AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").expect("valid account id");
+            AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
             AccountStorageDelta::default(),
@@ -723,7 +721,7 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new(9), ZERO, ZERO, ZERO]),
+            Word::from([Felt::new_unchecked(9), ZERO, ZERO, ZERO]),
         );
 
         Proposal::new(
@@ -731,7 +729,7 @@ mod tests {
             1,
             TransactionType::ConsumeNotes {
                 note_ids: vec![miden_protocol::note::NoteId::from_raw(Word::from([
-                    Felt::new(1),
+                    Felt::new_unchecked(1),
                     ZERO,
                     ZERO,
                     ZERO,

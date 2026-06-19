@@ -99,6 +99,22 @@ impl<'a> MidenAccountInspector<'a> {
         selector_value == guardian_on
     }
 
+    /// Whether the account is an OpenZeppelin multisig, detected by its threshold-config slot.
+    /// Unlike [`Self::has_guardian_auth`] this is independent of the GUARDIAN selector, so it
+    /// stays true after a `SwitchGuardian` and correctly gates the replay-protection adjustment.
+    pub fn has_multisig_auth(&self) -> bool {
+        self.get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)
+            .is_some()
+    }
+
+    /// Whether the account has a GUARDIAN component, detected by the selector slot regardless of
+    /// whether it is currently enabled. Unlike [`Self::has_guardian_auth`] this stays true when
+    /// the selector is OFF, mirroring the unconditional `enable_guardian` that
+    /// `verify_guardian_signature` leaves ON after any successful transaction.
+    pub fn has_guardian_component(&self) -> bool {
+        self.get_item_by_name(OZ_GUARDIAN_SELECTOR).is_some()
+    }
+
     /// Extract GUARDIAN public key commitment from the OpenZeppelin GUARDIAN public key map.
     /// Requires the exact slot name `openzeppelin::guardian::public_key`.
     pub fn extract_guardian_public_key(&self) -> Option<String> {
@@ -118,8 +134,8 @@ mod tests {
     use super::*;
     use guardian_shared::FromJson;
     use miden_protocol::account::{
-        AccountCode, AccountId, AccountIdVersion, AccountStorage, AccountStorageMode, AccountType,
-        StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
+        AccountCode, AccountId, AccountIdVersion, AccountStorage, AccountType, StorageMap,
+        StorageMapKey, StorageSlot, StorageSlotName,
     };
     use miden_protocol::asset::AssetVault;
 
@@ -149,19 +165,15 @@ mod tests {
             signer_slot(OZ_MULTISIG_SIGNER_PUBKEYS, oz_pubkeys),
         ])
         .expect("valid storage");
-        let account_id = AccountId::dummy(
-            [3u8; 15],
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountUpdatableCode,
-            AccountStorageMode::Private,
-        );
+        let account_id =
+            AccountId::dummy([3u8; 15], AccountIdVersion::Version1, AccountType::Private);
 
         Account::new_existing(
             account_id,
             AssetVault::new(&[]).expect("empty vault"),
             storage,
             AccountCode::mock(),
-            miden_protocol::Felt::new(1),
+            miden_protocol::Felt::new_unchecked(1),
         )
     }
 

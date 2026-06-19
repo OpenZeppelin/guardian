@@ -34,7 +34,7 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```toml
 [dependencies]
 miden-multisig-client = "0.14.6"
-miden-client = "0.14.5"
+miden-client = "0.15.0"
 ```
 
 ### 5-Minute Example
@@ -944,6 +944,7 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
+| 0.15.x | 0.15.0 | ^0.15.0 | Miden 0.15 protocol; v1 account IDs, bech32m addresses |
 | 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
 | 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
 | 0.12.x | 0.12.5 | ^0.12.5 | Initial release |

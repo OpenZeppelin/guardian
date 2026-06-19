@@ -27,7 +27,7 @@ impl ConsumableNote {
             .iter()
             .filter_map(|asset| match asset {
                 Asset::Fungible(fungible) if fungible.faucet_id() == faucet_id => {
-                    Some(fungible.amount())
+                    Some(fungible.amount().as_u64())
                 }
                 _ => None,
             })
@@ -119,8 +119,8 @@ impl MultisigClient {
                         )
                 });
                 if can_consume_now {
-                    Some(ConsumableNote {
-                        id: record.id(),
+                    record.id().map(|id| ConsumableNote {
+                        id,
                         assets: record.assets().iter().cloned().collect(),
                     })
                 } else {
@@ -147,16 +147,16 @@ impl MultisigClient {
         let result = notes
             .into_iter()
             .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
-            .map(|(record, relevances)| {
+            .filter_map(|(record, relevances)| {
                 let note = ConsumableNote {
-                    id: record.id(),
+                    id: record.id()?,
                     assets: record.assets().iter().cloned().collect(),
                 };
                 let statuses: Vec<(AccountId, String)> = relevances
                     .into_iter()
                     .map(|(id, status)| (id, format!("{:?}", status)))
                     .collect();
-                (note, statuses)
+                Some((note, statuses))
             })
             .collect();
 
@@ -176,9 +176,11 @@ impl MultisigClient {
         let result = notes
             .into_iter()
             .filter(|(_, relevances)| relevances.iter().any(|(id, _)| *id == account_id))
-            .map(|(record, _)| ConsumableNote {
-                id: record.id(),
-                assets: record.assets().iter().cloned().collect(),
+            .filter_map(|(record, _)| {
+                Some(ConsumableNote {
+                    id: record.id()?,
+                    assets: record.assets().iter().cloned().collect(),
+                })
             })
             .collect();
 
@@ -241,7 +243,7 @@ mod tests {
 
     // Use a regular account ID for filter validation tests (no FungibleAsset creation)
     fn test_account_id() -> AccountId {
-        AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap()
+        AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap()
     }
 
     #[test]

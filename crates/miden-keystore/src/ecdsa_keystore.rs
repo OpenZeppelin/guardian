@@ -1,6 +1,8 @@
 use crate::KeyStoreError;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, SecretKey, Signature};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey, Signature, SigningKey as SecretKey,
+};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};

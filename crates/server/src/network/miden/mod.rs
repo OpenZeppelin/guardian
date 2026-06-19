@@ -25,6 +25,17 @@ impl MidenNetworkClient {
         Ok(Self { client })
     }
 
+    /// Builds a client without contacting the network or loading TLS roots, for
+    /// unit tests that exercise the pure serialization/delta paths
+    /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`)
+    /// which never issue an RPC.
+    #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+    fn lazy_for_test(network: NetworkType) -> Self {
+        let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
+            .expect("lazy client construction is infallible for a valid endpoint");
+        Self { client }
+    }
+
     /// Construct an Account object from JSON state representation
     fn construct_account_from_json(
         account_id: &AccountId,
@@ -196,9 +207,47 @@ impl NetworkClient for MidenNetworkClient {
         };
 
         let inspector = MidenAccountInspector::new(&account);
-        let has_guardian_auth = inspector.has_guardian_auth();
+        // Gate on multisig, not GUARDIAN: the replay-protection map is populated by the multisig
+        // auth regardless of GUARDIAN state, and a SwitchGuardian clears the GUARDIAN selector, so
+        // a GUARDIAN-gated check would skip the adjustment and omit the executed-transactions entry
+        // the chain recorded.
+        let is_multisig = inspector.has_multisig_auth();
+        let has_guardian_component = inspector.has_guardian_component();
 
-        if has_guardian_auth {
+        if has_guardian_component {
+            // `verify_guardian_signature` always runs `enable_guardian`, so the selector is ON
+            // after any successful transaction. The abort summary stored as the delta can capture
+            // it OFF (a SwitchGuardian disables it mid-script), so re-enable here to match the
+            // on-chain commitment. This invariant — that the selector is always ON post-tx — is
+            // load-bearing; the parity regression test
+            // `test_switch_guardian_server_reconstruction_matches_execution`
+            // (crates/contracts/tests/auth/multisig.rs) pins it. If a contract path is ever added
+            // that leaves the selector OFF after a successful tx, this reconstruction must change.
+            const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
+            const GUARDIAN_ON: [u32; 4] = [1, 0, 0, 0];
+
+            let slot_name = StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME)
+                .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
+
+            account
+                .storage_mut()
+                .set_item(&slot_name, Word::from(GUARDIAN_ON))
+                .map_err(|e| {
+                    tracing::error!(
+                        account_id = %account.id().to_hex(),
+                        error = %e,
+                        "Failed to re-enable GUARDIAN selector"
+                    );
+                    format!("Failed to re-enable GUARDIAN selector: {e}")
+                })?;
+
+            tracing::debug!(
+                account_id = %account.id().to_hex(),
+                "Re-enabled GUARDIAN selector to mirror enable_guardian"
+            );
+        }
+
+        if is_multisig {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
             // This affects determinism on simulations as the simulation won't pass the authentication,
             // therefore, the transaction won't be added to the mapping.
@@ -417,6 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires live network access and system TLS roots; covered by integration suites"]
     async fn test_client_from_network_type() {
         let network = NetworkType::MidenTestnet;
         let result = MidenNetworkClient::from_network(network).await;
@@ -426,11 +476,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_state_commitment_invalid_state_json() {
         let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
+        let client = MidenNetworkClient::lazy_for_test(network);
 
-        let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
+        let account_id_hex = "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a";
         let state_json = serde_json::json!({"balance": 0});
 
         let result = client.get_state_commitment(account_id_hex, &state_json);
@@ -447,9 +495,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_state_commitment_invalid_format() {
         let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
+        let client = MidenNetworkClient::lazy_for_test(network);
 
         let invalid_account_id = "not_a_valid_hex";
         let state_json = serde_json::json!({"balance": 0});
@@ -466,9 +512,7 @@ mod tests {
     #[tokio::test]
     async fn test_validate_guardian_commitment_success() {
         let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
+        let client = MidenNetworkClient::lazy_for_test(network);
 
         let account_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
@@ -492,9 +536,7 @@ mod tests {
     #[tokio::test]
     async fn test_validate_guardian_commitment_mismatch() {
         let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
+        let client = MidenNetworkClient::lazy_for_test(network);
 
         let account_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
@@ -519,9 +561,7 @@ mod tests {
     #[tokio::test]
     async fn test_apply_delta() {
         let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
+        let client = MidenNetworkClient::lazy_for_test(network);
 
         let account_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
@@ -560,20 +600,17 @@ mod tests {
         use miden_protocol::Felt;
         use miden_protocol::account::AccountDelta;
         use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
-        use miden_protocol::account::{AccountBuilder, AccountStorageMode, AccountType};
+        use miden_protocol::account::{AccountBuilder, AccountType};
         use miden_standards::account::auth::NoAuth;
         use miden_standards::account::wallets::BasicWallet;
 
         let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::from_network(network)
-            .await
-            .expect("Failed to create client");
+        let client = MidenNetworkClient::lazy_for_test(network);
 
         // Create a simple account without GUARDIAN auth to test the full state delta path
         // This avoids the replay protection logic which requires proper storage maps
         let account = AccountBuilder::new([0xAB; 32])
-            .account_type(AccountType::RegularAccountUpdatableCode)
-            .storage_mode(AccountStorageMode::Public)
+            .account_type(AccountType::Public)
             .with_component(BasicWallet)
             .with_auth_component(NoAuth)
             .build()
@@ -586,7 +623,7 @@ mod tests {
             account.id(),
             AccountStorageDelta::default(),
             AccountVaultDelta::default(),
-            Felt::new(1), // nonce delta
+            Felt::new_unchecked(1), // nonce delta
         )
         .expect("Failed to create delta")
         .with_code(Some(account.code().clone()));

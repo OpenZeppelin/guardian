@@ -6,11 +6,11 @@ use std::pin::Pin;
 
 use miden_client::Serializable;
 use miden_multisig_client::{
-    build_p2id_transaction_request, ensure_hex_prefix, generate_salt, word_from_hex, Asset,
-    ExportedProposal, NoteId, ProcedureName, TransactionType,
+    build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
+    word_from_hex, Asset, ExportedProposal, NoteId, ProcedureName, TransactionType,
 };
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::FungibleAsset;
+use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
 use crate::display::{
@@ -929,8 +929,8 @@ async fn action_create_custom_proposal(
         .ok_or_else(|| "No account loaded".to_string())?
         .clone();
 
-    let asset =
-        FungibleAsset::new(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
+    let asset = build_transfer_asset(account.inner(), faucet_id, amount)
+        .map_err(|e| format!("invalid asset: {}", e))?;
     let salt = generate_salt();
     let transaction_request_bytes = build_p2id_transaction_request(
         account.inner(),
@@ -992,7 +992,7 @@ async fn action_execute_custom_proposal(
         .account()
         .ok_or_else(|| "No account loaded".to_string())?
         .clone();
-    let asset = FungibleAsset::new(recipe.faucet_id, recipe.amount)
+    let asset = build_transfer_asset(account.inner(), recipe.faucet_id, recipe.amount)
         .map_err(|e| format!("invalid asset: {}", e))?;
 
     let mut request = build_p2id_transaction_request(
@@ -1067,6 +1067,25 @@ fn prompt_remove_cosigner(
     Ok(TransactionType::remove_cosigner(commitment))
 }
 
+/// Parses an account address from either a `0x` hex account ID or a bech32m
+/// address (e.g. `mdev1...`). Miden 0.15 uses bech32m as the canonical
+/// user-facing address format, so faucets and other tools emit that form.
+fn parse_account_address(input: &str, expected_network: &NetworkId) -> Result<AccountId, String> {
+    if input.starts_with("0x") || input.starts_with("0X") {
+        AccountId::from_hex(input).map_err(|e| e.to_string())
+    } else {
+        let (network_id, account_id) = AccountId::from_bech32(input).map_err(|e| e.to_string())?;
+        if &network_id != expected_network {
+            return Err(format!(
+                "address belongs to the {} network but the session is configured for {}",
+                network_id.as_str(),
+                expected_network.as_str()
+            ));
+        }
+        Ok(account_id)
+    }
+}
+
 fn prompt_p2id(
     state: &SessionState,
     editor: &mut DefaultEditor,
@@ -1128,7 +1147,7 @@ fn prompt_p2id(
         .ok_or_else(|| "Invalid selection".to_string())?;
 
     let faucet_id = selected_asset.faucet_id();
-    let max_amount = selected_asset.amount();
+    let max_amount = selected_asset.amount().as_u64();
 
     println!(
         "\nSelected: {} tokens from faucet {}",
@@ -1137,10 +1156,10 @@ fn prompt_p2id(
     );
 
     // Get recipient
-    print_info("Enter the recipient account ID:");
-    let recipient_hex = prompt_input(editor, "  Recipient account ID: ")?;
-    let recipient =
-        AccountId::from_hex(&recipient_hex).map_err(|e| format!("Invalid recipient: {}", e))?;
+    print_info("Enter the recipient address (bech32m, e.g. mdev1..., or 0x hex):");
+    let recipient_input = prompt_input(editor, "  Recipient address: ")?;
+    let recipient = parse_account_address(recipient_input.trim(), &state.network_id())
+        .map_err(|e| format!("Invalid recipient: {}", e))?;
 
     // Get amount
     print_info(&format!("Enter amount to transfer (max: {}):", max_amount));
@@ -1162,7 +1181,7 @@ fn prompt_p2id(
     }
 
     println!("\nTransfer details:");
-    println!("  Recipient: {}", shorten_hex(&recipient_hex));
+    println!("  Recipient: {}", shorten_hex(recipient_input.trim()));
     println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
     println!("  Amount:    {} / {} available", amount, max_amount);
 
