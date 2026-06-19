@@ -154,7 +154,10 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
-    async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_all_delta_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
         timed(
             "pull_all_delta_proposals",
             self.inner.pull_all_delta_proposals(account_id),
@@ -162,7 +165,10 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
-    async fn pull_pending_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_pending_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
         timed(
             "pull_pending_proposals",
             self.inner.pull_pending_proposals(account_id),
