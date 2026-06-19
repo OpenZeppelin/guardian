@@ -80,6 +80,8 @@ You are a contributor.
    vocabulary, allowlist payload shapes.
 3. [`examples/operator-smoke-web`](../examples/operator-smoke-web/README.md)
    — reference harness.
+4. [Guides → Miden Dashboard UI](./guides/miden-dashboard/README.md) — run the
+   real dashboard UI against a local server with Docker Compose.
 
 ---
 
