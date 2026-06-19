@@ -32,7 +32,6 @@ mod ct;
 mod digest;
 mod wrappers;
 
-#[cfg(test)]
 pub(crate) use ct::eq as ct_eq;
 pub(crate) use digest::session_digest;
 pub(crate) use wrappers::{CredentialUrl, FixedKey, SecretBytes, SecretString};
