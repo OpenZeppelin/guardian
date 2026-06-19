@@ -18,6 +18,7 @@ export type {
   ConfigureRequest,
   ConfigureResponse,
   PubkeyResponse,
+  StatusResponse,
   DeltaProposalRequest,
   DeltaProposalResponse,
   ProposalsResponse,
