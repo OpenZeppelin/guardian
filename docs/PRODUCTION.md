@@ -65,8 +65,11 @@ Before treating a deployment as production-ready:
 - If Prometheus scraping is wanted, set `GUARDIAN_METRICS_ENABLED=true`,
   bind `GUARDIAN_METRICS_ADDR=0.0.0.0:9464` (containers), keep the port
   reachable only from the scraper's network, and set
-  `GUARDIAN_METRICS_BEARER_TOKEN`. See
-  [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--metrics-prometheus).
+  `GUARDIAN_METRICS_BEARER_TOKEN`. See the
+  [Observability guide](./guides/observability/README.md) for scraping and a
+  Grafana dashboard stack, and
+  [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--metrics-prometheus) for
+  the env vars.
 
 ## Where details live
 
@@ -78,7 +81,9 @@ Before treating a deployment as production-ready:
 | Understand server storage modes and why prod uses Postgres | [`architecture/services.md`](./architecture/services.md#storage-modes) |
 | Check runtime and deploy-time env vars | [`CONFIGURATION.md`](./CONFIGURATION.md) |
 | Bootstrap, replace, or respond to ACK/operator/EVM secret issues | [`runbooks/secrets.md`](./runbooks/secrets.md) |
+| Migrate a deployed stack to verified database TLS | [`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md) |
 | Configure dashboard operators and permissions | [`DASHBOARD.md`](./DASHBOARD.md) |
+| Scrape Prometheus metrics and visualize them | [`guides/observability/`](./guides/observability/README.md) |
 | Diagnose deploy/runtime failures | [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) |
 
 ## Non-goals

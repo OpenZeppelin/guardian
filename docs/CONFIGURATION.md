@@ -24,13 +24,57 @@ the runtime env vars in this document.
 
 | Variable | Default | Build mode | Notes |
 |---|---|---|---|
-| `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. |
+| `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. TLS verification is controlled by the standard `sslmode`/`sslrootcert` parameters — see [Database TLS](#database-tls). |
 | `GUARDIAN_STORAGE_PATH` | `/var/guardian/storage` | filesystem | Path for state + delta blobs. |
 | `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. |
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
+
+### Database TLS
+
+TLS behavior is driven entirely by the standard libpq parameters in
+`DATABASE_URL`; there is no Guardian-specific TLS env var. To migrate a deployed
+AWS stack to verified TLS, see
+[`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md). The same parameters
+govern both the synchronous startup-migration connection and the asynchronous
+runtime pools, so they always behave identically.
+
+| `sslmode` | `sslrootcert` | Behavior |
+|---|---|---|
+| _omitted_ / `disable` | _(any)_ | Plaintext, no TLS. |
+| `require` | _(none)_ | Encrypted, certificate **not** verified. |
+| `require` | `<path>` | Encrypted + certificate chain verified (promoted to `verify-ca`, matching libpq). |
+| `verify-ca` | `<path>` | Encrypted + chain verified (hostname not checked). |
+| `verify-full` | `<path>` | Encrypted + chain **and** hostname verified. Recommended for managed providers. |
+
+- `sslrootcert=<path>` points at a PEM CA bundle file the server can read; the
+  whole bundle must parse (a malformed entry fails startup). It may contain
+  multiple roots.
+- Verifying modes **fail closed**: a missing/unreadable/empty CA bundle, an
+  unknown `sslmode`, `allow`/`prefer` (which permit plaintext fallback), or
+  `sslrootcert=system` (unsupported — needs libpq ≥16) all abort startup with an
+  actionable error rather than connecting insecurely.
+- Hostname matching under `verify-full` is strict SAN-based; certificates without
+  a matching Subject Alternative Name (including Common-Name-only certs) are
+  rejected.
+
+Per-provider examples:
+
+```text
+# AWS RDS (managed; recommended). Mount a combined bundle of the Amazon RDS CA
+# roots AND the Amazon Trust Services roots — the RDS Proxy presents an ACM
+# certificate chaining to Amazon Trust Services, a direct instance chains to the
+# RDS CA roots.
+DATABASE_URL=postgres://USER:PW@HOST:5432/guardian?sslmode=verify-full&sslrootcert=/etc/guardian/tls/rds-combined-ca.pem
+
+# Another managed provider (GCP Cloud SQL / Azure / Supabase / Neon …)
+DATABASE_URL=postgres://USER:PW@HOST:5432/guardian?sslmode=verify-full&sslrootcert=/etc/guardian/tls/provider-ca.pem
+
+# Local docker compose (no TLS)
+DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian
+```
 
 ## Runtime — ACK signing and network
 
@@ -112,7 +156,9 @@ isolation first (loopback default / private network / security group),
 the bearer token second, and proxy-terminated TLS where transport
 encryption is required. Never expose it to a public network. The
 exposed metric taxonomy and cardinality rules are documented in
-[`spec/api.md`](../spec/api.md).
+[`spec/api.md`](../spec/api.md); see the
+[Observability guide](./guides/observability/README.md) for scraping and a
+one-command Grafana dashboard stack.
 
 ## Runtime — dashboard
 
