@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, './src'),
         '@miden-sdk/miden-sdk': path.resolve(
           __dirname,
-          'node_modules/@miden-sdk/miden-sdk/dist/index.js',
+          'node_modules/@miden-sdk/miden-sdk/dist/st/eager.js',
         ),
         '@openzeppelin/guardian-operator-client': path.resolve(
           __dirname,
