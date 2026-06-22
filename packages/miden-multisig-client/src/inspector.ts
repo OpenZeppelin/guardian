@@ -7,7 +7,7 @@ import { base64ToUint8Array } from './utils/encoding.js';
 import { wordElementToBigInt, wordToHex } from './utils/word.js';
 import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
 
-// Upstream `AuthGuardedMultisig` storage slot names (miden::standards::auth::*).
+// `AuthGuardedMultisig` storage slot names (miden::standards::auth::*).
 const MULTISIG_SLOT_NAMES = {
   THRESHOLD_CONFIG: 'miden::standards::auth::multisig::threshold_config',
   SIGNER_PUBLIC_KEYS: 'miden::standards::auth::multisig::approver_public_keys',
@@ -88,8 +88,8 @@ export class AccountInspector {
       }
     }
 
-    // The upstream guarded-multisig has no enable/disable selector — the guardian is
-    // always present. Read its public key directly from the guardian pub_key slot.
+    // The guarded-multisig has no enable/disable selector; the guardian is always present.
+    // Read its public key directly from the guardian pub_key slot.
     let guardianCommitment: string | null = null;
 
     try {

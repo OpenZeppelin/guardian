@@ -30,9 +30,9 @@ function buildGuardedMultisigComponent(
     ...buildMultisigStorageSlots(config),
     ...buildGuardianStorageSlots(config),
   ];
-  // The web SDK assembler already provides the upstream `miden::standards::auth::*` library
-  // modules, so they are NOT linked here (linking would raise a duplicate-definition error).
-  // Only the guarded-multisig account component itself is compiled.
+  // The web SDK assembler already provides the `miden::standards::auth::*` library modules, so
+  // only the guarded-multisig component is compiled here; linking them again would be a
+  // duplicate definition.
   const authComponentCode = authBuilder.compileAccountComponentCode(
     GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM,
   );
@@ -115,8 +115,8 @@ export function validateMultisigConfig(config: MultisigConfig): void {
   if (!config.guardianCommitment) {
     throw new Error('GUARDIAN commitment is required');
   }
-  // Upstream `AuthGuardedMultisigConfig::new` rejects a guardian equal to any approver; mirror
-  // that invariant here so the TS builder cannot create an account the Rust SDK would reject.
+  // `AuthGuardedMultisigConfig::new` rejects a guardian equal to any approver; mirror that
+  // invariant here so the TS builder cannot create an account the Rust SDK would reject.
   if (signerCommitments.has(normalizeSignerCommitment(config.guardianCommitment))) {
     throw new Error('GUARDIAN commitment must be different from all signer commitments');
   }

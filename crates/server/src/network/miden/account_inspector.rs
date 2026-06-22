@@ -3,7 +3,7 @@ use miden_protocol::account::{Account, StorageSlotName};
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::account::auth::AuthGuardedMultisig;
 
-// Upstream `AuthGuardedMultisig` storage slot names (miden::standards::auth::*),
+// `AuthGuardedMultisig` storage slot names (miden::standards::auth::*),
 // sourced from the component's `*_slot()` accessors so they cannot drift.
 fn multisig_threshold_config_slot() -> &'static str {
     AuthGuardedMultisig::threshold_config_slot().as_str()
@@ -38,18 +38,6 @@ impl<'a> MidenAccountInspector<'a> {
         self.account.storage().get_map_item(&name, key).ok()
     }
 
-    /// Extract public key from threshold config slot (single signer case)
-    /// Returns None if slot is empty or default
-    pub fn extract_single_pubkey(&self) -> Option<String> {
-        let value = self.get_item_by_name(multisig_threshold_config_slot())?;
-
-        if value != Word::default() {
-            let pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
-            return Some(pubkey_hex);
-        }
-        None
-    }
-
     /// Extract public keys from the multisig signer map.
     ///
     /// Returns an empty vector if the signer map is empty or missing.
@@ -81,32 +69,25 @@ impl<'a> MidenAccountInspector<'a> {
         pubkeys
     }
 
-    /// Check if a public key exists in account storage
-    /// Returns true if the pubkey is found in either threshold config or signer pubkeys map
+    /// Check if a public key exists in the multisig signer map.
     pub fn pubkey_exists(&self, target_pubkey: &str) -> bool {
-        if let Some(single_pubkey) = self.extract_single_pubkey()
-            && single_pubkey == target_pubkey
-        {
-            return true;
-        }
-
-        let signer_pubkeys = self.extract_pubkeys();
-        signer_pubkeys.iter().any(|pk| pk == target_pubkey)
+        self.extract_pubkeys().iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account is an upstream `AuthGuardedMultisig` by the presence of a
-    /// GUARDIAN public key. The upstream component has no enable/disable selector — the
-    /// guardian is always present — so a non-default key in the guardian pub_key slot
-    /// uniquely identifies a guarded multisig.
+    /// Check if the account is an `AuthGuardedMultisig` by the presence of a GUARDIAN
+    /// public key. The component has no enable/disable selector — the guardian is always
+    /// present — so a non-default key in the guardian pub_key slot uniquely identifies a
+    /// guarded multisig.
+    #[cfg(test)]
     pub fn has_guardian_auth(&self) -> bool {
         self.extract_guardian_public_key().is_some()
     }
 
     /// Whether the account carries the multisig auth component, detected by the structural
-    /// presence of its `threshold_config` slot. Unlike [`Self::has_guardian_auth`] this is a
-    /// property of the account's code/storage layout that cannot be cleared by any delta, so it
-    /// is the correct gate for the replay-protection adjustment: the `executed_transactions` map
-    /// belongs to the multisig component, and the adjustment must run for every multisig tx
+    /// presence of its `threshold_config` slot. Unlike the guardian-key presence check, this
+    /// is a property of the account's code/storage layout that cannot be cleared by any delta,
+    /// so it is the correct gate for the replay-protection adjustment: the `executed_transactions`
+    /// map belongs to the multisig component, and the adjustment must run for every multisig tx
     /// regardless of the guardian key's value.
     pub fn has_multisig_auth(&self) -> bool {
         self.get_item_by_name(multisig_threshold_config_slot())
@@ -176,23 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_single_pubkey() {
-        let fixture_json: serde_json::Value =
-            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
-                .expect("Failed to parse fixture");
-
-        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
-        let inspector = MidenAccountInspector::new(&account);
-
-        let pubkey = inspector.extract_single_pubkey();
-        assert!(pubkey.is_some(), "Expected pubkey in threshold config slot");
-        assert!(
-            pubkey.unwrap().starts_with("0x"),
-            "Pubkey should be hex format"
-        );
-    }
-
-    #[test]
     fn test_pubkey_exists() {
         let fixture_json: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
@@ -202,12 +166,14 @@ mod tests {
         let inspector = MidenAccountInspector::new(&account);
 
         let pubkey = inspector
-            .extract_single_pubkey()
-            .expect("Expected pubkey in threshold config slot");
+            .extract_pubkeys()
+            .into_iter()
+            .next()
+            .expect("Expected at least one signer pubkey in the approver map");
 
         assert!(
             inspector.pubkey_exists(&pubkey),
-            "Pubkey should exist in storage"
+            "Signer pubkey should exist in storage"
         );
 
         assert!(

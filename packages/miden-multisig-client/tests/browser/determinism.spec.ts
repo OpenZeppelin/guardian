@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 // Cross-SDK parity gate. The Rust upstream builder pins these values in
 // `crates/contracts/src/multisig_guardian.rs::test_browser_deterministic_account_matches_rust_builder`.
-const EXPECTED_ID = '0xf9bf6e86166a2101217ff39e1ddfa2';
+const EXPECTED_ID = '0x8fc3d82cee89e3614b5e3e215db370';
 const EXPECTED_COMMITMENT =
-  '0x25d8ea5d0525be44cd23052359893d8242b2bd6c643c9f35b9096de55bcace55';
+  '0x9fa18826a999fa5ac79c615a00905b3e09e5e0a703a65f167d1c836e51e8e08e';
 // Storage commitment of the Rust account (7 slots, no schema-commitment slot). TS reproduces
 // this exactly once it uses buildWithoutSchemaCommitment() — proving the storage layout matches.
 const EXPECTED_STORAGE_COMMITMENT =
@@ -53,14 +53,11 @@ test('TS account reproduces the Rust storage layout and override-target procedur
   }
 });
 
-// KNOWN BLOCKER — dependency version skew. The npm `@miden-sdk/miden-sdk` (0.15.0) bundles a
-// different miden-standards patch than the Rust pin (0.15.3), so the auth-flow internals
-// (`auth_tx_guarded_multisig`) compile to a different MAST. This makes the full account
-// code-commitment/id diverge across SDKs even though storage + override-target procedures match.
-// A TS-created account is therefore NOT byte-identical to the Rust/server account until the web
-// SDK and Rust crates are aligned to the same standards patch. Unskip once aligned.
-test.fixme(
-  'TS account id + commitment match the Rust builder (blocked on web SDK vs Rust standards version alignment)',
+// `@miden-sdk/miden-sdk` 0.15.2 bundles `miden-standards 0.15.3`, matching the Rust pin
+// (`miden-standards = "=0.15.3"`), so `auth_tx_guarded_multisig` compiles to the same MAST and a
+// TS-built account is byte-identical to the Rust/server account.
+test(
+  'TS account id + commitment match the Rust builder',
   async ({ page }) => {
     const result = await buildInBrowser(page);
     expect(result?.id).toBe(EXPECTED_ID);

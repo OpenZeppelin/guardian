@@ -27,18 +27,13 @@ function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: numbe
   ];
 }
 
-function buildProcedureThresholdAdvice(
-  procedure: ProcedureName,
-  threshold: number,
-): { configHash: Word; payload: FeltArray } {
-  // `Poseidon2.hashElements` consumes (frees) its `FeltArray` by value, so the
-  // advice payload must be a freshly built one — reusing the hashed array
-  // surfaces as "null pointer passed to rust" at the later `advice.insert`.
-  const configHash = Poseidon2.hashElements(
+function buildProcedureThresholdConfigHash(procedure: ProcedureName, threshold: number): Word {
+  // `set_procedure_threshold` reads its `[proc_threshold, PROC_ROOT]` inputs from the operand
+  // stack (pushed by the script), so no advice-map entry is attached; this hash is returned
+  // only for caller bookkeeping.
+  return Poseidon2.hashElements(
     new FeltArray(buildProcedureThresholdFelts(procedure, threshold)),
   );
-  const payload = new FeltArray(buildProcedureThresholdFelts(procedure, threshold));
-  return { configHash, payload };
 }
 
 async function buildUpdateProcedureThresholdScript(
@@ -70,7 +65,7 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
   threshold: number,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
-  const { configHash } = buildProcedureThresholdAdvice(procedure, threshold);
+  const configHash = buildProcedureThresholdConfigHash(procedure, threshold);
 
   const script = await buildUpdateProcedureThresholdScript(
     client,

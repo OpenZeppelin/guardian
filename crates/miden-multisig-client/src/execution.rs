@@ -224,7 +224,7 @@ pub async fn build_final_transaction_request(
             procedure,
             new_threshold,
         } => {
-            let (tx_request, _) =
+            let tx_request =
                 crate::transaction::build_update_procedure_threshold_transaction_request(
                     *procedure,
                     *new_threshold,

@@ -63,11 +63,6 @@ fn record(
 }
 
 fn main() {
-    // Map Guardian's stable facing-names (the SDK `ProcedureName` API identifiers, shared
-    // with procedures.rs / procedures.ts) to the upstream `AuthGuardedMultisig` MASM
-    // procedures, resolving each root authoritatively by its fully-qualified path. Read-only
-    // helper procedures (get_signer_at, is_signer, get_threshold_and_num_approvers) are not
-    // threshold-override targets and are intentionally omitted.
     let auth_code = AuthGuardedMultisig::code();
     let auth_root = |masm_name: &str| -> Word {
         let export = auth_code

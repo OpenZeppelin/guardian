@@ -210,10 +210,8 @@ impl NetworkClient for MidenNetworkClient {
         };
 
         let inspector = MidenAccountInspector::new(&account);
-        // Gate on the structural presence of the multisig component (its `threshold_config`
-        // slot), not on the guardian key's value. The `executed_transactions` map belongs to the
-        // multisig component and is populated whenever its `auth_tx` runs; a guardian-key-presence
-        // gate would silently skip the replay-protection adjustment if that key were ever zeroed.
+        // Gate the replay-protection adjustment on the structural multisig component, not the
+        // guardian key's value (which a delta could zero); see `has_multisig_auth`.
         let is_multisig = inspector.has_multisig_auth();
 
         if is_multisig {

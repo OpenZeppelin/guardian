@@ -14,11 +14,9 @@ import { authSchemeId } from '../utils/signature.js';
 import type { SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-// Upstream `update_guardian_public_key(new_guardian_scheme_id, new_guardian_public_key)`
-// takes the new key word and its scheme id as operand-stack args (the fork read them from
-// the advice map). The key word is pushed first, then the scheme id on top, matching the
-// reader; the call leaves the five pushed elements, which are dropped afterwards. Rotation
-// needs only the multisig threshold signatures — no current-guardian signature.
+// `update_guardian_public_key(new_guardian_scheme_id, new_guardian_public_key)` takes its
+// args on the operand stack: push the key word first, then the scheme id on top, and drop the
+// five leftover elements after the call. Rotation needs only the multisig threshold signatures.
 async function buildUpdateGuardianScript(
   client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,

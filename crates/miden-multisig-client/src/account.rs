@@ -12,7 +12,7 @@ use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
 
-// Upstream `AuthGuardedMultisig` storage slot names (miden::standards::auth::*).
+// `AuthGuardedMultisig` storage slot names (miden::standards::auth::*).
 // Sourced from the component's `*_slot()` accessors so they cannot drift.
 fn multisig_threshold_config_slot() -> &'static str {
     AuthGuardedMultisig::threshold_config_slot().as_str()

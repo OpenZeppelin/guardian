@@ -1,13 +1,12 @@
 //! MultisigGuardian Account Builder
 //!
-//! High-level API for creating accounts with multisig + GUARDIAN authentication.
-//! Single source of truth for MultisigGuardian account creation across the codebase.
+//! High-level API for creating accounts with multisig + GUARDIAN authentication,
+//! and the single source of truth for MultisigGuardian account creation.
 //!
-//! As of the Miden 0.15 migration this builds the **upstream** `miden-standards`
-//! `AuthGuardedMultisig` component rather than a Guardian-forked contract. The
-//! guardian is always present (no enable/disable selector), and guardian-key
-//! rotation (`update_guardian_public_key`) uses the account's default multisig
-//! threshold with no current-guardian co-signature — matching `docs/CONCEPTS.md`.
+//! Builds the upstream `miden-standards` `AuthGuardedMultisig` component plus a
+//! `BasicWallet`. The guardian is always present (no enable/disable selector) and
+//! guardian-key rotation uses the account's default multisig threshold with no
+//! current-guardian co-signature, matching `docs/CONCEPTS.md`.
 
 use anyhow::{Result, anyhow};
 use miden_protocol::Word;
@@ -37,7 +36,7 @@ pub struct MultisigGuardianConfig {
     /// (`Private` keeps state off-chain; defaults to `Private`).
     pub account_type: AccountType,
     /// Optional procedure-specific threshold overrides (procedure root -> threshold).
-    /// Note: guardian rotation deliberately carries no override (uses the default threshold).
+    /// Guardian rotation deliberately carries no override and uses the default threshold.
     pub proc_threshold_overrides: Vec<(Word, u32)>,
 }
 
@@ -86,17 +85,14 @@ impl MultisigGuardianConfig {
 pub struct MultisigGuardianBuilder {
     config: MultisigGuardianConfig,
     seed: [u8; 32],
-    account_type: AccountType,
 }
 
 impl MultisigGuardianBuilder {
     /// Creates a new MultisigGuardian builder with the given configuration.
     pub fn new(config: MultisigGuardianConfig) -> Self {
-        let account_type = config.account_type;
         Self {
             config,
             seed: [0u8; 32],
-            account_type,
         }
     }
 
@@ -108,7 +104,7 @@ impl MultisigGuardianBuilder {
 
     /// Sets the account type (also controls on-chain storage visibility).
     pub fn with_account_type(mut self, account_type: AccountType) -> Self {
-        self.account_type = account_type;
+        self.config.account_type = account_type;
         self
     }
 
@@ -138,7 +134,7 @@ impl MultisigGuardianBuilder {
     fn into_parts(self) -> Result<([u8; 32], AccountType, AccountComponent)> {
         self.validate_config()?;
         let component = self.build_guarded_multisig_component()?;
-        Ok((self.seed, self.account_type, component))
+        Ok((self.seed, self.config.account_type, component))
     }
 
     fn auth_scheme(&self) -> AuthScheme {
@@ -287,8 +283,6 @@ mod tests {
             mock_commitment(10),
         );
 
-        // The upstream guarded-multisig component must expose exactly one auth
-        // procedure, and the account's first procedure must be that auth root.
         let component = MultisigGuardianBuilder::new(config.clone())
             .build_guarded_multisig_component()
             .expect("component");
@@ -320,15 +314,13 @@ mod tests {
             .build()
             .expect("account");
 
-        // Cross-SDK parity contract for the UPSTREAM guarded-multisig component.
-        // The TypeScript builder MUST derive these exact values from the same
-        // pinned miden-standards version. Captured from the upstream component on
-        // the Miden 0.15 migration; bumping miden-standards changes these (see the
-        // version-lock guardrail in the implementation plan).
-        assert_eq!(account.id().to_hex(), "0xf9bf6e86166a2101217ff39e1ddfa2");
+        // Cross-SDK parity: the TypeScript builder must derive these same identity
+        // values from the same pinned miden-standards version; regenerate both if
+        // the pin changes.
+        assert_eq!(account.id().to_hex(), "0x8fc3d82cee89e3614b5e3e215db370");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x25d8ea5d0525be44cd23052359893d8242b2bd6c643c9f35b9096de55bcace55"
+            "0x9fa18826a999fa5ac79c615a00905b3e09e5e0a703a65f167d1c836e51e8e08e"
         );
     }
 }

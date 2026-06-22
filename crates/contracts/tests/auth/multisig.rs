@@ -213,7 +213,7 @@ fn build_update_procedure_threshold_script_for_scheme(
     threshold: u32,
     signature_scheme: SignatureScheme,
 ) -> anyhow::Result<miden_protocol::transaction::TransactionScript> {
-    let _ = signature_scheme; // upstream guarded-multisig library is scheme-agnostic
+    let _ = signature_scheme;
     let multisig_library: Library = StandardsLib::default().into();
     let tx_script_code = format!(
         r#"
@@ -401,10 +401,9 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
         Felt::new_unchecked(0),
     ]);
 
-    // Upstream interleaves PUB_KEY then SCHEME_ID per approver, reversed by index:
-    // [CONFIG, PUB_KEY_N, SCHEME_N, ..., PUB_KEY_0, SCHEME_0]. (The proc body interleaves;
-    // the docstring's separate-block layout is stale.) All signers are Falcon512Poseidon2
-    // (scheme id 2).
+    // Advice layout is [CONFIG, PUB_KEY_N, SCHEME_N, ..., PUB_KEY_0, SCHEME_0]:
+    // interleaved pub-key/scheme-id pairs, reversed by index. All signers are
+    // Falcon512Poseidon2 (scheme id 2).
     for public_key in new_public_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
@@ -591,7 +590,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
     for public_key in new_public_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
-        // Upstream interleaves a scheme-id word after each pubkey (Falcon512Poseidon2 = 2).
+        // A scheme-id word follows each pubkey (Falcon512Poseidon2 = 2).
         config_and_pubkeys_vector.extend_from_slice(&[
             Felt::new_unchecked(2),
             Felt::new_unchecked(0),
@@ -722,8 +721,8 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
         _guardian_authenticator,
     ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
 
-    // Initialize with GUARDIAN selector = OFF so key update doesn't require GUARDIAN signature
-    // This is the expected flow: disable GUARDIAN, update key, then enable GUARDIAN in a follow-up tx
+    // Guardian-key rotation is a note-less operation, so upstream's carve-out requires only the
+    // multisig threshold signatures — no current-guardian signature.
     let multisig_account =
         create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
 
@@ -753,15 +752,11 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     let (_new_guardian_secret_key, new_guardian_public_key, _new_guardian_authenticatior) =
         setup_keys_and_authenticator_for_guardian()?;
 
-    // Upstream `update_guardian_public_key(scheme_id: felt, new_pub_key: word)` takes its
-    // inputs as STACK ARGS (the fork read them from the advice map). The new key is known
-    // here, so embed it as push literals. Scheme id 2 = Falcon512Poseidon2. The upstream
-    // carve-out skips the guardian signature when this is the sole (note-less) operation,
-    // so only the multisig threshold signatures are required below.
-    // Match upstream's calling convention (miden-testing guarded_multisig test): push the
-    // new key word + scheme id, call the component proc, then drop the 5 pushed felts (the
-    // call does not consume them). Scheme id 2 = Falcon512Poseidon2.
-    let new_guardian_key_word: Word = new_guardian_public_key.to_commitment().into();
+    // `update_guardian_public_key(scheme_id: felt, new_pub_key: word)` takes its inputs as
+    // stack args, so push them as literals and drop the 5 felts afterwards (the call does not
+    // consume them). Scheme id 2 = Falcon512Poseidon2. The guardian-signature carve-out for
+    // this note-less operation means only the multisig threshold signatures are required.
+    let new_guardian_key_word: Word = new_guardian_public_key.to_commitment();
     let new_guardian_scheme_id = 2u32;
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(AuthGuardedMultisig::code())?
@@ -1010,9 +1005,8 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
         Felt::new_unchecked(0),
         Felt::new_unchecked(0),
     ];
-    // Well-formed upstream advice: interleaved [PUB_KEY, SCHEME_ID] per approver (Falcon=2),
-    // so the update reaches the contract's invariant check (the existing send_asset override
-    // of 2 becomes unreachable with only 1 approver) rather than failing on a malformed vector.
+    // Well-formed advice: interleaved [PUB_KEY, SCHEME_ID] per approver (Falcon=2), so the
+    // update reaches the contract's invariant check rather than failing on a malformed vector.
     config_and_pubkeys.extend_from_slice(public_keys[0].to_commitment().as_elements());
     config_and_pubkeys.extend_from_slice(&[
         Felt::new_unchecked(2),
@@ -1061,17 +1055,16 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
     Ok(())
 }
 
-// Reproduction: add-cosigner proposal creation on a FRESH (build(), nonce-0,
-// never-deployed) guarded multisig account — mirrors the demo path, which fails
-// against a real node with "value for key ... not present in the advice map".
-// The passing add-signer test above uses build_existing() + a pre-committed
-// account; this isolates the brand-new-account variable.
+/// Reproduces add-cosigner proposal creation on a fresh (`build()`, nonce-0,
+/// never-deployed) guarded multisig account — the demo path that fails against a
+/// real node with "value for key ... not present in the advice map". The passing
+/// add-signer test above uses `build_existing()` with a pre-committed account, so
+/// this isolates the brand-new-account variable.
 #[tokio::test]
 async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     let (_sk, public_keys, _auth, _gsk, guardian_public_key, _gauth) =
         setup_keys_and_authenticators_with_guardian(1, 1)?;
 
-    // Fresh account: build() => nonce 0, carries its creation seed, NOT deployed.
     let config = MultisigGuardianConfig::new(
         1,
         vec![public_keys[0].to_commitment()],
@@ -1086,11 +1079,8 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         account.seed().is_some()
     );
 
-    // Empty chain; the account is NOT pre-committed.
     let mock_chain = MockChainBuilder::new().build().unwrap();
 
-    // Build the update_signers advice exactly like build_multisig_config_advice:
-    // new signer set [signer, new_signer], threshold kept at 1.
     let salt = Word::from([Felt::new_unchecked(9); 4]);
     let (_nsk, new_public_keys, _na) = setup_keys_and_authenticators(2, 2)?;
     let threshold = 1u64;
@@ -1104,7 +1094,7 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     for public_key in new_public_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
-        // Upstream interleaves a scheme-id word after each pubkey (Falcon512Poseidon2 = 2).
+        // A scheme-id word follows each pubkey (Falcon512Poseidon2 = 2).
         config_and_pubkeys_vector.extend_from_slice(&[
             Felt::new_unchecked(2),
             Felt::new_unchecked(0),
@@ -1141,10 +1131,10 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         .execute()
         .await;
 
-    // The contract + kernel executor correctly produce Unauthorized (carrying the
-    // tx summary to be signed) for a fresh, undeployed account with no signatures.
-    // This confirms the demo's "advice map key not present" abort is NOT a contract
-    // issue — it originates in the miden-client real-node execution input setup.
+    // Unauthorized (carrying the tx summary to sign) is the correct result for a fresh,
+    // undeployed account with no signatures, confirming the demo's "advice map key not
+    // present" abort originates in miden-client real-node execution input setup, not the
+    // contract.
     match result {
         Err(TransactionExecutorError::Unauthorized(_)) => Ok(()),
         Ok(_) => anyhow::bail!("expected Unauthorized, got success"),

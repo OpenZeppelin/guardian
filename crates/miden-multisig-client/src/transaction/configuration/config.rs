@@ -49,33 +49,10 @@ pub fn build_multisig_config_advice(
     (config_hash, payload)
 }
 
-/// Builds the procedure-threshold advice map entry.
-///
-/// Returns (config_hash, config_values) tuple.
-pub fn build_procedure_threshold_advice(
-    procedure: ProcedureName,
-    threshold: u32,
-) -> (Word, Vec<Felt>) {
-    let procedure_root = procedure.root();
-    let mut payload = Vec::with_capacity(8);
-    payload.extend_from_slice(procedure_root.as_elements());
-    payload.extend_from_slice(&[
-        Felt::new_unchecked(threshold as u64),
-        Felt::new_unchecked(0),
-        Felt::new_unchecked(0),
-        Felt::new_unchecked(0),
-    ]);
-
-    let digest = Hasher::hash_elements(&payload);
-    let config_hash: Word = digest;
-    (config_hash, payload)
-}
-
 /// Builds the update_signers transaction script.
 pub fn build_update_signers_script(_scheme: SignatureScheme) -> Result<TransactionScript> {
-    // Upstream guarded-multisig exposes a single scheme-agnostic library; the
-    // per-signer scheme lives in account storage, so the script no longer branches
-    // on `scheme` (param retained for caller API stability).
+    // The guarded-multisig library is scheme-agnostic (per-signer scheme lives in account
+    // storage), so the script does not branch on `scheme`; the param is kept for API stability.
     let standards_lib: Library = StandardsLib::default().into();
 
     let tx_script_code = "
@@ -159,26 +136,25 @@ pub fn build_update_procedure_threshold_script(
 
 /// Builds an update_procedure_threshold transaction request.
 ///
-/// Returns (TransactionRequest, config_hash) tuple.
+/// `set_procedure_threshold` reads its `[proc_threshold, PROC_ROOT]` inputs from the operand
+/// stack (pushed by the script), so only the auth signature advice is attached here.
 pub fn build_update_procedure_threshold_transaction_request<I>(
     procedure: ProcedureName,
     threshold: u32,
     salt: Word,
     extra_advice: I,
     scheme: SignatureScheme,
-) -> Result<(TransactionRequest, Word)>
+) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let (config_hash, config_values) = build_procedure_threshold_advice(procedure, threshold);
     let script = build_update_procedure_threshold_script(procedure, threshold, scheme)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
-        .extend_advice_map([(config_hash, config_values)])
         .extend_advice_map(extra_advice)
         .auth_arg(salt)
         .build()?;
 
-    Ok((request, config_hash))
+    Ok(request)
 }

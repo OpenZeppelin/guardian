@@ -18,11 +18,11 @@ import { authSchemeId } from '../utils/signature.js';
 import type { SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-function buildMultisigConfigAdvice(
+function buildMultisigConfigFelts(
   threshold: number,
   signerCommitments: string[],
   signatureScheme: SignatureScheme,
-): { configHash: Word; payload: FeltArray } {
+): Felt[] {
   const numApprovers = signerCommitments.length;
   const schemeId = authSchemeId(signatureScheme);
   const felts: Felt[] = [
@@ -31,14 +31,29 @@ function buildMultisigConfigAdvice(
     new Felt(0n),
     new Felt(0n),
   ];
-  // Upstream interleaves [PUB_KEY, SCHEME_ID] per approver, in reverse index order.
+  // Interleave [PUB_KEY, SCHEME_ID] per approver, in reverse index order.
   for (const commitment of [...signerCommitments].reverse()) {
     const word = WordType.fromHex(normalizeHexWord(commitment));
     felts.push(...word.toFelts());
     felts.push(new Felt(BigInt(schemeId)), new Felt(0n), new Felt(0n), new Felt(0n));
   }
-  const payload = new FeltArray(felts);
-  const configHash = Poseidon2.hashElements(payload);
+  return felts;
+}
+
+export function buildMultisigConfigAdvice(
+  threshold: number,
+  signerCommitments: string[],
+  signatureScheme: SignatureScheme,
+): { configHash: Word; payload: FeltArray } {
+  // `Poseidon2.hashElements` consumes (frees) its `FeltArray` by value, so the advice payload
+  // must be a separately built array — reusing the hashed array surfaces as "null pointer
+  // passed to rust" at the later `advice.insert`.
+  const configHash = Poseidon2.hashElements(
+    new FeltArray(buildMultisigConfigFelts(threshold, signerCommitments, signatureScheme)),
+  );
+  const payload = new FeltArray(
+    buildMultisigConfigFelts(threshold, signerCommitments, signatureScheme),
+  );
   return { configHash, payload };
 }
 

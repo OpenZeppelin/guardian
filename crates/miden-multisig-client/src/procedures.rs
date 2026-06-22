@@ -26,27 +26,21 @@ impl ProcedureName {
     /// These roots are deterministic based on the upstream MASM bytecode.
     pub fn root(&self) -> Word {
         match self {
-            // update_signers_and_threshold
             ProcedureName::UpdateSigners => procedure_root_word(
                 "0xe60215c664714037ad08811093b3685a6ace65c78351263473298cce9c7600e3",
             ),
-            // set_procedure_threshold
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
                 "0x9bee1ea89c844874d7f3c63bba52b277a429679028dc3a4e27c54db6cf4f158d",
             ),
-            // auth_tx_guarded_multisig
             ProcedureName::AuthTx => procedure_root_word(
                 "0x08f59357487cebf34c4557dd9fc32cecb82d9f7b3d3bba213a68a9729e463260",
             ),
-            // update_guardian_public_key
             ProcedureName::UpdateGuardian => procedure_root_word(
                 "0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675",
             ),
-            // BasicWallet::move_asset_to_note
             ProcedureName::SendAsset => procedure_root_word(
                 "0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4",
             ),
-            // BasicWallet::receive_asset
             ProcedureName::ReceiveAsset => procedure_root_word(
                 "0x6170fd6d682d91777b551fd866258f43cc657f1291f8f071500f4e56e9c153da",
             ),

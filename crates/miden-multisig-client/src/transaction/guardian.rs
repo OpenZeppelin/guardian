@@ -2,10 +2,10 @@
 //!
 //! Functions for building transactions that rotate the GUARDIAN public key.
 //!
-//! The upstream `AuthGuardedMultisig` component takes the new key and its scheme
-//! as operand-stack arguments (the fork read them from the advice map). Rotation
-//! requires only the multisig threshold signatures — no current-guardian
-//! signature — matching `docs/CONCEPTS.md` cold-key recovery.
+//! The `AuthGuardedMultisig` component takes the new key and its scheme as
+//! operand-stack arguments. Rotation requires only the multisig threshold
+//! signatures — no current-guardian signature — matching `docs/CONCEPTS.md`
+//! cold-key recovery.
 
 use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;

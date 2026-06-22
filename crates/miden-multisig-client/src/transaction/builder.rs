@@ -644,7 +644,7 @@ impl ProposalBuilder {
             as usize;
 
         let salt = generate_salt();
-        let (tx_request, _) = build_update_procedure_threshold_transaction_request(
+        let tx_request = build_update_procedure_threshold_transaction_request(
             procedure,
             new_threshold,
             salt,
