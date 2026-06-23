@@ -36,6 +36,10 @@ no-ops); both processes then see `auth_sessions`, `auth_challenges`,
 `worker_leases`. To exercise the race deliberately, start A and B simultaneously
 against a fresh DB and confirm both come up with the schema applied once.
 
+Each replica logs one coordination-mode line at startup (FR-019) — confirm it
+reads `coordination mode=shared backend=postgres ...` here (it would read
+`mode=single-process backend=filesystem ...` for a dev/in-memory run).
+
 Put a round-robin proxy in front (or just hit A and B directly to force the
 cross-replica cases).
 

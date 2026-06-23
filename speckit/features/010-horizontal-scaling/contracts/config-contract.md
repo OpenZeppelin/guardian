@@ -63,6 +63,22 @@ consequence under multiple replicas, and give the exact remedy. Errors are
 startup/config errors (process exits non-zero), not request-path errors — no
 change to HTTP/gRPC boundary error shapes.
 
+## Startup mode log line (FR-019)
+
+On startup the server logs exactly one coordination-mode line reflecting the
+**resolved** state (never operator intent):
+
+```text
+coordination mode=shared backend=postgres stage=prod rate_limit_partitions=6 cursor_secret=configured
+coordination mode=single-process backend=filesystem stage=dev rate_limit_partitions=1 cursor_secret=ephemeral
+```
+
+`mode=shared` iff coordination is backed by the external store (Postgres);
+`mode=single-process` for the in-memory impls. This is the discoverable signal
+that replaces an explicit `DISTRIBUTED_MODE` toggle — coordination capability is
+determined by the storage backend, not a separate flag, so the line cannot
+disagree with reality.
+
 ## Documentation surface (US6)
 
 - `docs/runbooks/horizontal-scaling.md` (new) — required env vars, state-store

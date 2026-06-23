@@ -317,6 +317,16 @@ source code.
   both MUST recover automatically when the store returns. This fail-closed auth
   behavior is an accepted, documented change from the previous always-available
   in-memory behavior.
+- **FR-019**: At startup the server MUST emit a single, unambiguous log line
+  stating which coordination mode is active — "shared" (backed by the external
+  store, replica-safe) or "single-process" (in-memory, single-replica only) —
+  together with the effective HA-relevant settings it derives from configuration:
+  the storage backend, the deployment stage, the rate-limit partition count, and
+  whether the pagination cursor secret was supplied or generated. This makes the
+  active mode explicit and diagnosable without inferring it from other logs, and
+  is the discoverable signal that replaces an explicit mode toggle (coordination
+  capability is determined by the storage backend, not a separate flag). The line
+  MUST reflect the actual resolved state, never operator intent.
 
 ### Key Entities
 
@@ -373,6 +383,11 @@ source code.
   scenarios pass.
 - **SC-008**: All existing single-replica test suites pass unchanged, confirming
   no regression for dev/local deployments.
+- **SC-009**: On startup, the server logs exactly one coordination-mode line that
+  correctly reports "shared" when backed by the external store and
+  "single-process" otherwise, including the resolved backend, stage, rate-limit
+  partition count, and cursor-secret source; an operator can determine the active
+  mode from that single line alone.
 
 ## Assumptions
 

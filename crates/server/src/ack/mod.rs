@@ -11,7 +11,7 @@ pub mod miden_falcon_rpo;
 mod secrets_manager;
 
 use crate::delta_object::DeltaObject;
-use crate::error::{GuardianError, Result};
+use crate::error::Result;
 use guardian_shared::SignatureScheme;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
 use std::path::{Path, PathBuf};
@@ -25,9 +25,6 @@ pub(crate) use miden_ecdsa::{
 };
 pub use miden_falcon_rpo::MidenFalconRpoSigner;
 
-const ENV_GUARDIAN_ENV: &str = "GUARDIAN_ENV";
-const PROD_ENV: &str = "prod";
-
 /// The ECDSA signer is abstracted over [`EcdsaSignerBackend`] so its key can live
 /// in a hosted backend (e.g. AWS KMS); Falcon stays concrete because hosted
 /// backends only support the secp256k1 ECDSA scheme.
@@ -40,7 +37,7 @@ pub struct AckRegistry {
 impl AckRegistry {
     pub async fn new(keystore_path: PathBuf) -> Result<Self> {
         let ecdsa_backend = EcdsaBackendKind::from_env()?;
-        if is_prod_environment()? {
+        if crate::config::stage::is_prod()? {
             let provider = AwsSecretsManagerProvider::from_env().await?;
             Self::from_provider(keystore_path, ecdsa_backend, Some(&provider)).await
         } else {
@@ -135,19 +132,10 @@ async fn build_ecdsa_signer<P: AckSecretProvider>(
     Ok(MidenEcdsaSigner::new(backend))
 }
 
-fn is_prod_environment() -> Result<bool> {
-    match std::env::var(ENV_GUARDIAN_ENV) {
-        Ok(value) => Ok(value.eq_ignore_ascii_case(PROD_ENV)),
-        Err(std::env::VarError::NotPresent) => Ok(false),
-        Err(std::env::VarError::NotUnicode(_)) => Err(GuardianError::ConfigurationError(format!(
-            "{ENV_GUARDIAN_ENV} must contain valid UTF-8"
-        ))),
-    }
-}
-
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use crate::error::GuardianError;
     use async_trait::async_trait;
     use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, FilesystemKeyStore, KeyStore};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;

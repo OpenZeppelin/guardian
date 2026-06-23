@@ -28,17 +28,41 @@ use url::Url;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
+const MIGRATION_ADVISORY_LOCK_KEY: i64 = 0x4755_4152_4449_414E;
+
 /// Run database migrations. Call once at application startup.
+///
+/// Migrations run under a session advisory lock so that replicas booting
+/// simultaneously serialize: the first holder migrates and the rest block,
+/// then find nothing pending. The lock is released explicitly and, as a
+/// backstop, on connection drop.
 pub async fn run_migrations(database_url: &str) -> Result<(), String> {
     let url = database_url.to_string();
     tokio::task::spawn_blocking(move || {
         let mut conn = PgConnection::establish(&url)
             .map_err(|e| format!("Failed to connect for migrations: {e}"))?;
 
-        conn.run_pending_migrations(MIGRATIONS)
-            .map_err(|e| format!("Failed to run migrations: {e}"))?;
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(format!(
+                "SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_KEY})"
+            )),
+            &mut conn,
+        )
+        .map_err(|e| format!("Failed to acquire migration advisory lock: {e}"))?;
 
-        Ok::<(), String>(())
+        let result = conn
+            .run_pending_migrations(MIGRATIONS)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to run migrations: {e}"));
+
+        let _ = diesel::RunQueryDsl::execute(
+            diesel::sql_query(format!(
+                "SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_KEY})"
+            )),
+            &mut conn,
+        );
+
+        result
     })
     .await
     .map_err(|e| format!("Migration task failed: {e}"))??;

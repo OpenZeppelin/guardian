@@ -110,7 +110,7 @@ crates/server/
 │   ├── dashboard/config.rs         # prod fail-fast on unset cursor secret
 │   ├── builder/storage.rs          # prod fail-fast on filesystem backend
 │   ├── builder/state.rs            # AppState gains coordination handles
-│   ├── builder/mod.rs / handle.rs  # wire coordination impls by backend
+│   ├── builder/mod.rs / handle.rs  # wire coordination impls by backend; log active coordination mode at startup (FR-019)
 │   ├── storage/postgres.rs         # advisory-lock guard around run_pending_migrations
 │   ├── jobs/canonicalization/worker.rs    # concurrent renewal task + cancellation signal
 │   ├── jobs/canonicalization/processor.rs # cooperative cancel check + fence verify_held before submit
