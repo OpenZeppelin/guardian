@@ -1,6 +1,6 @@
 # Guardian SDK Release Surface
 
-Current coordinated SDK release line: `0.14.x`
+Current coordinated SDK release line: `0.15.x`
 
 ## Publishable Rust Crates
 

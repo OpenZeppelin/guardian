@@ -484,8 +484,10 @@ cmd_bootstrap_kms_ecdsa_key() {
 cmd_build_and_push() {
   local ecr_repo_uri
   local docker_platform
+  local git_sha
   ecr_repo_uri=$(get_ecr_repo_uri)
   docker_platform=$(docker_platform_for_arch "$CPU_ARCHITECTURE")
+  git_sha=$(git rev-parse --short=12 HEAD 2>/dev/null || true)
 
   log_info "Creating ECR repository..."
   aws ecr create-repository \
@@ -496,8 +498,8 @@ cmd_build_and_push() {
   aws ecr get-login-password --region "$AWS_REGION" | \
     docker login --username AWS --password-stdin "${ecr_repo_uri%/*}"
 
-  log_info "Building Docker image..."
-  docker build --platform "$docker_platform" --build-arg "GUARDIAN_SERVER_FEATURES=${GUARDIAN_SERVER_FEATURES}" --no-cache -t "${ECR_REPO_NAME}:latest" .
+  log_info "Building Docker image (commit ${git_sha:-unknown})..."
+  docker build --platform "$docker_platform" --build-arg "GUARDIAN_SERVER_FEATURES=${GUARDIAN_SERVER_FEATURES}" --build-arg "GUARDIAN_GIT_SHA=${git_sha}" --no-cache -t "${ECR_REPO_NAME}:latest" .
 
   log_info "Tagging and pushing to ECR..."
   docker tag "${ECR_REPO_NAME}:latest" "${ecr_repo_uri}:latest"
