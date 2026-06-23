@@ -107,14 +107,6 @@ impl<'a> MidenAccountInspector<'a> {
             .is_some()
     }
 
-    /// Whether the account has a GUARDIAN component, detected by the selector slot regardless of
-    /// whether it is currently enabled. Unlike [`Self::has_guardian_auth`] this stays true when
-    /// the selector is OFF, mirroring the unconditional `enable_guardian` that
-    /// `verify_guardian_signature` leaves ON after any successful transaction.
-    pub fn has_guardian_component(&self) -> bool {
-        self.get_item_by_name(OZ_GUARDIAN_SELECTOR).is_some()
-    }
-
     /// Extract GUARDIAN public key commitment from the OpenZeppelin GUARDIAN public key map.
     /// Requires the exact slot name `openzeppelin::guardian::public_key`.
     pub fn extract_guardian_public_key(&self) -> Option<String> {
