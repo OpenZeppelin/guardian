@@ -1,0 +1,3 @@
+-- Irreversible: the Miden 0.15 cutover permanently removed pre-0.15 (v0) account
+-- data, which cannot be reconstructed. This down migration is intentionally a
+-- no-op -- rolling back the schema does not (and cannot) restore truncated rows.

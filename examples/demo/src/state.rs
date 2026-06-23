@@ -4,6 +4,7 @@ use std::sync::Arc;
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{ExportedProposal, MultisigClient, SignatureScheme};
 use miden_protocol::account::AccountId;
+use miden_protocol::address::NetworkId;
 use miden_protocol::Word;
 use tempfile::TempDir;
 
@@ -136,6 +137,22 @@ impl SessionState {
 
     pub fn is_ecdsa(&self) -> bool {
         matches!(self.signature_scheme, SignatureScheme::Ecdsa)
+    }
+
+    /// Network identifier inferred from the configured Miden endpoint, used to
+    /// render account IDs as bech32m addresses (the format faucets expect).
+    /// A local node is treated as devnet.
+    pub fn network_id(&self) -> NetworkId {
+        let host = self
+            .miden_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.host())
+            .unwrap_or_default();
+        if host.contains("testnet") {
+            NetworkId::Testnet
+        } else {
+            NetworkId::Devnet
+        }
     }
 
     /// Sets the imported proposal.

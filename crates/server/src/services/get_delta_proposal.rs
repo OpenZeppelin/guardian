@@ -122,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn get_delta_proposal_returns_pending_proposal() {
         let (state, storage, _network, metadata) = create_test_state();
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment = "0xabc".to_string();
 
         let (signer_pubkey, signer_commitment, signer_signature, timestamp) =
@@ -149,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn get_delta_proposal_rejects_non_pending_proposal() {
         let (state, storage, _network, metadata) = create_test_state();
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170".to_string();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment = "0xabc".to_string();
 
         let (signer_pubkey, signer_commitment, signer_signature, timestamp) =

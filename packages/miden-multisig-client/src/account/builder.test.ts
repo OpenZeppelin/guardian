@@ -74,9 +74,6 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountComponent: {
     compile: compileComponent,
   },
-  AccountType: {
-    RegularAccountUpdatableCode: 'regular',
-  },
   AccountStorageMode: {
     public: () => 'public',
     private: () => 'private',

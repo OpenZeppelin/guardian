@@ -5,9 +5,7 @@ use tonic::{
     Request,
 };
 
-pub use miden_node_proto::generated::{
-    account, block_producer, blockchain, note, primitives, rpc, store, transaction,
-};
+pub use miden_node_proto::generated::{account, blockchain, note, primitives, rpc, transaction};
 pub use rpc::api_client::ApiClient;
 
 /// Simple wrapper around the tonic-generated ApiClient
@@ -30,6 +28,20 @@ impl MidenRpcClient {
         let client = ApiClient::new(channel);
 
         Ok(Self { client })
+    }
+
+    /// Builds a client over a lazily-created channel that is never proactively
+    /// connected and skips TLS root loading. This lets pure, non-RPC call paths
+    /// be unit-tested without a network or a system certificate store; issuing
+    /// an actual RPC on the resulting client will fail to connect.
+    pub fn lazy_unconnected(endpoint: impl Into<String>) -> Result<Self, String> {
+        let channel = Channel::from_shared(endpoint.into())
+            .map_err(|e| format!("Invalid endpoint: {e}"))?
+            .connect_lazy();
+
+        Ok(Self {
+            client: ApiClient::new(channel),
+        })
     }
 
     /// Get the underlying tonic ApiClient for full access to all RPC methods:
@@ -76,9 +88,9 @@ impl MidenRpcClient {
         };
 
         self.client
-            .submit_proven_transaction(Request::new(request))
+            .submit_proven_tx(Request::new(request))
             .await
-            .map_err(|e| format!("SubmitProvenTransaction RPC failed: {e}"))?;
+            .map_err(|e| format!("SubmitProvenTx RPC failed: {e}"))?;
 
         Ok(())
     }
@@ -99,7 +111,7 @@ impl MidenRpcClient {
         let request = rpc::SyncNotesRequest {
             block_range: Some(rpc::BlockRange {
                 block_from: block_num,
-                block_to: None,
+                block_to: u32::MAX,
             }),
             note_tags,
         };
@@ -109,22 +121,6 @@ impl MidenRpcClient {
             .sync_notes(Request::new(request))
             .await
             .map_err(|e| format!("SyncNotes RPC failed: {e}"))?;
-
-        Ok(response.into_inner())
-    }
-
-    /// Check nullifiers and get their proofs
-    pub async fn check_nullifiers(
-        &mut self,
-        nullifiers: Vec<primitives::Digest>,
-    ) -> Result<rpc::CheckNullifiersResponse, String> {
-        let request = rpc::NullifierList { nullifiers };
-
-        let response = self
-            .client
-            .check_nullifiers(Request::new(request))
-            .await
-            .map_err(|e| format!("CheckNullifiers RPC failed: {e}"))?;
 
         Ok(response.into_inner())
     }

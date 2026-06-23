@@ -1,4 +1,5 @@
 import { Felt, FeltArray, Rpo256, Word } from '@miden-sdk/miden-sdk';
+import { feltFromU64Reduced } from './utils/felt.js';
 
 /**
  * Lookup-bound message format used to sign requests against the Guardian
@@ -25,7 +26,7 @@ function bytesToFelts(bytes: Uint8Array): Felt[] {
       const byte = offset + i < bytes.length ? bytes[offset + i] : 0;
       value |= BigInt(byte) << BigInt(8 * i);
     }
-    felts.push(new Felt(value));
+    felts.push(feltFromU64Reduced(value));
   }
   return felts;
 }
@@ -56,9 +57,10 @@ function lookupDomainTag(): Word {
  * ```
  *
  * @param timestampMs Unix milliseconds. Reinterpreted as `u64` to match the
- *                    Rust `as u64` cast (so negative inputs wrap into the
- *                    high range, then are reduced mod the Goldilocks prime by
- *                    the Felt constructor).
+ *                    Rust `as u64` cast (so negative inputs wrap into the high
+ *                    range), then reduced mod the Goldilocks prime via
+ *                    `feltFromU64Reduced` (Miden 0.15's `Felt` constructor
+ *                    rejects non-canonical inputs instead of reducing).
  * @param keyCommitmentHex `0x`-prefixed 32-byte hex string for the queried
  *                         commitment.
  */
@@ -66,8 +68,7 @@ export function lookupAuthDigest(timestampMs: number | bigint, keyCommitmentHex:
   const tag = lookupDomainTag().toFelts();
   const kc = Word.fromHex(keyCommitmentHex).toFelts();
   const tsBigInt = typeof timestampMs === 'bigint' ? timestampMs : BigInt(timestampMs);
-  const timestampU64 = BigInt.asUintN(64, tsBigInt);
-  const timestampFelt = new Felt(timestampU64);
+  const timestampFelt = feltFromU64Reduced(tsBigInt);
 
   const message = new FeltArray([
     tag[0],

@@ -342,7 +342,7 @@ pub async fn start_mock_server(
 
 pub fn create_mock_delta() -> ProtoDeltaObject {
     ProtoDeltaObject {
-        account_id: "0x7bfb0f38b0fafa103f86a805594170".to_string(),
+        account_id: "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string(),
         nonce: 1,
         prev_commitment: "0x123".to_string(),
         delta_payload: r#"{"updates": []}"#.to_string(),
@@ -359,7 +359,7 @@ pub fn create_mock_delta() -> ProtoDeltaObject {
 
 pub fn create_mock_account_state() -> AccountState {
     AccountState {
-        account_id: "0x7bfb0f38b0fafa103f86a805594170".to_string(),
+        account_id: "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string(),
         state_json: r#"{"balance": 1000}"#.to_string(),
         commitment: "0x123".to_string(),
         created_at: "2024-01-01T00:00:00Z".to_string(),

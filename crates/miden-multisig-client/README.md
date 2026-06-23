@@ -59,8 +59,8 @@ println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint
 use miden_multisig_client::TransactionType;
 use miden_objects::account::AccountId;
 
-let recipient = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170")?;
-let faucet = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594171")?;
+let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")?;
+let faucet = AccountId::from_hex("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c")?;
 let tx = TransactionType::transfer(recipient, faucet, 1_000);
 
 // Proposer creates the delta on GUARDIAN
@@ -130,7 +130,7 @@ List notes from a specific faucet with a minimum amount filter:
 ```rust
 use miden_multisig_client::NoteFilter;
 
-let faucet = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170")?;
+let faucet = AccountId::from_hex("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c")?;
 let filter = NoteFilter::by_faucet_min_amount(faucet, 5_000);
 let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```

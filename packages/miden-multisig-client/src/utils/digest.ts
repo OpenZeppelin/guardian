@@ -1,5 +1,6 @@
 import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
 import { AccountId, Felt, FeltArray, Rpo256, Word } from '@miden-sdk/miden-sdk';
+import { feltFromU64Reduced } from './felt.js';
 
 export class AuthDigest {
   static fromAccountIdWithTimestamp(accountId: string, timestamp: number): Word {
@@ -11,7 +12,7 @@ export class AuthDigest {
     const feltArray = new FeltArray([
       prefix,
       suffix,
-      new Felt(BigInt(timestamp)),
+      feltFromU64Reduced(BigInt(timestamp)),
       new Felt(0n),
     ]);
 
@@ -39,7 +40,7 @@ export class AuthDigest {
     const feltArray = new FeltArray([
       prefix,
       suffix,
-      new Felt(BigInt(timestamp)),
+      feltFromU64Reduced(BigInt(timestamp)),
       ...payloadWord.toFelts(),
     ]);
 
@@ -67,7 +68,7 @@ export class AuthDigest {
       for (let j = 0; j < 8 && i + j < bytes.length; j += 1) {
         packed |= BigInt(bytes[i + j]) << (8n * BigInt(j));
       }
-      payloadElements.push(new Felt(packed));
+      payloadElements.push(feltFromU64Reduced(packed));
     }
 
     return Rpo256.hashElements(new FeltArray(payloadElements));

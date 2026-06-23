@@ -156,8 +156,9 @@ describe('lookupAuthDigest', () => {
     lookupAuthDigest(-1, keyCommitmentHex);
 
     const messageCall = hashCalls[hashCalls.length - 1];
-    // -1 cast to u64 is 0xFFFFFFFFFFFFFFFF.
-    expect(messageCall.input[4].value).toBe(0xFFFFFFFFFFFFFFFFn);
+    // -1 casts to u64 0xFFFFFFFFFFFFFFFF, then reduces mod the Goldilocks prime
+    // (matching Rust `felt_from_u64_reduced`): 0xFFFFFFFFFFFFFFFF - (2^64 - 2^32 + 1) = 0xFFFFFFFE.
+    expect(messageCall.input[4].value).toBe(0xFFFFFFFEn);
   });
 
   it('produces distinct digest inputs for distinct commitments', () => {

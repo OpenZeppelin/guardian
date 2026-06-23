@@ -49,7 +49,7 @@ mod tests {
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a valid hex account ID from the test fixtures
         let account_id =
-            AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").expect("valid account id");
+            AccountId::from_hex("0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a").expect("valid account id");
 
         let account_delta = AccountDelta::new(
             account_id,

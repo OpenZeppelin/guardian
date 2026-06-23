@@ -7,8 +7,8 @@ use anyhow::{Result, anyhow};
 use miden_protocol::{
     Word,
     account::{
-        Account, AccountBuilder, AccountStorageMode, AccountType, StorageMap, StorageMapKey,
-        StorageSlot, StorageSlotName,
+        Account, AccountBuilder, AccountType, StorageMap, StorageMapKey, StorageSlot,
+        StorageSlotName,
     },
 };
 use miden_standards::account::wallets::BasicWallet;
@@ -31,8 +31,9 @@ pub struct MultisigGuardianConfig {
     pub guardian_enabled: bool,
     /// Signature scheme for the account (Falcon or ECDSA).
     pub signature_scheme: SignatureScheme,
-    /// Account storage mode (defaults to Private).
-    pub storage_mode: AccountStorageMode,
+    /// Account type, which also determines on-chain storage visibility
+    /// (`Private` keeps state off-chain; defaults to `Private`).
+    pub account_type: AccountType,
     /// Optional procedure-specific threshold overrides.
     /// Map from procedure root to threshold.
     pub proc_threshold_overrides: Vec<(Word, u32)>,
@@ -57,7 +58,7 @@ impl MultisigGuardianConfig {
             guardian_commitment,
             guardian_enabled: true,
             signature_scheme: SignatureScheme::Falcon,
-            storage_mode: AccountStorageMode::Private,
+            account_type: AccountType::Private,
             proc_threshold_overrides: Vec::new(),
         }
     }
@@ -74,9 +75,9 @@ impl MultisigGuardianConfig {
         self
     }
 
-    /// Sets the account storage mode.
-    pub fn with_storage_mode(mut self, storage_mode: AccountStorageMode) -> Self {
-        self.storage_mode = storage_mode;
+    /// Sets the account type (also controls on-chain storage visibility).
+    pub fn with_account_type(mut self, account_type: AccountType) -> Self {
+        self.account_type = account_type;
         self
     }
 
@@ -118,18 +119,16 @@ pub struct MultisigGuardianBuilder {
     config: MultisigGuardianConfig,
     seed: [u8; 32],
     account_type: AccountType,
-    storage_mode: AccountStorageMode,
 }
 
 impl MultisigGuardianBuilder {
     /// Creates a new MultisigGuardian builder with the given configuration.
     pub fn new(config: MultisigGuardianConfig) -> Self {
-        let storage_mode = config.storage_mode;
+        let account_type = config.account_type;
         Self {
             config,
             seed: [0u8; 32],
-            account_type: AccountType::RegularAccountUpdatableCode,
-            storage_mode,
+            account_type,
         }
     }
 
@@ -139,15 +138,9 @@ impl MultisigGuardianBuilder {
         self
     }
 
-    /// Sets the account type.
+    /// Sets the account type (also controls on-chain storage visibility).
     pub fn with_account_type(mut self, account_type: AccountType) -> Self {
         self.account_type = account_type;
-        self
-    }
-
-    /// Sets the storage mode.
-    pub fn with_storage_mode(mut self, storage_mode: AccountStorageMode) -> Self {
-        self.storage_mode = storage_mode;
         self
     }
 
@@ -170,7 +163,6 @@ impl MultisigGuardianBuilder {
             .with_auth_component(auth_component)
             .with_component(BasicWallet)
             .account_type(self.account_type)
-            .storage_mode(self.storage_mode)
             .build()
             .map_err(|e| anyhow!("failed to build account: {e}"))?;
 
@@ -192,7 +184,6 @@ impl MultisigGuardianBuilder {
             .with_auth_component(auth_component)
             .with_component(BasicWallet)
             .account_type(self.account_type)
-            .storage_mode(self.storage_mode)
             .build_existing()
             .map_err(|e| anyhow!("failed to build existing account: {e}"))?;
 
@@ -445,7 +436,7 @@ mod tests {
             vec![mock_commitment(1), mock_commitment(2)],
             mock_commitment(10),
         )
-        .with_storage_mode(AccountStorageMode::Public);
+        .with_account_type(AccountType::Public);
 
         let builder = MultisigGuardianBuilder::new(config.clone());
         let auth_slots = builder.build_auth_slots().expect("auth slots");
@@ -481,10 +472,13 @@ mod tests {
             .build()
             .expect("account");
 
-        assert_eq!(account.id().to_hex(), "0x4c053cea120ba890494eba281a8e5c");
+        // Cross-SDK parity contract: the TypeScript builder must produce these
+        // same identity values for the same inputs. Re-verify it against these
+        // when validating smoke-web.
+        assert_eq!(account.id().to_hex(), "0xc42d3ebf2d6ac86103906b4a71b642");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x49f0b7a53c9104ae8b370ac5db29a0ad04348b1aa4b104f5ec260775cf6bd5b9"
+            "0xf3e34ccf284ed0d9defc573d8ae7ab2d136f11dc65937939294b6155f62588c2"
         );
     }
 }

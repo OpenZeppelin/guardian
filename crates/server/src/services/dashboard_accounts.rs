@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn bech32_for_miden_account_encodes_with_network_hrp() {
-        let mut meta = miden_meta("0x7bfb0f38b0fafa103f86a805594170", "2026-05-26T00:00:00Z");
+        let mut meta = miden_meta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", "2026-05-26T00:00:00Z");
         meta.network_config = NetworkConfig::Miden {
             network_type: MidenNetworkType::Testnet,
         };

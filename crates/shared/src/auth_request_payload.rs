@@ -24,7 +24,9 @@ impl AuthRequestPayload {
         for chunk in bytes.chunks(8) {
             let mut chunk_bytes = [0u8; 8];
             chunk_bytes[..chunk.len()].copy_from_slice(chunk);
-            payload_elements.push(Felt::new(u64::from_le_bytes(chunk_bytes)));
+            payload_elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(
+                chunk_bytes,
+            )));
         }
 
         Self {
