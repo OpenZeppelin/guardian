@@ -14,9 +14,10 @@ startup. Postgres backend only. Column details and lifecycle rules are in
 
 ## Migration: `<date>_auth_challenges`
 
-`up.sql` creates `auth_challenges` (PK `signing_digest BYTEA` — the value the
-client signs and returns; no surrogate id, see data-model.md), `realm TEXT`,
-`principal TEXT`, `issued_at`, `expires_at`, `consumed_at` nullable + index on
+`up.sql` creates `auth_challenges` with composite PK `(realm TEXT, challenge_key
+TEXT)` — `challenge_key` is the operator signing-digest hex or the EVM nonce —
+plus `principal TEXT`, `payload JSONB` (realm-specific match/recover fields, see
+data-model.md), `issued_at`, `expires_at`, `consumed_at` nullable + index on
 `(realm, principal)` and `expires_at`. `down.sql` drops it.
 
 ## Migration: `<date>_worker_leases`
@@ -50,8 +51,9 @@ the canonicalization lease, which spans pool churn and uses a lease row instead.
 ## Atomic operations the impls rely on
 
 - Challenge single-use consume: conditional `UPDATE ... SET consumed_at = now()
-  WHERE signing_digest = $1 AND realm = $2 AND consumed_at IS NULL AND now() <
-  expires_at RETURNING ...`.
+  WHERE realm = $1 AND challenge_key = $2 AND consumed_at IS NULL AND now() <
+  expires_at` — affected-row-count `1` => this caller won the claim, `0` =>
+  already consumed/expired.
 - Lease acquire/steal: `INSERT ... ON CONFLICT (lease_name) DO UPDATE ... WHERE
   worker_leases.expires_at < now() OR worker_leases.holder_id = excluded.holder_id`.
 - Lease renew: `UPDATE ... WHERE lease_name = $1 AND holder_id = $2 AND now() <

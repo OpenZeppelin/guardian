@@ -134,7 +134,7 @@ scales with replica count (e.g. 2 replicas ~ 2x the configured burst). This
 weakens an abuse-prevention control, but it fails open (more lenient) rather
 than blocking legitimate traffic, so it ranks below correctness-critical items.
 
-**Independent Test**: With 2+ replicas and the partition count set to the
+**Independent Test**: With 2+ replicas and `GUARDIAN_MAX_REPLICAS` set to the
 autoscaling max capacity, drive traffic exceeding the global limit through the
 load balancer and confirm the aggregate accepted rate stays at or below the
 global limit (stricter when running below max capacity), rather than scaling by
@@ -148,8 +148,8 @@ replica count.
    how the load balancer distributes them.
 2. **Given** rate limiting is disabled by configuration, **When** running with
    multiple replicas, **Then** no throttling occurs (no regression).
-3. **Given** the partition count is set to the autoscaling max capacity, **When**
-   fewer than the max number of replicas are running, **Then** aggregate
+3. **Given** `GUARDIAN_MAX_REPLICAS` is set to the autoscaling max capacity,
+   **When** fewer than that many replicas are running, **Then** aggregate
    enforcement is stricter than the global limit (never looser), and no request
    depends on an external coordination service.
 
@@ -262,8 +262,12 @@ source code.
   when the current owner becomes unavailable. Ownership renewal MUST run
   concurrently with (not gated on) the canonicalization pass, the pass MUST be
   cooperatively cancellable so a lost owner can stop promptly, and every
-  state-mutating submission/promotion MUST be gated by a fencing check so a
-  superseded owner can never commit a write even during the cancellation window.
+  state-mutating write (canonical promotion **and** retry/discard) MUST be gated
+  by an advisory fencing check so a superseded owner is prevented from committing
+  during the cancellation window. (The fence is a pre-write ownership re-check;
+  combined with idempotent writes — same delta ⇒ identical bytes — a brief
+  two-leader overlap can at most re-apply the same transition, never corrupt
+  state.)
 - **FR-006**: Canonicalization retry budgets and state transitions
   (promote/discard) MUST be counted once per interval across the fleet, never
   once per replica.
@@ -274,14 +278,14 @@ source code.
   prod behavior) rather than silently generating a per-process secret without
   notice.
 - **FR-009**: The aggregate request rate enforced across all replicas MUST NOT
-  exceed the configured global limit. This is achieved by partitioning the global
-  limit across a fixed partition count set to the deployment's autoscaling **max**
-  capacity, so each replica enforces `global_limit / partitions`. When fewer than
-  the max number of replicas are running, aggregate enforcement is stricter than
-  the global limit (never looser); the resulting tolerance band MUST be
-  documented. The partition count MUST default from the deployment's autoscaling
-  max capacity (set by infrastructure), not from a manually maintained value, and
-  MUST remain operator-overridable.
+  exceed the configured global limit. This is achieved by dividing the global
+  limit by the deployment's **maximum replica capacity** (`GUARDIAN_MAX_REPLICAS`),
+  so each replica enforces `global_limit / GUARDIAN_MAX_REPLICAS`. When fewer than
+  the maximum number of replicas are running, aggregate enforcement is stricter
+  than the global limit (never looser); the resulting tolerance band MUST be
+  documented. `GUARDIAN_MAX_REPLICAS` MUST default from the deployment's
+  autoscaling max capacity (set by infrastructure), not from a manually maintained
+  value, and MUST remain operator-overridable.
 - **FR-010**: Rate limiting MUST NOT introduce any external coordination
   dependency on the request hot path; enforcement is per-process arithmetic over
   the partitioned budget and therefore has no shared-store failure mode. Any
@@ -321,12 +325,22 @@ source code.
   stating which coordination mode is active — "shared" (backed by the external
   store, replica-safe) or "single-process" (in-memory, single-replica only) —
   together with the effective HA-relevant settings it derives from configuration:
-  the storage backend, the deployment stage, the rate-limit partition count, and
+  the storage backend, the deployment stage, the maximum replica capacity, and
   whether the pagination cursor secret was supplied or generated. This makes the
   active mode explicit and diagnosable without inferring it from other logs, and
   is the discoverable signal that replaces an explicit mode toggle (coordination
-  capability is determined by the storage backend, not a separate flag). The line
-  MUST reflect the actual resolved state, never operator intent.
+  capability is determined by resolved configuration, not a separate flag). The
+  line MUST reflect the actual resolved state, never operator intent.
+- **FR-020**: The coordination mode MUST be determined by the **storage backend
+  alone**: the Postgres backend MUST use shared coordination (sessions,
+  challenges, leadership) and the filesystem backend MUST use in-memory
+  coordination. Shared coordination MUST be the default whenever Postgres is
+  active and MUST NOT be disabled by any tunable — a missing, mis-overridden, or
+  low `GUARDIAN_MAX_REPLICAS` (or any other knob) MUST NEVER silently reintroduce
+  per-process auth/canonicalization state on a Postgres deployment. (Skipping the
+  per-request session lookup for a deployment known to be single-instance is a
+  possible future optimization behind an explicit, guarded opt-in; it is out of
+  scope here and MUST NOT be inferred from a rate-limit signal.)
 
 ### Key Entities
 
@@ -337,15 +351,19 @@ source code.
   and a revocation (logout) state; must be authoritative across replicas.
 - **Canonicalization Lease / Leadership**: The right, held by at most one replica
   at a time, to run the canonicalization worker; has a holder identity, an
-  expiry/heartbeat so it can be reclaimed, and a monotonic fencing token checked at
-  every state-mutating write so a superseded holder cannot commit.
+  expiry/heartbeat so it can be reclaimed, and a fencing token (advancing on each
+  steal) re-checked before every state-mutating write so a superseded holder is
+  prevented from committing (advisory check, made safe by idempotent writes).
 - **Pagination Cursor**: An opaque, integrity-protected continuation token whose
   validity depends on a secret shared by all replicas.
+- **Maximum Replica Capacity** (`GUARDIAN_MAX_REPLICAS`): The
+  infrastructure-derived signal for how many replicas the deployment can scale to.
+  It feeds **rate-limit partitioning only** (`global_limit / GUARDIAN_MAX_REPLICAS`).
+  It MUST NOT influence the coordination mode (which is backend-derived, FR-020).
 - **Effective Rate-Limit Budget**: The per-replica share of the global limit,
-  computed as `global_limit / partition_count`, where `partition_count` is the
-  deployment's autoscaling max capacity. Per-client burst/sustained counters
-  remain per-process; they are partitioned, not aggregated, so total enforcement
-  stays at or below the global limit.
+  computed as `global_limit / GUARDIAN_MAX_REPLICAS`. Per-client burst/sustained
+  counters remain per-process; they are partitioned, not aggregated, so total
+  enforcement stays at or below the global limit.
 - **Deployment Stage**: A configuration value identifying the environment (prod
   vs. non-prod) that gates HA guardrails.
 
@@ -372,9 +390,10 @@ source code.
   (rather than ~ Nx the limit). The documented tolerance band MUST also state the
   two-sided imprecision: (a) running below the autoscaling max capacity enforces
   stricter than the global limit, and (b) HTTP keep-alive can pin a single client
-  to one replica, so that client may be throttled at `global_limit / partitions`
-  (e.g. 1/6) — an over-strict, fail-closed outcome for that client. Both are
-  accepted trade-offs of partitioning without shared hot-path state.
+  to one replica, so that client may be throttled at
+  `global_limit / GUARDIAN_MAX_REPLICAS` (e.g. 1/6) — an over-strict, fail-closed
+  outcome for that client. Both are accepted trade-offs of partitioning without
+  shared hot-path state.
 - **SC-006**: A prod-stage server configured with the filesystem backend (or with
   a required HA setting missing) fails to start 100% of the time with an error
   that names the misconfiguration and the remedy.
@@ -385,9 +404,9 @@ source code.
   no regression for dev/local deployments.
 - **SC-009**: On startup, the server logs exactly one coordination-mode line that
   correctly reports "shared" when backed by the external store and
-  "single-process" otherwise, including the resolved backend, stage, rate-limit
-  partition count, and cursor-secret source; an operator can determine the active
-  mode from that single line alone.
+  "single-process" otherwise, including the resolved backend, stage, max replica
+  capacity, and cursor-secret source; an operator can determine the active mode
+  from that single line alone (mode follows the storage backend).
 
 ## Assumptions
 
@@ -409,13 +428,15 @@ source code.
   environment); expiry/lease logic must tolerate small skew.
 - Rate limiting is partitioned conservatively against the autoscaling **max**
   capacity (not the current replica count), so it is never silently looser than
-  the global limit during scale-out and is stricter when running below max
-  capacity. A documented tolerance band for this under-enforcement is acceptable,
-  consistent with the issue's "within some documented tolerance".
+  the global limit during scale-out and over-throttles (conservatively stricter)
+  when running below max capacity. A documented tolerance band for this
+  over-throttling is acceptable, consistent with the issue's "within some
+  documented tolerance".
 - The infrastructure already computes the autoscaling max capacity
   (`infra/data.tf` `effective_server_autoscaling_max_capacity`, prod =
-  `max(desired, 6)`); the partition setting defaults from it via Terraform rather
-  than a manually maintained value.
+  `max(desired, 6)`); `GUARDIAN_MAX_REPLICAS` defaults from it via Terraform
+  rather than a manually maintained value. It drives **rate-limit partitioning
+  only**; the coordination mode is backend-derived (FR-020).
 
 ## Dependencies
 
@@ -425,18 +446,24 @@ source code.
   `GUARDIAN_ENV`, `GUARDIAN_RATE_LIMIT_ENABLED`, `GUARDIAN_RATE_BURST_PER_SEC`,
   `GUARDIAN_RATE_PER_MIN`, `DATABASE_URL`, `GUARDIAN_STORAGE_PATH`,
   `GUARDIAN_METADATA_PATH`.
-- New configuration: `GUARDIAN_RATE_LIMIT_PARTITIONS` (rate-limit partition count;
-  defaults from `effective_server_autoscaling_max_capacity`).
-- Infrastructure wiring: `infra/data.tf` (`effective_server_autoscaling_max_capacity`)
-  and `infra/ecs.tf` (rate-limit env block) must set the new partition env var so
-  the correct default ships without operator action.
+- New configuration: `GUARDIAN_MAX_REPLICAS` (maximum replica capacity; drives
+  **rate-limit partitioning only**; defaults from
+  `effective_server_autoscaling_max_capacity`).
+- Infrastructure wiring (in scope): `infra/data.tf`
+  (`effective_server_autoscaling_max_capacity`) and `infra/ecs.tf` (server env
+  block) must set `GUARDIAN_MAX_REPLICAS` so the correct default ships without
+  operator action.
 - Operator documentation set (`docs/CONFIGURATION.md`, AWS deploy docs, runbooks)
   must be updated per the contributor docs table.
 
 ## Out of Scope
 
-- Autoscaling policy, ALB/ECS provisioning, or Terraform changes beyond
-  documenting required configuration.
+- Autoscaling policy, ALB/ECS provisioning, or Terraform changes beyond the
+  `GUARDIAN_MAX_REPLICAS` env-var wiring (in scope above) and documenting required
+  configuration.
+- Skipping shared coordination for a known single-instance Postgres deployment
+  (a per-request-lookup optimization); if pursued later it MUST be an explicit,
+  guarded opt-in, never inferred from `GUARDIAN_MAX_REPLICAS` or another tunable.
 - Changing the storage backend selection from a compile-time feature to a runtime
   switch.
 - Multi-region or active/active cross-region deployment.

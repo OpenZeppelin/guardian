@@ -78,30 +78,39 @@ verify-on-B (FR-001).
 
 | Column | Type | Notes |
 |---|---|---|
-| `signing_digest` | `BYTEA` (32) PRIMARY KEY | challenge identity = the exact value the client signs and returns (see decision below). No surrogate uuid. |
-| `realm` | `TEXT` NOT NULL | `operator` \| `evm` |
-| `principal` | `TEXT` NOT NULL | operator commitment (current key, `dashboard/state.rs:108-168`) or EVM address; indexed |
+| `realm` | `TEXT` NOT NULL | `operator` \| `evm` (part of PK) |
+| `challenge_key` | `TEXT` NOT NULL | per-challenge unique key **within a realm** (part of PK). Operator: the signing digest hex. EVM: the challenge nonce. This is what `consume` targets. |
+| `principal` | `TEXT` NOT NULL | operator commitment (`dashboard/state.rs:108-168`) or EVM address; indexed for `active_for` lookup |
+| `payload` | `JSONB` NOT NULL | realm-specific fields needed to match/recover at verify time (see below) |
 | `issued_at` | `TIMESTAMPTZ` NOT NULL | |
 | `expires_at` | `TIMESTAMPTZ` NOT NULL | indexed |
-| `consumed_at` | `TIMESTAMPTZ` NULL | set when `verify` succeeds; prevents replay across replicas |
+| `consumed_at` | `TIMESTAMPTZ` NULL | set when `verify` succeeds; single-use across replicas |
 
-**Challenge identity decision** (resolves the previously-open PK type): the PK is
-the `signing_digest`, not a uuid. Today `verify` matches a signed response against
-a `Vec<PendingChallenge>` per principal (`dashboard/state.rs:170-288`); the signed
-digest the client returns uniquely identifies which challenge it answers, so it is
-the natural single-use key and preserves current matching semantics. `consume` is
-therefore keyed by `(realm, signing_digest)` (see coordination-traits.md).
+**Realm-aware payload (resolves the EVM modeling gap)**: the two realms verify
+differently, so a single `signing_digest` column does not model both:
+- **Operator** matches by Falcon-verifying the stored signing digest (a `Word`)
+  against the submitted signature (`dashboard/state.rs:228-230`). `payload` =
+  `{ "signing_digest": "<hex>" }`; `challenge_key` = that hex.
+- **EVM** matches by **nonce**, then recovers the signer from the **full original
+  challenge** (`address`, `nonce`, `issued_at`, `expires_at`) via
+  `recover_session_address` (`evm/session.rs:112-127`). `payload` =
+  `{ "address", "nonce", "issued_at", "expires_at" }`; `challenge_key` = the nonce.
 
-**Indexes**: PK on `signing_digest`; index on `(realm, principal)`; index on
-`expires_at`.
+Verification matching (Falcon verify / nonce compare + ECDSA recover) runs in
+Rust, not SQL: `active_for(principal)` returns the unexpired, unconsumed payloads;
+the caller matches one; then `consume(challenge_key)` atomically claims it.
+
+**Primary key**: `(realm, challenge_key)`. **Indexes**: PK; index on
+`(realm, principal)` for `active_for`; index on `expires_at` for the sweep.
 
 **Lifecycle / validation**:
-- Created by `issue_challenge`.
-- Consumable iff `consumed_at IS NULL AND now() < expires_at`; consumption sets
-  `consumed_at = now()` atomically (single-use; a replay on any replica fails —
-  FR-003, US1 scenario 3).
-- Multiple pending challenges per principal allowed (current code stores a
-  `Vec`); the `(realm, principal)` index supports lookup.
+- Created by `issue_challenge` (per-principal cap via `max_outstanding`, oldest
+  pruned, matching today's `Vec` cap).
+- Consumable iff `consumed_at IS NULL AND now() < expires_at`; `consume`
+  conditionally sets `consumed_at = now()` and reports whether it won the race
+  (single-use; a replay on any replica fails — FR-003, US1 scenario 3).
+- Multiple pending challenges per principal allowed; the `(realm, principal)`
+  index supports `active_for`.
 
 ---
 
@@ -149,9 +158,14 @@ future background workers.
 predicate at a time because acquisition is a single atomic conditional write
 against the DB clock. The cooperative-cancellation abort path has a small window
 between lease loss and the pass stopping; the **mandatory** fence check
-(`verify_held`) at every submission boundary closes that window — even if two
-replicas momentarily both believe they lead, only the current `fence_token` holder
-can commit a state-mutating write. TTL + voluntary abort alone is NOT relied on.
+(`verify_held`) immediately before every state-mutating write strongly mitigates
+that window. Note the fence is **advisory** (a separate round-trip, TOCTOU): a
+lease could in principle be stolen between the check and the write. That residual
+window is benign here because the canonical writes are **idempotent deterministic
+upserts** — the same delta produces identical state/delta bytes regardless of
+which replica writes — and retry/discard writes are likewise idempotent for a
+given candidate. So a brief overlap cannot corrupt state; it can at most
+re-apply the same transition. TTL + voluntary abort alone is NOT relied on.
 
 ---
 
@@ -160,11 +174,13 @@ can commit a state-mutating write. TTL + voluntary abort alone is NOT relied on.
 No tables. The `coordination` module provides:
 - `InMemorySessionStore` / `InMemoryChallengeStore` — the current
   `Arc<Mutex<HashMap>>` behavior, byte-for-byte.
-- `AlwaysLeader` — `try_acquire`/`renew` always succeed (single replica is always
-  the leader).
+- `AlwaysLeader` — `try_acquire`/`renew`/`verify_held` always succeed (single
+  replica is always the leader).
 
-This keeps single-replica/dev behavior identical to today and requires no
-database (FR-014; constitution dev-default invariant).
+Selected when the filesystem backend is active (backend-derived selection, R9 —
+**not** gated on `GUARDIAN_MAX_REPLICAS`). A Postgres deployment always uses the
+shared (table-backed) impls. This keeps single-replica/dev behavior identical to
+today and requires no database (FR-014; constitution dev-default invariant).
 
 ---
 

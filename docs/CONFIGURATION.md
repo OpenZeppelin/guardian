@@ -136,6 +136,7 @@ multi-stack deployments get scoped IDs.
 | `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Master kill-switch for HTTP rate limiting. Set `false` only in test environments. |
 | `GUARDIAN_RATE_BURST_PER_SEC` | `10` (code default); `200` set by the prod Terraform profile | Token-bucket burst. |
 | `GUARDIAN_RATE_PER_MIN` | `60` (code default); `5000` set by the prod Terraform profile | Sustained rate. |
+| `GUARDIAN_MAX_REPLICAS` | `1` (code default); autoscaling **max** capacity set by the prod Terraform profile | Per-replica rate-limit divisor: each replica enforces `global / GUARDIAN_MAX_REPLICAS` so the fleet aggregate stays at or below the global limit. Use the autoscaling **max**, not the running count. Drives rate-limiting only — coordination mode is backend-derived. Running below max over-throttles (accepted); an override is clamped up to the autoscaling max by Terraform. See [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md). |
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject request bodies larger than this. |
 | `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` | `20` | Account-level cap; hitting it returns `pending_proposals_limit`. |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated explicit origins. **Unset → permissive `Any` origin / `Any` methods / `Any` headers, credentials disabled** (suitable for local dev). **Set → strict allowlist with `allow_credentials(true)`** (required for production browser clients). |
@@ -166,10 +167,29 @@ one-command Grafana dashboard stack.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
-| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value when running ≥2 ECS tasks so cursors validate across replicas. |
+| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process (non-prod); **required** in the prod stage | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. In the prod stage (`GUARDIAN_ENV=prod`) the server **fails to start** if unset (an ephemeral per-process key silently breaks cross-replica pagination); in non-prod it warns and generates an ephemeral key. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
 (`testnet`, `devnet`, or `local`) rather than configured separately.
+
+### Prod-stage startup guards & HA behavior
+
+When `GUARDIAN_ENV=prod`, the server fails fast on misconfigurations that are
+silently broken across replicas:
+
+- the **filesystem** storage backend is refused (single-instance only — use the
+  Postgres image with `DATABASE_URL`);
+- an unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` is refused;
+- a rate limit that partitions to **0 requests per replica** is refused — i.e.
+  the global `GUARDIAN_RATE_BURST_PER_SEC`/`GUARDIAN_RATE_PER_MIN` is below
+  `GUARDIAN_MAX_REPLICAS`, which would make every replica throttle all traffic.
+  Raise the global limit or lower `GUARDIAN_MAX_REPLICAS`. (Non-prod only warns.)
+
+On the Postgres backend, operator/EVM sessions, login challenges, and the
+canonicalization lease are shared across replicas (backend-derived — no tunable
+disables this). If the database is briefly unavailable, authentication **fails
+closed** (rejected, never bypassed) and recovers automatically. See the
+[horizontal-scaling runbook](./runbooks/horizontal-scaling.md).
 
 Allowlist payload shapes and enrollment flow:
 [`docs/DASHBOARD.md`](./DASHBOARD.md).
@@ -265,5 +285,5 @@ this saves you from grepping:
 | EVM support locally | `GUARDIAN_EVM_RPC_URLS` (allowed chain set derives from its keys) + build with `--features evm` |
 | Use Secrets Manager for ACK keys | `GUARDIAN_ENV=prod` + `AWS_REGION=<region>` + secrets pre-created |
 | Run the dashboard locally | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/path/to/allowlist.json` |
-| Multi-replica dashboard | `GUARDIAN_DASHBOARD_CURSOR_SECRET=<32-byte hex>` pinned across tasks |
+| Multi-replica (HA) | Postgres backend + `GUARDIAN_DASHBOARD_CURSOR_SECRET=<64 hex>` pinned across tasks + `GUARDIAN_MAX_REPLICAS=<autoscaling max>` (all set by the prod Terraform profile) |
 | Higher throughput in prod | `GUARDIAN_RATE_BURST_PER_SEC`, `GUARDIAN_RATE_PER_MIN`, `GUARDIAN_DB_POOL_MAX_SIZE` |

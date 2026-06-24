@@ -547,6 +547,19 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
 
+#### Horizontal scaling (multiple replicas)
+
+The prod profile runs 2–6 tasks behind the ALB. Because it sets `GUARDIAN_ENV=prod`
+and the Postgres backend, the server runs **shared coordination** (sessions,
+login challenges, and the canonicalization lease live in Postgres) — so any
+request lands on any replica and canonicalization runs on exactly one replica at
+a time. Terraform also sets `GUARDIAN_MAX_REPLICAS` from
+`effective_server_autoscaling_max_capacity` (`max(desired, 6)`) so rate limits
+are partitioned across the fleet, and requires `GUARDIAN_DASHBOARD_CURSOR_SECRET`.
+Watch the per-replica `GUARDIAN_DB_POOL_MAX_SIZE` against Postgres
+`max_connections` (RDS Proxy absorbs most of this). Full operator guidance:
+[`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md).
+
 ## HTTPS And gRPC
 
 HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided.

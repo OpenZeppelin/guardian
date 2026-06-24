@@ -19,49 +19,61 @@ errors MUST map to the **same** boundary errors operators/clients see today
 
 ## `SessionStore`
 
+Each store instance is **realm-bound at construction** (operator vs evm), so the
+methods carry no realm. `StoredSession { subject: SessionSubject, issued_at,
+expires_at }`; `SessionSubject` is `Operator { operator_id, commitment }` |
+`Evm { address }` (no permissions — re-resolved per request).
+
 ```text
 trait SessionStore {
-    async fn put(&self, realm: Realm, token_digest: [u8;32], subject: Subject,
-                 issued_at, expires_at) -> Result<()>;
-    async fn get(&self, realm: Realm, token_digest: [u8;32]) -> Result<Option<SessionRecord>>;
-    async fn revoke(&self, realm: Realm, token_digest: [u8;32]) -> Result<()>; // idempotent (logout)
-    async fn sweep_expired(&self) -> Result<u64>;
+    async fn insert(&self, key: [u8;32], session: StoredSession) -> Result<()>;
+    async fn get(&self, key: &[u8;32], now) -> Result<Option<StoredSession>>;
+    async fn revoke(&self, key: &[u8;32]) -> Result<Option<StoredSession>>; // logout; returns prior for logging
+    async fn sweep_expired(&self, now) -> Result<u64>;
 }
 ```
 
 Behavioral contract:
-- `get` returns `Some` only when `revoked_at IS NULL AND now() < expires_at`.
+- `get` returns `Some` only when the session is unrevoked and `now < expires_at`.
 - Validity is evaluated against the store's clock (DB clock for Postgres).
-- `revoke` is idempotent and visible to all replicas immediately.
-- Replaces `DashboardState` session map and `EvmSessionState` session map without
+- `revoke` returns the prior session (for logout logging) and, once revoked, `get`
+  MUST reject it on every replica until natural expiry. The Postgres impl marks
+  `revoked_at` and keeps the row until expiry; the in-memory impl removes it.
+- Replaces the `DashboardState` and `EvmSessionState` session maps without
   changing the outcome of `authenticate_session` (permissions still re-resolved
   from the live allowlist at call time).
 
 ## `ChallengeStore`
 
+Each store instance is **realm-scoped** at construction (operator vs evm), so the
+trait methods don't take a realm. The stored challenge carries a realm-appropriate
+`key` and `payload`:
+
 ```text
 trait ChallengeStore {
-    async fn issue(&self, realm: Realm, principal: String, challenge: PendingChallenge) -> Result<()>;
-    async fn consume(&self, realm: Realm, signing_digest: [u8;32]) -> Result<Option<PendingChallenge>>; // single-use
-    async fn list_for(&self, realm: Realm, principal: &str) -> Result<Vec<PendingChallenge>>;
-    async fn sweep_expired(&self) -> Result<u64>;
+    async fn issue(&self, principal: &str, challenge: StoredChallenge, max_outstanding: usize, now) -> Result<()>;
+    async fn active_for(&self, principal: &str, now) -> Result<Vec<StoredChallenge>>;
+    async fn consume(&self, principal: &str, key: &str, now) -> Result<bool>; // true => this caller won the single-use claim
+    async fn sweep_expired(&self, now) -> Result<u64>;
 }
+struct StoredChallenge { key: String, payload: ChallengePayload, issued_at, expires_at }
+enum ChallengePayload { OperatorDigest(Word), EvmChallenge { address, nonce, issued_at, expires_at } }
 ```
 
-**Challenge identity decision**: the challenge primary key is the
-**`signing_digest`** (`BYTEA`, 32 bytes) — the exact value the client signs and
-returns. This is a deliberate behavior decision, not just a column type: today's
-`verify` matches a signed response against a `Vec<PendingChallenge>` per principal
-(`dashboard/state.rs:170-288`); keying by `signing_digest` preserves that
-matching semantics (the returned signature identifies which challenge it answers)
-while making single-use consumption a single keyed atomic write. No surrogate
-uuid is introduced. `(realm, principal)` remains an index for `list_for`.
+**Why match-in-Rust, not match-in-store**: the two realms verify differently and
+neither check is expressible in SQL — operator does a Falcon
+`public_key.verify(signing_digest, sig)` (`dashboard/state.rs:228-230`), EVM does
+a nonce compare then `recover_session_address(challenge, sig)`
+(`evm/session.rs:112-127`). So the store returns candidate payloads
+(`active_for`), the caller matches one, then `consume(principal, key)` atomically
+claims it. `key` is the signing-digest hex (operator) or the nonce (EVM); see
+data-model.md table `auth_challenges` `(realm, challenge_key)`.
 
 Behavioral contract:
-- `consume` atomically marks `consumed_at` and returns the challenge only if it
-  was unconsumed and unexpired — a replay on any replica returns `None`
-  (FR-003).
-- Issue-on-replica-A / consume-on-replica-B succeeds (FR-001).
+- `consume(principal, key)` atomically sets `consumed_at` and returns `true` only
+  if the challenge was unconsumed and unexpired — a replay (or a lost race) on any
+  replica returns `false` (FR-003).
+- Issue-on-replica-A / match+consume-on-replica-B succeeds (FR-001).
 
 ## `LeaderElector`
 
@@ -98,27 +110,43 @@ at the next checkpoint. "Abort the current pass" is thus a concrete mechanism, n
 just a requirement.
 
 **Fence enforcement at the submission boundary (MUST, not may)**: `fence_token`
-strictly increases on each (re)acquisition. Because cancellation is cooperative
+advances on each change of holder (a steal). Because cancellation is cooperative
 there is a window between losing the lease and the pass actually stopping, so the
-processor MUST call `verify_held` (fence/ownership re-check) immediately before any
-state-mutating on-chain submission or canonical promotion, and MUST skip that
-write if it returns `false`. This closes the abort-window split-brain: even if two
-replicas briefly both believe they lead, only the current fence holder can commit
-a write. TTL + voluntary abort alone is insufficient — the fence check is the hard
-guarantee.
+processor MUST call `verify_held` (fence/ownership re-check) immediately before
+**every** state-mutating write — canonical `submit_state`/`submit_delta` **and**
+the retry/discard writes — and MUST skip the write if it returns `false`.
+
+The fence is **advisory**, not atomic: `verify_held` is a separate round-trip, so
+in principle the lease could be stolen between the check and the write (TOCTOU).
+This is acceptable because the writes are **idempotent** — canonical promotion is
+a deterministic upsert (same delta → identical bytes) and retry/discard are
+idempotent per candidate — so a brief two-leader overlap can at most re-apply the
+same transition, never corrupt state. The fence + idempotency + cooperative
+cancellation together strongly mitigate split-brain; TTL + voluntary abort alone
+is not relied on.
 
 ## Selection rule (wiring)
 
 `builder/storage.rs` already chooses the storage backend. The same decision point
-selects the coordination family:
+selects the coordination family, keying on the **storage backend alone**:
 
-- `feature = "postgres"` + `DATABASE_URL` set  => Postgres impls (share the
+- `feature = "postgres"` + `DATABASE_URL` set => Postgres impls (share the
   storage/metadata pool or a dedicated small pool — decided at implementation).
-- filesystem backend  => in-memory impls + `AlwaysLeader`.
+- filesystem backend => in-memory impls + `AlwaysLeader`.
+
+Coordination is **not** gated on `GUARDIAN_MAX_REPLICAS` or any other tunable:
+a Postgres deployment always uses shared coordination. This is deliberate and
+default-safe — a missing/mis-set tunable must never silently revert a multi-replica
+deployment to per-process state (the #242 bug). The single-instance
+session-lookup optimization is deferred to a future explicit, guarded opt-in.
 
 Coordination availability therefore can never diverge from where shared state
-lives. `AppState` (`builder/state.rs`) carries `Arc<dyn SessionStore>`,
-`Arc<dyn ChallengeStore>`, `Arc<dyn LeaderElector>`.
+lives. Because the session/challenge stores are realm-bound, they are owned by
+their realm's consumer, not shared on `AppState`: the builder constructs an
+operator-realm `SessionStore`+`ChallengeStore` pair injected into `DashboardState`
+and an evm-realm pair injected into `EvmSessionState`. `AppState`
+(`builder/state.rs`) carries only `Arc<dyn LeaderElector>` (used by the
+canonicalization worker).
 
 ## Availability & performance trade-offs (explicit behavior changes)
 
@@ -145,6 +173,6 @@ a local per-replica session cache (a cache would serve revoked sessions until it
 TTL). The accepted consequence is that every authenticated request performs one
 indexed Postgres `SELECT` (by `token_digest` PK) where today it is an in-memory
 map hit. Immediate revocation is chosen over lower per-request latency. This adds
-per-request DB load and reinforces the connection-pool sizing concern (see
-plan.md risks and the runbook). Challenges are touched only during login (low
+per-request DB load and reinforces the connection-pool sizing concern (see the
+horizontal-scaling runbook). Challenges are touched only during login (low
 volume); the per-request cost is the session lookup.

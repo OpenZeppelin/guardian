@@ -1,10 +1,39 @@
+use std::sync::Arc;
+
 use crate::canonicalization::CanonicalizationConfig;
+use crate::coordination::{AlwaysLeader, CANONICALIZATION_LEASE, LeaderElector, Lease};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tokio_util::sync::CancellationToken;
+
+/// A leader handle for a single canonicalization pass: who we are, the fence we
+/// hold, and a cancellation signal tripped when the lease is lost mid-pass.
+struct PassLease {
+    leader: Arc<dyn LeaderElector>,
+    lease: Lease,
+    cancel: CancellationToken,
+}
+
+impl PassLease {
+    /// Single-process default (filesystem / tests): always the leader, never
+    /// cancelled.
+    fn single_process() -> Self {
+        Self {
+            leader: Arc::new(AlwaysLeader::new(CANONICALIZATION_LEASE, "single-process")),
+            lease: Lease {
+                name: CANONICALIZATION_LEASE.to_string(),
+                holder_id: "single-process".to_string(),
+                fence_token: 0,
+                expires_at: DateTime::<Utc>::MAX_UTC,
+            },
+            cancel: CancellationToken::new(),
+        }
+    }
+}
 
 #[async_trait]
 pub trait Processor: Send + Sync {
@@ -36,11 +65,29 @@ fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
 
 struct DeltasProcessorBase {
     state: AppState,
+    pass: PassLease,
     max_retries: u32,
     submission_grace_period_seconds: u64,
 }
 
 impl DeltasProcessorBase {
+    /// Mandatory fence check at every state-mutating write boundary: if this
+    /// replica no longer holds the lease (superseded mid-pass), refuse the write
+    /// so a stale leader can never commit a canonical state/delta.
+    async fn ensure_lease_held(&self, delta: &DeltaObject) -> Result<()> {
+        if self.pass.leader.verify_held(&self.pass.lease).await? {
+            return Ok(());
+        }
+        tracing::warn!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            "Canonicalization lease lost; refusing canonical write"
+        );
+        Err(GuardianError::StorageError(
+            "canonicalization lease lost; aborting write".to_string(),
+        ))
+    }
+
     fn candidate_age_seconds(&self, delta: &DeltaObject, now: DateTime<Utc>) -> Option<u64> {
         let DeltaStatus::Candidate { timestamp, .. } = &delta.status else {
             return None;
@@ -65,6 +112,12 @@ impl DeltasProcessorBase {
         );
 
         for account_id in account_ids {
+            if self.pass.cancel.is_cancelled() {
+                tracing::warn!(
+                    "Canonicalization pass cancelled (lease lost); stopping before next account"
+                );
+                break;
+            }
             if let Err(e) = self.process_account(&account_id).await {
                 tracing::error!(
                     account_id = %account_id,
@@ -109,6 +162,13 @@ impl DeltasProcessorBase {
         );
 
         for delta in candidates {
+            if self.pass.cancel.is_cancelled() {
+                tracing::warn!(
+                    account_id = %account_id,
+                    "Canonicalization pass cancelled (lease lost); stopping before next candidate"
+                );
+                break;
+            }
             let nonce = delta.nonce;
             if let Err(e) = self.process_candidate(delta).await {
                 tracing::error!(
@@ -203,6 +263,7 @@ impl DeltasProcessorBase {
                         "Delta verification failed after max retries, discarding"
                     );
 
+                    self.ensure_lease_held(&delta).await?;
                     storage_backend
                         .delete_delta(&delta.account_id, delta.nonce)
                         .await
@@ -236,6 +297,7 @@ impl DeltasProcessorBase {
 
                     let new_status = delta.status.with_incremented_retry(now);
 
+                    self.ensure_lease_held(&delta).await?;
                     storage_backend
                         .update_delta_status(&delta.account_id, delta.nonce, new_status)
                         .await
@@ -294,6 +356,7 @@ impl DeltasProcessorBase {
             auth_scheme: String::new(),
         };
 
+        self.ensure_lease_held(&delta).await?;
         storage_backend
             .submit_state(&updated_state)
             .await
@@ -334,6 +397,7 @@ impl DeltasProcessorBase {
         let mut canonical_delta = delta.clone();
         canonical_delta.status = DeltaStatus::canonical(now.clone());
 
+        self.ensure_lease_held(&delta).await?;
         storage_backend
             .submit_delta(&canonical_delta)
             .await
@@ -406,10 +470,31 @@ pub struct DeltasProcessor {
 }
 
 impl DeltasProcessor {
+    /// Single-process processor (filesystem / tests): always the leader, never
+    /// fenced out. Behavior is identical to the pre-lease worker.
+    #[allow(dead_code)]
     pub fn new(state: AppState, config: CanonicalizationConfig) -> Self {
+        let pass = PassLease::single_process();
+        Self::with_lease(state, config, pass.leader, pass.lease, pass.cancel)
+    }
+
+    /// Lease-bound processor used by the multi-replica worker: writes are fenced
+    /// by `leader`/`lease` and the pass aborts when `cancel` is tripped.
+    pub fn with_lease(
+        state: AppState,
+        config: CanonicalizationConfig,
+        leader: Arc<dyn LeaderElector>,
+        lease: Lease,
+        cancel: CancellationToken,
+    ) -> Self {
         Self {
             base: DeltasProcessorBase {
                 state,
+                pass: PassLease {
+                    leader,
+                    lease,
+                    cancel,
+                },
                 max_retries: config.max_retries,
                 submission_grace_period_seconds: config.submission_grace_period_seconds,
             },
@@ -437,6 +522,7 @@ impl TestDeltasProcessor {
         Self {
             base: DeltasProcessorBase {
                 state,
+                pass: PassLease::single_process(),
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
                 submission_grace_period_seconds: 0,
             },

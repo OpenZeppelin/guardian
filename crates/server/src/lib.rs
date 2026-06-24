@@ -6,6 +6,7 @@ pub mod audit;
 pub mod build_info;
 pub mod builder;
 pub mod config;
+pub mod coordination;
 pub mod dashboard;
 pub mod middleware;
 

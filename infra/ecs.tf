@@ -145,6 +145,10 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(local.effective_guardian_rate_per_min)
           },
           {
+            name  = "GUARDIAN_MAX_REPLICAS"
+            value = tostring(local.effective_guardian_max_replicas)
+          },
+          {
             name  = "GUARDIAN_DB_POOL_MAX_SIZE"
             value = tostring(local.effective_guardian_db_pool_max_size)
           },

@@ -302,6 +302,23 @@ variable "guardian_rate_per_min" {
   default     = null
 }
 
+variable "guardian_max_replicas" {
+  description = <<-EOT
+    Optional override for GUARDIAN_MAX_REPLICAS, the maximum replica capacity the
+    server divides global rate limits by. Defaults to the effective autoscaling
+    max capacity. Drives rate-limit partitioning only (coordination mode is
+    backend-derived). A value below the real max lets the aggregate exceed the
+    global limit, so an explicit override must be >= the autoscaling max.
+  EOT
+  type        = number
+  default     = null
+
+  validation {
+    condition     = var.guardian_max_replicas == null || var.guardian_max_replicas >= 1
+    error_message = "guardian_max_replicas must be >= 1 when set."
+  }
+}
+
 variable "guardian_rate_limit_enabled" {
   description = "Optional override to enable or disable Guardian HTTP rate limiting"
   type        = bool

@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use super::allowlist::{
     AllowlistSource, OperatorAllowlist, OperatorAllowlistEntryInput, normalize_commitment,
@@ -13,35 +12,71 @@ use super::config::DashboardConfig;
 use super::cursor::CursorSecret;
 use super::types::{
     AuthenticatedOperator, IssuedOperatorSession, OperatorChallenge, OperatorChallengePayload,
-    OperatorSessionRecord, PendingChallenge,
 };
 use super::util::{cookie_date, correlation_id, random_hex, rate_limit_error};
+use crate::coordination::{
+    ChallengePayload, ChallengeStore, InMemoryChallengeStore, InMemorySessionStore, SessionStore,
+    SessionSubject, StoredChallenge, StoredSession,
+};
 use crate::error::{GuardianError, Result};
 use crate::middleware::rate_limit::RateLimitStore;
 use crate::network::NetworkType;
 use crate::secret::session_digest;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DashboardState {
     config: DashboardConfig,
     allowlist_source: AllowlistSource,
     allowlist: Arc<RwLock<OperatorAllowlist>>,
-    challenges: Arc<Mutex<HashMap<String, Vec<PendingChallenge>>>>,
-    sessions: Arc<Mutex<HashMap<[u8; 32], OperatorSessionRecord>>>,
+    session_store: Arc<dyn SessionStore>,
+    challenge_store: Arc<dyn ChallengeStore>,
     commitment_rate_limits: RateLimitStore,
     cursor_secret: CursorSecret,
     cursor_secret_configured: bool,
     started_at: DateTime<Utc>,
 }
 
+impl std::fmt::Debug for DashboardState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DashboardState")
+            .field("config", &self.config)
+            .field("cursor_secret_configured", &self.cursor_secret_configured)
+            .field("started_at", &self.started_at)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DashboardState {
     pub async fn from_env_for_network(
         network_type: NetworkType,
     ) -> std::result::Result<Self, String> {
+        Self::from_env_for_network_with_stores(
+            network_type,
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryChallengeStore::new()),
+        )
+        .await
+    }
+
+    /// Same as [`DashboardState::from_env_for_network`] but with explicit,
+    /// realm-bound coordination stores. The server builder passes shared
+    /// (Postgres) stores here on the Postgres backend; the default path uses
+    /// in-memory stores (single-process / dev).
+    pub async fn from_env_for_network_with_stores(
+        network_type: NetworkType,
+        session_store: Arc<dyn SessionStore>,
+        challenge_store: Arc<dyn ChallengeStore>,
+    ) -> std::result::Result<Self, String> {
         let config = DashboardConfig::from_env_for_network(network_type)?;
         let allowlist_source = AllowlistSource::from_env().await?;
         let allowlist = allowlist_source.load().await?;
-        Self::from_allowlist_source(allowlist_source, allowlist, config)
+        Self::from_allowlist_source(
+            allowlist_source,
+            allowlist,
+            config,
+            session_store,
+            challenge_store,
+        )
     }
 
     pub fn for_tests(entries: Vec<(String, String)>) -> Self {
@@ -58,6 +93,8 @@ impl DashboardState {
             AllowlistSource::Static,
             allowlist,
             DashboardConfig::for_tests(),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryChallengeStore::new()),
         )
         .expect("dashboard test configuration should be valid")
     }
@@ -76,6 +113,8 @@ impl DashboardState {
             AllowlistSource::Static,
             allowlist,
             DashboardConfig::for_tests(),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryChallengeStore::new()),
         )
         .expect("dashboard test configuration should be valid")
     }
@@ -132,19 +171,20 @@ impl DashboardState {
             .is_some()
         {
             let expires_at = now + self.config.nonce_ttl;
-            let mut challenges = self.challenges.lock().await;
-            let pending = challenges.entry(normalized_commitment.clone()).or_default();
-            pending.retain(|challenge| challenge.expires_at > now);
-            pending.push(PendingChallenge {
-                signing_digest,
+            let challenge = StoredChallenge {
+                key: signing_digest.into_hex(),
+                payload: ChallengePayload::OperatorDigest(signing_digest),
                 issued_at: now,
                 expires_at,
-            });
-            if pending.len() > self.config.max_outstanding_challenges {
-                pending.sort_by_key(|challenge| challenge.issued_at);
-                let drain_len = pending.len() - self.config.max_outstanding_challenges;
-                pending.drain(0..drain_len);
-            }
+            };
+            self.challenge_store
+                .issue(
+                    &normalized_commitment,
+                    challenge,
+                    self.config.max_outstanding_challenges,
+                    now,
+                )
+                .await?;
 
             tracing::info!(
                 auth_event = "challenge_issued",
@@ -221,18 +261,16 @@ impl DashboardState {
             ));
         }
 
-        let mut challenges = self.challenges.lock().await;
-        let pending = challenges.entry(normalized_commitment.clone()).or_default();
-        pending.retain(|challenge| challenge.expires_at > now);
+        let active = self
+            .challenge_store
+            .active_for(&normalized_commitment, now)
+            .await?;
+        let matched = active.iter().find(|challenge| match &challenge.payload {
+            ChallengePayload::OperatorDigest(digest) => public_key.verify(*digest, &signature),
+            _ => false,
+        });
 
-        let matched_index = pending
-            .iter()
-            .position(|challenge| public_key.verify(challenge.signing_digest, &signature));
-
-        let Some(matched_index) = matched_index else {
-            if pending.is_empty() {
-                challenges.remove(&normalized_commitment);
-            }
+        let Some(matched) = matched else {
             tracing::warn!(
                 auth_event = "verify_failed",
                 correlation_id = %correlation_id,
@@ -244,34 +282,42 @@ impl DashboardState {
             ));
         };
 
-        pending.remove(matched_index);
-        if pending.is_empty() {
-            challenges.remove(&normalized_commitment);
+        if !self
+            .challenge_store
+            .consume(&normalized_commitment, &matched.key, now)
+            .await?
+        {
+            tracing::warn!(
+                auth_event = "verify_failed",
+                correlation_id = %correlation_id,
+                operator_id = %operator.operator_id,
+                "Operator verify rejected because the matched challenge was already consumed"
+            );
+            return Err(GuardianError::AuthenticationFailed(
+                "Invalid operator credentials".to_string(),
+            ));
         }
-        drop(challenges);
 
         let issued_at = now;
         let expires_at = now + self.config.session_ttl;
-        // Stash the freshly-resolved principal (identity + current
-        // permissions) into the session record. `authenticate_session`
-        // re-resolves permissions per request from the live allowlist
-        // anyway, so the copy held here is just a fallback used for
-        // logout-side logging.
         let operator_identity = operator.clone();
         let token = random_hex::<32>();
         let cookie_header = self.session_cookie_header(&token, issued_at, expires_at);
         let session_key = session_digest(&token);
 
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires_at > now);
-        sessions.insert(
-            session_key,
-            OperatorSessionRecord {
-                operator: operator_identity.clone(),
-                issued_at,
-                expires_at,
-            },
-        );
+        self.session_store
+            .insert(
+                session_key,
+                StoredSession {
+                    subject: SessionSubject::Operator {
+                        operator_id: operator_identity.operator_id.clone(),
+                        commitment: normalized_commitment.clone(),
+                    },
+                    issued_at,
+                    expires_at,
+                },
+            )
+            .await?;
 
         tracing::info!(
             auth_event = "verify_success",
@@ -293,33 +339,39 @@ impl DashboardState {
         now: DateTime<Utc>,
     ) -> Result<AuthenticatedOperator> {
         self.refresh_allowlist().await?;
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires_at > now);
 
         let session_key = session_digest(token);
-        let session = sessions.get(&session_key).cloned().ok_or_else(|| {
-            tracing::warn!(
-                auth_event = "session_rejected",
-                reason = "missing_or_expired",
-                "Operator session rejected"
-            );
-            GuardianError::AuthenticationFailed("Invalid operator session".to_string())
-        })?;
+        let session = self
+            .session_store
+            .get(&session_key, now)
+            .await?
+            .ok_or_else(|| {
+                tracing::warn!(
+                    auth_event = "session_rejected",
+                    reason = "missing_or_expired",
+                    "Operator session rejected"
+                );
+                GuardianError::AuthenticationFailed("Invalid operator session".to_string())
+            })?;
 
-        // Re-resolve the principal from the **live** allowlist snapshot
-        // rather than returning the (potentially stale) copy carried in
-        // the session record. This is the load-bearing wiring for
-        // feature 006-operator-authz FR-008 / SC-004: a permission
-        // grant or revocation written to the allowlist source takes
-        // effect on the next authenticated request without re-login.
-        let Some(live_operator) = self
-            .lookup_allowlisted_operator(&session.operator.commitment)
-            .await
+        let SessionSubject::Operator {
+            operator_id,
+            commitment,
+        } = &session.subject
         else {
-            sessions.remove(&session_key);
+            return Err(GuardianError::AuthenticationFailed(
+                "Invalid operator session".to_string(),
+            ));
+        };
+
+        // Re-resolve the principal from the **live** allowlist snapshot rather
+        // than the identity carried in the session record, so a permission grant
+        // or revocation takes effect on the next request without re-login.
+        let Some(live_operator) = self.lookup_allowlisted_operator(commitment).await else {
+            self.session_store.revoke(&session_key).await?;
             tracing::warn!(
                 auth_event = "session_rejected",
-                operator_id = %session.operator.operator_id,
+                operator_id = %operator_id,
                 reason = "revoked",
                 "Operator session rejected because the operator is no longer allowlisted"
             );
@@ -331,25 +383,27 @@ impl DashboardState {
         Ok(live_operator)
     }
 
-    pub async fn logout(&self, token: Option<&str>, now: DateTime<Utc>) {
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires_at > now);
+    pub async fn logout(&self, token: Option<&str>, _now: DateTime<Utc>) -> Result<()> {
         if let Some(token) = token
-            && let Some(session) = sessions.remove(&session_digest(token))
+            && let Some(session) = self.session_store.revoke(&session_digest(token)).await?
+            && let SessionSubject::Operator { operator_id, .. } = &session.subject
         {
             tracing::info!(
                 auth_event = "logout",
-                operator_id = %session.operator.operator_id,
+                operator_id = %operator_id,
                 issued_at = %session.issued_at.to_rfc3339(),
                 "Operator session cleared"
             );
         }
+        Ok(())
     }
 
     fn from_allowlist_source(
         allowlist_source: AllowlistSource,
         allowlist: OperatorAllowlist,
         mut config: DashboardConfig,
+        session_store: Arc<dyn SessionStore>,
+        challenge_store: Arc<dyn ChallengeStore>,
     ) -> std::result::Result<Self, String> {
         tracing::info!(
             auth_event = "allowlist_loaded",
@@ -358,27 +412,47 @@ impl DashboardState {
         );
         let configured_cursor_secret = config.take_cursor_secret();
         let cursor_secret_configured = configured_cursor_secret.is_some();
-        let cursor_secret = configured_cursor_secret.unwrap_or_else(|| {
-            if !cfg!(test) {
-                tracing::warn!(
-                    "dashboard cursor secret not configured; generating ephemeral per-process \
-                     secret. Multi-replica deployments must set \
-                     GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 32-byte hex value."
-                );
+        let cursor_secret = match configured_cursor_secret {
+            Some(secret) => secret,
+            None => {
+                if crate::config::stage::is_prod().map_err(|error| error.to_string())? {
+                    return Err(
+                        "GUARDIAN_DASHBOARD_CURSOR_SECRET is required in the prod stage \
+                         (GUARDIAN_ENV=prod): an ephemeral per-process secret silently breaks \
+                         dashboard pagination across replicas. Set a stable shared 64-hex value."
+                            .to_string(),
+                    );
+                }
+                if !cfg!(test) {
+                    tracing::warn!(
+                        "dashboard cursor secret not configured; generating ephemeral per-process \
+                         secret. Multi-replica deployments must set \
+                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 32-byte hex value."
+                    );
+                }
+                CursorSecret::generate()
             }
-            CursorSecret::generate()
-        });
+        };
         Ok(Self {
             commitment_rate_limits: RateLimitStore::new(config.commitment_rate_limit.clone()),
             config,
             allowlist_source,
             allowlist: Arc::new(RwLock::new(allowlist)),
-            challenges: Arc::new(Mutex::new(HashMap::new())),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_store,
+            challenge_store,
             cursor_secret,
             cursor_secret_configured,
             started_at: Utc::now(),
         })
+    }
+
+    /// Reclaim expired operator sessions and challenges. Run periodically by the
+    /// server's background sweep; expiry is also enforced on read, so this is
+    /// housekeeping (and a no-op for the in-memory backend beyond freeing memory).
+    pub async fn sweep_expired(&self, now: DateTime<Utc>) -> Result<()> {
+        self.session_store.sweep_expired(now).await?;
+        self.challenge_store.sweep_expired(now).await?;
+        Ok(())
     }
 
     /// Server-side signing secret for opaque pagination cursors. See
@@ -794,7 +868,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_map_never_holds_plaintext_token() {
+    async fn session_is_keyed_by_digest_not_plaintext_token() {
         let operator = TestSigner::new();
         let state = DashboardState::for_tests(vec![(
             "operator-1".to_string(),
@@ -813,12 +887,49 @@ mod tests {
             .expect("verify");
         let token = parse_token_from_cookie(&session.cookie_header);
 
-        let sessions = state.sessions.lock().await;
-        let only_key = sessions.keys().next().expect("session exists");
+        // The store only ever receives `session_digest(token)`, never the
+        // plaintext token: the digest differs from the token bytes, and
+        // authentication round-trips on the real token (proving the mapping).
         assert_ne!(
-            only_key.as_slice(),
+            crate::secret::session_digest(&token).as_slice(),
             token.as_bytes(),
-            "map key must be a digest, not the plaintext token"
+            "session key must be a digest, not the plaintext token"
+        );
+        state
+            .authenticate_session(&token, now)
+            .await
+            .expect("session lookup round-trips on the real token");
+    }
+
+    #[tokio::test]
+    async fn prod_stage_requires_cursor_secret() {
+        let _env_lock = ENV_LOCK.lock().await;
+        let _no_secret = EnvVarGuard::remove("GUARDIAN_DASHBOARD_CURSOR_SECRET");
+
+        let prod = EnvVarGuard::set("GUARDIAN_ENV", "prod");
+        let prod_result = DashboardState::from_allowlist_source(
+            super::AllowlistSource::Static,
+            super::OperatorAllowlist::from_entries(Vec::new()).expect("empty allowlist is valid"),
+            DashboardConfig::for_tests(),
+            std::sync::Arc::new(crate::coordination::InMemorySessionStore::new()),
+            std::sync::Arc::new(crate::coordination::InMemoryChallengeStore::new()),
+        );
+        assert!(
+            prod_result.is_err(),
+            "prod stage must reject an unset cursor secret"
+        );
+        drop(prod);
+
+        let non_prod_result = DashboardState::from_allowlist_source(
+            super::AllowlistSource::Static,
+            super::OperatorAllowlist::from_entries(Vec::new()).expect("empty allowlist is valid"),
+            DashboardConfig::for_tests(),
+            std::sync::Arc::new(crate::coordination::InMemorySessionStore::new()),
+            std::sync::Arc::new(crate::coordination::InMemoryChallengeStore::new()),
+        );
+        assert!(
+            non_prod_result.is_ok(),
+            "non-prod tolerates an unset cursor secret (ephemeral fallback)"
         );
     }
 }

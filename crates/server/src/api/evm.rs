@@ -180,11 +180,14 @@ pub async fn logout_evm_session(
     headers: HeaderMap,
 ) -> Result<([(header::HeaderName, String); 1], Json<LogoutResponse>)> {
     let token = extract_cookie(&headers, state.evm.sessions.cookie_name());
-    state
+    if let Err(error) = state
         .evm
         .sessions
         .logout(token.as_deref(), state.clock.now())
-        .await;
+        .await
+    {
+        tracing::warn!(auth_event = "evm_logout_failed", %error, "EVM logout revoke failed");
+    }
     Ok((
         [(header::SET_COOKIE, state.evm.sessions.clear_cookie_header())],
         Json(LogoutResponse { success: true }),

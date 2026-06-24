@@ -41,6 +41,7 @@ pub struct ServerBuilder {
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
     dashboard: Option<Arc<DashboardState>>,
+    coordination: Option<crate::coordination::CoordinationHandles>,
     logging_config: Option<LoggingConfig>,
     cors_layer: Option<tower_http::cors::CorsLayer>,
     rate_limit_config: Option<RateLimitConfig>,
@@ -63,6 +64,7 @@ impl ServerBuilder {
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
             dashboard: None,
+            coordination: None,
             logging_config: None,
             cors_layer: None,
             rate_limit_config: None,
@@ -178,6 +180,14 @@ impl ServerBuilder {
     /// Configure dashboard auth/session state.
     pub fn dashboard(mut self, dashboard: Arc<DashboardState>) -> Self {
         self.dashboard = Some(dashboard);
+        self
+    }
+
+    /// Coordination store handles selected by the storage backend (Postgres =>
+    /// shared, filesystem => in-memory). Injected into the realm-scoped consumers
+    /// when their state is built from the environment.
+    pub fn coordination(mut self, handles: crate::coordination::CoordinationHandles) -> Self {
+        self.coordination = Some(handles);
         self
     }
 
@@ -442,12 +452,57 @@ impl ServerBuilder {
             .ok_or("Auditor not set. Use .auditor(...) — typically populated by StorageMetadataBuilder::build()")?;
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
+        let coordination = self.coordination;
+        let coordination_mode = coordination
+            .as_ref()
+            .map(|handles| handles.mode)
+            .unwrap_or(crate::coordination::CoordinationMode::SingleProcess);
+        let leader: Arc<dyn crate::coordination::LeaderElector> = coordination
+            .as_ref()
+            .map(|handles| handles.leader.clone())
+            .unwrap_or_else(|| {
+                Arc::new(crate::coordination::AlwaysLeader::new(
+                    crate::coordination::CANONICALIZATION_LEASE,
+                    "single-process",
+                ))
+            });
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
-            None => Arc::new(DashboardState::from_env_for_network(network_type).await?),
+            None => match coordination.as_ref() {
+                Some(handles) => Arc::new(
+                    DashboardState::from_env_for_network_with_stores(
+                        network_type,
+                        handles.operator_sessions.clone(),
+                        handles.operator_challenges.clone(),
+                    )
+                    .await?,
+                ),
+                // Fail closed: the Postgres backend must not silently fall back to
+                // per-process dashboard state. Coordination handles are populated
+                // by StorageMetadataBuilder::build(); their absence here means a
+                // manual builder skipped them.
+                None if storage.kind() == crate::storage::StorageType::Postgres => {
+                    return Err(
+                        "Postgres storage requires coordination handles for shared dashboard \
+                         sessions/challenges; call .coordination(...) (populated by \
+                         StorageMetadataBuilder::build())"
+                            .to_string(),
+                    );
+                }
+                None => Arc::new(DashboardState::from_env_for_network(network_type).await?),
+            },
         };
         #[cfg(feature = "evm")]
-        let evm = Arc::new(EvmAppState::from_env().await?);
+        let evm = {
+            let sessions = match coordination.as_ref() {
+                Some(handles) => crate::evm::EvmSessionState::new(
+                    handles.evm_sessions.clone(),
+                    handles.evm_challenges.clone(),
+                ),
+                None => crate::evm::EvmSessionState::default(),
+            };
+            Arc::new(EvmAppState::from_env_with_sessions(sessions).await?)
+        };
 
         let network_client = MidenNetworkClient::from_network(network_type)
             .await
@@ -456,6 +511,7 @@ impl ServerBuilder {
         let startup_info = startup::StartupInfo::new(
             network_type,
             storage.kind(),
+            coordination_mode.as_str(),
             ack.ecdsa_backend_id(),
             ack.commitment(&SignatureScheme::Falcon),
             ack.commitment(&SignatureScheme::Ecdsa),
@@ -466,6 +522,28 @@ impl ServerBuilder {
             self.grpc_enabled.then_some(self.grpc_port),
             metrics_config.enabled.then_some(metrics_config.bind_addr),
         );
+
+        // Prod fail-fast: an enabled rate limit that partitions to 0 per replica
+        // (global limit below GUARDIAN_MAX_REPLICAS) silently throttles all
+        // traffic on every replica. Mirror the other prod guards (filesystem
+        // backend, cursor secret) and refuse to start rather than serve a fleet
+        // that denies every request. Non-prod keeps the warning emitted by
+        // RateLimitConfig::from_env.
+        let rate_limit_config = self
+            .rate_limit_config
+            .unwrap_or_else(RateLimitConfig::from_env);
+        if crate::config::stage::is_prod().map_err(|error| error.to_string())?
+            && rate_limit_config.enabled
+            && (rate_limit_config.burst_per_sec == 0 || rate_limit_config.per_min == 0)
+        {
+            return Err(
+                "rate limiting partitions to 0 requests per replica in the prod stage \
+                 (GUARDIAN_ENV=prod): a global GUARDIAN_RATE_BURST_PER_SEC/GUARDIAN_RATE_PER_MIN \
+                 below GUARDIAN_MAX_REPLICAS makes every replica throttle all traffic. Raise the \
+                 global rate limit or lower GUARDIAN_MAX_REPLICAS."
+                    .to_string(),
+            );
+        }
 
         let app_state = AppState {
             storage,
@@ -482,9 +560,10 @@ impl ServerBuilder {
 
         Ok(ServerHandle {
             app_state,
+            leader,
             startup_info,
             cors_layer: self.cors_layer,
-            rate_limit_config: self.rate_limit_config,
+            rate_limit_config: Some(rate_limit_config),
             body_limit_config: self.body_limit_config,
             metrics_config,
             http_enabled: self.http_enabled,

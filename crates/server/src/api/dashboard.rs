@@ -180,10 +180,13 @@ pub async fn logout_operator(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let token = extract_cookie(&headers, state.dashboard.cookie_name());
-    state
+    if let Err(error) = state
         .dashboard
         .logout(token.as_deref(), state.clock.now())
-        .await;
+        .await
+    {
+        tracing::warn!(auth_event = "logout_failed", %error, "Operator logout revoke failed");
+    }
 
     (
         StatusCode::OK,

@@ -108,4 +108,49 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    /// Representation of the `auth_sessions` table.
+    ///
+    /// Shared operator/EVM session store for horizontal scaling (issue #242).
+    auth_sessions (token_digest) {
+        token_digest -> Bytea,
+        realm -> Text,
+        subject -> Jsonb,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        revoked_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `auth_challenges` table.
+    ///
+    /// Shared operator/EVM login-challenge store for horizontal scaling
+    /// (issue #242). Composite key `(realm, challenge_key)`.
+    auth_challenges (realm, challenge_key) {
+        realm -> Text,
+        challenge_key -> Text,
+        principal -> Text,
+        payload -> Jsonb,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        consumed_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `worker_leases` table.
+    ///
+    /// Single-owner background-worker coordination for horizontal scaling
+    /// (issue #242).
+    worker_leases (lease_name) {
+        lease_name -> Text,
+        holder_id -> Text,
+        acquired_at -> Timestamptz,
+        renewed_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        fence_token -> Int8,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(states, deltas, delta_proposals, account_metadata,);

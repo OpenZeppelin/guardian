@@ -11,10 +11,10 @@ behavior changes (no client wire contract changes).
 |---|---|---|
 | `GUARDIAN_ENV` | **reused** | Stage signal. `prod` (case-insensitive) activates HA fail-fast guards. Already set from Terraform `var.deployment_stage` (`infra/ecs.tf:128-129`). Currently only gates ACK secrets (`ack/mod.rs:139-145`); `is_prod_environment()` is promoted to a shared `config/stage.rs` helper. |
 | `GUARDIAN_DASHBOARD_CURSOR_SECRET` | **enforcement changed** | 64-hex (32-byte) shared secret. Prod: **required** — startup fails if unset. Non-prod: optional — warn + ephemeral per-process secret (unchanged dev behavior, `dashboard/state.rs:359-370`). |
-| `GUARDIAN_RATE_LIMIT_PARTITIONS` | **new** | Positive integer = the deployment's autoscaling **max** capacity. Divides `GUARDIAN_RATE_BURST_PER_SEC` and `GUARDIAN_RATE_PER_MIN` per replica (`global / partitions`) so aggregate enforcement stays at or below the global limit (stricter when running below max capacity). Defaults from Terraform `effective_server_autoscaling_max_capacity` (see below); operator-overridable. Unset or `1` => current per-process behavior. |
+| `GUARDIAN_MAX_REPLICAS` | **new** | Positive integer = the deployment's autoscaling **max** capacity. Drives **rate limiting only**: divides `GUARDIAN_RATE_BURST_PER_SEC`/`GUARDIAN_RATE_PER_MIN` per replica (`global / GUARDIAN_MAX_REPLICAS`) so aggregate stays at or below the global limit (over-throttles below max capacity). Defaults from Terraform `effective_server_autoscaling_max_capacity` (see below); overridable, but a value **below** the real max makes per-replica caps too high so the aggregate can exceed the global limit (too loose) — Terraform should validate `>=` effective max. A value above the real max over-throttles. Unset or `1` => current per-process rate-limit behavior. **Does NOT affect coordination mode** — that is backend-derived (FR-020). |
 | `DATABASE_URL` | unchanged | Required for the Postgres backend (which the prod image uses). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` / `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | unchanged | Per-replica pool sizes; runbook adds guidance: total ≈ size x replicas x pools must stay under Postgres `max_connections`. |
-| `GUARDIAN_RATE_LIMIT_ENABLED` / `GUARDIAN_RATE_BURST_PER_SEC` / `GUARDIAN_RATE_PER_MIN` | unchanged | Now interpreted as global limits when `GUARDIAN_RATE_LIMIT_PARTITIONS > 1`. |
+| `GUARDIAN_RATE_LIMIT_ENABLED` / `GUARDIAN_RATE_BURST_PER_SEC` / `GUARDIAN_RATE_PER_MIN` | unchanged | Now interpreted as global limits when `GUARDIAN_MAX_REPLICAS > 1`. |
 
 Optional (implementation may add, with documented defaults): lease TTL / renew
 interval overrides (e.g. `GUARDIAN_CANON_LEASE_TTL_SECS`,
@@ -24,22 +24,22 @@ TTL is sized for renew/failover only and is independent of the canonicalization
 
 ## Terraform wiring (default ships from infra)
 
-`GUARDIAN_RATE_LIMIT_PARTITIONS` MUST default from the deployment's autoscaling
-max capacity rather than a manually maintained value:
+`GUARDIAN_MAX_REPLICAS` MUST default from the deployment's autoscaling max
+capacity rather than a manually maintained value:
 
 - `infra/data.tf` already computes
   `local.effective_server_autoscaling_max_capacity` (prod = `max(desired, 6)`).
-- `infra/ecs.tf` already injects the rate-limit env block (after
+- `infra/ecs.tf` already injects the server env block (after
   `GUARDIAN_RATE_PER_MIN`). Add:
   ```hcl
   {
-    name  = "GUARDIAN_RATE_LIMIT_PARTITIONS"
-    value = tostring(local.effective_guardian_rate_limit_partitions)
+    name  = "GUARDIAN_MAX_REPLICAS"
+    value = tostring(local.effective_guardian_max_replicas)
   }
   ```
-  where `local.effective_guardian_rate_limit_partitions = var.guardian_rate_limit_partitions != null ? var.guardian_rate_limit_partitions : local.effective_server_autoscaling_max_capacity`
-  (new `var.guardian_rate_limit_partitions` defaults to `null`, i.e. derive from
-  max capacity; operators may override).
+  where `local.effective_guardian_max_replicas = var.guardian_max_replicas != null ? var.guardian_max_replicas : local.effective_server_autoscaling_max_capacity`
+  (new `var.guardian_max_replicas` defaults to `null`, i.e. derive from max
+  capacity; operators may override).
 
 This keeps the default correct on every deploy with no operator action; the
 runbook documents the override, not a required value.
@@ -69,24 +69,28 @@ On startup the server logs exactly one coordination-mode line reflecting the
 **resolved** state (never operator intent):
 
 ```text
-coordination mode=shared backend=postgres stage=prod rate_limit_partitions=6 cursor_secret=configured
-coordination mode=single-process backend=filesystem stage=dev rate_limit_partitions=1 cursor_secret=ephemeral
+coordination mode=shared backend=postgres stage=prod max_replicas=6 cursor_secret=configured
+coordination mode=single-process backend=filesystem stage=dev max_replicas=1 cursor_secret=ephemeral
 ```
 
 `mode=shared` iff coordination is backed by the external store (Postgres);
-`mode=single-process` for the in-memory impls. This is the discoverable signal
-that replaces an explicit `DISTRIBUTED_MODE` toggle — coordination capability is
-determined by the storage backend, not a separate flag, so the line cannot
-disagree with reality.
+`mode=single-process` for the in-memory impls (filesystem). This is the
+discoverable signal that replaces an explicit `DISTRIBUTED_MODE` toggle —
+coordination is determined by the resolved storage backend alone, not a flag and
+not a tunable, so the line cannot disagree with reality. (`max_replicas` is shown
+for the rate-limit context; it does not affect the mode.)
 
 ## Documentation surface (US6)
 
 - `docs/runbooks/horizontal-scaling.md` (new) — required env vars, state-store
   dependency (shared Postgres), pool sizing vs `max_connections`,
-  `GUARDIAN_RATE_LIMIT_PARTITIONS` override guidance + rate-limit tolerance
-  (under-enforcement below max capacity), filesystem = dev-only, failover behavior
-  of the canonicalization lease.
-- `docs/CONFIGURATION.md` — add `GUARDIAN_RATE_LIMIT_PARTITIONS` (default from
-  autoscaling max capacity), document the prod guards.
+  `GUARDIAN_MAX_REPLICAS` guidance (rate-limit partitioning only;
+  over-throttling/keep-alive tolerance below max capacity; a too-low override can
+  let aggregate limits exceed the global limit, a too-high override over-throttles),
+  coordination mode is backend-derived (Postgres = shared),
+  filesystem = dev-only, failover behavior of the canonicalization lease.
+- `docs/CONFIGURATION.md` — add `GUARDIAN_MAX_REPLICAS` (default from autoscaling
+  max capacity; rate-limiting effect only — does not change coordination mode),
+  document the prod guards.
 - `docs/SERVER_AWS_DEPLOY.md` — HA notes referencing the existing prod profile
-  (`infra/data.tf` desired 2 / max 6) and the partition default sourced from it.
+  (`infra/data.tf` desired 2 / max 6) and `GUARDIAN_MAX_REPLICAS` sourced from it.
