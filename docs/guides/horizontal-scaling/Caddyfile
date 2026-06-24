@@ -1,0 +1,9 @@
+# Round-robin reverse proxy across the two Guardian replicas — the stand-in for
+# the ALB in front of the prod ECS tasks. Caddy's reverse_proxy automatically
+# sets X-Forwarded-For, which the Guardian server reads to key rate limiting by
+# the real client IP rather than the proxy's address.
+:8080 {
+	reverse_proxy server-a:3000 server-b:3000 {
+		lb_policy round_robin
+	}
+}

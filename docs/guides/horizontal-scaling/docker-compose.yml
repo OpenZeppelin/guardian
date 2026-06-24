@@ -1,0 +1,89 @@
+# Horizontal scaling: two Guardian replicas behind a round-robin proxy, sharing
+# one Postgres. Demonstrates the coordination layer (issue #242) end to end and
+# locally: shared operator/EVM sessions and login challenges, the single-owner
+# canonicalization lease with failover, per-replica rate-limit partitioning, and
+# fail-closed auth when the shared store is unavailable.
+#
+# Run from this directory:
+#   cp .env.example .env                       # then fill in the values
+#   cp operators.example.json operators.json   # for the operator-login walkthrough
+#   docker compose up
+#
+# Compose auto-loads .env for both ${VAR} interpolation and each server's runtime
+# config. Walkthrough: ./README.md   Full config reference: ../../CONFIGURATION.md
+#
+# Coordination is backend-derived: because both replicas use the Postgres backend
+# they share sessions/challenges/lease automatically — no flag turns it on. ACK
+# signing keys are auto-generated per replica here, which is fine for this demo
+# (it exercises auth + coordination, not multisig co-signing); a real prod
+# deployment pins one shared ACK key via Secrets Manager (GUARDIAN_ENV=prod, see
+# the aws-signers guide).
+
+x-guardian-server: &guardian-server
+  image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+  pull_policy: always
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    RUST_LOG: info
+    GUARDIAN_NETWORK_TYPE: ${GUARDIAN_NETWORK_TYPE:-MidenTestnet}
+    DATABASE_URL: postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+    GUARDIAN_KEYSTORE_PATH: /var/guardian/keystore
+    GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE: /etc/guardian/operators.json
+    # Pinned and identical on every replica: pagination cursors are signed with
+    # this key, so a cursor minted on one replica must validate on another.
+    GUARDIAN_DASHBOARD_CURSOR_SECRET: ${GUARDIAN_DASHBOARD_CURSOR_SECRET:?set GUARDIAN_DASHBOARD_CURSOR_SECRET in .env (openssl rand -hex 32)}
+    # Rate-limit partition divisor: each replica enforces global/GUARDIAN_MAX_REPLICAS
+    # so the fleet aggregate stays at or below the global limit.
+    GUARDIAN_MAX_REPLICAS: ${GUARDIAN_MAX_REPLICAS:-2}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: guardian
+    ports:
+      - "5432:5432" # exposed so you can inspect worker_leases / auth_sessions with psql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server-a:
+    <<: *guardian-server
+    hostname: server-a
+    volumes:
+      - guardian-keystore-a:/var/guardian/keystore
+      - ./operators.json:/etc/guardian/operators.json:ro
+    ports:
+      - "3000:3000" # target replica A directly (bypassing the proxy)
+
+  server-b:
+    <<: *guardian-server
+    hostname: server-b
+    volumes:
+      - guardian-keystore-b:/var/guardian/keystore
+      - ./operators.json:/etc/guardian/operators.json:ro
+    ports:
+      - "3010:3000" # target replica B directly (bypassing the proxy)
+
+  proxy:
+    image: caddy:2-alpine
+    depends_on:
+      - server-a
+      - server-b
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "8080:8080" # round-robin entrypoint; this is what a client/LB would hit
+
+volumes:
+  guardian-postgres:
+  guardian-keystore-a:
+  guardian-keystore-b:

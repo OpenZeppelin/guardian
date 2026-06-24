@@ -86,6 +86,13 @@ fleet aggregate stays at or below the global limit.
   let the aggregate exceed the global limit). Setting it higher only
   over-throttles.
 
+## Validate the coordination behavior locally
+
+To see this contract in action before deploying — shared sessions, single-owner
+lease with failover, fail-closed auth, rate-limit partitioning — run the
+[horizontal-scaling guide](../guides/horizontal-scaling/README.md): two replicas
+behind a round-robin proxy sharing one Postgres, all on Docker Compose.
+
 ## Filesystem backend is dev-only
 
 The filesystem backend keeps state local to one task (and does not persist audit
