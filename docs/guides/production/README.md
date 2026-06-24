@@ -139,8 +139,14 @@ to migrate an already-deployed stack safely, follow
 
 ### Dashboard operator allowlist (if the dashboard is enabled)
 
-Let Terraform create the stack-scoped secret from a public-key list, or point at
-an existing secret ARN:
+There is no bootstrap command for operator keys — unlike the ACK keys, the
+server never holds an operator private key. Each operator generates their **own**
+Falcon keypair on a trusted device (the `examples/operator-smoke-web` harness has
+a UI for this) and hands you only the `0x…` **public** key; see
+[`DASHBOARD.md` → Enrolling an operator](../../DASHBOARD.md#enrolling-an-operator).
+
+You then let Terraform create the stack-scoped allowlist secret from those public
+keys, or point at an existing secret ARN:
 
 ```bash
 export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
