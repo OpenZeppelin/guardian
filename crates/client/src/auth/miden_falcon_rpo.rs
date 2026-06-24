@@ -59,7 +59,7 @@ impl FalconRpoSigner {
 /// Converts an account ID and timestamp to a Word for signing.
 pub fn account_id_timestamp_to_word(account_id: AccountId, timestamp: i64) -> Word {
     let account_id_felts: [Felt; 2] = account_id.into();
-    let timestamp_felt = Felt::new(timestamp as u64);
+    let timestamp_felt = Felt::new_unchecked(timestamp as u64);
 
     let message_elements = vec![
         account_id_felts[0],
@@ -119,7 +119,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let signer = FalconRpoSigner::new(secret_key);
 
-        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let account_id = AccountId::from_hex("0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a").unwrap();
         let timestamp: i64 = 1700000000;
         let signature_hex = signer.sign_account_id_with_timestamp(&account_id, timestamp);
 
@@ -138,7 +138,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let signer = FalconRpoSigner::new(secret_key);
 
-        let account_id = AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").unwrap();
+        let account_id = AccountId::from_hex("0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a").unwrap();
         let timestamp: i64 = 1700000000;
         let payload = AuthRequestPayload::from_json_bytes(br#"{"op":"push_delta"}"#).unwrap();
 

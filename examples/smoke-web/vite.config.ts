@@ -5,23 +5,40 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    dedupe: ['react', 'react-dom', '@tanstack/react-query'],
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-      '@multisig-browser': path.resolve(__dirname, '../_shared/multisig-browser/src'),
-      '@miden-sdk/miden-sdk': path.resolve(
-        __dirname,
-        'node_modules/@miden-sdk/miden-sdk/dist/index.js',
-      ),
-      '@openzeppelin/guardian-client': path.resolve(
-        __dirname,
-        '../../packages/guardian-client/dist/index.js',
-      ),
-      '@openzeppelin/miden-multisig-client': path.resolve(
-        __dirname,
-        '../../packages/miden-multisig-client/dist/index.js',
-      ),
-    },
+    dedupe: [
+      'react',
+      'react-dom',
+      '@tanstack/react-query',
+      'wagmi',
+      '@wagmi/core',
+      'viem',
+      'graz',
+      '@cosmjs/stargate',
+      '@solana/wallet-adapter-base',
+      '@solana/wallet-adapter-react',
+      '@solana-mobile/wallet-adapter-mobile',
+      '@miden-sdk/react',
+      '@miden-sdk/miden-sdk',
+    ],
+    alias: [
+      {
+        find: /^@getpara\/aa-.*$/,
+        replacement: path.resolve(__dirname, 'getpara-aa-stub.mjs'),
+      },
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+      {
+        find: '@multisig-browser',
+        replacement: path.resolve(__dirname, '../_shared/multisig-browser/src'),
+      },
+      {
+        find: '@openzeppelin/guardian-client',
+        replacement: path.resolve(__dirname, '../../packages/guardian-client/dist/index.js'),
+      },
+      {
+        find: '@openzeppelin/miden-multisig-client',
+        replacement: path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
+      },
+    ],
   },
   server: {
     port: 3002,

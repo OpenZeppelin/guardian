@@ -7,6 +7,7 @@ use guardian_shared::FromJson;
 use guardian_shared::SignatureScheme;
 use guardian_shared::ToJson;
 use miden_client::account::Account;
+use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
 use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
@@ -16,11 +17,26 @@ use miden_protocol::utils::serde::Serializable;
 use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
-use crate::error::{MultisigError, Result};
+use crate::error::{MultisigError, Result, error_chain};
 use crate::execution::build_final_transaction_request;
 use crate::keystore::word_from_hex;
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::word_to_hex;
+
+/// True for note-less storage-config transactions, whose post-submit state miden-client persists
+/// incorrectly for private accounts, so local state must be rebuilt from the proven delta instead.
+fn rebuilds_local_state_from_delta(transaction_type: &TransactionType) -> bool {
+    match transaction_type {
+        TransactionType::AddCosigner { .. }
+        | TransactionType::RemoveCosigner { .. }
+        | TransactionType::UpdateSigners { .. }
+        | TransactionType::UpdateProcedureThreshold { .. }
+        | TransactionType::SwitchGuardian { .. } => true,
+        TransactionType::P2ID { .. }
+        | TransactionType::ConsumeNotes { .. }
+        | TransactionType::Custom => false,
+    }
+}
 
 impl MultisigClient {
     /// Creates a GUARDIAN client (unauthenticated).
@@ -41,17 +57,23 @@ impl MultisigClient {
         account_id: AccountId,
     ) -> Result<Word> {
         let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
-        let fetched_account = rpc_client
-            .get_account_details(account_id)
+        let (_, proof) = rpc_client
+            .get_account(account_id, GetAccountRequest::new())
             .await
-            .map_err(|e| {
-                MultisigError::MidenClient(format!(
+            .map_err(|e| match e {
+                RpcError::RequestError {
+                    error_kind: GrpcError::NotFound,
+                    ..
+                } => {
+                    MultisigError::MidenClient(format!("account {} not found on chain", account_id))
+                }
+                other => MultisigError::MidenClient(format!(
                     "failed to fetch on-chain commitment for account {}: {}",
-                    account_id, e
-                ))
+                    account_id, other
+                )),
             })?;
 
-        Ok(fetched_account.commitment())
+        Ok(proof.account_witness().state_commitment())
     }
 
     pub(crate) async fn try_get_on_chain_account_commitment(
@@ -59,9 +81,12 @@ impl MultisigClient {
         account_id: AccountId,
     ) -> Result<Option<Word>> {
         let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
-        match rpc_client.get_account_details(account_id).await {
-            Ok(fetched_account) => {
-                let commitment = fetched_account.commitment();
+        match rpc_client
+            .get_account(account_id, GetAccountRequest::new())
+            .await
+        {
+            Ok((_, proof)) => {
+                let commitment = proof.account_witness().state_commitment();
                 if commitment == Word::default() {
                     Ok(None)
                 } else {
@@ -265,6 +290,20 @@ impl MultisigClient {
     /// Finalizes a transaction by executing it on-chain and updating local state.
     ///
     /// This handles the common post-execution logic for all proposal types.
+    ///
+    /// Note-less storage-config changes on private accounts take a manual
+    /// execute/prove/submit pipeline and rebuild the account from the proven
+    /// delta: the standard submit path otherwise leaves stale local state
+    /// (cleared storage-map entries linger) and stages SMT roots that block a
+    /// corrective overwrite. Note-bearing transactions keep the standard path to
+    /// preserve note tracking. A full-state delta (private accounts) converts
+    /// directly into the account; an incremental delta is applied onto the base.
+    ///
+    /// For a `SwitchGuardian` the new endpoint is registered only when it
+    /// actually differs from the current one. On an unchanged endpoint the
+    /// pushed switch delta canonicalizes normally; re-registering would overwrite
+    /// the pre-switch base and double-apply the delta. Post-submit `sync_state`
+    /// failures are ignored because GUARDIAN may not have canonicalized yet.
     pub(crate) async fn finalize_transaction(
         &mut self,
         account_id: AccountId,
@@ -279,7 +318,6 @@ impl MultisigClient {
             verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
         }
 
-        // Capture the new GUARDIAN endpoint if this is a SwitchGuardian transaction
         let new_guardian_endpoint =
             if let TransactionType::SwitchGuardian { new_endpoint, .. } = transaction_type {
                 Some(new_endpoint.clone())
@@ -287,51 +325,114 @@ impl MultisigClient {
                 None
             };
 
-        // Execute the transaction on-chain
-        self.miden_client
-            .submit_new_transaction(account_id, tx_request)
-            .await
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!(
-                    "transaction execution failed: {:?}",
-                    e
-                ))
-            })?;
+        let updated_account: Account = if rebuilds_local_state_from_delta(transaction_type) {
+            let base_account: Account = self
+                .miden_client
+                .get_account(account_id)
+                .await
+                .map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to get account before execution: {}",
+                        e
+                    ))
+                })?
+                .ok_or_else(|| {
+                    MultisigError::MissingConfig("account not found before execution".to_string())
+                })?;
 
-        // Try to sync with the network to ensure consistent state.
-        if let Err(_e) = self.miden_client.sync_state().await {
-            // Intentionally ignored, GUARDIAN may not have canonicalized yet.
-        }
+            let tx_result = self
+                .miden_client
+                .execute_transaction(account_id, tx_request)
+                .await
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "transaction execution failed: {:?}",
+                        e
+                    ))
+                })?;
 
-        // Get updated account from miden-client's local state
-        let account_record = self
-            .miden_client
-            .get_account(account_id)
-            .await
-            .map_err(|e| {
-                MultisigError::MidenClient(format!("failed to get updated account: {}", e))
-            })?
-            .ok_or_else(|| {
-                MultisigError::MissingConfig("account not found after execution".to_string())
-            })?;
+            let proven = self
+                .miden_client
+                .prove_transaction(&tx_result)
+                .await
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "transaction proving failed: {:?}",
+                        e
+                    ))
+                })?;
 
-        let updated_account: Account = account_record;
+            self.miden_client
+                .submit_proven_transaction(proven, &tx_result)
+                .await
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "transaction submission failed: {:?}",
+                        e
+                    ))
+                })?;
 
-        // Update GUARDIAN endpoint if this was a SwitchGuardian transaction, then register on new GUARDIAN
+            let account_delta = tx_result.account_delta();
+            let rebuilt: Account = if account_delta.is_full_state() {
+                Account::try_from(account_delta).map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to build account from full state delta: {}",
+                        e
+                    ))
+                })?
+            } else {
+                let mut acc = base_account;
+                acc.apply_delta(account_delta).map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to apply transaction delta to account: {}",
+                        e
+                    ))
+                })?;
+                acc
+            };
+
+            self.add_or_update_account(&rebuilt, true).await?;
+
+            let _ = self.miden_client.sync_state().await;
+
+            rebuilt
+        } else {
+            self.miden_client
+                .submit_new_transaction(account_id, tx_request)
+                .await
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "transaction execution failed: {:?}",
+                        e
+                    ))
+                })?;
+
+            let _ = self.miden_client.sync_state().await;
+
+            self.miden_client
+                .get_account(account_id)
+                .await
+                .map_err(|e| {
+                    MultisigError::MidenClient(format!("failed to get updated account: {}", e))
+                })?
+                .ok_or_else(|| {
+                    MultisigError::MissingConfig("account not found after execution".to_string())
+                })?
+        };
+
         if let Some(endpoint) = new_guardian_endpoint {
+            let switching_endpoint = endpoint != self.guardian_endpoint;
             self.guardian_endpoint = endpoint;
+            self.account = Some(MultisigAccount::new(updated_account.clone()));
 
-            // Refresh the local account after switching to the new GUARDIAN endpoint.
-            let multisig_account = MultisigAccount::new(updated_account.clone());
-            self.account = Some(multisig_account);
-
-            // Register the updated account on the new GUARDIAN server
-            self.register_on_guardian().await.map_err(|e| {
-                MultisigError::GuardianServer(format!(
-                    "transaction executed successfully but failed to register on new GUARDIAN: {}",
-                    e
-                ))
-            })?;
+            if switching_endpoint {
+                self.register_on_guardian().await.map_err(|e| {
+                    MultisigError::GuardianServer(format!(
+                        "transaction executed successfully but failed to register on new GUARDIAN: {}",
+                        e
+                    ))
+                })?;
+            }
         } else {
             let multisig_account = MultisigAccount::new(updated_account);
             self.account = Some(multisig_account);
@@ -358,20 +459,30 @@ impl MultisigClient {
             .miden_client
             .get_account(account_id)
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to check account: {}", e)))?;
+            .map_err(|e| {
+                MultisigError::MidenClient(format!("failed to check account: {}", error_chain(&e)))
+            })?;
 
         if existing.is_some() {
             self.miden_client
                 .add_account(account, true)
                 .await
                 .map_err(|e| {
-                    MultisigError::MidenClient(format!("failed to update account: {}", e))
+                    MultisigError::MidenClient(format!(
+                        "failed to update account: {}",
+                        error_chain(&e)
+                    ))
                 })?;
         } else {
             self.miden_client
                 .add_account(account, imported)
                 .await
-                .map_err(|e| MultisigError::MidenClient(format!("failed to add account: {}", e)))?;
+                .map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to add account: {}",
+                        error_chain(&e)
+                    ))
+                })?;
         }
 
         Ok(())
@@ -390,7 +501,7 @@ mod tests {
     use super::MultisigClient;
 
     fn tx_summary_json() -> serde_json::Value {
-        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
             account_id,
             AccountStorageDelta::default(),
@@ -435,10 +546,10 @@ mod tests {
 
     #[test]
     fn ensure_proposal_account_id_accepts_matching_account() {
-        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
 
         let result = MultisigClient::ensure_proposal_account_id(
-            "0x7bfb0f38b0fafa103f86a805594170",
+            "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b",
             &account_id,
         );
 
@@ -447,17 +558,17 @@ mod tests {
 
     #[test]
     fn ensure_proposal_account_id_rejects_mismatched_account() {
-        let account_id = AccountId::from_hex("0x7bfb0f38b0fafa103f86a805594170").unwrap();
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
 
         let error = MultisigClient::ensure_proposal_account_id(
-            "0x8a65fc5a39e4cd106d648e3eb4ab5f",
+            "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
             &account_id,
         )
         .unwrap_err();
 
         assert_eq!(
             error.to_string(),
-            "invalid configuration: proposal is for account 0x8a65fc5a39e4cd106d648e3eb4ab5f instead of 0x7bfb0f38b0fafa103f86a805594170"
+            "invalid configuration: proposal is for account 0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a instead of 0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"
         );
     }
 }

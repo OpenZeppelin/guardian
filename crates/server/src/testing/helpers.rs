@@ -18,7 +18,7 @@ use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
 use miden_protocol::utils::serde::Serializable;
@@ -476,7 +476,7 @@ pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
 }
 
 pub fn get_test_account_id() -> (AccountId, String) {
-    let account_id_hex = "0x8a65fc5a39e4cd106d648e3eb4ab5f";
+    let account_id_hex = "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a";
     let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
     (account_id, account_id_hex.to_string())
 }

@@ -10,7 +10,7 @@ use miden_confidential_contracts::multisig_guardian::{
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
-    PublicKey as EcdsaPublicKey, SecretKey as EcdsaSecretKey,
+    PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
 };
 use miden_protocol::crypto::dsa::falcon512_poseidon2::{
     PublicKey as FalconPublicKey, SecretKey as FalconSecretKey,

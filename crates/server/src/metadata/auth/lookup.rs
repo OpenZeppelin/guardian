@@ -83,7 +83,7 @@ mod tests {
     use guardian_shared::hex::IntoHex;
     use miden_protocol::Word;
     use miden_protocol::account::AccountId;
-    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey as EcdsaSecretKey;
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
     use miden_protocol::utils::serde::Serializable;
 
@@ -184,7 +184,7 @@ mod tests {
         let ts = 1_700_000_000_000i64;
 
         let account_id =
-            AccountId::from_hex("0x8a65fc5a39e4cd106d648e3eb4ab5f").expect("account id");
+            AccountId::from_hex("0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a").expect("account id");
         let payload = AuthRequestPayload::from_bytes(&kc.as_bytes());
         let request_digest = AuthRequestMessage::new(account_id, ts, payload).to_word();
         let sig = secret.sign(request_digest).into_hex();

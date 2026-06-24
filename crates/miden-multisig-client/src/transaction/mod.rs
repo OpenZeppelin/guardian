@@ -60,7 +60,7 @@ pub fn generate_salt() -> Word {
     for (i, chunk) in bytes.chunks(8).enumerate() {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(chunk);
-        felts[i] = Felt::new(u64::from_le_bytes(arr));
+        felts[i] = guardian_shared::felt::felt_from_u64_reduced(u64::from_le_bytes(arr));
     }
     felts.into()
 }
@@ -95,6 +95,26 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("failed to decode transaction request")
+        );
+    }
+
+    /// Guards against silent transaction-kernel drift: the kernel commitment depends on transitive
+    /// hashing crates (notably Plonky3 `p3-*`), so a stale `Cargo.lock` yields a kernel the node
+    /// rejects with "value for key ... not present in the advice map". This constant must equal the
+    /// live network's "Proof Commitment"; if the test fails after a dependency bump, realign the
+    /// crates (`cargo update`) and update the constant together.
+    #[test]
+    fn transaction_kernel_commitment_matches_network() {
+        use miden_protocol::transaction::TransactionKernel;
+
+        const EXPECTED_KERNEL_COMMITMENT: &str =
+            "0x8cd42f3f2c023c2632ceb982f3d3cf2952f5a1655915c9525a04b510c53fbd20";
+
+        let actual = word_to_hex(&TransactionKernel.to_commitment());
+        assert_eq!(
+            actual, EXPECTED_KERNEL_COMMITMENT,
+            "transaction kernel commitment drifted from the network kernel; a transitive \
+             hashing crate (e.g. Plonky3 `p3-*`) likely changed in Cargo.lock"
         );
     }
 }

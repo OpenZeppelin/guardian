@@ -1,7 +1,7 @@
 use miden_multisig_client::{word_from_hex, ProcedureName, ProcedureThreshold};
 use rustyline::DefaultEditor;
 
-use crate::display::{print_section, print_success, print_waiting, shorten_hex};
+use crate::display::{print_info, print_section, print_success, print_waiting, shorten_hex};
 use crate::menu::prompt_input;
 use crate::state::SessionState;
 
@@ -120,6 +120,10 @@ pub async fn action_create_account(
     print_success(&format!(
         "Account created: {}",
         shorten_hex(&account_id.to_string())
+    ));
+    print_info(&format!(
+        "Address (paste into faucet): {}",
+        account_id.to_bech32(state.network_id())
     ));
 
     // Automatically configure account in GUARDIAN

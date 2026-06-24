@@ -448,7 +448,7 @@ mod tests {
     async fn test_resolve_account_timestamp_too_old() {
         // Set server clock to a specific time
         let clock = MockClock::new(Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap());
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let (signer_pubkey, signer_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(account_id);
 
@@ -481,7 +481,7 @@ mod tests {
     async fn test_resolve_account_timestamp_in_future() {
         // Set server clock to a specific time
         let clock = MockClock::new(Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap());
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let (signer_pubkey, signer_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(account_id);
 
@@ -514,7 +514,7 @@ mod tests {
     async fn test_resolve_account_replay_attack_detected() {
         // Set server clock to a specific time
         let clock = MockClock::new(Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap());
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
         // Create a signer and generate signature with the mock clock's timestamp
         let test_signer = crate::testing::helpers::TestSigner::new();
@@ -548,7 +548,7 @@ mod tests {
     async fn test_resolve_account_cas_storage_error() {
         // Set server clock to a specific time
         let clock = MockClock::new(Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap());
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
         // Create a signer and generate signature with the mock clock's timestamp
         let test_signer = crate::testing::helpers::TestSigner::new();
@@ -581,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_account_not_found() {
         let clock = MockClock::default();
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let (signer_pubkey, _, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(account_id);
 
@@ -604,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_account_metadata_storage_error() {
         let clock = MockClock::default();
-        let account_id = "0x7bfb0f38b0fafa103f86a805594170";
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let (signer_pubkey, _, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(account_id);
 

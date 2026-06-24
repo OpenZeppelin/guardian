@@ -1,6 +1,6 @@
 use guardian_shared::SignatureScheme;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SecretKey;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as SecretKey;
 use miden_protocol::utils::serde::Serializable;
 
 use super::Signer;

@@ -352,14 +352,20 @@ pub proc update_signers_and_threshold(multisig_config_hash: word)
     drop
     # => [pad(12)]
 
-    # compare initial vs current multisig config
-
-    # load init_num_of_approvers & new_num_of_approvers
     loc_load.0 loc_load.1
     # => [init_num_of_approvers, new_num_of_approvers, pad(12)]
 
-    exec.cleanup_pubkey_mapping
-    # => [pad(12)]
+    dup.1 dup.1
+    u32assert2 u32lt
+    # => [should_cleanup, init_num_of_approvers, new_num_of_approvers, pad(12)]
+
+    if.true
+        exec.cleanup_pubkey_mapping
+        # => [pad(12)]
+    else
+        drop drop
+        # => [pad(12)]
+    end
 end
 
 #! Update or clear the threshold override for a specific procedure.
@@ -902,14 +908,20 @@ pub proc update_signers_and_threshold(multisig_config_hash: word)
     drop
     # => [pad(12)]
 
-    # compare initial vs current multisig config
-
-    # load init_num_of_approvers & new_num_of_approvers
     loc_load.0 loc_load.1
     # => [init_num_of_approvers, new_num_of_approvers, pad(12)]
 
-    exec.cleanup_pubkey_mapping
-    # => [pad(12)]
+    dup.1 dup.1
+    u32assert2 u32lt
+    # => [should_cleanup, init_num_of_approvers, new_num_of_approvers, pad(12)]
+
+    if.true
+        exec.cleanup_pubkey_mapping
+        # => [pad(12)]
+    else
+        drop drop
+        # => [pad(12)]
+    end
 end
 
 #! Update or clear the threshold override for a specific procedure.
