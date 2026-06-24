@@ -39,6 +39,10 @@ audit table, no schema migrations, and cannot safely back multiple ECS tasks.
 
 ## Production checklist
 
+For a copy-pasteable, end-to-end walkthrough that satisfies every item below,
+follow the [Production deployment guide](./guides/production/README.md). This
+checklist is the summary; the guide is the step-by-step.
+
 Before treating a deployment as production-ready:
 
 - Set `DEPLOY_STAGE=prod`.
@@ -75,6 +79,7 @@ Before treating a deployment as production-ready:
 
 | Need | Read |
 |---|---|
+| End-to-end production walkthrough (AWS ECS) | [`guides/production/`](./guides/production/README.md) |
 | Step-by-step setup for a specific run mode | [`guides/`](./guides/README.md) |
 | Deploy or update the AWS stack | [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md) |
 | Understand the AWS topology and Terraform ownership | [`architecture/infra.md`](./architecture/infra.md) |
