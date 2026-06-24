@@ -145,17 +145,28 @@ Falcon keypair on a trusted device (the `examples/operator-smoke-web` harness ha
 a UI for this) and hands you only the `0x…` **public** key; see
 [`DASHBOARD.md` → Enrolling an operator](../../DASHBOARD.md#enrolling-an-operator).
 
-You then let Terraform create the stack-scoped allowlist secret from those public
-keys, or point at an existing secret ARN:
+Two ways to supply those public keys:
 
-```bash
-export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
-```
+- **Terraform-managed (simplest).** Pass the keys and Terraform creates the
+  stack-scoped Secrets Manager secret:
+  ```bash
+  export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
+  ```
+  This bare-key form grants `dashboard:read` only.
 
-The bare-key (Terraform) form grants `dashboard:read` only. To grant
-`accounts:pause`, manage the secret externally with object entries. The server
-re-reads the allowlist on every challenge and authenticated request, so
-add/revoke takes effect without a restart. See [`DASHBOARD.md`](../../DASHBOARD.md).
+- **Externally-managed secret (for `accounts:pause`).** Manage the allowlist
+  secret yourself — using object entries with explicit permissions — and point
+  the deployment at it by ARN:
+  ```bash
+  export GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="arn:aws:secretsmanager:...:secret:guardian/server/operators"
+  ```
+  This wires the runtime `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` and takes
+  precedence over the JSON list. It is the only path that can grant
+  `accounts:pause` (object entries aren't expressible through the Terraform
+  list).
+
+The server re-reads the allowlist on every challenge and authenticated request,
+so add/revoke takes effect without a restart. See [`DASHBOARD.md`](../../DASHBOARD.md).
 
 ## 2. Set the production environment
 
