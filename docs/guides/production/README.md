@@ -321,11 +321,13 @@ encryption is enabled against the bundled Postgres, which is empty on first run.
 
 ```bash
 curl -s localhost:3000/pubkey | jq .     # Falcon + ECDSA public keys / commitments
-docker compose logs server | grep -E "ECDSA ACK signer ready|storage encryption"
+docker compose logs server | grep "ECDSA ACK signer ready"
 ```
 
-`/pubkey` returning both keys confirms Secrets Manager + KMS resolved; the log
-line confirms the KMS sign probe passed and the store is encrypted.
+`/pubkey` returning both keys confirms Secrets Manager + KMS resolved; the
+`ECDSA ACK signer ready` line confirms the KMS sign probe passed. Storage
+encryption is confirmed by the server starting cleanly — a missing/malformed key
+fails fast at startup rather than running unencrypted.
 
 ## Troubleshooting
 

@@ -16,12 +16,12 @@
 
 services:
   server:
-    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION in .env (pin an explicit version for production)}
     pull_policy: always
     ports:
       - "3000:3000"
       - "50051:50051"
-      - "9464:9464"
+      - "127.0.0.1:9464:9464"
     depends_on:
       postgres:
         condition: service_healthy
