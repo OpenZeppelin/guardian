@@ -49,8 +49,12 @@ Terraform ownership.
 - The repo checked out (for `scripts/aws-deploy.sh`, the Terraform in `infra/`,
   and the bootstrap helpers).
 - Docker, for `aws-deploy.sh build`.
-- AWS CLI credentials that can create a KMS key, create Secrets Manager secrets,
-  and run Terraform (ECS, RDS, ALB, IAM, Route 53/ACM). See
+- **An authenticated AWS session** before any command — the script and Terraform
+  call AWS on every step and never prompt for login, so an unauthenticated shell
+  just fails with raw AWS errors. Log in (`aws sso login` / `aws configure`) and
+  confirm with `aws sts get-caller-identity`. The credentials need to create a KMS
+  key and Secrets Manager secrets and run Terraform (ECS, RDS, ALB, IAM, Route
+  53/ACM); full list in
   [`SERVER_AWS_DEPLOY.md` → Prerequisites](../../SERVER_AWS_DEPLOY.md#prerequisites).
 - A `STACK_NAME` (e.g. `guardian-prod`). Secret names and resources derive from
   it, so distinct stacks coexist in one account.
@@ -64,9 +68,12 @@ Terraform ownership.
 | Miden network | Set `GUARDIAN_NETWORK_TYPE` explicitly. Supported: `MidenTestnet`, `MidenDevnet` (use `MidenTestnet` for the public network). An unrecognized value silently falls back to `MidenDevnet`, so never ship the default. |
 | ECDSA ACK backend | **KMS** (recommended for new deployments — the private key never enters the process). Secrets Manager remains supported. See [`runbooks/secrets.md`](../../runbooks/secrets.md#hosted-ecdsa-backend-aws-kms). |
 
-Throughout, export the stack identity once:
+Throughout, export the stack identity once. Set `AWS_REGION` **before** step 1 —
+bootstrap writes the secrets and KMS key into it (default `us-east-1`):
 
 ```bash
+aws sts get-caller-identity        # confirm you're authenticated, in the right account
+export AWS_REGION=us-east-1        # region for secrets, KMS, and all stack resources
 export DEPLOY_STAGE=prod
 export STACK_NAME=guardian-prod
 export GUARDIAN_NETWORK_TYPE=MidenTestnet   # MidenTestnet | MidenDevnet | MidenLocal
@@ -118,14 +125,29 @@ data) is the natural enablement window.
 
 This generates a random 32-byte key (`openssl rand -base64 32`) and stores it as
 a Secrets Manager secret holding
-`{ "active": "k1", "keys": { "k1": "<the generated base64 key>" } }`. Setting
-`GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` at deploy (step 2) wires the runtime
-`GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` plus the task-role
-`secretsmanager:GetSecretValue` grant — the same pattern as the ACK keys.
+`{ "active": "k1", "keys": { "k1": "<the generated base64 key>" } }`, defaulting
+to the name `<stack-name>/server/storage-encryption-key`.
+
+> **Bootstrapping creates the key but does _not_ turn encryption on.** Unlike the
+> ACK keys (which load by default in prod), storage encryption is opt-in: you
+> must set **`GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME`** at deploy (step 2) to the
+> secret **name** the bootstrap printed (the **name**, not the ARN — Terraform
+> resolves the ARN itself). That env var is the on-switch — setting it wires the
+> task-role `secretsmanager:GetSecretValue` grant and injects the runtime
+> `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` (the same name→grant→`SECRET_ID`
+> pattern as the ACK keys). Leave it unset and the bootstrapped secret simply sits
+> unused while storage stays plaintext at rest. It only wires up on the `prod`
+> stage.
+
+```bash
+export GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME="$STACK_NAME/server/storage-encryption-key"
+```
+
 Startup is fail-fast: a missing/malformed/wrong-length key, or more than one key
-source, prevents startup rather than degrading to plaintext. Rotate by adding a
-key to `keys` and moving `active`; keep the old key so existing records still
-decrypt. See [`CONFIGURATION.md` → Storage encryption at rest](../../CONFIGURATION.md#storage-encryption-at-rest).
+source, prevents startup rather than degrading to plaintext (and `plan`/`deploy`
+abort early if the env var is set but the secret is missing or malformed). Rotate
+by adding a key to `keys` and moving `active`; keep the old key so existing
+records still decrypt. See [`CONFIGURATION.md` → Storage encryption at rest](../../CONFIGURATION.md#storage-encryption-at-rest).
 
 ### Verified database TLS — CA bundle secret
 
@@ -212,14 +234,24 @@ the deploy-time variables in
 
 ### Keep it in a `.env.prod` and override the profile
 
-Rather than exporting variables piecemeal, keep them in a `.env.prod` and source
+Rather than exporting variables piecemeal, copy the committed
+[`.env.prod.example`](./.env.prod.example) to `.env.prod` (gitignored) and source
 it before each command — the same file feeds every `bootstrap-*`, `plan`, and
-`deploy` run:
+`deploy` run. This is the ECS/RDS track's template; it has **no**
+`POSTGRES_PASSWORD` (RDS is credentialed by Terraform). The single-host Docker
+Compose template is the separate [`.env.example`](./.env.example).
 
 ```bash
-set -a && source .env.prod && set +a
-./scripts/aws-deploy.sh deploy
+cp .env.prod.example .env.prod      # fill in stack name, region, secret names, origins
+set -a && source .env.prod && set +a   # feeds every bootstrap / build / plan / deploy
+
+./scripts/aws-deploy.sh build                 # build + push image to ECR
+./scripts/aws-deploy.sh plan                  # review the Terraform plan against the pushed digest
+./scripts/aws-deploy.sh deploy --skip-build   # apply the reviewed plan (no rebuild)
 ```
+
+The build → plan → deploy split is the recommended flow (step 3 below explains
+why); `deploy` on its own builds and applies in one shot.
 
 Two override channels feed the deploy:
 
