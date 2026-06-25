@@ -4,12 +4,10 @@
 //! Uses two windows: burst (per second) and sustained (per minute).
 
 use axum::{
-    Json,
     body::Body,
-    http::{Request, Response, StatusCode},
+    http::{Request, Response},
     response::IntoResponse,
 };
-use serde::Serialize;
 use std::{
     collections::HashMap,
     env,
@@ -236,13 +234,6 @@ impl RateLimitType {
     }
 }
 
-/// Rate limit error response
-#[derive(Debug, Serialize)]
-pub struct RateLimitResponse {
-    pub success: bool,
-    pub error: String,
-    pub retry_after_secs: u32,
-}
 
 /// Tower layer for rate limiting
 #[derive(Debug, Clone)]
@@ -364,22 +355,14 @@ where
                         "Request rate limited"
                     );
 
-                    let response = RateLimitResponse {
-                        success: false,
-                        error: format!(
-                            "Rate limit exceeded ({} limit). Retry after {} seconds.",
-                            limit_type.as_str(),
-                            retry_after
-                        ),
+                    // Reuse the canonical error object (feature 009): this
+                    // yields `{ code, message, meta }` plus the `Retry-After`
+                    // header, identical to every other Guardian error body.
+                    Ok(crate::error::GuardianError::RateLimitExceeded {
                         retry_after_secs: retry_after,
-                    };
-
-                    Ok((
-                        StatusCode::TOO_MANY_REQUESTS,
-                        [("Retry-After", retry_after.to_string())],
-                        Json(response),
-                    )
-                        .into_response())
+                        scope: limit_type.as_str().to_string(),
+                    }
+                    .into_response())
                 }
             }
         })
@@ -599,18 +582,35 @@ mod tests {
         assert_eq!(original.as_str(), cloned.as_str());
     }
 
-    #[test]
-    fn test_rate_limit_response_serialization() {
-        let response = RateLimitResponse {
-            success: false,
-            error: "Rate limit exceeded".to_string(),
-            retry_after_secs: 60,
-        };
+    #[tokio::test]
+    async fn test_rate_limit_response_uses_canonical_error_envelope() {
+        use axum::body::to_bytes;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
 
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"success\":false"));
-        assert!(json.contains("\"retry_after_secs\":60"));
-        assert!(json.contains("Rate limit exceeded"));
+        let response = crate::error::GuardianError::RateLimitExceeded {
+            retry_after_secs: 60,
+            scope: "sustained".to_string(),
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok()),
+            Some("60")
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Canonical { code, message, meta } shape — no legacy success/error.
+        assert!(parsed.get("success").is_none());
+        assert!(parsed.get("error").is_none());
+        assert_eq!(parsed["code"], "rate_limit_exceeded");
+        assert!(parsed["message"].is_string());
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(true));
+        assert_eq!(parsed["meta"]["retry_after_secs"], serde_json::json!(60));
     }
 
     #[test]

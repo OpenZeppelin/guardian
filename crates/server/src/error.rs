@@ -248,6 +248,109 @@ impl GuardianError {
             GuardianError::AccountPaused { .. } => "GUARDIAN_ACCOUNT_PAUSED",
         }
     }
+
+    /// Short, end-user-safe message for this error (feature
+    /// `009-human-readable-errors`). Unlike [`Display`], this is **safe to show
+    /// directly in a wallet UI**: it is a single plain sentence and is
+    /// safe-by-construction — it never interpolates account IDs, commitments,
+    /// nonces, signer IDs, file paths, URLs, or raw upstream/RPC text. Wording
+    /// is NOT part of the stable wire contract; only [`code`](Self::code) is
+    /// stable. Clients branch and localize on `code`, never on this text.
+    ///
+    /// Server-mapped connectivity faults (`network_error`, `rpc_unavailable`,
+    /// `rpc_validation_failed`) deliberately get a connectivity-style message
+    /// distinct from the single generic message used for pure internal faults
+    /// (`storage_error`, `signing_error`, `configuration_error`,
+    /// `data_unavailable`).
+    pub fn user_message(&self) -> &'static str {
+        match self {
+            // Not found — uniform, no info leak about which thing/account.
+            GuardianError::AccountNotFound(_)
+            | GuardianError::StateNotFound(_)
+            | GuardianError::DeltaNotFound { .. }
+            | GuardianError::ProposalNotFound { .. } => {
+                "We couldn't find that. It may have been completed or removed."
+            }
+            GuardianError::AccountAlreadyExists(_) => "This account already exists.",
+            // Validation — not user-actionable beyond retrying with valid input.
+            GuardianError::InvalidAccountId(_)
+            | GuardianError::InvalidDelta(_)
+            | GuardianError::InvalidCommitment(_)
+            | GuardianError::CommitmentMismatch { .. }
+            | GuardianError::InvalidProposalSignature(_)
+            | GuardianError::InvalidInput(_)
+            | GuardianError::InvalidNetworkConfig(_)
+            | GuardianError::InvalidEvmProposal(_)
+            | GuardianError::InvalidCursor(_)
+            | GuardianError::InvalidLimit(_)
+            | GuardianError::InvalidStatusFilter(_) => {
+                "That request couldn't be processed. Please check the details and try again."
+            }
+            // Pending-change conflicts.
+            GuardianError::ConflictPendingDelta
+            | GuardianError::ConflictPendingProposal
+            | GuardianError::PendingProposalsLimit { .. } => {
+                "There's already a pending change for this account. Finish or cancel it first."
+            }
+            GuardianError::AuthenticationFailed(_) => {
+                "Your session has expired. Please sign in again."
+            }
+            GuardianError::AuthorizationFailed(_) | GuardianError::SignerNotAuthorized(_) => {
+                "You're not an authorized signer for this account."
+            }
+            GuardianError::InsufficientOperatorPermission { .. } => {
+                "You don't have permission to do that."
+            }
+            GuardianError::ProposalAlreadySigned { .. } => "You've already signed this transaction.",
+            GuardianError::InsufficientSignatures { .. } => {
+                "This transaction still needs more signatures."
+            }
+            GuardianError::UnsupportedForNetwork { .. } | GuardianError::UnsupportedEvmChain { .. } => {
+                "That action isn't supported for this account's network."
+            }
+            GuardianError::RateLimitExceeded { .. } => {
+                "Too many requests — please try again shortly."
+            }
+            GuardianError::AccountPaused { .. } => {
+                "This account is paused and can't approve transactions right now."
+            }
+            GuardianError::AccountDataUnavailable(_) => {
+                "This account's data is temporarily unavailable. Please try again."
+            }
+            // Server-mapped connectivity (Guardian reached; the network behind
+            // it didn't answer) — distinct from internal faults below.
+            GuardianError::NetworkError(_)
+            | GuardianError::RpcUnavailable(_)
+            | GuardianError::RpcValidationFailed(_) => {
+                "Guardian can't reach the network right now. Please try again."
+            }
+            // Pure internal faults — single generic message, no internals.
+            GuardianError::StorageError(_)
+            | GuardianError::SigningError(_)
+            | GuardianError::ConfigurationError(_)
+            | GuardianError::DataUnavailable(_) => {
+                "Something went wrong on Guardian's side. Please try again."
+            }
+        }
+    }
+
+    /// Whether retrying the same request could plausibly succeed. Surfaced in
+    /// `meta.retryable` on the error wire object so clients can drive retry UI
+    /// uniformly without branching on every `code`.
+    pub fn retryable(&self) -> bool {
+        matches!(
+            self,
+            GuardianError::AccountDataUnavailable(_)
+                | GuardianError::StorageError(_)
+                | GuardianError::NetworkError(_)
+                | GuardianError::SigningError(_)
+                | GuardianError::ConfigurationError(_)
+                | GuardianError::RpcUnavailable(_)
+                | GuardianError::RpcValidationFailed(_)
+                | GuardianError::RateLimitExceeded { .. }
+                | GuardianError::DataUnavailable(_)
+        )
+    }
 }
 
 impl fmt::Display for GuardianError {
@@ -379,66 +482,103 @@ impl From<miden_keystore::KeyStoreError> for GuardianError {
     }
 }
 
+/// Structured machine-readable side-data on the error wire object. Carried
+/// identically on the HTTP error body and the gRPC `Status.details`
+/// (feature `009-human-readable-errors`). `retryable` is always present; the
+/// remaining fields are omitted when they do not apply to the variant.
 #[derive(Serialize)]
-struct ErrorResponse {
-    success: bool,
-    code: &'static str,
-    error: String,
+struct ErrorMeta {
+    /// Whether retrying the same request could plausibly succeed.
+    retryable: bool,
+    /// Seconds to wait before retrying. Populated only for
+    /// `rate_limit_exceeded`; the `Retry-After` header carries the same value.
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_after_secs: Option<u32>,
-    /// FR-016 / FR-017: lex-sorted permissions the operator lacks.
-    /// Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
+    /// Lex-sorted permissions the operator lacks. Populated only for
+    /// `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_permissions: Option<Vec<String>>,
-    /// FR-016: `false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`,
-    /// absent elsewhere.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    retryable: Option<bool>,
-    /// RFC 3339 UTC timestamp of the original pause. Populated only
-    /// for `GUARDIAN_ACCOUNT_PAUSED`.
+    /// RFC 3339 UTC timestamp of the original pause. Populated only for
+    /// `GUARDIAN_ACCOUNT_PAUSED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     paused_at: Option<String>,
     /// Reason captured at first pause. Populated only for
-    /// `GUARDIAN_ACCOUNT_PAUSED` (may be absent within that variant
-    /// if the reason field is null).
+    /// `GUARDIAN_ACCOUNT_PAUSED` (may itself be absent within that variant).
     #[serde(skip_serializing_if = "Option::is_none")]
     paused_reason: Option<String>,
+}
+
+/// The single error object on the wire: `{ code, message, meta }`. Identical
+/// shape on the HTTP error body and the gRPC `Status.details` (feature
+/// `009-human-readable-errors`). The legacy `success`/`error` fields are
+/// gone; the diagnostic [`Display`](GuardianError) string is logged
+/// server-side only and never returned.
+#[derive(Serialize)]
+struct ErrorBody {
+    /// Stable machine-readable code; the client branch + i18n key.
+    code: &'static str,
+    /// User-safe sentence; safe to display verbatim. Wording is not stable.
+    message: &'static str,
+    meta: ErrorMeta,
+}
+
+impl GuardianError {
+    /// Build the structured `meta` block for this error.
+    fn error_meta(&self) -> ErrorMeta {
+        let retry_after_secs = match self {
+            GuardianError::RateLimitExceeded {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
+        };
+        let (missing_permissions, paused_at, paused_reason) = match self {
+            GuardianError::InsufficientOperatorPermission {
+                missing_permissions,
+            } => (Some(missing_permissions.clone()), None, None),
+            GuardianError::AccountPaused {
+                paused_at,
+                paused_reason,
+            } => (None, Some(paused_at.to_rfc3339()), paused_reason.clone()),
+            _ => (None, None, None),
+        };
+        ErrorMeta {
+            retryable: self.retryable(),
+            retry_after_secs,
+            missing_permissions,
+            paused_at,
+            paused_reason,
+        }
+    }
+
+    /// Build the full `{ code, message, meta }` wire object. Shared by the
+    /// HTTP `IntoResponse` and the gRPC `Status` conversion so the two
+    /// surfaces return a byte-identical object (Constitution II parity).
+    fn error_body(&self) -> ErrorBody {
+        ErrorBody {
+            code: self.code(),
+            message: self.user_message(),
+            meta: self.error_meta(),
+        }
+    }
 }
 
 impl IntoResponse for GuardianError {
     fn into_response(self) -> Response {
         let status = self.http_status();
+        // FR-003: the diagnostic Display string is logged for operators, never
+        // returned on the wire (removes the disclosure risk by construction).
+        if status.is_server_error() {
+            tracing::error!(code = self.code(), detail = %self, "guardian error (HTTP 5xx)");
+        } else {
+            tracing::debug!(code = self.code(), detail = %self, "guardian error (HTTP 4xx)");
+        }
         let retry_after_secs = match &self {
             GuardianError::RateLimitExceeded {
                 retry_after_secs, ..
             } => Some(*retry_after_secs),
             _ => None,
         };
-        let (missing_permissions, retryable, paused_at, paused_reason) = match &self {
-            GuardianError::InsufficientOperatorPermission {
-                missing_permissions,
-            } => (Some(missing_permissions.clone()), Some(false), None, None),
-            GuardianError::AccountPaused {
-                paused_at,
-                paused_reason,
-            } => (
-                None,
-                Some(false),
-                Some(paused_at.to_rfc3339()),
-                paused_reason.clone(),
-            ),
-            _ => (None, None, None, None),
-        };
-        let body = Json(ErrorResponse {
-            success: false,
-            code: self.code(),
-            error: self.to_string(),
-            retry_after_secs,
-            missing_permissions,
-            retryable,
-            paused_at,
-            paused_reason,
-        });
+        let body = Json(self.error_body());
         if let Some(retry_after_secs) = retry_after_secs {
             (
                 status,
@@ -454,22 +594,16 @@ impl IntoResponse for GuardianError {
 
 impl From<GuardianError> for tonic::Status {
     fn from(err: GuardianError) -> Self {
-        match &err {
-            GuardianError::AccountPaused {
-                paused_at,
-                paused_reason,
-            } => {
-                let details = serde_json::json!({
-                    "code": err.code(),
-                    "paused_at": paused_at.to_rfc3339(),
-                    "paused_reason": paused_reason,
-                })
-                .to_string()
-                .into_bytes();
-                tonic::Status::with_details(err.grpc_status(), err.to_string(), details.into())
-            }
-            _ => tonic::Status::new(err.grpc_status(), err.to_string()),
+        // gRPC carries the same `{ code, message, meta }` object as HTTP, in
+        // `Status.details`, for every error. `Status.message` is the user-safe
+        // message; the diagnostic Display string is logged, not returned.
+        if err.http_status().is_server_error() {
+            tracing::error!(code = err.code(), detail = %err, "guardian error (gRPC internal)");
+        } else {
+            tracing::debug!(code = err.code(), detail = %err, "guardian error (gRPC)");
         }
+        let details = serde_json::to_vec(&err.error_body()).unwrap_or_default();
+        tonic::Status::with_details(err.grpc_status(), err.user_message(), details.into())
     }
 }
 
@@ -901,10 +1035,20 @@ mod tests {
 
     #[test]
     fn into_tonic_status() {
+        // Status.message is now the user-safe message (not the Display detail
+        // "bad creds", which is logged, not returned); details carry the
+        // identical { code, message, meta } object as the HTTP body.
         let err = GuardianError::AuthenticationFailed("bad creds".into());
+        let user_message = err.user_message();
         let status: tonic::Status = err.into();
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
-        assert!(status.message().contains("bad creds"));
+        assert_eq!(status.message(), user_message);
+        assert!(!status.message().contains("bad creds"));
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("details are JSON");
+        assert_eq!(details["code"], "authentication_failed");
+        assert_eq!(details["message"], user_message);
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     // --- Dashboard pagination error variants (FR-028) ---
@@ -993,17 +1137,19 @@ mod tests {
             serde_json::from_slice(&body_bytes).expect("body is valid JSON");
 
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(parsed["success"], serde_json::Value::Bool(false));
+        // New shape: no `success`/`error`; `code` + `message` at top level,
+        // structured side-data under `meta`.
+        assert!(parsed.get("success").is_none());
+        assert!(parsed.get("error").is_none());
         assert_eq!(parsed["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+        assert!(parsed["message"].is_string());
         assert_eq!(
-            parsed["missing_permissions"],
+            parsed["meta"]["missing_permissions"],
             serde_json::json!(["accounts:pause"])
         );
-        assert_eq!(parsed["retryable"], serde_json::Value::Bool(false));
-        // The new fields are populated; the legacy `retry_after_secs`
-        // is absent for this code (additive extension preserves the
-        // existing envelope shape for every other code).
-        assert!(parsed.get("retry_after_secs").is_none());
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(false));
+        // `retry_after_secs` does not apply to this code.
+        assert!(parsed["meta"].get("retry_after_secs").is_none());
     }
 
     // -- Feature 001-account-pausing: AccountPaused --
@@ -1039,10 +1185,16 @@ mod tests {
             serde_json::from_slice(&body_bytes).expect("body is valid JSON");
 
         assert_eq!(status, StatusCode::CONFLICT);
+        assert!(parsed.get("success").is_none());
+        assert!(parsed.get("error").is_none());
         assert_eq!(parsed["code"], "GUARDIAN_ACCOUNT_PAUSED");
-        assert_eq!(parsed["paused_at"], "2026-05-19T14:23:00+00:00");
-        assert_eq!(parsed["paused_reason"], "suspected cosigner compromise");
-        assert_eq!(parsed["retryable"], serde_json::Value::Bool(false));
+        assert!(parsed["message"].is_string());
+        assert_eq!(parsed["meta"]["paused_at"], "2026-05-19T14:23:00+00:00");
+        assert_eq!(
+            parsed["meta"]["paused_reason"],
+            "suspected cosigner compromise"
+        );
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[test]
@@ -1058,23 +1210,200 @@ mod tests {
         let details: serde_json::Value =
             serde_json::from_slice(status.details()).expect("details are JSON");
         assert_eq!(details["code"], "GUARDIAN_ACCOUNT_PAUSED");
-        assert_eq!(details["paused_at"], "2026-05-19T14:23:00+00:00");
-        assert_eq!(details["paused_reason"], "compromise");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["paused_at"], "2026-05-19T14:23:00+00:00");
+        assert_eq!(details["meta"]["paused_reason"], "compromise");
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[test]
-    fn other_errors_do_not_carry_missing_permissions_or_retryable() {
+    fn plain_error_body_has_code_message_meta_and_no_legacy_fields() {
         use axum::body::to_bytes;
-        // A non-permission error must NOT populate the new fields, so
-        // existing dashboard error parsers see no change (research.md
-        // Decision 1: additive extension).
+        // A plain error: { code, message, meta:{retryable} } — no `success`,
+        // no `error`, and no `meta` fields that don't apply to the variant.
         let err = GuardianError::AccountNotFound("0xabc".into());
         let response = err.into_response();
         let body_bytes = futures::executor::block_on(to_bytes(response.into_body(), usize::MAX))
             .expect("body bytes");
         let parsed: serde_json::Value =
             serde_json::from_slice(&body_bytes).expect("body is valid JSON");
-        assert!(parsed.get("missing_permissions").is_none());
-        assert!(parsed.get("retryable").is_none());
+        assert!(parsed.get("success").is_none());
+        assert!(parsed.get("error").is_none());
+        assert_eq!(parsed["code"], "account_not_found");
+        assert!(parsed["message"].is_string());
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(false));
+        assert!(parsed["meta"].get("missing_permissions").is_none());
+        assert!(parsed["meta"].get("paused_at").is_none());
+        assert!(parsed["meta"].get("retry_after_secs").is_none());
+    }
+
+    // --- Feature 009-human-readable-errors: user_message() ---
+
+    /// Every variant, built with deliberately sensitive-looking payloads so
+    /// the sanitization scan (SC-002) is meaningful.
+    fn all_variants_with_sensitive_payloads() -> Vec<GuardianError> {
+        let paused_at = chrono::DateTime::parse_from_rfc3339("2026-05-19T14:23:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        vec![
+            GuardianError::AccountNotFound("0xDEADBEEFACCOUNT".into()),
+            GuardianError::AccountAlreadyExists("0xDEADBEEFACCOUNT".into()),
+            GuardianError::AccountDataUnavailable("0xDEADBEEFACCOUNT".into()),
+            GuardianError::InvalidAccountId("0xDEADBEEFACCOUNT".into()),
+            GuardianError::StateNotFound("0xDEADBEEFACCOUNT".into()),
+            GuardianError::DeltaNotFound {
+                account_id: "0xDEADBEEFACCOUNT".into(),
+                nonce: 42,
+            },
+            GuardianError::InvalidDelta("postgres://secret@host/db".into()),
+            GuardianError::ConflictPendingDelta,
+            GuardianError::ConflictPendingProposal,
+            GuardianError::PendingProposalsLimit { limit: 7 },
+            GuardianError::CommitmentMismatch {
+                expected: "0xAAAACOMMITMENT".into(),
+                actual: "0xBBBBCOMMITMENT".into(),
+            },
+            GuardianError::InvalidCommitment("0xAAAACOMMITMENT".into()),
+            GuardianError::AuthenticationFailed("bad creds for 0xSIGNER".into()),
+            GuardianError::AuthorizationFailed("0xSIGNER not in policy".into()),
+            GuardianError::InvalidInput("/var/secret/path".into()),
+            GuardianError::StorageError("/var/lib/guardian/db: disk full".into()),
+            GuardianError::NetworkError("https://rpc.internal:8080 refused".into()),
+            GuardianError::SigningError("falcon: 0xPRIVATEKEYMATERIAL".into()),
+            GuardianError::ConfigurationError("postgres://u:p@h/db".into()),
+            GuardianError::ProposalNotFound {
+                account_id: "0xDEADBEEFACCOUNT".into(),
+                commitment: "0xAAAACOMMITMENT".into(),
+            },
+            GuardianError::ProposalAlreadySigned {
+                signer_id: "0xSIGNER".into(),
+            },
+            GuardianError::InvalidProposalSignature("0xSIGNATURE".into()),
+            GuardianError::UnsupportedForNetwork {
+                network: "evm".into(),
+                operation: "push_delta".into(),
+            },
+            GuardianError::UnsupportedEvmChain { chain_id: 1 },
+            GuardianError::InvalidNetworkConfig("https://rpc.internal".into()),
+            GuardianError::RpcUnavailable("https://rpc.internal:8080".into()),
+            GuardianError::RpcValidationFailed("https://rpc.internal".into()),
+            GuardianError::SignerNotAuthorized("0xSIGNER".into()),
+            GuardianError::InvalidEvmProposal("0xCALLDATA".into()),
+            GuardianError::InsufficientSignatures { required: 3, got: 1 },
+            GuardianError::RateLimitExceeded {
+                retry_after_secs: 30,
+                scope: "ip:10.0.0.1".into(),
+            },
+            GuardianError::InvalidCursor("0xTAMPERED".into()),
+            GuardianError::InvalidLimit("9999".into()),
+            GuardianError::InvalidStatusFilter("'; DROP TABLE".into()),
+            GuardianError::InsufficientOperatorPermission {
+                missing_permissions: vec!["accounts:pause".into()],
+            },
+            GuardianError::DataUnavailable("/var/lib/guardian unreadable".into()),
+            GuardianError::AccountPaused {
+                paused_at,
+                paused_reason: Some("0xSIGNER compromise".into()),
+            },
+        ]
+    }
+
+    #[test]
+    fn user_message_is_nonempty_for_every_variant() {
+        // SC-001: 100% of variants return a non-empty, single-sentence message.
+        for err in all_variants_with_sensitive_payloads() {
+            let msg = err.user_message();
+            assert!(!msg.is_empty(), "empty user_message for {}", err.code());
+            assert!(
+                msg.ends_with('.'),
+                "message for {} should be a sentence: {msg:?}",
+                err.code()
+            );
+        }
+    }
+
+    #[test]
+    fn user_message_never_leaks_sensitive_payload() {
+        // SC-002: the user-safe message must never echo identifiers, hashes,
+        // paths, URLs, or other payload values that the Display string carries.
+        let disallowed = [
+            "0xDEADBEEFACCOUNT",
+            "0xAAAACOMMITMENT",
+            "0xBBBBCOMMITMENT",
+            "0xSIGNER",
+            "0xSIGNATURE",
+            "0xPRIVATEKEYMATERIAL",
+            "0xCALLDATA",
+            "0xTAMPERED",
+            "postgres://",
+            "https://",
+            "/var/",
+            "DROP TABLE",
+            "10.0.0.1",
+        ];
+        for err in all_variants_with_sensitive_payloads() {
+            let msg = err.user_message();
+            for needle in disallowed {
+                assert!(
+                    !msg.contains(needle),
+                    "user_message for {} leaked {needle:?}: {msg:?}",
+                    err.code()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn connectivity_and_internal_messages_are_distinct() {
+        // SC-005: server-mapped connectivity faults vs pure internal faults
+        // must surface different copy.
+        let connectivity = GuardianError::RpcUnavailable("x".into()).user_message();
+        assert_eq!(
+            GuardianError::NetworkError("x".into()).user_message(),
+            connectivity
+        );
+        assert_eq!(
+            GuardianError::RpcValidationFailed("x".into()).user_message(),
+            connectivity
+        );
+        let internal = GuardianError::StorageError("x".into()).user_message();
+        assert_eq!(
+            GuardianError::SigningError("x".into()).user_message(),
+            internal
+        );
+        assert_eq!(
+            GuardianError::ConfigurationError("x".into()).user_message(),
+            internal
+        );
+        assert_eq!(
+            GuardianError::DataUnavailable("x".into()).user_message(),
+            internal
+        );
+        assert_ne!(connectivity, internal);
+    }
+
+    #[test]
+    fn rate_limit_meta_carries_retry_after_and_retryable_true() {
+        use axum::body::to_bytes;
+        let err = GuardianError::RateLimitExceeded {
+            retry_after_secs: 30,
+            scope: "ip".into(),
+        };
+        let response = err.into_response();
+        // Retry-After header preserved.
+        assert_eq!(
+            response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok()),
+            Some("30")
+        );
+        let body_bytes = futures::executor::block_on(to_bytes(response.into_body(), usize::MAX))
+            .expect("body bytes");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("body is valid JSON");
+        assert_eq!(parsed["code"], "rate_limit_exceeded");
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(true));
+        assert_eq!(parsed["meta"]["retry_after_secs"], serde_json::json!(30));
     }
 }
