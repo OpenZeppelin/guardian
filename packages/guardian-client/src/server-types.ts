@@ -148,6 +148,15 @@ export interface ServerPubkeyResponse {
   pubkey?: string;
 }
 
+export interface ServerStatusResponse {
+  status: string;
+  version: string;
+  git_commit: string;
+  environment: string;
+  started_at: string;
+  uptime_seconds: number;
+}
+
 export interface ServerLookupAccount {
   account_id: string;
 }

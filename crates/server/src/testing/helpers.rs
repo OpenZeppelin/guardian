@@ -379,6 +379,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/get_state", axum::routing::get(http::get_state))
         .route("/state/lookup", axum::routing::get(http::lookup))
         .route("/pubkey", axum::routing::get(http::get_pubkey))
+        .route("/status", axum::routing::get(http::status))
         .route(
             "/push_delta_proposal",
             axum::routing::post(http::push_delta_proposal),

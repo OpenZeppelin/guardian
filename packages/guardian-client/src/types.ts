@@ -153,6 +153,15 @@ export interface PubkeyResponse {
   pubkey?: string;
 }
 
+export interface StatusResponse {
+  status: string;
+  version: string;
+  gitCommit: string;
+  environment: string;
+  startedAt: string;
+  uptimeSeconds: number;
+}
+
 export interface DeltaProposalRequest {
   accountId: string;
   nonce: number;
