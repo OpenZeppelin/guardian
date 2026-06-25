@@ -83,16 +83,28 @@ export interface GuardianDashboardAccountResponse {
   account: GuardianDashboardAccountDetail;
 }
 
-export interface GuardianErrorResponse {
-  success: boolean;
-  error: string;
+/** Structured machine-readable side-data on the wire (feature 009). */
+export interface GuardianErrorMetaWire {
+  /** Always present. */
+  retryable: boolean;
   retry_after_secs?: number;
-  code?: string;
-  retryable?: boolean;
+  /** Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`. */
+  missing_permissions?: string[];
   /** Populated only for `GUARDIAN_ACCOUNT_PAUSED`. */
   paused_at?: string;
   /** Populated only for `GUARDIAN_ACCOUNT_PAUSED`. */
-  paused_reason?: string;
-  /** Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`. */
-  missing_permissions?: string[];
+  paused_reason?: string | null;
+}
+
+/**
+ * Wire shape of a Guardian error body (feature `009-human-readable-errors`):
+ * `{ code, message, meta }`. The legacy `success`/`error` fields are gone;
+ * the diagnostic detail is logged server-side only.
+ */
+export interface GuardianErrorResponse {
+  /** Stable machine-readable code; branch on this. */
+  code?: string;
+  /** Short, user-safe message — safe to display verbatim. */
+  message: string;
+  meta: GuardianErrorMetaWire;
 }

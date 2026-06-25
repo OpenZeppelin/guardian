@@ -3,17 +3,24 @@ import type { OperatorPermission } from './permissions.js';
 export type DashboardAccountStateStatus = 'available' | 'unavailable';
 
 export interface GuardianOperatorHttpErrorData {
-  success: false;
   /**
    * Stable, machine-readable error code emitted by the server. Clients
-   * SHOULD branch on this rather than on `error` (the human message) or
+   * SHOULD branch on this rather than on `message` (the human text) or
    * the HTTP status alone. Codes added by feature
    * `005-operator-dashboard-metrics` are typed via {@link DashboardErrorCode};
    * other codes (e.g. `account_not_found`, `authentication_failed`) are
    * forwarded as raw strings.
    */
   code?: string;
-  error: string;
+  /**
+   * Short, user-safe message (feature `009-human-readable-errors`) — safe to
+   * display verbatim. Wording is not part of the stable contract; branch on
+   * `code`, not on this text. Replaces the former diagnostic `error` field,
+   * which is no longer on the wire (logged server-side only). Parsed out of
+   * the wire `{ code, message, meta }` object; the structured `meta` fields
+   * below are flattened here for ergonomics.
+   */
+  message: string;
   retryAfterSecs?: number;
   /**
    * Feature 006-operator-authz FR-016 / FR-017: populated only for

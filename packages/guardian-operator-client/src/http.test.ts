@@ -160,9 +160,8 @@ describe('GuardianOperatorHttpClient', () => {
         status: 400,
         statusText: 'Bad Request',
         body: {
-          success: false,
           code: 'invalid_limit',
-          error: 'limit must be at most 500, got 9999',
+          message: 'limit must be at most 500, got 9999',
         },
       }),
     );
@@ -481,9 +480,8 @@ describe('GuardianOperatorHttpClient', () => {
       status: 429,
       statusText: 'Too Many Requests',
       body: {
-        success: false,
-        error: 'Rate limit exceeded',
-        retry_after_secs: 60,
+        message: 'Rate limit exceeded',
+        meta: { retry_after_secs: 60 },
       },
     }));
 
@@ -493,8 +491,7 @@ describe('GuardianOperatorHttpClient', () => {
     expect(error).toBeInstanceOf(GuardianOperatorHttpError);
     expect(error.status).toBe(429);
     expect(error.data).toEqual({
-      success: false,
-      error: 'Rate limit exceeded',
+      message: 'Rate limit exceeded',
       retryAfterSecs: 60,
     });
     expect(error.retryAfterSecs).toBe(60);
@@ -669,9 +666,8 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         status: 400,
         statusText: 'Bad Request',
         body: {
-          success: false,
           code: 'invalid_limit',
-          error: 'limit must be at most 500, got 9999',
+          message: 'limit must be at most 500, got 9999',
         },
       }),
     );
@@ -694,9 +690,8 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         status: 404,
         statusText: 'Not Found',
         body: {
-          success: false,
           code: 'account_not_found',
-          error: "Account '0xunknown' not found",
+          message: "Account '0xunknown' not found",
         },
       }),
     );
@@ -718,9 +713,8 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         status: 503,
         statusText: 'Service Unavailable',
         body: {
-          success: false,
           code: 'data_unavailable',
-          error: 'delta store unreadable',
+          message: 'delta store unreadable',
         },
       }),
     );
@@ -1194,7 +1188,7 @@ describe('parseErrorBody', () => {
       const response = errorResponse({
         status: 400,
         statusText: 'Bad Request',
-        body: { success: false, code, error: message },
+        body: { code, message: message },
       });
       const parsed = await parseErrorBody(response as unknown as Response);
       expect(parsed.code).toBe(code);
@@ -1210,7 +1204,7 @@ describe('parseErrorBody', () => {
     const response = errorResponse({
       status: 429,
       statusText: 'Too Many Requests',
-      body: { success: false, code: 'rate_limit_exceeded', error: 'slow down' },
+      body: { code: 'rate_limit_exceeded', message: 'slow down' },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
     expect(parsed.code).toBe('rate_limit_exceeded');
@@ -1222,10 +1216,9 @@ describe('parseErrorBody', () => {
       status: 429,
       statusText: 'Too Many Requests',
       body: {
-        success: false,
         code: 'rate_limit_exceeded',
-        error: 'slow down',
-        retry_after_secs: 7,
+        message: 'slow down',
+        meta: { retry_after_secs: 7 },
       },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
@@ -1258,9 +1251,8 @@ describe('parseErrorBody', () => {
 
   it('accepts a pre-parsed object body', async () => {
     const parsed = await parseErrorBody({
-      success: false,
       code: 'invalid_cursor',
-      error: 'tampered',
+      message: 'tampered',
     });
     expect(parsed.code).toBe('invalid_cursor');
     expect(parsed.message).toBe('tampered');
@@ -1351,9 +1343,8 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
         status: 400,
         statusText: 'Bad Request',
         body: {
-          success: false,
           code: 'invalid_status_filter',
-          error: "unknown status value 'foo'",
+          message: "unknown status value 'foo'",
         },
       }),
     );
@@ -1477,7 +1468,7 @@ describe('GuardianOperatorHttpClient — error matrix (FR-028 / SC-012)', () => 
         errorResponse({
           status,
           statusText: code,
-          body: { success: false, code, error: `${code} message` },
+          body: { code, message: `${code} message` },
         }),
       );
       const client = new GuardianOperatorHttpClient('https://guardian.example');
@@ -1529,11 +1520,9 @@ describe('parseErrorBody (feature 006-operator-authz)', () => {
       status: 403,
       statusText: 'Forbidden',
       body: {
-        success: false,
         code: 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
-        error: 'Operator lacks required permissions: accounts:pause',
-        missing_permissions: ['accounts:pause'],
-        retryable: false,
+        message: 'Operator lacks required permissions: accounts:pause',
+        meta: { missing_permissions: ['accounts:pause'], retryable: false },
       },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
@@ -1548,9 +1537,8 @@ describe('parseErrorBody (feature 006-operator-authz)', () => {
       status: 404,
       statusText: 'Not Found',
       body: {
-        success: false,
         code: 'account_not_found',
-        error: "Account 'x' not found",
+        message: "Account 'x' not found",
       },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
@@ -1566,11 +1554,9 @@ describe('parseErrorBody (feature 006-operator-authz)', () => {
       status: 403,
       statusText: 'Forbidden',
       body: {
-        success: false,
         code: 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
-        error: 'multiple missing',
-        missing_permissions: ['accounts:pause', 'policies:write'],
-        retryable: false,
+        message: 'multiple missing',
+        meta: { missing_permissions: ['accounts:pause', 'policies:write'], retryable: false },
       },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
@@ -1588,16 +1574,17 @@ describe('parseErrorBody (feature 006-operator-authz)', () => {
       status: 404,
       statusText: 'Not Found',
       body: {
-        success: false,
         code: 'account_not_found',
-        error: 'unrelated',
-        missing_permissions: ['accounts:pause'],
-        retryable: false,
+        message: 'unrelated',
+        meta: { missing_permissions: ['accounts:pause'], retryable: false },
       },
     });
     const parsed = await parseErrorBody(response as unknown as Response);
+    // `missingPermissions` stays gated on the permission code (not surfaced
+    // here), but `meta.retryable` is surfaced universally on the new wire
+    // shape (feature 009), so it is read through as-is.
     expect(parsed.missingPermissions).toBeUndefined();
-    expect(parsed.retryable).toBeUndefined();
+    expect(parsed.retryable).toBe(false);
   });
 });
 
@@ -1698,11 +1685,9 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
         status: 409,
         statusText: 'Conflict',
         body: {
-          success: false,
           code: 'GUARDIAN_ACCOUNT_PAUSED',
-          error: 'account is paused',
-          paused_at: '2026-05-20T10:00:00Z',
-          paused_reason: 'compliance review',
+          message: 'account is paused',
+          meta: { paused_at: '2026-05-20T10:00:00Z', paused_reason: 'compliance review' },
         },
       }),
     );
@@ -1858,12 +1843,9 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
         status: 409,
         statusText: 'Conflict',
         body: {
-          success: false,
           code: 'GUARDIAN_ACCOUNT_PAUSED',
-          error: 'account is paused',
-          paused_at: '2026-05-19T14:30:00Z',
-          paused_reason: 'compliance review',
-          retryable: false,
+          message: 'account is paused',
+          meta: { paused_at: '2026-05-19T14:30:00Z', paused_reason: 'compliance review', retryable: false },
         },
       }),
     );
@@ -1886,11 +1868,9 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
         status: 409,
         statusText: 'Conflict',
         body: {
-          success: false,
           code: 'GUARDIAN_ACCOUNT_PAUSED',
-          error: 'account is paused',
-          paused_at: '2026-05-19T14:30:00Z',
-          paused_reason: null,
+          message: 'account is paused',
+          meta: { paused_at: '2026-05-19T14:30:00Z', paused_reason: null },
         },
       }),
     );
@@ -1912,9 +1892,8 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
         status: 409,
         statusText: 'Conflict',
         body: {
-          success: false,
           code: 'GUARDIAN_ACCOUNT_PAUSED',
-          error: 'account is paused',
+          message: 'account is paused',
         },
       }),
     );
