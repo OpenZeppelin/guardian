@@ -11,6 +11,11 @@ data "aws_secretsmanager_secret" "ack_ecdsa" {
   name  = local.ack_ecdsa_secret_name
 }
 
+data "aws_secretsmanager_secret" "storage_encryption" {
+  count = local.managed_storage_encryption_enabled ? 1 : 0
+  name  = local.storage_encryption_secret_name
+}
+
 # Get default VPC if vpc_id is not specified
 data "aws_vpc" "default" {
   count   = var.vpc_id == "" ? 1 : 0
@@ -103,6 +108,8 @@ locals {
   evm_rpc_urls_secret_name                     = "${var.stack_name}/server/evm-rpc-urls"
   ack_falcon_secret_name                       = var.guardian_ack_falcon_secret_name != "" ? var.guardian_ack_falcon_secret_name : "${var.stack_name}/server/ack-falcon-secret-key"
   ack_ecdsa_secret_name                        = var.guardian_ack_ecdsa_secret_name != "" ? var.guardian_ack_ecdsa_secret_name : "${var.stack_name}/server/ack-ecdsa-secret-key"
+  managed_storage_encryption_enabled           = local.is_prod && var.guardian_storage_encryption_secret_name != ""
+  storage_encryption_secret_name               = local.managed_storage_encryption_enabled ? var.guardian_storage_encryption_secret_name : ""
   rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
   rds_proxy_role_name                          = "${var.stack_name}-rds-proxy"
   rds_proxy_security_group_name                = "${var.stack_name}-rds-proxy-sg"

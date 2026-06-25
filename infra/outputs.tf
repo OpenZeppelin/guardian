@@ -124,6 +124,11 @@ output "ack_ecdsa_secret_name" {
   value       = local.ack_ecdsa_secret_name
 }
 
+output "storage_encryption_secret_name" {
+  description = "Secrets Manager name for the storage encryption key (empty when encryption is disabled)"
+  value       = local.storage_encryption_secret_name
+}
+
 output "deployment_stage" {
   description = "Active deployment stage"
   value       = local.stage_name

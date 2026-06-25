@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "guardian:storage-encryption:envelope:v1",
+  "title": "Guardian Storage Encryption Envelope",
+  "description": "At-rest representation of one encrypted Guardian storage payload (state_json or delta_payload). Stored in the existing jsonb column / filesystem JSON file in place of the plaintext payload. A payload is treated as encrypted iff it validates against this schema; in an encryption-enabled deployment a payload that does not validate is a read error, never returned as plaintext.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "alg", "kid", "nonce", "ct"],
+  "properties": {
+    "v": {
+      "type": "integer",
+      "const": 1,
+      "description": "Envelope scheme version."
+    },
+    "alg": {
+      "type": "string",
+      "enum": ["AES-256-GCM"],
+      "description": "AEAD algorithm. Additional algorithms may be added in later schema versions."
+    },
+    "kid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the key the ciphertext was produced under. Resolved by the StorageKeyProvider; supports rotation and multi-key reads."
+    },
+    "nonce": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "Per-encryption AEAD nonce (96-bit / 12 bytes for AES-256-GCM), base64-encoded. Freshly random for every encryption; never reused under one key."
+    },
+    "ct": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "Ciphertext with the appended authentication tag, base64-encoded. AAD bound to record identity is authenticated but not stored here (reconstructed from plaintext routing fields at decrypt time)."
+    }
+  }
+}

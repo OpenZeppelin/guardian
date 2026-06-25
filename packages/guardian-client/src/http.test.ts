@@ -72,6 +72,55 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('getStatus', () => {
+    it('maps the server status response to camelCase', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'ok',
+          version: '0.1.0',
+          git_commit: 'abc123def456',
+          environment: 'devnet',
+          started_at: '2026-06-17T10:00:00Z',
+          uptime_seconds: 3600,
+        }),
+      });
+
+      const status = await client.getStatus();
+
+      expect(status).toEqual({
+        status: 'ok',
+        version: '0.1.0',
+        gitCommit: 'abc123def456',
+        environment: 'devnet',
+        startedAt: '2026-06-17T10:00:00Z',
+        uptimeSeconds: 3600,
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/status',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+          }),
+        })
+      );
+    });
+
+    it('should throw GuardianHttpError on non-ok response', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        text: async () => 'down',
+      });
+
+      const error = await client.getStatus().catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(503);
+    });
+  });
+
   describe('configure', () => {
     it('should configure account with authentication', async () => {
       client.setSigner(mockSigner);
