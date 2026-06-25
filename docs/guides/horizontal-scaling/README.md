@@ -141,7 +141,7 @@ rate-limited):
 ```sh
 for i in $(seq 1 12); do
   curl -s -o /dev/null -w "%{http_code} " \
-    "http://localhost:3000/dashboard/auth/challenge?commitment=0xdemo"
+    "http://localhost:3000/auth/challenge?commitment=0xdemo"
 done; echo
 ```
 
@@ -164,15 +164,15 @@ harness (or the operator client) pointed at the **proxy** URL
    ```json
    [{ "public_key": "0x<falcon-operator-pubkey>", "permissions": ["dashboard:read"] }]
    ```
-2. Complete the login (`GET /dashboard/auth/challenge` → sign → `POST
-   /dashboard/auth/verify`). The proxy round-robins, so this may land on either
+2. Complete the login (`GET /auth/challenge` → sign → `POST
+   /auth/verify`). The proxy round-robins, so this may land on either
    replica; the session row is written to `auth_sessions`.
 3. Make an authenticated request (e.g. `GET /dashboard/accounts`) a few times —
    each may be served by a different replica, and all succeed: the cookie is
    validated against the shared store, not per-process memory.
 4. Now `docker compose stop` the replica that handled your login and repeat —
    **your session still works** on the survivor. Then `POST
-   /dashboard/auth/logout`; the revocation is honored on every replica.
+   /auth/logout`; the revocation is honored on every replica.
 
 ## Cleanup
 

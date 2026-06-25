@@ -108,6 +108,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Session revocation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2183,6 +2193,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session revocation failed",
             "content": {
               "application/json": {
                 "schema": {

@@ -427,7 +427,7 @@ impl DashboardState {
                     tracing::warn!(
                         "dashboard cursor secret not configured; generating ephemeral per-process \
                          secret. Multi-replica deployments must set \
-                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 32-byte hex value."
+                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 64-hex (32-byte) value."
                     );
                 }
                 CursorSecret::generate()

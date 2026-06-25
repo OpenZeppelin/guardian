@@ -173,26 +173,31 @@ pub async fn verify_operator_login(
     security(("operator_session" = [])),
     responses(
         (status = 200, description = "Session invalidated", body = LogoutOperatorResponse),
+        (status = 500, description = "Session revocation failed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn logout_operator(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> impl IntoResponse {
+) -> Result<(
+    StatusCode,
+    [(header::HeaderName, String); 1],
+    Json<LogoutOperatorResponse>,
+)> {
     let token = extract_cookie(&headers, state.dashboard.cookie_name());
-    if let Err(error) = state
+    // Fail closed: if the shared session store cannot revoke (e.g. Postgres is
+    // unavailable), surface the error so the caller can retry instead of being
+    // told a logout succeeded that did not take effect fleet-wide.
+    state
         .dashboard
         .logout(token.as_deref(), state.clock.now())
-        .await
-    {
-        tracing::warn!(auth_event = "logout_failed", %error, "Operator logout revoke failed");
-    }
+        .await?;
 
-    (
+    Ok((
         StatusCode::OK,
         [(header::SET_COOKIE, state.dashboard.clear_cookie_header())],
         Json(LogoutOperatorResponse { success: true }),
-    )
+    ))
 }
 
 /// Paginated list of accounts visible to the operator. Requires the

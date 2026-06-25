@@ -78,7 +78,7 @@ impl SessionStore for PgSessionStore {
         // session rather than erroring.
         diesel::insert_into(auth_sessions::table)
             .values(&row)
-            .on_conflict(auth_sessions::token_digest)
+            .on_conflict((auth_sessions::realm, auth_sessions::token_digest))
             .do_update()
             .set((
                 auth_sessions::realm.eq(self.realm.as_str()),

@@ -108,6 +108,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Session revocation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [

@@ -112,9 +112,9 @@ diesel::table! {
     /// Representation of the `auth_sessions` table.
     ///
     /// Shared operator/EVM session store for horizontal scaling (issue #242).
-    auth_sessions (token_digest) {
-        token_digest -> Bytea,
+    auth_sessions (realm, token_digest) {
         realm -> Text,
+        token_digest -> Bytea,
         subject -> Jsonb,
         issued_at -> Timestamptz,
         expires_at -> Timestamptz,
