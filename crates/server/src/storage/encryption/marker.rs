@@ -5,8 +5,12 @@ use super::envelope::ENVELOPE_VERSION;
 use super::key_provider::StorageKeyProvider;
 
 /// Written only when a store is encrypted; its presence means the store is
-/// encrypted. `init_kid` is informational lineage and does not pin the active
-/// key, so rotation is unaffected.
+/// encrypted. `init_kid` records the key the store was initialized with.
+/// Active-key rotation is unaffected — new writes stamp the active key id — but
+/// `init_kid` must stay resolvable by the key provider or the server refuses to
+/// start (see `apply_startup_guard`). The initial key therefore cannot be fully
+/// retired from the provider even after every record has been re-encrypted to a
+/// newer key; retiring it requires rewriting this marker.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct EncryptionMarker {
     pub(crate) scheme_version: u8,

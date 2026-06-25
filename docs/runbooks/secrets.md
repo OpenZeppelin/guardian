@@ -314,11 +314,34 @@ New records use `k2`; old `k1` records keep decrypting. Do **not** remove a key
 that any stored record still references. Bulk re-encryption tooling is not yet
 provided.
 
+### Nonce budget
+
+Records are sealed with AES-256-GCM under a random 96-bit nonce. Per NIST
+SP 800-38D, a single key must encrypt fewer than ~2³² records (about 4 billion)
+before nonce-collision probability becomes non-negligible — and a collision
+under one key is catastrophic, not graceful.
+
+Each state, delta, and proposal write is one encryption under the **active**
+key. Treat 2³² as a per-key budget: [rotate](#rotation) the active key well
+before any single `active` kid reaches ~1 billion writes (2³⁰, a ~4× margin),
+or on a calendar cadence sized to the deployment's write rate. Rotation only
+repoints `active` — old records keep decrypting under their original kid — so
+the budget resets with each rotation. If 2³² is unreachable for the
+deployment's lifetime, no cadence is required.
+
 ### Compromise response
 
 Treat as a confidentiality breach of account state/history (not key material —
 Guardian is non-custodial). Rotate the key, and because old records remain
 readable with the old key, plan a re-encryption migration before retiring it.
+
+Note that the key the store was first initialized with (`init_kid`, recorded in
+the store's encryption marker) must stay resolvable in the structured secret for
+the server to start, **even after every record has been re-encrypted to a newer
+kid**. Fully retiring the initial key therefore requires rewriting the store
+marker, not just dropping the key from the secret — and there is no operator
+command for that yet. If the initial key is itself the compromised one, track
+the marker rewrite as migration work rather than assuming a key drop suffices.
 
 ## Operator public keys
 
