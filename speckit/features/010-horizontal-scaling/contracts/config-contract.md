@@ -10,7 +10,7 @@ behavior changes (no client wire contract changes).
 | Variable | Status | Behavior |
 |---|---|---|
 | `GUARDIAN_ENV` | **reused** | Stage signal. `prod` (case-insensitive) activates HA fail-fast guards. Already set from Terraform `var.deployment_stage` (`infra/ecs.tf:128-129`). Currently only gates ACK secrets (`ack/mod.rs:139-145`); `is_prod_environment()` is promoted to a shared `config/stage.rs` helper. |
-| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | **enforcement changed** | 64-hex (32-byte) shared secret. Prod: **required** — startup fails if unset. Non-prod: optional — warn + ephemeral per-process secret (unchanged dev behavior, `dashboard/state.rs:359-370`). |
+| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | **enforcement changed** | 64-hex (32-byte) shared secret. Optional in every stage: if unset, warn and fall back to an ephemeral per-process secret (boots, never fails startup). A missing shared secret degrades only dashboard pagination across replicas, so it is not a startup guard (`dashboard/state.rs`). |
 | `GUARDIAN_MAX_REPLICAS` | **new** | Positive integer = the deployment's autoscaling **max** capacity. Drives **rate limiting only**: divides `GUARDIAN_RATE_BURST_PER_SEC`/`GUARDIAN_RATE_PER_MIN` per replica (`global / GUARDIAN_MAX_REPLICAS`) so aggregate stays at or below the global limit (over-throttles below max capacity). Defaults from Terraform `effective_server_autoscaling_max_capacity` (see below); overridable, but a value **below** the real max makes per-replica caps too high so the aggregate can exceed the global limit (too loose) — Terraform should validate `>=` effective max. A value above the real max over-throttles. Unset or `1` => current per-process rate-limit behavior. **Does NOT affect coordination mode** — that is backend-derived (FR-020). |
 | `DATABASE_URL` | unchanged | Required for the Postgres backend (which the prod image uses). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` / `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | unchanged | Per-replica pool sizes; runbook adds guidance: total ≈ size x replicas x pools must stay under Postgres `max_connections`. |
@@ -37,9 +37,10 @@ capacity rather than a manually maintained value:
     value = tostring(local.effective_guardian_max_replicas)
   }
   ```
-  where `local.effective_guardian_max_replicas = var.guardian_max_replicas != null ? var.guardian_max_replicas : local.effective_server_autoscaling_max_capacity`
+  where `local.effective_guardian_max_replicas = var.guardian_max_replicas != null ? max(var.guardian_max_replicas, local.effective_server_autoscaling_max_capacity) : local.effective_server_autoscaling_max_capacity`
   (new `var.guardian_max_replicas` defaults to `null`, i.e. derive from max
-  capacity; operators may override).
+  capacity; an explicit override is clamped **up** to the autoscaling max so it
+  can only ever raise the divisor, never lower it below the real fleet size).
 
 This keeps the default correct on every deploy with no operator action; the
 runbook documents the override, not a required value.
@@ -51,10 +52,15 @@ variable and remedy, when `GUARDIAN_ENV=prod` and any of:
 
 1. The active storage backend is the **filesystem** backend (US5/FR-012). Remedy:
    build/run with the Postgres backend and set `DATABASE_URL`.
-2. `GUARDIAN_DASHBOARD_CURSOR_SECRET` is **unset** (US3/FR-013). Remedy: set a
-   stable shared 64-hex secret on all replicas.
+2. An enabled global rate limit partitions to **zero** requests per replica
+   (`GUARDIAN_RATE_BURST_PER_SEC`/`GUARDIAN_RATE_PER_MIN` below
+   `GUARDIAN_MAX_REPLICAS`, FR-013). Remedy: raise the global limit or lower
+   `GUARDIAN_MAX_REPLICAS`.
 
-In non-prod, condition (1) is allowed (dev default) and (2) warns but starts.
+In non-prod, condition (1) is allowed (dev default) and (2) warns but starts. A
+missing `GUARDIAN_DASHBOARD_CURSOR_SECRET` is NOT a startup guard in any stage:
+it warns and boots with an ephemeral per-process secret (FR-008), because it
+degrades pagination only.
 
 ## Error message contract
 

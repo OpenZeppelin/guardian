@@ -108,7 +108,8 @@ state, so it ranks below auth and canonicalization.
 **Independent Test**: With 2+ replicas and a shared cursor secret configured,
 request page 1 from one replica and page 2 (using the returned cursor) from
 another; the second page returns the correct continuation. With the secret
-unset in a multi-replica configuration, startup surfaces the misconfiguration.
+unset in a multi-replica configuration, startup surfaces the misconfiguration
+with a warning and still boots.
 
 **Acceptance Scenarios**:
 
@@ -117,7 +118,8 @@ unset in a multi-replica configuration, startup surfaces the misconfiguration.
    returns the correct next page.
 2. **Given** a multi-replica configuration with no shared cursor secret, **When**
    the server starts, **Then** the operator is clearly warned that pagination
-   will break across replicas (and, per FR-013, startup fails in the prod stage).
+   will break across replicas and the server boots (in every stage) with an
+   ephemeral per-process secret, rather than silently proceeding without notice.
 3. **Given** a tampered or expired cursor, **When** it is submitted to any
    replica, **Then** it is rejected consistently.
 
@@ -274,9 +276,12 @@ source code.
 - **FR-007**: Pagination cursors MUST be issued and verified using a shared
   secret so a cursor issued by one replica is valid on all replicas.
 - **FR-008**: When a shared cursor secret is not configured, the system MUST
-  surface the misconfiguration at startup (warning in non-prod, see FR-013 for
-  prod behavior) rather than silently generating a per-process secret without
-  notice.
+  surface the misconfiguration at startup with a warning in every stage, rather
+  than silently generating a per-process secret without notice. The server still
+  boots, using an ephemeral per-process secret; a missing cursor secret degrades
+  only dashboard pagination across replicas (a cursor minted on one replica is
+  rejected on another) and never affects correctness or auth, so it is not a
+  startup guard.
 - **FR-009**: The aggregate request rate enforced across all replicas MUST NOT
   exceed the configured global limit. This is achieved by dividing the global
   limit by the deployment's **maximum replica capacity** (`GUARDIAN_MAX_REPLICAS`),
@@ -297,10 +302,12 @@ source code.
 - **FR-012**: In the prod stage, the system MUST refuse to start with a storage
   backend that cannot be shared across replicas (the filesystem backend),
   failing fast with an actionable error.
-- **FR-013**: In the prod stage, the system MUST refuse to start (or fail fast)
-  when a required HA setting is missing where its absence would cause
-  cross-replica incorrectness (e.g. an unset shared cursor secret); in non-prod
-  the same condition MUST warn but allow startup.
+- **FR-013**: In the prod stage, the system MUST fail fast when a setting is
+  missing or misconfigured in a way that would make every replica serve
+  incorrectly (e.g. a global rate limit that partitions to zero requests per
+  replica); in non-prod the same condition MUST warn but allow startup. A missing
+  shared cursor secret is explicitly NOT such a setting: it warns but boots in
+  every stage (FR-008), because it degrades pagination only, not correctness.
 - **FR-014**: All HA behaviors MUST preserve existing single-replica behavior;
   running exactly one replica MUST NOT require new external infrastructure for
   local/dev use.
@@ -395,8 +402,9 @@ source code.
   outcome for that client. Both are accepted trade-offs of partitioning without
   shared hot-path state.
 - **SC-006**: A prod-stage server configured with the filesystem backend (or with
-  a required HA setting missing) fails to start 100% of the time with an error
-  that names the misconfiguration and the remedy.
+  a global rate limit that partitions to zero requests per replica) fails to
+  start 100% of the time with an error that names the misconfiguration and the
+  remedy.
 - **SC-007**: A reviewer who has never seen the code can stand up a correct 2+
   replica deployment using only the operator runbook, and all P1/P2 acceptance
   scenarios pass.
@@ -412,8 +420,9 @@ source code.
 
 - The shipped production image is built with the Postgres storage backend, so a
   shared relational database is available to replicas and is the natural shared
-  coordination/state store for sessions, challenges, leadership, cursors, and
-  rate-limit counters. No new infrastructure component (e.g. a separate cache or
+  coordination/state store for sessions, challenges, and leadership. (Rate
+  limiting is partitioned per-process, not a shared counter — see FR-010.) No
+  new infrastructure component (e.g. a separate cache or
   queue) is assumed to be mandatory; if one is proposed it will be justified in
   planning.
 - "Prod stage" is represented by the existing `GUARDIAN_ENV=prod` signal (today

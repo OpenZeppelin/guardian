@@ -11,7 +11,7 @@ creates no tables.
 All timestamps are `TIMESTAMPTZ` and all expiry comparisons use the database
 clock (`now()`), giving a single authoritative clock across replicas.
 
-### Migration concurrency (multi-replica startup) — REQUIRED
+## Migration concurrency (multi-replica startup) — REQUIRED
 
 With 2-6 replicas booting simultaneously (ECS rolling deploy or cold start),
 every replica runs `embed_migrations!` against the **one** shared Postgres at the
@@ -22,17 +22,21 @@ advisory lock**:
 
 ```text
 run_migrations(conn):
-    SELECT pg_advisory_lock(<fixed_migration_key>);   -- blocks until sole holder
+    until pg_try_advisory_lock(<fixed_migration_key>) or deadline:  -- bounded wait, polls
+        sleep(poll_interval)
     run_pending_migrations(conn);                      -- no-op for replicas that lose the race
     SELECT pg_advisory_unlock(<fixed_migration_key>);
 ```
 
-The first replica to grab the lock migrates; the others block, then find no
-pending migrations and proceed. `pg_advisory_lock` is appropriate here (unlike for
-the canonicalization lease) because this is a short, bounded, single-connection
-critical section held only for the migration call — not across request/pool
-churn. This change lives in `storage/postgres.rs:32-47` (`run_migrations`). See
-the matching edge case in spec.md and the db-schema.md contract.
+The first replica to grab the lock migrates; the others poll `pg_try_advisory_lock`
+until it frees, then find no pending migrations and proceed. The wait is **bounded
+by a timeout** (rather than `pg_advisory_lock`'s unbounded block) so a replica
+stuck mid-migration fails the others fast instead of wedging the whole fleet on
+boot; the holder still releases on unlock and on connection drop. This is a short,
+single-connection critical section — not across request/pool churn (unlike the
+canonicalization lease). This change lives in `storage/postgres.rs`
+(`run_migrations`). See the matching edge case in spec.md and the db-schema.md
+contract.
 
 ---
 
@@ -43,15 +47,15 @@ Replaces the per-process `Arc<Mutex<HashMap<[u8;32], OperatorSessionRecord>>>`
 
 | Column | Type | Notes |
 |---|---|---|
-| `token_digest` | `BYTEA` (32) PRIMARY KEY | SHA-256 of the session token (never store plaintext; matches current `[u8;32]` keying) |
-| `realm` | `TEXT` NOT NULL | `operator` \| `evm` (discriminator) |
+| `realm` | `TEXT` NOT NULL | `operator` \| `evm` (discriminator); part of the composite PK |
+| `token_digest` | `BYTEA` (32) NOT NULL | SHA-256 of the session token (never store plaintext; matches current `[u8;32]` keying); part of the composite PK |
 | `subject` | `JSONB` NOT NULL | Realm-specific identity: operator `AuthenticatedOperator` or EVM `address`. Permissions are re-resolved from the live allowlist at use time (preserves `authenticate_session` behavior, `dashboard/state.rs:290-332`) |
 | `issued_at` | `TIMESTAMPTZ` NOT NULL | |
 | `expires_at` | `TIMESTAMPTZ` NOT NULL | indexed for TTL sweep |
 | `revoked_at` | `TIMESTAMPTZ` NULL | set on logout; a non-null value => session rejected on every replica (FR-003) |
 
-**Indexes**: PK on `token_digest`; index on `expires_at` (sweep);
-index on `(realm, expires_at)`.
+**Indexes**: composite PK on `(realm, token_digest)`; index on `expires_at`
+(sweep); index on `(realm, expires_at)`.
 
 **Lifecycle / validation**:
 - Created on successful `verify`.

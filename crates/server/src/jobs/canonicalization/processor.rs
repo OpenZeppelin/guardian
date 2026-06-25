@@ -71,9 +71,15 @@ struct DeltasProcessorBase {
 }
 
 impl DeltasProcessorBase {
-    /// Mandatory fence check at every state-mutating write boundary: if this
+    /// Mandatory fence check before every custody-state write: the canonical
+    /// `submit_state` / `submit_delta`, the `update_auth` cosigner-key sync, the
+    /// discard `delete_delta`, and the retry `update_delta_status`. If this
     /// replica no longer holds the lease (superseded mid-pass), refuse the write
-    /// so a stale leader can never commit a canonical state/delta.
+    /// so a stale leader can never commit a custody transition. Best-effort
+    /// cleanup that trails a fenced write — clearing `has_pending_candidate` and
+    /// deleting a finalized proposal — is intentionally left unfenced: both are
+    /// idempotent and non-custodial, so a brief two-leader overlap can at most
+    /// repeat them harmlessly.
     async fn ensure_lease_held(&self, delta: &DeltaObject) -> Result<()> {
         if self.pass.leader.verify_held(&self.pass.lease).await? {
             return Ok(());
@@ -426,6 +432,7 @@ impl DeltasProcessorBase {
                 "Syncing cosigner public keys from on-chain storage"
             );
 
+            self.ensure_lease_held(&delta).await?;
             self.state
                 .metadata
                 .update_auth(&delta.account_id, new_auth, &now)

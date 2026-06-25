@@ -72,9 +72,20 @@ impl ChallengeStore for PgChallengeStore {
             .num_seconds()
             .max(0) as f64;
         let max = max_outstanding as i64;
+        let lock_key = format!("{realm}|{principal}");
 
         conn.transaction::<(), diesel::result::Error, _>(|conn| {
             async move {
+                // Serialize concurrent issuance for this (realm, principal) so the
+                // insert + cap-trim below sees a consistent row set; without it two
+                // racing issues can each trim to `max` independently and leave
+                // `max + 1` outstanding. The xact lock auto-releases at commit and
+                // only contends per principal, not across the table.
+                diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                    .bind::<Text, _>(&lock_key)
+                    .execute(conn)
+                    .await?;
+
                 // ON CONFLICT refreshes a re-issued challenge (latest wins,
                 // re-arming consumed_at) rather than aborting the transaction on
                 // a duplicate `(realm, challenge_key)`. Keys are random nonces /

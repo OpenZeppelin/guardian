@@ -8,9 +8,10 @@ startup. Postgres backend only. Column details and lifecycle rules are in
 
 ## Migration: `<date>_auth_sessions`
 
-`up.sql` creates `auth_sessions` (PK `token_digest BYTEA`, `realm TEXT`,
-`subject JSONB`, `issued_at`, `expires_at`, `revoked_at` nullable) + index on
-`expires_at` and `(realm, expires_at)`. `down.sql` drops it.
+`up.sql` creates `auth_sessions` (composite PK `(realm TEXT, token_digest
+BYTEA)` so operator and EVM sessions are namespaced rather than relying on token
+randomness, `subject JSONB`, `issued_at`, `expires_at`, `revoked_at` nullable) +
+index on `expires_at` and `(realm, expires_at)`. `down.sql` drops it.
 
 ## Migration: `<date>_auth_challenges`
 
@@ -29,13 +30,15 @@ data-model.md), `issued_at`, `expires_at`, `consumed_at` nullable + index on
 ## Migration execution under concurrent replica startup — REQUIRED
 
 All replicas run the embedded migrations against one Postgres at boot. The runner
-(`storage/postgres.rs:32-47`) MUST wrap `run_pending_migrations` in a Postgres
-**session-level advisory lock** on a fixed key:
-`SELECT pg_advisory_lock($key)` -> migrate -> `SELECT pg_advisory_unlock($key)`.
-One replica migrates; the rest block, then find nothing pending. Without this,
-simultaneous first-deploy boots can race/deadlock on identical migrations. (This
-advisory lock is acceptable here — short, single-connection, bounded — unlike for
-the canonicalization lease, which spans pool churn and uses a lease row instead.)
+(`storage/postgres.rs`) MUST wrap `run_pending_migrations` in a Postgres
+**session-level advisory lock** on a fixed key, acquired with a **bounded wait**:
+poll `SELECT pg_try_advisory_lock($key)` until it succeeds or a timeout elapses ->
+migrate -> `SELECT pg_advisory_unlock($key)`. One replica migrates; the rest poll,
+then find nothing pending. The bounded wait (vs. an unbounded `pg_advisory_lock`)
+means a replica stuck mid-migration fails the others fast rather than wedging the
+fleet on boot. Without the lock, simultaneous first-deploy boots can race/deadlock
+on identical migrations. (Acceptable here — short, single-connection — unlike the
+canonicalization lease, which spans pool churn and uses a lease row instead.)
 
 ## Constraints on the migration set
 

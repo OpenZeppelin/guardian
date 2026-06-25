@@ -554,8 +554,11 @@ and the Postgres backend, the server runs **shared coordination** (sessions,
 login challenges, and the canonicalization lease live in Postgres) — so any
 request lands on any replica and canonicalization runs on exactly one replica at
 a time. Terraform also sets `GUARDIAN_MAX_REPLICAS` from
-`effective_server_autoscaling_max_capacity` (`max(desired, 6)`) so rate limits
-are partitioned across the fleet, and requires `GUARDIAN_DASHBOARD_CURSOR_SECRET`.
+`effective_guardian_max_replicas` (derived from the autoscaling max capacity,
+prod `max(desired, 6)`) so rate limits are partitioned across the fleet. Set
+`GUARDIAN_DASHBOARD_CURSOR_SECRET` to a stable shared value so dashboard
+pagination works across replicas — leaving it unset only degrades pagination (a
+startup warning, not a failure) and it is not wired by Terraform today.
 Watch the per-replica `GUARDIAN_DB_POOL_MAX_SIZE` against Postgres
 `max_connections` (RDS Proxy absorbs most of this). Full operator guidance:
 [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md).

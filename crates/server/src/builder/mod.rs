@@ -453,6 +453,21 @@ impl ServerBuilder {
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let coordination = self.coordination;
+        // Fail closed before anything else: the Postgres backend must never fall
+        // back to per-process coordination (AlwaysLeader + in-memory sessions),
+        // which would let every replica run canonicalization and split auth
+        // state. Checking here (not only on the dashboard==None path) catches a
+        // manual builder that supplies a custom dashboard but skips coordination.
+        if coordination.is_none()
+            && storage.kind() == crate::storage::StorageType::Postgres
+        {
+            return Err(
+                "Postgres storage requires coordination handles for shared \
+                 sessions/challenges and canonicalization leadership; call \
+                 .coordination(...) (populated by StorageMetadataBuilder::build())"
+                    .to_string(),
+            );
+        }
         let coordination_mode = coordination
             .as_ref()
             .map(|handles| handles.mode)
@@ -477,18 +492,9 @@ impl ServerBuilder {
                     )
                     .await?,
                 ),
-                // Fail closed: the Postgres backend must not silently fall back to
-                // per-process dashboard state. Coordination handles are populated
-                // by StorageMetadataBuilder::build(); their absence here means a
-                // manual builder skipped them.
-                None if storage.kind() == crate::storage::StorageType::Postgres => {
-                    return Err(
-                        "Postgres storage requires coordination handles for shared dashboard \
-                         sessions/challenges; call .coordination(...) (populated by \
-                         StorageMetadataBuilder::build())"
-                            .to_string(),
-                    );
-                }
+                // The Postgres-without-coordination case already failed closed
+                // above, so reaching here with no handles means a non-Postgres
+                // (filesystem/dev) backend using per-process dashboard state.
                 None => Arc::new(DashboardState::from_env_for_network(network_type).await?),
             },
         };
@@ -525,9 +531,10 @@ impl ServerBuilder {
 
         // Prod fail-fast: an enabled rate limit that partitions to 0 per replica
         // (global limit below GUARDIAN_MAX_REPLICAS) silently throttles all
-        // traffic on every replica. Mirror the other prod guards (filesystem
-        // backend, cursor secret) and refuse to start rather than serve a fleet
-        // that denies every request. Non-prod keeps the warning emitted by
+        // traffic on every replica. Mirror the filesystem-backend prod guard and
+        // refuse to start rather than serve a fleet that denies every request.
+        // (A missing cursor secret only warns and boots — it is not a prod guard.)
+        // Non-prod keeps the warning emitted by
         // RateLimitConfig::from_env.
         let rate_limit_config = self
             .rate_limit_config

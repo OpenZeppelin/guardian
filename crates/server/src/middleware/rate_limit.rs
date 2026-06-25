@@ -698,7 +698,8 @@ mod tests {
 
     #[test]
     fn test_rate_limit_layer_from_env() {
-        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
         unsafe {
             env::remove_var(ENV_RATE_LIMIT_ENABLED);
             env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");

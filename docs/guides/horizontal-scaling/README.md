@@ -4,7 +4,7 @@ Run two Guardian replicas behind a round-robin proxy, sharing one Postgres, and
 watch the coordination layer (issue #242) work end to end on your laptop. This
 mirrors the prod topology — 2–6 ECS tasks behind a load balancer — in miniature.
 
-```
+```text
                          ┌─────────────┐
    client ──▶  :8080 ──▶ │ proxy/Caddy │ ──round-robin──┬──▶ server-a :3000
                          └─────────────┘                └──▶ server-b :3010

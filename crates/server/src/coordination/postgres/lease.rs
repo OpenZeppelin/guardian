@@ -118,8 +118,13 @@ impl LeaderElector for PgLeaseElector {
 
     async fn release(&self, lease: Lease) -> Result<()> {
         let mut conn = super::checkout(&self.pool, "lease").await?;
+        // Expire the lease in place instead of deleting the row, so `fence_token`
+        // survives and keeps advancing monotonically on the next steal. A DELETE
+        // would let a fresh acquire re-INSERT `fence_token = 0`, after which a
+        // stale `Lease { fence_token: 0 }` from a long-gone holder could pass
+        // `verify_held` again.
         diesel::sql_query(
-            "DELETE FROM worker_leases \
+            "UPDATE worker_leases SET expires_at = now() \
              WHERE lease_name = $1 AND holder_id = $2 AND fence_token = $3",
         )
         .bind::<Text, _>(&lease.name)

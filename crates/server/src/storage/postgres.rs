@@ -29,6 +29,14 @@ use url::Url;
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 const MIGRATION_ADVISORY_LOCK_KEY: i64 = 0x4755_4152_4449_414E;
+const MIGRATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const MIGRATION_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[derive(diesel::QueryableByName)]
+struct AdvisoryLockAcquired {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    acquired: bool,
+}
 
 /// Run database migrations. Call once at application startup.
 ///
@@ -42,13 +50,27 @@ pub async fn run_migrations(database_url: &str) -> Result<(), String> {
         let mut conn = PgConnection::establish(&url)
             .map_err(|e| format!("Failed to connect for migrations: {e}"))?;
 
-        diesel::RunQueryDsl::execute(
-            diesel::sql_query(format!(
-                "SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_KEY})"
-            )),
-            &mut conn,
-        )
-        .map_err(|e| format!("Failed to acquire migration advisory lock: {e}"))?;
+        let deadline = std::time::Instant::now() + MIGRATION_LOCK_TIMEOUT;
+        loop {
+            let attempt = diesel::RunQueryDsl::get_result::<AdvisoryLockAcquired>(
+                diesel::sql_query(format!(
+                    "SELECT pg_try_advisory_lock({MIGRATION_ADVISORY_LOCK_KEY}) AS acquired"
+                )),
+                &mut conn,
+            )
+            .map_err(|e| format!("Failed to attempt migration advisory lock: {e}"))?;
+            if attempt.acquired {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "Timed out after {}s waiting for the migration advisory lock; \
+                     another replica may be stuck mid-migration",
+                    MIGRATION_LOCK_TIMEOUT.as_secs()
+                ));
+            }
+            std::thread::sleep(MIGRATION_LOCK_POLL);
+        }
 
         let result = conn
             .run_pending_migrations(MIGRATIONS)
