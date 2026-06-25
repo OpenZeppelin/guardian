@@ -167,7 +167,7 @@ one-command Grafana dashboard stack.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
-| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process (non-prod); **required** in the prod stage | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. In the prod stage (`GUARDIAN_ENV=prod`) the server **fails to start** if unset (an ephemeral per-process key silently breaks cross-replica pagination); in non-prod it warns and generates an ephemeral key. |
+| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. If unset the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key only breaks dashboard pagination across replicas — nothing else, so it is not a startup guard. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
 (`testnet`, `devnet`, or `local`) rather than configured separately.
@@ -179,7 +179,6 @@ silently broken across replicas:
 
 - the **filesystem** storage backend is refused (single-instance only — use the
   Postgres image with `DATABASE_URL`);
-- an unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` is refused;
 - a rate limit that partitions to **0 requests per replica** is refused — i.e.
   the global `GUARDIAN_RATE_BURST_PER_SEC`/`GUARDIAN_RATE_PER_MIN` is below
   `GUARDIAN_MAX_REPLICAS`, which would make every replica throttle all traffic.

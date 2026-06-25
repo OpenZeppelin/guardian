@@ -415,19 +415,12 @@ impl DashboardState {
         let cursor_secret = match configured_cursor_secret {
             Some(secret) => secret,
             None => {
-                if crate::config::stage::is_prod().map_err(|error| error.to_string())? {
-                    return Err(
-                        "GUARDIAN_DASHBOARD_CURSOR_SECRET is required in the prod stage \
-                         (GUARDIAN_ENV=prod): an ephemeral per-process secret silently breaks \
-                         dashboard pagination across replicas. Set a stable shared 64-hex value."
-                            .to_string(),
-                    );
-                }
                 if !cfg!(test) {
                     tracing::warn!(
                         "dashboard cursor secret not configured; generating ephemeral per-process \
-                         secret. Multi-replica deployments must set \
-                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 64-hex (32-byte) value."
+                         secret. This degrades only dashboard pagination: a multi-replica \
+                         deployment must set GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared \
+                         64-hex (32-byte) value, or a cursor minted on one replica fails on another."
                     );
                 }
                 CursorSecret::generate()
@@ -902,7 +895,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prod_stage_requires_cursor_secret() {
+    async fn unset_cursor_secret_boots_in_every_stage() {
         let _env_lock = ENV_LOCK.lock().await;
         let _no_secret = EnvVarGuard::remove("GUARDIAN_DASHBOARD_CURSOR_SECRET");
 
@@ -915,8 +908,8 @@ mod tests {
             std::sync::Arc::new(crate::coordination::InMemoryChallengeStore::new()),
         );
         assert!(
-            prod_result.is_err(),
-            "prod stage must reject an unset cursor secret"
+            prod_result.is_ok(),
+            "prod stage tolerates an unset cursor secret (warns, ephemeral fallback)"
         );
         drop(prod);
 

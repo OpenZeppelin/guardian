@@ -10,8 +10,8 @@ Tracking: issue #242.
 | Setting | Why it matters across replicas |
 |---|---|
 | **Postgres backend** (`DATABASE_URL`) | Sessions, login challenges, and the canonicalization lease live in Postgres so they are shared. The filesystem backend is **dev-only** and is refused at startup in the prod stage. |
-| **`GUARDIAN_DASHBOARD_CURSOR_SECRET`** (64 hex chars) | Pagination cursors are signed with this key. If it differs per replica, a cursor minted on one replica fails on another. **Required** in the prod stage — startup fails if unset. |
-| **`GUARDIAN_ENV=prod`** | Activates the prod-stage startup guards (filesystem refusal, cursor-secret requirement). Set by Terraform from `var.deployment_stage`. |
+| **`GUARDIAN_DASHBOARD_CURSOR_SECRET`** (64 hex chars) | Pagination cursors are signed with this key. If it differs per replica, a cursor minted on one replica fails on another. Unset → the server **warns** and generates an ephemeral per-process secret (boots fine in every stage); pin a shared value so multi-replica dashboard pagination works. Degrades only pagination, not custody. |
+| **`GUARDIAN_ENV=prod`** | Activates the prod-stage startup guards (filesystem-backend refusal, 0-req/replica rate-limit refusal). Set by Terraform from `var.deployment_stage`. |
 | **`GUARDIAN_MAX_REPLICAS`** | Rate-limit partitioning divisor (see below). Defaults from the autoscaling max capacity via Terraform. |
 
 With the published Postgres image + the prod Terraform profile, all of these are

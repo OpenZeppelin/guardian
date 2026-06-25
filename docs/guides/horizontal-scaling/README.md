@@ -141,8 +141,16 @@ docker compose logs -f server-a server-b   # Ctrl-C after a few seconds
 
 You will see lease renew/acquire failures and storage errors — the worker
 **cancels its pass** instead of canonicalizing blind. If you have completed the
-login walkthrough below, an authenticated request now returns `5xx` (rejected),
-never a silent success: authentication is **fail-closed**. Recover with:
+login walkthrough below, an authenticated request fails rather than silently
+succeeding: authentication is **fail-closed**.
+
+> `docker compose pause` freezes Postgres mid-connection (SIGSTOP), so an
+> in-flight request *hangs until it times out* rather than getting a prompt
+> `5xx`. Either way it never succeeds. To see a fast `5xx` instead (socket
+> closed → connection refused), use `docker compose stop postgres` and
+> `docker compose start postgres` to recover.
+
+Recover with:
 
 ```sh
 docker compose unpause postgres
@@ -204,11 +212,15 @@ docker compose down -v        # -v also drops the Postgres + keystore volumes
 This guide stays AWS-free to be runnable; a real prod deployment differs in two
 ways that do not change the coordination behavior shown above:
 
-- **`GUARDIAN_ENV=prod`** activates the prod-stage startup guards — the
-  filesystem backend, an unset cursor secret, and a rate limit that partitions
-  to 0 req/replica are each refused at startup. Try it: with the stack down,
-  unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` and add `GUARDIAN_ENV=prod` to a
-  replica, and it will refuse to start.
+- **`GUARDIAN_ENV=prod`** activates the prod-stage startup guards — a filesystem
+  storage backend and a rate limit that partitions to 0 req/replica are each
+  refused at startup. (An unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` only *warns* —
+  it degrades cross-replica dashboard pagination, not custody, so a
+  single-replica prod server still boots.) Note these guards live behind the ACK
+  registry init, which in prod requires AWS first: set `GUARDIAN_ENV=prod`
+  without `AWS_REGION` and the server refuses to start with `AWS_REGION is
+  required when GUARDIAN_ENV=prod` before it ever reaches the storage or
+  rate-limit checks — so observing those two specifically needs AWS configured.
 - **One shared ACK signing key.** Each replica here auto-generates its own
   guardian ACK key into its local keystore — and in non-prod it does so on
   *every* startup, so the identity is not even stable across a single replica's
