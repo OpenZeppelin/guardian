@@ -3,7 +3,7 @@ use crate::error::GuardianError;
 use crate::services::ResolvedAccount;
 use crate::state::AppState;
 use crate::state_object::StateObject;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct CommitContext<'a> {
     pub state: &'a AppState,
@@ -112,43 +112,55 @@ impl DeltaCommitStrategy {
                         .ok()
                 };
 
-                if let Some(ref id) = proposal_id
-                    && let Ok(_existing_proposal) = ctx
+                if let Some(ref id) = proposal_id {
+                    match ctx
                         .resolved
                         .storage
                         .pull_delta_proposal(&delta.account_id, id)
                         .await
-                {
-                    info!(
-                        account_id = %delta.account_id,
-                        proposal_id = %id,
-                        "Deleting matching proposal as delta is now canonical"
-                    );
-                    // Finalization is the canonical delta + matching
-                    // proposal, not the cleanup delete succeeding —
-                    // count it before attempting the delete. (This
-                    // Optimistic-mode emit and the Candidate-mode one
-                    // in jobs/canonicalization/processor.rs are
-                    // mutually exclusive per deployment, not a
-                    // double-count.)
-                    metrics::counter!(
-                        crate::metrics::names::PROPOSALS_TOTAL,
-                        crate::metrics::names::LABEL_EVENT =>
-                            crate::metrics::labels::ProposalEvent::Finalized.as_str()
-                    )
-                    .increment(1);
-                    if let Err(e) = ctx
-                        .resolved
-                        .storage
-                        .delete_delta_proposal(&delta.account_id, id)
-                        .await
                     {
-                        warn!(
-                            account_id = %delta.account_id,
-                            proposal_id = %id,
-                            error = %e,
-                            "Failed to delete proposal, but continuing"
-                        );
+                        Ok(_existing_proposal) => {
+                            info!(
+                                account_id = %delta.account_id,
+                                proposal_id = %id,
+                                "Deleting matching proposal as delta is now canonical"
+                            );
+                            // Finalization is the canonical delta + matching
+                            // proposal, not the cleanup delete succeeding —
+                            // count it before attempting the delete. (This
+                            // Optimistic-mode emit and the Candidate-mode one
+                            // in jobs/canonicalization/processor.rs are
+                            // mutually exclusive per deployment, not a
+                            // double-count.)
+                            metrics::counter!(
+                                crate::metrics::names::PROPOSALS_TOTAL,
+                                crate::metrics::names::LABEL_EVENT =>
+                                    crate::metrics::labels::ProposalEvent::Finalized.as_str()
+                            )
+                            .increment(1);
+                            if let Err(e) = ctx
+                                .resolved
+                                .storage
+                                .delete_delta_proposal(&delta.account_id, id)
+                                .await
+                            {
+                                warn!(
+                                    account_id = %delta.account_id,
+                                    proposal_id = %id,
+                                    error = %e,
+                                    "Failed to delete proposal, but continuing"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            debug!(
+                                account_id = %delta.account_id,
+                                proposal_id = %id,
+                                error = %e,
+                                "No matching proposal to finalize after canonical delta \
+                                 (absent or unreadable); skipping cleanup"
+                            );
+                        }
                     }
                 }
 

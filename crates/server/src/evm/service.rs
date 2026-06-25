@@ -275,16 +275,17 @@ pub async fn list_proposals(
     load_evm_metadata(state, account_id).await?;
     let session_address = normalize_session_address(session_address)?;
     let mut active = Vec::new();
-    for delta in state
+    for record in state
         .storage
         .pull_all_delta_proposals(account_id)
         .await
         .map_err(GuardianError::StorageError)?
     {
-        if !is_evm_delta(&delta) {
+        let delta = &record.proposal;
+        if !is_evm_delta(delta) {
             continue;
         }
-        let proposal = EvmProposal::from_stored_delta(&delta)?;
+        let proposal = EvmProposal::from_stored_delta(delta)?;
         if proposal_is_inactive(state, &proposal).await? {
             state
                 .storage
