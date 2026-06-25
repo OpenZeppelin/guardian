@@ -301,11 +301,14 @@ impl GuardianError {
             GuardianError::InsufficientOperatorPermission { .. } => {
                 "You don't have permission to do that."
             }
-            GuardianError::ProposalAlreadySigned { .. } => "You've already signed this transaction.",
+            GuardianError::ProposalAlreadySigned { .. } => {
+                "You've already signed this transaction."
+            }
             GuardianError::InsufficientSignatures { .. } => {
                 "This transaction still needs more signatures."
             }
-            GuardianError::UnsupportedForNetwork { .. } | GuardianError::UnsupportedEvmChain { .. } => {
+            GuardianError::UnsupportedForNetwork { .. }
+            | GuardianError::UnsupportedEvmChain { .. } => {
                 "That action isn't supported for this account's network."
             }
             GuardianError::RateLimitExceeded { .. } => {
@@ -1289,7 +1292,10 @@ mod tests {
             GuardianError::RpcValidationFailed("https://rpc.internal".into()),
             GuardianError::SignerNotAuthorized("0xSIGNER".into()),
             GuardianError::InvalidEvmProposal("0xCALLDATA".into()),
-            GuardianError::InsufficientSignatures { required: 3, got: 1 },
+            GuardianError::InsufficientSignatures {
+                required: 3,
+                got: 1,
+            },
             GuardianError::RateLimitExceeded {
                 retry_after_secs: 30,
                 scope: "ip:10.0.0.1".into(),

@@ -234,7 +234,6 @@ impl RateLimitType {
     }
 }
 
-
 /// Tower layer for rate limiting
 #[derive(Debug, Clone)]
 pub struct RateLimitLayer {
