@@ -103,17 +103,18 @@ async fn test_grpc_push_delta_unauthorized_cosigner() {
     let request = create_signed_request_with_auth(push_req, &account_id_hex, &unauthorized_signer);
     let push_response = service.push_delta(request).await;
 
-    // Should succeed as a gRPC call but return failure in response
-    assert!(push_response.is_ok(), "gRPC call should succeed");
-    let push_response = push_response.unwrap().into_inner();
-    assert!(
-        !push_response.success,
-        "Push should fail with unauthorized cosigner"
-    );
-    assert!(
-        push_response.message.contains("not authorized"),
-        "Error message should mention authorization"
-    );
+    // Errors now surface as a gRPC Status (feature 009), not an in-band
+    // success=false response.
+    let status = push_response.expect_err("unauthorized push must be a gRPC error status");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    // Status.message is the user-safe sentence; the raw "not authorized"
+    // detail is logged server-side, not returned.
+    assert!(!status.message().is_empty());
+    let details: serde_json::Value =
+        serde_json::from_slice(status.details()).expect("Status.details is JSON");
+    assert!(details["code"].is_string(), "details carry a stable code");
+    assert!(details["message"].is_string());
+    assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
 }
 
 #[tokio::test]
