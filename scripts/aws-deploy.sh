@@ -468,10 +468,18 @@ cmd_bootstrap_storage_encryption_key() {
   secret_value=$(jq -nc --arg k "$key_material" '{active:"k1", keys:{k1:$k}}')
 
   log_info "Creating storage encryption secret ${secret_name}"
-  aws secretsmanager create-secret \
+  local secret_file
+  secret_file=$(mktemp)
+  printf '%s' "$secret_value" >"$secret_file"
+  if aws secretsmanager create-secret \
     --name "$secret_name" \
-    --secret-string "$secret_value" \
-    --region "$AWS_REGION" >/dev/null
+    --secret-string "file://$secret_file" \
+    --region "$AWS_REGION" >/dev/null; then
+    rm -f "$secret_file"
+  else
+    rm -f "$secret_file"
+    return 1
+  fi
 
   log_info "Storage encryption key bootstrap complete"
   log_info "Enable encryption on the next deploy by exporting the secret name:"

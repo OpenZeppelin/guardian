@@ -285,13 +285,17 @@ GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-
 
 The bootstrap command defaults the name to `<stack-name>/server/storage-encryption-key`;
 leaving `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` unset on deploy keeps storage in
-plaintext. The equivalent manual creation is:
+plaintext. The equivalent manual creation writes the document to a restricted
+temp file and passes `file://` so the key never lands in the process arg list
+(`ps` / `/proc`):
 
 ```bash
+f=$(mktemp)
+jq -nc --arg k "$(openssl rand -base64 32)" '{active:"k1", keys:{k1:$k}}' >"$f"
 aws secretsmanager create-secret \
   --name guardian-prod/server/storage-encryption-key \
-  --secret-string "$(jq -nc --arg k "$(openssl rand -base64 32)" \
-    '{active:"k1", keys:{k1:$k}}')"
+  --secret-string "file://$f"
+rm -f "$f"
 ```
 
 The server writes a one-time encryption marker on the first write; it will refuse
@@ -304,10 +308,13 @@ Add a new key and repoint `active`, keeping the previous key so existing records
 still decrypt:
 
 ```bash
+f=$(mktemp)
+jq -nc --arg k1 "$OLD_B64" --arg k2 "$(openssl rand -base64 32)" \
+  '{active:"k2", keys:{k1:$k1, k2:$k2}}' >"$f"
 aws secretsmanager put-secret-value \
   --secret-id guardian-prod/server/storage-encryption-key \
-  --secret-string "$(jq -nc --arg k1 "$OLD_B64" --arg k2 "$(openssl rand -base64 32)" \
-    '{active:"k2", keys:{k1:$k1, k2:$k2}}')"
+  --secret-string "file://$f"
+rm -f "$f"
 ```
 
 New records use `k2`; old `k1` records keep decrypting. Do **not** remove a key
