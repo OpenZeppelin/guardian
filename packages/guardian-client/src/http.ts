@@ -38,9 +38,67 @@ import {
 } from './conversion.js';
 
 /**
- * Error thrown by the GUARDIAN HTTP client.
+ * Structured machine-readable side-data on a GUARDIAN error
+ * (feature `009-human-readable-errors`). `retryable` is always present.
+ */
+export interface GuardianErrorMeta {
+  retryable: boolean;
+  retryAfterSecs?: number;
+  missingPermissions?: string[];
+  pausedAt?: string;
+  pausedReason?: string | null;
+}
+
+interface ParsedGuardianError {
+  code: string;
+  message: string;
+  meta: GuardianErrorMeta;
+}
+
+/**
+ * Parse a GUARDIAN error body `{ code, message, meta }` (feature 009),
+ * mapping the server's snake_case `meta` fields to camelCase. Returns
+ * `undefined` for non-JSON or non-conforming bodies.
+ */
+function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
+  let json: unknown;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof json !== 'object' || json === null) return undefined;
+  const obj = json as Record<string, unknown>;
+  if (typeof obj.code !== 'string' || typeof obj.message !== 'string') return undefined;
+
+  const rawMeta =
+    typeof obj.meta === 'object' && obj.meta !== null ? (obj.meta as Record<string, unknown>) : {};
+  const meta: GuardianErrorMeta = { retryable: rawMeta.retryable === true };
+  if (typeof rawMeta.retry_after_secs === 'number') meta.retryAfterSecs = rawMeta.retry_after_secs;
+  if (Array.isArray(rawMeta.missing_permissions)) {
+    meta.missingPermissions = rawMeta.missing_permissions.filter(
+      (x): x is string => typeof x === 'string'
+    );
+  }
+  if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
+  if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
+    meta.pausedReason = rawMeta.paused_reason as string | null;
+  }
+  return { code: obj.code, message: obj.message, meta };
+}
+
+/**
+ * Error thrown by the GUARDIAN HTTP client. Parses the `{ code, message, meta }`
+ * error body (feature 009): branch on {@link code}, display {@link userMessage}.
  */
 export class GuardianHttpError extends Error {
+  /** Stable, machine-readable error code (e.g. `account_paused`). */
+  readonly code?: string;
+  /** Short, user-safe message — safe to display verbatim in a wallet UI. */
+  readonly userMessage?: string;
+  /** Structured side-data (`retryable`, `retryAfterSecs`, …). */
+  readonly meta?: GuardianErrorMeta;
+
   constructor(
     public readonly status: number,
     public readonly statusText: string,
@@ -48,6 +106,10 @@ export class GuardianHttpError extends Error {
   ) {
     super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
     this.name = 'GuardianHttpError';
+    const parsed = parseGuardianErrorBody(body);
+    this.code = parsed?.code;
+    this.userMessage = parsed?.message;
+    this.meta = parsed?.meta;
   }
 }
 
@@ -318,7 +380,16 @@ export class GuardianHttpClient {
         },
       });
     } catch (err) {
-      if (retries > 0 && err instanceof GuardianHttpError && err.body.includes('Replay attack')) {
+      // Replay rejections (stale timestamp) are transient: retry once with a
+      // fresh timestamp. The specific "Replay attack" detail is now sanitized
+      // off the wire (feature 009), so branch on the stable auth code instead.
+      // Retrying a genuine auth failure is harmless — one extra attempt that
+      // also fails — and only happens when a retry budget remains.
+      if (
+        retries > 0 &&
+        err instanceof GuardianHttpError &&
+        err.code === 'authentication_failed'
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);
       }
