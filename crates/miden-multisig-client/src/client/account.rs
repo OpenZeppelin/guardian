@@ -7,8 +7,7 @@ use std::collections::HashSet;
 
 use base64::Engine;
 use guardian_client::{
-    AuthConfig, ClientError as GuardianClientError, MidenEcdsaAuth, MidenFalconRpoAuth,
-    TryIntoTxSummary, auth_config::AuthType,
+    AuthConfig, MidenEcdsaAuth, MidenFalconRpoAuth, TryIntoTxSummary, auth_config::AuthType,
 };
 use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
@@ -393,8 +392,10 @@ impl MultisigClient {
             .await
         {
             Ok(resp) => resp,
-            Err(GuardianClientError::ServerError(msg)) if msg.contains("not found") => {
-                // No new deltas since current nonce - this is not an error
+            // No new deltas since current nonce — not an error. Errors now
+            // arrive as a gRPC Status (feature 009); branch on the not-found
+            // signal rather than substring-matching the message.
+            Err(e) if e.is_not_found() => {
                 return Ok(());
             }
             Err(e) => {
