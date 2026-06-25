@@ -1,0 +1,132 @@
+# Guardian + the Miden Dashboard UI + a live Prometheus/Grafana observability
+# stack, in one `docker compose up`. This is the combination of two guides:
+#   ../miden-dashboard   — Guardian (postgres) + the operator dashboard UI
+#   ../observability     — Prometheus scraping Guardian, visualized in Grafana
+#
+# Services:
+#   - postgres:   state + metadata backend (the published image requires it).
+#   - server:     published Guardian image, postgres backend, file-based operator
+#                 allowlist, local keystore for the in-memory ACK signer, AND
+#                 Prometheus metrics enabled on :9464 (internal only).
+#   - dashboard:  the Next.js operator UI (0xMiden/guardian-dashboard), run from a
+#                 source clone via the stock node image.
+#   - prometheus: scrapes server:9464 (config reused from ../observability).
+#   - grafana:    pre-provisioned Guardian dashboard (reused from ../observability).
+#
+# Metrics is a RUNTIME toggle (not a build feature), so the published postgres
+# image already exposes /metrics — no source build needed here.
+#
+# Run from this directory:
+#   cp .env.example .env                 # then fill in the values
+#   cp operators.example.json operators.json
+#   docker compose up
+#
+# Ports (all bound to loopback — local demo only; Grafana runs anonymous admin):
+#   3000  server HTTP        3001  dashboard UI        3002  Grafana
+#   50051 server gRPC        9090  Prometheus          9464  metrics (NOT published)
+#
+# Walkthrough: ./README.md   Full server config: ../../CONFIGURATION.md
+
+services:
+  server:
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    pull_policy: always
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+      - ./operators.json:/etc/guardian/operators.json:ro
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_NETWORK_TYPE=${GUARDIAN_NETWORK_TYPE:-MidenTestnet}
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/etc/guardian/operators.json
+      # Metrics on, reachable by the Prometheus container over the internal
+      # network. The bearer token must match ../observability/prometheus/prometheus.yml
+      # (`devtoken` — a throwaway for this local stack).
+      - GUARDIAN_METRICS_ENABLED=true
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
+      - GUARDIAN_METRICS_BEARER_TOKEN=devtoken
+      - GUARDIAN_METRICS_REFRESH_INTERVAL_SECS=15
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    image: node:22
+    working_dir: /app
+    depends_on:
+      - server
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - ${GUARDIAN_DASHBOARD_PATH:-./guardian-dashboard}:/app
+      - dashboard-node-modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- -p 3001 -H 0.0.0.0"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY in .env}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY in .env}
+      - GUARDIAN_ENDPOINTS=${GUARDIAN_ENDPOINTS:?set GUARDIAN_ENDPOINTS in .env}
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      # Reused from the observability guide — its scrape target is `server:9464`
+      # with bearer `devtoken`, which matches the server above unchanged.
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - server
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      # 3002 on the host — 3000 is the server, 3001 is the dashboard UI.
+      - "127.0.0.1:3002:3000"
+    volumes:
+      # Datasource + the pre-built Guardian dashboard, reused from ../observability.
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Zero-friction local viewing: open http://localhost:3002 and land on the
+      # dashboard, no login. DEV ONLY — never enable anonymous admin on a Grafana
+      # reachable by anyone else.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_USERS_DEFAULT_THEME=dark
+    depends_on:
+      - prometheus
+
+volumes:
+  guardian-postgres:
+  guardian-keystore:
+  dashboard-node-modules:
+  prometheus-data:
+  grafana-data:

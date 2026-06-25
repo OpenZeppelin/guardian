@@ -25,6 +25,7 @@ storage, or network), not after Compose.
 | [AWS-managed ACK signers](./aws-signers/README.md) | Self-hosted Compose: Postgres + Secrets Manager (Falcon) + KMS (ECDSA) |
 | [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 | [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
+| [Dashboard + observability](./dashboard-observability/README.md) | Local Compose combining the two above: Postgres + server + the Miden Dashboard UI + Prometheus + Grafana, in one `docker compose up` |
 
 ## Adding a guide
 

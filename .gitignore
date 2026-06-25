@@ -12,6 +12,10 @@ templates/
 .env.registry
 docs/guides/miden-dashboard/operators.json
 docs/guides/miden-dashboard/guardian-dashboard/
+docs/guides/dashboard-observability/operators.json
+docs/guides/dashboard-observability/guardian-dashboard/
+docs/guides/dashboard-observability/scripts/node_modules/
+docs/guides/dashboard-observability/scripts/package-lock.json
 
 .cursor/
 .claude/

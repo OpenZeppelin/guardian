@@ -1,0 +1,16 @@
+{
+  "name": "guardian-operator-demo",
+  "private": true,
+  "type": "module",
+  "description": "Example scripts driving the Guardian operator dashboard API with @openzeppelin/guardian-operator-client.",
+  "scripts": {
+    "demo": "tsx operator-demo.ts"
+  },
+  "dependencies": {
+    "@miden-sdk/miden-sdk": "0.15.1",
+    "@openzeppelin/guardian-operator-client": "0.15.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

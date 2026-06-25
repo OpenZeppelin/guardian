@@ -1,0 +1,6 @@
+[
+  {
+    "public_key": "0x<your-falcon-operator-pubkey>",
+    "permissions": ["dashboard:read", "accounts:pause"]
+  }
+]
