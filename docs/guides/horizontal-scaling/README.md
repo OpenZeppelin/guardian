@@ -35,7 +35,7 @@ one replica ever canonicalizes. The variable meanings live in
 cp .env.example .env
 # Set a real cursor secret — it MUST be identical on every replica:
 #   openssl rand -hex 32   →   paste into GUARDIAN_DASHBOARD_CURSOR_SECRET
-cp operators.example.json operators.json   # empty allowlist `[]`; add a key for the login walkthrough (step 6)
+cp operators.example.json operators.json   # empty allowlist `[]`; add a key for the login walkthrough (step 7)
 ```
 
 > **Building an unreleased version?** The published `latest` image does not yet
@@ -111,7 +111,26 @@ the increment is the steal signal a superseded holder uses to fence itself off
 at its next write. Bring the replica back with `docker compose start server-a`;
 the lease does not bounce back (the current holder keeps renewing).
 
-### 4. Auth fails closed when the shared store is down
+### 4. Proxy request failover
+
+The lease failover above is server-side; the proxy also has to stop routing
+*client* requests to a dead replica. That is what the `health_uri` / `lb_*`
+directives in the [`Caddyfile`](./Caddyfile) do — a bare `round_robin` (no health
+checks) keeps sending half the traffic to the dead replica and returns `502`.
+Kill a replica and hit the proxy:
+
+```sh
+docker compose stop server-b
+for i in $(seq 1 4); do curl -s -o /dev/null -w "%{http_code} " \
+  http://localhost:8080/pubkey; done; echo
+```
+
+Every response stays `200` — Caddy health-checks each replica and routes only to
+the survivor. Bring it back with `docker compose start server-b`; Caddy re-adds
+it within one health interval (~5s). (Strip the health directives from the
+`Caddyfile` and the same loop returns alternating `502`s.)
+
+### 5. Auth fails closed when the shared store is down
 
 Pause Postgres and watch the holder step down rather than barrel ahead:
 
@@ -131,7 +150,7 @@ docker compose unpause postgres
 
 Coordination resumes automatically; no manual intervention.
 
-### 5. Rate-limit partitioning and `X-Forwarded-For`
+### 6. Rate-limit partitioning and `X-Forwarded-For`
 
 Each replica enforces `global / GUARDIAN_MAX_REPLICAS`. With the default global
 burst of 10 and `GUARDIAN_MAX_REPLICAS=2`, a single replica caps at ~5 req/s.
@@ -150,7 +169,7 @@ After the per-replica burst is spent you see `429`s. Through the proxy
 real client IP rather than the proxy address — confirm by repeating the loop
 against `http://localhost:8080/...` and seeing the same per-IP behavior.
 
-### 6. (End-to-end) An operator session survives losing its replica
+### 7. (End-to-end) An operator session survives losing its replica
 
 This is the headline, and it needs a real operator key to sign the challenge.
 Use the [`examples/operator-smoke-web`](../../../examples/operator-smoke-web)
@@ -190,11 +209,28 @@ ways that do not change the coordination behavior shown above:
   to 0 req/replica are each refused at startup. Try it: with the stack down,
   unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` and add `GUARDIAN_ENV=prod` to a
   replica, and it will refuse to start.
-- **One shared ACK signing key.** Here each replica auto-generates its own (fine
-  for auth + coordination). For the multisig co-signing flow every replica must
-  present the *same* guardian identity, so prod pins one ACK key via AWS Secrets
+- **One shared ACK signing key.** Each replica here auto-generates its own
+  guardian ACK key into its local keystore — and in non-prod it does so on
+  *every* startup, so the identity is not even stable across a single replica's
+  restart. That is fine for auth + coordination, which is all this guide
+  exercises. It is **not** enough for the multisig co-signing flow: every replica
+  must present the *same* guardian identity, because each account pins the
+  guardian's `/pubkey` commitment into its `openzeppelin::guardian::public_key`
+  slot at configure time. Route a multisig flow through the round-robin proxy and
+  the replica that did not configure the account rejects it with
+  `invalid GUARDIAN public key binding`. So prod pins one ACK key via AWS Secrets
   Manager — see the [aws-signers guide](../aws-signers/README.md). Per-account
   state already lives in Postgres and needs nothing extra.
+
+> **Smoke-testing multisig against this demo?** Until a stable non-AWS identity
+> lands ([issue #289](https://github.com/OpenZeppelin/guardian/issues/289) — a
+> local file/env signer key, so every replica can share one identity without
+> AWS), point your client at a **single replica directly**
+> (`http://localhost:3000`), never the proxy (`:8080`). Also make the client's
+> Miden RPC network match the server's `GUARDIAN_NETWORK_TYPE` (e.g. devnet RPC
+> ↔ `MidenDevnet`), or canonicalization will loop on an `on_chain=0x00…0`
+> commitment because the account was deployed to a different network than the
+> guardian verifies against.
 
 The managed path (published Postgres image + the prod Terraform profile) sets
 all of this for you; see [`../../SERVER_AWS_DEPLOY.md`](../../SERVER_AWS_DEPLOY.md)
