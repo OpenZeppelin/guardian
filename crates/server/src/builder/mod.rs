@@ -458,15 +458,11 @@ impl ServerBuilder {
         // which would let every replica run canonicalization and split auth
         // state. Checking here (not only on the dashboard==None path) catches a
         // manual builder that supplies a custom dashboard but skips coordination.
-        if coordination.is_none()
-            && storage.kind() == crate::storage::StorageType::Postgres
-        {
-            return Err(
-                "Postgres storage requires coordination handles for shared \
+        if coordination.is_none() && storage.kind() == crate::storage::StorageType::Postgres {
+            return Err("Postgres storage requires coordination handles for shared \
                  sessions/challenges and canonicalization leadership; call \
                  .coordination(...) (populated by StorageMetadataBuilder::build())"
-                    .to_string(),
-            );
+                .to_string());
         }
         let coordination_mode = coordination
             .as_ref()
