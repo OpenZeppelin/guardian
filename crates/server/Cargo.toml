@@ -12,6 +12,7 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm = { version = "0.10", features = ["std"] }
 async-trait = "0.1"
 aws-config = { version = "=1.5.18", default-features = false, features = ["rt-tokio", "rustls"] }
 aws-sdk-secretsmanager = { version = "=1.75.0", default-features = false, features = ["rt-tokio", "rustls"] }

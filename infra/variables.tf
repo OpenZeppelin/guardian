@@ -377,6 +377,12 @@ variable "guardian_ack_ecdsa_secret_name" {
   default     = ""
 }
 
+variable "guardian_storage_encryption_secret_name" {
+  description = "Secrets Manager secret name holding the storage encryption key document ({active, keys}). When set (prod only), the ECS task is granted secretsmanager:GetSecretValue on it and GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID is injected, enabling encryption at rest. Empty leaves storage in plaintext at rest."
+  type        = string
+  default     = ""
+}
+
 variable "guardian_evm_rpc_urls" {
   description = "Comma-separated chain_id=url EVM RPC entries; when set, Terraform creates a Secrets Manager secret containing this value"
   type        = string

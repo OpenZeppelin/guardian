@@ -291,6 +291,38 @@ This Terraform stack is RDS-only. Existing stacks that still run ECS-hosted Post
 5. Validate the public Guardian endpoints.
 6. Confirm the old Postgres ECS and Cloud Map resources are gone from AWS before considering the cutover complete.
 
+## Storage encryption key
+
+Optional storage-at-rest encryption (see
+[`docs/PRODUCTION.md`](../docs/PRODUCTION.md#storage-encryption)) reads its key
+from a Secrets Manager secret named by `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID`.
+
+The key material is created out-of-band (it must never enter Terraform state),
+then the stack wires the rest automatically, mirroring the ACK key secrets:
+
+1. Bootstrap the key secret once, against an empty store:
+
+   ```bash
+   DEPLOY_STAGE=prod STACK_NAME=guardian-prod \
+     ./scripts/aws-deploy.sh bootstrap-storage-encryption-key
+   ```
+
+2. Enable it on the next deploy by exporting the secret name (the bootstrap
+   command prints it):
+
+   ```bash
+   GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key \
+     DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy
+   ```
+
+Setting `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` is what enables encryption — the
+deploy script passes it through to `guardian_storage_encryption_secret_name`, and
+the stack then grants the ECS **task** role `secretsmanager:GetSecretValue` on that
+secret and injects `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID`. Leaving it unset
+keeps storage in plaintext at rest. Wiring is prod-only; dev uses
+`GUARDIAN_STORAGE_ENCRYPTION_KEY` directly. Rotation details live in
+[`docs/runbooks/secrets.md`](../docs/runbooks/secrets.md#storage-encryption-key).
+
 ## Troubleshooting
 
 - If the server task does not start, inspect the server log group and confirm the `database_endpoint` output points to the expected RDS host.

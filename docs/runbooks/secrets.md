@@ -15,6 +15,7 @@ this doc covers *how* to bootstrap, replace, and respond to compromise.
 | `DATABASE_URL` | Secrets Manager (`<stack>/server/database-url`) | Managed by Terraform | ECS task **execution** role, at task start |
 | RDS Proxy credentials (prod) | Secrets Manager (`<stack>/server/database-credentials`) | Managed by Terraform | RDS Proxy IAM role |
 | ACK signing keys (prod) | Secrets Manager — IDs selected by `GUARDIAN_ACK_{FALCON,ECDSA}_SECRET_ID` env vars; default `guardian-prod/server/ack-{falcon,ecdsa}-secret-key`; Terraform sets per-stack `${stack_name}/server/ack-{falcon,ecdsa}-secret-key` | Bootstrapped once via `aws-deploy.sh bootstrap-ack-keys`; never rotated by deploys; replacement is incident/migration work | ECS task **runtime** role, at server startup |
+| Storage encryption key (optional) | Secrets Manager — ID from `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` | Created once against an empty store; rotate by adding keys to the structured secret | ECS task **runtime** role, at server startup (loaded once, cached) |
 | Operator public keys | Secrets Manager (Terraform-managed or pre-existing ARN) | Updated by editing Terraform var or rotating the secret value | ECS task runtime role, on each dashboard challenge **and each authenticated `/dashboard/*` request** (hot-reloaded — no restart needed) |
 | EVM allowed chains + RPC URLs | Secrets Manager (Terraform-managed) | Updated by editing `config/evm/chains.json` and redeploying | ECS task execution role; surfaced as env to the task |
 
@@ -254,6 +255,100 @@ If you believe an ACK secret leaked:
    verifiers.
 6. File an incident referencing the secret ARN, the replacement timestamp,
    and the CloudTrail evidence.
+
+## Storage encryption key
+
+Optional. Encrypts account state and delta/proposal payloads at rest (see
+[`PRODUCTION.md`](../PRODUCTION.md#storage-encryption)). The key never leaves the
+process boundary beyond Secrets Manager; it is loaded once at startup and cached.
+
+### Bootstrap (against an empty store)
+
+On the standard AWS stack, use the deploy script. It generates the key locally,
+creates the structured secret (`{active, keys}`), and refuses to overwrite an
+existing one:
+
+```bash
+DEPLOY_STAGE=prod STACK_NAME=guardian-prod \
+  ./scripts/aws-deploy.sh bootstrap-storage-encryption-key
+```
+
+Then enable it on the next deploy by exporting the secret name (the bootstrap
+command prints it). Setting `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` is what turns
+encryption on: Terraform injects `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` and
+grants the ECS **runtime** role `secretsmanager:GetSecretValue` on the secret:
+
+```bash
+GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key \
+  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy
+```
+
+The bootstrap command defaults the name to `<stack-name>/server/storage-encryption-key`;
+leaving `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` unset on deploy keeps storage in
+plaintext. The equivalent manual creation writes the document to a restricted
+temp file and passes `file://` so the key never lands in the process arg list
+(`ps` / `/proc`):
+
+```bash
+f=$(mktemp)
+jq -nc --arg k "$(openssl rand -base64 32)" '{active:"k1", keys:{k1:$k}}' >"$f"
+aws secretsmanager create-secret \
+  --name guardian-prod/server/storage-encryption-key \
+  --secret-string "file://$f"
+rm -f "$f"
+```
+
+The server writes a one-time encryption marker on the first write; it will refuse
+to start if the key is configured against a store that already holds plaintext
+records.
+
+### Rotation
+
+Add a new key and repoint `active`, keeping the previous key so existing records
+still decrypt:
+
+```bash
+f=$(mktemp)
+jq -nc --arg k1 "$OLD_B64" --arg k2 "$(openssl rand -base64 32)" \
+  '{active:"k2", keys:{k1:$k1, k2:$k2}}' >"$f"
+aws secretsmanager put-secret-value \
+  --secret-id guardian-prod/server/storage-encryption-key \
+  --secret-string "file://$f"
+rm -f "$f"
+```
+
+New records use `k2`; old `k1` records keep decrypting. Do **not** remove a key
+that any stored record still references. Bulk re-encryption tooling is not yet
+provided.
+
+### Nonce budget
+
+Records are sealed with AES-256-GCM under a random 96-bit nonce. Per NIST
+SP 800-38D, a single key must encrypt fewer than ~2³² records (about 4 billion)
+before nonce-collision probability becomes non-negligible — and a collision
+under one key is catastrophic, not graceful.
+
+Each state, delta, and proposal write is one encryption under the **active**
+key. Treat 2³² as a per-key budget: [rotate](#rotation) the active key well
+before any single `active` kid reaches ~1 billion writes (2³⁰, a ~4× margin),
+or on a calendar cadence sized to the deployment's write rate. Rotation only
+repoints `active` — old records keep decrypting under their original kid — so
+the budget resets with each rotation. If 2³² is unreachable for the
+deployment's lifetime, no cadence is required.
+
+### Compromise response
+
+Treat as a confidentiality breach of account state/history (not key material —
+Guardian is non-custodial). Rotate the key, and because old records remain
+readable with the old key, plan a re-encryption migration before retiring it.
+
+Note that the key the store was first initialized with (`init_kid`, recorded in
+the store's encryption marker) must stay resolvable in the structured secret for
+the server to start, **even after every record has been re-encrypted to a newer
+kid**. Fully retiring the initial key therefore requires rewriting the store
+marker, not just dropping the key from the secret — and there is no operator
+command for that yet. If the initial key is itself the compromised one, track
+the marker rewrite as migration work rather than assuming a key drop suffices.
 
 ## Operator public keys
 

@@ -190,6 +190,12 @@ resource "aws_ecs_task_definition" "server" {
               name  = "GUARDIAN_ACK_ECDSA_KMS_KEY_ID"
               value = var.guardian_ack_ecdsa_kms_key_arn
             }
+          ] : [],
+          local.storage_encryption_secret_name != "" ? [
+            {
+              name  = "GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID"
+              value = local.storage_encryption_secret_name
+            }
           ] : []
         )
 

@@ -12,6 +12,7 @@ import type {
   SignatureScheme,
   Signer,
   StateObject,
+  StatusResponse,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
@@ -23,6 +24,7 @@ import type {
   ServerStateObject,
   ServerConfigureResponse,
   ServerPushDeltaResponse,
+  ServerStatusResponse,
 } from './server-types.js';
 import {
   fromServerConfigureResponse,
@@ -84,6 +86,19 @@ export class GuardianHttpClient {
     return {
       commitment: data.commitment,
       pubkey: data.pubkey,
+    };
+  }
+
+  async getStatus(): Promise<StatusResponse> {
+    const response = await this.fetch('/status', { method: 'GET' });
+    const data = (await response.json()) as ServerStatusResponse;
+    return {
+      status: data.status,
+      version: data.version,
+      gitCommit: data.git_commit,
+      environment: data.environment,
+      startedAt: data.started_at,
+      uptimeSeconds: data.uptime_seconds,
     };
   }
 

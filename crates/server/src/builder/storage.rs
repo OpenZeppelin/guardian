@@ -11,8 +11,15 @@ use crate::metadata::MetadataStore;
 use crate::metadata::filesystem::FilesystemMetadataStore;
 #[cfg(feature = "postgres")]
 use crate::metadata::postgres::PostgresMetadataStore;
-use crate::secret::CredentialUrl;
+use crate::secret::{CredentialUrl, SecretString};
 use crate::storage::StorageBackend;
+use crate::storage::encryption::cipher::{Aes256GcmCipher, StorageCipher};
+use crate::storage::encryption::decorator::EncryptedStorage;
+use crate::storage::encryption::key_provider::{
+    DEFAULT_KID, ENV_KEY, ENV_KEY_ID, ENV_SECRET_ID, InMemoryKeyProvider, KeyProviderError,
+    StorageKeyProvider,
+};
+use crate::storage::encryption::marker::{MarkerStore, apply_startup_guard};
 #[cfg(not(feature = "postgres"))]
 use crate::storage::filesystem::FilesystemService;
 #[cfg(feature = "postgres")]
@@ -121,13 +128,14 @@ impl StorageMetadataBuilder {
             let metadata = PostgresMetadataStore::new(raw_url, metadata_pool_max_size).await?;
             let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
 
+            let storage = wrap_with_encryption(storage).await?;
             let holder_id = format!("{}-{:016x}", std::process::id(), rand::random::<u64>());
             let coordination = crate::coordination::CoordinationHandles::postgres(
                 metadata.pool_handle(),
                 holder_id,
             );
 
-            Ok((Arc::new(storage), Arc::new(metadata), auditor, coordination))
+            Ok((storage, Arc::new(metadata), auditor, coordination))
         }
 
         #[cfg(not(feature = "postgres"))]
@@ -154,9 +162,10 @@ impl StorageMetadataBuilder {
             );
             let auditor: SharedAuditor = Arc::new(LogAuditor::new());
 
+            let storage = wrap_with_encryption(storage).await?;
             let coordination = crate::coordination::CoordinationHandles::in_memory();
 
-            Ok((Arc::new(storage), Arc::new(metadata), auditor, coordination))
+            Ok((storage, Arc::new(metadata), auditor, coordination))
         }
     }
 }
@@ -175,6 +184,67 @@ fn reject_filesystem_in_prod(is_prod: bool) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+async fn wrap_with_encryption<S>(storage: S) -> Result<Arc<dyn StorageBackend>, String>
+where
+    S: StorageBackend + MarkerStore + 'static,
+{
+    let provider = resolve_storage_key_provider().await?;
+    apply_startup_guard(&storage, provider.as_deref()).await?;
+    match provider {
+        Some(provider) => {
+            let cipher: Arc<dyn StorageCipher> = Arc::new(Aes256GcmCipher::new(provider));
+            let inner: Arc<dyn StorageBackend> = Arc::new(storage);
+            Ok(Arc::new(EncryptedStorage::new(inner, cipher)))
+        }
+        None => Ok(Arc::new(storage)),
+    }
+}
+
+async fn resolve_storage_key_provider() -> Result<Option<Arc<dyn StorageKeyProvider>>, String> {
+    match (non_empty_env(ENV_KEY), non_empty_env(ENV_SECRET_ID)) {
+        (Some(_), Some(_)) => Err(KeyProviderError::MultipleKeySources.to_string()),
+        (Some(key), None) => {
+            let kid = non_empty_env(ENV_KEY_ID).unwrap_or_else(|| DEFAULT_KID.to_string());
+            let provider =
+                InMemoryKeyProvider::from_dev_key(&key, &kid).map_err(|e| e.to_string())?;
+            Ok(Some(Arc::new(provider)))
+        }
+        (None, Some(secret_id)) => {
+            let secret = fetch_secret_document(&secret_id).await?;
+            let provider = InMemoryKeyProvider::from_secret_json(secret.expose_secret())
+                .map_err(|e| e.to_string())?;
+            Ok(Some(Arc::new(provider)))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+async fn fetch_secret_document(secret_id: &str) -> Result<SecretString, String> {
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .load()
+        .await;
+    let client = aws_sdk_secretsmanager::Client::new(&config);
+    let response = client
+        .get_secret_value()
+        .secret_id(secret_id)
+        .send()
+        .await
+        .map_err(|e| {
+            KeyProviderError::KeyStoreUnavailable(format!("secret {secret_id}: {e}")).to_string()
+        })?;
+    response
+        .secret_string()
+        .map(|s| SecretString::new(s.to_owned()))
+        .ok_or_else(|| format!("Storage encryption secret {secret_id} has no string value"))
 }
 
 #[cfg(feature = "postgres")]
@@ -212,6 +282,85 @@ fn validate_pool_size(pool_max_size: usize, env_var_name: &str) -> Result<usize,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    static ENCRYPTION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct EncEnvGuard;
+
+    impl EncEnvGuard {
+        fn clear() -> Self {
+            for key in [ENV_KEY, ENV_KEY_ID, ENV_SECRET_ID] {
+                // SAFETY: serialized by ENCRYPTION_ENV_LOCK
+                unsafe { std::env::remove_var(key) };
+            }
+            Self
+        }
+        fn set(self, key: &str, value: &str) -> Self {
+            // SAFETY: serialized by ENCRYPTION_ENV_LOCK
+            unsafe { std::env::set_var(key, value) };
+            self
+        }
+    }
+
+    impl Drop for EncEnvGuard {
+        fn drop(&mut self) {
+            for key in [ENV_KEY, ENV_KEY_ID, ENV_SECRET_ID] {
+                // SAFETY: serialized by ENCRYPTION_ENV_LOCK
+                unsafe { std::env::remove_var(key) };
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_none_when_no_key_source() {
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear();
+        assert!(resolve_storage_key_provider().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_from_dev_key() {
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear().set(ENV_KEY, &BASE64.encode([5u8; 32]));
+        let provider = resolve_storage_key_provider().await.unwrap().unwrap();
+        assert_eq!(provider.active_key_id(), DEFAULT_KID);
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_honors_custom_kid() {
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear()
+            .set(ENV_KEY, &BASE64.encode([5u8; 32]))
+            .set(ENV_KEY_ID, "primary");
+        let provider = resolve_storage_key_provider().await.unwrap().unwrap();
+        assert_eq!(provider.active_key_id(), "primary");
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_rejects_invalid_dev_key() {
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear().set(ENV_KEY, "not-base64!!!");
+        assert!(resolve_storage_key_provider().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_rejects_short_dev_key() {
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear().set(ENV_KEY, &BASE64.encode([5u8; 16]));
+        assert!(resolve_storage_key_provider().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_rejects_multiple_sources() {
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear()
+            .set(ENV_KEY, &BASE64.encode([5u8; 32]))
+            .set(ENV_SECRET_ID, "some/secret/id");
+        let result = resolve_storage_key_provider().await;
+        assert!(matches!(&result, Err(message) if message.contains("more than one")));
+    }
 
     #[test]
     fn test_new_creates_empty_builder() {

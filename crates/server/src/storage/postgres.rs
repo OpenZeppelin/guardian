@@ -1,7 +1,8 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::schema::{delta_proposals, deltas, states};
+use crate::schema::{delta_proposals, deltas, states, storage_encryption_marker};
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
+use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
     GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
@@ -678,6 +679,96 @@ impl From<ProposalRow> for DeltaObject {
     }
 }
 
+fn proposal_row_to_record(row: ProposalRow) -> ProposalRecord {
+    ProposalRecord {
+        account_id: row.account_id.clone(),
+        commitment: row.commitment.clone(),
+        proposal: row.into(),
+    }
+}
+
+#[derive(Queryable, Selectable, Insertable)]
+#[diesel(table_name = storage_encryption_marker)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+struct MarkerRow {
+    id: bool,
+    scheme_version: i16,
+    init_kid: String,
+}
+
+#[async_trait]
+impl MarkerStore for PostgresService {
+    async fn read_encryption_marker(&self) -> Result<Option<EncryptionMarker>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let row: Option<MarkerRow> = storage_encryption_marker::table
+            .select(MarkerRow::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| format!("Failed to read encryption marker: {e}"))?;
+        row.map(|row| {
+            let scheme_version = u8::try_from(row.scheme_version).map_err(|_| {
+                format!(
+                    "storage encryption marker scheme version {} is out of range",
+                    row.scheme_version
+                )
+            })?;
+            Ok(EncryptionMarker {
+                scheme_version,
+                init_kid: row.init_kid,
+            })
+        })
+        .transpose()
+    }
+
+    async fn write_encryption_marker(&self, marker: &EncryptionMarker) -> Result<(), String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let row = MarkerRow {
+            id: true,
+            scheme_version: marker.scheme_version as i16,
+            init_kid: marker.init_kid.clone(),
+        };
+        diesel::insert_into(storage_encryption_marker::table)
+            .values(&row)
+            .on_conflict(storage_encryption_marker::id)
+            .do_update()
+            .set((
+                storage_encryption_marker::scheme_version.eq(row.scheme_version),
+                storage_encryption_marker::init_kid.eq(&row.init_kid),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to write encryption marker: {e}"))?;
+        Ok(())
+    }
+
+    async fn has_payload_records(&self) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        diesel::select(
+            diesel::dsl::exists(states::table.select(states::account_id))
+                .or(diesel::dsl::exists(deltas::table.select(deltas::id)))
+                .or(diesel::dsl::exists(
+                    delta_proposals::table.select(delta_proposals::commitment),
+                )),
+        )
+        .get_result(&mut conn)
+        .await
+        .map_err(|e| format!("Failed to probe payload records: {e}"))
+    }
+}
+
 #[async_trait]
 impl StorageBackend for PostgresService {
     fn kind(&self) -> StorageType {
@@ -984,7 +1075,10 @@ impl StorageBackend for PostgresService {
         Ok(row.into())
     }
 
-    async fn pull_all_delta_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_all_delta_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
         let mut conn = self
             .pool
             .get()
@@ -999,10 +1093,13 @@ impl StorageBackend for PostgresService {
             .await
             .map_err(|e| format!("Failed to pull all delta proposals: {e}"))?;
 
-        Ok(rows.into_iter().map(|r| r.into()).collect())
+        Ok(rows.into_iter().map(proposal_row_to_record).collect())
     }
 
-    async fn pull_pending_proposals(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_pending_proposals(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProposalRecord>, String> {
         let mut conn = self
             .pool
             .get()
@@ -1020,7 +1117,7 @@ impl StorageBackend for PostgresService {
             .await
             .map_err(|e| format!("Failed to pull pending proposals: {e}"))?;
 
-        Ok(rows.into_iter().map(|r| r.into()).collect())
+        Ok(rows.into_iter().map(proposal_row_to_record).collect())
     }
 
     async fn update_delta_proposal(
