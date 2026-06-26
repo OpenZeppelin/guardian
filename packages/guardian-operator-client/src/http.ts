@@ -279,9 +279,10 @@ export class GuardianOperatorHttpError extends Error {
     public readonly data: GuardianOperatorHttpErrorData | null,
   ) {
     super(
-      `Guardian operator HTTP error ${status}: ${statusText}${
-        data ? ` - ${data.message}` : body ? ` - ${body}` : ''
-      }`,
+      // Only the user-safe `message` is appended; the raw `body` (which may
+      // contain backend/transport detail) stays on the `body` field for
+      // diagnostics but is never folded into the Error message (feature 009).
+      `Guardian operator HTTP error ${status}: ${statusText}${data ? ` - ${data.message}` : ''}`,
     );
     this.name = 'GuardianOperatorHttpError';
     this.retryAfterSecs = data?.retryAfterSecs;
@@ -1069,17 +1070,14 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
 
   const message = requireString(record, 'message', 'error response');
 
+  // `meta` (with a boolean `retryable`) is required on the feature 009
+  // envelope; a missing/malformed meta is contract drift, surfaced loudly so
+  // callers never silently lose retry classification.
   const metaRaw = record.meta;
-  let meta: Record<string, unknown> = {};
-  if (metaRaw !== undefined) {
-    if (typeof metaRaw !== 'object' || metaRaw === null || Array.isArray(metaRaw)) {
-      throw new GuardianOperatorContractError(
-        'error response',
-        'meta must be an object when present',
-      );
-    }
-    meta = metaRaw as Record<string, unknown>;
+  if (typeof metaRaw !== 'object' || metaRaw === null || Array.isArray(metaRaw)) {
+    throw new GuardianOperatorContractError('error response', 'meta must be an object');
   }
+  const meta = metaRaw as Record<string, unknown>;
 
   const retryAfterValue = meta.retry_after_secs;
   let retryAfterSecs: number | undefined;
@@ -1093,20 +1091,13 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     retryAfterSecs = retryAfterValue;
   }
 
-  // `meta.retryable` is always present on the new wire shape; surface it
-  // whenever it is a boolean (the server pins `false` for permission denials
-  // and account-paused rejections).
-  let retryable: boolean | undefined;
+  // `meta.retryable` is required and pins retry classification (the server
+  // sets `false` for permission denials and account-paused rejections).
   const retryableRaw = meta.retryable;
-  if (retryableRaw !== undefined) {
-    if (typeof retryableRaw !== 'boolean') {
-      throw new GuardianOperatorContractError(
-        'error response',
-        'meta.retryable must be a boolean when present',
-      );
-    }
-    retryable = retryableRaw;
+  if (typeof retryableRaw !== 'boolean') {
+    throw new GuardianOperatorContractError('error response', 'meta.retryable must be a boolean');
   }
+  const retryable = retryableRaw;
 
   let missingPermissions: readonly string[] | undefined;
   let pausedAt: string | undefined;

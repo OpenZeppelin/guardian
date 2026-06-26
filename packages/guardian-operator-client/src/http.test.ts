@@ -162,6 +162,7 @@ describe('GuardianOperatorHttpClient', () => {
         body: {
           code: 'invalid_limit',
           message: 'limit must be at most 500, got 9999',
+          meta: { retryable: false },
         },
       }),
     );
@@ -481,7 +482,7 @@ describe('GuardianOperatorHttpClient', () => {
       statusText: 'Too Many Requests',
       body: {
         message: 'Rate limit exceeded',
-        meta: { retry_after_secs: 60 },
+        meta: { retry_after_secs: 60, retryable: true },
       },
     }));
 
@@ -493,6 +494,7 @@ describe('GuardianOperatorHttpClient', () => {
     expect(error.data).toEqual({
       message: 'Rate limit exceeded',
       retryAfterSecs: 60,
+      retryable: true,
     });
     expect(error.retryAfterSecs).toBe(60);
   });
@@ -668,6 +670,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         body: {
           code: 'invalid_limit',
           message: 'limit must be at most 500, got 9999',
+          meta: { retryable: false },
         },
       }),
     );
@@ -692,6 +695,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         body: {
           code: 'account_not_found',
           message: "Account '0xunknown' not found",
+          meta: { retryable: false },
         },
       }),
     );
@@ -715,6 +719,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
         body: {
           code: 'data_unavailable',
           message: 'delta store unreadable',
+          meta: { retryable: true },
         },
       }),
     );
@@ -1345,6 +1350,7 @@ describe('GuardianOperatorHttpClient — global feeds (US6, US7)', () => {
         body: {
           code: 'invalid_status_filter',
           message: "unknown status value 'foo'",
+          meta: { retryable: false },
         },
       }),
     );
@@ -1468,7 +1474,7 @@ describe('GuardianOperatorHttpClient — error matrix (FR-028 / SC-012)', () => 
         errorResponse({
           status,
           statusText: code,
-          body: { code, message: `${code} message` },
+          body: { code, message: `${code} message`, meta: { retryable: code === 'data_unavailable' } },
         }),
       );
       const client = new GuardianOperatorHttpClient('https://guardian.example');
@@ -1687,7 +1693,7 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
         body: {
           code: 'GUARDIAN_ACCOUNT_PAUSED',
           message: 'account is paused',
-          meta: { paused_at: '2026-05-20T10:00:00Z', paused_reason: 'compliance review' },
+          meta: { paused_at: '2026-05-20T10:00:00Z', paused_reason: 'compliance review', retryable: false },
         },
       }),
     );
@@ -1870,7 +1876,7 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
         body: {
           code: 'GUARDIAN_ACCOUNT_PAUSED',
           message: 'account is paused',
-          meta: { paused_at: '2026-05-19T14:30:00Z', paused_reason: null },
+          meta: { paused_at: '2026-05-19T14:30:00Z', paused_reason: null, retryable: false },
         },
       }),
     );

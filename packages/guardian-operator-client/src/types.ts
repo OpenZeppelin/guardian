@@ -31,9 +31,11 @@ export interface GuardianOperatorHttpErrorData {
    */
   missingPermissions?: readonly string[];
   /**
-   * Feature 006-operator-authz FR-016: explicit retryability flag.
-   * `false` for permission denials (the contract pins this); absent
-   * for every other code so existing parsers see no change.
+   * Explicit retryability flag, flattened from `meta.retryable` on the
+   * feature `009-human-readable-errors` envelope. Surfaced for any code:
+   * permission denials and account-paused rejections pin this to `false`;
+   * transient server failures (rate limit, connectivity, storage) surface
+   * `true`.
    */
   retryable?: boolean;
   /**

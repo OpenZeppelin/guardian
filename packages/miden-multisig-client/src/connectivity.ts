@@ -32,8 +32,8 @@ export function isLikelyNetworkError(err: unknown): boolean {
   if (lower.includes('failed to fetch')) return true;
   if (lower.includes('networkerror')) return true;
   if (lower.includes('network error')) return true;
-  if (lower.includes('load failed')) return true; // Safari fetch failure
-  if (lower.includes('abort')) return true; // includes "aborted"
+  if (lower.includes('load failed')) return true;
+  if (lower.includes('abort')) return true;
   if (lower.includes('timeout') || lower.includes('timed out')) return true;
   if (lower.includes('connection')) return true;
   if (lower.includes('econnrefused') || lower.includes('enotfound')) return true;
@@ -69,8 +69,6 @@ export function toUserFacingError(err: unknown): UserFacingError {
     if (err.code && err.userMessage) {
       return { code: err.code, userMessage: err.userMessage, cause: err };
     }
-    // Reached a host, but no Guardian error object (unparseable body). A 5xx
-    // here is an upstream/proxy connectivity problem, not a user-actionable one.
     if (err.status >= 500) {
       return { category: 'unreachable', userMessage: CONNECTIVITY_MESSAGE, cause: err };
     }
