@@ -392,12 +392,9 @@ impl MultisigClient {
             .await
         {
             Ok(resp) => resp,
-            // No new deltas since current nonce — not an error. Errors now
-            // arrive as a gRPC Status (feature 009); branch on the not-found
-            // signal rather than substring-matching the message.
-            Err(e) if e.is_not_found() => {
-                return Ok(());
-            }
+            // A not-found result means there are no new deltas since the current
+            // nonce — a normal sync outcome, not a failure.
+            Err(e) if e.is_not_found() => return Ok(()),
             Err(e) => {
                 return Err(MultisigError::GuardianServer(format!(
                     "failed to pull deltas from GUARDIAN: {}",

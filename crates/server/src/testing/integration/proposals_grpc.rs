@@ -306,6 +306,7 @@ async fn test_grpc_sign_delta_proposal_not_found() {
         serde_json::from_slice(status.details()).expect("Status.details is JSON");
     assert_eq!(details["code"], "proposal_not_found");
     assert!(details["message"].is_string());
+    assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
 }
 
 #[tokio::test]
@@ -366,7 +367,7 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
     assert!(!status.message().is_empty());
     let details: serde_json::Value =
         serde_json::from_slice(status.details()).expect("Status.details is JSON");
-    assert!(details["code"].is_string());
+    assert_eq!(details["code"], "authentication_failed");
     assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
 }
 

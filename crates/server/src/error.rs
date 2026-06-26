@@ -341,13 +341,14 @@ impl GuardianError {
     /// `meta.retryable` on the error wire object so clients can drive retry UI
     /// uniformly without branching on every `code`.
     pub fn retryable(&self) -> bool {
+        // `ConfigurationError` is deterministic (a misconfigured server won't
+        // start serving the same request on retry), so it is NOT retryable.
         matches!(
             self,
             GuardianError::AccountDataUnavailable(_)
                 | GuardianError::StorageError(_)
                 | GuardianError::NetworkError(_)
                 | GuardianError::SigningError(_)
-                | GuardianError::ConfigurationError(_)
                 | GuardianError::RpcUnavailable(_)
                 | GuardianError::RpcValidationFailed(_)
                 | GuardianError::RateLimitExceeded { .. }
