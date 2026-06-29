@@ -165,7 +165,8 @@ impl AckSecretProviderKind {
     /// reads concurrently). `raw` is the `GUARDIAN_ACK_SECRET_PROVIDER` value
     /// (`None` when unset); `is_prod` is whether `GUARDIAN_ENV=prod`. Unset or
     /// blank falls back to the backward-compatible default — AWS in prod,
-    /// ephemeral elsewhere — while an explicit value always wins.
+    /// ephemeral elsewhere — while an explicit value wins, except `none` is
+    /// refused in prod so a stable-identity deployment can't boot ephemeral.
     fn resolve(raw: Option<&str>, is_prod: bool) -> Result<Self> {
         let default = if is_prod { Self::Aws } else { Self::None };
         match raw.map(|value| value.trim().to_ascii_lowercase()) {
@@ -174,6 +175,12 @@ impl AckSecretProviderKind {
                 "" => Ok(default),
                 PROVIDER_AWS => Ok(Self::Aws),
                 PROVIDER_FILE => Ok(Self::File),
+                // Explicit `none` in prod would boot ephemeral keys and silently
+                // invalidate every account that pinned the on-chain commitment;
+                // refuse it rather than start with a throwaway identity.
+                PROVIDER_NONE if is_prod => Err(GuardianError::ConfigurationError(format!(
+                    "{ENV_ACK_SECRET_PROVIDER}=`{PROVIDER_NONE}` is not allowed when {ENV_GUARDIAN_ENV}=`{PROD_ENV}`"
+                ))),
                 PROVIDER_NONE => Ok(Self::None),
                 other => Err(GuardianError::ConfigurationError(format!(
                     "{ENV_ACK_SECRET_PROVIDER} `{other}` is not supported (expected `{PROVIDER_AWS}`, `{PROVIDER_FILE}`, or `{PROVIDER_NONE}`)"
@@ -400,9 +407,17 @@ mod tests {
     }
 
     #[test]
-    fn provider_kind_explicit_none_overrides_prod_default() {
+    fn provider_kind_rejects_explicit_none_in_prod() {
+        let error = AckSecretProviderKind::resolve(Some("none"), true).unwrap_err();
+        assert!(
+            matches!(error, GuardianError::ConfigurationError(message) if message.contains("not allowed"))
+        );
+    }
+
+    #[test]
+    fn provider_kind_explicit_none_allowed_outside_prod() {
         assert_eq!(
-            AckSecretProviderKind::resolve(Some("none"), true).unwrap(),
+            AckSecretProviderKind::resolve(Some("none"), false).unwrap(),
             AckSecretProviderKind::None
         );
     }

@@ -45,15 +45,17 @@ impl FileSecretProvider {
     where
         F: FnOnce(&[u8]) -> std::result::Result<T, String>,
     {
-        let contents = std::fs::read_to_string(path).map_err(|error| {
+        // Read-and-wrap in one expression so the key bytes never bind to a bare
+        // `String` (CONTRIBUTING.md, "Secrets in server memory").
+        let contents = SecretString::new(std::fs::read_to_string(path).map_err(|error| {
             GuardianError::ConfigurationError(format!(
                 "Failed to read ack secret file {}: {error}",
                 path.display()
             ))
-        })?;
+        })?);
         decode_secret_key(
             &format!("Ack secret file {}", path.display()),
-            &SecretString::new(contents),
+            &contents,
             parser,
         )
     }
