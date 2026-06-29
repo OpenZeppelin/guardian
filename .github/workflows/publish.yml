@@ -6,8 +6,6 @@ name: Publish NPM Packages
 on:
   release:
     types: [published]
-  push:
-    branches: ["release-workflows"]
   workflow_dispatch:
     inputs:
       dry-run:
@@ -82,15 +80,15 @@ jobs:
             echo "📦 ${PACKAGE_NAME}@${PACKAGE_VERSION} will be published."
           fi
 
-      # - name: Publish to npm
-      #   if: steps.check-version.outputs.already_published == 'false' && !(github.event.inputs.dry-run == 'true')
-      #   working-directory: packages/${{ matrix.package }}
-      #   run: npm publish --provenance --access public
-      #   env:
-      #     NPM_CONFIG_PROVENANCE: true
+      - name: Publish to npm
+        if: steps.check-version.outputs.already_published == 'false' && !(github.event.inputs.dry-run == 'true')
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --provenance --access public
+        env:
+          NPM_CONFIG_PROVENANCE: true
 
       - name: Publish to npm (dry run)
-        # if: steps.check-version.outputs.already_published == 'false' && github.event.inputs.dry-run == 'true'
+        if: steps.check-version.outputs.already_published == 'false' && github.event.inputs.dry-run == 'true'
         working-directory: packages/${{ matrix.package }}
         run: npm publish --provenance --access public --dry-run
         env:
