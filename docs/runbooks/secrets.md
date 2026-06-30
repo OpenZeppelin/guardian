@@ -66,6 +66,53 @@ accounts will fail with a Guardian commitment mismatch. A `SwitchGuardian`
 proposal is the account-level migration path for changing that stored
 commitment.
 
+### Where the ACK secrets come from
+
+`GUARDIAN_ACK_SECRET_PROVIDER` selects the source of the ACK signing keys:
+
+| Value | Source | Default for | Identity |
+|---|---|---|---|
+| `aws` | AWS Secrets Manager (IDs from `GUARDIAN_ACK_{FALCON,ECDSA}_SECRET_ID`) | `GUARDIAN_ENV=prod` | Stable |
+| `file` | Local files (paths from `GUARDIAN_ACK_{FALCON,ECDSA}_SECRET_PATH`) | — | Stable |
+| `none` | Ephemeral keys generated in the keystore on every boot | everything else | **Changes every restart** |
+
+When unset, it falls back to the historical behavior: `aws` in prod,
+`none` otherwise. The `none` path is dev-only — a fresh identity on each
+restart freezes every account that pinned the previous commitment, with
+per-account `SwitchGuardian` as the only recovery.
+
+### Self-hosted: stable identity without AWS
+
+A self-hosted, non-AWS Guardian keeps a fixed identity with the `file`
+provider. Set `GUARDIAN_ACK_SECRET_PROVIDER=file` and point
+`GUARDIAN_ACK_FALCON_SECRET_PATH` / `GUARDIAN_ACK_ECDSA_SECRET_PATH` at files
+holding the hex-encoded secret keys
+([`file_provider.rs`](../../crates/server/src/ack/file_provider.rs)). The file
+format is the hex string emitted by `ack-keygen` — identical to what Secrets
+Manager stores — so the same key material is portable between the two providers.
+
+Generate the pair once and write each value to its own file:
+
+```bash
+cargo run --quiet -p guardian-server --bin ack-keygen \
+  | tee /dev/stderr \
+  | { read -r json; \
+      jq -rj '.falcon_secret_key' <<<"$json" > ack-falcon-secret-key; \
+      jq -rj '.ecdsa_secret_key'  <<<"$json" > ack-ecdsa-secret-key; }
+chmod 600 ack-falcon-secret-key ack-ecdsa-secret-key
+```
+
+Treat these files like any private key: keep them out of version control and
+image layers, and back them up — losing them is a Guardian identity change, with
+the same `SwitchGuardian` migration path described above. On Unix the server
+**enforces** owner-only permissions and refuses to start if the file is readable
+by group or others, so a bare file on disk must be `0600` and a Kubernetes secret
+mount needs `defaultMode: 0400` (the `0644` default is rejected).
+
+With `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` the ECDSA key comes from KMS and its
+file is never read, so you can omit `GUARDIAN_ACK_ECDSA_SECRET_PATH` entirely on
+that path; only the Falcon file is required.
+
 ### Hosted ECDSA backend (AWS KMS)
 
 The ECDSA ACK signer can be backed by AWS KMS instead of a Secrets Manager
