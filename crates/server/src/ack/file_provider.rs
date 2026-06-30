@@ -30,14 +30,20 @@ const ENV_ACK_ECDSA_SECRET_PATH: &str = "GUARDIAN_ACK_ECDSA_SECRET_PATH";
 /// [`from_env`]: FileSecretProvider::from_env
 pub struct FileSecretProvider {
     falcon_secret_path: PathBuf,
-    ecdsa_secret_path: PathBuf,
+    /// `None` when `GUARDIAN_ACK_ECDSA_SECRET_PATH` is unset. The ECDSA secret
+    /// file is only read for the in-memory ECDSA backend; an `aws-kms` backend
+    /// signs with the KMS key and never calls [`ecdsa_secret_key`], so the path
+    /// is optional and only required to exist when actually consulted.
+    ///
+    /// [`ecdsa_secret_key`]: AckSecretProvider::ecdsa_secret_key
+    ecdsa_secret_path: Option<PathBuf>,
 }
 
 impl FileSecretProvider {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             falcon_secret_path: required_path(ENV_ACK_FALCON_SECRET_PATH)?,
-            ecdsa_secret_path: required_path(ENV_ACK_ECDSA_SECRET_PATH)?,
+            ecdsa_secret_path: optional_path(ENV_ACK_ECDSA_SECRET_PATH)?,
         })
     }
 
@@ -45,6 +51,7 @@ impl FileSecretProvider {
     where
         F: FnOnce(&[u8]) -> std::result::Result<T, String>,
     {
+        ensure_owner_only(path)?;
         // Read-and-wrap in one expression so the key bytes never bind to a bare
         // `String` (CONTRIBUTING.md, "Secrets in server memory").
         let contents = SecretString::new(std::fs::read_to_string(path).map_err(|error| {
@@ -70,7 +77,12 @@ impl AckSecretProvider for FileSecretProvider {
     }
 
     async fn ecdsa_secret_key(&self) -> Result<EcdsaSecretKey> {
-        self.parsed_secret_key(&self.ecdsa_secret_path, |secret_bytes| {
+        let path = self.ecdsa_secret_path.as_deref().ok_or_else(|| {
+            GuardianError::ConfigurationError(format!(
+                "{ENV_ACK_ECDSA_SECRET_PATH} is required for the in-memory ECDSA backend; set it or use GUARDIAN_ACK_ECDSA_BACKEND=aws-kms"
+            ))
+        })?;
+        self.parsed_secret_key(path, |secret_bytes| {
             EcdsaSecretKey::read_from_bytes(secret_bytes).map_err(|error| error.to_string())
         })
     }
@@ -97,6 +109,60 @@ fn required_path(env_var: &str) -> Result<PathBuf> {
     }
 }
 
+/// Like [`required_path`] but absent is allowed (`Ok(None)`); a set-but-blank
+/// value is still a misconfiguration.
+fn optional_path(env_var: &str) -> Result<Option<PathBuf>> {
+    match std::env::var(env_var) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Err(GuardianError::ConfigurationError(format!(
+                    "{env_var} must not be blank when set"
+                )))
+            } else {
+                Ok(Some(PathBuf::from(trimmed)))
+            }
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(GuardianError::ConfigurationError(format!(
+            "{env_var} must contain valid UTF-8"
+        ))),
+    }
+}
+
+/// Reject a secret file that any principal other than the owner can touch, the
+/// way OpenSSH guards private keys. These hold long-lived ACK signing keys, so a
+/// group/other-accessible file fails startup rather than loading silently.
+/// Unix-only; a no-op elsewhere (Windows ACLs are not modeled here).
+#[cfg(unix)]
+fn ensure_owner_only(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = std::fs::metadata(path)
+        .map_err(|error| {
+            GuardianError::ConfigurationError(format!(
+                "Failed to inspect ack secret file {}: {error}",
+                path.display()
+            ))
+        })?
+        .permissions()
+        .mode();
+
+    if mode & 0o077 != 0 {
+        return Err(GuardianError::ConfigurationError(format!(
+            "Ack secret file {} must not be accessible by group or others (set its permissions to 0600)",
+            path.display()
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owner_only(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
@@ -111,8 +177,19 @@ mod tests {
         dir
     }
 
+    /// Write a secret file with owner-only (`0600`) permissions so it passes
+    /// [`ensure_owner_only`].
+    fn write_secret(path: &Path, contents: impl AsRef<[u8]>) {
+        std::fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     fn write_hex(path: &Path, bytes: &[u8]) {
-        std::fs::write(path, hex::encode(bytes)).unwrap();
+        write_secret(path, hex::encode(bytes));
     }
 
     #[tokio::test]
@@ -126,7 +203,7 @@ mod tests {
         write_hex(&ecdsa_path, &ecdsa.to_bytes());
         let provider = FileSecretProvider {
             falcon_secret_path: falcon_path,
-            ecdsa_secret_path: ecdsa_path,
+            ecdsa_secret_path: Some(ecdsa_path),
         };
 
         assert_eq!(
@@ -148,7 +225,7 @@ mod tests {
         write_hex(&falcon_path, &falcon.to_bytes());
         let provider = FileSecretProvider {
             falcon_secret_path: falcon_path,
-            ecdsa_secret_path: dir.join("ecdsa"),
+            ecdsa_secret_path: None,
         };
 
         let first = provider.falcon_secret_key().await.unwrap();
@@ -165,14 +242,13 @@ mod tests {
         let dir = temp_dir("trim");
         let ecdsa = EcdsaSecretKey::new();
         let ecdsa_path = dir.join("ecdsa");
-        std::fs::write(
+        write_secret(
             &ecdsa_path,
             format!("  {}\n", hex::encode(ecdsa.to_bytes())),
-        )
-        .unwrap();
+        );
         let provider = FileSecretProvider {
             falcon_secret_path: dir.join("falcon"),
-            ecdsa_secret_path: ecdsa_path,
+            ecdsa_secret_path: Some(ecdsa_path),
         };
 
         assert_eq!(
@@ -186,7 +262,7 @@ mod tests {
     async fn missing_file_is_configuration_error() {
         let provider = FileSecretProvider {
             falcon_secret_path: PathBuf::from("/nonexistent/guardian/ack-falcon"),
-            ecdsa_secret_path: PathBuf::from("/nonexistent/guardian/ack-ecdsa"),
+            ecdsa_secret_path: Some(PathBuf::from("/nonexistent/guardian/ack-ecdsa")),
         };
         assert!(matches!(
             provider.falcon_secret_key().await,
@@ -198,15 +274,63 @@ mod tests {
     async fn invalid_hex_is_configuration_error() {
         let dir = temp_dir("badhex");
         let falcon_path = dir.join("falcon");
-        std::fs::write(&falcon_path, "nothex!!").unwrap();
+        write_secret(&falcon_path, "nothex!!");
         let provider = FileSecretProvider {
             falcon_secret_path: falcon_path,
-            ecdsa_secret_path: dir.join("ecdsa"),
+            ecdsa_secret_path: None,
         };
 
         let err = provider.falcon_secret_key().await.unwrap_err();
         assert!(
             matches!(err, GuardianError::ConfigurationError(message) if message.contains("hex"))
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // The ECDSA file is only consulted by the in-memory backend; an aws-kms
+    // backend never calls `ecdsa_secret_key`, so an unset path must not block
+    // loading the Falcon key, yet must surface a clear error if consulted.
+    #[tokio::test]
+    async fn unset_ecdsa_path_loads_falcon_but_errors_only_when_ecdsa_consulted() {
+        let dir = temp_dir("ecdsa_opt");
+        let falcon = FalconSecretKey::new();
+        let falcon_path = dir.join("falcon");
+        write_hex(&falcon_path, &falcon.to_bytes());
+        let provider = FileSecretProvider {
+            falcon_secret_path: falcon_path,
+            ecdsa_secret_path: None,
+        };
+
+        assert_eq!(
+            provider.falcon_secret_key().await.unwrap().to_bytes(),
+            falcon.to_bytes()
+        );
+        let err = provider.ecdsa_secret_key().await.unwrap_err();
+        assert!(matches!(
+            err,
+            GuardianError::ConfigurationError(message)
+                if message.contains(ENV_ACK_ECDSA_SECRET_PATH)
+        ));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_group_or_world_accessible_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("perms");
+        let falcon = FalconSecretKey::new();
+        let falcon_path = dir.join("falcon");
+        std::fs::write(&falcon_path, hex::encode(falcon.to_bytes())).unwrap();
+        std::fs::set_permissions(&falcon_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let provider = FileSecretProvider {
+            falcon_secret_path: falcon_path,
+            ecdsa_secret_path: None,
+        };
+
+        let err = provider.falcon_secret_key().await.unwrap_err();
+        assert!(
+            matches!(err, GuardianError::ConfigurationError(message) if message.contains("0600"))
         );
         std::fs::remove_dir_all(dir).ok();
     }

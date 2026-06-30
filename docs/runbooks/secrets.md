@@ -102,11 +102,16 @@ cargo run --quiet -p guardian-server --bin ack-keygen \
 chmod 600 ack-falcon-secret-key ack-ecdsa-secret-key
 ```
 
-Treat these files like any private key: mount them read-only (Docker/k8s
-secrets, a `0600` file on disk), keep them out of version control and image
-layers, and back them up — losing them is a Guardian identity change, with the
-same `SwitchGuardian` migration path described above. The ECDSA file is unused
-when `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms`; Falcon is always read from its file.
+Treat these files like any private key: keep them out of version control and
+image layers, and back them up — losing them is a Guardian identity change, with
+the same `SwitchGuardian` migration path described above. On Unix the server
+**enforces** owner-only permissions and refuses to start if the file is readable
+by group or others, so a bare file on disk must be `0600` and a Kubernetes secret
+mount needs `defaultMode: 0400` (the `0644` default is rejected).
+
+With `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` the ECDSA key comes from KMS and its
+file is never read, so you can omit `GUARDIAN_ACK_ECDSA_SECRET_PATH` entirely on
+that path; only the Falcon file is required.
 
 ### Hosted ECDSA backend (AWS KMS)
 
