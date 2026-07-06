@@ -67,6 +67,21 @@ pub trait NetworkClient: Send + Sync {
         expected_guardian_commitment: &str,
     ) -> Result<(), String>;
 
+    /// Extract the guardian public key commitment stored in the account
+    /// state, or `Ok(None)` when the state carries no guardian binding
+    /// (non-guardian account types, networks without the concept). Used
+    /// by the release-on-guardian-switch hook to detect that a committed
+    /// delta moved the account to a different guardian. The default is
+    /// `Ok(None)` — "cannot tell" — so backends without guardian storage
+    /// never trigger a release.
+    fn extract_guardian_commitment(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<String>, String> {
+        let _ = state_json;
+        Ok(None)
+    }
+
     /// Determine if account auth should be updated given the state
     async fn should_update_auth(
         &mut self,

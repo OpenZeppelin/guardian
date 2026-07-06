@@ -28,6 +28,7 @@ mod lookup_account;
 pub mod pause_account;
 mod push_delta;
 mod push_delta_proposal;
+pub mod release_on_switch;
 mod sign_delta_proposal;
 mod status;
 pub mod unpause_account;
@@ -443,6 +444,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 

@@ -133,6 +133,7 @@ pub async fn register_account(
             last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
             paused_at: existing.as_ref().and_then(|m| m.paused_at),
             paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
+            released_at: existing.as_ref().and_then(|m| m.released_at),
         })
         .await
         .map_err(|e| {
@@ -523,6 +524,7 @@ mod tests {
                     .unwrap(),
             ),
             paused_reason: Some("compliance".to_string()),
+            released_at: None,
         }
     }
 

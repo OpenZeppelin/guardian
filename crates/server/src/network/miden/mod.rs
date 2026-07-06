@@ -29,8 +29,8 @@ impl MidenNetworkClient {
     /// unit tests that exercise the pure serialization/delta paths
     /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`)
     /// which never issue an RPC.
-    #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
-    fn lazy_for_test(network: NetworkType) -> Self {
+    #[cfg(any(test, feature = "integration", feature = "e2e"))]
+    pub(crate) fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
             .expect("lazy client construction is infallible for a valid endpoint");
         Self { client }
@@ -441,6 +441,15 @@ impl NetworkClient for MidenNetworkClient {
                 "Slot '{OZ_GUARDIAN_PUBLIC_KEY}' mismatch: expected {expected_guardian_commitment}, got {actual_guardian_commitment}"
             ))
         }
+    }
+
+    fn extract_guardian_commitment(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<String>, String> {
+        let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
+        Ok(inspector.extract_guardian_public_key())
     }
 
     async fn should_update_auth(

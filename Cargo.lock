@@ -3245,6 +3245,8 @@ dependencies = [
  "miden-protocol",
  "miden-rpc-client",
  "miden-standards",
+ "miden-testing",
+ "miden-tx",
  "pin-project-lite",
  "prost",
  "rand 0.9.2",

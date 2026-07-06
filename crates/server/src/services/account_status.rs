@@ -1,11 +1,12 @@
-//! Per-account pause chokepoint.
+//! Per-account pause/release chokepoint.
 //!
 //! Single helper [`ensure_account_active`] consulted from every
 //! per-account mutating entry point (multisig + EVM proposal pipelines).
 //! Admin/setup paths (`services::configure_account`,
 //! `evm::service::register_account`) deliberately do NOT call this
 //! helper. This module is the ONLY place outside read endpoints +
-//! the pause/unpause handlers that reads `AccountMetadata::paused_at` —
+//! the pause/unpause handlers and the guardian-switch release hook that
+//! reads `AccountMetadata::paused_at` / `AccountMetadata::released_at` —
 //! keeping the read centralized is what lets the future `PolicyEngine`
 //! replace this helper wholesale without API, audit, or storage churn.
 use chrono::{DateTime, Utc};
@@ -44,14 +45,23 @@ pub struct PauseTransition {
 }
 
 /// Returns `Ok(())` if the supplied metadata describes an active
-/// account, or `GuardianError::AccountPaused { .. }` carrying the
-/// persisted `paused_at` / `paused_reason` when the account is paused.
+/// account, `GuardianError::AccountReleased { .. }` when the account
+/// switched to a different guardian and was released, or
+/// `GuardianError::AccountPaused { .. }` carrying the persisted
+/// `paused_at` / `paused_reason` when the account is paused. Released
+/// wins over paused: it is the terminal state and its remedy
+/// (re-onboard via `/configure`) differs from pause's (operator
+/// unpause).
 ///
 /// Callers MUST invoke this only after authentication has succeeded —
-/// otherwise unauthenticated probes can learn pause state and reason.
-/// Pair with `resolve_account` (multisig) or post-signature verification
-/// (EVM) so the chokepoint reads from already-loaded metadata.
+/// otherwise unauthenticated probes can learn pause/release state and
+/// reason. Pair with `resolve_account` (multisig) or post-signature
+/// verification (EVM) so the chokepoint reads from already-loaded
+/// metadata.
 pub fn ensure_account_active_metadata(metadata: &AccountMetadata) -> Result<()> {
+    if let Some(released_at) = metadata.released_at {
+        return Err(GuardianError::AccountReleased { released_at });
+    }
     if let Some(paused_at) = metadata.paused_at {
         return Err(GuardianError::AccountPaused {
             paused_at,
@@ -103,6 +113,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: paused.map(|(ts, _)| ts),
             paused_reason: paused.and_then(|(_, r)| r.map(|s| s.to_string())),
+            released_at: None,
         }
     }
 
@@ -137,6 +148,41 @@ mod tests {
         ensure_account_active(&state, "acc-1")
             .await
             .expect("active account must pass the chokepoint");
+    }
+
+    #[tokio::test]
+    async fn released_account_returns_account_released() {
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        let mut released = meta("acc-1", None);
+        released.released_at = Some(ts);
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(released)));
+        let state = state_with(metadata).await;
+
+        match ensure_account_active(&state, "acc-1").await {
+            Err(GuardianError::AccountReleased { released_at }) => assert_eq!(released_at, ts),
+            other => panic!("expected AccountReleased, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn released_wins_over_paused() {
+        // A released account that is ALSO paused must surface the
+        // release: its remedy (re-onboard via /configure) differs from
+        // pause's (operator unpause), and unpausing must never imply
+        // the account became mutable again.
+        let paused_ts = Utc.with_ymd_and_hms(2026, 5, 19, 14, 30, 0).unwrap();
+        let released_ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        let mut both = meta("acc-1", Some((paused_ts, Some("compliance"))));
+        both.released_at = Some(released_ts);
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(both)));
+        let state = state_with(metadata).await;
+
+        match ensure_account_active(&state, "acc-1").await {
+            Err(GuardianError::AccountReleased { released_at }) => {
+                assert_eq!(released_at, released_ts)
+            }
+            other => panic!("expected AccountReleased, got {other:?}"),
+        }
     }
 
     #[tokio::test]

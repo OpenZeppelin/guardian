@@ -3487,6 +3487,13 @@
             ],
             "description": "Reason captured at first pause; `None` when active."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 UTC timestamp at which this server detected the account\nswitched to a different guardian and released it; `None` while\nthis server is the account's guardian."
+          },
           "state_created_at": {
             "type": [
               "string",
@@ -3588,6 +3595,12 @@
             ]
           },
           "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released_at": {
             "type": [
               "string",
               "null"
@@ -4942,6 +4955,12 @@
                   ]
                 },
                 "paused_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "released_at": {
                   "type": [
                     "string",
                     "null"

@@ -102,6 +102,15 @@ pub enum GuardianError {
         paused_at: DateTime<Utc>,
         paused_reason: Option<String>,
     },
+    /// The account switched to a different guardian and this server
+    /// released it; mutating action rejected with stable code
+    /// `GUARDIAN_ACCOUNT_RELEASED`. HTTP 409 Conflict, gRPC
+    /// `FAILED_PRECONDITION`. Terminal until the wallet re-onboards via
+    /// `/configure`. `released_at` is carried on the response body /
+    /// gRPC `Status::details`.
+    AccountReleased {
+        released_at: DateTime<Utc>,
+    },
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -157,6 +166,7 @@ impl GuardianError {
             GuardianError::InsufficientOperatorPermission { .. } => StatusCode::FORBIDDEN,
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::AccountPaused { .. } => StatusCode::CONFLICT,
+            GuardianError::AccountReleased { .. } => StatusCode::CONFLICT,
         }
     }
 
@@ -202,6 +212,7 @@ impl GuardianError {
             GuardianError::InsufficientOperatorPermission { .. } => tonic::Code::PermissionDenied,
             GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::AccountPaused { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::AccountReleased { .. } => tonic::Code::FailedPrecondition,
         }
     }
 
@@ -246,6 +257,7 @@ impl GuardianError {
             }
             GuardianError::DataUnavailable(_) => "data_unavailable",
             GuardianError::AccountPaused { .. } => "GUARDIAN_ACCOUNT_PAUSED",
+            GuardianError::AccountReleased { .. } => "GUARDIAN_ACCOUNT_RELEASED",
         }
     }
 }
@@ -349,6 +361,11 @@ impl fmt::Display for GuardianError {
                 Some(reason) => write!(f, "Account is paused: {reason}"),
                 None => write!(f, "Account is paused"),
             },
+            GuardianError::AccountReleased { .. } => write!(
+                f,
+                "Account was released: it switched to a different guardian. \
+                 Re-onboard via /configure to reactivate"
+            ),
         }
     }
 }
@@ -403,6 +420,10 @@ struct ErrorResponse {
     /// if the reason field is null).
     #[serde(skip_serializing_if = "Option::is_none")]
     paused_reason: Option<String>,
+    /// RFC 3339 UTC timestamp of the guardian-switch release. Populated
+    /// only for `GUARDIAN_ACCOUNT_RELEASED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    released_at: Option<String>,
 }
 
 impl IntoResponse for GuardianError {
@@ -414,10 +435,16 @@ impl IntoResponse for GuardianError {
             } => Some(*retry_after_secs),
             _ => None,
         };
-        let (missing_permissions, retryable, paused_at, paused_reason) = match &self {
+        let (missing_permissions, retryable, paused_at, paused_reason, released_at) = match &self {
             GuardianError::InsufficientOperatorPermission {
                 missing_permissions,
-            } => (Some(missing_permissions.clone()), Some(false), None, None),
+            } => (
+                Some(missing_permissions.clone()),
+                Some(false),
+                None,
+                None,
+                None,
+            ),
             GuardianError::AccountPaused {
                 paused_at,
                 paused_reason,
@@ -426,8 +453,16 @@ impl IntoResponse for GuardianError {
                 Some(false),
                 Some(paused_at.to_rfc3339()),
                 paused_reason.clone(),
+                None,
             ),
-            _ => (None, None, None, None),
+            GuardianError::AccountReleased { released_at } => (
+                None,
+                Some(false),
+                None,
+                None,
+                Some(released_at.to_rfc3339()),
+            ),
+            _ => (None, None, None, None, None),
         };
         let body = Json(ErrorResponse {
             success: false,
@@ -438,6 +473,7 @@ impl IntoResponse for GuardianError {
             retryable,
             paused_at,
             paused_reason,
+            released_at,
         });
         if let Some(retry_after_secs) = retry_after_secs {
             (
@@ -463,6 +499,15 @@ impl From<GuardianError> for tonic::Status {
                     "code": err.code(),
                     "paused_at": paused_at.to_rfc3339(),
                     "paused_reason": paused_reason,
+                })
+                .to_string()
+                .into_bytes();
+                tonic::Status::with_details(err.grpc_status(), err.to_string(), details.into())
+            }
+            GuardianError::AccountReleased { released_at } => {
+                let details = serde_json::json!({
+                    "code": err.code(),
+                    "released_at": released_at.to_rfc3339(),
                 })
                 .to_string()
                 .into_bytes();

@@ -442,6 +442,19 @@ impl DeltasProcessorBase {
             }
         }
 
+        // Issue #305: if this canonicalized delta moved the account's
+        // guardian key away from this server (a SwitchGuardian pushed to
+        // the pre-switch guardian), release the account. Best-effort —
+        // the delta is already canonical either way.
+        crate::services::release_on_switch::release_if_guardian_switched(
+            &self.state,
+            &account_metadata,
+            &new_state_json,
+            delta.nonce,
+            &updated_state.commitment,
+        )
+        .await;
+
         record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Canonicalized);
         Ok(())
     }
@@ -527,6 +540,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 

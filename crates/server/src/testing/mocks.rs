@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 type StdResult<T, E> = std::result::Result<T, E>;
 type ApplyDeltaResult = StdResult<(serde_json::Value, String), String>;
 type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
+type ExtractGuardianCommitmentResult = StdResult<Option<String>, String>;
 type PullDeltasResult = StdResult<Vec<DeltaObject>, String>;
 type GetMetadataResult = StdResult<Option<crate::metadata::AccountMetadata>, String>;
 type ListResult = StdResult<Vec<String>, String>;
@@ -35,6 +36,7 @@ pub struct MockNetworkClient {
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
+    pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
 }
 
 impl MockNetworkClient {
@@ -73,6 +75,17 @@ impl MockNetworkClient {
 
     pub fn with_verify_delta(self, response: StdResult<(), String>) -> Self {
         self.verify_delta_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_extract_guardian_commitment(
+        self,
+        response: StdResult<Option<String>, String>,
+    ) -> Self {
+        self.extract_guardian_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
@@ -199,6 +212,19 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
+    }
+
+    fn extract_guardian_commitment(
+        &self,
+        _state_json: &serde_json::Value,
+    ) -> StdResult<Option<String>, String> {
+        // Default `Ok(None)` ("no guardian binding visible") keeps the
+        // release-on-switch hook inert in tests that don't opt in.
+        self.extract_guardian_commitment_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
     }
 
     async fn should_update_auth(
@@ -715,6 +741,8 @@ pub struct MockMetadataStore {
     pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub find_by_cosigner_commitment_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
+    pub set_released_calls: Arc<StdMutex<Vec<String>>>,
+    pub clear_released_calls: Arc<StdMutex<Vec<String>>>,
     /// Reported by [`MetadataStore::pool_status`]. Defaults to `None`;
     /// set via [`Self::with_pool_status`].
     pub pool_status: Option<crate::storage::PoolStatus>,
@@ -910,5 +938,25 @@ impl MetadataStore for MockMetadataStore {
             paused_at: None,
             paused_reason: None,
         })
+    }
+
+    async fn set_released(
+        &self,
+        account_id: &str,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<bool, String> {
+        self.set_released_calls
+            .lock()
+            .unwrap()
+            .push(account_id.to_string());
+        Ok(true)
+    }
+
+    async fn clear_released(&self, account_id: &str) -> StdResult<(), String> {
+        self.clear_released_calls
+            .lock()
+            .unwrap()
+            .push(account_id.to_string());
+        Ok(())
     }
 }

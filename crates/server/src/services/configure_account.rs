@@ -136,6 +136,7 @@ pub async fn configure_account(
     // is carried forward from `existing` so a new storage backend
     // cannot accidentally clear it (the field is only mutated by
     // `set_pause`/`clear_pause`).
+    let was_released = existing.as_ref().and_then(|m| m.released_at).is_some();
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
@@ -149,6 +150,9 @@ pub async fn configure_account(
         last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
         paused_at: existing.as_ref().and_then(|m| m.paused_at),
         paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
+        // `set` never touches released state; the explicit
+        // `clear_released` below performs the reactivation.
+        released_at: existing.as_ref().and_then(|m| m.released_at),
     };
 
     state.metadata.set(metadata_entry).await.map_err(|e| {
@@ -159,6 +163,31 @@ pub async fn configure_account(
         );
         GuardianError::StorageError(format!("Failed to store metadata: {e}"))
     })?;
+
+    // Deliberate asymmetry with pause: `released` means "a guardian
+    // switch moved this account away from this server", and this very
+    // path just re-validated (validate_guardian_commitment above) that
+    // the submitted state binds the account to this server again — so
+    // re-onboarding is exactly the reactivation event. Pause, an
+    // operator decision, stays in force across reconfiguration.
+    if was_released {
+        tracing::info!(
+            account_id = %params.account_id,
+            "Reactivating released account via /configure re-onboarding"
+        );
+        state
+            .metadata
+            .clear_released(&params.account_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Failed to clear released state during re-onboarding"
+                );
+                GuardianError::StorageError(format!("Failed to clear released state: {e}"))
+            })?;
+    }
 
     // Count only first-time creations — /configure also serves
     // reconfiguration of existing accounts.
@@ -345,6 +374,7 @@ mod tests {
             last_auth_timestamp: Some(1000),
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         };
 
         let network_client = MockNetworkClient::new()
@@ -408,6 +438,7 @@ mod tests {
             last_auth_timestamp: Some(1000),
             paused_at: Some(paused_at),
             paused_reason: Some("compliance".to_string()),
+            released_at: None,
         };
 
         let network_client = MockNetworkClient::new()
@@ -442,6 +473,76 @@ mod tests {
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].paused_at, Some(paused_at));
         assert_eq!(set_calls[0].paused_reason.as_deref(), Some("compliance"));
+        assert!(
+            metadata_store
+                .clear_released_calls
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "no release to clear when the account was not released"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_reonboarding_clears_released_state() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        use chrono::TimeZone;
+        let released_at = chrono::Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        let existing_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            last_auth_timestamp: Some(1000),
+            paused_at: None,
+            paused_reason: None,
+            released_at: Some(released_at),
+        };
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x5678".to_string()));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()));
+
+        let state =
+            create_test_app_state(network_client, storage_backend, metadata_store.clone()).await;
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential,
+        };
+
+        configure_account(&state, params)
+            .await
+            .expect("Re-onboarding a released account should succeed");
+
+        // Re-onboarding (with the guardian binding re-validated) is the
+        // reactivation event: released state must be explicitly cleared.
+        assert_eq!(
+            metadata_store.clear_released_calls.lock().unwrap().clone(),
+            vec![account_id_hex.to_string()],
+            "re-onboarding must clear the released state"
+        );
     }
 
     #[tokio::test]
