@@ -244,7 +244,8 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
         help: "Candidate deltas processed by the canonicalization worker, by outcome \
-               (canonicalized, retried, discarded, grace_deferred).",
+               (canonicalized, retried, discarded, grace_deferred, divergence_deferred, \
+               diverged).",
     },
     MetricDef {
         name: CANONICALIZATION_RETRIES_TOTAL,

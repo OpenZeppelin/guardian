@@ -3,6 +3,20 @@ pub mod miden;
 use crate::metadata::auth::{Auth, Credentials};
 use async_trait::async_trait;
 
+/// Outcome of comparing a locally-computed state commitment against the
+/// on-chain one. A mismatch is a legitimate observation (the tx has not
+/// landed yet, or the account advanced past the expected state), not an
+/// error: `Err` from [`NetworkClient::verify_state`] is reserved for
+/// failures to make the comparison at all (RPC failure, malformed state).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateVerification {
+    /// The on-chain commitment equals the locally-computed one.
+    Match,
+    /// The on-chain commitment differs; carries the observed on-chain
+    /// value so callers can classify the mismatch.
+    Mismatch { on_chain: String },
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Get state commitment in hex format from JSON
@@ -12,12 +26,14 @@ pub trait NetworkClient: Send + Sync {
         state_json: &serde_json::Value,
     ) -> Result<String, String>;
 
-    /// Verify state commitment matches on-chain state
+    /// Compare the commitment of `state_json` against the on-chain
+    /// account commitment. Returns `Err` only when the comparison could
+    /// not be made (RPC failure, malformed state JSON).
     async fn verify_state(
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<(), String>;
+    ) -> Result<StateVerification, String>;
 
     /// Verify delta is valid for given state
     fn verify_delta(

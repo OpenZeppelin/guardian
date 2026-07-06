@@ -1,6 +1,7 @@
 use crate::canonicalization::CanonicalizationConfig;
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
+use crate::network::StateVerification;
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use async_trait::async_trait;
@@ -38,6 +39,7 @@ struct DeltasProcessorBase {
     state: AppState,
     max_retries: u32,
     submission_grace_period_seconds: u64,
+    divergence_confirmations: u32,
 }
 
 impl DeltasProcessorBase {
@@ -156,7 +158,7 @@ impl DeltasProcessorBase {
         };
 
         match verify_result {
-            Ok(()) => {
+            Ok(StateVerification::Match) => {
                 if let Some(new_commitment) = delta.new_commitment.clone() {
                     self.canonicalize_verified_delta(delta, new_state_json, new_commitment)
                         .await
@@ -169,135 +171,214 @@ impl DeltasProcessorBase {
                     Ok(())
                 }
             }
-            Err(e) => {
-                let now = self.state.clock.now();
-                if let Some(candidate_age_seconds) = self.candidate_age_seconds(&delta, now)
-                    && candidate_age_seconds < self.submission_grace_period_seconds
-                {
-                    tracing::info!(
-                        account_id = %delta.account_id,
-                        nonce = delta.nonce,
-                        candidate_age_seconds,
-                        submission_grace_period_seconds = self.submission_grace_period_seconds,
-                        error = %e,
-                        "Delta verification failed during submission grace period; will retry without consuming retry budget"
-                    );
-                    record_candidate_outcome(
-                        crate::metrics::labels::CandidateOutcome::GraceDeferred,
-                    );
+            // The account advanced past the state this candidate was built
+            // on: its transaction is anchored to `prev_commitment`, so it can
+            // never land anymore and the expected commitment is permanently
+            // unsatisfiable. Waiting out the grace period would only keep the
+            // account locked (every new proposal 409s meanwhile) — discard as
+            // soon as the divergence is confirmed.
+            Ok(StateVerification::Mismatch { on_chain }) if on_chain != delta.prev_commitment => {
+                self.handle_diverged_candidate(delta, &on_chain).await
+            }
+            // On-chain still shows the candidate's base state: the
+            // transaction simply has not landed yet. Defer within the
+            // grace period, then consume retry budget, as before.
+            Ok(StateVerification::Mismatch { on_chain }) => {
+                self.handle_unverified_candidate(
+                    delta,
+                    &format!("on-chain commitment still at candidate base {on_chain}"),
+                )
+                .await
+            }
+            // The comparison itself failed (RPC error, malformed state):
+            // indistinguishable from transient trouble, so keep the
+            // grace/retry behavior.
+            Err(e) => self.handle_unverified_candidate(delta, &e).await,
+        }
+    }
 
-                    return Ok(());
-                }
+    /// Handle a candidate whose account moved past its base state on-chain.
+    ///
+    /// Discarding is gated on `divergence_confirmations` consecutive
+    /// observations: a single read can come from a lagging RPC node whose
+    /// stale commitment looks diverged while the candidate's transaction
+    /// actually landed. The counter is persisted on the delta status so
+    /// confirmation survives worker restarts.
+    async fn handle_diverged_candidate(&self, delta: DeltaObject, on_chain: &str) -> Result<()> {
+        let observations = delta.status.divergence_count() + 1;
 
-                let current_retry = delta.status.retry_count();
-                let new_retry = current_retry + 1;
-                let now = now.to_rfc3339();
+        if observations < self.divergence_confirmations {
+            tracing::info!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                on_chain = %on_chain,
+                prev_commitment = %delta.prev_commitment,
+                observations,
+                divergence_confirmations = self.divergence_confirmations,
+                "On-chain commitment matches neither candidate base nor expected state; \
+                 deferring discard until divergence is confirmed"
+            );
 
-                if new_retry >= self.max_retries {
+            let new_status = delta.status.with_incremented_divergence();
+            self.state
+                .storage
+                .update_delta_status(&delta.account_id, delta.nonce, new_status)
+                .await
+                .map_err(|e| {
+                    GuardianError::StorageError(format!("Failed to update delta status: {e}"))
+                })?;
+            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::DivergenceDeferred);
+
+            return Ok(());
+        }
+
+        tracing::warn!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            on_chain = %on_chain,
+            prev_commitment = %delta.prev_commitment,
+            observations,
+            "Account advanced past candidate's base state on-chain; discarding \
+             unsatisfiable candidate and releasing the account"
+        );
+
+        let now = self.state.clock.now().to_rfc3339();
+        self.remove_candidate(&delta, &now).await?;
+        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
+
+        Ok(())
+    }
+
+    /// Handle a candidate whose expected state was not (yet) observed
+    /// on-chain: defer within the submission grace period, then consume
+    /// retry budget and discard once exhausted.
+    async fn handle_unverified_candidate(&self, delta: DeltaObject, reason: &str) -> Result<()> {
+        let now = self.state.clock.now();
+        if let Some(candidate_age_seconds) = self.candidate_age_seconds(&delta, now)
+            && candidate_age_seconds < self.submission_grace_period_seconds
+        {
+            tracing::info!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                candidate_age_seconds,
+                submission_grace_period_seconds = self.submission_grace_period_seconds,
+                error = %reason,
+                "Delta verification failed during submission grace period; will retry without consuming retry budget"
+            );
+            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::GraceDeferred);
+
+            return Ok(());
+        }
+
+        let current_retry = delta.status.retry_count();
+        let new_retry = current_retry + 1;
+        let now = now.to_rfc3339();
+
+        if new_retry >= self.max_retries {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                retries = new_retry,
+                max_retries = self.max_retries,
+                error = %reason,
+                "Delta verification failed after max retries, discarding"
+            );
+
+            self.remove_candidate(&delta, &now).await?;
+            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
+        } else {
+            tracing::info!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                retry = new_retry,
+                max_retries = self.max_retries,
+                error = %reason,
+                "Delta verification failed, will retry"
+            );
+
+            let new_status = delta.status.with_incremented_retry(now);
+
+            self.state
+                .storage
+                .update_delta_status(&delta.account_id, delta.nonce, new_status)
+                .await
+                .map_err(|e| {
+                    GuardianError::StorageError(format!("Failed to update delta status: {e}"))
+                })?;
+            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Retried);
+            metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL).increment(1);
+        }
+
+        Ok(())
+    }
+
+    /// Delete a candidate that can never be canonicalized, delete its
+    /// matching proposal, and release the account's pending-candidate lock.
+    async fn remove_candidate(&self, delta: &DeltaObject, now: &str) -> Result<()> {
+        let storage_backend = self.state.storage.clone();
+
+        storage_backend
+            .delete_delta(&delta.account_id, delta.nonce)
+            .await
+            .map_err(|e| GuardianError::StorageError(format!("Failed to delete delta: {e}")))?;
+
+        // A discarded candidate can never be canonicalized, so delete its proposal:
+        // leaving it would strand it as `pending` forever and let clients re-submit a
+        // stale intent.
+        let proposal_id = {
+            let client = self.state.network_client.lock().await;
+            match client.delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload) {
+                Ok(id) => Some(id),
+                Err(e) => {
                     tracing::warn!(
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
-                        retries = new_retry,
-                        max_retries = self.max_retries,
                         error = %e,
-                        "Delta verification failed after max retries, discarding"
+                        "Could not derive proposal id for discarded delta; \
+                         its proposal may remain stranded as pending"
                     );
-
-                    storage_backend
-                        .delete_delta(&delta.account_id, delta.nonce)
-                        .await
-                        .map_err(|e| {
-                            GuardianError::StorageError(format!("Failed to delete delta: {e}"))
-                        })?;
-                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
-
-                    // A discarded candidate can never be canonicalized, so delete its proposal:
-                    // leaving it would strand it as `pending` forever and let clients re-submit a
-                    // stale intent.
-                    let proposal_id = {
-                        let client = self.state.network_client.lock().await;
-                        match client.delta_proposal_id(
-                            &delta.account_id,
-                            delta.nonce,
-                            &delta.delta_payload,
-                        ) {
-                            Ok(id) => Some(id),
-                            Err(e) => {
-                                tracing::warn!(
-                                    account_id = %delta.account_id,
-                                    nonce = delta.nonce,
-                                    error = %e,
-                                    "Could not derive proposal id for discarded delta; \
-                                     its proposal may remain stranded as pending"
-                                );
-                                None
-                            }
-                        }
-                    };
-                    if let Some(ref id) = proposal_id
-                        && let Ok(_existing_proposal) = storage_backend
-                            .pull_delta_proposal(&delta.account_id, id)
-                            .await
-                    {
-                        tracing::warn!(
-                            account_id = %delta.account_id,
-                            proposal_id = %id,
-                            "Deleting matching proposal as its delta was discarded"
-                        );
-                        if let Err(e) = storage_backend
-                            .delete_delta_proposal(&delta.account_id, id)
-                            .await
-                        {
-                            tracing::warn!(
-                                account_id = %delta.account_id,
-                                proposal_id = %id,
-                                error = %e,
-                                "Failed to delete proposal after discard, but continuing"
-                            );
-                        }
-                    }
-
-                    // Clear the pending candidate flag after discard
-                    if let Err(e) = self
-                        .state
-                        .metadata
-                        .set_has_pending_candidate(&delta.account_id, false, &now)
-                        .await
-                    {
-                        tracing::warn!(
-                            account_id = %delta.account_id,
-                            error = %e,
-                            "Failed to clear has_pending_candidate flag after discard"
-                        );
-                    }
-                } else {
-                    tracing::info!(
-                        account_id = %delta.account_id,
-                        nonce = delta.nonce,
-                        retry = new_retry,
-                        max_retries = self.max_retries,
-                        error = %e,
-                        "Delta verification failed, will retry"
-                    );
-
-                    let new_status = delta.status.with_incremented_retry(now);
-
-                    storage_backend
-                        .update_delta_status(&delta.account_id, delta.nonce, new_status)
-                        .await
-                        .map_err(|e| {
-                            GuardianError::StorageError(format!(
-                                "Failed to update delta status: {e}"
-                            ))
-                        })?;
-                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Retried);
-                    metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL)
-                        .increment(1);
+                    None
                 }
-
-                Ok(())
+            }
+        };
+        if let Some(ref id) = proposal_id
+            && let Ok(_existing_proposal) = storage_backend
+                .pull_delta_proposal(&delta.account_id, id)
+                .await
+        {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                proposal_id = %id,
+                "Deleting matching proposal as its delta was discarded"
+            );
+            if let Err(e) = storage_backend
+                .delete_delta_proposal(&delta.account_id, id)
+                .await
+            {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    proposal_id = %id,
+                    error = %e,
+                    "Failed to delete proposal after discard, but continuing"
+                );
             }
         }
+
+        // Clear the pending candidate flag after discard
+        if let Err(e) = self
+            .state
+            .metadata
+            .set_has_pending_candidate(&delta.account_id, false, now)
+            .await
+        {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                error = %e,
+                "Failed to clear has_pending_candidate flag after discard"
+            );
+        }
+
+        Ok(())
     }
 
     async fn canonicalize_verified_delta(
@@ -458,6 +539,7 @@ impl DeltasProcessor {
                 state,
                 max_retries: config.max_retries,
                 submission_grace_period_seconds: config.submission_grace_period_seconds,
+                divergence_confirmations: config.divergence_confirmations,
             },
         }
     }
@@ -485,6 +567,7 @@ impl TestDeltasProcessor {
                 state,
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
                 submission_grace_period_seconds: 0,
+                divergence_confirmations: u32::MAX, // ...nor on divergence
             },
         }
     }
@@ -742,7 +825,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(()))
+            .with_verify_state(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -842,6 +925,221 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mismatch_at_candidate_base_defers_within_grace() {
+        // On-chain still shows the candidate's prev_commitment: the tx has
+        // not landed yet, so the grace period applies and nothing is written.
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(30);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+        assert!(storage.get_update_delta_status_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_diverged_candidate_first_observation_defers() {
+        // On-chain matches neither the candidate's base nor its expected new
+        // commitment. A single observation could be a stale RPC read, so the
+        // candidate is kept and only the persisted divergence counter grows —
+        // grace period notwithstanding, no discard yet.
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        let status_updates = storage.get_update_delta_status_calls();
+        assert_eq!(status_updates.len(), 1);
+        assert_eq!(status_updates[0].2.divergence_count(), 1);
+        assert_eq!(status_updates[0].2.retry_count(), 0);
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_diverged_candidate_confirmed_discards_and_releases() {
+        // Second consecutive diverged observation reaches the default
+        // confirmation threshold (2): the unsatisfiable candidate is deleted
+        // and the account lock released immediately, well within the grace
+        // period.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = DeltaStatus::Candidate {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            retry_count: 0,
+            divergence_count: 1,
+        };
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 1)]
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+        assert!(
+            metadata
+                .get_set_calls()
+                .iter()
+                .any(|m| !m.has_pending_candidate)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_divergence_confirmations_of_one_discards_immediately() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_divergence_confirmations(1);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 1)]
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_process_candidate_max_retries_discards() {
         let account_id = "0xtest_account";
         // Create a candidate that has already been retried max_retries times
@@ -894,7 +1192,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(()));
+            .with_verify_state(Ok(StateVerification::Match));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -967,7 +1265,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(()))
+            .with_verify_state(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(Some(new_auth)));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1117,7 +1415,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(()))
+            .with_verify_state(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1159,7 +1457,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(()))
+            .with_verify_state(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()

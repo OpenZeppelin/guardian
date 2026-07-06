@@ -85,6 +85,7 @@ pub(crate) fn decode_delta_status(
         DeltaStatus::Candidate {
             timestamp,
             retry_count,
+            ..
         } => Some((
             DashboardDeltaStatus::Candidate,
             Some(*retry_count),
@@ -244,6 +245,7 @@ mod tests {
             DeltaStatus::Candidate {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
                 retry_count: retries,
+                divergence_count: 0,
             },
         )
     }
