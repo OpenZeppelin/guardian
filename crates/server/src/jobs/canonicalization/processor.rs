@@ -182,8 +182,11 @@ impl DeltasProcessorBase {
             }
             // On-chain still shows the candidate's base state: the
             // transaction simply has not landed yet. Defer within the
-            // grace period, then consume retry budget, as before.
+            // grace period, then consume retry budget, as before. This
+            // read also proves any earlier diverged observation was
+            // stale, so the divergence streak starts over.
             Ok(StateVerification::Mismatch { on_chain }) => {
+                let delta = self.reset_divergence_streak(delta).await?;
                 self.handle_unverified_candidate(
                     delta,
                     &format!("on-chain commitment still at candidate base {on_chain}"),
@@ -191,10 +194,40 @@ impl DeltasProcessorBase {
                 .await
             }
             // The comparison itself failed (RPC error, malformed state):
-            // indistinguishable from transient trouble, so keep the
-            // grace/retry behavior.
+            // no observation was made, so the divergence streak is left
+            // untouched and the grace/retry behavior applies.
             Err(e) => self.handle_unverified_candidate(delta, &e).await,
         }
+    }
+
+    /// Reset a candidate's persisted divergence streak after a read showed
+    /// the account still at the candidate's base: divergence must be
+    /// observed on *consecutive* ticks, so a non-diverged observation in
+    /// between restarts the count. No-op (and no storage write) unless a
+    /// streak was in progress.
+    async fn reset_divergence_streak(&self, mut delta: DeltaObject) -> Result<DeltaObject> {
+        if delta.status.divergence_count() == 0 {
+            return Ok(delta);
+        }
+
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            divergence_count = delta.status.divergence_count(),
+            "On-chain commitment back at candidate base; resetting divergence streak"
+        );
+
+        let new_status = delta.status.with_reset_divergence();
+        self.state
+            .storage
+            .update_delta_status(&delta.account_id, delta.nonce, new_status.clone())
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to update delta status: {e}"))
+            })?;
+        delta.status = new_status;
+
+        Ok(delta)
     }
 
     /// Handle a candidate whose account moved past its base state on-chain.
@@ -1137,6 +1170,88 @@ mod tests {
             vec![(account_id.to_string(), 1)]
         );
         assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_divergence_streak_resets_on_base_observation() {
+        // diverged -> base -> diverged must NOT accumulate to the threshold:
+        // the base read proves the earlier diverged read was stale, so the
+        // streak restarts and the candidate survives all three ticks.
+        let account_id = "0xtest_account";
+
+        let fresh = create_candidate_delta(account_id, 1);
+        let mut once_diverged = create_candidate_delta(account_id, 1);
+        once_diverged.status = DeltaStatus::Candidate {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            retry_count: 0,
+            divergence_count: 1,
+        };
+
+        // Response queues are LIFO (`Vec::pop`), so tick 3's responses are
+        // pushed first and tick 1's last. Ticks 2 and 3 pull the candidate
+        // as the previous tick persisted it (the mock store is stateless).
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                // tick 3: streak was reset on tick 2
+                .with_pull_deltas_after(Ok(vec![fresh.clone()]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                // tick 2: streak of 1 persisted by tick 1
+                .with_pull_deltas_after(Ok(vec![once_diverged]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                // tick 1: fresh candidate
+                .with_pull_deltas_after(Ok(vec![fresh]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            // tick 3: diverged again
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }))
+            // tick 2: back at the candidate's base
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }))
+            // tick 1: diverged
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+
+        for _ in 0..3 {
+            let result = processor.process_all_accounts().await;
+            assert!(result.is_ok());
+        }
+
+        // Tick 1 starts a streak, tick 2 resets it, tick 3 starts over —
+        // never reaching the threshold of 2.
+        let observed: Vec<u32> = storage
+            .get_update_delta_status_calls()
+            .iter()
+            .map(|(_, _, status)| status.divergence_count())
+            .collect();
+        assert_eq!(observed, vec![1, 0, 1]);
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
     }
 
     #[tokio::test]

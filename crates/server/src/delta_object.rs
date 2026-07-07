@@ -25,9 +25,10 @@ pub enum DeltaStatus {
         /// Consecutive canonicalization ticks that observed the on-chain
         /// commitment at neither this delta's `prev_commitment` nor its
         /// expected new commitment — i.e. the account advanced past the
-        /// state this candidate was built on. Requiring more than one
-        /// observation before discarding shields against a single stale
-        /// RPC read.
+        /// state this candidate was built on. Reset to zero whenever a
+        /// read shows the account still at the candidate's base, so only
+        /// an unbroken streak counts. Requiring more than one observation
+        /// before discarding shields against stale RPC reads.
         #[serde(default)]
         divergence_count: u32,
     },
@@ -141,6 +142,21 @@ impl DeltaStatus {
                 timestamp: timestamp.clone(),
                 retry_count: *retry_count,
                 divergence_count: divergence_count + 1,
+            },
+            _ => self.clone(),
+        }
+    }
+
+    pub fn with_reset_divergence(&self) -> Self {
+        match self {
+            Self::Candidate {
+                timestamp,
+                retry_count,
+                divergence_count: _,
+            } => Self::Candidate {
+                timestamp: timestamp.clone(),
+                retry_count: *retry_count,
+                divergence_count: 0,
             },
             _ => self.clone(),
         }
