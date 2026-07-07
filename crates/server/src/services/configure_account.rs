@@ -546,6 +546,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_configure_account_reonboarding_fails_closed_when_clear_released_fails() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        use chrono::TimeZone;
+        let released_at = chrono::Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        let existing_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            last_auth_timestamp: Some(1000),
+            paused_at: None,
+            paused_reason: None,
+            released_at: Some(released_at),
+        };
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x5678".to_string()));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()))
+            .with_clear_released(Err("disk on fire".to_string()));
+
+        let state =
+            create_test_app_state(network_client, storage_backend, metadata_store.clone()).await;
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential,
+        };
+
+        // Fail-closed: the account stays released (mutations still refused)
+        // and the caller sees the storage failure so the wallet retries
+        // the re-onboarding.
+        let err = configure_account(&state, params)
+            .await
+            .expect_err("clear_released failure must surface");
+        assert!(
+            matches!(err, GuardianError::StorageError(_)),
+            "expected StorageError, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_configure_account_network_error() {
         use crate::testing::helpers::generate_falcon_signature;
 

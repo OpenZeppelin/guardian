@@ -743,6 +743,7 @@ pub struct MockMetadataStore {
     pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
     pub set_released_calls: Arc<StdMutex<Vec<String>>>,
     pub clear_released_calls: Arc<StdMutex<Vec<String>>>,
+    pub clear_released_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     /// Reported by [`MetadataStore::pool_status`]. Defaults to `None`;
     /// set via [`Self::with_pool_status`].
     pub pool_status: Option<crate::storage::PoolStatus>,
@@ -800,6 +801,11 @@ impl MockMetadataStore {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    pub fn with_clear_released(self, response: StdResult<(), String>) -> Self {
+        self.clear_released_responses.lock().unwrap().push(response);
         self
     }
 
@@ -957,6 +963,10 @@ impl MetadataStore for MockMetadataStore {
             .lock()
             .unwrap()
             .push(account_id.to_string());
-        Ok(())
+        self.clear_released_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
     }
 }

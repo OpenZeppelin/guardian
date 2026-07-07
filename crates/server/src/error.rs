@@ -407,8 +407,8 @@ struct ErrorResponse {
     /// Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_permissions: Option<Vec<String>>,
-    /// FR-016: `false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`,
-    /// absent elsewhere.
+    /// FR-016: `false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`,
+    /// and `GUARDIAN_ACCOUNT_RELEASED`, absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
     /// RFC 3339 UTC timestamp of the original pause. Populated only

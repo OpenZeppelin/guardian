@@ -55,7 +55,9 @@ use crate::services::{
     ConfigureAccountParams, PushDeltaParams, configure_account, process_canonicalizations_now,
     push_delta,
 };
-use crate::testing::helpers::{IntegrationMockNetworkClient, create_test_app_state};
+use crate::testing::helpers::{
+    CapturingAuditor, IntegrationMockNetworkClient, create_test_app_state,
+};
 
 fn commitment_hex(account: &Account) -> String {
     format!("0x{}", hex::encode(account.to_commitment().as_bytes()))
@@ -213,6 +215,10 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     integration_client.register_account(account_id_hex.clone(), executed_commitment_hex.clone());
     state.network_client = Arc::new(tokio::sync::Mutex::new(integration_client));
 
+    // Capture audit emissions so the release event can be asserted.
+    let auditor = CapturingAuditor::new();
+    state.auditor = Arc::new(auditor.clone());
+
     // Onboard the account on this (soon to be old) guardian.
     let api_pubkey_hex = cosigner_pubkeys[0].clone().into_hex();
     let api_commitment_hex = format!(
@@ -332,6 +338,26 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     assert!(
         metadata.released_at.is_some(),
         "canonicalized guardian switch must release the account"
+    );
+
+    // The release must be recorded on the audit trail.
+    let release_events: Vec<_> = auditor
+        .snapshot()
+        .into_iter()
+        .filter(|e| e.action_kind == crate::audit::kinds::ACCOUNTS_RELEASE)
+        .collect();
+    assert_eq!(
+        release_events.len(),
+        1,
+        "release must emit exactly one accounts.release audit event"
+    );
+    assert_eq!(
+        release_events[0].target_account_id.as_deref(),
+        Some(account_id_hex.as_str())
+    );
+    assert_eq!(
+        release_events[0].payload["new_guardian_commitment"],
+        new_guardian_commitment_hex
     );
 
     // Mutations are refused with the release-specific error...

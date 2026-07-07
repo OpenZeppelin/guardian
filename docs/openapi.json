@@ -3093,6 +3093,13 @@
             ],
             "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 timestamp of the guardian-switch release. Present only\nfor `GUARDIAN_ACCOUNT_RELEASED`."
+          },
           "retry_after_secs": {
             "type": [
               "integer",
@@ -3107,7 +3114,7 @@
               "boolean",
               "null"
             ],
-            "description": "`false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`."
+            "description": "`false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`, and\n`GUARDIAN_ACCOUNT_RELEASED`."
           },
           "success": {
             "type": "boolean",
