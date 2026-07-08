@@ -5,6 +5,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { MidenWalletSigner, type WalletSigningContext } from './miden-wallet.js';
 import { tryComputeEcdsaCommitmentHex } from '../utils/signature.js';
 import { bytesToHex, hexToBytes } from '../utils/encoding.js';
+import { buildGuardianSignatureFromSigner } from '../multisig/signing.js';
 
 // Real-crypto repro for the reported failure:
 //   "assertion failed with error message: invalid public key commitment"
@@ -103,5 +104,24 @@ describe('MidenWalletSigner ECDSA public-key resolution', () => {
     await signer.signLookupMessage(accountCommitment!, 1700000000);
 
     expect(signer.publicKey).toBe(COMPRESSED_PUBKEY_HEX);
+  });
+
+  it('builds a guardian ProposalSignature carrying the recovered key (integration via buildGuardianSignatureFromSigner)', async () => {
+    const accountCommitment = tryComputeEcdsaCommitmentHex(COMPRESSED_PUBKEY_HEX);
+    const signer = new MidenWalletSigner(ecdsaWallet(PRIVATE_KEY), accountCommitment!, 'ecdsa');
+
+    // The exact call the guardian flow makes (multisig/signing.ts): sign the
+    // commitment, then read `signer.publicKey` for the ProposalSignature that is sent
+    // to the guardian and packed into the transaction advice map. This is the seam
+    // where the report observed `publicKey === commitment`.
+    const proposalSignature = await buildGuardianSignatureFromSigner(signer, accountCommitment!);
+
+    expect(proposalSignature.scheme).toBe('ecdsa');
+    if (proposalSignature.scheme !== 'ecdsa') throw new Error('expected an ecdsa ProposalSignature');
+    // The signature reaching the guardian/kernel must carry the real 33-byte key,
+    // not the 32-byte commitment — otherwise Poseidon2(publicKey) == commitment fails.
+    expect(proposalSignature.publicKey).toBe(COMPRESSED_PUBKEY_HEX);
+    expect(proposalSignature.publicKey).not.toBe(accountCommitment);
+    expect(tryComputeEcdsaCommitmentHex(proposalSignature.publicKey!)).toBe(accountCommitment);
   });
 });
