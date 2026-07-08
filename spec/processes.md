@@ -223,7 +223,8 @@ sequenceDiagram
 
 ### Configuration
 - Current server builder defaults: submission_grace_period_seconds = 600
-  (10m), check_interval_seconds = 10, max_retries = 48.
+  (10m), check_interval_seconds = 10, max_retries = 48,
+  divergence_confirmations = 2.
 - These values are configured in code, not through server env vars.
 
 ### Worker Behavior
@@ -231,12 +232,23 @@ sequenceDiagram
  - For each account:
   - Pull all deltas and select ready candidates (candidate_at >= delay_seconds); process in nonce order.
   - Apply delta locally to compute expected state and commitment.
-  - Verify on-chain commitment. If it matches `new_commitment`:
-    - Persist new state (atomic with delta status update when possible).
-    - Optionally update auth from chain via `should_update_auth`.
-    - Set delta status to `canonical`.
-    - Delete matching Miden delta proposal identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
-  - Else set delta status to `discarded`.
+  - Fetch the on-chain commitment and classify:
+    - Matches the expected new commitment: canonicalize —
+      persist new state (atomic with delta status update when possible),
+      optionally update auth from chain via `should_update_auth`, set delta
+      status to `canonical`, and delete the matching Miden delta proposal
+      identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
+    - Matches the candidate's `prev_commitment` (its transaction has not
+      landed yet), or the comparison itself failed (RPC error): defer within
+      `submission_grace_period_seconds`, then consume retry budget each tick
+      and discard after `max_retries`.
+    - Matches neither — the account advanced past the candidate's base
+      state, so the candidate can never verify: after
+      `divergence_confirmations` consecutive such observations (default 2,
+      to tolerate a single stale RPC read) discard immediately, bypassing
+      the grace period, delete the matching proposal, and clear the
+      account's pending-candidate flag so new proposals stop returning
+      `409 conflict_pending_delta`.
 
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 
@@ -258,12 +270,14 @@ sequenceDiagram
       W->>ST: pull_state(account_id)
       W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)
       W->>N: verify_state(account_id, new_state)\n(on_chain_commitment)
-      alt commitments match
+      alt on-chain matches expected commitment
         W->>ST: submit_state(new_state)
         W->>W: maybe update_auth(should_update_auth)
         W->>ST: submit_delta(canonical)
-      else mismatch
-        W->>ST: submit_delta(discarded)
+      else on-chain still at prev_commitment (not landed)
+        W->>W: defer (grace period), then consume retry budget
+      else diverged (matches neither)
+        W->>ST: delete_delta + delete matching proposal\nclear pending-candidate flag (after confirmation)
       end
     end
   end

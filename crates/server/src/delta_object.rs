@@ -22,6 +22,15 @@ pub enum DeltaStatus {
         timestamp: String,
         #[serde(default)]
         retry_count: u32,
+        /// Consecutive canonicalization ticks that observed the on-chain
+        /// commitment at neither this delta's `prev_commitment` nor its
+        /// expected new commitment — i.e. the account advanced past the
+        /// state this candidate was built on. Reset to zero whenever a
+        /// read shows the account still at the candidate's base, so only
+        /// an unbroken streak counts. Requiring more than one observation
+        /// before discarding shields against stale RPC reads.
+        #[serde(default)]
+        divergence_count: u32,
     },
     Canonical {
         timestamp: String,
@@ -44,6 +53,7 @@ impl DeltaStatus {
         Self::Candidate {
             timestamp,
             retry_count: 0,
+            divergence_count: 0,
         }
     }
 
@@ -51,6 +61,7 @@ impl DeltaStatus {
         Self::Candidate {
             timestamp,
             retry_count,
+            divergence_count: 0,
         }
     }
 
@@ -94,18 +105,59 @@ impl DeltaStatus {
         }
     }
 
+    pub fn divergence_count(&self) -> u32 {
+        match self {
+            Self::Candidate {
+                divergence_count, ..
+            } => *divergence_count,
+            _ => 0,
+        }
+    }
+
     pub fn with_incremented_retry(&self, new_timestamp: String) -> Self {
         match self {
             Self::Candidate {
                 timestamp,
                 retry_count,
+                divergence_count,
             } => {
                 let _ = new_timestamp;
                 Self::Candidate {
                     timestamp: timestamp.clone(),
                     retry_count: retry_count + 1,
+                    divergence_count: *divergence_count,
                 }
             }
+            _ => self.clone(),
+        }
+    }
+
+    pub fn with_incremented_divergence(&self) -> Self {
+        match self {
+            Self::Candidate {
+                timestamp,
+                retry_count,
+                divergence_count,
+            } => Self::Candidate {
+                timestamp: timestamp.clone(),
+                retry_count: *retry_count,
+                divergence_count: divergence_count + 1,
+            },
+            _ => self.clone(),
+        }
+    }
+
+    pub fn with_reset_divergence(&self) -> Self {
+        match self {
+            Self::Candidate {
+                timestamp,
+                retry_count,
+                divergence_count: _,
+            } => Self::Candidate {
+                timestamp: timestamp.clone(),
+                retry_count: *retry_count,
+                divergence_count: 0,
+            },
             _ => self.clone(),
         }
     }
@@ -116,6 +168,7 @@ impl Default for DeltaStatus {
         Self::Candidate {
             timestamp: String::new(),
             retry_count: 0,
+            divergence_count: 0,
         }
     }
 }
@@ -364,6 +417,7 @@ mod tests {
         let candidate = DeltaStatus::Candidate {
             timestamp: "2024-01-02".to_string(),
             retry_count: 0,
+            divergence_count: 0,
         };
         assert!(!candidate.is_pending());
         assert!(candidate.is_candidate());

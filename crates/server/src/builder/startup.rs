@@ -149,6 +149,7 @@ mod tests {
                 check_interval_seconds: 10,
                 max_retries: 48,
                 submission_grace_period_seconds: 600,
+                divergence_confirmations: 2,
             }),
             3,
             true,

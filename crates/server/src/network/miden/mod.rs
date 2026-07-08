@@ -2,7 +2,7 @@ pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_GUARDIAN_PUBLIC_KEY};
-use crate::network::{NetworkClient, NetworkType};
+use crate::network::{NetworkClient, NetworkType, StateVerification};
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
@@ -87,7 +87,7 @@ impl NetworkClient for MidenNetworkClient {
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<StateVerification, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
@@ -129,18 +129,18 @@ impl NetworkClient for MidenNetworkClient {
         })?;
 
         if local_commitment_hex != on_chain_commitment {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id.to_hex(),
                 local = %local_commitment_hex,
                 on_chain = %on_chain_commitment,
                 "Commitment mismatch during state verification"
             );
-            return Err(format!(
-                "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
-            ));
+            return Ok(StateVerification::Mismatch {
+                on_chain: on_chain_commitment,
+            });
         }
 
-        Ok(())
+        Ok(StateVerification::Match)
     }
 
     fn verify_delta(

@@ -620,6 +620,7 @@ mod tests {
             check_interval_seconds: 7,
             max_retries: 13,
             submission_grace_period_seconds: 42,
+            divergence_confirmations: 2,
         });
         let info = get_dashboard_info(&state).await.unwrap();
         let cfg = info.backend.canonicalization.expect("config present");
