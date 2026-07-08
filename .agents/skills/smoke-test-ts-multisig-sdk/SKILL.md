@@ -36,8 +36,8 @@ If the commitment does not round-trip into `status().multisig.guardianPubkey` af
    ```json
    {
      "dependencies": {
-       "@openzeppelin/miden-multisig-client": "0.15.0",
-       "@openzeppelin/guardian-client": "0.15.0",
+       "@openzeppelin/miden-multisig-client": "0.15.1",
+       "@openzeppelin/guardian-client": "0.15.1",
        "@miden-sdk/miden-sdk": "0.15.0"
      }
    }
