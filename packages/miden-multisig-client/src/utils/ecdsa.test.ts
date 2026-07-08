@@ -87,6 +87,23 @@ describe('EcdsaFormat', () => {
     });
   });
 
+  describe('isValidPublicKeyPoint', () => {
+    // The secp256k1 generator point G, compressed — a known-valid point.
+    const G = '0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+
+    it('accepts a valid compressed secp256k1 point', () => {
+      expect(EcdsaFormat.isValidPublicKeyPoint(G)).toBe(true);
+    });
+
+    it('rejects a valid-length key whose x is off-curve', () => {
+      expect(EcdsaFormat.isValidPublicKeyPoint('0x02' + 'ff'.repeat(32))).toBe(false);
+    });
+
+    it('rejects a valid-length key with a bad prefix byte', () => {
+      expect(EcdsaFormat.isValidPublicKeyPoint('0xff' + 'ab'.repeat(32))).toBe(false);
+    });
+  });
+
   describe('keccakDigestHex', () => {
     it('should return 0x-prefixed hex of keccak-256 hash', () => {
       const result = EcdsaFormat.keccakDigestHex(new Uint8Array(0));

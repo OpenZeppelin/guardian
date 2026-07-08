@@ -51,6 +51,21 @@ export class EcdsaFormat {
     return byteLength === 33 || byteLength === 65;
   }
 
+  /**
+   * Whether `publicKeyHex` decodes to a valid secp256k1 curve point (compressed
+   * 33-byte or uncompressed 65-byte). Unlike {@link EcdsaFormat.validatePublicKeyHex}
+   * this rejects well-formed-length but off-curve or bad-prefix keys, and does so
+   * without the Miden WASM SDK.
+   */
+  static isValidPublicKeyPoint(publicKeyHex: string): boolean {
+    try {
+      secp256k1.ProjectivePoint.fromHex(ensureHexPrefix(publicKeyHex).slice(2));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   static compressPublicKey(uncompressedHex: string): string {
     const clean = ensureHexPrefix(uncompressedHex).slice(2);
     const byteLength = clean.length / 2;
