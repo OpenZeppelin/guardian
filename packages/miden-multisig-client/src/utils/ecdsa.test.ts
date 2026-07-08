@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { EcdsaFormat } from './ecdsa.js';
+import { bytesToHex } from './encoding.js';
 
 describe('EcdsaFormat', () => {
   describe('normalizeRecoveryByte', () => {
@@ -99,6 +102,46 @@ describe('EcdsaFormat', () => {
       const a = EcdsaFormat.keccakDigestHex(new Uint8Array([1]));
       const b = EcdsaFormat.keccakDigestHex(new Uint8Array([2]));
       expect(a).not.toBe(b);
+    });
+  });
+
+  describe('recoverCompressedPublicKeyHex', () => {
+    const privateKey = new Uint8Array(32).fill(0x11);
+    const message = new Uint8Array([9, 8, 7, 6, 5]);
+
+    function sign(priv: Uint8Array, msg: Uint8Array): Uint8Array {
+      const sig = secp256k1.sign(keccak_256(msg), priv);
+      const out = new Uint8Array(65);
+      out.set(sig.toCompactRawBytes(), 0); // r || s
+      out[64] = sig.recovery; // v
+      return out;
+    }
+
+    it('recovers the compressed public key that produced the signature', () => {
+      const expected = bytesToHex(secp256k1.getPublicKey(privateKey, true));
+      const recovered = EcdsaFormat.recoverCompressedPublicKeyHex(message, sign(privateKey, message));
+      expect(recovered).toBe(expected);
+    });
+
+    it('accepts an Ethereum-style recovery byte (27/28)', () => {
+      const sig = sign(privateKey, message);
+      sig[64] += 27; // 0/1 -> 27/28
+      const expected = bytesToHex(secp256k1.getPublicKey(privateKey, true));
+      expect(EcdsaFormat.recoverCompressedPublicKeyHex(message, sig)).toBe(expected);
+    });
+
+    it('throws when the signature is not 65 bytes', () => {
+      expect(() => EcdsaFormat.recoverCompressedPublicKeyHex(message, new Uint8Array(64))).toThrow(
+        /65-byte signature/,
+      );
+    });
+
+    it('throws on an invalid recovery byte', () => {
+      const sig = sign(privateKey, message);
+      sig[64] = 5;
+      expect(() => EcdsaFormat.recoverCompressedPublicKeyHex(message, sig)).toThrow(
+        /recovery byte must be/,
+      );
     });
   });
 });

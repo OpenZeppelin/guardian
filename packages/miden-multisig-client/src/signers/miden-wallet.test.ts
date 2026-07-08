@@ -54,15 +54,27 @@ describe('MidenWalletSigner', () => {
       expect(signer.publicKey).toBe('0xcommitment');
     });
 
-    it('should use explicit publicKey when provided', () => {
+    it('should use an explicit (valid) ECDSA publicKey when provided', () => {
+      const pubKey = '0x02' + 'ab'.repeat(32); // 33-byte compressed secp256k1 key
       const signer = new MidenWalletSigner(
         mockWallet,
         '0xcommitment',
         'ecdsa',
         undefined,
-        '0xwalletpubkey',
+        pubKey,
       );
-      expect(signer.publicKey).toBe('0xwalletpubkey');
+      expect(signer.publicKey).toBe(pubKey);
+    });
+
+    it('throws on an invalid explicit ECDSA publicKey instead of falling back to the commitment', () => {
+      expect(
+        () => new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa', undefined, '0xwalletpubkey'),
+      ).toThrow(/invalid ECDSA public key/);
+    });
+
+    it('does not fall back to the commitment for an ECDSA signer with no key (throws until a signature exists)', () => {
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa');
+      expect(() => signer.publicKey).toThrow(/not available yet/);
     });
 
     it('should use localAuthSigner publicKey when provided', () => {

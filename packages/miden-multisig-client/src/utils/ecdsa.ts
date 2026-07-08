@@ -1,5 +1,6 @@
+import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { ensureHexPrefix } from './encoding.js';
+import { bytesToHex, ensureHexPrefix } from './encoding.js';
 
 const ECDSA_SIGNATURE_BYTE_LENGTH = 64;
 const ECDSA_SIGNATURE_WITH_RECOVERY_BYTE_LENGTH = 65;
@@ -73,5 +74,39 @@ export class EcdsaFormat {
       hex += hash[i].toString(16).padStart(2, '0');
     }
     return hex;
+  }
+
+  /**
+   * Recover the compressed (33-byte) secp256k1 public key that produced an
+   * `ecdsa_k256_keccak` signature over `messageBytes`.
+   *
+   * `messageBytes` is the raw word/message bytes (the digest is `keccak256` of
+   * these, matching the transaction kernel and {@link EcdsaFormat.keccakDigestHex}).
+   * `signature` must be the 65-byte `r||s||v` form; the recovery byte may be the
+   * canonical `0/1` or the Ethereum-style `27/28`.
+   */
+  static recoverCompressedPublicKeyHex(messageBytes: Uint8Array, signature: Uint8Array): string {
+    if (signature.length !== ECDSA_SIGNATURE_WITH_RECOVERY_BYTE_LENGTH) {
+      throw new Error(
+        `ECDSA public-key recovery requires a ${ECDSA_SIGNATURE_WITH_RECOVERY_BYTE_LENGTH}-byte signature (r||s||v), got ${signature.length}`,
+      );
+    }
+
+    let recoveryBit = signature[ECDSA_SIGNATURE_BYTE_LENGTH];
+    if (recoveryBit === 27 || recoveryBit === 28) {
+      recoveryBit -= 27;
+    }
+    if (recoveryBit !== 0 && recoveryBit !== 1) {
+      throw new Error(
+        `ECDSA recovery byte must be 0/1 (or 27/28), got ${signature[ECDSA_SIGNATURE_BYTE_LENGTH]}`,
+      );
+    }
+
+    const compact = signature.slice(0, ECDSA_SIGNATURE_BYTE_LENGTH);
+    const msgHash = keccak_256(messageBytes);
+    const recovered = secp256k1.Signature.fromCompact(compact)
+      .addRecoveryBit(recoveryBit)
+      .recoverPublicKey(msgHash);
+    return bytesToHex(recovered.toRawBytes(true));
   }
 }
