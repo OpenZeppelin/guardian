@@ -33,7 +33,7 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.15.0"
+miden-multisig-client = "0.15.1"
 miden-client = "0.15.0"
 ```
 
@@ -1041,8 +1041,8 @@ cd packages/miden-multisig-client && npm publish --access public
 1. Tag the release:
 
 ```bash
-git tag v0.15.0
-git push origin v0.15.0
+git tag v0.15.1
+git push origin v0.15.1
 ```
 
 2. Create a GitHub release from the tag with release notes.
