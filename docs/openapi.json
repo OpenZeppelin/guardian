@@ -3093,6 +3093,13 @@
             ],
             "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 timestamp of the guardian-switch release. Present only\nfor `GUARDIAN_ACCOUNT_RELEASED`."
+          },
           "retry_after_secs": {
             "type": [
               "integer",
@@ -3107,7 +3114,7 @@
               "boolean",
               "null"
             ],
-            "description": "`false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`."
+            "description": "`false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`, and\n`GUARDIAN_ACCOUNT_RELEASED`."
           },
           "success": {
             "type": "boolean",
@@ -3487,6 +3494,13 @@
             ],
             "description": "Reason captured at first pause; `None` when active."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 UTC timestamp at which this server detected the account\nswitched to a different guardian and released it; `None` while\nthis server is the account's guardian."
+          },
           "state_created_at": {
             "type": [
               "string",
@@ -3588,6 +3602,12 @@
             ]
           },
           "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released_at": {
             "type": [
               "string",
               "null"
@@ -4948,6 +4968,12 @@
                   ]
                 },
                 "paused_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "released_at": {
                   "type": [
                     "string",
                     "null"

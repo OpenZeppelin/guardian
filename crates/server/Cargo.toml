@@ -72,6 +72,8 @@ diesel_migrations = { version = "2.2", optional = true }
 # Optional dependencies for e2e tests
 miden-client = { workspace = true, features = ["testing"], optional = true }
 miden-confidential-contracts = { path = "../contracts", optional = true }
+miden-testing = { workspace = true, optional = true }
+miden-tx = { workspace = true, optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
@@ -102,4 +104,4 @@ postgres = [
     "tokio-postgres-rustls",
 ]
 integration = []
-e2e = ["miden-client", "miden-confidential-contracts"]
+e2e = ["miden-client", "miden-confidential-contracts", "miden-testing", "miden-tx"]

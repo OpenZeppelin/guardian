@@ -41,6 +41,22 @@ import {
  * Error thrown by the GUARDIAN HTTP client.
  */
 export class GuardianHttpError extends Error {
+  /**
+   * Stable machine-readable error code from the server's JSON error
+   * envelope (e.g. `GUARDIAN_ACCOUNT_RELEASED`, `GUARDIAN_ACCOUNT_PAUSED`,
+   * `commitment_mismatch`), or `null` when the body is not a JSON
+   * envelope. Callers SHOULD branch on this rather than on `body` text
+   * or the HTTP status alone.
+   */
+  public readonly code: string | null;
+  /**
+   * RFC 3339 UTC timestamp at which the guardian released the account
+   * after it switched to a different guardian. Present only when
+   * `code === 'GUARDIAN_ACCOUNT_RELEASED'` (HTTP 409); the account is
+   * terminal on this server until re-onboarded via `configure`.
+   */
+  public readonly releasedAt: string | null;
+
   constructor(
     public readonly status: number,
     public readonly statusText: string,
@@ -48,6 +64,24 @@ export class GuardianHttpError extends Error {
   ) {
     super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
     this.name = 'GuardianHttpError';
+    let code: string | null = null;
+    let releasedAt: string | null = null;
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (parsed !== null && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>;
+        if (typeof record['code'] === 'string') {
+          code = record['code'];
+        }
+        if (typeof record['released_at'] === 'string') {
+          releasedAt = record['released_at'];
+        }
+      }
+    } catch {
+      // Non-JSON body (e.g. proxy HTML error page): keep raw `body` only.
+    }
+    this.code = code;
+    this.releasedAt = releasedAt;
   }
 }
 

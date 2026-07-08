@@ -27,6 +27,7 @@ pub fn falcon_account(account_id: &str, cosigner_commitments: Vec<String>) -> Ac
         last_auth_timestamp: None,
         paused_at: None,
         paused_reason: None,
+        released_at: None,
     }
 }
 
@@ -43,6 +44,7 @@ pub fn ecdsa_account(account_id: &str, cosigner_commitments: Vec<String>) -> Acc
         last_auth_timestamp: None,
         paused_at: None,
         paused_reason: None,
+        released_at: None,
     }
 }
 
@@ -57,6 +59,7 @@ pub fn evm_account(account_id: &str, signers: Vec<String>) -> AccountMetadata {
         last_auth_timestamp: None,
         paused_at: None,
         paused_reason: None,
+        released_at: None,
     }
 }
 

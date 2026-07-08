@@ -359,6 +359,7 @@ mod tests {
                 last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             }))
         } else {
             Ok(None)
@@ -477,6 +478,7 @@ mod tests {
                 last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             })));
         let storage = MockStorageBackend::new()
             .with_list_account_deltas_paged(Err("disk read failed".into()));
@@ -564,6 +566,7 @@ mod tests {
                     last_auth_timestamp: None,
                     paused_at: None,
                     paused_reason: None,
+                    released_at: None,
                 })));
             }
             m

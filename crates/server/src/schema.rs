@@ -86,6 +86,7 @@ diesel::table! {
         last_auth_timestamp -> Nullable<Int8>,
         paused_at -> Nullable<Timestamptz>,
         paused_reason -> Nullable<Text>,
+        released_at -> Nullable<Timestamptz>,
     }
 }
 
