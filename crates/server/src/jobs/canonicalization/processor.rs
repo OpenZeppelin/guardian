@@ -75,15 +75,17 @@ struct DeltasProcessorBase {
 impl DeltasProcessorBase {
     /// Mandatory fence check before every custody-state write: the canonical
     /// `submit_state` / `submit_delta`, the `update_auth` cosigner-key sync, the
-    /// discard `delete_delta`, and the retry `update_delta_status`. If this
-    /// replica no longer holds the lease (superseded mid-pass), refuse the write
-    /// so a stale leader can never commit a custody transition. The fence is
-    /// advisory (a separate read before the write), so a steal can land between
-    /// check and write; that residual window is safe to *re-apply*, not
-    /// byte-idempotent: promotion re-writes the same deterministic transition
-    /// (status timestamps may differ), a discard repeats a delete, and a retry
-    /// increment can at worst double-count a single retry tick — never a
-    /// divergent custody state. Trailing cleanup is intentionally unfenced but
+    /// discard `delete_delta`, the retry `update_delta_status`, and the
+    /// divergence-streak `update_delta_status` (increment/reset) that gates a
+    /// divergence discard. If this replica no longer holds the lease (superseded
+    /// mid-pass), refuse the write so a stale leader can never commit a custody
+    /// transition. The fence is advisory (a separate read before the write), so
+    /// a steal can land between check and write; that residual window is safe to
+    /// *re-apply*, not byte-idempotent: promotion re-writes the same
+    /// deterministic transition (status timestamps may differ), a discard
+    /// repeats a delete, and a retry/divergence increment can at worst
+    /// double-count a single tick — never a divergent custody state. Trailing
+    /// cleanup is intentionally unfenced but
     /// not blind: proposal deletion is idempotent, and the pending-candidate
     /// flag uses the conditional `clear_pending_candidate_if_none` (see its doc
     /// for the wedge race a blind clear would cause, which fencing cannot fix).
@@ -289,6 +291,7 @@ impl DeltasProcessorBase {
         );
 
         let new_status = delta.status.with_reset_divergence();
+        self.ensure_lease_held(&delta).await?;
         self.state
             .storage
             .update_delta_status(&delta.account_id, delta.nonce, new_status.clone())
@@ -324,6 +327,7 @@ impl DeltasProcessorBase {
             );
 
             let new_status = delta.status.with_incremented_divergence();
+            self.ensure_lease_held(&delta).await?;
             self.state
                 .storage
                 .update_delta_status(&delta.account_id, delta.nonce, new_status)
