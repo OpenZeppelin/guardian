@@ -85,7 +85,10 @@ impl StartupInfo {
             } else {
                 "non-prod"
             },
-            max_replicas = %std::env::var("GUARDIAN_MAX_REPLICAS").unwrap_or_else(|_| "1".to_string()),
+            // Resolved value (FR-019), matching the rate limiter's fallback —
+            // never the raw env string, which could disagree with what is
+            // actually enforced.
+            max_replicas = crate::middleware::rate_limit::max_replicas_from_env().unwrap_or(1),
             cursor_secret = if self.cursor_secret_configured {
                 "configured"
             } else {

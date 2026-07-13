@@ -17,7 +17,11 @@ pub struct Lease {
 /// Coordinates single-owner background work across replicas. `renew` runs on its
 /// own timer concurrent with the protected work; a `false` return means the lease
 /// was lost. `verify_held` is the mandatory fence check the holder runs
-/// immediately before any state-mutating write.
+/// immediately before any state-mutating write. `release` expires the lease in
+/// place for prompt handover on a planned stop; the server has no graceful
+/// shutdown hook yet, so nothing calls it in production paths and a stopped
+/// holder hands over only after TTL expiry (documented in the
+/// horizontal-scaling runbook).
 #[async_trait]
 pub trait LeaderElector: Send + Sync {
     async fn try_acquire(&self, ttl: Duration) -> Result<Option<Lease>>;

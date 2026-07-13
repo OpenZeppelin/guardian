@@ -267,9 +267,10 @@ source code.
   state-mutating write (canonical promotion **and** retry/discard) MUST be gated
   by an advisory fencing check so a superseded owner is prevented from committing
   during the cancellation window. (The fence is a pre-write ownership re-check;
-  combined with idempotent writes — same delta ⇒ identical bytes — a brief
-  two-leader overlap can at most re-apply the same transition, never corrupt
-  state.)
+  combined with re-apply-safe writes — promotion re-writes the same deterministic
+  transition, discard repeats a delete, and a retry increment can at worst
+  double-count one retry tick — a brief two-leader overlap can re-apply a
+  transition or cost one extra retry, never produce a divergent custody state.)
 - **FR-006**: Canonicalization retry budgets and state transitions
   (promote/discard) MUST be counted once per interval across the fleet, never
   once per replica.

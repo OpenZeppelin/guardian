@@ -119,10 +119,15 @@ impl ChallengeStore for PgChallengeStore {
                 .execute(conn)
                 .await?;
 
+                // Cap only the *pending* challenges, mirroring the in-memory
+                // store (which removes a challenge on consume). Consumed rows
+                // must not count toward the cap or a burst of successful logins
+                // would evict older still-pending challenges; they are kept for
+                // single-use enforcement until the expiry sweep reclaims them.
                 diesel::sql_query(
                     "DELETE FROM auth_challenges WHERE ctid IN (\
                      SELECT ctid FROM auth_challenges \
-                     WHERE realm = $1 AND principal = $2 \
+                     WHERE realm = $1 AND principal = $2 AND consumed_at IS NULL \
                      ORDER BY issued_at DESC OFFSET $3)",
                 )
                 .bind::<Text, _>(&realm)

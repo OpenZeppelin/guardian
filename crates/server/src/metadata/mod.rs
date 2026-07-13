@@ -123,6 +123,29 @@ pub trait MetadataStore: Send + Sync {
         self.set(metadata).await
     }
 
+    /// Clear `has_pending_candidate` only if the account has no
+    /// candidate-status delta at the moment of the write.
+    ///
+    /// A blind `set_has_pending_candidate(false)` is unsafe as the trailing
+    /// cleanup after a promotion or discard: between the custody write that
+    /// removes the candidate row and the flag clear, a new submission can pass
+    /// the row-scan gate, insert a fresh candidate, and set the flag — the
+    /// blind clear then clobbers it. Because the canonicalization worker
+    /// selects accounts by this flag while the submission gate scans delta
+    /// rows, a wrongly-cleared flag makes the account invisible to the worker
+    /// *and* keeps new submissions rejected: a permanent wedge. Backends that
+    /// can check the delta table in the same statement MUST override this with
+    /// an atomic conditional write. This default (a plain clear) is only
+    /// acceptable for single-process backends, where the residual in-process
+    /// window is the pre-existing one.
+    async fn clear_pending_candidate_if_none(
+        &self,
+        account_id: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.set_has_pending_candidate(account_id, false, now).await
+    }
+
     /// List all account IDs that have pending candidates
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
 

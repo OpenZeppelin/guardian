@@ -222,6 +222,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_rate_limit_enabled` | `true` | Whether Guardian HTTP rate limiting is enabled |
 | `guardian_rate_burst_per_sec` | `10` in dev, `200` in prod | Guardian HTTP burst limit |
 | `guardian_rate_per_min` | `60` in dev, `5000` in prod | Guardian HTTP sustained limit |
+| `guardian_max_replicas` | autoscaling max capacity (prod `max(desired, 6)`) | `GUARDIAN_MAX_REPLICAS` rate-limit partition divisor; an explicit value is clamped **up** to the autoscaling max so the fleet aggregate can never exceed the global limit |
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
@@ -252,6 +253,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_log_group` | CloudWatch log group for the server |
 | `cluster_log_group` | CloudWatch log group for ECS execute command |
 | `guardian_rate_limit_enabled` | Whether HTTP rate limiting is enabled |
+| `guardian_max_replicas` | Effective `GUARDIAN_MAX_REPLICAS` after clamping to the autoscaling max |
 
 ## Stage Profiles
 

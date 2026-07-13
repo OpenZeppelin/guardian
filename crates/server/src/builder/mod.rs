@@ -316,6 +316,13 @@ impl ServerBuilder {
     /// Rate limiting uses two windows: burst (per second) and sustained (per minute).
     /// Limits are applied per IP, with optional enhancement based on account/signer.
     ///
+    /// An explicitly supplied config is enforced **per process, as-is** — it is
+    /// NOT divided by `GUARDIAN_MAX_REPLICAS`. Multi-replica partitioning
+    /// (global limit ÷ max replicas) happens only in
+    /// [`RateLimitConfig::from_env`], which is also the default when this
+    /// method is not called. When embedding the server behind a multi-replica
+    /// deployment with explicit limits, pass per-replica values.
+    ///
     /// # Arguments
     /// * `config` - The rate limit configuration to use
     ///
@@ -525,17 +532,32 @@ impl ServerBuilder {
             metrics_config.enabled.then_some(metrics_config.bind_addr),
         );
 
-        // Prod fail-fast: an enabled rate limit that partitions to 0 per replica
-        // (global limit below GUARDIAN_MAX_REPLICAS) silently throttles all
-        // traffic on every replica. Mirror the filesystem-backend prod guard and
-        // refuse to start rather than serve a fleet that denies every request.
-        // (A missing cursor secret only warns and boots — it is not a prod guard.)
-        // Non-prod keeps the warning emitted by
-        // RateLimitConfig::from_env.
+        // Prod fail-fast pair for rate-limit partitioning; non-prod keeps the
+        // warnings emitted by RateLimitConfig::from_env. (A missing cursor
+        // secret only warns and boots — it is not a prod guard.)
+        let is_prod = crate::config::stage::is_prod().map_err(|error| error.to_string())?;
+        // An unparsable GUARDIAN_MAX_REPLICAS falls back to a divisor of 1 (no
+        // partitioning), silently letting the fleet aggregate reach
+        // max_replicas × the global limit — fail-open, the exact FR-009 bug.
+        // Refuse to start rather than serve too loose.
+        if is_prod {
+            crate::middleware::rate_limit::max_replicas_from_env().map_err(|error| {
+                format!(
+                    "invalid GUARDIAN_MAX_REPLICAS in the prod stage (GUARDIAN_ENV=prod): \
+                     {error}. Falling back would disable rate-limit partitioning and let the \
+                     fleet aggregate exceed the global limit. Set it to the deployment's \
+                     autoscaling max capacity."
+                )
+            })?;
+        }
+        // An enabled rate limit that partitions to 0 per replica (global limit
+        // below GUARDIAN_MAX_REPLICAS) silently throttles all traffic on every
+        // replica. Mirror the filesystem-backend prod guard and refuse to start
+        // rather than serve a fleet that denies every request.
         let rate_limit_config = self
             .rate_limit_config
             .unwrap_or_else(RateLimitConfig::from_env);
-        if crate::config::stage::is_prod().map_err(|error| error.to_string())?
+        if is_prod
             && rate_limit_config.enabled
             && (rate_limit_config.burst_per_sec == 0 || rate_limit_config.per_min == 0)
         {

@@ -118,10 +118,12 @@ the retry/discard writes — and MUST skip the write if it returns `false`.
 
 The fence is **advisory**, not atomic: `verify_held` is a separate round-trip, so
 in principle the lease could be stolen between the check and the write (TOCTOU).
-This is acceptable because the writes are **idempotent** — canonical promotion is
-a deterministic upsert (same delta → identical bytes) and retry/discard are
-idempotent per candidate — so a brief two-leader overlap can at most re-apply the
-same transition, never corrupt state. The fence + idempotency + cooperative
+This is acceptable because the writes are **safe to re-apply** (not strictly
+byte-idempotent): canonical promotion re-writes the same deterministic transition
+(status timestamps may differ), a discard repeats a delete, and a retry increment
+can at worst double-count a single retry tick in the overlap window — so a brief
+two-leader overlap can re-apply a transition or cost one extra retry, never
+produce a divergent custody state. The fence + re-apply safety + cooperative
 cancellation together strongly mitigate split-brain; TTL + voluntary abort alone
 is not relied on.
 

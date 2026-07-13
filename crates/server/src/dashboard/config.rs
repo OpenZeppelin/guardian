@@ -3,6 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::dashboard::cursor::CursorSecret;
 use crate::middleware::RateLimitConfig;
+use crate::middleware::rate_limit::partition_limit;
 use crate::network::NetworkType;
 
 pub(crate) const OPEN_DASHBOARD_DOMAIN: &str = "*";
@@ -53,9 +54,24 @@ impl DashboardConfig {
                     "GUARDIAN_DASHBOARD_CURSOR_SECRET must be 32 hex-encoded bytes (64 chars): {e}"
                 )
             })?;
+        // The per-commitment challenge limiter is per-process state, so like
+        // the global HTTP limits it is partitioned by GUARDIAN_MAX_REPLICAS —
+        // otherwise N replicas hand an attacker ~N× the per-commitment budget
+        // (issue #242 / FR-009). Unlike the global limits it is clamped to ≥ 1:
+        // a share of 0 would deny every operator login on this replica, and
+        // login liveness outranks strictness here. With the clamp active the
+        // fleet aggregate for one commitment is bounded by the replica count.
+        // An invalid GUARDIAN_MAX_REPLICAS resolves to 1 here (no partitioning);
+        // the prod builder guard refuses startup on that input before serving.
+        let max_replicas = crate::middleware::rate_limit::max_replicas_from_env().unwrap_or(1);
+        let commitment_rate_limit = RateLimitConfig::new(
+            partition_limit(DEFAULT_PUBKEY_RATE_BURST_PER_SEC, max_replicas).max(1),
+            partition_limit(DEFAULT_PUBKEY_RATE_PER_MIN, max_replicas).max(1),
+        );
         Ok(Self {
             environment: environment_for_network(network_type).to_string(),
             cursor_secret,
+            commitment_rate_limit,
             ..Self::default()
         })
     }
@@ -107,11 +123,11 @@ impl Default for DashboardConfig {
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
-    use std::sync::{LazyLock, Mutex};
-
     use super::*;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    // Crate-wide env lock (not module-local): `GUARDIAN_MAX_REPLICAS` is also
+    // mutated by the rate-limit middleware tests, and the process environment
+    // is one shared global.
+    use crate::testing::env_lock::ENV_LOCK;
 
     struct EnvVarGuard {
         key: &'static str,
@@ -175,6 +191,42 @@ mod tests {
             config.filesystem_aggregate_threshold(),
             DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD
         );
+    }
+
+    #[test]
+    fn commitment_rate_limit_unpartitioned_for_single_replica() {
+        let _guard = EnvVarGuard::remove("GUARDIAN_MAX_REPLICAS");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        assert_eq!(
+            config.commitment_rate_limit.burst_per_sec,
+            DEFAULT_PUBKEY_RATE_BURST_PER_SEC
+        );
+        assert_eq!(
+            config.commitment_rate_limit.per_min,
+            DEFAULT_PUBKEY_RATE_PER_MIN
+        );
+    }
+
+    #[test]
+    fn commitment_rate_limit_is_partitioned_by_max_replicas() {
+        let _guard = EnvVarGuard::set("GUARDIAN_MAX_REPLICAS", "5");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        assert_eq!(config.commitment_rate_limit.burst_per_sec, 1); // 5 / 5
+        assert_eq!(config.commitment_rate_limit.per_min, 6); // 30 / 5
+    }
+
+    #[test]
+    fn commitment_rate_limit_partition_clamps_to_at_least_one() {
+        let _guard = EnvVarGuard::set("GUARDIAN_MAX_REPLICAS", "50");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        // Floor would be 0 (deny every login on this replica); the ≥1 clamp
+        // keeps operator login alive at the cost of a replica-count-bounded
+        // aggregate for a single commitment.
+        assert_eq!(config.commitment_rate_limit.burst_per_sec, 1);
+        assert_eq!(config.commitment_rate_limit.per_min, 1);
     }
 
     #[test]

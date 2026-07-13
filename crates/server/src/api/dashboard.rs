@@ -95,6 +95,7 @@ pub struct AccountsQuery {
     responses(
         (status = 200, description = "Challenge issued", body = OperatorChallengeResponse),
         (status = 400, description = "Invalid commitment", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Challenge issuance failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn challenge_operator_login(
@@ -135,6 +136,7 @@ pub async fn challenge_operator_login(
     responses(
         (status = 200, description = "Session established", body = VerifyOperatorResponse),
         (status = 401, description = "Challenge verification failed", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Session establishment failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn verify_operator_login(

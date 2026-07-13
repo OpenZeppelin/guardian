@@ -179,6 +179,11 @@ output "guardian_rate_per_min" {
   value       = local.effective_guardian_rate_per_min
 }
 
+output "guardian_max_replicas" {
+  description = "Effective GUARDIAN_MAX_REPLICAS (rate-limit partition divisor), after clamping an explicit override up to the autoscaling max capacity"
+  value       = local.effective_guardian_max_replicas
+}
+
 output "guardian_db_pool_max_size" {
   description = "Effective Guardian storage DB pool maximum size"
   value       = local.effective_guardian_db_pool_max_size

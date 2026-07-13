@@ -67,6 +67,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Challenge issuance failed (shared auth store unavailable; fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -177,6 +187,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session establishment failed (shared auth store unavailable; fails closed)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2159,6 +2179,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Challenge issuance failed (shared auth store unavailable; fails closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -2269,6 +2299,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session establishment failed (shared auth store unavailable; fails closed)",
             "content": {
               "application/json": {
                 "schema": {

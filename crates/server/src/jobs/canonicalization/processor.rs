@@ -75,11 +75,16 @@ impl DeltasProcessorBase {
     /// `submit_state` / `submit_delta`, the `update_auth` cosigner-key sync, the
     /// discard `delete_delta`, and the retry `update_delta_status`. If this
     /// replica no longer holds the lease (superseded mid-pass), refuse the write
-    /// so a stale leader can never commit a custody transition. Best-effort
-    /// cleanup that trails a fenced write — clearing `has_pending_candidate` and
-    /// deleting a finalized proposal — is intentionally left unfenced: both are
-    /// idempotent and non-custodial, so a brief two-leader overlap can at most
-    /// repeat them harmlessly.
+    /// so a stale leader can never commit a custody transition. The fence is
+    /// advisory (a separate read before the write), so a steal can land between
+    /// check and write; that residual window is safe to *re-apply*, not
+    /// byte-idempotent: promotion re-writes the same deterministic transition
+    /// (status timestamps may differ), a discard repeats a delete, and a retry
+    /// increment can at worst double-count a single retry tick — never a
+    /// divergent custody state. Trailing cleanup is intentionally unfenced but
+    /// not blind: proposal deletion is idempotent, and the pending-candidate
+    /// flag uses the conditional `clear_pending_candidate_if_none` (see its doc
+    /// for the wedge race a blind clear would cause, which fencing cannot fix).
     async fn ensure_lease_held(&self, delta: &DeltaObject) -> Result<()> {
         if self.pass.leader.verify_held(&self.pass.lease).await? {
             return Ok(());
@@ -324,11 +329,12 @@ impl DeltasProcessorBase {
                         }
                     }
 
-                    // Clear the pending candidate flag after discard
+                    // Conditional clear: never drop the flag while a candidate
+                    // row exists (see the trait doc for the wedge race).
                     if let Err(e) = self
                         .state
                         .metadata
-                        .set_has_pending_candidate(&delta.account_id, false, &now)
+                        .clear_pending_candidate_if_none(&delta.account_id, &now)
                         .await
                     {
                         tracing::warn!(
@@ -458,10 +464,11 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to update delta as canonical: {e}"))
             })?;
 
-        // Clear the pending candidate flag
+        // Conditional clear: never drop the flag while a candidate row exists
+        // (see the trait doc for the wedge race).
         self.state
             .metadata
-            .set_has_pending_candidate(&delta.account_id, false, &now)
+            .clear_pending_candidate_if_none(&delta.account_id, &now)
             .await
             .map_err(|e| {
                 tracing::warn!(

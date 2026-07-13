@@ -50,7 +50,11 @@ start** rather than falling back to per-process state.
   lease (`worker_leases`). Leadership transfers automatically to another replica
   within one lease TTL (≈ 3× the canonicalization check interval) if the holder
   crashes. A superseded holder cannot commit a canonical write (a fencing token
-  is checked before every state/delta write).
+  is checked before every state/delta write). A *planned* stop (deploy,
+  scale-in) does not release the lease early today — there is no graceful
+  shutdown hook yet — so after replacing the lease holder, canonicalization
+  pauses for up to one TTL (~30s at the default 10s check interval) before the
+  new holder takes over. This is a stall, never a correctness issue.
 - **Rate limiting** is per-process but partitioned (see below).
 
 ## Failure modes (by design)
@@ -62,9 +66,13 @@ start** rather than falling back to per-process state.
   available in-memory behavior.
 - **DB connection budget**: each replica opens up to `GUARDIAN_DB_POOL_MAX_SIZE`
   (default 32 in prod) connections, plus the metadata pool, plus per-request
-  session lookups. With N replicas the total can approach
-  `N × (pools × size)`; keep it under Postgres `max_connections`. Prod routes
-  through RDS Proxy by default, which pools server-side and absorbs much of this.
+  session lookups. Coordination (sessions, challenges, the lease) does not add a
+  pool of its own — it shares the **metadata pool**, so per-request auth lookups
+  compete with metadata/canonicalization traffic for the same connections; size
+  `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` with that in mind. With N replicas the
+  total can approach `N × (pools × size)`; keep it under Postgres
+  `max_connections`. Prod routes through RDS Proxy by default, which pools
+  server-side and absorbs much of this.
 
 ## `GUARDIAN_MAX_REPLICAS` and rate limiting
 
@@ -85,6 +93,17 @@ fleet aggregate stays at or below the global limit.
   to the autoscaling max, so it can never drop below real capacity (which would
   let the aggregate exceed the global limit). Setting it higher only
   over-throttles.
+- **Invalid values fail fast in prod**: a set-but-unparsable or zero
+  `GUARDIAN_MAX_REPLICAS` would otherwise fall back to a divisor of 1 and
+  silently disable partitioning (fail-open). In the prod stage the server
+  refuses to start; non-prod warns and treats it as `1`.
+- **Per-commitment challenge limits are partitioned too**: the dashboard's
+  per-commitment login-challenge limiter is per-process, so it is divided by
+  `GUARDIAN_MAX_REPLICAS` like the global limits — but clamped to **≥1 per
+  replica** so operator login can never be fully denied. With the clamp active,
+  the fleet aggregate for a single commitment is bounded by the replica count
+  rather than the configured limit (accepted: liveness over strictness for
+  login).
 
 ## Validate the coordination behavior locally
 

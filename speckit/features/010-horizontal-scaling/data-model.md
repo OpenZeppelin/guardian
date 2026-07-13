@@ -165,11 +165,12 @@ between lease loss and the pass stopping; the **mandatory** fence check
 (`verify_held`) immediately before every state-mutating write strongly mitigates
 that window. Note the fence is **advisory** (a separate round-trip, TOCTOU): a
 lease could in principle be stolen between the check and the write. That residual
-window is benign here because the canonical writes are **idempotent deterministic
-upserts** — the same delta produces identical state/delta bytes regardless of
-which replica writes — and retry/discard writes are likewise idempotent for a
-given candidate. So a brief overlap cannot corrupt state; it can at most
-re-apply the same transition. TTL + voluntary abort alone is NOT relied on.
+window is benign here because the canonical writes are **safe to re-apply**:
+promotion re-writes the same deterministic transition (status timestamps may
+differ between writers), a discard repeats a delete, and a retry increment can at
+worst double-count a single retry tick. So a brief overlap cannot produce a
+divergent custody state; it can at most re-apply the same transition or cost one
+extra retry. TTL + voluntary abort alone is NOT relied on.
 
 ---
 

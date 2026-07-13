@@ -107,6 +107,7 @@ pub struct CancelProposalResponse {
     responses(
         (status = 200, description = "Challenge issued", body = ChallengeResponse),
         (status = 400, description = "Invalid address", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Challenge issuance failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn challenge_evm_session(
@@ -137,6 +138,7 @@ pub async fn challenge_evm_session(
     responses(
         (status = 200, description = "Session established", body = VerifySessionResponse),
         (status = 401, description = "Challenge verification failed", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Session establishment failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn verify_evm_session(
