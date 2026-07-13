@@ -37,6 +37,9 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
           [
             aws_secretsmanager_secret.database_url.arn
           ],
+          local.ca_bundle_enabled ? [
+            var.rds_ca_bundle_secret_arn
+          ] : [],
           local.evm_allowed_chain_ids_secret_arn != "" ? [
             local.evm_allowed_chain_ids_secret_arn
           ] : [],
@@ -107,6 +110,28 @@ resource "aws_iam_role_policy" "ecs_task_ack_ecdsa_kms" {
         ]
         Resource = [
           var.guardian_ack_ecdsa_kms_key_arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "ecs_task_storage_encryption_secret" {
+  count = local.managed_storage_encryption_enabled ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-storage-encryption-secret"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          data.aws_secretsmanager_secret.storage_encryption[0].arn
         ]
       }
     ]

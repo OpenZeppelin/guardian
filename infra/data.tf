@@ -11,6 +11,11 @@ data "aws_secretsmanager_secret" "ack_ecdsa" {
   name  = local.ack_ecdsa_secret_name
 }
 
+data "aws_secretsmanager_secret" "storage_encryption" {
+  count = local.managed_storage_encryption_enabled ? 1 : 0
+  name  = local.storage_encryption_secret_name
+}
+
 # Get default VPC if vpc_id is not specified
 data "aws_vpc" "default" {
   count   = var.vpc_id == "" ? 1 : 0
@@ -103,6 +108,8 @@ locals {
   evm_rpc_urls_secret_name                     = "${var.stack_name}/server/evm-rpc-urls"
   ack_falcon_secret_name                       = var.guardian_ack_falcon_secret_name != "" ? var.guardian_ack_falcon_secret_name : "${var.stack_name}/server/ack-falcon-secret-key"
   ack_ecdsa_secret_name                        = var.guardian_ack_ecdsa_secret_name != "" ? var.guardian_ack_ecdsa_secret_name : "${var.stack_name}/server/ack-ecdsa-secret-key"
+  managed_storage_encryption_enabled           = local.is_prod && var.guardian_storage_encryption_secret_name != ""
+  storage_encryption_secret_name               = local.managed_storage_encryption_enabled ? var.guardian_storage_encryption_secret_name : ""
   rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
   rds_proxy_role_name                          = "${var.stack_name}-rds-proxy"
   rds_proxy_security_group_name                = "${var.stack_name}-rds-proxy-sg"
@@ -134,7 +141,12 @@ locals {
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""
   database_endpoint        = local.effective_rds_proxy_route_database_url ? local.database_proxy_endpoint : local.direct_database_endpoint
 
-  database_url = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?sslmode=require"
+  ca_bundle_enabled        = var.rds_ca_bundle_secret_arn != ""
+  ca_bundle_volume_name    = "guardian-db-ca"
+  ca_bundle_mount_dir      = "/etc/guardian/tls"
+  ca_bundle_container_path = "${local.ca_bundle_mount_dir}/rds-combined-ca.pem"
+  database_sslparams       = local.ca_bundle_enabled ? "sslmode=verify-full&sslrootcert=${local.ca_bundle_container_path}" : "sslmode=require"
+  database_url             = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?${local.database_sslparams}"
 
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""

@@ -69,6 +69,98 @@ describe('GuardianHttpClient', () => {
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(500);
       expect(error.statusText).toBe('Internal Server Error');
+      // Non-JSON body: no typed envelope fields.
+      expect(error.code).toBeNull();
+      expect(error.releasedAt).toBeNull();
+    });
+
+    it('exposes code and released_at from a GUARDIAN_ACCOUNT_RELEASED envelope', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            code: 'GUARDIAN_ACCOUNT_RELEASED',
+            error: 'Account was released',
+            retryable: false,
+            released_at: '2026-07-06T10:00:00Z',
+          }),
+      });
+
+      const error = await client.getPubkey().catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(409);
+      expect(error.code).toBe('GUARDIAN_ACCOUNT_RELEASED');
+      expect(error.releasedAt).toBe('2026-07-06T10:00:00Z');
+    });
+
+    it('exposes code without releasedAt for other envelope errors', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            code: 'account_not_found',
+            error: "Account '0xabc' not found",
+          }),
+      });
+
+      const error = await client.getPubkey().catch((e) => e);
+      expect(error.code).toBe('account_not_found');
+      expect(error.releasedAt).toBeNull();
+    });
+  });
+
+  describe('getStatus', () => {
+    it('maps the server status response to camelCase', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'ok',
+          version: '0.1.0',
+          git_commit: 'abc123def456',
+          environment: 'devnet',
+          started_at: '2026-06-17T10:00:00Z',
+          uptime_seconds: 3600,
+        }),
+      });
+
+      const status = await client.getStatus();
+
+      expect(status).toEqual({
+        status: 'ok',
+        version: '0.1.0',
+        gitCommit: 'abc123def456',
+        environment: 'devnet',
+        startedAt: '2026-06-17T10:00:00Z',
+        uptimeSeconds: 3600,
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/status',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+          }),
+        })
+      );
+    });
+
+    it('should throw GuardianHttpError on non-ok response', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        text: async () => 'down',
+      });
+
+      const error = await client.getStatus().catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(503);
     });
   });
 

@@ -10,6 +10,7 @@ set -euo pipefail
 #   build    - Build and push the Docker image to ECR
 #   bootstrap-ack-keys - Create the prod ACK key secrets in Secrets Manager
 #   bootstrap-kms-ecdsa-key - Create the KMS ECDSA ACK signing key + alias (KMS backend)
+#   bootstrap-storage-encryption-key - Create the storage encryption key secret in Secrets Manager
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
@@ -41,6 +42,7 @@ set -euo pipefail
 #   GUARDIAN_EVM_ENTRYPOINT_ADDRESS - Shared EVM EntryPoint address (default: EntryPoint v0.9)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON - JSON array of Falcon operator public keys; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
+#   GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME - Secrets Manager secret name for the storage encryption key document. Setting it enables encryption at rest (prod): the stack wires the IAM grant and GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID. Unset leaves storage in plaintext. bootstrap-storage-encryption-key defaults to <stack-name>/server/storage-encryption-key (optional)
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
@@ -68,6 +70,7 @@ GUARDIAN_EVM_RPC_URLS_SECRET_ARN="${GUARDIAN_EVM_RPC_URLS_SECRET_ARN:-${TF_VAR_g
 GUARDIAN_EVM_ENTRYPOINT_ADDRESS="${GUARDIAN_EVM_ENTRYPOINT_ADDRESS:-${TF_VAR_guardian_evm_entrypoint_address:-}}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON="${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON:-}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
+GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME="${GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME:-${TF_VAR_guardian_storage_encryption_secret_name:-}}"
 TF_DIR="${SCRIPT_DIR}/../infra"
 TF_STATE_PATH_OVERRIDE="${TF_STATE_PATH:-}"
 TF_STATE_BACKUP_PATH_OVERRIDE="${TF_STATE_BACKUP_PATH:-}"
@@ -301,6 +304,9 @@ build_tf_vars() {
   if [ -n "${GUARDIAN_ACK_ECDSA_SECRET_NAME:-}" ]; then
     TF_VARS+=("-var" "guardian_ack_ecdsa_secret_name=${GUARDIAN_ACK_ECDSA_SECRET_NAME}")
   fi
+  if storage_encryption_enabled; then
+    TF_VARS+=("-var" "guardian_storage_encryption_secret_name=$(storage_encryption_secret_name)")
+  fi
 
   if [ -n "$DOMAIN_NAME" ]; then
     TF_VARS+=("-var" "domain_name=${DOMAIN_NAME}")
@@ -334,6 +340,14 @@ ack_ecdsa_secret_name() {
 
 ack_ecdsa_kms_key_arn() {
   echo "${TF_VAR_guardian_ack_ecdsa_kms_key_arn:-}"
+}
+
+storage_encryption_secret_name() {
+  echo "${GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME:-${STACK_NAME}/server/storage-encryption-key}"
+}
+
+storage_encryption_enabled() {
+  [ -n "$GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME" ]
 }
 
 ecdsa_backend_is_kms() {
@@ -373,6 +387,103 @@ validate_ack_secrets_exist() {
     log_error "Missing ECDSA ACK secret ${ecdsa_secret_name}. Run ./scripts/aws-deploy.sh bootstrap-ack-keys first."
     return 1
   fi
+}
+
+validate_storage_encryption_secret_exists() {
+  if [ "$DEPLOY_STAGE" != "prod" ]; then
+    return 0
+  fi
+
+  if ! storage_encryption_enabled; then
+    return 0
+  fi
+
+  local secret_name
+  local secret_string
+  local active_kid
+  local active_key_b64
+  local decoded_len
+  secret_name=$(storage_encryption_secret_name)
+
+  if ! secret_exists "$secret_name"; then
+    log_error "Storage encryption is enabled but secret ${secret_name} is missing. Run ./scripts/aws-deploy.sh bootstrap-storage-encryption-key first."
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    log_error "jq is required to validate the storage encryption key document"
+    return 1
+  fi
+
+  secret_string=$(aws secretsmanager get-secret-value \
+    --secret-id "$secret_name" \
+    --region "$AWS_REGION" \
+    --query SecretString \
+    --output text 2>/dev/null) || {
+    log_error "Failed to read storage encryption secret ${secret_name}"
+    return 1
+  }
+
+  active_kid=$(jq -er '.active' <<<"$secret_string") || {
+    log_error "Storage encryption secret ${secret_name} is invalid: missing .active"
+    return 1
+  }
+
+  active_key_b64=$(jq -er --arg kid "$active_kid" '.keys[$kid]' <<<"$secret_string") || {
+    log_error "Storage encryption secret ${secret_name} is invalid: .keys does not contain active kid '${active_kid}'"
+    return 1
+  }
+
+  decoded_len=$(printf '%s' "$active_key_b64" | base64 --decode 2>/dev/null | wc -c | tr -d ' ')
+  if [ "$decoded_len" != "32" ]; then
+    log_error "Storage encryption secret ${secret_name} is invalid: active key must decode to 32 bytes"
+    return 1
+  fi
+}
+
+cmd_bootstrap_storage_encryption_key() {
+  local secret_name
+  local key_material
+  local secret_value
+  secret_name=$(storage_encryption_secret_name)
+
+  if secret_exists "$secret_name"; then
+    log_error "Refusing to overwrite existing storage encryption secret ${secret_name}"
+    log_error "Rotating the storage encryption key means adding a new kid to the existing secret document, not re-bootstrapping"
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    log_error "jq is required to build the storage encryption key document"
+    return 1
+  fi
+
+  log_info "Generating 32-byte storage encryption key locally..."
+  key_material=$(openssl rand -base64 32)
+  if [ -z "$key_material" ]; then
+    log_error "Failed to generate storage encryption key material"
+    return 1
+  fi
+
+  secret_value=$(jq -nc --arg k "$key_material" '{active:"k1", keys:{k1:$k}}')
+
+  log_info "Creating storage encryption secret ${secret_name}"
+  local secret_file
+  secret_file=$(mktemp)
+  printf '%s' "$secret_value" >"$secret_file"
+  if aws secretsmanager create-secret \
+    --name "$secret_name" \
+    --secret-string "file://$secret_file" \
+    --region "$AWS_REGION" >/dev/null; then
+    rm -f "$secret_file"
+  else
+    rm -f "$secret_file"
+    return 1
+  fi
+
+  log_info "Storage encryption key bootstrap complete"
+  log_info "Enable encryption on the next deploy by exporting the secret name:"
+  log_info "  export GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=${secret_name}"
 }
 
 cmd_bootstrap_ack_keys() {
@@ -484,8 +595,10 @@ cmd_bootstrap_kms_ecdsa_key() {
 cmd_build_and_push() {
   local ecr_repo_uri
   local docker_platform
+  local git_sha
   ecr_repo_uri=$(get_ecr_repo_uri)
   docker_platform=$(docker_platform_for_arch "$CPU_ARCHITECTURE")
+  git_sha=$(git rev-parse --short=12 HEAD 2>/dev/null || true)
 
   log_info "Creating ECR repository..."
   aws ecr create-repository \
@@ -496,8 +609,8 @@ cmd_build_and_push() {
   aws ecr get-login-password --region "$AWS_REGION" | \
     docker login --username AWS --password-stdin "${ecr_repo_uri%/*}"
 
-  log_info "Building Docker image..."
-  docker build --platform "$docker_platform" --build-arg "GUARDIAN_SERVER_FEATURES=${GUARDIAN_SERVER_FEATURES}" --no-cache -t "${ECR_REPO_NAME}:latest" .
+  log_info "Building Docker image (commit ${git_sha:-unknown})..."
+  docker build --platform "$docker_platform" --build-arg "GUARDIAN_SERVER_FEATURES=${GUARDIAN_SERVER_FEATURES}" --build-arg "GUARDIAN_GIT_SHA=${git_sha}" --no-cache -t "${ECR_REPO_NAME}:latest" .
 
   log_info "Tagging and pushing to ECR..."
   docker tag "${ECR_REPO_NAME}:latest" "${ecr_repo_uri}:latest"
@@ -510,6 +623,7 @@ cmd_plan() {
   log_info "Planning GUARDIAN server Terraform changes..."
   validate_deploy_config
   validate_ack_secrets_exist || return 1
+  validate_storage_encryption_secret_exists || return 1
 
   local IMAGE_URI
   IMAGE_URI=$(resolve_deploy_image_uri) || return 1
@@ -526,6 +640,7 @@ cmd_deploy() {
   log_info "Deploying GUARDIAN server with Terraform..."
   validate_deploy_config
   validate_ack_secrets_exist || return 1
+  validate_storage_encryption_secret_exists || return 1
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -768,6 +883,9 @@ case "${COMMAND:-}" in
   bootstrap-kms-ecdsa-key)
     cmd_bootstrap_kms_ecdsa_key
     ;;
+  bootstrap-storage-encryption-key)
+    cmd_bootstrap_storage_encryption_key
+    ;;
   status)
     cmd_status
     ;;
@@ -788,6 +906,7 @@ case "${COMMAND:-}" in
     echo "  build    Build and push the Docker image to ECR (no Terraform)"
     echo "  bootstrap-ack-keys  Create the prod ACK key secrets in Secrets Manager"
     echo "  bootstrap-kms-ecdsa-key  Create the KMS ECDSA ACK signing key + alias (KMS backend)"
+    echo "  bootstrap-storage-encryption-key  Create the storage encryption key secret in Secrets Manager"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"
     echo "  cleanup  Remove all AWS resources"
@@ -817,6 +936,7 @@ case "${COMMAND:-}" in
     echo "  GUARDIAN_EVM_ENTRYPOINT_ADDRESS= Shared EVM EntryPoint address (default: v0.9)"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON= JSON array of Falcon operator public keys; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"
+    echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME= Storage encryption key secret name; setting it enables encryption at rest (prod) and wires the IAM grant + env var (bootstrap default: <stack-name>/server/storage-encryption-key)"
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
@@ -825,6 +945,8 @@ case "${COMMAND:-}" in
     echo "  ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys"
     echo "  STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key  # prints the ARN to set"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-storage-encryption-key  # prints the name to export"
+    echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"

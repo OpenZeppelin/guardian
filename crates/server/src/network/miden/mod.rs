@@ -4,7 +4,7 @@ use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
     MidenAccountInspector, guardian_public_key_slot_name,
 };
-use crate::network::{NetworkClient, NetworkType};
+use crate::network::{NetworkClient, NetworkType, StateVerification};
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
@@ -32,8 +32,8 @@ impl MidenNetworkClient {
     /// unit tests that exercise the pure serialization/delta paths
     /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`)
     /// which never issue an RPC.
-    #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
-    fn lazy_for_test(network: NetworkType) -> Self {
+    #[cfg(all(test, any(feature = "e2e", not(feature = "integration"))))]
+    pub(crate) fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
             .expect("lazy client construction is infallible for a valid endpoint");
         Self { client }
@@ -90,7 +90,7 @@ impl NetworkClient for MidenNetworkClient {
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<StateVerification, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
@@ -132,18 +132,18 @@ impl NetworkClient for MidenNetworkClient {
         })?;
 
         if local_commitment_hex != on_chain_commitment {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id.to_hex(),
                 local = %local_commitment_hex,
                 on_chain = %on_chain_commitment,
                 "Commitment mismatch during state verification"
             );
-            return Err(format!(
-                "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
-            ));
+            return Ok(StateVerification::Mismatch {
+                on_chain: on_chain_commitment,
+            });
         }
 
-        Ok(())
+        Ok(StateVerification::Match)
     }
 
     fn verify_delta(

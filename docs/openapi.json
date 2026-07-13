@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.1.0"
+    "version": "0.15.1"
   },
   "paths": {
     "/auth/challenge": {
@@ -3000,6 +3000,47 @@
           }
         ]
       }
+    },
+    "/status": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, and uptime.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "Server liveness, version, and environment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3052,6 +3093,13 @@
             ],
             "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 timestamp of the guardian-switch release. Present only\nfor `GUARDIAN_ACCOUNT_RELEASED`."
+          },
           "retry_after_secs": {
             "type": [
               "integer",
@@ -3066,7 +3114,7 @@
               "boolean",
               "null"
             ],
-            "description": "`false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`."
+            "description": "`false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`, and\n`GUARDIAN_ACCOUNT_RELEASED`."
           },
           "success": {
             "type": "boolean",
@@ -3446,6 +3494,13 @@
             ],
             "description": "Reason captured at first pause; `None` when active."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 UTC timestamp at which this server detected the account\nswitched to a different guardian and released it; `None` while\nthis server is the account's guardian."
+          },
           "state_created_at": {
             "type": [
               "string",
@@ -3547,6 +3602,12 @@
             ]
           },
           "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released_at": {
             "type": [
               "string",
               "null"
@@ -4474,6 +4535,12 @@
               "status"
             ],
             "properties": {
+              "divergence_count": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Consecutive canonicalization ticks that observed the on-chain\ncommitment at neither this delta's `prev_commitment` nor its\nexpected new commitment — i.e. the account advanced past the\nstate this candidate was built on. Reset to zero whenever a\nread shows the account still at the candidate's base, so only\nan unbroken streak counts. Requiring more than one observation\nbefore discarding shields against stale RPC reads.",
+                "minimum": 0
+              },
               "retry_count": {
                 "type": "integer",
                 "format": "int32",
@@ -4901,6 +4968,12 @@
                   ]
                 },
                 "paused_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "released_at": {
                   "type": [
                     "string",
                     "null"
@@ -5629,6 +5702,46 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "description": "Response body for `GET /status`. Safe to expose unauthenticated.",
+        "required": [
+          "status",
+          "version",
+          "git_commit",
+          "environment",
+          "started_at",
+          "uptime_seconds"
+        ],
+        "properties": {
+          "environment": {
+            "type": "string",
+            "description": "Deployment environment / network label, e.g. `\"testnet\"`. Same\nvalue surfaced on `GET /dashboard/info`."
+          },
+          "git_commit": {
+            "type": "string",
+            "description": "Short git SHA at build time (`\"unknown\"` when unavailable)."
+          },
+          "started_at": {
+            "type": "string",
+            "description": "RFC 3339 wall-clock time the process started."
+          },
+          "status": {
+            "type": "string",
+            "description": "Constant `\"ok\"`. A 200 response is itself the liveness signal."
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Whole seconds since `started_at`; clamped to 0 on clock skew.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string",
+            "description": "`CARGO_PKG_VERSION` of `guardian-server`."
           }
         }
       },

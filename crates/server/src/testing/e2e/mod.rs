@@ -2,3 +2,4 @@
 #![cfg(feature = "e2e")]
 
 mod configure_account;
+mod switch_guardian_canonicalization;

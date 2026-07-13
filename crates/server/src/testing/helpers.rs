@@ -6,7 +6,7 @@ use crate::api::grpc::GuardianService;
 use crate::dashboard::DashboardState;
 use crate::metadata::auth::Auth;
 use crate::metadata::filesystem::FilesystemMetadataStore;
-use crate::network::NetworkClient;
+use crate::network::{NetworkClient, StateVerification};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use crate::storage::filesystem::FilesystemService;
@@ -68,7 +68,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &mut self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<StateVerification, String> {
         use miden_protocol::account::Account;
 
         let account = Account::from_json(state_json)
@@ -79,16 +79,16 @@ impl NetworkClient for IntegrationMockNetworkClient {
 
         if let Some(on_chain_commitment) = self.initial_commitments.get(account_id) {
             if &local_commitment_hex != on_chain_commitment {
-                return Err(format!(
-                    "Commitment mismatch for account '{account_id}': local={local_commitment_hex}, on-chain={on_chain_commitment}"
-                ));
+                return Ok(StateVerification::Mismatch {
+                    on_chain: on_chain_commitment.clone(),
+                });
             }
         } else {
             self.initial_commitments
                 .insert(account_id.to_string(), local_commitment_hex.clone());
         }
 
-        Ok(())
+        Ok(StateVerification::Match)
     }
 
     fn verify_delta(
@@ -147,6 +147,13 @@ impl NetworkClient for IntegrationMockNetworkClient {
         _expected_guardian_commitment: &str,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn extract_guardian_commitment(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<String>, String> {
+        self.miden_client.extract_guardian_commitment(state_json)
     }
 
     async fn should_update_auth(
@@ -379,6 +386,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/get_state", axum::routing::get(http::get_state))
         .route("/state/lookup", axum::routing::get(http::lookup))
         .route("/pubkey", axum::routing::get(http::get_pubkey))
+        .route("/status", axum::routing::get(http::status))
         .route(
             "/push_delta_proposal",
             axum::routing::post(http::push_delta_proposal),

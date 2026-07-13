@@ -77,6 +77,13 @@ pub enum CandidateOutcome {
     Retried,
     Discarded,
     GraceDeferred,
+    /// The on-chain commitment matched neither the candidate's previous
+    /// nor its expected new commitment, but not yet on enough consecutive
+    /// ticks to discard; deferred for another confirmation.
+    DivergenceDeferred,
+    /// Discarded because the account advanced past the candidate's base
+    /// state on-chain, making verification permanently unsatisfiable.
+    Diverged,
 }
 
 impl CandidateOutcome {
@@ -86,6 +93,8 @@ impl CandidateOutcome {
             Self::Retried => "retried",
             Self::Discarded => "discarded",
             Self::GraceDeferred => "grace_deferred",
+            Self::DivergenceDeferred => "divergence_deferred",
+            Self::Diverged => "diverged",
         }
     }
 }

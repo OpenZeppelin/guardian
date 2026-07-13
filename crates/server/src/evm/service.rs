@@ -133,6 +133,7 @@ pub async fn register_account(
             last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
             paused_at: existing.as_ref().and_then(|m| m.paused_at),
             paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
+            released_at: existing.as_ref().and_then(|m| m.released_at),
         })
         .await
         .map_err(|e| {
@@ -275,16 +276,17 @@ pub async fn list_proposals(
     load_evm_metadata(state, account_id).await?;
     let session_address = normalize_session_address(session_address)?;
     let mut active = Vec::new();
-    for delta in state
+    for record in state
         .storage
         .pull_all_delta_proposals(account_id)
         .await
         .map_err(GuardianError::StorageError)?
     {
-        if !is_evm_delta(&delta) {
+        let delta = &record.proposal;
+        if !is_evm_delta(delta) {
             continue;
         }
-        let proposal = EvmProposal::from_stored_delta(&delta)?;
+        let proposal = EvmProposal::from_stored_delta(delta)?;
         if proposal_is_inactive(state, &proposal).await? {
             state
                 .storage
@@ -522,6 +524,7 @@ mod tests {
                     .unwrap(),
             ),
             paused_reason: Some("compliance".to_string()),
+            released_at: None,
         }
     }
 

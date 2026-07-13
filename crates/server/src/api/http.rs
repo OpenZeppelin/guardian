@@ -368,6 +368,26 @@ pub struct PubkeyQuery {
     pub scheme: Option<String>,
 }
 
+/// Public, unauthenticated liveness + identity probe. Returns the
+/// server's version, git commit, environment, start time, and uptime.
+/// Consumed by wallet clients (pre-auth health check) and the status
+/// homepage. Exposes no account, operator, or auth data.
+#[utoipa::path(
+    get,
+    path = "/status",
+    tag = "client",
+    responses(
+        (status = 200, description = "Server liveness, version, and environment", body = crate::services::StatusResponse),
+    )
+)]
+pub async fn status(State(state): State<AppState>) -> Json<crate::services::StatusResponse> {
+    Json(crate::services::build_status(
+        state.dashboard.environment(),
+        state.dashboard.started_at(),
+        state.clock.now(),
+    ))
+}
+
 /// Return the Guardian acknowledgement (ACK) public key / commitment
 /// for the requested signature scheme (`falcon` default, or `ecdsa`).
 #[utoipa::path(
@@ -613,6 +633,45 @@ mod tests {
         (state, storage, network, metadata)
     }
 
+    #[tokio::test]
+    async fn status_route_returns_ok_without_auth() {
+        use crate::testing::helpers::create_router;
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (state, ..) = create_test_state();
+        let app = create_router(state);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("status request should succeed");
+
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("status body should read");
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("status body should be JSON");
+
+        assert_eq!(json["status"], "ok");
+        assert!(json["version"].is_string());
+        assert!(json["environment"].is_string());
+        assert!(json["started_at"].is_string());
+        assert!(json["uptime_seconds"].is_number());
+        // Must not leak any dashboard/inventory fields.
+        assert!(json.get("total_account_count").is_none());
+        assert!(json.get("accounts_by_auth_method").is_none());
+    }
+
     fn create_account_metadata(
         account_id: String,
         cosigner_commitments: Vec<String>,
@@ -629,6 +688,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 

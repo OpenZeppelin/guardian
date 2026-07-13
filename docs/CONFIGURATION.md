@@ -24,7 +24,7 @@ the runtime env vars in this document.
 
 | Variable | Default | Build mode | Notes |
 |---|---|---|---|
-| `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. |
+| `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. TLS verification is controlled by the standard `sslmode`/`sslrootcert` parameters — see [Database TLS](#database-tls). |
 | `GUARDIAN_STORAGE_PATH` | `/var/guardian/storage` | filesystem | Path for state + delta blobs. |
 | `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. |
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
@@ -32,11 +32,55 @@ the runtime env vars in this document.
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
 
+### Database TLS
+
+TLS behavior is driven entirely by the standard libpq parameters in
+`DATABASE_URL`; there is no Guardian-specific TLS env var. To migrate a deployed
+AWS stack to verified TLS, see
+[`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md). The same parameters
+govern both the synchronous startup-migration connection and the asynchronous
+runtime pools, so they always behave identically.
+
+| `sslmode` | `sslrootcert` | Behavior |
+|---|---|---|
+| _omitted_ / `disable` | _(any)_ | Plaintext, no TLS. |
+| `require` | _(none)_ | Encrypted, certificate **not** verified. |
+| `require` | `<path>` | Encrypted + certificate chain verified (promoted to `verify-ca`, matching libpq). |
+| `verify-ca` | `<path>` | Encrypted + chain verified (hostname not checked). |
+| `verify-full` | `<path>` | Encrypted + chain **and** hostname verified. Recommended for managed providers. |
+
+- `sslrootcert=<path>` points at a PEM CA bundle file the server can read; the
+  whole bundle must parse (a malformed entry fails startup). It may contain
+  multiple roots.
+- Verifying modes **fail closed**: a missing/unreadable/empty CA bundle, an
+  unknown `sslmode`, `allow`/`prefer` (which permit plaintext fallback), or
+  `sslrootcert=system` (unsupported — needs libpq ≥16) all abort startup with an
+  actionable error rather than connecting insecurely.
+- Hostname matching under `verify-full` is strict SAN-based; certificates without
+  a matching Subject Alternative Name (including Common-Name-only certs) are
+  rejected.
+
+Per-provider examples:
+
+```text
+# AWS RDS (managed; recommended). Mount a combined bundle of the Amazon RDS CA
+# roots AND the Amazon Trust Services roots — the RDS Proxy presents an ACM
+# certificate chaining to Amazon Trust Services, a direct instance chains to the
+# RDS CA roots.
+DATABASE_URL=postgres://USER:PW@HOST:5432/guardian?sslmode=verify-full&sslrootcert=/etc/guardian/tls/rds-combined-ca.pem
+
+# Another managed provider (GCP Cloud SQL / Azure / Supabase / Neon …)
+DATABASE_URL=postgres://USER:PW@HOST:5432/guardian?sslmode=verify-full&sslrootcert=/etc/guardian/tls/provider-ca.pem
+
+# Local docker compose (no TLS)
+DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian
+```
+
 ## Runtime — ACK signing and network
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_ENV` | _unset_ | Set to `prod` to load ACK keys from AWS Secrets Manager. Anything else (or unset) uses filesystem keystore and auto-generates if absent. |
+| `GUARDIAN_ENV` | _unset_ | Selects the **default** ACK secret source: `prod` → AWS Secrets Manager; anything else (or unset) → ephemeral filesystem keys, regenerated each restart. Override explicitly with `GUARDIAN_ACK_SECRET_PROVIDER` (below) — e.g. `file` for a stable identity without AWS. |
 | `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
 | `GUARDIAN_NETWORK_TYPE` | `MidenDevnet` | Miden network identifier (`MidenDevnet`, `MidenTestnet`, etc.). Required only when you need a non-default network. Pins which Miden RPC and on-chain consensus the server speaks to. |
 
@@ -48,6 +92,62 @@ and falls back to fixed defaults when they're unset
 |---|---|---|
 | `GUARDIAN_ACK_FALCON_SECRET_ID` | `guardian-prod/server/ack-falcon-secret-key` | Secrets Manager name/ARN for the Falcon ACK secret key. |
 | `GUARDIAN_ACK_ECDSA_SECRET_ID` | `guardian-prod/server/ack-ecdsa-secret-key` | Secrets Manager name/ARN for the ECDSA ACK secret key. Used only when the ECDSA backend is `in-memory`. |
+
+### ACK secret provider (stable identity without AWS)
+
+Outside prod the default (`GUARDIAN_ACK_SECRET_PROVIDER=none`) generates a fresh
+ACK keypair on every restart, which changes the Guardian's on-chain ack-key
+commitment and freezes accounts that pinned the old one. Set the provider to
+`file` to load fixed keys from local files instead — a stable identity without
+AWS Secrets Manager. Each file holds the hex string emitted by `ack-keygen`
+(identical to what Secrets Manager stores). See the
+[Secrets runbook](./runbooks/secrets.md#self-hosted-stable-identity-without-aws).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_ACK_SECRET_PROVIDER` | `aws` when `GUARDIAN_ENV=prod`, else `none` | Source of the ACK signing keys: `aws` (Secrets Manager), `file` (local files), or `none` (ephemeral, dev only). An unrecognized value fails startup; `none` is rejected when `GUARDIAN_ENV=prod`. |
+| `GUARDIAN_ACK_FALCON_SECRET_PATH` | _unset_ | **Required** when `GUARDIAN_ACK_SECRET_PROVIDER=file`. Path to a file holding the hex-encoded Falcon ACK secret key. On Unix the file must be owner-only (mode `0600`) or startup fails. |
+| `GUARDIAN_ACK_ECDSA_SECRET_PATH` | _unset_ | **Required** when `GUARDIAN_ACK_SECRET_PROVIDER=file`, **unless** `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` (then the ECDSA key comes from KMS and this file is never read). Path to the hex-encoded ECDSA ACK secret key; same `0600` requirement. |
+
+### Storage encryption at rest
+
+Application-layer encryption of the sensitive stored payloads (account state,
+delta and proposal payloads). It is **opt-in by key-source presence** — configure
+a key and the server encrypts; configure none and it stores plaintext exactly as
+before. Routing/index fields (account id, nonce, commitments, status, timestamps)
+always stay plaintext. See the [storage-encryption quickstart](../speckit/features/001-storage-encryption/quickstart.md).
+
+**Which variable do I set?** Choose **one key source** — the dev key for local
+work, or the Secrets Manager secret for production. You never set both (doing so
+is a startup error). `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` is **not** a key — it is
+an optional label, and most users leave it unset.
+
+**Key sources** (set exactly one; presence is what turns encryption on):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY` | _unset_ | **Dev key source.** The actual 32-byte key, base64-encoded (`openssl rand -base64 32`). |
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` | _unset_ | **Prod key source.** AWS Secrets Manager name/ARN of a secret holding a structured `{ "active": kid, "keys": { kid: base64-32-bytes } }` document (one or more keys). Reuses `AWS_REGION`. |
+
+**Optional label:**
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` | `k1` | Only used with the dev key source. Sets the key id (`kid`) recorded on each encrypted record so the key can be identified later. The default is fine for almost everyone — leave it unset unless you specifically need the dev key's id to match an id used elsewhere. (With Secrets Manager the ids come from the secret's `keys`/`active` fields instead, so this variable is ignored.) |
+
+Every encrypted record stores the `kid` of the key that wrote it, and on read the
+key is resolved by that id — this is what lets Secrets Manager hold several keys
+and rotate them (add a new key, repoint `active`, keep the old key so existing
+records still decrypt). The dev key source holds a single key, so it cannot do
+multi-key rotation reads; that is a production capability.
+
+Rules: configure **exactly one** key source (both set → startup error). When a key
+source is set the server validates it at startup and fails fast on a
+missing/malformed/wrong-length key — it never silently falls back to plaintext.
+Encryption is fixed for a populated store: the server records a marker on the
+first encrypted write and refuses to mix plaintext and ciphertext, so enable it
+against an empty store (e.g. after the Miden 0.15 cutover). Switching an existing
+store requires an explicit re-encryption migration (not yet provided).
 
 ### Hosted ECDSA signer backend
 
@@ -112,7 +212,9 @@ isolation first (loopback default / private network / security group),
 the bearer token second, and proxy-terminated TLS where transport
 encryption is required. Never expose it to a public network. The
 exposed metric taxonomy and cardinality rules are documented in
-[`spec/api.md`](../spec/api.md).
+[`spec/api.md`](../spec/api.md); see the
+[Observability guide](./guides/observability/README.md) for scraping and a
+one-command Grafana dashboard stack.
 
 ## Runtime — dashboard
 

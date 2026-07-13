@@ -28,7 +28,9 @@ mod lookup_account;
 pub mod pause_account;
 mod push_delta;
 mod push_delta_proposal;
+pub mod release_on_switch;
 mod sign_delta_proposal;
+mod status;
 pub mod unpause_account;
 
 pub use crate::jobs::canonicalization::{
@@ -74,6 +76,7 @@ pub use push_delta_proposal::{
 pub use sign_delta_proposal::{
     SignDeltaProposalParams, SignDeltaProposalResult, sign_delta_proposal,
 };
+pub use status::{StatusResponse, build_status};
 
 #[derive(Clone)]
 pub struct ResolvedAccount {
@@ -441,6 +444,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 

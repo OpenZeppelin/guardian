@@ -40,7 +40,8 @@ pub struct ApiErrorResponse {
     /// `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub missing_permissions: Option<Vec<String>>,
-    /// `false` for permission denials and `GUARDIAN_ACCOUNT_PAUSED`.
+    /// `false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`, and
+    /// `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retryable: Option<bool>,
     /// RFC 3339 pause timestamp. Present only for
@@ -50,6 +51,10 @@ pub struct ApiErrorResponse {
     /// Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_reason: Option<String>,
+    /// RFC 3339 timestamp of the guardian-switch release. Present only
+    /// for `GUARDIAN_ACCOUNT_RELEASED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
 }
 
 /// Security scheme name for the signed-request public key header.
@@ -180,12 +185,13 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::get_state,
         crate::api::http::lookup,
         crate::api::http::get_pubkey,
+        crate::api::http::status,
         crate::api::http::push_delta_proposal,
         crate::api::http::get_delta_proposals,
         crate::api::http::get_delta_proposal,
         crate::api::http::sign_delta_proposal,
     ),
-    components(schemas(ApiErrorResponse)),
+    components(schemas(ApiErrorResponse, crate::services::StatusResponse)),
     modifiers(&ClientSecurityAddon, &CommonResponsesAddon),
     tags((name = "client", description = "Client-facing API consumed by SDKs and packages.")),
 )]

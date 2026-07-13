@@ -85,6 +85,7 @@ pub(crate) fn decode_delta_status(
         DeltaStatus::Candidate {
             timestamp,
             retry_count,
+            ..
         } => Some((
             DashboardDeltaStatus::Candidate,
             Some(*retry_count),
@@ -244,6 +245,7 @@ mod tests {
             DeltaStatus::Candidate {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
                 retry_count: retries,
+                divergence_count: 0,
             },
         )
     }
@@ -357,6 +359,7 @@ mod tests {
                 last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             }))
         } else {
             Ok(None)
@@ -475,6 +478,7 @@ mod tests {
                 last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             })));
         let storage = MockStorageBackend::new()
             .with_list_account_deltas_paged(Err("disk read failed".into()));
@@ -562,6 +566,7 @@ mod tests {
                     last_auth_timestamp: None,
                     paused_at: None,
                     paused_reason: None,
+                    released_at: None,
                 })));
             }
             m

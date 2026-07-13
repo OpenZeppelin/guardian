@@ -1,0 +1,77 @@
+# Guardian server with a TLS-enabled Postgres, demonstrating a *verified*
+# (sslmode=verify-full) database connection. The bundled Postgres terminates TLS
+# with a self-signed cert; the server verifies it against the CA you generate.
+#
+# Run from this directory:
+#   ./generate-certs.sh         # one-time: writes certs/ (SAN=postgres)
+#   cp .env.example .env        # then set POSTGRES_PASSWORD
+#   docker compose up
+#
+# Compose auto-loads .env from this directory. Walkthrough: ./README.md
+# Full server config reference: ../../CONFIGURATION.md
+
+services:
+  # Postgres refuses a server key that is group/world-readable or not owned by
+  # its runtime user. This one-shot service copies the generated key into a
+  # shared volume with the right owner (uid 999 = the postgres image user) and
+  # mode, then exits — the same init-container shape used in the ECS deployment.
+  db-cert-init:
+    image: alpine:3.20
+    volumes:
+      - ./certs:/src:ro
+      - pgcerts:/certs
+    command:
+      - sh
+      - -c
+      - "cp /src/server.crt /src/server.key /certs/ && chown 999:999 /certs/server.crt /certs/server.key && chmod 644 /certs/server.crt && chmod 600 /certs/server.key"
+
+  postgres:
+    image: postgres:16
+    depends_on:
+      db-cert-init:
+        condition: service_completed_successfully
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+      - pgcerts:/certs:ro
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/certs/server.crt
+      - -c
+      - ssl_key_file=/certs/server.key
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    image: ${GUARDIAN_IMAGE:-ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}}
+    pull_policy: ${GUARDIAN_PULL_POLICY:-always}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+      - ./certs/ca.pem:/etc/guardian/tls/ca.pem:ro
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - RUST_LOG=info
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian?sslmode=${DB_SSLMODE:-verify-full}&sslrootcert=/etc/guardian/tls/ca.pem
+
+volumes:
+  guardian-keystore:
+  guardian-postgres:
+  pgcerts:

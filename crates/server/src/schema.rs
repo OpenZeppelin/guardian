@@ -86,6 +86,7 @@ diesel::table! {
         last_auth_timestamp -> Nullable<Int8>,
         paused_at -> Nullable<Timestamptz>,
         paused_reason -> Nullable<Text>,
+        released_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -105,6 +106,16 @@ diesel::table! {
         outcome -> Text,
         error_code -> Nullable<Text>,
         client_ip -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    /// Single-row store-level encryption marker. Its presence indicates the
+    /// store is encrypted.
+    storage_encryption_marker (id) {
+        id -> Bool,
+        scheme_version -> Int2,
+        init_kid -> Text,
     }
 }
 
