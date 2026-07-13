@@ -31,6 +31,16 @@ pub struct AccountMetadata {
     /// active. Required (non-empty, ≤ 512 UTF-8 chars) on pause.
     #[serde(default)]
     pub paused_reason: Option<String>,
+    /// UTC timestamp at which this server detected it is no longer the
+    /// account's guardian (a canonicalized `SwitchGuardian` delta moved
+    /// the on-chain guardian key away from this server's ack key).
+    /// `None` while this server is the account's guardian. Terminal:
+    /// cleared only by re-onboarding through `/configure`, which
+    /// re-validates the guardian binding. First-writer-wins like
+    /// `paused_at`; orthogonal to pause so an operator unpause can
+    /// never resurrect a released account.
+    #[serde(default)]
+    pub released_at: Option<DateTime<Utc>>,
 }
 
 /// Cursor parameters for the paginated account list read. Sort key is
@@ -192,4 +202,21 @@ pub trait MetadataStore: Send + Sync {
         &self,
         account_id: &str,
     ) -> Result<crate::services::account_status::PauseTransition, String>;
+
+    /// Atomically transition an account to the released state after a
+    /// guardian switch away from this server was detected.
+    /// First-writer-wins: when the account is already released the
+    /// persisted `released_at` is left unchanged. Returns `Ok(true)`
+    /// when this call performed the transition (callers audit on this),
+    /// `Ok(false)` when the account was already released, `Err` if the
+    /// account does not exist. Like pause, released state is owned by
+    /// this method + [`Self::clear_released`]; a generic [`Self::set`]
+    /// must never change it.
+    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String>;
+
+    /// Clear the released state for an account. Called only from the
+    /// `/configure` re-onboarding path, which re-validates that this
+    /// server is the account's guardian before reactivating it.
+    /// Idempotent; `Err` if the account does not exist.
+    async fn clear_released(&self, account_id: &str) -> Result<(), String>;
 }

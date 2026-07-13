@@ -114,6 +114,7 @@ describe('GuardianOperatorHttpClient', () => {
             updated_at: '2026-04-22T11:00:00Z',
             paused_at: null,
             paused_reason: null,
+            released_at: null,
           },
         ],
         next_cursor: null,
@@ -136,6 +137,7 @@ describe('GuardianOperatorHttpClient', () => {
           updatedAt: '2026-04-22T11:00:00Z',
           pausedAt: null,
           pausedReason: null,
+          releasedAt: null,
         },
       ],
       nextCursor: null,
@@ -294,6 +296,7 @@ describe('GuardianOperatorHttpClient', () => {
       state_updated_at: null,
       paused_at: null,
       paused_reason: null,
+      released_at: null,
     }));
 
     const client = new GuardianOperatorHttpClient('https://guardian.example/api');
@@ -1719,6 +1722,21 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
   });
 });
 
+describe('parseErrorBody — account_released', () => {
+  it('maps GUARDIAN_ACCOUNT_RELEASED to account_released with releasedAt and retryable=false', async () => {
+    const parsed = await parseErrorBody({
+      success: false,
+      code: 'GUARDIAN_ACCOUNT_RELEASED',
+      error: 'account was released',
+      released_at: '2026-07-06T10:00:00Z',
+    });
+    expect(parsed.code).toBe('account_released');
+    expect(parsed.releasedAt).toBe('2026-07-06T10:00:00Z');
+    expect(parsed.retryable).toBe(false);
+    expect(isDashboardErrorCode('account_released')).toBe(true);
+  });
+});
+
 describe('GuardianOperatorHttpClient — account pause/unpause', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch);
@@ -1901,6 +1919,53 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
 
     expect(err.data?.code).toBe('account_paused');
     expect(err.data?.pausedReason).toBeNull();
+  });
+
+  it('normalizes a 409 GUARDIAN_ACCOUNT_RELEASED into code account_released with releasedAt', async () => {
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          success: false,
+          code: 'GUARDIAN_ACCOUNT_RELEASED',
+          error: 'account was released',
+          released_at: '2026-07-06T10:00:00Z',
+          retryable: false,
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .pauseAccount('0xabc', 'reason')
+      .catch((v) => v)) as GuardianOperatorHttpError;
+
+    expect(err).toBeInstanceOf(GuardianOperatorHttpError);
+    expect(err.status).toBe(409);
+    expect(err.data?.code).toBe('account_released');
+    expect(err.data?.releasedAt).toBe('2026-07-06T10:00:00Z');
+    expect(err.data?.retryable).toBe(false);
+  });
+
+  it('drops parsed details when an account_released error omits released_at (contract drift)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          success: false,
+          code: 'GUARDIAN_ACCOUNT_RELEASED',
+          error: 'account was released',
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .pauseAccount('0xabc', 'reason')
+      .catch((v) => v)) as GuardianOperatorHttpError;
+    expect(err).toBeInstanceOf(GuardianOperatorHttpError);
+    expect(err.status).toBe(409);
+    expect(err.data).toBeNull();
   });
 
   it('drops parsed details when an account_paused error omits paused_at (contract drift)', async () => {

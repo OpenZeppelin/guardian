@@ -18,6 +18,7 @@ export type { OperatorPermission } from './permissions.js';
 
 export type {
   AccountPausedErrorDetails,
+  AccountReleasedErrorDetails,
   AccountStatus,
   DashboardAccountDetail,
   DashboardAccountResponse,

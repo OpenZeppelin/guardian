@@ -13,6 +13,14 @@ pub struct CanonicalizationConfig {
 
     /// Minimum age a candidate must reach before verification failures consume retry budget.
     pub submission_grace_period_seconds: u64,
+
+    /// Consecutive worker ticks that must observe the on-chain commitment at
+    /// neither the candidate's previous nor its expected new commitment before
+    /// the candidate is discarded as diverged (the account advanced past the
+    /// state it was built on, so it can never verify). Values above 1 shield
+    /// against acting on a single stale RPC read; the divergence discard
+    /// bypasses the submission grace period.
+    pub divergence_confirmations: u32,
 }
 
 impl Default for CanonicalizationConfig {
@@ -21,6 +29,7 @@ impl Default for CanonicalizationConfig {
             check_interval_seconds: 10,           // Try every 10 seconds
             max_retries: 18,                      // 18 attempts (total: ~3 minutes)
             submission_grace_period_seconds: 600, // Allow proving/submission to settle first
+            divergence_confirmations: 2,          // Two ticks to rule out a stale read
         }
     }
 }
@@ -32,6 +41,7 @@ impl CanonicalizationConfig {
             check_interval_seconds,
             max_retries,
             submission_grace_period_seconds: Self::default().submission_grace_period_seconds,
+            divergence_confirmations: Self::default().divergence_confirmations,
         }
     }
 
@@ -49,5 +59,12 @@ impl CanonicalizationConfig {
     /// Get submission grace period as Duration
     pub fn submission_grace_period(&self) -> Duration {
         Duration::from_secs(self.submission_grace_period_seconds)
+    }
+
+    /// Override the number of consecutive diverged observations required
+    /// before a candidate is discarded.
+    pub fn with_divergence_confirmations(mut self, confirmations: u32) -> Self {
+        self.divergence_confirmations = confirmations;
+        self
     }
 }

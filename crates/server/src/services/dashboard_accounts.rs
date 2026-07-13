@@ -35,6 +35,8 @@ pub struct DashboardAccountSummary {
     pub paused_at: Option<String>,
     #[serde(default)]
     pub paused_reason: Option<String>,
+    #[serde(default)]
+    pub released_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -60,6 +62,11 @@ pub struct DashboardAccountDetail {
     /// Reason captured at first pause; `None` when active.
     #[serde(default)]
     pub paused_reason: Option<String>,
+    /// RFC 3339 UTC timestamp at which this server detected the account
+    /// switched to a different guardian and released it; `None` while
+    /// this server is the account's guardian.
+    #[serde(default)]
+    pub released_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +225,7 @@ impl DashboardAccountSummary {
             updated_at: metadata.updated_at.clone(),
             paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
             paused_reason: metadata.paused_reason.clone(),
+            released_at: metadata.released_at.map(|ts| ts.to_rfc3339()),
         }
     }
 }
@@ -241,6 +249,7 @@ impl DashboardAccountDetail {
             state_updated_at: Some(account_state.updated_at.clone()),
             paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
             paused_reason: metadata.paused_reason.clone(),
+            released_at: metadata.released_at.map(|ts| ts.to_rfc3339()),
         }
     }
 }
@@ -306,6 +315,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 
@@ -349,6 +359,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         };
         assert!(bech32_for_account(&meta).is_none());
     }

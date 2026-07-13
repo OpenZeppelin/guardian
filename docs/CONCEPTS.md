@@ -196,6 +196,7 @@ flowchart TB
 | Candidate discarded | Delta status flips `candidate` → `discarded` | Refetch state, rebuild and resubmit. Usually means the Miden proof was never submitted or the on-chain commitment diverged. |
 | Operator censors / withholds | Other cosigners see stale state | Use the user's cold key to rotate Guardian; the new operator inherits canonical state from Miden. |
 | Account paused by operator | State-transition, proposal, and EVM mutation paths return `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` (reads and `ConfigureAccount` keep working) | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
+| Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server, mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. |
 | Pubkey changed unexpectedly | `/pubkey` returns a key your client doesn't pin | Treat as compromise. Halt, verify rotation through an out-of-band channel. |
 
 ## Provider rotation

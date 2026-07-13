@@ -80,7 +80,7 @@ DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_ENV` | _unset_ | Set to `prod` to load ACK keys from AWS Secrets Manager. Anything else (or unset) uses filesystem keystore and auto-generates if absent. |
+| `GUARDIAN_ENV` | _unset_ | Selects the **default** ACK secret source: `prod` → AWS Secrets Manager; anything else (or unset) → ephemeral filesystem keys, regenerated each restart. Override explicitly with `GUARDIAN_ACK_SECRET_PROVIDER` (below) — e.g. `file` for a stable identity without AWS. |
 | `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
 | `GUARDIAN_NETWORK_TYPE` | `MidenDevnet` | Miden network identifier (`MidenDevnet`, `MidenTestnet`, etc.). Required only when you need a non-default network. Pins which Miden RPC and on-chain consensus the server speaks to. |
 
@@ -92,6 +92,22 @@ and falls back to fixed defaults when they're unset
 |---|---|---|
 | `GUARDIAN_ACK_FALCON_SECRET_ID` | `guardian-prod/server/ack-falcon-secret-key` | Secrets Manager name/ARN for the Falcon ACK secret key. |
 | `GUARDIAN_ACK_ECDSA_SECRET_ID` | `guardian-prod/server/ack-ecdsa-secret-key` | Secrets Manager name/ARN for the ECDSA ACK secret key. Used only when the ECDSA backend is `in-memory`. |
+
+### ACK secret provider (stable identity without AWS)
+
+Outside prod the default (`GUARDIAN_ACK_SECRET_PROVIDER=none`) generates a fresh
+ACK keypair on every restart, which changes the Guardian's on-chain ack-key
+commitment and freezes accounts that pinned the old one. Set the provider to
+`file` to load fixed keys from local files instead — a stable identity without
+AWS Secrets Manager. Each file holds the hex string emitted by `ack-keygen`
+(identical to what Secrets Manager stores). See the
+[Secrets runbook](./runbooks/secrets.md#self-hosted-stable-identity-without-aws).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_ACK_SECRET_PROVIDER` | `aws` when `GUARDIAN_ENV=prod`, else `none` | Source of the ACK signing keys: `aws` (Secrets Manager), `file` (local files), or `none` (ephemeral, dev only). An unrecognized value fails startup; `none` is rejected when `GUARDIAN_ENV=prod`. |
+| `GUARDIAN_ACK_FALCON_SECRET_PATH` | _unset_ | **Required** when `GUARDIAN_ACK_SECRET_PROVIDER=file`. Path to a file holding the hex-encoded Falcon ACK secret key. On Unix the file must be owner-only (mode `0600`) or startup fails. |
+| `GUARDIAN_ACK_ECDSA_SECRET_PATH` | _unset_ | **Required** when `GUARDIAN_ACK_SECRET_PROVIDER=file`, **unless** `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms` (then the ECDSA key comes from KMS and this file is never read). Path to the hex-encoded ECDSA ACK secret key; same `0600` requirement. |
 
 ### Storage encryption at rest
 

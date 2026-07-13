@@ -164,6 +164,20 @@ impl DeltaCommitStrategy {
                     }
                 }
 
+                // Issue #305: if this delta moved the account's guardian
+                // key away from this server (a SwitchGuardian pushed to
+                // the pre-switch guardian), release the account. In
+                // optimistic mode this runs at commit time — the same
+                // trust level as every other optimistic commit.
+                crate::services::release_on_switch::release_if_guardian_switched(
+                    ctx.state,
+                    &ctx.resolved.metadata,
+                    &new_state.state_json,
+                    delta.nonce,
+                    &new_state.commitment,
+                )
+                .await;
+
                 Ok(())
             }
         }
@@ -218,6 +232,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 

@@ -55,6 +55,7 @@ struct MetadataRow {
     last_auth_timestamp: Option<i64>,
     paused_at: Option<chrono::DateTime<chrono::Utc>>,
     paused_reason: Option<String>,
+    released_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // Insertable struct for writing to database
@@ -70,6 +71,7 @@ struct NewMetadata<'a> {
     last_auth_timestamp: Option<i64>,
     paused_at: Option<chrono::DateTime<chrono::Utc>>,
     paused_reason: Option<String>,
+    released_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl TryFrom<MetadataRow> for AccountMetadata {
@@ -91,6 +93,7 @@ impl TryFrom<MetadataRow> for AccountMetadata {
             last_auth_timestamp: row.last_auth_timestamp,
             paused_at: row.paused_at,
             paused_reason: row.paused_reason,
+            released_at: row.released_at,
         })
     }
 }
@@ -159,8 +162,13 @@ impl MetadataStore for PostgresMetadataStore {
             last_auth_timestamp: metadata.last_auth_timestamp,
             paused_at: metadata.paused_at,
             paused_reason: metadata.paused_reason.clone(),
+            released_at: metadata.released_at,
         };
 
+        // The on-conflict set deliberately excludes `paused_at`,
+        // `paused_reason`, and `released_at`: those lifecycle flags are
+        // owned by their dedicated set/clear methods and must not be
+        // changed by a generic metadata write.
         diesel::insert_into(account_metadata::table)
             .values(&new_metadata)
             .on_conflict(account_metadata::account_id)
@@ -448,6 +456,61 @@ impl MetadataStore for PostgresMetadataStore {
             paused_at: None,
             paused_reason: None,
         })
+    }
+
+    /// First-writer-wins release: the `released_at IS NULL` filter
+    /// encodes the transition atomically; zero rows updated means the
+    /// account was already released (or missing — disambiguated below).
+    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let rows_updated = diesel::update(account_metadata::table)
+            .filter(account_metadata::account_id.eq(account_id))
+            .filter(account_metadata::released_at.is_null())
+            .set(account_metadata::released_at.eq(Some(now)))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to set released: {e}"))?;
+
+        if rows_updated > 0 {
+            return Ok(true);
+        }
+
+        let exists: Option<MetadataRow> = account_metadata::table
+            .filter(account_metadata::account_id.eq(account_id))
+            .select(MetadataRow::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| format!("Failed to load account_metadata: {e}"))?;
+        match exists {
+            Some(_) => Ok(false),
+            None => Err(format!("Account not found: {account_id}")),
+        }
+    }
+
+    async fn clear_released(&self, account_id: &str) -> Result<(), String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let rows_updated = diesel::update(account_metadata::table)
+            .filter(account_metadata::account_id.eq(account_id))
+            .set(account_metadata::released_at.eq::<Option<DateTime<Utc>>>(None))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to clear released: {e}"))?;
+
+        if rows_updated == 0 {
+            return Err(format!("Account not found: {account_id}"));
+        }
+        Ok(())
     }
 
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
