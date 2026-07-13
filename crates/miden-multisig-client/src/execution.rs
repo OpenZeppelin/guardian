@@ -230,7 +230,6 @@ pub async fn build_final_transaction_request(
                     *new_threshold,
                     salt,
                     signature_advice,
-                    scheme,
                 )?;
 
             Ok(tx_request)

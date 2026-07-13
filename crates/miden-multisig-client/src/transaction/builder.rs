@@ -649,7 +649,6 @@ impl ProposalBuilder {
             new_threshold,
             salt,
             std::iter::empty(),
-            key_manager.scheme(),
         )?;
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();

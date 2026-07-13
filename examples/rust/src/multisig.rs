@@ -1,5 +1,6 @@
 use std::fmt;
 
+use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{
@@ -15,10 +16,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::assembly::Library;
 use miden_protocol::{Felt, Hasher};
 use miden_standards::StandardsLib;
-
-// Falcon512Poseidon2 scheme id stored alongside each approver public key by the
-// upstream `update_signers_and_threshold` reader.
-const FALCON_SCHEME_ID: u64 = 2;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -123,7 +120,7 @@ pub fn build_multisig_config_advice(
     for commitment in signer_commitments.iter().rev() {
         payload.extend_from_slice(commitment.as_elements());
         payload.extend_from_slice(&[
-            Felt::new_unchecked(FALCON_SCHEME_ID),
+            Felt::new_unchecked(SignatureScheme::Falcon.auth_scheme_id()),
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),

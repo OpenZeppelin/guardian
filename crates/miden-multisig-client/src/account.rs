@@ -104,8 +104,32 @@ impl MultisigAccount {
         Ok(slot_value[1].as_canonical_u64() as u32)
     }
 
+    /// Whether the account's code carries the auth procedure of the contract
+    /// version this SDK pins (`ProcedureName::AuthTx`). False means the account
+    /// was created from a different miden-standards release, so this SDK's
+    /// hardcoded procedure roots do not describe it.
+    pub fn is_pinned_contract_version(&self) -> bool {
+        self.account
+            .code()
+            .has_procedure(ProcedureName::AuthTx.root())
+    }
+
+    /// Rejects accounts built from a different contract version before any
+    /// procedure-root-keyed storage read. Without this, reads against such an
+    /// account silently miss its stored overrides (the map is keyed by *its*
+    /// roots, not this SDK's) and report the default threshold.
+    fn assert_pinned_contract_version(&self) -> Result<()> {
+        if self.is_pinned_contract_version() {
+            return Ok(());
+        }
+        Err(MultisigError::UnsupportedContractVersion {
+            account_id: self.account.id(),
+        })
+    }
+
     /// Returns the configured threshold override for a specific procedure, if present.
     pub fn procedure_threshold(&self, procedure: ProcedureName) -> Result<Option<u32>> {
+        self.assert_pinned_contract_version()?;
         let value =
             self.get_map_item_by_name(multisig_procedure_thresholds_slot(), procedure.root());
         let Some(value) = value else {
@@ -316,6 +340,33 @@ mod tests {
         let account = Account::new_unchecked(id, vault, storage, code, nonce, seed);
 
         MultisigAccount::new(account)
+    }
+
+    /// An account built from a different contract version (here: `NoAuth` +
+    /// `BasicWallet`, which lacks the pinned guarded-multisig auth procedure)
+    /// must fail root-keyed threshold reads loudly instead of silently
+    /// reporting the default threshold.
+    #[test]
+    fn procedure_threshold_rejects_foreign_contract_version() {
+        use miden_protocol::account::AccountBuilder;
+        use miden_standards::account::auth::NoAuth;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let account = AccountBuilder::new([3u8; 32])
+            .with_auth_component(NoAuth)
+            .with_component(BasicWallet)
+            .build_existing()
+            .expect("account builds");
+        let account = MultisigAccount::new(account);
+
+        assert!(!account.is_pinned_contract_version());
+        let err = account
+            .procedure_threshold(ProcedureName::SendAsset)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MultisigError::UnsupportedContractVersion { .. }
+        ));
     }
 
     #[test]

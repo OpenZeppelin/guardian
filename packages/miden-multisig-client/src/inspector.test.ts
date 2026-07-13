@@ -51,6 +51,8 @@ vi.mock('@miden-sdk/miden-sdk', () => {
 
         return {
           storage: () => createMockStorage(slots, maps),
+          // The contract-version guard checks for the pinned auth procedure.
+          code: () => ({ hasProcedure: () => true }),
           vault: () => createMockVault([
             { faucetId: '0xfaucet1', amount: 1000n },
             { faucetId: '0xfaucet2', amount: 500n },
@@ -58,10 +60,18 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         };
       }),
     },
-    Word: vi.fn().mockImplementation((arr: BigUint64Array) => ({
-      toU64s: () => Array.from(arr),
-      toHex: () => '0x' + Array.from(arr).map(v => v.toString(16).padStart(16, '0')).join(''),
-    })),
+    Word: Object.assign(
+      vi.fn().mockImplementation((arr: BigUint64Array) => ({
+        toU64s: () => Array.from(arr),
+        toHex: () => '0x' + Array.from(arr).map(v => v.toString(16).padStart(16, '0')).join(''),
+      })),
+      {
+        fromHex: vi.fn((hex: string) => ({
+          toU64s: () => [0n, 0n, 0n, 0n],
+          toHex: () => hex,
+        })),
+      },
+    ),
   };
 });
 
@@ -122,6 +132,21 @@ describe('AccountInspector', () => {
 
       expect(config.numSigners).toBe(3);
     });
+
+    it('rejects accounts built from a different contract version', async () => {
+      const { Account } = await import('@miden-sdk/miden-sdk');
+      const account = Account.deserialize(new Uint8Array([1, 2, 3]));
+      // Same account shape, but its code lacks the pinned auth procedure —
+      // root-keyed reads against it would silently miss its stored overrides.
+      const foreign = {
+        ...account,
+        code: () => ({ hasProcedure: () => false }),
+      };
+
+      expect(() => AccountInspector.fromAccount(foreign as never)).toThrow(
+        /unsupported contract version/,
+      );
+    });
   });
 });
 
@@ -135,6 +160,7 @@ describe('AccountInspector edge cases', () => {
 
     // Override mock for this test: no guardian pub_key entry present.
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: (slotName: string) => {
           if (slotName === 'miden::standards::auth::multisig::threshold_config') return { toU64s: () => [1n, 1n, 0n, 0n] };
@@ -165,6 +191,7 @@ describe('AccountInspector edge cases', () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: () => ({ toU64s: () => [1n, 1n, 0n, 0n] }),
         getMapItem: () => {
@@ -186,6 +213,7 @@ describe('AccountInspector edge cases', () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: (slotName: string) => {
           if (slotName === 'miden::standards::auth::multisig::threshold_config') return { toU64s: () => [2n, 5n, 0n, 0n] }; // threshold=2, numSigners=5
@@ -212,6 +240,7 @@ describe('AccountInspector edge cases', () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: () => ({ toU64s: () => [1n, 1n, 0n, 0n] }),
         getMapItem: () => {

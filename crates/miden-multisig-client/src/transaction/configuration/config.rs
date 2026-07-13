@@ -50,9 +50,10 @@ pub fn build_multisig_config_advice(
 }
 
 /// Builds the update_signers transaction script.
-pub fn build_update_signers_script(_scheme: SignatureScheme) -> Result<TransactionScript> {
-    // The guarded-multisig library is scheme-agnostic (per-signer scheme lives in account
-    // storage), so the script does not branch on `scheme`; the param is kept for API stability.
+///
+/// The guarded-multisig library is scheme-agnostic: each signer's scheme lives in
+/// account storage, so the script is identical for Falcon and ECDSA accounts.
+pub fn build_update_signers_script() -> Result<TransactionScript> {
     let standards_lib: Library = StandardsLib::default().into();
 
     let tx_script_code = "
@@ -88,7 +89,7 @@ where
 {
     let (config_hash, config_values) =
         build_multisig_config_advice(threshold, signer_commitments, scheme);
-    let script = build_update_signers_script(scheme)?;
+    let script = build_update_signers_script()?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
@@ -105,7 +106,6 @@ where
 pub fn build_update_procedure_threshold_script(
     procedure: ProcedureName,
     threshold: u32,
-    _scheme: SignatureScheme,
 ) -> Result<TransactionScript> {
     let standards_lib: Library = StandardsLib::default().into();
 
@@ -143,12 +143,11 @@ pub fn build_update_procedure_threshold_transaction_request<I>(
     threshold: u32,
     salt: Word,
     extra_advice: I,
-    scheme: SignatureScheme,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let script = build_update_procedure_threshold_script(procedure, threshold, scheme)?;
+    let script = build_update_procedure_threshold_script(procedure, threshold)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)

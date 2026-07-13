@@ -82,6 +82,111 @@ jobs:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  contract-behavior:
+    # MockChain behavior suite for the upstream guarded-multisig component
+    # (crates/contracts/tests/) plus the multisig client's integration tests.
+    # These live in tests/ directories, which the coverage job's `--lib` run
+    # never executes — without this job the contract authentication paths
+    # (update signers, per-procedure thresholds, guardian rotation, replay
+    # protection) have no CI coverage at all.
+    name: Contract Behavior Tests
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.93.0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-contracts-
+
+      - name: Run contract behavior and SDK integration tests
+        run: cargo test -p miden-confidential-contracts -p miden-multisig-client --all-targets
+
+  ts-sdk:
+    # Cross-SDK parity gates for the TypeScript multisig client. The vitest
+    # suite pins PROCEDURE_ROOTS against the Rust `procedure_roots` example
+    # output and the vendored MASM against its generated constant; the
+    # Playwright run is the byte-for-byte account-determinism gate (TS-built
+    # account id/commitment == Rust builder). A miden-standards or
+    # @miden-sdk/miden-sdk bump that shifts procedure roots or storage layout
+    # fails here instead of stranding deployed accounts silently.
+    name: TypeScript SDK Tests
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.93.0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ts-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ts-
+
+      # The vitest parity test shells out to this example; prebuilding keeps
+      # the test itself fast and its failure modes distinct from build errors.
+      - name: Prebuild procedure_roots example
+        run: cargo build --example procedure_roots -p miden-multisig-client
+
+      # The runner's preinstalled Node (>= 18, per the package engines field)
+      # is used directly to avoid adding an unpinned action.
+      - name: Install package dependencies
+        working-directory: packages/miden-multisig-client
+        run: npm ci
+
+      - name: Run vitest parity and unit tests
+        working-directory: packages/miden-multisig-client
+        run: npm test
+
+      - name: Build package
+        working-directory: packages/miden-multisig-client
+        run: npm run build
+
+      # channel 'chrome' in playwright.config.ts uses the runner's system
+      # Chrome; no browser download required.
+      - name: Run browser determinism gate
+        working-directory: packages/miden-multisig-client
+        run: npm run test:browser
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

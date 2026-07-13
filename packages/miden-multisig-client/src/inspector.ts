@@ -69,6 +69,19 @@ export class AccountInspector {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   static fromAccount(account: Account): DetectedMultisigConfig {
+    // Reject accounts built from a different contract version before any
+    // procedure-root-keyed read: against such an account the reads below would
+    // silently miss its stored overrides (its `procedure_thresholds` map is
+    // keyed by *its* roots, not this SDK's) and report wrong thresholds.
+    if (!account.code().hasProcedure(Word.fromHex(getProcedureRoot('auth_tx')))) {
+      throw new Error(
+        'unsupported contract version: the account\'s code does not carry this ' +
+        "SDK's pinned guarded-multisig auth procedure; use the SDK release " +
+        'matching the contract version the account was created with ' +
+        '(see docs/MULTISIG_SDK.md, "Contract version pinning")',
+      );
+    }
+
     const storage = account.storage();
 
     const slot0 = storage.getItem(MULTISIG_SLOT_NAMES.THRESHOLD_CONFIG) as Word;

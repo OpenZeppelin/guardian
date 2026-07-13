@@ -403,6 +403,15 @@ impl NetworkClient for MidenNetworkClient {
         }
     }
 
+    fn extract_guardian_commitment(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<String>, String> {
+        let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
+        Ok(inspector.extract_guardian_public_key())
+    }
+
     async fn should_update_auth(
         &mut self,
         state_json: &serde_json::Value,
