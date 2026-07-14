@@ -238,6 +238,7 @@ mod tests {
                     .unwrap(),
             ),
             paused_reason: Some("compliance".to_string()),
+            released_at: None,
         }
     }
 
@@ -363,6 +364,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         })));
 
         let state = create_test_app_state_with_mocks(
@@ -466,6 +468,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         })));
 
         let state = create_test_app_state_with_mocks(

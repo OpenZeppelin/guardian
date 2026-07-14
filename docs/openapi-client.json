@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.15.0"
+    "version": "0.15.1"
   },
   "paths": {
     "/configure": {
@@ -968,6 +968,13 @@
             ],
             "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
           },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 timestamp of the guardian-switch release. Present only\nfor `GUARDIAN_ACCOUNT_RELEASED`."
+          },
           "retry_after_secs": {
             "type": [
               "integer",
@@ -1408,6 +1415,12 @@
               "status"
             ],
             "properties": {
+              "divergence_count": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Consecutive canonicalization ticks that observed the on-chain\ncommitment at neither this delta's `prev_commitment` nor its\nexpected new commitment — i.e. the account advanced past the\nstate this candidate was built on. Reset to zero whenever a\nread shows the account still at the candidate's base, so only\nan unbroken streak counts. Requiring more than one observation\nbefore discarding shields against stale RPC reads.",
+                "minimum": 0
+              },
               "retry_count": {
                 "type": "integer",
                 "format": "int32",

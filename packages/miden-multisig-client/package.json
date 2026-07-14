@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/miden-multisig-client",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "TypeScript SDK for Miden multisig accounts with GUARDIAN integration",
   "type": "module",
   "main": "./dist/index.js",

@@ -274,6 +274,7 @@ mod tests {
             last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 
@@ -825,6 +826,7 @@ mod tests {
             status: DeltaStatus::Candidate {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 retry_count: 0,
+                divergence_count: 0,
             },
             metadata: None,
         };

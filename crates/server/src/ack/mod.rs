@@ -6,6 +6,7 @@
 //! concrete. The two are built independently at startup: a hosted ECDSA backend
 //! must not require an ECDSA secret in Secrets Manager that does not exist.
 
+mod file_provider;
 pub mod miden_ecdsa;
 pub mod miden_falcon_rpo;
 mod secrets_manager;
@@ -17,6 +18,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use self::file_provider::FileSecretProvider;
 use self::secrets_manager::{AckSecretProvider, AwsSecretsManagerProvider};
 
 pub(crate) use miden_ecdsa::{
@@ -27,6 +29,10 @@ pub use miden_falcon_rpo::MidenFalconRpoSigner;
 
 const ENV_GUARDIAN_ENV: &str = "GUARDIAN_ENV";
 const PROD_ENV: &str = "prod";
+const ENV_ACK_SECRET_PROVIDER: &str = "GUARDIAN_ACK_SECRET_PROVIDER";
+const PROVIDER_AWS: &str = "aws";
+const PROVIDER_FILE: &str = "file";
+const PROVIDER_NONE: &str = "none";
 
 /// The ECDSA signer is abstracted over [`EcdsaSignerBackend`] so its key can live
 /// in a hosted backend (e.g. AWS KMS); Falcon stays concrete because hosted
@@ -40,17 +46,8 @@ pub struct AckRegistry {
 impl AckRegistry {
     pub async fn new(keystore_path: PathBuf) -> Result<Self> {
         let ecdsa_backend = EcdsaBackendKind::from_env()?;
-        if is_prod_environment()? {
-            let provider = AwsSecretsManagerProvider::from_env().await?;
-            Self::from_provider(keystore_path, ecdsa_backend, Some(&provider)).await
-        } else {
-            Self::from_provider(
-                keystore_path,
-                ecdsa_backend,
-                None::<&AwsSecretsManagerProvider>,
-            )
-            .await
-        }
+        let provider = AckSecretProviderKind::from_env()?.build().await?;
+        Self::from_provider(keystore_path, ecdsa_backend, provider.as_deref()).await
     }
 
     pub fn pubkey(&self, scheme: &SignatureScheme) -> String {
@@ -82,7 +79,7 @@ impl AckRegistry {
         }
     }
 
-    async fn from_provider<P: AckSecretProvider>(
+    async fn from_provider<P: AckSecretProvider + ?Sized>(
         keystore_path: PathBuf,
         ecdsa_backend: EcdsaBackendKind,
         provider: Option<&P>,
@@ -93,7 +90,7 @@ impl AckRegistry {
     }
 }
 
-async fn build_falcon_signer<P: AckSecretProvider>(
+async fn build_falcon_signer<P: AckSecretProvider + ?Sized>(
     keystore_path: &Path,
     provider: Option<&P>,
 ) -> Result<MidenFalconRpoSigner> {
@@ -107,7 +104,7 @@ async fn build_falcon_signer<P: AckSecretProvider>(
     )?)
 }
 
-async fn acquire_ecdsa_secret<P: AckSecretProvider>(
+async fn acquire_ecdsa_secret<P: AckSecretProvider + ?Sized>(
     ecdsa_backend: EcdsaBackendKind,
     provider: Option<&P>,
 ) -> Result<Option<EcdsaSecretKey>> {
@@ -119,7 +116,7 @@ async fn acquire_ecdsa_secret<P: AckSecretProvider>(
     }
 }
 
-async fn build_ecdsa_signer<P: AckSecretProvider>(
+async fn build_ecdsa_signer<P: AckSecretProvider + ?Sized>(
     keystore_path: PathBuf,
     ecdsa_backend: EcdsaBackendKind,
     provider: Option<&P>,
@@ -133,6 +130,74 @@ async fn build_ecdsa_signer<P: AckSecretProvider>(
     };
     tracing::info!(backend = backend.backend_id(), "ECDSA ACK signer ready");
     Ok(MidenEcdsaSigner::new(backend))
+}
+
+/// Selects where the ACK signing secrets come from at startup, and thus whether
+/// Guardian keeps a stable identity. [`Aws`](Self::Aws) and [`File`](Self::File)
+/// both supply fixed key material; [`None`](Self::None) generates an ephemeral
+/// keypair on every boot, so the on-chain ack-key commitment changes each
+/// restart and freezes any account that pinned the previous one. Selected by
+/// `GUARDIAN_ACK_SECRET_PROVIDER`; when unset it defaults to AWS in prod and
+/// ephemeral elsewhere, preserving the historical behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AckSecretProviderKind {
+    Aws,
+    File,
+    None,
+}
+
+impl AckSecretProviderKind {
+    fn from_env() -> Result<Self> {
+        let raw = match std::env::var(ENV_ACK_SECRET_PROVIDER) {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(GuardianError::ConfigurationError(format!(
+                    "{ENV_ACK_SECRET_PROVIDER} must contain valid UTF-8"
+                )));
+            }
+        };
+        Self::resolve(raw.as_deref(), is_prod_environment()?)
+    }
+
+    /// Pure resolution of the provider kind, split out from [`from_env`] so it is
+    /// testable without mutating process-global env vars (which `AckRegistry::new`
+    /// reads concurrently). `raw` is the `GUARDIAN_ACK_SECRET_PROVIDER` value
+    /// (`None` when unset); `is_prod` is whether `GUARDIAN_ENV=prod`. Unset or
+    /// blank falls back to the backward-compatible default — AWS in prod,
+    /// ephemeral elsewhere — while an explicit value wins, except `none` is
+    /// refused in prod so a stable-identity deployment can't boot ephemeral.
+    fn resolve(raw: Option<&str>, is_prod: bool) -> Result<Self> {
+        let default = if is_prod { Self::Aws } else { Self::None };
+        match raw.map(|value| value.trim().to_ascii_lowercase()) {
+            None => Ok(default),
+            Some(value) => match value.as_str() {
+                "" => Ok(default),
+                PROVIDER_AWS => Ok(Self::Aws),
+                PROVIDER_FILE => Ok(Self::File),
+                // Explicit `none` in prod would boot ephemeral keys and silently
+                // invalidate every account that pinned the on-chain commitment;
+                // refuse it rather than start with a throwaway identity.
+                PROVIDER_NONE if is_prod => Err(GuardianError::ConfigurationError(format!(
+                    "{ENV_ACK_SECRET_PROVIDER}=`{PROVIDER_NONE}` is not allowed when {ENV_GUARDIAN_ENV}=`{PROD_ENV}`"
+                ))),
+                PROVIDER_NONE => Ok(Self::None),
+                other => Err(GuardianError::ConfigurationError(format!(
+                    "{ENV_ACK_SECRET_PROVIDER} `{other}` is not supported (expected `{PROVIDER_AWS}`, `{PROVIDER_FILE}`, or `{PROVIDER_NONE}`)"
+                ))),
+            },
+        }
+    }
+
+    /// Constructs the selected provider. `None` means no provider — the signers
+    /// fall back to ephemeral keys generated in the keystore.
+    async fn build(self) -> Result<Option<Box<dyn AckSecretProvider>>> {
+        match self {
+            Self::Aws => Ok(Some(Box::new(AwsSecretsManagerProvider::from_env().await?))),
+            Self::File => Ok(Some(Box::new(FileSecretProvider::from_env()?))),
+            Self::None => Ok(None),
+        }
+    }
 }
 
 fn is_prod_environment() -> Result<bool> {
@@ -300,5 +365,76 @@ mod tests {
 
         assert_eq!(provider.falcon_calls.load(Ordering::SeqCst), 1);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // `AckSecretProviderKind::resolve` is the pure core of provider selection;
+    // it is tested directly so these cases never mutate the process-global env
+    // vars that `AckRegistry::new` reads concurrently in other tests.
+    #[test]
+    fn provider_kind_unset_defaults_to_none_outside_prod() {
+        assert_eq!(
+            AckSecretProviderKind::resolve(None, false).unwrap(),
+            AckSecretProviderKind::None
+        );
+    }
+
+    #[test]
+    fn provider_kind_unset_defaults_to_aws_in_prod() {
+        assert_eq!(
+            AckSecretProviderKind::resolve(None, true).unwrap(),
+            AckSecretProviderKind::Aws
+        );
+    }
+
+    #[test]
+    fn provider_kind_blank_falls_back_to_default() {
+        assert_eq!(
+            AckSecretProviderKind::resolve(Some("   "), true).unwrap(),
+            AckSecretProviderKind::Aws
+        );
+        assert_eq!(
+            AckSecretProviderKind::resolve(Some(""), false).unwrap(),
+            AckSecretProviderKind::None
+        );
+    }
+
+    #[test]
+    fn provider_kind_explicit_file_overrides_prod_default() {
+        assert_eq!(
+            AckSecretProviderKind::resolve(Some("FILE"), true).unwrap(),
+            AckSecretProviderKind::File
+        );
+    }
+
+    #[test]
+    fn provider_kind_rejects_explicit_none_in_prod() {
+        let error = AckSecretProviderKind::resolve(Some("none"), true).unwrap_err();
+        assert!(
+            matches!(error, GuardianError::ConfigurationError(message) if message.contains("not allowed"))
+        );
+    }
+
+    #[test]
+    fn provider_kind_explicit_none_allowed_outside_prod() {
+        assert_eq!(
+            AckSecretProviderKind::resolve(Some("none"), false).unwrap(),
+            AckSecretProviderKind::None
+        );
+    }
+
+    #[test]
+    fn provider_kind_explicit_aws_selected_outside_prod() {
+        assert_eq!(
+            AckSecretProviderKind::resolve(Some("aws"), false).unwrap(),
+            AckSecretProviderKind::Aws
+        );
+    }
+
+    #[test]
+    fn provider_kind_rejects_unknown_value() {
+        let error = AckSecretProviderKind::resolve(Some("vault"), false).unwrap_err();
+        assert!(
+            matches!(error, GuardianError::ConfigurationError(message) if message.contains("vault"))
+        );
     }
 }

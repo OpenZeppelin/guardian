@@ -47,6 +47,7 @@ export interface GuardianErrorMeta {
   missingPermissions?: string[];
   pausedAt?: string;
   pausedReason?: string | null;
+  releasedAt?: string;
 }
 
 interface ParsedGuardianError {
@@ -81,6 +82,7 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
     );
   }
   if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
+  if (typeof rawMeta.released_at === 'string') meta.releasedAt = rawMeta.released_at;
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }
@@ -92,12 +94,26 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
  * error body (feature 009): branch on {@link code}, display {@link userMessage}.
  */
 export class GuardianHttpError extends Error {
-  /** Stable, machine-readable error code (e.g. `account_paused`). */
-  readonly code?: string;
+  /**
+   * Stable machine-readable error code from the server's `{ code, message,
+   * meta }` error object (e.g. `GUARDIAN_ACCOUNT_RELEASED`,
+   * `GUARDIAN_ACCOUNT_PAUSED`, `commitment_mismatch`), or `null` when the
+   * body is not a conforming JSON envelope. Callers SHOULD branch on this
+   * rather than on `body` text or the HTTP status alone.
+   */
+  public readonly code: string | null;
   /** Short, user-safe message — safe to display verbatim in a wallet UI. */
   readonly userMessage?: string;
   /** Structured side-data (`retryable`, `retryAfterSecs`, …). */
   readonly meta?: GuardianErrorMeta;
+  /**
+   * RFC 3339 UTC timestamp at which the guardian released the account
+   * after it switched to a different guardian. Convenience accessor for
+   * `meta.releasedAt`; present only when
+   * `code === 'GUARDIAN_ACCOUNT_RELEASED'` (HTTP 409); the account is
+   * terminal on this server until re-onboarded via `configure`.
+   */
+  public readonly releasedAt: string | null;
 
   constructor(
     public readonly status: number,
@@ -107,9 +123,10 @@ export class GuardianHttpError extends Error {
     super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
     this.name = 'GuardianHttpError';
     const parsed = parseGuardianErrorBody(body);
-    this.code = parsed?.code;
+    this.code = parsed?.code ?? null;
     this.userMessage = parsed?.message;
     this.meta = parsed?.meta;
+    this.releasedAt = parsed?.meta.releasedAt ?? null;
   }
 }
 

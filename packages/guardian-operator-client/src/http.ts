@@ -88,6 +88,9 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   'insufficient_operator_permission',
   // Same wire-form / TS-form mapping as `insufficient_operator_permission`.
   'account_paused',
+  // Same wire-form / TS-form mapping; wire string is
+  // `GUARDIAN_ACCOUNT_RELEASED`.
+  'account_released',
 ]);
 
 /** Server-emitted wire form for the permission-denial error code. */
@@ -96,6 +99,9 @@ const WIRE_INSUFFICIENT_OPERATOR_PERMISSION =
 
 /** Server-emitted wire form for the account-paused error code. */
 const WIRE_ACCOUNT_PAUSED = 'GUARDIAN_ACCOUNT_PAUSED';
+
+/** Server-emitted wire form for the account-released error code. */
+const WIRE_ACCOUNT_RELEASED = 'GUARDIAN_ACCOUNT_RELEASED';
 
 /**
  * Map a server-emitted error `code` to the typed
@@ -109,6 +115,9 @@ function mapDashboardErrorCode(raw: string | null): string | null {
   }
   if (raw === WIRE_ACCOUNT_PAUSED) {
     return 'account_paused';
+  }
+  if (raw === WIRE_ACCOUNT_RELEASED) {
+    return 'account_released';
   }
   return raw;
 }
@@ -146,6 +155,12 @@ export interface ParsedErrorBody {
    * non-null reason).
    */
   pausedReason?: string | null;
+  /**
+   * Populated only when `code === 'account_released'`. RFC 3339 UTC
+   * timestamp at which the server detected the account switched to a
+   * different guardian and released it.
+   */
+  releasedAt?: string;
 }
 
 /**
@@ -228,6 +243,7 @@ export async function parseErrorBody(
   let missingPermissions: readonly string[] | undefined;
   let pausedAt: string | undefined;
   let pausedReason: string | null | undefined;
+  let releasedAt: string | undefined;
   if (code === 'insufficient_operator_permission') {
     const missingRaw = meta['missing_permissions'];
     if (
@@ -247,6 +263,11 @@ export async function parseErrorBody(
     } else if (reasonRaw === null) {
       pausedReason = null;
     }
+  } else if (code === 'account_released') {
+    const releasedAtRaw = meta['released_at'];
+    if (typeof releasedAtRaw === 'string') {
+      releasedAt = releasedAtRaw;
+    }
   }
 
   return {
@@ -257,6 +278,7 @@ export async function parseErrorBody(
     retryable,
     pausedAt,
     pausedReason,
+    releasedAt,
   };
 }
 
@@ -976,6 +998,7 @@ function parseAccountSummary(
     updatedAt: requireString(record, 'updated_at', context),
     pausedAt: requireNullableString(record, 'paused_at', context),
     pausedReason: requireNullableString(record, 'paused_reason', context),
+    releasedAt: requireNullableString(record, 'released_at', context),
   };
   if (record.account_id_bech32 !== undefined && record.account_id_bech32 !== null) {
     if (typeof record.account_id_bech32 !== 'string') {
@@ -1102,6 +1125,7 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
   let missingPermissions: readonly string[] | undefined;
   let pausedAt: string | undefined;
   let pausedReason: string | null | undefined;
+  let releasedAt: string | undefined;
   if (code === 'insufficient_operator_permission') {
     const missingRaw = meta.missing_permissions;
     if (missingRaw !== undefined) {
@@ -1134,6 +1158,15 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
         'meta.paused_reason must be a string or null for account_paused',
       );
     }
+  } else if (code === 'account_released') {
+    const releasedAtRaw = meta.released_at;
+    if (typeof releasedAtRaw !== 'string') {
+      throw new GuardianOperatorContractError(
+        'error response',
+        'meta.released_at must be a string for account_released',
+      );
+    }
+    releasedAt = releasedAtRaw;
   }
 
   return {
@@ -1144,6 +1177,7 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     retryable,
     pausedAt,
     pausedReason,
+    releasedAt,
   };
 }
 

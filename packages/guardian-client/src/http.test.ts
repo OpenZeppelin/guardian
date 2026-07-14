@@ -69,6 +69,47 @@ describe('GuardianHttpClient', () => {
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(500);
       expect(error.statusText).toBe('Internal Server Error');
+      // Non-JSON body: no typed envelope fields.
+      expect(error.code).toBeNull();
+      expect(error.releasedAt).toBeNull();
+    });
+
+    it('exposes code and released_at from a GUARDIAN_ACCOUNT_RELEASED envelope', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_ACCOUNT_RELEASED',
+            message: 'This account has moved to a different guardian. Reconnect it to continue.',
+            meta: { retryable: false, released_at: '2026-07-06T10:00:00Z' },
+          }),
+      });
+
+      const error = await client.getPubkey().catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(409);
+      expect(error.code).toBe('GUARDIAN_ACCOUNT_RELEASED');
+      expect(error.releasedAt).toBe('2026-07-06T10:00:00Z');
+    });
+
+    it('exposes code without releasedAt for other envelope errors', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () =>
+          JSON.stringify({
+            code: 'account_not_found',
+            message: "We couldn't find that. It may have been completed or removed.",
+            meta: { retryable: false },
+          }),
+      });
+
+      const error = await client.getPubkey().catch((e) => e);
+      expect(error.code).toBe('account_not_found');
+      expect(error.releasedAt).toBeNull();
     });
   });
 
@@ -797,7 +838,8 @@ describe('GuardianHttpError', () => {
 
   it('leaves accessors undefined for a non-JSON / non-conforming body', () => {
     const plain = new GuardianHttpError(502, 'Bad Gateway', 'upstream exploded');
-    expect(plain.code).toBeUndefined();
+    expect(plain.code).toBeNull();
+    expect(plain.releasedAt).toBeNull();
     expect(plain.userMessage).toBeUndefined();
     expect(plain.meta).toBeUndefined();
   });

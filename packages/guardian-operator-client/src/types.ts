@@ -50,6 +50,12 @@ export interface GuardianOperatorHttpErrorData {
    * for forward compatibility).
    */
   pausedReason?: string | null;
+  /**
+   * Populated only for `account_released` responses. RFC 3339 UTC
+   * timestamp at which the server detected the account switched to a
+   * different guardian and released it.
+   */
+  releasedAt?: string;
 }
 
 export interface GuardianOperatorHttpClientOptions {
@@ -119,6 +125,12 @@ export interface DashboardAccountSummary {
   pausedAt: string | null;
   /** Reason captured at first pause; `null` when active. */
   pausedReason: string | null;
+  /**
+   * RFC 3339 UTC timestamp at which this server detected the account
+   * switched to a different guardian and released it; `null` while
+   * this server is the account's guardian.
+   */
+  releasedAt: string | null;
 }
 
 export interface DashboardAccountDetail extends DashboardAccountSummary {
@@ -149,6 +161,11 @@ export interface UnpauseAccountResponse {
 export interface AccountPausedErrorDetails {
   pausedAt: string;
   pausedReason: string | null;
+}
+
+/** Typed details carried on the `GUARDIAN_ACCOUNT_RELEASED` error envelope. */
+export interface AccountReleasedErrorDetails {
+  releasedAt: string;
 }
 
 /**
@@ -218,7 +235,12 @@ export type DashboardErrorCode =
   // paused. Exposed as snake_case to match the rest of the
   // vocabulary; server wire string is `GUARDIAN_ACCOUNT_PAUSED` and
   // the http.ts mapping layer translates between the two.
-  | 'account_paused';
+  | 'account_paused'
+  // Surfaced from mutating endpoints when the target account switched
+  // to a different guardian and was released (issue #305). Same
+  // wire-form / TS-form mapping as `account_paused`; server wire
+  // string is `GUARDIAN_ACCOUNT_RELEASED`.
+  | 'account_released';
 
 export interface PagedResult<T> {
   items: T[];

@@ -41,6 +41,10 @@ pub struct ApiErrorMeta {
     /// Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_reason: Option<String>,
+    /// RFC 3339 timestamp of the guardian-switch release. Present only
+    /// for `GUARDIAN_ACCOUNT_RELEASED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
 }
 
 /// Wire shape of a Guardian error response body: `{ code, message, meta }`

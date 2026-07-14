@@ -36,6 +36,12 @@ export interface GuardianDashboardAccountSummary {
   paused_at: string | null;
   /** Reason captured at first pause; `null` when active. */
   paused_reason: string | null;
+  /**
+   * RFC 3339 UTC timestamp at which this server detected the account
+   * switched to a different guardian and released it; `null` while
+   * this server is the account's guardian.
+   */
+  released_at: string | null;
 }
 
 export interface GuardianDashboardAccountDetail extends GuardianDashboardAccountSummary {
@@ -70,6 +76,18 @@ export const GUARDIAN_ACCOUNT_PAUSED = 'GUARDIAN_ACCOUNT_PAUSED' as const;
 export interface GuardianAccountPausedErrorDetails {
   paused_at: string;
   paused_reason: string | null;
+}
+
+/**
+ * Stable error code returned by mutating endpoints when the target
+ * account was released after switching to a different guardian.
+ * HTTP 409, gRPC FAILED_PRECONDITION. Terminal until the wallet
+ * re-onboards via `/configure`.
+ */
+export const GUARDIAN_ACCOUNT_RELEASED = 'GUARDIAN_ACCOUNT_RELEASED' as const;
+
+export interface GuardianAccountReleasedErrorDetails {
+  released_at: string;
 }
 
 export interface GuardianDashboardAccountsResponse {

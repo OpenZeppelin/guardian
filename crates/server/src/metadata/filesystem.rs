@@ -103,15 +103,17 @@ impl MetadataStore for FilesystemMetadataStore {
     async fn set(&self, metadata: AccountMetadata) -> Result<(), String> {
         let account_id = metadata.account_id.clone();
 
-        // Mirror the Postgres `set` semantics: pause state is owned by
-        // `set_pause` / `clear_pause` and must not be cleared by a
-        // generic metadata write (e.g. reconfigure, EVM re-register).
+        // Mirror the Postgres `set` semantics: pause and released state
+        // are owned by `set_pause` / `clear_pause` and `set_released` /
+        // `clear_released` and must not be changed by a generic metadata
+        // write (e.g. reconfigure, EVM re-register).
         let mut metadata = metadata;
         {
             let mut cache = self.cache.write().await;
             if let Some(existing) = cache.get(&account_id) {
                 metadata.paused_at = existing.paused_at;
                 metadata.paused_reason = existing.paused_reason.clone();
+                metadata.released_at = existing.released_at;
             }
             cache.insert(account_id, metadata);
         }
@@ -262,6 +264,36 @@ impl MetadataStore for FilesystemMetadataStore {
         Ok(transition)
     }
 
+    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+        let mut cache = self.cache.write().await;
+        let metadata = cache
+            .get_mut(account_id)
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+        // First-writer-wins: keep the original released_at.
+        if metadata.released_at.is_some() {
+            return Ok(false);
+        }
+        metadata.released_at = Some(now);
+
+        self.persist(&cache).await?;
+        Ok(true)
+    }
+
+    async fn clear_released(&self, account_id: &str) -> Result<(), String> {
+        let mut cache = self.cache.write().await;
+        let metadata = cache
+            .get_mut(account_id)
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+        if metadata.released_at.is_none() {
+            return Ok(());
+        }
+        metadata.released_at = None;
+
+        self.persist(&cache).await
+    }
+
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
         let cache = self.cache.read().await;
         let mut matches = Vec::new();
@@ -311,6 +343,7 @@ mod pause_tests {
                 last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             })
             .await
             .unwrap();
@@ -364,5 +397,66 @@ mod pause_tests {
         let post = store.get("acct").await.unwrap().unwrap();
         assert!(post.paused_at.is_none());
         assert!(post.paused_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_released_is_first_writer_wins() {
+        let (store, _dir) = fresh_store().await;
+        let first = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 7, 6, 11, 0, 0).unwrap();
+
+        assert!(store.set_released("acct", first).await.unwrap());
+        // Second release is a no-op that reports "not newly released".
+        assert!(!store.set_released("acct", later).await.unwrap());
+
+        let post = store.get("acct").await.unwrap().unwrap();
+        assert_eq!(
+            post.released_at,
+            Some(first),
+            "original released_at preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_released_missing_account_errors() {
+        let (store, _dir) = fresh_store().await;
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        assert!(store.set_released("missing", ts).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn clear_released_reactivates_and_is_idempotent() {
+        let (store, _dir) = fresh_store().await;
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        store.set_released("acct", ts).await.unwrap();
+
+        store.clear_released("acct").await.unwrap();
+        let post = store.get("acct").await.unwrap().unwrap();
+        assert!(post.released_at.is_none());
+
+        // Idempotent on an already-active account.
+        store.clear_released("acct").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn generic_set_preserves_released_state() {
+        let (store, _dir) = fresh_store().await;
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        store.set_released("acct", ts).await.unwrap();
+
+        // A generic metadata write (reconfigure-style) that carries
+        // released_at: None must NOT clear the released state — only
+        // clear_released may.
+        let mut refreshed = store.get("acct").await.unwrap().unwrap();
+        refreshed.released_at = None;
+        refreshed.updated_at = "2026-07-06T12:00:00Z".into();
+        store.set(refreshed).await.unwrap();
+
+        let post = store.get("acct").await.unwrap().unwrap();
+        assert_eq!(
+            post.released_at,
+            Some(ts),
+            "generic set must not clear released_at"
+        );
     }
 }
