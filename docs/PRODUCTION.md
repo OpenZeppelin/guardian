@@ -102,8 +102,11 @@ none and behavior is unchanged.
 - Enable against an **empty** store. The server writes a one-time marker on the
   first encrypted write and then refuses to mix plaintext and ciphertext, so it
   fails fast if a key is configured against a store that already holds plaintext
-  records. The Miden 0.15 cutover (which purges Miden account data) is the
-  natural enablement window.
+  records. For Miden-only deployments the Miden 0.15 cutover (which purges Miden
+  account data) is the natural enablement window; deployments that also retain EVM
+  account rows — which the cutover preserves — must clear or migrate those
+  plaintext records before enabling encryption, or the first encrypted write will
+  fail fast against the mixed store.
 - Startup is fail-fast: a missing/malformed/wrong-length key, or more than one
   key source, prevents startup rather than degrading to plaintext.
 - Key rotation: add a new entry to `keys` and move `active`; keep the old key so

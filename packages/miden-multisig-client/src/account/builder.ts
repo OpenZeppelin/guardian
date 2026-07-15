@@ -21,6 +21,10 @@ import { normalizeSignerCommitment } from '../utils/signature.js';
  * Builds the upstream guarded-multisig auth `AccountComponent` from a config, using the
  * given code builder to compile the vendored MASM. Pure with respect to network/store —
  * callers supply the raw WASM client only for its assembler.
+ *
+ * Only the guarded-multisig component is compiled here: the web SDK assembler already provides
+ * the `miden::standards::auth::*` library modules, so linking them again would be a duplicate
+ * definition.
  */
 function buildGuardedMultisigComponent(
   authBuilder: Awaited<ReturnType<WasmWebClient['createCodeBuilder']>>,
@@ -30,9 +34,6 @@ function buildGuardedMultisigComponent(
     ...buildMultisigStorageSlots(config),
     ...buildGuardianStorageSlots(config),
   ];
-  // The web SDK assembler already provides the `miden::standards::auth::*` library modules, so
-  // only the guarded-multisig component is compiled here; linking them again would be a
-  // duplicate definition.
   const authComponentCode = authBuilder.compileAccountComponentCode(
     GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM,
   );
@@ -115,8 +116,6 @@ export function validateMultisigConfig(config: MultisigConfig): void {
   if (!config.guardianCommitment) {
     throw new Error('GUARDIAN commitment is required');
   }
-  // `AuthGuardedMultisigConfig::new` rejects a guardian equal to any approver; mirror that
-  // invariant here so the TS builder cannot create an account the Rust SDK would reject.
   if (signerCommitments.has(normalizeSignerCommitment(config.guardianCommitment))) {
     throw new Error('GUARDIAN commitment must be different from all signer commitments');
   }

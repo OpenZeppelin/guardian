@@ -16,7 +16,7 @@ pub use multisig::is_signer
 
 pub use guardian::update_guardian_public_key
 
-#! Authenticate a transaction with multi-signature support and optional guardian verification.
+#! Authenticate a transaction with multi-signature support and guardian verification.
 #!
 #! Inputs:
 #!   Operand stack: [SALT]

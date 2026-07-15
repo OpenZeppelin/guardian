@@ -27,10 +27,12 @@ function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: numbe
   ];
 }
 
+/**
+ * `set_procedure_threshold` reads its `[proc_threshold, PROC_ROOT]` inputs from the operand stack
+ * (pushed by the script), so no advice-map entry is attached; this hash is returned only for
+ * caller bookkeeping.
+ */
 function buildProcedureThresholdConfigHash(procedure: ProcedureName, threshold: number): Word {
-  // `set_procedure_threshold` reads its `[proc_threshold, PROC_ROOT]` inputs from the operand
-  // stack (pushed by the script), so no advice-map entry is attached; this hash is returned
-  // only for caller bookkeeping.
   return Poseidon2.hashElements(
     new FeltArray(buildProcedureThresholdFelts(procedure, threshold)),
   );

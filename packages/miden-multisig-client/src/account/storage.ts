@@ -3,9 +3,11 @@ import { StorageSlot, StorageMap, Word } from '@miden-sdk/miden-sdk';
 import { ensureHexPrefix } from '../utils/encoding.js';
 import { getProcedureRoot } from '../procedures.js';
 
-// `AuthGuardedMultisig` storage slot names (miden::standards::auth::*). These must match the
-// Rust `miden-standards` component exactly: account ID and commitment derive from the storage
-// layout, so any divergence breaks cross-SDK determinism (guarded by the parity test).
+/**
+ * `AuthGuardedMultisig` storage slot names (`miden::standards::auth::*`). These must match the
+ * Rust `miden-standards` component exactly: account ID and commitment derive from the storage
+ * layout, so any divergence breaks cross-SDK determinism (guarded by the parity test).
+ */
 const MULTISIG_SLOT_NAMES = {
   THRESHOLD_CONFIG: 'miden::standards::auth::multisig::threshold_config',
   SIGNER_PUBLIC_KEYS: 'miden::standards::auth::multisig::approver_public_keys',
@@ -71,9 +73,11 @@ export class StorageLayoutBuilder {
     return [slot0, slot1, slot2, slot3, slot4];
   }
 
+  /**
+   * The guarded-multisig has no enable/disable selector; the guardian is always present, so this
+   * returns just two slots: the guardian public-key map and its scheme map.
+   */
   buildGuardianSlots(config: MultisigConfig): StorageSlot[] {
-    // The guarded-multisig has no enable/disable selector; the guardian is always present.
-    // Only two slots: the guardian public key map and its scheme map.
     const schemeId = config.signatureScheme === 'ecdsa' ? 1n : 2n;
     const zeroKey = signerMapKey(0n);
 

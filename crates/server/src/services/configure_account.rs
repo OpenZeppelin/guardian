@@ -656,7 +656,7 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_validate_guardian_commitment(Err(
-                "OpenZeppelin slot 'miden::standards::auth::guardian::pub_key' mismatch"
+                "Miden Standards slot 'miden::standards::auth::guardian::pub_key' mismatch"
                     .to_string(),
             ));
 
