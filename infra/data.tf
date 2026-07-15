@@ -21,6 +21,11 @@ data "aws_secretsmanager_secret" "dashboard_cursor" {
   name  = local.dashboard_cursor_secret_name
 }
 
+data "aws_kms_key" "dashboard_cursor" {
+  count  = local.is_prod && data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id != "" ? 1 : 0
+  key_id = data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id
+}
+
 # Get default VPC if vpc_id is not specified
 data "aws_vpc" "default" {
   count   = var.vpc_id == "" ? 1 : 0

@@ -60,7 +60,7 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
             "kms:Decrypt"
           ]
           Resource = [
-            data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id
+            data.aws_kms_key.dashboard_cursor[0].arn
           ]
         }
       ] : []
