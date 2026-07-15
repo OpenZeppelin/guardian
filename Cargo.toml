@@ -66,7 +66,7 @@ utoipa = { version = "5", features = ["axum_extras"] }
 
 # Miden
 miden-protocol = "0.15.3"
-miden-standards = "0.15.3"
+miden-standards = "=0.15.3"
 miden-tx = "0.15.3"
 miden-node-proto ="0.15.0"
 miden-testing = "0.15.3"

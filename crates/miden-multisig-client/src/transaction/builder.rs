@@ -564,6 +564,7 @@ impl ProposalBuilder {
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
+            key_manager.scheme(),
             salt,
             std::iter::empty(),
         )?;
@@ -643,12 +644,11 @@ impl ProposalBuilder {
             as usize;
 
         let salt = generate_salt();
-        let (tx_request, _) = build_update_procedure_threshold_transaction_request(
+        let tx_request = build_update_procedure_threshold_transaction_request(
             procedure,
             new_threshold,
             salt,
             std::iter::empty(),
-            key_manager.scheme(),
         )?;
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();

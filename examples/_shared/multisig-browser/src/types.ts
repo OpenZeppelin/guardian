@@ -49,7 +49,6 @@ export interface SerializedDetectedMultisigConfig {
   threshold: number;
   numSigners: number;
   signerCommitments: string[];
-  guardianEnabled: boolean;
   guardianCommitment: string | null;
   vaultBalances: SerializedVaultBalance[];
   procedureThresholds: Array<{ procedure: ProcedureName; threshold: number }>;
@@ -157,7 +156,6 @@ export function serializeDetectedMultisigConfig(
     threshold: config.threshold,
     numSigners: config.numSigners,
     signerCommitments: [...config.signerCommitments],
-    guardianEnabled: config.guardianEnabled,
     guardianCommitment: config.guardianCommitment,
     vaultBalances: config.vaultBalances.map(serializeVaultBalance),
     procedureThresholds: [...config.procedureThresholds.entries()]

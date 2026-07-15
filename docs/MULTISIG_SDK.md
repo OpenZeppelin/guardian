@@ -64,7 +64,6 @@ const config = {
   threshold: 1,
   signerCommitments: [signer.commitment, cosigner1Commitment, cosigner2Commitment],
   guardianCommitment,
-  guardianEnabled: true,
 };
 const multisig = await client.create(config, signer);
 await multisig.registerOnGuardian();
@@ -307,7 +306,6 @@ const config: MultisigConfig = {
     '0x5678...efgh',                        // Cosigner 2
   ],
   guardianCommitment,                            // GUARDIAN server commitment
-  guardianEnabled: true,
 };
 
 // Create the account
@@ -522,7 +520,6 @@ Returns `DetectedMultisigConfig`:
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
-- `guardianEnabled`: boolean
 - `guardianCommitment`: string
 - `vaultBalances`: { faucetId, amount }[]
 
@@ -584,7 +581,7 @@ client.sync().await?;
 // Inspect account
 println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
-println!("GUARDIAN enabled: {}", account.guardian_enabled()?);
+println!("GUARDIAN commitment: {:?}", account.guardian_commitment()?);
 ```
 
 ### Recovering Accounts By Key
@@ -767,7 +764,6 @@ for note in notes {
 | `cosigner_commitments()` | List of commitments (Word) |
 | `cosigner_commitments_hex()` | List as hex strings |
 | `is_cosigner(commitment)` | Check if commitment is signer |
-| `guardian_enabled()` | GUARDIAN integration enabled |
 | `guardian_commitment()` | GUARDIAN server commitment |
 
 #### TransactionType
@@ -803,7 +799,6 @@ const config = {
   threshold: 2,
   signerCommitments: [ceoCommitment, cfoCommitment, cooCommitment],
   guardianCommitment,
-  guardianEnabled: true,
 };
 
 const treasury = await client.create(config, ceoSigner);
@@ -944,6 +939,7 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
+| 0.16.x (unreleased) | 0.15.2 | 0.15.2 (exact) | Breaking: upstream `miden-standards` guarded-multisig contract replaces the local MASM; `guardianEnabled` removed; all procedure roots changed |
 | 0.15.x | 0.15.0 | ^0.15.0 | Miden 0.15 protocol; v1 account IDs, bech32m addresses |
 | 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
 | 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
@@ -952,6 +948,60 @@ console.log('Notes consumed, funds now in vault');
 ### Breaking Changes
 
 Check the [GitHub release notes](https://github.com/OpenZeppelin/guardian/releases) for breaking changes between versions.
+
+### Contract version pinning
+
+Accounts are built from the audited upstream `AuthGuardedMultisig` component, pinned
+exactly in both SDKs so a TypeScript-built account is byte-identical to a Rust-built
+one:
+
+- **Rust**: `miden-standards = "=0.15.3"` (workspace `Cargo.toml`)
+- **TypeScript**: `@miden-sdk/miden-sdk 0.15.2`, which embeds miden-standards 0.15.3
+  in its WASM
+
+The pins are deliberate and must move together: nothing at build time verifies the
+npm SDK's embedded miden-standards matches the Rust pin — the CI parity gates
+(`procedure_roots_match_upstream_component`, the vitest `procedure-roots` test, and
+the Playwright determinism spec) are what catch drift.
+
+**Deployed accounts are immutable.** An account's code — and therefore its procedure
+roots — is fixed at creation. The SDK's hardcoded `PROCEDURE_ROOTS` /
+`ProcedureName::root()` values, and the transaction scripts it compiles against the
+bundled library, all assume the account was built from the *currently pinned*
+contract version. Consequences of bumping the pin to a miden-standards release whose
+MASM changed:
+
+- Management transactions built by the new SDK **fail against old accounts** (the
+  script calls a procedure root the old account's code does not export).
+- Per-procedure threshold reads and `set_procedure_threshold` writes key the
+  account's `procedure_thresholds` storage map by the *new* roots — against an old
+  account they silently miss the stored overrides or store overrides the account
+  never consults.
+
+**Release policy until a contract-version registry lands**: treat any
+miden-standards / @miden-sdk pin bump that changes procedure roots as a breaking
+release. Bump the minor version, regenerate the root constants (both SDKs), and
+state explicitly in the release notes that the new SDK operates only accounts
+created with the new contract version. The planned fix is a version registry keyed
+by the account's auth-procedure root, letting one SDK operate accounts from every
+supported contract version.
+
+#### SDK ↔ contract version support
+
+| SDK release | miden-standards (contract) | Operates accounts created with |
+|---|---|---|
+| next (0.16.x, unreleased) | 0.15.3 | miden-standards 0.15.3 contracts only |
+| ≤ 0.15.x | — (local Guardian MASM) | pre-upstream accounts (wiped by the 0.15 cutover) |
+
+Both SDKs **enforce** this at runtime rather than trusting the table: before any
+procedure-root-keyed storage read, the account's code is checked for the pinned
+contract version's auth procedure (`auth_tx_guarded_multisig`). A mismatch fails
+loudly — Rust `MultisigError::UnsupportedContractVersion` (from
+`MultisigAccount::procedure_threshold` and everything built on it), TS an
+`unsupported contract version` error from `AccountInspector.fromAccount` — instead
+of silently reporting wrong thresholds. `MultisigAccount::is_pinned_contract_version()`
+exposes the check directly. When a new contract version is adopted, add a row here
+and regenerate the root constants in the same change.
 
 ---
 

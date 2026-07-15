@@ -7,21 +7,24 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Miden multisig smart contract accounts"
-default-run = "miden-confidential-contracts"
+description = "Builder facade for Miden guarded-multisig accounts (upstream miden-standards component)"
 
 [dependencies]
 miden-standards = { workspace = true }
 miden-protocol = { workspace = true }
-miden-tx = { workspace = true }
-miden-testing = { workspace = true }
 
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
 guardian-shared = { version = "=0.15.1", path = "../shared" }
 
+[features]
+testing = ["miden-protocol/testing"]
+
 [dev-dependencies]
+miden-confidential-contracts = { path = ".", features = ["testing"] }
 miden-client = { workspace = true, features = ["testing", "tonic"] }
+miden-tx = { workspace = true }
+miden-testing = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 rand = { workspace = true }
 rand_chacha = { workspace = true }

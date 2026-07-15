@@ -28,7 +28,6 @@ vi.mock('./inspector.js', () => ({
       threshold: 2,
       numSigners: 2,
       signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-      guardianEnabled: true,
       guardianCommitment: '0x' + 'c'.repeat(64),
       vaultBalances: [],
       procedureThresholds: new Map(),
