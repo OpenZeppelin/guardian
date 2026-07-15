@@ -30,10 +30,6 @@ export default defineConfig({
         replacement: path.resolve(__dirname, '../_shared/multisig-browser/src'),
       },
       {
-        find: '@miden-sdk/miden-sdk',
-        replacement: path.resolve(__dirname, 'miden-sdk-compat.mjs'),
-      },
-      {
         find: '@openzeppelin/guardian-client',
         replacement: path.resolve(__dirname, '../../packages/guardian-client/dist/index.js'),
       },

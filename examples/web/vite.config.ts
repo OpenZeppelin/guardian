@@ -9,7 +9,6 @@ export default defineConfig({
     dedupe: ['@miden-sdk/miden-sdk'],
     alias: {
       '@': path.resolve(__dirname, './src'),
-      '@miden-sdk/miden-sdk': path.resolve(__dirname, 'miden-sdk-compat.mjs'),
       '@openzeppelin/guardian-client': path.resolve(__dirname, '../../packages/guardian-client/dist/index.js'),
       '@openzeppelin/miden-multisig-client': path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
     },
