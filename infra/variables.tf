@@ -305,11 +305,14 @@ variable "guardian_rate_per_min" {
 variable "guardian_max_replicas" {
   description = <<-EOT
     Optional override for GUARDIAN_MAX_REPLICAS, the maximum replica capacity the
-    server divides global rate limits by. Defaults to the effective autoscaling
-    max capacity. Drives rate-limit partitioning only (coordination mode is
-    backend-derived). A value below the real max would let the aggregate exceed
-    the global limit, so an explicit override is clamped up to the autoscaling
-    max in data.tf and can only ever raise the divisor, never lower it.
+    server divides global rate limits by. Defaults to the deployment surge
+    capacity: the greater of desired count and autoscaling max capacity, scaled
+    by server_deployment_maximum_percent using ECS rounding semantics. This is
+    the true worst-case number of tasks that can serve concurrently during a
+    rolling deploy. Drives rate-limit partitioning only (coordination mode is
+    backend-derived). A value below the real worst-case capacity would let the
+    aggregate exceed the global limit, so an explicit override is clamped up to
+    the surge capacity in data.tf and can only ever raise the divisor.
   EOT
   type        = number
   default     = null
@@ -320,6 +323,31 @@ variable "guardian_max_replicas" {
       (var.guardian_max_replicas >= 1 && floor(var.guardian_max_replicas) == var.guardian_max_replicas)
     )
     error_message = "guardian_max_replicas must be an integer >= 1 when set."
+  }
+}
+
+variable "server_deployment_maximum_percent" {
+  description = <<-EOT
+    ECS deployment_maximum_percent for the server service: the ceiling, as a
+    percentage of desired count, on tasks that may run concurrently during a
+    rolling deploy. Folded into the GUARDIAN_MAX_REPLICAS default so the
+    fleet-aggregate rate limit holds even mid-deploy; lowering it tightens
+    per-task limits back toward global/max at the cost of deploy headroom.
+    Must exceed 100 and, after ECS rounds the resulting task count down, allow
+    at least one task above the minimum positive desired capacity (including
+    autoscaling minimum capacity). The ECS service precondition enforces this
+    because deployment_minimum_healthy_percent is 100.
+  EOT
+  type        = number
+  default     = 200
+
+  validation {
+    condition = (
+      var.server_deployment_maximum_percent > 100 &&
+      var.server_deployment_maximum_percent <= 200 &&
+      floor(var.server_deployment_maximum_percent) == var.server_deployment_maximum_percent
+    )
+    error_message = "server_deployment_maximum_percent must be an integer in (100, 200]."
   }
 }
 

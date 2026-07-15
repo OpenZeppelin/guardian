@@ -130,6 +130,136 @@ pub struct ProposalRecord {
     pub commitment: String,
     pub proposal: DeltaObject,
 }
+
+/// Identity of the canonicalization lease a worker holds while writing.
+/// Fenced backends (Postgres) validate this against the `worker_leases`
+/// row inside the same transaction as the protected write and hold the
+/// row locked until commit, so a superseded holder cannot commit — the
+/// fence is enforced by the store, not by a separate pre-write read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseFence {
+    pub lease_name: String,
+    pub holder_id: String,
+    pub fence_token: i64,
+}
+
+/// Outcome of a fenced canonicalization write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalWrite {
+    /// The write committed.
+    Applied,
+    /// The caller's lease is no longer current; nothing was written.
+    StaleLease,
+    /// The target delta is no longer in candidate status (another owner
+    /// already promoted or discarded it); nothing was written.
+    NotCandidate,
+}
+
+/// Outcome of a candidate submission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateSubmission {
+    /// The candidate row and the pending-candidate flag committed.
+    Submitted,
+    /// The account already has a pending candidate, or a delta already
+    /// occupies this nonce; nothing was written. The service layer maps
+    /// this to the same conflict rejection as its pre-commit gate — the
+    /// in-transaction recheck is what makes that gate race-proof.
+    Conflict,
+    /// The account state advanced after the service-layer validation but
+    /// before the candidate transaction acquired the account lock.
+    CommitmentMismatch { expected: String },
+}
+
+/// Everything a candidate promotion commits as one unit: the advanced
+/// account state, the delta flipped to canonical, the optional cosigner
+/// auth sync, and the pending-candidate flag release. `now` stamps the
+/// metadata `updated_at`; `fence` is `None` only for single-process
+/// electors, whose leases have no shared-store row to validate — a
+/// fencing backend refuses an unfenced promotion outright.
+#[derive(Debug, Clone)]
+pub struct CandidatePromotion {
+    pub state: StateObject,
+    pub delta: DeltaObject,
+    pub new_auth: Option<crate::metadata::Auth>,
+    pub now: String,
+    pub fence: Option<LeaseFence>,
+}
+
+/// Single-process fallback for [`StorageBackend::submit_candidate`]:
+/// the delta write and the flag set are separate commits, and the
+/// pending-candidate recheck stays at the service-layer gate — both
+/// acceptable only where no concurrent replica can observe the gap
+/// (filesystem backend, mocks).
+pub(crate) async fn submit_candidate_sequential(
+    storage: &dyn StorageBackend,
+    metadata: &dyn crate::metadata::MetadataStore,
+    delta: &DeltaObject,
+    now: &str,
+) -> Result<CandidateSubmission, String> {
+    storage.submit_delta(delta).await?;
+    metadata
+        .set_has_pending_candidate(&delta.account_id, true, now)
+        .await?;
+    Ok(CandidateSubmission::Submitted)
+}
+
+/// Single-process fallback for [`StorageBackend::promote_candidate`]:
+/// sequential writes with no fence, mirroring the pre-lease worker.
+pub(crate) async fn promote_candidate_sequential(
+    storage: &dyn StorageBackend,
+    metadata: &dyn crate::metadata::MetadataStore,
+    promotion: CandidatePromotion,
+) -> Result<CanonicalWrite, String> {
+    storage.submit_state(&promotion.state).await?;
+    if let Some(new_auth) = promotion.new_auth {
+        metadata
+            .update_auth(&promotion.state.account_id, new_auth, &promotion.now)
+            .await?;
+    }
+    storage.submit_delta(&promotion.delta).await?;
+    metadata
+        .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
+        .await?;
+    Ok(CanonicalWrite::Applied)
+}
+
+/// Single-process fallback for [`StorageBackend::discard_candidate`].
+/// A flag-clear failure is tolerated (warn) to match the historical
+/// discard path: the candidate row is already gone and the stuck flag
+/// only costs an empty worker pass, never a wedge.
+pub(crate) async fn discard_candidate_sequential(
+    storage: &dyn StorageBackend,
+    metadata: &dyn crate::metadata::MetadataStore,
+    account_id: &str,
+    nonce: u64,
+    now: &str,
+) -> Result<CanonicalWrite, String> {
+    storage.delete_delta(account_id, nonce).await?;
+    if let Err(e) = metadata
+        .clear_pending_candidate_if_none(account_id, now)
+        .await
+    {
+        tracing::warn!(
+            account_id = %account_id,
+            error = %e,
+            "Failed to clear has_pending_candidate flag after discard"
+        );
+    }
+    Ok(CanonicalWrite::Applied)
+}
+
+/// Single-process fallback for [`StorageBackend::update_candidate_status`].
+pub(crate) async fn update_candidate_status_sequential(
+    storage: &dyn StorageBackend,
+    account_id: &str,
+    nonce: u64,
+    status: DeltaStatus,
+) -> Result<CanonicalWrite, String> {
+    storage
+        .update_delta_status(account_id, nonce, status)
+        .await?;
+    Ok(CanonicalWrite::Applied)
+}
 pub(crate) mod encryption;
 pub mod filesystem;
 #[cfg(feature = "postgres")]
@@ -275,6 +405,69 @@ pub trait StorageBackend: Send + Sync {
         nonce: u64,
         status: DeltaStatus,
     ) -> Result<(), String>;
+
+    // ----------------------------------------------------------------------
+    // Canonicalization lifecycle writes. Deliberately required (no
+    // defaults) on every implementation: a trait default silently
+    // absorbing a dropped backend override would revert the Postgres
+    // backend to unfenced, non-atomic writes. Postgres commits each of
+    // these as one fenced transaction; single-process backends use the
+    // `*_sequential` helpers above.
+    // ----------------------------------------------------------------------
+
+    /// Persist a new candidate delta and set the account's
+    /// `has_pending_candidate` flag as one unit. Without atomicity a
+    /// crash between the two writes leaves a candidate row the worker
+    /// never selects (flag false) while new submissions stay rejected
+    /// (row exists): a permanent wedge. Fencing backends additionally
+    /// recheck under the account lock that no candidate exists and that
+    /// the nonce is unoccupied, returning
+    /// [`CandidateSubmission::Conflict`] instead of overwriting — two
+    /// racing submissions that both passed the service-layer gate must
+    /// not both commit, and a delayed submission must never overwrite
+    /// canonical history at its nonce.
+    async fn submit_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<CandidateSubmission, String>;
+
+    /// Promote a verified candidate: advance the account state, sync
+    /// cosigner auth when supplied, flip the delta to canonical, and
+    /// release the pending-candidate flag — all or nothing, gated on
+    /// the promotion's lease fence and on the delta still being a
+    /// candidate.
+    async fn promote_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: CandidatePromotion,
+    ) -> Result<CanonicalWrite, String>;
+
+    /// Discard an unsatisfiable candidate: delete the delta row only if
+    /// it is still a candidate (a row another owner already promoted to
+    /// canonical must survive a stale discard) and release the
+    /// pending-candidate flag, gated on the lease fence.
+    async fn discard_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String>;
+
+    /// Update a candidate's status (retry / divergence bookkeeping) only
+    /// while it is still a candidate, gated on the lease fence — a stale
+    /// worker's delayed update must never demote a canonical delta back
+    /// to candidate.
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String>;
 
     // ----------------------------------------------------------------------
     // Dashboard read APIs — feature `005-operator-dashboard-metrics`,

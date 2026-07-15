@@ -9,9 +9,9 @@ use super::envelope::RecordAad;
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
-    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageBackend,
-    StorageType,
+    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
+    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
+    GlobalProposalCursor, LeaseFence, ProposalRecord, StorageBackend, StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 
@@ -255,6 +255,55 @@ impl StorageBackend for EncryptedStorage {
     ) -> Result<(), String> {
         self.inner
             .update_delta_status(account_id, nonce, status)
+            .await
+    }
+
+    async fn submit_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<CandidateSubmission, String> {
+        self.inner
+            .submit_candidate(metadata, &self.encrypt_delta(delta)?, now)
+            .await
+    }
+
+    async fn promote_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: CandidatePromotion,
+    ) -> Result<CanonicalWrite, String> {
+        let promotion = CandidatePromotion {
+            state: self.encrypt_state(&promotion.state)?,
+            delta: self.encrypt_delta(&promotion.delta)?,
+            ..promotion
+        };
+        self.inner.promote_candidate(metadata, promotion).await
+    }
+
+    async fn discard_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String> {
+        self.inner
+            .discard_candidate(metadata, account_id, nonce, now, fence)
+            .await
+    }
+
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String> {
+        self.inner
+            .update_candidate_status(account_id, nonce, status, fence)
             .await
     }
 

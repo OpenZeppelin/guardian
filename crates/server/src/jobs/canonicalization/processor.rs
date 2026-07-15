@@ -7,6 +7,7 @@ use crate::error::{GuardianError, Result};
 use crate::network::StateVerification;
 use crate::state::AppState;
 use crate::state_object::StateObject;
+use crate::storage::{CandidatePromotion, CanonicalWrite, LeaseFence};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio_util::sync::CancellationToken;
@@ -73,34 +74,46 @@ struct DeltasProcessorBase {
 }
 
 impl DeltasProcessorBase {
-    /// Mandatory fence check before every custody-state write: the canonical
-    /// `submit_state` / `submit_delta`, the `update_auth` cosigner-key sync, the
-    /// discard `delete_delta`, the retry `update_delta_status`, and the
-    /// divergence-streak `update_delta_status` (increment/reset) that gates a
-    /// divergence discard. If this replica no longer holds the lease (superseded
-    /// mid-pass), refuse the write so a stale leader can never commit a custody
-    /// transition. The fence is advisory (a separate read before the write), so
-    /// a steal can land between check and write; that residual window is safe to
-    /// *re-apply*, not byte-idempotent: promotion re-writes the same
-    /// deterministic transition (status timestamps may differ), a discard
-    /// repeats a delete, and a retry/divergence increment can at worst
-    /// double-count a single tick — never a divergent custody state. Trailing
-    /// cleanup is intentionally unfenced but
-    /// not blind: proposal deletion is idempotent, and the pending-candidate
-    /// flag uses the conditional `clear_pending_candidate_if_none` (see its doc
-    /// for the wedge race a blind clear would cause, which fencing cannot fix).
-    async fn ensure_lease_held(&self, delta: &DeltaObject) -> Result<()> {
-        if self.pass.leader.verify_held(&self.pass.lease).await? {
-            return Ok(());
-        }
+    /// Fence descriptor attached to every custody-state write: the canonical
+    /// promotion, the discard, and the retry / divergence-streak status
+    /// updates. Fenced backends (Postgres) validate it against the lease row
+    /// inside the same transaction as the write and hold the row locked until
+    /// commit, so a superseded holder can never commit a custody transition —
+    /// there is no check-then-write window. Backends additionally require the
+    /// target delta to still be a candidate, so a delayed stale write can
+    /// neither demote nor delete a delta another owner already promoted.
+    /// `None` for single-process electors, whose leases have no shared-store
+    /// row. Trailing cleanup (proposal deletion, release-on-switch) is
+    /// intentionally unfenced but not blind: proposal deletion is idempotent
+    /// and only follows a committed transition.
+    fn fence(&self) -> Option<LeaseFence> {
+        self.pass.leader.supports_fencing().then(|| LeaseFence {
+            lease_name: self.pass.lease.name.clone(),
+            holder_id: self.pass.lease.holder_id.clone(),
+            fence_token: self.pass.lease.fence_token,
+        })
+    }
+
+    /// Map a superseded-lease outcome to the error the pass surfaces; the
+    /// renewal task cancels the pass at the next checkpoint.
+    fn stale_lease_error(delta: &DeltaObject) -> GuardianError {
         tracing::warn!(
             account_id = %delta.account_id,
             nonce = delta.nonce,
-            "Canonicalization lease lost; refusing canonical write"
+            "Canonicalization lease lost; write refused by storage fence"
         );
-        Err(GuardianError::StorageError(
-            "canonicalization lease lost; aborting write".to_string(),
-        ))
+        GuardianError::StorageError("canonicalization lease lost; write refused".to_string())
+    }
+
+    /// Log a stale-candidate outcome: another owner already promoted or
+    /// discarded this delta, so the write was a no-op by design.
+    fn log_not_candidate(delta: &DeltaObject, operation: &str) {
+        tracing::warn!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            operation,
+            "Delta is no longer a candidate; skipping superseded write"
+        );
     }
 
     fn candidate_age_seconds(&self, delta: &DeltaObject, now: DateTime<Utc>) -> Option<u64> {
@@ -291,15 +304,24 @@ impl DeltasProcessorBase {
         );
 
         let new_status = delta.status.with_reset_divergence();
-        self.ensure_lease_held(&delta).await?;
-        self.state
+        let outcome = self
+            .state
             .storage
-            .update_delta_status(&delta.account_id, delta.nonce, new_status.clone())
+            .update_candidate_status(
+                &delta.account_id,
+                delta.nonce,
+                new_status.clone(),
+                self.fence().as_ref(),
+            )
             .await
             .map_err(|e| {
                 GuardianError::StorageError(format!("Failed to update delta status: {e}"))
             })?;
-        delta.status = new_status;
+        match outcome {
+            CanonicalWrite::Applied => delta.status = new_status,
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "divergence_reset"),
+        }
 
         Ok(delta)
     }
@@ -327,15 +349,28 @@ impl DeltasProcessorBase {
             );
 
             let new_status = delta.status.with_incremented_divergence();
-            self.ensure_lease_held(&delta).await?;
-            self.state
+            let outcome = self
+                .state
                 .storage
-                .update_delta_status(&delta.account_id, delta.nonce, new_status)
+                .update_candidate_status(
+                    &delta.account_id,
+                    delta.nonce,
+                    new_status,
+                    self.fence().as_ref(),
+                )
                 .await
                 .map_err(|e| {
                     GuardianError::StorageError(format!("Failed to update delta status: {e}"))
                 })?;
-            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::DivergenceDeferred);
+            match outcome {
+                CanonicalWrite::Applied => record_candidate_outcome(
+                    crate::metrics::labels::CandidateOutcome::DivergenceDeferred,
+                ),
+                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::NotCandidate => {
+                    Self::log_not_candidate(&delta, "divergence_increment")
+                }
+            }
 
             return Ok(());
         }
@@ -351,8 +386,13 @@ impl DeltasProcessorBase {
         );
 
         let now = self.state.clock.now().to_rfc3339();
-        self.remove_candidate(&delta, &now).await?;
-        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
+        match self.remove_candidate(&delta, &now).await? {
+            CanonicalWrite::Applied => {
+                record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
+            }
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_discard"),
+        }
 
         Ok(())
     }
@@ -392,8 +432,15 @@ impl DeltasProcessorBase {
                 "Delta verification failed after max retries, discarding"
             );
 
-            self.remove_candidate(&delta, &now).await?;
-            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
+            match self.remove_candidate(&delta, &now).await? {
+                CanonicalWrite::Applied => {
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
+                }
+                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::NotCandidate => {
+                    Self::log_not_candidate(&delta, "retry_discard");
+                }
+            }
         } else {
             tracing::info!(
                 account_id = %delta.account_id,
@@ -406,16 +453,30 @@ impl DeltasProcessorBase {
 
             let new_status = delta.status.with_incremented_retry(now);
 
-            self.ensure_lease_held(&delta).await?;
-            self.state
+            let outcome = self
+                .state
                 .storage
-                .update_delta_status(&delta.account_id, delta.nonce, new_status)
+                .update_candidate_status(
+                    &delta.account_id,
+                    delta.nonce,
+                    new_status,
+                    self.fence().as_ref(),
+                )
                 .await
                 .map_err(|e| {
                     GuardianError::StorageError(format!("Failed to update delta status: {e}"))
                 })?;
-            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Retried);
-            metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL).increment(1);
+            match outcome {
+                CanonicalWrite::Applied => {
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Retried);
+                    metrics::counter!(crate::metrics::names::CANONICALIZATION_RETRIES_TOTAL)
+                        .increment(1);
+                }
+                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::NotCandidate => {
+                    Self::log_not_candidate(&delta, "retry_increment");
+                }
+            }
         }
 
         Ok(())
@@ -423,14 +484,26 @@ impl DeltasProcessorBase {
 
     /// Delete a candidate that can never be canonicalized, delete its
     /// matching proposal, and release the account's pending-candidate lock.
-    async fn remove_candidate(&self, delta: &DeltaObject, now: &str) -> Result<()> {
+    /// The delete, the fence validation, and the conditional flag clear
+    /// commit as one fenced storage write; the delete only touches a row
+    /// still in candidate status, so a stale discard can never remove a
+    /// delta another owner promoted to canonical.
+    async fn remove_candidate(&self, delta: &DeltaObject, now: &str) -> Result<CanonicalWrite> {
         let storage_backend = self.state.storage.clone();
 
-        self.ensure_lease_held(delta).await?;
-        storage_backend
-            .delete_delta(&delta.account_id, delta.nonce)
+        let outcome = storage_backend
+            .discard_candidate(
+                self.state.metadata.as_ref(),
+                &delta.account_id,
+                delta.nonce,
+                now,
+                self.fence().as_ref(),
+            )
             .await
             .map_err(|e| GuardianError::StorageError(format!("Failed to delete delta: {e}")))?;
+        if outcome != CanonicalWrite::Applied {
+            return Ok(outcome);
+        }
 
         // A discarded candidate can never be canonicalized, so delete its proposal:
         // leaving it would strand it as `pending` forever and let clients re-submit a
@@ -474,22 +547,7 @@ impl DeltasProcessorBase {
             }
         }
 
-        // Conditional clear: never drop the flag while a candidate row exists
-        // (see the trait doc for the wedge race).
-        if let Err(e) = self
-            .state
-            .metadata
-            .clear_pending_candidate_if_none(&delta.account_id, now)
-            .await
-        {
-            tracing::warn!(
-                account_id = %delta.account_id,
-                error = %e,
-                "Failed to clear has_pending_candidate flag after discard"
-            );
-        }
-
-        Ok(())
+        Ok(CanonicalWrite::Applied)
     }
 
     async fn canonicalize_verified_delta(
@@ -532,14 +590,6 @@ impl DeltasProcessorBase {
             auth_scheme: String::new(),
         };
 
-        self.ensure_lease_held(&delta).await?;
-        storage_backend
-            .submit_state(&updated_state)
-            .await
-            .map_err(|e| {
-                GuardianError::StorageError(format!("Failed to update account state: {e}"))
-            })?;
-
         let new_auth = {
             let mut client = self.state.network_client.lock().await;
             client
@@ -549,23 +599,10 @@ impl DeltasProcessorBase {
                     GuardianError::StorageError(format!("Failed to check auth update: {e}"))
                 })?
         };
-
-        if let Some(new_auth) = new_auth {
+        if new_auth.is_some() {
             tracing::debug!(
                 account_id = %delta.account_id,
                 "Syncing cosigner public keys from on-chain storage"
-            );
-
-            self.ensure_lease_held(&delta).await?;
-            self.state
-                .metadata
-                .update_auth(&delta.account_id, new_auth, &now)
-                .await
-                .map_err(|e| GuardianError::StorageError(format!("Failed to update auth: {e}")))?;
-
-            tracing::debug!(
-                account_id = %delta.account_id,
-                "Metadata cosigner public keys synced with storage"
             );
         }
 
@@ -574,28 +611,32 @@ impl DeltasProcessorBase {
         let mut canonical_delta = delta.clone();
         canonical_delta.status = DeltaStatus::canonical(now.clone());
 
-        self.ensure_lease_held(&delta).await?;
-        storage_backend
-            .submit_delta(&canonical_delta)
+        // State, auth, delta status, and the pending-candidate flag commit
+        // as one fenced storage write: a crash, outage, or lease loss can
+        // never advance the state while the delta stays a candidate.
+        let outcome = storage_backend
+            .promote_candidate(
+                self.state.metadata.as_ref(),
+                CandidatePromotion {
+                    state: updated_state.clone(),
+                    delta: canonical_delta,
+                    new_auth,
+                    now: now.clone(),
+                    fence: self.fence(),
+                },
+            )
             .await
             .map_err(|e| {
-                GuardianError::StorageError(format!("Failed to update delta as canonical: {e}"))
+                GuardianError::StorageError(format!("Failed to canonicalize delta: {e}"))
             })?;
-
-        // Conditional clear: never drop the flag while a candidate row exists
-        // (see the trait doc for the wedge race).
-        self.state
-            .metadata
-            .clear_pending_candidate_if_none(&delta.account_id, &now)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    account_id = %delta.account_id,
-                    error = %e,
-                    "Failed to clear has_pending_candidate flag"
-                );
-                GuardianError::StorageError(format!("Failed to update metadata: {e}"))
-            })?;
+        match outcome {
+            CanonicalWrite::Applied => {}
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => {
+                Self::log_not_candidate(&delta, "promote");
+                return Ok(());
+            }
+        }
 
         let proposal_id = {
             let client = self.state.network_client.lock().await;
@@ -1730,5 +1771,225 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+    }
+
+    /// Elector standing in for the Postgres-backed one: leases carry a
+    /// shared-store row, so the processor must attach a fence to every
+    /// canonicalization write.
+    struct FencingElector;
+
+    #[async_trait::async_trait]
+    impl crate::coordination::LeaderElector for FencingElector {
+        async fn try_acquire(&self, _ttl: std::time::Duration) -> Result<Option<Lease>> {
+            Ok(None)
+        }
+
+        async fn renew(&self, _lease: &Lease, _ttl: std::time::Duration) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn verify_held(&self, _lease: &Lease) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn release(&self, _lease: Lease) -> Result<()> {
+            Ok(())
+        }
+
+        fn supports_fencing(&self) -> bool {
+            true
+        }
+    }
+
+    fn fenced_processor(state: AppState, config: CanonicalizationConfig) -> DeltasProcessor {
+        DeltasProcessor::with_lease(
+            state,
+            config,
+            Arc::new(FencingElector),
+            Lease {
+                name: CANONICALIZATION_LEASE.to_string(),
+                holder_id: "replica-a".to_string(),
+                fence_token: 7,
+                expires_at: chrono::DateTime::<Utc>::MAX_UTC,
+            },
+            tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    fn promotion_mocks(
+        account_id: &str,
+    ) -> (MockStorageBackend, MockNetworkClient, MockMetadataStore) {
+        let candidate = create_candidate_delta(account_id, 1);
+        let storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Match))
+            .with_should_update_auth(Ok(None));
+        let metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        (storage, network, metadata)
+    }
+
+    #[tokio::test]
+    async fn promotion_carries_the_lease_fence_to_storage() {
+        let account_id = "0xtest_account";
+        let (storage, network, metadata) = promotion_mocks(account_id);
+        let storage = Arc::new(storage);
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        let processor = fenced_processor(state, CanonicalizationConfig::default());
+
+        processor
+            .process_all_accounts()
+            .await
+            .expect("pass completes");
+        assert_eq!(
+            storage.get_promote_candidate_fences(),
+            vec![Some(crate::storage::LeaseFence {
+                lease_name: CANONICALIZATION_LEASE.to_string(),
+                holder_id: "replica-a".to_string(),
+                fence_token: 7,
+            })],
+            "a fencing elector's lease identity must reach the storage write",
+        );
+    }
+
+    #[tokio::test]
+    async fn single_process_promotion_carries_no_fence() {
+        let account_id = "0xtest_account";
+        let (storage, network, metadata) = promotion_mocks(account_id);
+        let storage = Arc::new(storage);
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::default());
+
+        processor
+            .process_all_accounts()
+            .await
+            .expect("pass completes");
+        assert_eq!(
+            storage.get_promote_candidate_fences(),
+            vec![None],
+            "single-process leases have no shared-store row to fence on",
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_lease_promotion_skips_proposal_cleanup() {
+        let account_id = "0xtest_account";
+        let (storage, network, metadata) = promotion_mocks(account_id);
+        let storage = Arc::new(
+            storage.with_promote_candidate(Ok(crate::storage::CanonicalWrite::StaleLease)),
+        );
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        let processor = fenced_processor(state, CanonicalizationConfig::default());
+
+        processor
+            .process_all_accounts()
+            .await
+            .expect("per-candidate errors are logged, not surfaced by the pass");
+        assert!(
+            storage.get_submit_state_calls().is_empty(),
+            "a refused promotion must not have written state",
+        );
+        assert!(
+            storage.get_pull_delta_proposal_calls().is_empty(),
+            "trailing proposal cleanup must not run after a refused promotion",
+        );
+    }
+
+    #[tokio::test]
+    async fn superseded_candidate_promotion_is_a_clean_skip() {
+        let account_id = "0xtest_account";
+        let (storage, network, metadata) = promotion_mocks(account_id);
+        let storage = Arc::new(
+            storage.with_promote_candidate(Ok(crate::storage::CanonicalWrite::NotCandidate)),
+        );
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        let processor = fenced_processor(state, CanonicalizationConfig::default());
+
+        processor
+            .process_all_accounts()
+            .await
+            .expect("a superseded candidate is skipped without error");
+        assert!(
+            storage.get_pull_delta_proposal_calls().is_empty(),
+            "another owner finished this candidate; its cleanup is not ours to run",
+        );
+    }
+
+    #[tokio::test]
+    async fn superseded_discard_deletes_nothing_and_skips_cleanup() {
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status =
+            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 17);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_discard_candidate(Ok(crate::storage::CanonicalWrite::NotCandidate)),
+        );
+        let network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Err("Verification failed".to_string()));
+        let metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(metadata),
+        );
+        let processor = fenced_processor(state, CanonicalizationConfig::new(10, 18));
+
+        processor
+            .process_all_accounts()
+            .await
+            .expect("a superseded discard is skipped without error");
+        assert!(
+            storage.get_delete_delta_calls().is_empty(),
+            "the storage-level discard already refused; nothing may be deleted",
+        );
+        assert!(
+            storage.get_pull_delta_proposal_calls().is_empty(),
+            "proposal cleanup must not follow a refused discard",
+        );
     }
 }

@@ -180,7 +180,7 @@ output "guardian_rate_per_min" {
 }
 
 output "guardian_max_replicas" {
-  description = "Effective GUARDIAN_MAX_REPLICAS (rate-limit partition divisor), after clamping an explicit override up to the autoscaling max capacity"
+  description = "Effective GUARDIAN_MAX_REPLICAS rate-limit divisor after clamping to the worst-case ECS deployment surge capacity"
   value       = local.effective_guardian_max_replicas
 }
 

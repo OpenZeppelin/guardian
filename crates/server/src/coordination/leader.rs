@@ -16,18 +16,28 @@ pub struct Lease {
 
 /// Coordinates single-owner background work across replicas. `renew` runs on its
 /// own timer concurrent with the protected work; a `false` return means the lease
-/// was lost. `verify_held` is the mandatory fence check the holder runs
-/// immediately before any state-mutating write. `release` expires the lease in
-/// place for prompt handover on a planned stop; the server has no graceful
-/// shutdown hook yet, so nothing calls it in production paths and a stopped
-/// holder hands over only after TTL expiry (documented in the
-/// horizontal-scaling runbook).
+/// was lost. State-mutating writes are fenced by the storage backend itself: the
+/// holder attaches its lease identity ([`crate::storage::LeaseFence`]) to each
+/// canonicalization write and a fencing backend validates and locks the lease row
+/// in the same transaction, so `verify_held` is a diagnostic read, not the write
+/// guard. `release` expires the lease in place for prompt handover on a planned
+/// stop; the server has no graceful shutdown hook yet, so nothing calls it in
+/// production paths and a stopped holder hands over only after TTL expiry
+/// (documented in the horizontal-scaling runbook).
 #[async_trait]
 pub trait LeaderElector: Send + Sync {
     async fn try_acquire(&self, ttl: Duration) -> Result<Option<Lease>>;
     async fn renew(&self, lease: &Lease, ttl: Duration) -> Result<bool>;
     async fn verify_held(&self, lease: &Lease) -> Result<bool>;
     async fn release(&self, lease: Lease) -> Result<()>;
+
+    /// Whether leases from this elector are backed by a shared-store row
+    /// that fenced storage backends can validate and lock inside the
+    /// same transaction as a canonicalization write. Single-process
+    /// electors return `false`: their leases have no row, so fenced
+    /// writes skip the lease predicate. Required (no default) so a
+    /// backend cannot silently lose its fencing in a merge.
+    fn supports_fencing(&self) -> bool;
 }
 
 /// Single-process elector: the only replica is always the leader. Used on the
@@ -71,6 +81,10 @@ impl LeaderElector for AlwaysLeader {
 
     async fn release(&self, _lease: Lease) -> Result<()> {
         Ok(())
+    }
+
+    fn supports_fencing(&self) -> bool {
+        false
     }
 }
 

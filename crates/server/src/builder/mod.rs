@@ -465,11 +465,31 @@ impl ServerBuilder {
         // which would let every replica run canonicalization and split auth
         // state. Checking here (not only on the dashboard==None path) catches a
         // manual builder that supplies a custom dashboard but skips coordination.
-        if coordination.is_none() && storage.kind() == crate::storage::StorageType::Postgres {
-            return Err("Postgres storage requires coordination handles for shared \
-                 sessions/challenges and canonicalization leadership; call \
-                 .coordination(...) (populated by StorageMetadataBuilder::build())"
-                .to_string());
+        // Present-but-in-memory handles are equally rejected: their leases have
+        // no shared-store row, so canonicalization writes would carry no fence
+        // and the Postgres backend would refuse them at runtime anyway — surface
+        // the misconfiguration at startup instead. The handles must come from
+        // the same database as storage and metadata
+        // (StorageMetadataBuilder::build wires all three from one pool); a
+        // mismatched domain fails closed at runtime — the fence cannot validate
+        // and candidates stay invisible to the worker — but is not detectable
+        // here through the trait objects.
+        if storage.kind() == crate::storage::StorageType::Postgres {
+            match &coordination {
+                None => {
+                    return Err("Postgres storage requires coordination handles for shared \
+                         sessions/challenges and canonicalization leadership; call \
+                         .coordination(...) (populated by StorageMetadataBuilder::build())"
+                        .to_string());
+                }
+                Some(handles) if !handles.leader.supports_fencing() => {
+                    return Err("Postgres storage requires fenceable coordination \
+                         (CoordinationHandles::postgres); in-memory handles would run \
+                         canonicalization on every replica with unfenced writes"
+                        .to_string());
+                }
+                Some(_) => {}
+            }
         }
         let coordination_mode = coordination
             .as_ref()

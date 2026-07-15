@@ -1,11 +1,13 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::schema::{delta_proposals, deltas, states, storage_encryption_marker};
+use crate::metadata::MetadataStore;
+use crate::schema::{account_metadata, delta_proposals, deltas, states, storage_encryption_marker};
 use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
-    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
+    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
+    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
+    GlobalProposalCursor, LeaseFence, ProposalRecord, StorageType,
 };
 use async_trait::async_trait;
 use diesel::ConnectionError;
@@ -14,7 +16,8 @@ use diesel::prelude::*;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::ManagerConfig;
 use diesel_async::pooled_connection::deadpool::Pool;
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use futures_util::FutureExt;
 use rustls::client::WebPkiServerVerifier;
@@ -769,6 +772,89 @@ impl MarkerStore for PostgresService {
     }
 }
 
+/// A canonicalization write reached the Postgres backend without a lease
+/// fence. On this backend every lifecycle write must be fenced — an unfenced
+/// write means the processor was wired with a single-process elector against
+/// shared storage, which the builder is supposed to reject. Fail closed.
+fn unfenced_write_error(operation: &str) -> String {
+    format!(
+        "Postgres canonicalization writes require a lease fence; \
+         refusing unfenced {operation} (wire CoordinationHandles::postgres)"
+    )
+}
+
+#[derive(diesel::QueryableByName)]
+struct FenceHeldRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    #[allow(dead_code)]
+    held: i32,
+}
+
+/// Validate the caller's lease inside the surrounding transaction and hold the
+/// `worker_leases` row locked until commit, so a steal cannot land between the
+/// check and the protected writes. Returns `false` (no row locked) when the
+/// lease was already superseded or expired.
+async fn lease_fence_held(
+    conn: &mut AsyncPgConnection,
+    fence: &LeaseFence,
+) -> Result<bool, diesel::result::Error> {
+    use diesel::sql_types::{BigInt, Text};
+    let row = diesel::sql_query(
+        "SELECT 1 AS held FROM worker_leases \
+         WHERE lease_name = $1 AND holder_id = $2 AND fence_token = $3 AND now() < expires_at \
+         FOR UPDATE",
+    )
+    .bind::<Text, _>(&fence.lease_name)
+    .bind::<Text, _>(&fence.holder_id)
+    .bind::<BigInt, _>(fence.fence_token)
+    .get_result::<FenceHeldRow>(conn)
+    .await
+    .optional()?;
+    Ok(row.is_some())
+}
+
+/// Lock the account's metadata row for the duration of the transaction. Every
+/// canonicalization write and every candidate submission takes this lock first,
+/// serializing them per account so the conditional pending-flag clear can never
+/// miss a concurrently committed candidate.
+async fn lock_account_metadata(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+) -> Result<(), diesel::result::Error> {
+    account_metadata::table
+        .filter(account_metadata::account_id.eq(account_id))
+        .select(account_metadata::account_id)
+        .for_update()
+        .first::<String>(conn)
+        .await
+        .map(|_| ())
+}
+
+/// Clear `has_pending_candidate` when no candidate rows remain, inside the
+/// caller's transaction (transactional twin of
+/// `PostgresMetadataStore::clear_pending_candidate_if_none`).
+async fn clear_pending_flag_if_none(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), diesel::result::Error> {
+    diesel::update(account_metadata::table)
+        .filter(account_metadata::account_id.eq(account_id))
+        .filter(account_metadata::has_pending_candidate.eq(true))
+        .filter(diesel::dsl::not(diesel::dsl::exists(
+            deltas::table
+                .filter(deltas::account_id.eq(account_id))
+                .filter(deltas::status_kind.eq("candidate")),
+        )))
+        .set((
+            account_metadata::has_pending_candidate.eq(false),
+            account_metadata::updated_at.eq(updated_at),
+        ))
+        .execute(conn)
+        .await
+        .map(|_| ())
+}
+
 #[async_trait]
 impl StorageBackend for PostgresService {
     fn kind(&self) -> StorageType {
@@ -1222,6 +1308,297 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to update delta status: {e}"))?;
 
         Ok(())
+    }
+
+    async fn submit_candidate(
+        &self,
+        _metadata: &dyn MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<CandidateSubmission, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let status_json = serde_json::to_value(&delta.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&delta.status)?;
+        let metadata_json = delta
+            .metadata
+            .as_ref()
+            .map(crate::delta_summary::metadata_to_value);
+        let updated_at: chrono::DateTime<chrono::Utc> = now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+        let delta = delta.clone();
+
+        conn.transaction::<CandidateSubmission, diesel::result::Error, _>(|conn| {
+            async move {
+                lock_account_metadata(conn, &delta.account_id).await?;
+
+                let current_commitment = states::table
+                    .filter(states::account_id.eq(&delta.account_id))
+                    .select(states::commitment)
+                    .first::<String>(conn)
+                    .await?;
+                if current_commitment != delta.prev_commitment {
+                    return Ok(CandidateSubmission::CommitmentMismatch {
+                        expected: current_commitment,
+                    });
+                }
+
+                // Race-proof twin of the service-layer admission gate:
+                // two submissions that both passed the pre-commit scan
+                // serialize on the account lock, and the loser sees the
+                // winner's candidate here.
+                let pending: bool = diesel::select(diesel::dsl::exists(
+                    deltas::table
+                        .filter(deltas::account_id.eq(&delta.account_id))
+                        .filter(deltas::status_kind.eq("candidate")),
+                ))
+                .get_result(conn)
+                .await?;
+                if pending {
+                    return Ok(CandidateSubmission::Conflict);
+                }
+
+                // DO NOTHING (not upsert): a row already at this nonce is
+                // settled history and must never be overwritten by a
+                // delayed submission.
+                let inserted = diesel::insert_into(deltas::table)
+                    .values(&NewDelta {
+                        account_id: &delta.account_id,
+                        nonce: delta.nonce as i64,
+                        prev_commitment: &delta.prev_commitment,
+                        new_commitment: delta.new_commitment.as_deref(),
+                        delta_payload: &delta.delta_payload,
+                        ack_sig: Some(delta.ack_sig.as_str()),
+                        status: status_json.clone(),
+                        status_kind,
+                        status_timestamp,
+                        metadata: metadata_json.as_ref(),
+                    })
+                    .on_conflict((deltas::account_id, deltas::nonce))
+                    .do_nothing()
+                    .execute(conn)
+                    .await?;
+                if inserted == 0 {
+                    return Ok(CandidateSubmission::Conflict);
+                }
+
+                diesel::update(account_metadata::table)
+                    .filter(account_metadata::account_id.eq(&delta.account_id))
+                    .set((
+                        account_metadata::has_pending_candidate.eq(true),
+                        account_metadata::updated_at.eq(updated_at),
+                    ))
+                    .execute(conn)
+                    .await?;
+
+                Ok(CandidateSubmission::Submitted)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to submit candidate: {e}"))
+    }
+
+    async fn promote_candidate(
+        &self,
+        _metadata: &dyn MetadataStore,
+        promotion: CandidatePromotion,
+    ) -> Result<CanonicalWrite, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let CandidatePromotion {
+            state,
+            delta,
+            new_auth,
+            now,
+            fence,
+        } = promotion;
+
+        let state_created_at: chrono::DateTime<chrono::Utc> = state
+            .created_at
+            .parse()
+            .map_err(|e| format!("Failed to parse created_at: {e}"))?;
+        let state_updated_at: chrono::DateTime<chrono::Utc> = state
+            .updated_at
+            .parse()
+            .map_err(|e| format!("Failed to parse updated_at: {e}"))?;
+        let metadata_updated_at: chrono::DateTime<chrono::Utc> = now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+        let status_json = serde_json::to_value(&delta.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&delta.status)?;
+        let auth_json = new_auth
+            .map(|auth| serde_json::to_value(&auth))
+            .transpose()
+            .map_err(|e| format!("Failed to serialize auth: {e}"))?;
+        let fence = fence.ok_or_else(|| unfenced_write_error("promote_candidate"))?;
+
+        conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
+            async move {
+                lock_account_metadata(conn, &state.account_id).await?;
+                if !lease_fence_held(conn, &fence).await? {
+                    return Ok(CanonicalWrite::StaleLease);
+                }
+
+                let flipped = diesel::update(deltas::table)
+                    .filter(deltas::account_id.eq(&delta.account_id))
+                    .filter(deltas::nonce.eq(delta.nonce as i64))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .set((
+                        deltas::status.eq(&status_json),
+                        deltas::status_kind.eq(status_kind),
+                        deltas::status_timestamp.eq(status_timestamp),
+                    ))
+                    .execute(conn)
+                    .await?;
+                if flipped == 0 {
+                    return Ok(CanonicalWrite::NotCandidate);
+                }
+
+                diesel::insert_into(states::table)
+                    .values(&NewState {
+                        account_id: &state.account_id,
+                        state_json: &state.state_json,
+                        commitment: &state.commitment,
+                        created_at: state_created_at,
+                        updated_at: state_updated_at,
+                    })
+                    .on_conflict(states::account_id)
+                    .do_update()
+                    .set((
+                        states::state_json.eq(&state.state_json),
+                        states::commitment.eq(&state.commitment),
+                        states::updated_at.eq(state_updated_at),
+                    ))
+                    .execute(conn)
+                    .await?;
+
+                if let Some(auth_json) = &auth_json {
+                    diesel::update(account_metadata::table)
+                        .filter(account_metadata::account_id.eq(&state.account_id))
+                        .set((
+                            account_metadata::auth.eq(auth_json),
+                            account_metadata::updated_at.eq(metadata_updated_at),
+                        ))
+                        .execute(conn)
+                        .await?;
+                }
+
+                clear_pending_flag_if_none(conn, &state.account_id, metadata_updated_at).await?;
+                Ok(CanonicalWrite::Applied)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to promote candidate: {e}"))
+    }
+
+    async fn discard_candidate(
+        &self,
+        _metadata: &dyn MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let updated_at: chrono::DateTime<chrono::Utc> = now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+        let account_id = account_id.to_string();
+        let fence = fence
+            .cloned()
+            .ok_or_else(|| unfenced_write_error("discard_candidate"))?;
+
+        conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
+            async move {
+                lock_account_metadata(conn, &account_id).await?;
+                if !lease_fence_held(conn, &fence).await? {
+                    return Ok(CanonicalWrite::StaleLease);
+                }
+
+                let deleted = diesel::delete(deltas::table)
+                    .filter(deltas::account_id.eq(&account_id))
+                    .filter(deltas::nonce.eq(nonce as i64))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .execute(conn)
+                    .await?;
+                if deleted == 0 {
+                    return Ok(CanonicalWrite::NotCandidate);
+                }
+
+                clear_pending_flag_if_none(conn, &account_id, updated_at).await?;
+                Ok(CanonicalWrite::Applied)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to discard candidate: {e}"))
+    }
+
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let status_json = serde_json::to_value(&status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&status)?;
+        let account_id = account_id.to_string();
+        let fence = fence
+            .cloned()
+            .ok_or_else(|| unfenced_write_error("update_candidate_status"))?;
+
+        conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
+            async move {
+                if !lease_fence_held(conn, &fence).await? {
+                    return Ok(CanonicalWrite::StaleLease);
+                }
+
+                let updated = diesel::update(deltas::table)
+                    .filter(deltas::account_id.eq(&account_id))
+                    .filter(deltas::nonce.eq(nonce as i64))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .set((
+                        deltas::status.eq(&status_json),
+                        deltas::status_kind.eq(status_kind),
+                        deltas::status_timestamp.eq(status_timestamp),
+                    ))
+                    .execute(conn)
+                    .await?;
+                if updated == 0 {
+                    return Ok(CanonicalWrite::NotCandidate);
+                }
+                Ok(CanonicalWrite::Applied)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to update candidate status: {e}"))
     }
 
     // ----------------------------------------------------------------------
@@ -2084,5 +2461,267 @@ mod tests {
     fn test_create_test_state() {
         let state = create_test_state("0x123");
         assert_eq!(state.account_id, "0x123");
+    }
+
+    /// End-to-end proof of the transactional fence: a superseded lease
+    /// holder's retry, discard, and promotion are all refused with no row
+    /// mutated; the current holder promotes atomically; and once canonical,
+    /// the delta survives both a repeated promotion and a discard attempt.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn fenced_canonicalization_writes_reject_stale_owners() {
+        use crate::coordination::LeaderElector;
+        use crate::coordination::postgres::PgLeaseElector;
+        use crate::delta_object::DeltaStatus;
+        use diesel::sql_types::Text;
+        use std::time::Duration;
+
+        let url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .expect("DATABASE_URL must be set for this #[ignore] test");
+        run_migrations(&url).await.expect("migrations apply");
+
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xfence{stamp}");
+        let lease_name = format!("canon-fence-{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let initial_state = create_test_state(&account_id);
+        let initial_commitment = initial_state.commitment.clone();
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+
+        let mut candidate = create_test_delta(&account_id, 1);
+        candidate.prev_commitment = initial_commitment.clone();
+        candidate.status = DeltaStatus::candidate(now.clone());
+        let submitted = service
+            .submit_candidate(&metadata_store, &candidate, &now)
+            .await
+            .expect("candidate insert + flag set commit together");
+        assert_eq!(submitted, CandidateSubmission::Submitted);
+
+        let racing_duplicate = service
+            .submit_candidate(&metadata_store, &candidate, &now)
+            .await
+            .expect("duplicate submission resolves");
+        assert_eq!(
+            racing_duplicate,
+            CandidateSubmission::Conflict,
+            "a second submission that raced past the service gate must not commit",
+        );
+        let mut second_nonce = create_test_delta(&account_id, 2);
+        second_nonce.status = DeltaStatus::candidate(now.clone());
+        assert_eq!(
+            service
+                .submit_candidate(&metadata_store, &second_nonce, &now)
+                .await
+                .expect("second-nonce submission resolves"),
+            CandidateSubmission::Conflict,
+            "one pending candidate per account, regardless of nonce",
+        );
+        let flag = |account: String| {
+            let pool = service.pool.clone();
+            async move {
+                let mut conn = pool.get().await.expect("conn");
+                account_metadata::table
+                    .filter(account_metadata::account_id.eq(account))
+                    .select(account_metadata::has_pending_candidate)
+                    .first::<bool>(&mut conn)
+                    .await
+                    .expect("flag read")
+            }
+        };
+        assert!(flag(account_id.clone()).await, "submit sets the flag");
+
+        let elector_a =
+            PgLeaseElector::new(build_postgres_pool_lazy(&url, 2).unwrap(), &lease_name, "a");
+        let elector_b =
+            PgLeaseElector::new(build_postgres_pool_lazy(&url, 2).unwrap(), &lease_name, "b");
+        let lease_a = elector_a
+            .try_acquire(Duration::from_secs(1))
+            .await
+            .expect("acquire a")
+            .expect("a owns the lease");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let lease_b = elector_b
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .expect("acquire b")
+            .expect("b steals the expired lease");
+        let stale_fence = LeaseFence {
+            lease_name: lease_a.name.clone(),
+            holder_id: lease_a.holder_id.clone(),
+            fence_token: lease_a.fence_token,
+        };
+        let current_fence = LeaseFence {
+            lease_name: lease_b.name.clone(),
+            holder_id: lease_b.holder_id.clone(),
+            fence_token: lease_b.fence_token,
+        };
+
+        let stale_retry = service
+            .update_candidate_status(
+                &account_id,
+                1,
+                DeltaStatus::candidate_with_retry(now.clone(), 1),
+                Some(&stale_fence),
+            )
+            .await
+            .expect("stale retry resolves");
+        assert_eq!(stale_retry, CanonicalWrite::StaleLease);
+        assert_eq!(
+            service.pull_delta(&account_id, 1).await.unwrap().status,
+            candidate.status,
+            "a refused retry mutates nothing",
+        );
+
+        let stale_discard = service
+            .discard_candidate(&metadata_store, &account_id, 1, &now, Some(&stale_fence))
+            .await
+            .expect("stale discard resolves");
+        assert_eq!(stale_discard, CanonicalWrite::StaleLease);
+        assert!(
+            service.pull_delta(&account_id, 1).await.is_ok(),
+            "a refused discard deletes nothing",
+        );
+
+        let mut canonical = candidate.clone();
+        canonical.status = DeltaStatus::canonical(now.clone());
+        let mut promoted_state = create_test_state(&account_id);
+        promoted_state.commitment = "0xpromoted".to_string();
+        let promotion = CandidatePromotion {
+            state: promoted_state,
+            delta: canonical,
+            new_auth: None,
+            now: now.clone(),
+            fence: Some(current_fence.clone()),
+        };
+
+        let stale_promotion = service
+            .promote_candidate(
+                &metadata_store,
+                CandidatePromotion {
+                    fence: Some(stale_fence),
+                    ..promotion.clone()
+                },
+            )
+            .await
+            .expect("stale promotion resolves");
+        assert_eq!(stale_promotion, CanonicalWrite::StaleLease);
+
+        let unfenced = service
+            .promote_candidate(
+                &metadata_store,
+                CandidatePromotion {
+                    fence: None,
+                    ..promotion.clone()
+                },
+            )
+            .await;
+        assert!(
+            unfenced.is_err_and(|e| e.contains("lease fence")),
+            "the Postgres backend refuses unfenced canonicalization writes",
+        );
+
+        let promoted = service
+            .promote_candidate(&metadata_store, promotion.clone())
+            .await
+            .expect("current owner promotes");
+        assert_eq!(promoted, CanonicalWrite::Applied);
+        assert!(
+            service
+                .pull_delta(&account_id, 1)
+                .await
+                .unwrap()
+                .status
+                .is_canonical(),
+            "promotion flips the delta to canonical",
+        );
+        assert_eq!(
+            service.pull_state(&account_id).await.unwrap().commitment,
+            "0xpromoted",
+            "promotion advances the state in the same commit",
+        );
+        assert!(
+            !flag(account_id.clone()).await,
+            "promotion releases the pending-candidate flag in the same commit",
+        );
+
+        let mut stale_state_candidate = create_test_delta(&account_id, 2);
+        stale_state_candidate.prev_commitment = initial_commitment;
+        stale_state_candidate.status = DeltaStatus::candidate(now.clone());
+        assert_eq!(
+            service
+                .submit_candidate(&metadata_store, &stale_state_candidate, &now)
+                .await
+                .expect("stale-state submission resolves"),
+            CandidateSubmission::CommitmentMismatch {
+                expected: "0xpromoted".to_string(),
+            },
+            "the transaction rejects a candidate built before the promotion",
+        );
+
+        let repeat = service
+            .promote_candidate(&metadata_store, promotion)
+            .await
+            .expect("repeat promotion resolves");
+        assert_eq!(
+            repeat,
+            CanonicalWrite::NotCandidate,
+            "a promotion re-applied to a canonical delta is a no-op",
+        );
+
+        let discard_canonical = service
+            .discard_candidate(&metadata_store, &account_id, 1, &now, Some(&current_fence))
+            .await
+            .expect("discard of canonical resolves");
+        assert_eq!(
+            discard_canonical,
+            CanonicalWrite::NotCandidate,
+            "canonical lineage survives every discard attempt",
+        );
+        assert!(service.pull_delta(&account_id, 1).await.is_ok());
+
+        elector_b.release(lease_b).await.expect("release");
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup deltas");
+        diesel::sql_query("DELETE FROM states WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup states");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup metadata");
+        diesel::sql_query("DELETE FROM worker_leases WHERE lease_name = $1")
+            .bind::<Text, _>(&lease_name)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup lease");
     }
 }

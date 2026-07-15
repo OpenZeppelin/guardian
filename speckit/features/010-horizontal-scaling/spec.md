@@ -264,13 +264,18 @@ source code.
   when the current owner becomes unavailable. Ownership renewal MUST run
   concurrently with (not gated on) the canonicalization pass, the pass MUST be
   cooperatively cancellable so a lost owner can stop promptly, and every
-  state-mutating write (canonical promotion **and** retry/discard) MUST be gated
-  by an advisory fencing check so a superseded owner is prevented from committing
-  during the cancellation window. (The fence is a pre-write ownership re-check;
-  combined with re-apply-safe writes — promotion re-writes the same deterministic
-  transition, discard repeats a delete, and a retry increment can at worst
-  double-count one retry tick — a brief two-leader overlap can re-apply a
-  transition or cost one extra retry, never produce a divergent custody state.)
+  state-mutating write (canonical promotion **and** retry/discard) MUST be fenced
+  **inside the write itself**: the shared-store backend validates the owner's
+  fencing token against the lease row in the same transaction as the write (and
+  holds the lease row locked until commit), and the write additionally requires
+  the target delta to still be in candidate status. A superseded owner's delayed
+  write is therefore refused by the store — there is no check-then-write window —
+  and a stale retry, discard, or promotion can never demote, delete, or overwrite
+  a delta another owner already finalized. Canonical promotion MUST be
+  failure-atomic: account state, cosigner auth sync, the candidate→canonical
+  status flip, and the pending-candidate flag release commit as one transaction,
+  so no crash, outage, or lease loss can advance the state while the delta
+  remains a candidate.
 - **FR-006**: Canonicalization retry budgets and state transitions
   (promote/discard) MUST be counted once per interval across the fleet, never
   once per replica.
@@ -290,8 +295,10 @@ source code.
   the maximum number of replicas are running, aggregate enforcement is stricter
   than the global limit (never looser); the resulting tolerance band MUST be
   documented. `GUARDIAN_MAX_REPLICAS` MUST default from the deployment's
-  autoscaling max capacity (set by infrastructure), not from a manually maintained
-  value, and MUST remain operator-overridable.
+  worst-case concurrent task capacity, including rolling-deployment surge
+  (`max(desired count, autoscaling max) × deployment maximum percent`, using ECS
+  rounding), not from a manually maintained value, and MUST remain
+  operator-overridable.
 - **FR-010**: Rate limiting MUST NOT introduce any external coordination
   dependency on the request hot path; enforcement is per-process arithmetic over
   the partitioned budget and therefore has no shared-store failure mode. Any
@@ -396,7 +403,7 @@ source code.
 - **SC-005**: With N replicas, the aggregate accepted request rate for a client
   exceeding the configured limit stays at or below the configured global limit
   (rather than ~ Nx the limit). The documented tolerance band MUST also state the
-  two-sided imprecision: (a) running below the autoscaling max capacity enforces
+  two-sided imprecision: (a) running below the deployment surge capacity enforces
   stricter than the global limit, and (b) HTTP keep-alive can pin a single client
   to one replica, so that client may be throttled at
   `global_limit / GUARDIAN_MAX_REPLICAS` (e.g. 1/6) — an over-strict, fail-closed
@@ -436,17 +443,17 @@ source code.
   on session affinity.
 - Replica clocks are synchronized within a few seconds (standard for the ECS
   environment); expiry/lease logic must tolerate small skew.
-- Rate limiting is partitioned conservatively against the autoscaling **max**
+- Rate limiting is partitioned conservatively against deployment **surge**
   capacity (not the current replica count), so it is never silently looser than
-  the global limit during scale-out and over-throttles (conservatively stricter)
-  when running below max capacity. A documented tolerance band for this
+  the global limit during scale-out or rolling deployment and over-throttles
+  when running below that capacity. A documented tolerance band for this
   over-throttling is acceptable, consistent with the issue's "within some
   documented tolerance".
-- The infrastructure already computes the autoscaling max capacity
-  (`infra/data.tf` `effective_server_autoscaling_max_capacity`, prod =
-  `max(desired, 6)`); `GUARDIAN_MAX_REPLICAS` defaults from it via Terraform
-  rather than a manually maintained value. It drives **rate-limit partitioning
-  only**; the coordination mode is backend-derived (FR-020).
+- The infrastructure computes surge capacity from the greater of desired count
+  and autoscaling max, scaled by the ECS deployment maximum percentage;
+  `GUARDIAN_MAX_REPLICAS` defaults from it via Terraform rather than a manually
+  maintained value. It drives **rate-limit partitioning only**; the coordination
+  mode is backend-derived (FR-020).
 
 ## Dependencies
 
@@ -458,9 +465,9 @@ source code.
   `GUARDIAN_METADATA_PATH`.
 - New configuration: `GUARDIAN_MAX_REPLICAS` (maximum replica capacity; drives
   **rate-limit partitioning only**; defaults from
-  `effective_server_autoscaling_max_capacity`).
+  `effective_server_deployment_surge_capacity`).
 - Infrastructure wiring (in scope): `infra/data.tf`
-  (`effective_server_autoscaling_max_capacity`) and `infra/ecs.tf` (server env
+  (`effective_server_deployment_surge_capacity`) and `infra/ecs.tf` (server env
   block) must set `GUARDIAN_MAX_REPLICAS` so the correct default ships without
   operator action.
 - Operator documentation set (`docs/CONFIGURATION.md`, AWS deploy docs, runbooks)

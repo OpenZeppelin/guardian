@@ -135,6 +135,10 @@ impl LeaderElector for PgLeaseElector {
         .map_err(|error| GuardianError::StorageError(format!("lease release: {error}")))?;
         Ok(())
     }
+
+    fn supports_fencing(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

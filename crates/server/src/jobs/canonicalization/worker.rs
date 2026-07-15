@@ -177,6 +177,10 @@ mod tests {
         async fn release(&self, _lease: Lease) -> Result<()> {
             Ok(())
         }
+
+        fn supports_fencing(&self) -> bool {
+            false
+        }
     }
 
     fn lease() -> Lease {

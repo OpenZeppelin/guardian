@@ -238,11 +238,21 @@ resource "aws_ecs_service" "server" {
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.server.arn
   desired_count                      = local.effective_server_desired_count
-  deployment_maximum_percent         = 200
+  deployment_maximum_percent         = var.server_deployment_maximum_percent
   deployment_minimum_healthy_percent = 100
   launch_type                        = "FARGATE"
   platform_version                   = "LATEST"
   enable_execute_command             = true
+
+  lifecycle {
+    precondition {
+      condition = (
+        floor(local.effective_server_minimum_positive_capacity * var.server_deployment_maximum_percent / 100) >
+        local.effective_server_minimum_positive_capacity
+      )
+      error_message = "server_deployment_maximum_percent must allow at least one surge task at the minimum positive desired capacity because deployment_minimum_healthy_percent is 100."
+    }
+  }
 
   health_check_grace_period_seconds = 30
 

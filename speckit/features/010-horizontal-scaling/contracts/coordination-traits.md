@@ -81,7 +81,7 @@ Behavioral contract:
 trait LeaderElector {
     async fn try_acquire(&self, lease: &str, holder_id: &str, ttl: Duration) -> Result<Option<Lease>>;
     async fn renew(&self, lease: &Lease) -> Result<bool>;     // false => lease lost
-    async fn verify_held(&self, lease: &Lease) -> Result<bool>; // fence-checked ownership at submission boundary
+    async fn verify_held(&self, lease: &Lease) -> Result<bool>; // diagnostic ownership probe (the write-time fence lives in the storage transaction)
     async fn release(&self, lease: Lease) -> Result<()>;       // graceful shutdown
 }
 struct Lease { name, holder_id, fence_token, expires_at }
@@ -109,23 +109,33 @@ returns `false`, the renewal task trips the cancellation signal and the pass sto
 at the next checkpoint. "Abort the current pass" is thus a concrete mechanism, not
 just a requirement.
 
-**Fence enforcement at the submission boundary (MUST, not may)**: `fence_token`
-advances on each change of holder (a steal). Because cancellation is cooperative
-there is a window between losing the lease and the pass actually stopping, so the
-processor MUST call `verify_held` (fence/ownership re-check) immediately before
-**every** state-mutating write — canonical `submit_state`/`submit_delta` **and**
-the retry/discard writes — and MUST skip the write if it returns `false`.
+**Fence enforcement inside the write (MUST, not may)**: `fence_token` advances on
+each change of holder (a steal). Because cancellation is cooperative there is a
+window between losing the lease and the pass actually stopping, so **every**
+state-mutating write — canonical promotion **and** the retry/discard writes —
+carries the holder's lease identity (`LeaseFence { lease_name, holder_id,
+fence_token }`) into the storage backend, which validates it against the
+`worker_leases` row **in the same transaction as the write** and holds the row
+locked until commit (`SELECT … FOR UPDATE`). A steal cannot land between check
+and write; a superseded holder's write is refused by the store and reported as
+`StaleLease` with nothing mutated.
 
-The fence is **advisory**, not atomic: `verify_held` is a separate round-trip, so
-in principle the lease could be stolen between the check and the write (TOCTOU).
-This is acceptable because the writes are **safe to re-apply** (not strictly
-byte-idempotent): canonical promotion re-writes the same deterministic transition
-(status timestamps may differ), a discard repeats a delete, and a retry increment
-can at worst double-count a single retry tick in the overlap window — so a brief
-two-leader overlap can re-apply a transition or cost one extra retry, never
-produce a divergent custody state. The fence + re-apply safety + cooperative
-cancellation together strongly mitigate split-brain; TTL + voluntary abort alone
-is not relied on.
+Each write is additionally conditional on the target delta still being in
+candidate status (`status_kind = 'candidate'` CAS): a delayed stale retry cannot
+demote a canonical delta, a delayed stale discard cannot delete one, and a
+repeated promotion is a clean `NotCandidate` no-op. Canonical promotion commits
+account state, the cosigner auth sync, the candidate→canonical flip, and the
+pending-candidate flag release as **one transaction**, so a crash or outage
+mid-promotion can never leave state advanced with the delta still a candidate.
+Candidate submission likewise commits the delta row and the pending-candidate
+flag together, and both paths lock the account's metadata row first, so the
+conditional flag clear can never race a concurrent submission into a wedge.
+
+`LeaderElector` exposes `supports_fencing()` (required, no default): `true` for
+the Postgres elector, `false` for `AlwaysLeader`, whose leases have no
+shared-store row — single-process writes carry no fence and skip the lease
+predicate. `verify_held` remains as a diagnostic/ownership probe; it is no
+longer the write guard.
 
 ## Selection rule (wiring)
 

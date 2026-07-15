@@ -49,8 +49,14 @@ start** rather than falling back to per-process state.
 - **Canonicalization** runs on exactly one replica at a time via a Postgres
   lease (`worker_leases`). Leadership transfers automatically to another replica
   within one lease TTL (≈ 3× the canonicalization check interval) if the holder
-  crashes. A superseded holder cannot commit a canonical write (a fencing token
-  is checked before every state/delta write). A *planned* stop (deploy,
+  crashes. A superseded holder cannot commit a canonical write: every
+  canonicalization write (promotion, discard, retry bookkeeping) validates the
+  holder's fencing token against the lease row **inside the same database
+  transaction** and only touches deltas still in candidate status, so a stale
+  holder's delayed write is refused by the store rather than merely checked
+  before it. Promotion itself is atomic — account state, cosigner auth sync,
+  the candidate→canonical flip, and the pending-candidate flag release commit
+  together or not at all. A *planned* stop (deploy,
   scale-in) does not release the lease early today — there is no graceful
   shutdown hook yet — so after replacing the lease holder, canonicalization
   pauses for up to one TTL (~30s at the default 10s check interval) before the
@@ -81,18 +87,28 @@ The configured global limits (`GUARDIAN_RATE_BURST_PER_SEC`,
 enforces `global / GUARDIAN_MAX_REPLICAS`. With round-robin distribution the
 fleet aggregate stays at or below the global limit.
 
-- Default = the deployment's **autoscaling max capacity** (Terraform). It must be
-  the *max*, not the count you happen to run now — partitioning by max is
-  conservative.
+- Default = the deployment's **surge capacity** (Terraform):
+  `max(desired count, autoscaling max) × deployment_maximum_percent`, rounded
+  down as ECS rounds its task ceiling (200% by default, so 2 × capacity). An ECS
+  rolling deploy can briefly run that many healthy tasks at once, and each
+  divides by this value — so the aggregate holds even mid-deploy. It must be the
+  worst-case concurrent count, not the count you happen to run now —
+  partitioning by capacity is conservative.
 - **Drives rate-limiting only.** It has no effect on coordination mode.
-- **Tolerance band**: when fewer than max replicas are running, the fleet
-  over-throttles (stricter than the global limit) — accepted. HTTP keep-alive can
-  also pin a client to one replica, throttling it at `global / max` (e.g. 1/6) —
-  also accepted; it is fail-closed (never too loose).
+- **Tolerance band**: when fewer than the surge capacity of replicas are
+  running — which is the steady state — the fleet over-throttles (stricter than
+  the global limit; roughly half of it outside deploy windows at the default
+  200% surge) — accepted; raise the global limits if steady-state throughput
+  matters, the invariant still holds. HTTP keep-alive can also pin a client to
+  one replica, throttling it at `global / capacity` — also accepted; it is
+  fail-closed (never too loose).
 - **Override** (`var.guardian_max_replicas`): an explicit value is clamped **up**
-  to the autoscaling max, so it can never drop below real capacity (which would
-  let the aggregate exceed the global limit). Setting it higher only
-  over-throttles.
+  to the surge capacity, so it can never drop below the worst-case concurrent
+  task count (which would let the aggregate exceed the global limit). Setting it
+  higher only over-throttles. `var.server_deployment_maximum_percent` tunes the
+  surge itself; Terraform rejects values that round down to no extra deployment
+  task at the minimum positive desired capacity (including autoscaling minimum)
+  while minimum healthy capacity is 100%.
 - **Invalid values fail fast in prod**: a set-but-unparsable or zero
   `GUARDIAN_MAX_REPLICAS` would otherwise fall back to a divisor of 1 and
   silently disable partitioning (fail-open). In the prod stage the server
