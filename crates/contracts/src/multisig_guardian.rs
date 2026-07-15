@@ -120,6 +120,7 @@ impl MultisigGuardianBuilder {
     }
 
     /// Builds the account using `build_existing()` (for testing with pre-set account state).
+    #[cfg(feature = "testing")]
     pub fn build_existing(self) -> Result<Account> {
         let (seed, account_type, component) = self.into_parts()?;
         AccountBuilder::new(seed)

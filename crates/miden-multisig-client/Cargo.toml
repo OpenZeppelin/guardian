@@ -47,4 +47,5 @@ legacy-consume-notes = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
+miden-confidential-contracts = { version = "=0.15.1", path = "../contracts", features = ["testing"] }
 miden-client = { workspace = true, features = ["tonic", "testing"] }

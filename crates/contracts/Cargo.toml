@@ -16,7 +16,11 @@ miden-protocol = { workspace = true }
 anyhow = { workspace = true }
 guardian-shared = { version = "=0.15.1", path = "../shared" }
 
+[features]
+testing = ["miden-protocol/testing"]
+
 [dev-dependencies]
+miden-confidential-contracts = { path = ".", features = ["testing"] }
 miden-client = { workspace = true, features = ["testing", "tonic"] }
 miden-tx = { workspace = true }
 miden-testing = { workspace = true }
