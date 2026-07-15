@@ -102,8 +102,8 @@ none and behavior is unchanged.
 - Enable against an **empty** store. The server writes a one-time marker on the
   first encrypted write and then refuses to mix plaintext and ciphertext, so it
   fails fast if a key is configured against a store that already holds plaintext
-  records. The Miden 0.15 cutover (which truncates account data) is the natural
-  enablement window.
+  records. The Miden 0.15 cutover (which purges Miden account data) is the
+  natural enablement window.
 - Startup is fail-fast: a missing/malformed/wrong-length key, or more than one
   key source, prevents startup rather than degrading to plaintext.
 - Key rotation: add a new entry to `keys` and move `active`; keep the old key so
@@ -115,18 +115,22 @@ Full configuration and a dev walkthrough are in
 
 ## Upgrading to Miden 0.15
 
-> **One-time, irreversible: the first 0.15 deploy wipes all pre-0.15 account
-> data.** Miden 0.15 changed account-ID derivation (v0 → v1) and Guardian's
-> custody account now uses the upstream `miden-standards` guarded-multisig
-> component, so stored 0.14 account states, deltas, proposals, and metadata
-> can no longer be deserialized or recomputed. They cannot be migrated.
+> **One-time, irreversible: the first 0.15 deploy wipes all pre-0.15 Miden
+> account data. EVM accounts are unaffected.** Miden 0.15 changed account-ID
+> derivation (v0 → v1) and Guardian's custody account now uses the upstream
+> `miden-standards` guarded-multisig component, so stored 0.14 Miden account
+> states, deltas, proposals, and metadata can no longer be deserialized or
+> recomputed. They cannot be migrated.
 
 What happens on the first 0.15 startup (Postgres backend):
 
 - The embedded cutover migration
   `2026-06-14-000001_v015_account_id_cutover` runs automatically via
-  `run_pending_migrations` and `TRUNCATE`s `states`, `deltas`,
-  `delta_proposals`, and `account_metadata`.
+  `run_pending_migrations` and deletes Miden-network rows from `states`,
+  `deltas`, `delta_proposals`, and `account_metadata`. Rows whose
+  `account_metadata.network_config->>'kind'` is `evm` are preserved across
+  all four tables; every other row — Miden rows and any row orphaned from
+  its metadata — is purged.
 - The append-only `admin_actions` audit table is **preserved** (it is
   DB-trigger protected and carries no un-deserializable account state).
 - The migration is irreversible — its `down.sql` is a no-op. There is no
@@ -136,9 +140,10 @@ Operator actions:
 
 - **Back up the database before deploying 0.15** if any pre-0.15 record must
   be retained for audit outside `admin_actions`.
-- After the upgrade, existing accounts must be **recreated** on 0.15; there is
-  no in-place account migration. Users re-establish custody accounts (new v1
-  IDs) and re-register them on the Guardian.
+- After the upgrade, existing Miden accounts must be **recreated** on 0.15;
+  there is no in-place account migration. Users re-establish custody accounts
+  (new v1 IDs) and re-register them on the Guardian. EVM accounts continue
+  operating unchanged.
 - Filesystem-backed deployments have no migration step — remove the data
   directory instead.
 
