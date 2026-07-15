@@ -46,6 +46,15 @@ a manually maintained value:
 This keeps the default correct on every deploy with no operator action; the
 runbook documents the override, not a required value.
 
+The managed prod profile also resolves a pre-created Secrets Manager entry
+(default `${stack_name}/server/dashboard-cursor-secret`) and injects its value as
+`GUARDIAN_DASHBOARD_CURSOR_SECRET` into every ECS task. Planning or deploying
+prod fails when the entry is absent. The deployment helper provides the
+one-time, non-overwriting `bootstrap-dashboard-cursor-secret` command. This is a
+Terraform profile guarantee, not a new server startup guard: manually managed
+deployments may still omit the variable and receive the ephemeral-key warning
+described above.
+
 ## Startup guards (fail-fast, prod only)
 
 The server MUST refuse to start, with a clear actionable error naming the

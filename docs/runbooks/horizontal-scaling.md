@@ -10,13 +10,19 @@ Tracking: issue #242.
 | Setting | Why it matters across replicas |
 |---|---|
 | **Postgres backend** (`DATABASE_URL`) | Sessions, login challenges, and the canonicalization lease live in Postgres so they are shared. The filesystem backend is **dev-only** and is refused at startup in the prod stage. |
-| **`GUARDIAN_DASHBOARD_CURSOR_SECRET`** (64 hex chars) | Pagination cursors are signed with this key. If it differs per replica, a cursor minted on one replica fails on another. Unset → the server **warns** and generates an ephemeral per-process secret (boots fine in every stage); pin a shared value so multi-replica dashboard pagination works. Degrades only pagination, not custody. |
+| **`GUARDIAN_DASHBOARD_CURSOR_SECRET`** (64 hex chars) | Pagination cursors are signed with this key. The prod Terraform profile injects one pre-created Secrets Manager value into every task. Outside that profile, an unset value makes the server **warn** and generate an ephemeral per-process secret; this degrades pagination across replicas, not custody. |
 | **`GUARDIAN_ENV=prod`** | Activates the prod-stage startup guards (filesystem-backend refusal, 0-req/replica rate-limit refusal). Set by Terraform from `var.deployment_stage`. |
 | **`GUARDIAN_MAX_REPLICAS`** | Rate-limit partitioning divisor (see below). Defaults from the autoscaling max capacity via Terraform. |
 
 With the published Postgres image + the prod Terraform profile, all of these are
-set for you. The rest of this doc is for understanding and for non-default
-deployments.
+set for you after the one-time cursor-secret bootstrap:
+
+```bash
+DEPLOY_STAGE=prod STACK_NAME=<stack> ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret
+```
+
+Normal deploys require that secret to exist and never create or rotate it. The
+rest of this doc is for understanding and for non-default deployments.
 
 ## Coordination is backend-derived (not a tunable)
 

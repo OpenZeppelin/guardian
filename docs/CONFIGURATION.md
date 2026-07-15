@@ -223,7 +223,7 @@ one-command Grafana dashboard stack.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
-| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. If unset the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key only breaks dashboard pagination across replicas — nothing else, so it is not a startup guard. |
+| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key only breaks dashboard pagination across replicas — nothing else, so it is not a startup guard. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
 (`testnet`, `devnet`, or `local`) rather than configured separately.
@@ -340,5 +340,5 @@ this saves you from grepping:
 | EVM support locally | `GUARDIAN_EVM_RPC_URLS` (allowed chain set derives from its keys) + build with `--features evm` |
 | Use Secrets Manager for ACK keys | `GUARDIAN_ENV=prod` + `AWS_REGION=<region>` + secrets pre-created |
 | Run the dashboard locally | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/path/to/allowlist.json` |
-| Multi-replica (HA) | Postgres backend + `GUARDIAN_DASHBOARD_CURSOR_SECRET=<64 hex>` pinned across tasks + `GUARDIAN_MAX_REPLICAS=<autoscaling max>` (all set by the prod Terraform profile) |
+| Multi-replica (HA) | Postgres backend + `GUARDIAN_DASHBOARD_CURSOR_SECRET=<64 hex>` pinned across tasks + `GUARDIAN_MAX_REPLICAS=<deployment surge capacity>`. The prod Terraform profile sets these after `bootstrap-dashboard-cursor-secret` creates the required Secrets Manager entry. |
 | Higher throughput in prod | `GUARDIAN_RATE_BURST_PER_SEC`, `GUARDIAN_RATE_PER_MIN`, `GUARDIAN_DB_POOL_MAX_SIZE` |

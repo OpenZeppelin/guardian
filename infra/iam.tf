@@ -27,28 +27,44 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = concat(
-          [
-            aws_secretsmanager_secret.database_url.arn
-          ],
-          local.ca_bundle_enabled ? [
-            var.rds_ca_bundle_secret_arn
-          ] : [],
-          local.evm_allowed_chain_ids_secret_arn != "" ? [
-            local.evm_allowed_chain_ids_secret_arn
-          ] : [],
-          local.evm_rpc_urls_secret_arn != "" ? [
-            local.evm_rpc_urls_secret_arn
-          ] : []
-        )
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = concat(
+            [
+              aws_secretsmanager_secret.database_url.arn
+            ],
+            local.ca_bundle_enabled ? [
+              var.rds_ca_bundle_secret_arn
+            ] : [],
+            local.evm_allowed_chain_ids_secret_arn != "" ? [
+              local.evm_allowed_chain_ids_secret_arn
+            ] : [],
+            local.evm_rpc_urls_secret_arn != "" ? [
+              local.evm_rpc_urls_secret_arn
+            ] : [],
+            local.is_prod ? [
+              data.aws_secretsmanager_secret.dashboard_cursor[0].arn
+            ] : []
+          )
+        }
+      ],
+      local.is_prod && data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id != "" ? [
+        {
+          Effect = "Allow"
+          Action = [
+            "kms:Decrypt"
+          ]
+          Resource = [
+            data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id
+          ]
+        }
+      ] : []
+    )
   })
 }
 

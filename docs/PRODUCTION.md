@@ -61,9 +61,9 @@ Before treating a deployment as production-ready:
 - If the operator dashboard is enabled, configure the operator allowlist
   secret and use object entries when permissions beyond `dashboard:read` are
   needed.
-- If running two or more ECS tasks, pin
-  `GUARDIAN_DASHBOARD_CURSOR_SECRET` so dashboard cursors validate across
-  tasks.
+- Before the first managed prod deploy, run
+  `./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret`; Terraform then injects the same
+  `GUARDIAN_DASHBOARD_CURSOR_SECRET` into every ECS task.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
 - If Prometheus scraping is wanted, set `GUARDIAN_METRICS_ENABLED=true`,

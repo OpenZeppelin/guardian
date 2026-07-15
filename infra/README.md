@@ -21,6 +21,7 @@ Resources created:
 - Optional Secrets Manager secret for dashboard operator public keys
 - Optional Secrets Manager secrets for EVM allowed chain IDs and RPC URLs
 - Secrets Manager secrets for stable Falcon and ECDSA ack keys in `prod`
+- Pre-created Secrets Manager secret for the shared dashboard cursor key in `prod`
 - Security groups for the ALB, server task, and database
 - CloudWatch log groups
 - IAM roles for ECS task execution and runtime
@@ -127,6 +128,13 @@ terraform plan
 terraform apply
 ```
 
+For direct prod Terraform usage, create the dashboard cursor secret before
+planning. Its value must be exactly 64 hexadecimal characters. Terraform checks
+that the secret exists without reading its value into state; the deployment
+helper performs the value-shape validation. If a customer-managed KMS key
+encrypts the secret, its key policy must allow the ECS task execution role to
+decrypt it.
+
 When you use `scripts/aws-deploy.sh`, it keeps separate local Terraform state files per `STACK_NAME` and `deployment_stage`, using:
 
 ```text
@@ -142,13 +150,17 @@ cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
 cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
 ```
 
-For `prod`, create the ACK key secrets once before the first deploy:
+For `prod`, create the ACK key and dashboard cursor secrets once before the first
+deploy:
 
 ```bash
 DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
+DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret
 ```
 
-Normal deploys do not create or rotate ACK keys. The server fetches the prod Secrets Manager entries at startup, imports them into the filesystem keystore, and then signs through the filesystem keystore like every other environment.
+Normal deploys do not create or rotate these secrets. Terraform requires the
+cursor secret to exist, grants the ECS execution role access, and injects its
+value as `GUARDIAN_DASHBOARD_CURSOR_SECRET` into every prod task.
 
 By default the secret names follow `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so each stack gets its own pair (`guardian-prod` → `guardian-prod/server/ack-falcon-secret-key`, etc.) and multiple Guardian instances can coexist in the same AWS account. To pin a stack at an existing legacy name, set `GUARDIAN_ACK_FALCON_SECRET_NAME` and `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy` — they flow through to the `guardian_ack_falcon_secret_name` / `guardian_ack_ecdsa_secret_name` Terraform variables.
 
@@ -249,6 +261,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
+| `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
 | `server_log_group` | CloudWatch log group for the server |

@@ -411,6 +411,12 @@ variable "guardian_storage_encryption_secret_name" {
   default     = ""
 }
 
+variable "guardian_dashboard_cursor_secret_name" {
+  description = "Secrets Manager secret name holding the 64-hex dashboard pagination cursor secret (prod only). Defaults to $${stack_name}/server/dashboard-cursor-secret when empty. The secret must exist before planning or deploying prod."
+  type        = string
+  default     = ""
+}
+
 variable "guardian_evm_rpc_urls" {
   description = "Comma-separated chain_id=url EVM RPC entries; when set, Terraform creates a Secrets Manager secret containing this value"
   type        = string
