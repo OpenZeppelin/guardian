@@ -234,14 +234,14 @@ impl DeltasProcessorBase {
             })?;
 
         let (new_state_json, recomputed_commitment) = {
-            let client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             client
                 .apply_delta(&current_state.state_json, &delta.delta_payload)
                 .map_err(GuardianError::InvalidDelta)?
         };
 
         let verify_result = {
-            let mut client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             client
                 .verify_state(&delta.account_id, &new_state_json)
                 .await
@@ -523,7 +523,7 @@ impl DeltasProcessorBase {
         // leaving it would strand it as `pending` forever and let clients re-submit a
         // stale intent.
         let proposal_id = {
-            let client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             match client.delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload) {
                 Ok(id) => Some(id),
                 Err(e) => {
@@ -605,7 +605,7 @@ impl DeltasProcessorBase {
         };
 
         let new_auth = {
-            let mut client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             client
                 .should_update_auth(&new_state_json, &account_metadata.auth)
                 .await
@@ -664,7 +664,7 @@ impl DeltasProcessorBase {
         }
 
         let proposal_id = {
-            let client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             client
                 .delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload)
                 .ok()
@@ -858,7 +858,7 @@ mod tests {
 
     fn create_test_app_state_with_clock(
         storage: Arc<dyn crate::storage::StorageBackend>,
-        network_client: Arc<tokio::sync::Mutex<dyn crate::network::NetworkClient>>,
+        network_client: Arc<dyn crate::network::NetworkClient>,
         metadata: Arc<dyn crate::metadata::MetadataStore>,
         clock: Arc<dyn crate::clock::Clock>,
     ) -> AppState {
@@ -901,7 +901,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -921,7 +921,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -941,7 +941,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -968,7 +968,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -998,7 +998,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1039,7 +1039,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1088,7 +1088,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
         );
 
@@ -1127,7 +1127,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1167,7 +1167,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1212,7 +1212,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1261,7 +1261,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1320,7 +1320,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1375,7 +1375,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1452,7 +1452,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1503,7 +1503,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1551,7 +1551,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1602,7 +1602,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1636,7 +1636,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1685,7 +1685,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1704,7 +1704,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1721,7 +1721,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1749,7 +1749,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1771,7 +1771,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1793,7 +1793,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1834,7 +1834,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1876,7 +1876,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1896,7 +1896,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1984,7 +1984,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::default());
@@ -2012,7 +2012,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = DeltasProcessor::new(state, CanonicalizationConfig::default());
@@ -2037,7 +2037,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::default());
@@ -2066,7 +2066,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::default());
@@ -2107,7 +2107,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::new(10, 18));

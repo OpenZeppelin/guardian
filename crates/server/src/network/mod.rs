@@ -30,7 +30,7 @@ pub trait NetworkClient: Send + Sync {
     /// account commitment. Returns `Err` only when the comparison could
     /// not be made (RPC failure, malformed state JSON).
     async fn verify_state(
-        &mut self,
+        &self,
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<StateVerification, String>;
@@ -100,7 +100,7 @@ pub trait NetworkClient: Send + Sync {
 
     /// Determine if account auth should be updated given the state
     async fn should_update_auth(
-        &mut self,
+        &self,
         state_json: &serde_json::Value,
         current_auth: &Auth,
     ) -> Result<Option<Auth>, String>;

@@ -118,7 +118,7 @@ impl DeltaCommitStrategy {
 
                 // Delete matching proposal now that delta is canonical
                 let proposal_id = {
-                    let client = ctx.state.network_client.lock().await;
+                    let client = &ctx.state.network_client;
                     client
                         .delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload)
                         .ok()
@@ -257,7 +257,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -303,7 +303,7 @@ mod tests {
         let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
         let resolved = ResolvedAccount {
@@ -346,7 +346,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -391,7 +391,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -439,7 +439,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -480,7 +480,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage.clone()),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -525,7 +525,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage.clone()),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -568,7 +568,7 @@ mod tests {
 
         let mut state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 

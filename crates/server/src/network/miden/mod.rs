@@ -90,7 +90,7 @@ impl NetworkClient for MidenNetworkClient {
     }
 
     async fn verify_state(
-        &mut self,
+        &self,
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> Result<StateVerification, String> {
@@ -459,7 +459,7 @@ impl NetworkClient for MidenNetworkClient {
     }
 
     async fn should_update_auth(
-        &mut self,
+        &self,
         state_json: &serde_json::Value,
         current_auth: &Auth,
     ) -> Result<Option<Auth>, String> {

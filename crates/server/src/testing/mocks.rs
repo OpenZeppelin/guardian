@@ -137,7 +137,7 @@ impl NetworkClient for MockNetworkClient {
     }
 
     async fn verify_state(
-        &mut self,
+        &self,
         account_id: &str,
         state_json: &serde_json::Value,
     ) -> StdResult<StateVerification, String> {
@@ -228,7 +228,7 @@ impl NetworkClient for MockNetworkClient {
     }
 
     async fn should_update_auth(
-        &mut self,
+        &self,
         _state_json: &serde_json::Value,
         _current_auth: &Auth,
     ) -> StdResult<Option<Auth>, String> {
