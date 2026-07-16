@@ -5,9 +5,10 @@ watch the coordination layer (issue #242) work end to end on your laptop. This
 mirrors the prod topology — 2–6 ECS tasks behind a load balancer — in miniature.
 
 ```text
-                         ┌─────────────┐
-   client ──▶  :8080 ──▶ │ proxy/Caddy │ ──round-robin──┬──▶ server-a :3000
-                         └─────────────┘                └──▶ server-b :3010
+              :8080  (HTTP)  ┌─────────────┐                  server-a :3000 (HTTP)
+   client ──▶                │ proxy/Caddy │ ──round-robin──┬──▶       :50052 (gRPC)
+              :50051 (gRPC)  └─────────────┘                └──▶ server-b :3010 (HTTP)
+                                                                       :50053 (gRPC)
                                                               │         │
                                                               └────┬────┘
                                                                    ▼
@@ -24,10 +25,11 @@ one replica ever canonicalizes. The variable meanings live in
 ## Prerequisites
 
 - Docker with Compose v2 (`docker compose`).
-- That's it — no AWS. ACK signing keys are generated locally per replica, which
-  is fine here because this guide exercises operator/EVM auth and coordination,
-  not the multisig co-signing flow (which is the only thing that needs one
-  shared ACK key — see [From this demo to production](#from-this-demo-to-production)).
+- The Rust toolchain and `jq`, used once to generate the shared ACK signing
+  keys (next section).
+- No AWS anywhere. The replicas share one Guardian identity through two local
+  key files (`GUARDIAN_ACK_SECRET_PROVIDER=file`) — the non-AWS stable identity
+  from [issue #289](https://github.com/OpenZeppelin/guardian/issues/289).
 
 ## Configure and run
 
@@ -35,8 +37,26 @@ one replica ever canonicalizes. The variable meanings live in
 cp .env.example .env
 # Set a real cursor secret — it MUST be identical on every replica:
 #   openssl rand -hex 32   →   paste into GUARDIAN_DASHBOARD_CURSOR_SECRET
-cp operators.example.json operators.json   # empty allowlist `[]`; add a key for the login walkthrough (step 7)
+cp operators.example.json operators.json   # empty allowlist `[]`; add a key for the login walkthrough (step 8)
 ```
+
+Generate **one** ACK keypair that both replicas mount (this is the fleet's
+Guardian identity — see [What is shared](#what-is-shared-and-why)). The files
+must be owner-only or the server refuses to start:
+
+```sh
+mkdir -p ack-keys
+cargo run --quiet -p guardian-server --bin ack-keygen \
+  | { read -r json; \
+      jq -rj '.falcon_secret_key' <<<"$json" > ack-keys/ack-falcon-secret-key; \
+      jq -rj '.ecdsa_secret_key'  <<<"$json" > ack-keys/ack-ecdsa-secret-key; }
+chmod 600 ack-keys/ack-falcon-secret-key ack-keys/ack-ecdsa-secret-key
+```
+
+`ack-keys/` is git-ignored. Treat it like any private key material — and note
+that regenerating it changes the Guardian's identity, freezing any multisig
+account that pinned the old one (see the
+[secrets runbook](../../runbooks/secrets.md#self-hosted-stable-identity-without-aws)).
 
 > **Building an unreleased version?** The published `latest` image does not yet
 > contain these coordination changes (issue #242). Drop in the local-build
@@ -59,6 +79,11 @@ The proxy is at <http://localhost:8080>. Each replica is also exposed directly �
 `server-a` on `:3000`, `server-b` on `:3010` — so you can target a specific
 replica during the walkthrough. Postgres is on `:5432`.
 
+gRPC mirrors the HTTP layout: the proxy round-robins plaintext gRPC (h2c) on
+`:50051` — which is the Rust demo CLI's default endpoint, so its `[1] Local
+gRPC` choice goes through the load balancer — with the replicas reachable
+directly on `:50052` (A) and `:50053` (B).
+
 ## What is shared (and why)
 
 | Shared in Postgres | Table | Effect across replicas |
@@ -70,19 +95,44 @@ replica during the walkthrough. Postgres is on `:5432`.
 Coordination is **backend-derived**: it is on because the backend is Postgres.
 No environment variable enables or disables it.
 
+One shared thing lives **outside** Postgres: the ACK signing keys. Both
+replicas mount the same `./ack-keys` files and load them via
+`GUARDIAN_ACK_SECRET_PROVIDER=file`, so the fleet presents a single,
+restart-stable Guardian identity at `/pubkey`. That matters for multisig: each
+account pins the guardian's `/pubkey` commitment into its
+`openzeppelin::guardian::public_key` slot at configure time, and a replica
+whose identity doesn't match rejects co-signing with `invalid GUARDIAN public
+key binding`. With per-replica ephemeral keys (the non-prod default), routing
+multisig through the proxy would fail on every request the "wrong" replica
+answered.
+
 ## Validation walkthrough
 
 ### 1. Both replicas report shared coordination
 
 ```sh
-docker compose logs server-a server-b | grep -i "coordination mode"
+docker compose logs server-a server-b | grep -i coordination
 ```
 
 Each replica prints one line; both must read `mode=shared backend=postgres`. If
 you ever see `mode=single-process backend=filesystem`, that replica is **not**
 safe to run alongside others.
 
-### 2. Exactly one canonicalization lease holder
+### 2. One Guardian identity across the fleet
+
+```sh
+diff <(curl -s http://localhost:3000/pubkey) <(curl -s http://localhost:3010/pubkey) \
+  && echo "identical"
+```
+
+Both replicas serve a byte-identical `/pubkey` response because they load the
+same `./ack-keys` files, and the identity survives restarts: `docker compose
+restart server-a` and run the diff again — still identical. (Remove the
+`GUARDIAN_ACK_*` variables from `docker-compose.yml` and each replica mints its
+own ephemeral key per boot; the diff then fails and multisig through the proxy
+breaks — see [What is shared](#what-is-shared-and-why).)
+
+### 3. Exactly one canonicalization lease holder
 
 ```sh
 docker compose exec postgres \
@@ -94,7 +144,7 @@ You get a single `canonicalization` row with one `holder_id` (formatted
 `{pid}-{random}`) — never two. Both replicas run the worker loop, but only the
 lease holder does work; the other keeps trying to acquire and backs off.
 
-### 3. Lease failover with a fencing-token bump
+### 4. Lease failover with a fencing-token bump
 
 Stop the current holder and watch a different replica take over within the lease
 TTL (~30s, i.e. 3× the 10s canonicalization interval):
@@ -111,7 +161,7 @@ the increment is the steal signal a superseded holder uses to fence itself off
 at its next write. Bring the replica back with `docker compose start server-a`;
 the lease does not bounce back (the current holder keeps renewing).
 
-### 4. Proxy request failover
+### 5. Proxy request failover
 
 The lease failover above is server-side; the proxy also has to stop routing
 *client* requests to a dead replica. That is what the `health_uri` / `lb_*`
@@ -130,7 +180,7 @@ the survivor. Bring it back with `docker compose start server-b`; Caddy re-adds
 it within one health interval (~5s). (Strip the health directives from the
 `Caddyfile` and the same loop returns alternating `502`s.)
 
-### 5. Auth fails closed when the shared store is down
+### 6. Auth fails closed when the shared store is down
 
 Pause Postgres and watch the holder step down rather than barrel ahead:
 
@@ -158,7 +208,7 @@ docker compose unpause postgres
 
 Coordination resumes automatically; no manual intervention.
 
-### 6. Rate-limit partitioning and `X-Forwarded-For`
+### 7. Rate-limit partitioning and `X-Forwarded-For`
 
 Each replica enforces `global / GUARDIAN_MAX_REPLICAS`. With the default global
 burst of 10 and `GUARDIAN_MAX_REPLICAS=2`, a single replica caps at ~5 req/s.
@@ -177,7 +227,7 @@ After the per-replica burst is spent you see `429`s. Through the proxy
 real client IP rather than the proxy address — confirm by repeating the loop
 against `http://localhost:8080/...` and seeing the same per-IP behavior.
 
-### 7. (End-to-end) An operator session survives losing its replica
+### 8. (End-to-end) An operator session survives losing its replica
 
 This is the headline, and it needs a real operator key to sign the challenge.
 Use the [`examples/operator-smoke-web`](../../../examples/operator-smoke-web)
@@ -207,6 +257,11 @@ harness (or the operator client) pointed at the **proxy** URL
 docker compose down -v        # -v also drops the Postgres + keystore volumes
 ```
 
+`./ack-keys` is a host directory, so `down -v` leaves it alone — keep it and the
+Guardian identity survives a full teardown. Delete it only to discard that
+identity for good (any account configured against it would need a
+`SwitchGuardian` migration).
+
 ## From this demo to production
 
 This guide stays AWS-free to be runnable; a real prod deployment differs in two
@@ -221,28 +276,27 @@ ways that do not change the coordination behavior shown above:
   without `AWS_REGION` and the server refuses to start with `AWS_REGION is
   required when GUARDIAN_ENV=prod` before it ever reaches the storage or
   rate-limit checks — so observing those two specifically needs AWS configured.
-- **One shared ACK signing key.** Each replica here auto-generates its own
-  guardian ACK key into its local keystore — and in non-prod it does so on
-  *every* startup, so the identity is not even stable across a single replica's
-  restart. That is fine for auth + coordination, which is all this guide
-  exercises. It is **not** enough for the multisig co-signing flow: every replica
-  must present the *same* guardian identity, because each account pins the
-  guardian's `/pubkey` commitment into its `openzeppelin::guardian::public_key`
-  slot at configure time. Route a multisig flow through the round-robin proxy and
-  the replica that did not configure the account rejects it with
-  `invalid GUARDIAN public key binding`. So prod pins one ACK key via AWS Secrets
-  Manager — see the [aws-signers guide](../aws-signers/README.md). Per-account
+- **Where the shared ACK key lives.** Both setups give the fleet one guardian
+  identity — the property multisig needs, since each account pins the
+  guardian's `/pubkey` commitment at configure time. This guide sources it from
+  two local files (`GUARDIAN_ACK_SECRET_PROVIDER=file`, the `./ack-keys` bind
+  mount); prod sources the same key material from AWS Secrets Manager
+  (`GUARDIAN_ENV=prod` defaults the provider to `aws`), so no secret sits on a
+  task's disk. The formats are identical — the hex strings `ack-keygen` emits —
+  so keys are portable between the two providers; see the
+  [aws-signers guide](../aws-signers/README.md) and the
+  [secrets runbook](../../runbooks/secrets.md#ack-signing-keys). Per-account
   state already lives in Postgres and needs nothing extra.
 
-> **Smoke-testing multisig against this demo?** Until a stable non-AWS identity
-> lands ([issue #289](https://github.com/OpenZeppelin/guardian/issues/289) — a
-> local file/env signer key, so every replica can share one identity without
-> AWS), point your client at a **single replica directly**
-> (`http://localhost:3000`), never the proxy (`:8080`). Also make the client's
-> Miden RPC network match the server's `GUARDIAN_NETWORK_TYPE` (e.g. devnet RPC
-> ↔ `MidenDevnet`), or canonicalization will loop on an `on_chain=0x00…0`
-> commitment because the account was deployed to a different network than the
-> guardian verifies against.
+> **Smoke-testing multisig against this demo?** The shared `file`-provider
+> identity makes the round-robin proxy safe for the full multisig flow —
+> configure, co-sign, and execute can each land on a different replica. Point
+> HTTP clients at `:8080` and gRPC clients (the Rust demo CLI) at `:50051`,
+> its default. Just make the client's Miden RPC network match the server's
+> `GUARDIAN_NETWORK_TYPE` (e.g. devnet RPC ↔ `MidenDevnet`), or
+> canonicalization will loop on an `on_chain=0x00…0` commitment because the
+> account was deployed to a different network than the guardian verifies
+> against.
 
 The managed path (published Postgres image + the prod Terraform profile) sets
 all of this for you; see [`../../SERVER_AWS_DEPLOY.md`](../../SERVER_AWS_DEPLOY.md)

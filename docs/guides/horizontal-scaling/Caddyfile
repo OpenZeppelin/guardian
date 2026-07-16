@@ -2,6 +2,16 @@
 # the ALB in front of the prod ECS tasks. Caddy's reverse_proxy automatically
 # sets X-Forwarded-For, which the Guardian server reads to key rate limiting by
 # the real client IP rather than the proxy's address.
+
+# gRPC is plaintext HTTP/2 here (no TLS), which Caddy only speaks when h2c is
+# explicitly enabled on the listener; without this the :50051 block would
+# negotiate HTTP/1.1 and every gRPC call would fail before reaching a replica.
+{
+	servers :50051 {
+		protocols h1 h2c
+	}
+}
+
 :8080 {
 	reverse_proxy server-a:3000 server-b:3000 {
 		lb_policy round_robin
@@ -27,6 +37,29 @@
 		lb_try_interval 250ms
 
 		# Passively mark an upstream down on a failed dial too.
+		fail_duration 10s
+		max_fails 1
+	}
+}
+
+# The same round-robin for gRPC (multisig SDK / demo CLI traffic). h2c:// keeps
+# the upstream leg plaintext HTTP/2, matching the replicas' un-TLS'd gRPC
+# listeners.
+:50051 {
+	reverse_proxy h2c://server-a:50051 h2c://server-b:50051 {
+		lb_policy round_robin
+
+		# A gRPC socket won't answer a plain GET, so probe each replica's HTTP
+		# port instead: both listeners live in one process, so HTTP health is a
+		# faithful proxy for gRPC health. Same rate-limit caveat as above.
+		health_uri /
+		health_port 3000
+		health_interval 5s
+		health_timeout 2s
+
+		lb_try_duration 5s
+		lb_try_interval 250ms
+
 		fail_duration 10s
 		max_fails 1
 	}

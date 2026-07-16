@@ -7,17 +7,20 @@
 # Run from this directory:
 #   cp .env.example .env                       # then fill in the values
 #   cp operators.example.json operators.json   # for the operator-login walkthrough
+#   <generate ./ack-keys/ with ack-keygen — see README.md "Configure and run">
 #   docker compose up
 #
 # Compose auto-loads .env for both ${VAR} interpolation and each server's runtime
 # config. Walkthrough: ./README.md   Full config reference: ../../CONFIGURATION.md
 #
 # Coordination is backend-derived: because both replicas use the Postgres backend
-# they share sessions/challenges/lease automatically — no flag turns it on. ACK
-# signing keys are auto-generated per replica here, which is fine for this demo
-# (it exercises auth + coordination, not multisig co-signing); a real prod
-# deployment pins one shared ACK key via Secrets Manager (GUARDIAN_ENV=prod, see
-# the aws-signers guide).
+# they share sessions/challenges/lease automatically — no flag turns it on. The
+# ACK signing keys come from one shared pair of local files (the `file` secret
+# provider), so every replica presents the same restart-stable Guardian identity
+# and the /pubkey commitment an account pins at configure time validates on
+# whichever replica answers — multisig flows can go through the round-robin
+# proxy. A real prod deployment keeps the same one-identity property but sources
+# the keys from Secrets Manager (GUARDIAN_ENV=prod, see the aws-signers guide).
 
 x-guardian-server: &guardian-server
   image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
@@ -31,6 +34,11 @@ x-guardian-server: &guardian-server
     DATABASE_URL: postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
     GUARDIAN_KEYSTORE_PATH: /var/guardian/keystore
     GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE: /etc/guardian/operators.json
+    # One fleet-wide ACK identity: both replicas load the same key files from
+    # the ./ack-keys bind mount instead of minting an ephemeral key each boot.
+    GUARDIAN_ACK_SECRET_PROVIDER: file
+    GUARDIAN_ACK_FALCON_SECRET_PATH: /etc/guardian/ack/ack-falcon-secret-key
+    GUARDIAN_ACK_ECDSA_SECRET_PATH: /etc/guardian/ack/ack-ecdsa-secret-key
     # Pinned and identical on every replica: pagination cursors are signed with
     # this key, so a cursor minted on one replica must validate on another.
     GUARDIAN_DASHBOARD_CURSOR_SECRET: ${GUARDIAN_DASHBOARD_CURSOR_SECRET:?set GUARDIAN_DASHBOARD_CURSOR_SECRET in .env (openssl rand -hex 32)}
@@ -61,8 +69,10 @@ services:
     volumes:
       - guardian-keystore-a:/var/guardian/keystore
       - ./operators.json:/etc/guardian/operators.json:ro
+      - ./ack-keys:/etc/guardian/ack:ro
     ports:
-      - "3000:3000" # target replica A directly (bypassing the proxy)
+      - "3000:3000"   # target replica A directly (bypassing the proxy)
+      - "50052:50051" # replica A gRPC, direct
 
   server-b:
     <<: *guardian-server
@@ -70,8 +80,10 @@ services:
     volumes:
       - guardian-keystore-b:/var/guardian/keystore
       - ./operators.json:/etc/guardian/operators.json:ro
+      - ./ack-keys:/etc/guardian/ack:ro
     ports:
-      - "3010:3000" # target replica B directly (bypassing the proxy)
+      - "3010:3000"   # target replica B directly (bypassing the proxy)
+      - "50053:50051" # replica B gRPC, direct
 
   proxy:
     image: caddy:2-alpine
@@ -81,7 +93,8 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
-      - "8080:8080" # round-robin entrypoint; this is what a client/LB would hit
+      - "8080:8080"   # round-robin HTTP entrypoint; this is what a client/LB would hit
+      - "50051:50051" # round-robin gRPC (h2c) entrypoint — the demo CLI's default endpoint
 
 volumes:
   guardian-postgres:
