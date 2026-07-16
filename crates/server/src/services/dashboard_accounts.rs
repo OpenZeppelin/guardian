@@ -348,8 +348,8 @@ mod tests {
             "testnet HRP expected, got '{bech32}'",
         );
 
-        let bech32_local = bech32_for_account(&meta, NetworkType::MidenLocal)
-            .expect("local maps to devnet HRP");
+        let bech32_local =
+            bech32_for_account(&meta, NetworkType::MidenLocal).expect("local maps to devnet HRP");
         assert!(
             bech32_local.starts_with("mdev1"),
             "local folds into devnet HRP, got '{bech32_local}'",
