@@ -265,9 +265,9 @@ pub const REGISTRY: &[MetricDef] = &[
         name: CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[],
-        help: "Verified candidates whose client-claimed new commitment differed from \
-               the recomputed commitment proven on-chain; promotion proceeds with \
-               the verified value, so nonzero indicates a client defect.",
+        help: "Verified candidates whose client-claimed new commitment was missing or \
+               differed from the recomputed commitment proven on-chain; promotion \
+               proceeds with the verified value, so nonzero indicates a client defect.",
     },
     MetricDef {
         name: CANONICALIZATION_PASS_ACCOUNTS,
@@ -280,9 +280,8 @@ pub const REGISTRY: &[MetricDef] = &[
         name: CANONICALIZATION_DELTAS_FETCHED_TOTAL,
         kind: MetricKind::Counter,
         labels: &[],
-        help: "Delta rows the canonicalization worker fetched from storage across \
-               all accounts; divided by candidates processed it measures the read \
-               amplification of the per-account delta query.",
+        help: "Candidate delta rows fetched by the canonicalization worker across all \
+               accounts; this tracks canonicalization pass volume.",
     },
     MetricDef {
         name: CANONICALIZATION_CANDIDATE_AGE_SECONDS,

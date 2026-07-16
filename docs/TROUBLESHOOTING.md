@@ -151,9 +151,9 @@ Operator checks:
   bound means candidates are not converging — check Miden RPC health
   and the discard outcomes above.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
-  means a client is claiming a `new_commitment` that differs from the
-  verified recomputed one; promotion still proceeds with the verified
-  value, but the client should be investigated.
+  means a client omitted `new_commitment` or claimed one that differs
+  from the verified recomputed value; promotion still proceeds with the
+  verified value, but the client should be investigated.
 
 ### `commitment_mismatch` on `PushDelta`
 

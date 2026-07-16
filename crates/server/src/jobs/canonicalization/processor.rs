@@ -190,6 +190,7 @@ impl DeltasProcessorBase {
         metrics::counter!(crate::metrics::names::CANONICALIZATION_DELTAS_FETCHED_TOTAL)
             .increment(candidates.len() as u64);
 
+        let mut first_error = None;
         for delta in candidates {
             if self.pass.cancel.is_cancelled() {
                 tracing::warn!(
@@ -206,7 +207,12 @@ impl DeltasProcessorBase {
                     error = %e,
                     "Failed to canonicalize delta"
                 );
+                first_error.get_or_insert(e);
             }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
         }
 
         Ok(())
@@ -248,16 +254,14 @@ impl DeltasProcessorBase {
             // client defect worth surfacing, never a reason to strand a
             // landed transaction as a candidate forever.
             Ok(StateVerification::Match) => {
-                if let Some(claimed) = &delta.new_commitment
-                    && *claimed != recomputed_commitment
-                {
+                if delta.new_commitment.as_deref() != Some(recomputed_commitment.as_str()) {
                     tracing::warn!(
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
-                        claimed = %claimed,
+                        claimed = ?delta.new_commitment,
                         recomputed = %recomputed_commitment,
-                        "Client-claimed commitment differs from the verified recomputed \
-                         commitment; promoting with the verified one"
+                        "Client-claimed commitment is missing or differs from the verified \
+                         recomputed commitment; promoting with the verified one"
                     );
                     metrics::counter!(
                         crate::metrics::names::CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL
@@ -1639,9 +1643,11 @@ mod tests {
         let config = CanonicalizationConfig::default();
         let processor = DeltasProcessor::new(state, config);
 
-        // Should continue processing even on error
-        let result = processor.process_all_accounts().await;
-        assert!(result.is_ok());
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("candidate failures do not abort the pass");
+        assert_eq!(summary.failed_accounts, 1);
     }
 
     #[tokio::test]
