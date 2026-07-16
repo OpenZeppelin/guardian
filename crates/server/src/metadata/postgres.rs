@@ -165,10 +165,8 @@ impl MetadataStore for PostgresMetadataStore {
             released_at: metadata.released_at,
         };
 
-        // The on-conflict set deliberately excludes `paused_at`,
-        // `paused_reason`, and `released_at`: those lifecycle flags are
-        // owned by their dedicated set/clear methods and must not be
-        // changed by a generic metadata write.
+        // Lifecycle fields are owned by their dedicated mutation methods and
+        // must not be changed by a generic metadata write.
         diesel::insert_into(account_metadata::table)
             .values(&new_metadata)
             .on_conflict(account_metadata::account_id)
@@ -177,7 +175,6 @@ impl MetadataStore for PostgresMetadataStore {
                 account_metadata::auth.eq(&auth_json),
                 account_metadata::network_config.eq(&network_config_json),
                 account_metadata::updated_at.eq(updated_at),
-                account_metadata::has_pending_candidate.eq(metadata.has_pending_candidate),
                 account_metadata::last_auth_timestamp.eq(metadata.last_auth_timestamp),
             ))
             .execute(&mut conn)
@@ -300,6 +297,37 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
 
         Ok(rows_updated > 0)
+    }
+
+    async fn set_has_pending_candidate(
+        &self,
+        account_id: &str,
+        has_candidate: bool,
+        now: &str,
+    ) -> Result<(), String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let updated_at: DateTime<Utc> = now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+
+        let rows_updated = diesel::update(account_metadata::table)
+            .filter(account_metadata::account_id.eq(account_id))
+            .set((
+                account_metadata::has_pending_candidate.eq(has_candidate),
+                account_metadata::updated_at.eq(updated_at),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to set pending-candidate flag: {e}"))?;
+
+        match rows_updated {
+            0 => Err(format!("Account not found: {account_id}")),
+            _ => Ok(()),
+        }
     }
 
     /// Atomic override of the trait default: the candidate-row check and the
@@ -562,6 +590,59 @@ mod tests {
             .first(&mut conn)
             .await
             .expect("flag read")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn generic_set_preserves_pending_candidate_flag() {
+        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        run_migrations(&url).await.expect("migrations apply");
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xsetrace{}", Utc::now().timestamp_micros());
+        let now = Utc::now().to_rfc3339();
+
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), true)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata");
+        drop(conn);
+
+        let stale_metadata = AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![],
+            },
+            network_config: NetworkConfig::miden_default(),
+            created_at: now.clone(),
+            updated_at: now,
+            has_pending_candidate: false,
+            last_auth_timestamp: None,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+        store
+            .set(stale_metadata)
+            .await
+            .expect("stale metadata upsert");
+
+        assert!(
+            flag(&store, &account_id).await,
+            "generic metadata upsert must not clear candidate ownership",
+        );
+
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]

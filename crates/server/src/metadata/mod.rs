@@ -69,7 +69,19 @@ pub trait MetadataStore: Send + Sync {
     /// Get metadata for a specific account
     async fn get(&self, account_id: &str) -> Result<Option<AccountMetadata>, String>;
 
-    /// Store or update metadata for an account
+    /// Store or update metadata for an account.
+    ///
+    /// Lifecycle fields — `has_pending_candidate`, `paused_at` /
+    /// `paused_reason`, and `released_at` — are owned by their dedicated
+    /// mutation methods and MUST NOT be changed by this generic write when
+    /// the account already exists. Callers read the row, spend time in
+    /// network calls, and write it back (e.g. `configure_account`), so a
+    /// `set` that applied these fields would clobber a concurrent
+    /// `submit_candidate` or pause with stale values. Shared backends
+    /// enforce this in the upsert itself; the single-process filesystem
+    /// store enforces it for pause/release only and accepts the residual
+    /// in-process candidate-flag window. Their values still apply on first
+    /// insert, where no concurrent owner can exist yet.
     async fn set(&self, metadata: AccountMetadata) -> Result<(), String>;
 
     /// List all account IDs
