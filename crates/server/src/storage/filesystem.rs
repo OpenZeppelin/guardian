@@ -503,6 +503,29 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
+    /// Filtered read only in what it returns: the filesystem layout has
+    /// no status index, so every delta file is still opened and decoded.
+    /// Acceptable for the single-process backend; the store-side win
+    /// belongs to Postgres.
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let deltas_filenames = self.list_delta_filenames(account_id).await?;
+        let mut deltas = Vec::new();
+
+        for filename in deltas_filenames {
+            if let Some(nonce_str) = filename.strip_suffix(".json")
+                && let Ok(nonce) = nonce_str.parse::<u64>()
+            {
+                let delta = self.pull_delta(account_id, nonce).await?;
+                if delta.status.is_candidate() {
+                    deltas.push(delta);
+                }
+            }
+        }
+
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
     // Delta proposal methods - stored separately from executed deltas
     async fn submit_delta_proposal(
         &self,
@@ -653,7 +676,7 @@ impl StorageBackend for FilesystemService {
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: crate::storage::CandidatePromotion,
-    ) -> Result<crate::storage::CanonicalWrite, String> {
+    ) -> Result<crate::storage::PromoteWrite, String> {
         crate::storage::promote_candidate_sequential(self, metadata, promotion).await
     }
 
@@ -1143,6 +1166,46 @@ mod tests {
         assert_eq!(deltas[1].nonce, 3);
         assert_eq!(deltas[2].nonce, 4);
         assert_eq!(deltas[3].nonce, 5);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_candidate_deltas_filters_and_orders() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+
+        // Mixed history: canonical at 1 and 3, candidates at 4 and 2
+        // (submitted out of nonce order).
+        for nonce in [1u64, 3] {
+            storage
+                .submit_delta(&create_test_delta(account_id, nonce))
+                .await
+                .expect("Submit delta failed");
+        }
+        for nonce in [4u64, 2] {
+            let mut delta = create_test_delta(account_id, nonce);
+            delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+            storage
+                .submit_delta(&delta)
+                .await
+                .expect("Submit delta failed");
+        }
+
+        let candidates = storage
+            .pull_candidate_deltas(account_id)
+            .await
+            .expect("Pull candidate deltas failed");
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].nonce, 2);
+        assert_eq!(candidates[1].nonce, 4);
+        assert!(candidates.iter().all(|d| d.status.is_candidate()));
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();

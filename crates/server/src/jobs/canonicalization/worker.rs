@@ -68,18 +68,36 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
         let result = processor.process_all_accounts().await;
         metrics::histogram!(crate::metrics::names::CANONICALIZATION_RUN_DURATION_SECONDS)
             .record(started.elapsed().as_secs_f64());
+        let outcome = match &result {
+            Ok(summary) if summary.cancelled => crate::metrics::labels::RunOutcome::Cancelled,
+            Ok(summary) if summary.failed_accounts > 0 => {
+                crate::metrics::labels::RunOutcome::Partial
+            }
+            Ok(_) => crate::metrics::labels::RunOutcome::Completed,
+            Err(_) => crate::metrics::labels::RunOutcome::Error,
+        };
         metrics::counter!(
             crate::metrics::names::CANONICALIZATION_RUNS_TOTAL,
-            crate::metrics::names::LABEL_OUTCOME =>
-                crate::metrics::labels::Outcome::from_ok(result.is_ok()).as_str()
+            crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
         )
         .increment(1);
 
         cancel.cancel();
         let _ = renewal.await;
 
-        if let Err(e) = result {
-            tracing::error!(error = %e, "Canonicalization worker error");
+        match result {
+            Ok(summary) if summary.cancelled || summary.failed_accounts > 0 => {
+                tracing::warn!(
+                    accounts = summary.accounts,
+                    failed_accounts = summary.failed_accounts,
+                    cancelled = summary.cancelled,
+                    "Canonicalization pass degraded"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "Canonicalization worker error");
+            }
         }
     }
 }
@@ -130,7 +148,7 @@ fn spawn_renewal(
 
 pub async fn process_all_accounts_now(state: &AppState) -> Result<()> {
     let processor = TestDeltasProcessor::new(state.clone());
-    processor.process_all_accounts().await
+    processor.process_all_accounts().await.map(|_| ())
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]

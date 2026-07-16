@@ -49,6 +49,13 @@ pub const CANONICALIZATION_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_run_duration_seconds";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
+pub const CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL: &str =
+    "guardian_canonicalization_commitment_mismatches_total";
+pub const CANONICALIZATION_PASS_ACCOUNTS: &str = "guardian_canonicalization_pass_accounts";
+pub const CANONICALIZATION_DELTAS_FETCHED_TOTAL: &str =
+    "guardian_canonicalization_deltas_fetched_total";
+pub const CANONICALIZATION_CANDIDATE_AGE_SECONDS: &str =
+    "guardian_canonicalization_candidate_age_seconds";
 
 // --- Delta / proposal lifecycle ------------------------------------------
 
@@ -231,7 +238,8 @@ pub const REGISTRY: &[MetricDef] = &[
         name: CANONICALIZATION_RUNS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
-        help: "Canonicalization worker passes over all accounts, by outcome.",
+        help: "Canonicalization worker passes over all accounts, by outcome \
+               (completed, partial, cancelled, error).",
     },
     MetricDef {
         name: CANONICALIZATION_RUN_DURATION_SECONDS,
@@ -245,13 +253,44 @@ pub const REGISTRY: &[MetricDef] = &[
         labels: &[LABEL_OUTCOME],
         help: "Candidate deltas processed by the canonicalization worker, by outcome \
                (canonicalized, retried, discarded, grace_deferred, divergence_deferred, \
-               diverged).",
+               diverged, stale_base).",
     },
     MetricDef {
         name: CANONICALIZATION_RETRIES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[],
         help: "Canonicalization verification retries consumed across all candidates.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Verified candidates whose client-claimed new commitment differed from \
+               the recomputed commitment proven on-chain; promotion proceeds with \
+               the verified value, so nonzero indicates a client defect.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_PASS_ACCOUNTS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Accounts with pending candidates listed at the start of the most \
+               recent canonicalization pass.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_DELTAS_FETCHED_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Delta rows the canonicalization worker fetched from storage across \
+               all accounts; divided by candidates processed it measures the read \
+               amplification of the per-account delta query.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_CANDIDATE_AGE_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Age of a candidate delta (since it entered candidate status) each \
+               time the worker processes it; sustained growth means candidates \
+               are not converging.",
     },
     MetricDef {
         name: DELTAS_SUBMITTED_TOTAL,

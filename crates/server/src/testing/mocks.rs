@@ -267,6 +267,7 @@ pub struct MockStorageBackend {
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub submit_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
     pub pull_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
@@ -289,7 +290,7 @@ pub struct MockStorageBackend {
     pub submit_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CandidateSubmission, String>>>>,
     pub promote_candidate_responses:
-        Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+        Arc<StdMutex<Vec<StdResult<crate::storage::PromoteWrite, String>>>>,
     pub promote_candidate_fences: Arc<StdMutex<Vec<Option<crate::storage::LeaseFence>>>>,
     pub discard_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
@@ -354,6 +355,14 @@ impl MockStorageBackend {
 
     pub fn with_pull_deltas_after(self, response: StdResult<Vec<DeltaObject>, String>) -> Self {
         self.pull_deltas_after_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_pull_candidate_deltas(self, response: StdResult<Vec<DeltaObject>, String>) -> Self {
+        self.pull_candidate_deltas_responses
             .lock()
             .unwrap()
             .push(response);
@@ -454,7 +463,7 @@ impl MockStorageBackend {
 
     pub fn with_promote_candidate(
         self,
-        response: StdResult<crate::storage::CanonicalWrite, String>,
+        response: StdResult<crate::storage::PromoteWrite, String>,
     ) -> Self {
         self.promote_candidate_responses
             .lock()
@@ -624,6 +633,23 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
+    // An explicit response wins; otherwise mirror the trait default over
+    // the `pull_deltas_after` queue so existing tests keep driving the
+    // processor through `with_pull_deltas_after`.
+    async fn pull_candidate_deltas(&self, account_id: &str) -> StdResult<Vec<DeltaObject>, String> {
+        if let Some(response) = self.pull_candidate_deltas_responses.lock().unwrap().pop() {
+            return response;
+        }
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|delta| delta.status.is_candidate())
+            .collect();
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -747,7 +773,7 @@ impl StorageBackend for MockStorageBackend {
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: crate::storage::CandidatePromotion,
-    ) -> Result<crate::storage::CanonicalWrite, String> {
+    ) -> Result<crate::storage::PromoteWrite, String> {
         self.promote_candidate_fences
             .lock()
             .unwrap()

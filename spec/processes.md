@@ -229,8 +229,10 @@ sequenceDiagram
 
 ### Worker Behavior
  - Runs every `check_interval_seconds`.
- - For each account:
-  - Pull all deltas and select ready candidates (candidate_at >= delay_seconds); process in nonce order.
+ - For each account with a pending candidate:
+  - Pull candidate deltas (`pull_candidate_deltas`, a store-side status
+    filter — canonical and discarded history rows never leave the store);
+    process in nonce order.
   - Apply delta locally to compute expected state and commitment.
   - Fetch the on-chain commitment and classify:
     - Matches the expected new commitment: canonicalize —
@@ -238,6 +240,13 @@ sequenceDiagram
       optionally update auth from chain via `should_update_auth`, set delta
       status to `canonical`, and delete the matching Miden delta proposal
       identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
+      The persisted commitment is the recomputed one the verification
+      proved on-chain; a client-supplied `new_commitment` that differs (or
+      is absent) is logged and counted but never blocks promotion.
+      Promotion is additionally gated on the stored state still sitting at
+      the candidate's `prev_commitment` — if a concurrent write moved it,
+      the promotion rolls back (`stale_base`) and the next tick
+      re-verifies against the new base.
     - Matches the candidate's `prev_commitment` (its transaction has not
       landed yet), or the comparison itself failed (RPC error): defer within
       `submission_grace_period_seconds`, then consume retry budget each tick
@@ -262,10 +271,9 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   T->>W: tick(check_interval)
-  W->>M: list()
+  W->>M: list_with_pending_candidates()
   loop accounts
-    W->>ST: pull_deltas_after(account_id, 0)
-    W->>W: filter ready candidates (>= delay_seconds)\nsort by nonce
+    W->>ST: pull_candidate_deltas(account_id)\n(store-side status filter, nonce order)
     loop candidates
       W->>ST: pull_state(account_id)
       W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)

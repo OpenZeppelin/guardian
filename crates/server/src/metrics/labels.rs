@@ -8,7 +8,7 @@
 //! one place.
 
 /// Success/failure outcome shared by operation-style counters
-/// (storage, canonicalization runs, operator auth, Miden RPC).
+/// (storage, operator auth, Miden RPC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Ok,
@@ -23,6 +23,33 @@ impl Outcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// How one canonicalization pass ended
+/// (`guardian_canonicalization_runs_total`). Per-account errors and
+/// lease-loss cancellation do not fail the pass, so a plain ok/error
+/// split would report degraded passes as healthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// Every listed account was processed without error.
+    Completed,
+    /// The pass finished but at least one account failed.
+    Partial,
+    /// The pass stopped early because the lease was lost.
+    Cancelled,
+    /// The pass could not run at all (e.g. the account listing failed).
+    Error,
+}
+
+impl RunOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Partial => "partial",
+            Self::Cancelled => "cancelled",
             Self::Error => "error",
         }
     }
@@ -84,6 +111,10 @@ pub enum CandidateOutcome {
     /// Discarded because the account advanced past the candidate's base
     /// state on-chain, making verification permanently unsatisfiable.
     Diverged,
+    /// Promotion rolled back because the stored state moved off the
+    /// candidate's base commitment during the pass; the candidate is
+    /// re-verified against the new base next tick.
+    StaleBase,
 }
 
 impl CandidateOutcome {
@@ -95,6 +126,7 @@ impl CandidateOutcome {
             Self::GraceDeferred => "grace_deferred",
             Self::DivergenceDeferred => "divergence_deferred",
             Self::Diverged => "diverged",
+            Self::StaleBase => "stale_base",
         }
     }
 }
@@ -145,6 +177,10 @@ mod tests {
         let all = [
             Outcome::Ok.as_str(),
             Outcome::Error.as_str(),
+            RunOutcome::Completed.as_str(),
+            RunOutcome::Partial.as_str(),
+            RunOutcome::Cancelled.as_str(),
+            RunOutcome::Error.as_str(),
             ProposalEvent::Created.as_str(),
             ProposalEvent::Signed.as_str(),
             ProposalEvent::Finalized.as_str(),
@@ -154,6 +190,9 @@ mod tests {
             CandidateOutcome::Retried.as_str(),
             CandidateOutcome::Discarded.as_str(),
             CandidateOutcome::GraceDeferred.as_str(),
+            CandidateOutcome::DivergenceDeferred.as_str(),
+            CandidateOutcome::Diverged.as_str(),
+            CandidateOutcome::StaleBase.as_str(),
             AccountKind::Miden.as_str(),
             PoolKind::Storage.as_str(),
             PoolKind::Metadata.as_str(),

@@ -143,6 +143,17 @@ Operator checks:
 - Miden RPC endpoint reachable (`rpc_unavailable` in logs indicates it
   isn't).
 - No `network_error` storms.
+- `guardian_canonicalization_candidates_total{outcome=...}` breaks down
+  what the worker decided per candidate (`diverged` and `discarded` are
+  the discard paths; `stale_base` means a promotion was rolled back
+  because the stored state moved mid-pass and will retry next tick).
+- `guardian_canonicalization_candidate_age_seconds` growing without
+  bound means candidates are not converging — check Miden RPC health
+  and the discard outcomes above.
+- `guardian_canonicalization_commitment_mismatches_total` counting up
+  means a client is claiming a `new_commitment` that differs from the
+  verified recomputed one; promotion still proceeds with the verified
+  value, but the client should be investigated.
 
 ### `commitment_mismatch` on `PushDelta`
 
