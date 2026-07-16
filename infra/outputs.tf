@@ -185,8 +185,18 @@ output "guardian_rate_per_min" {
 }
 
 output "guardian_max_replicas" {
-  description = "Effective GUARDIAN_MAX_REPLICAS rate-limit divisor after clamping to the worst-case ECS deployment surge capacity"
+  description = "Effective GUARDIAN_MAX_REPLICAS rate-limit divisor after clamping to the steady-state ECS capacity"
   value       = local.effective_guardian_max_replicas
+}
+
+output "guardian_dashboard_commitment_rate_burst_per_sec" {
+  description = "Effective fleet-wide dashboard per-commitment burst rate limit"
+  value       = local.dashboard_rate_burst_per_sec
+}
+
+output "guardian_dashboard_commitment_rate_per_min" {
+  description = "Effective fleet-wide dashboard per-commitment sustained rate limit"
+  value       = local.dashboard_rate_per_min
 }
 
 output "guardian_db_pool_max_size" {

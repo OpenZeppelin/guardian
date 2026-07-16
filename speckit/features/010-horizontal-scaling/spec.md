@@ -145,9 +145,9 @@ replica count.
 **Acceptance Scenarios**:
 
 1. **Given** a configured global request limit and 2+ replicas, **When** a client
-   exceeds the limit across replicas, **Then** excess requests are throttled so
-   the aggregate accepted rate stays at or below the global limit, regardless of
-   how the load balancer distributes them.
+   exceeds the limit across a steady-state fleet, **Then** excess requests are
+   throttled so the aggregate accepted rate stays at or below the global limit,
+   regardless of how the load balancer distributes them.
 2. **Given** rate limiting is disabled by configuration, **When** running with
    multiple replicas, **Then** no throttling occurs (no regression).
 3. **Given** `GUARDIAN_MAX_REPLICAS` is set to the autoscaling max capacity,
@@ -288,17 +288,17 @@ source code.
   only dashboard pagination across replicas (a cursor minted on one replica is
   rejected on another) and never affects correctness or auth, so it is not a
   startup guard.
-- **FR-009**: The aggregate request rate enforced across all replicas MUST NOT
-  exceed the configured global limit. This is achieved by dividing the global
-  limit by the deployment's **maximum replica capacity** (`GUARDIAN_MAX_REPLICAS`),
-  so each replica enforces `global_limit / GUARDIAN_MAX_REPLICAS`. When fewer than
-  the maximum number of replicas are running, aggregate enforcement is stricter
-  than the global limit (never looser); the resulting tolerance band MUST be
-  documented. `GUARDIAN_MAX_REPLICAS` MUST default from the deployment's
-  worst-case concurrent task capacity, including rolling-deployment surge
-  (`max(desired count, autoscaling max) × deployment maximum percent`, using ECS
-  rounding), not from a manually maintained value, and MUST remain
-  operator-overridable.
+- **FR-009**: During steady-state operation, the aggregate request rate enforced
+  across all replicas MUST NOT exceed the configured global limit. This is
+  achieved by dividing the global limit by the deployment's steady-state
+  capacity (`GUARDIAN_MAX_REPLICAS`), so each replica enforces
+  `global_limit / GUARDIAN_MAX_REPLICAS`. When fewer than the maximum number of
+  replicas are running, aggregate enforcement is stricter than the global limit.
+  During a rolling deployment, the aggregate allowance MAY temporarily rise by
+  up to `deployment_maximum_percent / 100` (2× by default); this tolerance MUST
+  be documented. `GUARDIAN_MAX_REPLICAS` MUST default from the greater of
+  desired count and autoscaling max when autoscaling is enabled, or desired
+  count otherwise, and MUST remain operator-overridable.
 - **FR-010**: Rate limiting MUST NOT introduce any external coordination
   dependency on the request hot path; enforcement is per-process arithmetic over
   the partitioned budget and therefore has no shared-store failure mode. Any
@@ -371,14 +371,15 @@ source code.
   prevented from committing (advisory check, made safe by idempotent writes).
 - **Pagination Cursor**: An opaque, integrity-protected continuation token whose
   validity depends on a secret shared by all replicas.
-- **Maximum Replica Capacity** (`GUARDIAN_MAX_REPLICAS`): The
-  infrastructure-derived signal for how many replicas the deployment can scale to.
+- **Steady-State Replica Capacity** (`GUARDIAN_MAX_REPLICAS`): The
+  infrastructure-derived signal for how many replicas the deployment can run
+  outside rolling-deployment surge.
   It feeds **rate-limit partitioning only** (`global_limit / GUARDIAN_MAX_REPLICAS`).
   It MUST NOT influence the coordination mode (which is backend-derived, FR-020).
 - **Effective Rate-Limit Budget**: The per-replica share of the global limit,
   computed as `global_limit / GUARDIAN_MAX_REPLICAS`. Per-client burst/sustained
   counters remain per-process; they are partitioned, not aggregated, so total
-  enforcement stays at or below the global limit.
+  steady-state enforcement stays at or below the global limit.
 - **Deployment Stage**: A configuration value identifying the environment (prod
   vs. non-prod) that gates HA guardrails.
 
@@ -400,15 +401,16 @@ source code.
 - **SC-004**: With 2+ replicas and a shared cursor secret, 100% of pagination
   cursors issued by one replica are accepted by other replicas across a paging
   test of at least 100 page transitions.
-- **SC-005**: With N replicas, the aggregate accepted request rate for a client
-  exceeding the configured limit stays at or below the configured global limit
-  (rather than ~ Nx the limit). The documented tolerance band MUST also state the
-  two-sided imprecision: (a) running below the deployment surge capacity enforces
-  stricter than the global limit, and (b) HTTP keep-alive can pin a single client
-  to one replica, so that client may be throttled at
+- **SC-005**: With N steady-state replicas, the aggregate accepted request rate
+  for a client exceeding the configured limit stays at or below the configured
+  global limit (rather than ~ Nx the limit). The documented tolerance band MUST
+  state: (a) running below steady-state capacity enforces stricter than the
+  global limit, (b) HTTP keep-alive can pin a single client to one replica, so
+  that client may be throttled at
   `global_limit / GUARDIAN_MAX_REPLICAS` (e.g. 1/6) — an over-strict, fail-closed
-  outcome for that client. Both are accepted trade-offs of partitioning without
-  shared hot-path state.
+  outcome, and (c) rolling-deployment surge may temporarily raise aggregate
+  allowance by up to `deployment_maximum_percent / 100`. These are accepted
+  trade-offs of partitioning without shared hot-path state.
 - **SC-006**: A prod-stage server configured with the filesystem backend (or with
   a global rate limit that partitions to zero requests per replica) fails to
   start 100% of the time with an error that names the misconfiguration and the
@@ -443,17 +445,14 @@ source code.
   on session affinity.
 - Replica clocks are synchronized within a few seconds (standard for the ECS
   environment); expiry/lease logic must tolerate small skew.
-- Rate limiting is partitioned conservatively against deployment **surge**
-  capacity (not the current replica count), so it is never silently looser than
-  the global limit during scale-out or rolling deployment and over-throttles
-  when running below that capacity. A documented tolerance band for this
-  over-throttling is acceptable, consistent with the issue's "within some
-  documented tolerance".
-- The infrastructure computes surge capacity from the greater of desired count
-  and autoscaling max, scaled by the ECS deployment maximum percentage;
-  `GUARDIAN_MAX_REPLICAS` defaults from it via Terraform rather than a manually
-  maintained value. It drives **rate-limit partitioning only**; the coordination
-  mode is backend-derived (FR-020).
+- Rate limiting is partitioned against steady-state capacity, not current task
+  count. It over-throttles below that capacity and may temporarily allow up to
+  the ECS deployment maximum percentage during a rolling deployment. This
+  documented tolerance is acceptable.
+- `GUARDIAN_MAX_REPLICAS` defaults from the greater of desired count and
+  autoscaling max when autoscaling is enabled, or desired count otherwise. It
+  drives **rate-limit partitioning only**; the coordination mode is
+  backend-derived (FR-020).
 
 ## Dependencies
 
@@ -463,11 +462,11 @@ source code.
   `GUARDIAN_ENV`, `GUARDIAN_RATE_LIMIT_ENABLED`, `GUARDIAN_RATE_BURST_PER_SEC`,
   `GUARDIAN_RATE_PER_MIN`, `DATABASE_URL`, `GUARDIAN_STORAGE_PATH`,
   `GUARDIAN_METADATA_PATH`.
-- New configuration: `GUARDIAN_MAX_REPLICAS` (maximum replica capacity; drives
-  **rate-limit partitioning only**; defaults from
-  `effective_server_deployment_surge_capacity`).
+- New configuration: `GUARDIAN_MAX_REPLICAS` (steady-state replica capacity;
+  drives **rate-limit partitioning only**; defaults from
+  `effective_server_steady_capacity`).
 - Infrastructure wiring (in scope): `infra/data.tf`
-  (`effective_server_deployment_surge_capacity`) and `infra/ecs.tf` (server env
+  (`effective_server_steady_capacity`) and `infra/ecs.tf` (server env
   block) must set `GUARDIAN_MAX_REPLICAS` so the correct default ships without
   operator action.
 - Operator documentation set (`docs/CONFIGURATION.md`, AWS deploy docs, runbooks)

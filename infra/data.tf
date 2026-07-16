@@ -140,15 +140,14 @@ locals {
   effective_guardian_rate_limit_enabled      = var.guardian_rate_limit_enabled != null ? var.guardian_rate_limit_enabled : true
   effective_guardian_rate_burst_per_sec      = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
   effective_guardian_rate_per_min            = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
-  # GUARDIAN_MAX_REPLICAS defaults to the deployment surge capacity: the
-  # greater of desired count and autoscaling max, scaled and rounded down
-  # using ECS deployment_maximum_percent semantics. A rolling deploy can
-  # run that many healthy tasks concurrently, so dividing by less would
-  # let the fleet exceed the global rate limit. Explicit overrides are
-  # clamped UP to that capacity for the same reason.
-  effective_server_capacity_ceiling            = max(local.effective_server_desired_count, local.effective_server_autoscaling_max_capacity)
-  effective_server_deployment_surge_capacity   = floor(local.effective_server_capacity_ceiling * var.server_deployment_maximum_percent / 100)
-  effective_guardian_max_replicas              = var.guardian_max_replicas != null ? max(var.guardian_max_replicas, local.effective_server_deployment_surge_capacity) : local.effective_server_deployment_surge_capacity
+  dashboard_rate_burst_per_sec               = var.guardian_dashboard_commitment_rate_burst_per_sec != null ? var.guardian_dashboard_commitment_rate_burst_per_sec : 6
+  dashboard_rate_per_min                     = var.guardian_dashboard_commitment_rate_per_min != null ? var.guardian_dashboard_commitment_rate_per_min : 30
+  # Rate-limit partitioning uses steady-state capacity. Rolling deployments may
+  # temporarily allow deployment_maximum_percent / 100 times the fleet budget.
+  # Clamped to >= 1: a scaled-to-zero service would otherwise ship
+  # GUARDIAN_MAX_REPLICAS=0, which the prod server refuses at startup.
+  effective_server_steady_capacity             = max(1, local.effective_server_autoscaling_enabled ? max(local.effective_server_desired_count, local.effective_server_autoscaling_max_capacity) : local.effective_server_desired_count)
+  effective_guardian_max_replicas              = var.guardian_max_replicas != null ? max(var.guardian_max_replicas, local.effective_server_steady_capacity) : local.effective_server_steady_capacity
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
   managed_evm_allowed_chain_ids_secret_enabled = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""

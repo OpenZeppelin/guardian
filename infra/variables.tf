@@ -302,17 +302,51 @@ variable "guardian_rate_per_min" {
   default     = null
 }
 
+variable "guardian_dashboard_commitment_rate_burst_per_sec" {
+  description = "Optional override for the fleet-wide dashboard per-commitment burst rate limit"
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_dashboard_commitment_rate_burst_per_sec == null ||
+      (
+        var.guardian_dashboard_commitment_rate_burst_per_sec >= 1 &&
+        var.guardian_dashboard_commitment_rate_burst_per_sec <= 4294967295 &&
+        floor(var.guardian_dashboard_commitment_rate_burst_per_sec) == var.guardian_dashboard_commitment_rate_burst_per_sec
+      )
+    )
+    error_message = "guardian_dashboard_commitment_rate_burst_per_sec must be an integer between 1 and 4294967295 when set."
+  }
+}
+
+variable "guardian_dashboard_commitment_rate_per_min" {
+  description = "Optional override for the fleet-wide dashboard per-commitment sustained rate limit"
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_dashboard_commitment_rate_per_min == null ||
+      (
+        var.guardian_dashboard_commitment_rate_per_min >= 1 &&
+        var.guardian_dashboard_commitment_rate_per_min <= 4294967295 &&
+        floor(var.guardian_dashboard_commitment_rate_per_min) == var.guardian_dashboard_commitment_rate_per_min
+      )
+    )
+    error_message = "guardian_dashboard_commitment_rate_per_min must be an integer between 1 and 4294967295 when set."
+  }
+}
+
 variable "guardian_max_replicas" {
   description = <<-EOT
     Optional override for GUARDIAN_MAX_REPLICAS, the maximum replica capacity the
-    server divides global rate limits by. Defaults to the deployment surge
-    capacity: the greater of desired count and autoscaling max capacity, scaled
-    by server_deployment_maximum_percent using ECS rounding semantics. This is
-    the true worst-case number of tasks that can serve concurrently during a
-    rolling deploy. Drives rate-limit partitioning only (coordination mode is
-    backend-derived). A value below the real worst-case capacity would let the
-    aggregate exceed the global limit, so an explicit override is clamped up to
-    the surge capacity in data.tf and can only ever raise the divisor.
+    server divides rate limits by. Defaults to the greater of desired count and
+    autoscaling maximum when autoscaling is enabled, or the desired count
+    otherwise. Drives rate-limit partitioning only (coordination mode is
+    backend-derived). An explicit override is clamped up to that steady-state
+    capacity. Rolling deployments may temporarily allow up to
+    deployment_maximum_percent / 100 times the configured fleet-wide limit.
   EOT
   type        = number
   default     = null
@@ -330,13 +364,13 @@ variable "server_deployment_maximum_percent" {
   description = <<-EOT
     ECS deployment_maximum_percent for the server service: the ceiling, as a
     percentage of desired count, on tasks that may run concurrently during a
-    rolling deploy. Folded into the GUARDIAN_MAX_REPLICAS default so the
-    fleet-aggregate rate limit holds even mid-deploy; lowering it tightens
-    per-task limits back toward global/max at the cost of deploy headroom.
-    Must exceed 100 and, after ECS rounds the resulting task count down, allow
-    at least one task above the minimum positive desired capacity (including
-    autoscaling minimum capacity). The ECS service precondition enforces this
-    because deployment_minimum_healthy_percent is 100.
+    rolling deploy. Because GUARDIAN_MAX_REPLICAS uses steady-state capacity,
+    the fleet-wide rate allowance may temporarily scale by this percentage
+    during a rollout. Must exceed 100 and, after ECS rounds the resulting task
+    count down, allow at least one task above the minimum positive desired
+    capacity (including autoscaling minimum capacity). The ECS service
+    precondition enforces this because deployment_minimum_healthy_percent is
+    100.
   EOT
   type        = number
   default     = 200

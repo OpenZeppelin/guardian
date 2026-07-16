@@ -89,43 +89,41 @@ start** rather than falling back to per-process state.
 ## `GUARDIAN_MAX_REPLICAS` and rate limiting
 
 The configured global limits (`GUARDIAN_RATE_BURST_PER_SEC`,
-`GUARDIAN_RATE_PER_MIN`) are divided by `GUARDIAN_MAX_REPLICAS` so each replica
-enforces `global / GUARDIAN_MAX_REPLICAS`. With round-robin distribution the
-fleet aggregate stays at or below the global limit.
+`GUARDIAN_RATE_PER_MIN`) and the dashboard per-commitment auth budgets are
+divided by `GUARDIAN_MAX_REPLICAS` so each replica enforces
+`global / GUARDIAN_MAX_REPLICAS`. With round-robin distribution the fleet
+aggregate stays at or below the configured global HTTP limit during steady-state
+operation.
 
-- Default = the deployment's **surge capacity** (Terraform):
-  `max(desired count, autoscaling max) × deployment_maximum_percent`, rounded
-  down as ECS rounds its task ceiling (200% by default, so 2 × capacity). An ECS
-  rolling deploy can briefly run that many healthy tasks at once, and each
-  divides by this value — so the aggregate holds even mid-deploy. It must be the
-  worst-case concurrent count, not the count you happen to run now —
-  partitioning by capacity is conservative.
+- Default = the deployment's **steady-state capacity** (Terraform): the
+  greater of desired count and autoscaling max when autoscaling is enabled, or
+  the desired count otherwise.
 - **Drives rate-limiting only.** It has no effect on coordination mode.
-- **Tolerance band**: when fewer than the surge capacity of replicas are
-  running — which is the steady state — the fleet over-throttles (stricter than
-  the global limit; roughly half of it outside deploy windows at the default
-  200% surge) — accepted; raise the global limits if steady-state throughput
-  matters, the invariant still holds. HTTP keep-alive can also pin a client to
-  one replica, throttling it at `global / capacity` — also accepted; it is
-  fail-closed (never too loose).
+- **Tolerance band**: when fewer than the steady-state maximum are running, the
+  fleet over-throttles. HTTP keep-alive can also pin a client to one replica,
+  throttling it at `global / capacity`. Both are accepted fail-closed outcomes.
+- **Rolling deployments**: ECS may briefly run up to
+  `server_deployment_maximum_percent` of the steady-state capacity. The
+  aggregate allowance can rise by the same factor during that window (2× with
+  the default 200%). This temporary relaxation is accepted to avoid permanent
+  steady-state over-throttling.
 - **Override** (`var.guardian_max_replicas`): an explicit value is clamped **up**
-  to the surge capacity, so it can never drop below the worst-case concurrent
-  task count (which would let the aggregate exceed the global limit). Setting it
-  higher only over-throttles. `var.server_deployment_maximum_percent` tunes the
-  surge itself; Terraform rejects values that round down to no extra deployment
-  task at the minimum positive desired capacity (including autoscaling minimum)
-  while minimum healthy capacity is 100%.
+  to steady-state capacity. Setting it higher only over-throttles.
 - **Invalid values fail fast in prod**: a set-but-unparsable or zero
   `GUARDIAN_MAX_REPLICAS` would otherwise fall back to a divisor of 1 and
   silently disable partitioning (fail-open). In the prod stage the server
   refuses to start; non-prod warns and treats it as `1`.
-- **Per-commitment challenge limits are partitioned too**: the dashboard's
-  per-commitment login-challenge limiter is per-process, so it is divided by
-  `GUARDIAN_MAX_REPLICAS` like the global limits — but clamped to **≥1 per
-  replica** so operator login can never be fully denied. With the clamp active,
-  the fleet aggregate for a single commitment is bounded by the replica count
-  rather than the configured limit (accepted: liveness over strictness for
-  login).
+- **Operator login uses the same divisor**: the dashboard's per-commitment
+  challenge and verification budgets use `GUARDIAN_MAX_REPLICAS`. The default
+  prod divisor is 6, yielding 1 request/second and 5 requests/minute per
+  endpoint on a keep-alive-pinned replica. The fleet-wide budgets can be
+  overridden with
+  `GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC` and
+  `GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN`. Shares are clamped to **≥1 per
+  replica** so operator login can never be fully denied. The defaults (6/second
+  and 30/minute) divide exactly across the default six replicas; a custom budget
+  below the divisor can exceed its nominal fleet-wide value because of the
+  liveness clamp.
 
 ## Validate the coordination behavior locally
 

@@ -568,12 +568,13 @@ and the Postgres backend, the server runs **shared coordination** (sessions,
 login challenges, and the canonicalization lease live in Postgres) — so any
 request lands on any replica and canonicalization runs on exactly one replica at
 a time. Terraform also sets `GUARDIAN_MAX_REPLICAS` from
-`effective_guardian_max_replicas` (the deployment surge capacity:
-`max(desired, autoscaling max) × server_deployment_maximum_percent`, rounded
-as ECS does; prod is `max(desired, 6) × 2` by default, so the fleet aggregate
-holds even while a rolling deploy runs extra tasks) so rate limits are
-partitioned across the fleet. In prod, Terraform requires the pre-created
-dashboard cursor secret and injects the same value into every task, so dashboard
+`effective_guardian_max_replicas` (the greater of desired count and autoscaling
+max, 6 by default) so global HTTP and dashboard commitment rate limits are
+partitioned across the steady-state fleet. A rolling deployment may allow up to
+`server_deployment_maximum_percent / 100` times the configured aggregate limit
+(2× by default). The default dashboard share is 5 requests per minute on a
+keep-alive-pinned replica. In prod, Terraform requires the pre-created dashboard
+cursor secret and injects the same value into every task, so dashboard
 pagination works across replicas. The server itself still warns and uses an
 ephemeral key when run without the variable outside this managed prod profile.
 Watch the per-replica `GUARDIAN_DB_POOL_MAX_SIZE` against Postgres

@@ -27,9 +27,9 @@ const DEFAULT_BURST_PER_SEC: u32 = 10;
 const DEFAULT_PER_MIN: u32 = 60;
 /// Environment variable for enabling or disabling rate limiting
 const ENV_RATE_LIMIT_ENABLED: &str = "GUARDIAN_RATE_LIMIT_ENABLED";
-/// Deployment's maximum replica capacity; the configured global limits are
-/// divided by it so per-process enforcement keeps the fleet aggregate at or
-/// below the global limit (issue #242). Drives rate limiting only.
+/// Deployment's steady-state replica capacity; configured limits are divided
+/// by it so per-process enforcement keeps the steady-state fleet aggregate at
+/// or below the fleet-wide limit (issue #242). Drives rate limiting only.
 const ENV_MAX_REPLICAS: &str = "GUARDIAN_MAX_REPLICAS";
 /// Cleanup interval for stale entries
 const CLEANUP_INTERVAL_SECS: u64 = 60;
