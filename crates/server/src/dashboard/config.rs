@@ -17,9 +17,12 @@ pub(crate) const DEFAULT_PUBKEY_RATE_PER_MIN: u32 = 30;
 /// aggregates may return a degraded marker on filesystem-backed
 /// deployments, per FR-029 of `005-operator-dashboard-metrics`.
 pub(crate) const DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD: usize = 1_000;
-/// Default deployment environment identifier exposed on
-/// `GET /dashboard/info`.
-pub(crate) const DEFAULT_ENVIRONMENT: &str = "testnet";
+/// Network used by `Default`/`for_tests()` configs only — production
+/// never reads this: every real server resolves `GUARDIAN_NETWORK_TYPE`
+/// once (in `main.rs`) and threads it here through the builder via
+/// [`DashboardConfig::from_env_for_network`], which overrides the field.
+/// Testnet matches the historical default `environment()` label.
+pub(crate) const DEFAULT_NETWORK_TYPE: NetworkType = NetworkType::MidenTestnet;
 
 #[derive(Clone, Debug)]
 pub struct DashboardConfig {
@@ -30,7 +33,13 @@ pub struct DashboardConfig {
     pub(crate) max_outstanding_challenges: usize,
     pub(crate) commitment_rate_limit: RateLimitConfig,
     pub(crate) filesystem_aggregate_threshold: usize,
-    pub(crate) environment: String,
+    /// The Miden network this server is configured against
+    /// (`GUARDIAN_NETWORK_TYPE`, threaded through the server builder).
+    /// A server talks to exactly one Miden network, so
+    /// network-dependent rendering — the `/dashboard/info` environment
+    /// label, bech32 address HRPs — derives from this, never from
+    /// per-account metadata, which clients may omit at registration.
+    pub(crate) network_type: NetworkType,
     /// Optional pre-parsed HMAC secret for the dashboard cursor codec.
     /// When `None`, [`DashboardState`] generates a fresh random secret
     /// per process — fine for single-replica deployments and unit
@@ -54,7 +63,7 @@ impl DashboardConfig {
                 )
             })?;
         Ok(Self {
-            environment: environment_for_network(network_type).to_string(),
+            network_type,
             cursor_secret,
             ..Self::default()
         })
@@ -68,8 +77,12 @@ impl DashboardConfig {
         self.filesystem_aggregate_threshold
     }
 
-    pub(crate) fn environment(&self) -> &str {
-        &self.environment
+    pub(crate) fn environment(&self) -> &'static str {
+        environment_for_network(self.network_type)
+    }
+
+    pub(crate) fn network_type(&self) -> NetworkType {
+        self.network_type
     }
 
     pub(crate) fn take_cursor_secret(&mut self) -> Option<CursorSecret> {
@@ -99,7 +112,7 @@ impl Default for DashboardConfig {
                 per_min: DEFAULT_PUBKEY_RATE_PER_MIN,
             },
             filesystem_aggregate_threshold: DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD,
-            environment: DEFAULT_ENVIRONMENT.to_string(),
+            network_type: DEFAULT_NETWORK_TYPE,
             cursor_secret: None,
         }
     }
