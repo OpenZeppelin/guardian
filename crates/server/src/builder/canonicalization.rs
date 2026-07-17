@@ -30,10 +30,10 @@ pub struct CanonicalizationConfig {
     /// Candidates within an account are always sequential (nonce order);
     /// this only overlaps the per-account work — dominated by the Miden
     /// RPC round trip — across accounts. `1` reproduces the fully
-    /// sequential pass and is the safe rollback value. The default
-    /// overlaps a moderate number of accounts; keep it comfortably below
-    /// `GUARDIAN_DB_POOL_MAX_SIZE` so the worker still leaves connections
-    /// for API requests.
+    /// sequential pass and is the safe rollback value. A DB connection is
+    /// held only during the short fenced transactions, so this may exceed
+    /// `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts queue
+    /// briefly at the pool rather than failing.
     pub max_concurrent_accounts: usize,
 }
 
@@ -44,7 +44,7 @@ impl Default for CanonicalizationConfig {
             max_retries: 18,                      // 18 attempts (total: ~3 minutes)
             submission_grace_period_seconds: 600, // Allow proving/submission to settle first
             divergence_confirmations: 2,          // Two ticks to rule out a stale read
-            max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; keep below the DB pool
+            max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; prod Terraform sets 50
         }
     }
 }

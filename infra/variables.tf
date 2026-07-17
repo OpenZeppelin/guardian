@@ -491,8 +491,10 @@ variable "guardian_canonicalization_max_concurrent_accounts" {
   description = <<-EOT
     Optional override for GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS, how many
     accounts one canonicalization pass processes in parallel (1 = fully sequential).
-    Defaults to 20 in prod, 10 otherwise. Keep it comfortably below
-    guardian_db_pool_max_size so the worker leaves connections for API requests.
+    Defaults to 50 in prod (which runs behind RDS Proxy), 10 otherwise. Most
+    of each account's wall clock is a chain RPC that holds no DB connection,
+    so this may exceed guardian_db_pool_max_size; write bursts queue briefly
+    at the pool instead of failing.
   EOT
   type        = number
   default     = null

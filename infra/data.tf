@@ -151,7 +151,7 @@ locals {
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
 
-  effective_guardian_canonicalization_max_concurrent_accounts = var.guardian_canonicalization_max_concurrent_accounts != null ? var.guardian_canonicalization_max_concurrent_accounts : (local.is_prod ? 20 : 10)
+  effective_guardian_canonicalization_max_concurrent_accounts = var.guardian_canonicalization_max_concurrent_accounts != null ? var.guardian_canonicalization_max_concurrent_accounts : (local.is_prod ? 50 : 10)
   managed_evm_allowed_chain_ids_secret_enabled                = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
   evm_allowed_chain_ids_secret_arn                            = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
   managed_evm_rpc_urls_secret_enabled                         = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
