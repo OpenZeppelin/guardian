@@ -42,6 +42,28 @@ pub struct AbandonCandidateResult {
 /// The `delete_delta` inside [`remove_candidate`] is the linearization
 /// point: a retry after a 5xx that returns `delta_not_found` means the
 /// abandon already succeeded.
+///
+/// Because that retry contract makes `delta_not_found` a success signal,
+/// delta reads use the list read (which errors only on backend failure)
+/// so a storage outage surfaces as a 5xx instead of a spurious 404.
+async fn pull_delta_at_nonce(
+    storage: &std::sync::Arc<dyn crate::storage::StorageBackend>,
+    account_id: &str,
+    nonce: u64,
+) -> Result<crate::delta_object::DeltaObject> {
+    let deltas = storage
+        .pull_deltas_after(account_id, 0)
+        .await
+        .map_err(|e| GuardianError::StorageError(format!("Failed to read deltas: {e}")))?;
+    deltas
+        .into_iter()
+        .find(|d| d.nonce == nonce)
+        .ok_or_else(|| GuardianError::DeltaNotFound {
+            account_id: account_id.to_string(),
+            nonce,
+        })
+}
+
 pub async fn abandon_candidate(
     state: &AppState,
     params: AbandonCandidateParams,
@@ -55,14 +77,7 @@ pub async fn abandon_candidate(
     let resolved = resolve_account(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
 
-    let delta = resolved
-        .storage
-        .pull_delta(&account_id, nonce)
-        .await
-        .map_err(|_| GuardianError::DeltaNotFound {
-            account_id: account_id.clone(),
-            nonce,
-        })?;
+    let delta = pull_delta_at_nonce(&resolved.storage, &account_id, nonce).await?;
 
     match &delta.status {
         DeltaStatus::Candidate { .. } => {}
@@ -109,14 +124,7 @@ pub async fn abandon_candidate(
 
     // Re-read immediately before removal: the worker may have canonicalized
     // (or discarded) the candidate between the on-chain read above and now.
-    let delta = resolved
-        .storage
-        .pull_delta(&account_id, nonce)
-        .await
-        .map_err(|_| GuardianError::DeltaNotFound {
-            account_id: account_id.clone(),
-            nonce,
-        })?;
+    let delta = pull_delta_at_nonce(&resolved.storage, &account_id, nonce).await?;
     if !delta.status.is_candidate() {
         return Err(GuardianError::CandidateLanded { account_id, nonce });
     }
@@ -253,8 +261,8 @@ mod tests {
                 account_id.clone(),
                 "0x123".to_string(),
             )))
-            .with_pull_delta(Ok(create_candidate_delta(&account_id, 1)))
-            .with_pull_delta(Ok(create_candidate_delta(&account_id, 1)));
+            .with_pull_deltas_after(Ok(vec![create_candidate_delta(&account_id, 1)]))
+            .with_pull_deltas_after(Ok(vec![create_candidate_delta(&account_id, 1)]));
 
         let _network =
             network.with_apply_delta(Ok((serde_json::json!({"new": true}), "0x456".to_string())));
@@ -279,11 +287,15 @@ mod tests {
             on_chain: "0x123".to_string(),
         }));
         let t = setup(network);
-        // The matching proposal exists and its deletion succeeds.
+        // The matching proposal exists (the mock derives the record's
+        // commitment from `new_commitment`, matched against the mock
+        // network's fixed proposal id) and its deletion succeeds.
+        let mut proposal = create_candidate_delta(&t.params.account_id, 1);
+        proposal.new_commitment = Some(format!("0x{}", "ab".repeat(32)));
         let _ = t
             .storage
             .clone()
-            .with_pull_delta_proposal(Ok(create_candidate_delta(&t.params.account_id, 1)))
+            .with_pull_all_delta_proposals(Ok(vec![proposal]))
             .with_delete_delta_proposal(Ok(()));
 
         let result = abandon_candidate(&t.state, t.params.clone()).await;
@@ -332,8 +344,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_abandon_missing_delta_maps_to_delta_not_found() {
-        // No pull_delta response is canned, so the mock returns its
-        // "No delta found" error.
+        // No pull_deltas_after response is canned, so the mock returns an
+        // empty list: the nonce is genuinely absent (vs a backend failure,
+        // which must NOT map to DeltaNotFound - see the dedicated test).
         let (state, storage, _, metadata) = create_test_state();
 
         let delta_fixture: serde_json::Value =
@@ -380,7 +393,7 @@ mod tests {
 
         let mut canonical = create_candidate_delta(&account_id, 1);
         canonical.status = DeltaStatus::canonical("2024-11-14T12:05:00Z".to_string());
-        let _ = storage.clone().with_pull_delta(Ok(canonical));
+        let _ = storage.clone().with_pull_deltas_after(Ok(vec![canonical]));
 
         let params = AbandonCandidateParams {
             account_id,
@@ -420,11 +433,11 @@ mod tests {
         let mut canonical = create_candidate_delta(&account_id, 1);
         canonical.status = DeltaStatus::canonical("2024-11-14T12:05:00Z".to_string());
         // Mock responses are a stack (LIFO): push the re-check response
-        // first so the candidate is returned on the first pull.
+        // first so the candidate is returned on the first read.
         let _ = storage
             .clone()
-            .with_pull_delta(Ok(canonical))
-            .with_pull_delta(Ok(create_candidate_delta(&account_id, 1)))
+            .with_pull_deltas_after(Ok(vec![canonical]))
+            .with_pull_deltas_after(Ok(vec![create_candidate_delta(&account_id, 1)]))
             .with_pull_state(Ok(create_state_object(
                 account_id.clone(),
                 "0x123".to_string(),
@@ -504,5 +517,139 @@ mod tests {
         // The delta itself was deleted before the failure — the account is
         // released (linearization point) even though the request errored.
         assert_eq!(t.storage.get_delete_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_abandon_storage_read_failure_is_not_delta_not_found() {
+        // A backend outage must surface as a 5xx StorageError, never as
+        // DeltaNotFound: the documented retry contract treats 404 as proof
+        // the abandon already succeeded.
+        let network = MockNetworkClient::new();
+        let (state, storage, _, metadata) = create_test_state();
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let (pubkey, commitment, signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let _ = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment],
+            },
+        ))));
+        let _ = storage
+            .clone()
+            .with_pull_deltas_after(Err("connection refused".to_string()));
+
+        let params = AbandonCandidateParams {
+            account_id,
+            nonce: 1,
+            credentials: Credentials::signature(pubkey, signature, timestamp),
+        };
+        let result = abandon_candidate(&state, params).await;
+        match result.unwrap_err() {
+            GuardianError::StorageError(msg) => assert!(msg.contains("connection refused")),
+            e => panic!("Expected StorageError, got: {:?}", e),
+        }
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let _ = network;
+    }
+
+    #[tokio::test]
+    async fn test_abandon_strict_proposal_check_failure_is_hard_error() {
+        // In Strict mode a failure to read the proposal store must fail
+        // the request, not be silently treated as "no proposal".
+        let network = MockNetworkClient::new().with_verify_state(Ok(StateVerification::Mismatch {
+            on_chain: "0x123".to_string(),
+        }));
+        let t = setup(network);
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_all_delta_proposals(Err("db down".to_string()));
+
+        let result = abandon_candidate(&t.state, t.params).await;
+        match result.unwrap_err() {
+            GuardianError::StorageError(msg) => {
+                assert!(msg.contains("matching proposal"), "got: {msg}")
+            }
+            e => panic!("Expected StorageError, got: {:?}", e),
+        }
+        // Linearization point already passed: the delta is deleted.
+        assert_eq!(t.storage.get_delete_delta_calls().len(), 1);
+        assert!(t.storage.get_delete_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_restores_flag_when_new_candidate_committed_concurrently() {
+        // The flag-clear helper re-reads the delta store after clearing:
+        // if a new candidate was committed the moment the 409 gate opened,
+        // the flag must be restored so the worker still sees the account.
+        let network = MockNetworkClient::new()
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            }))
+            .with_apply_delta(Ok((serde_json::json!({"new": true}), "0x456".to_string())));
+        let storage = MockStorageBackend::new();
+        let metadata = MockMetadataStore::new();
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(Mutex::new(network.clone())),
+            Arc::new(metadata.clone()),
+        );
+
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let (pubkey, commitment, signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let flag_set = create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment],
+            },
+        );
+        let mut flag_cleared = flag_set.clone();
+        flag_cleared.has_pending_candidate = false;
+        // `get` responses pop LIFO while more than one is canned, then the
+        // last is cloned: resolve_account and the helper's clear see the
+        // flag SET; the helper's restore then reads it CLEARED (mirroring
+        // its own write), so the restore write is not elided as a no-op.
+        let _ = metadata
+            .clone()
+            .with_get(Ok(Some(flag_cleared)))
+            .with_get(Ok(Some(flag_set.clone())))
+            .with_get(Ok(Some(flag_set)));
+
+        // List reads (LIFO): two service reads see the candidate at nonce
+        // 1; the helper's post-clear re-check sees a fresh candidate at
+        // nonce 2 committed concurrently.
+        let _ = storage
+            .clone()
+            .with_pull_deltas_after(Ok(vec![create_candidate_delta(&account_id, 2)]))
+            .with_pull_deltas_after(Ok(vec![create_candidate_delta(&account_id, 1)]))
+            .with_pull_deltas_after(Ok(vec![create_candidate_delta(&account_id, 1)]))
+            .with_pull_state(Ok(create_state_object(
+                account_id.clone(),
+                "0x123".to_string(),
+            )));
+
+        let params = AbandonCandidateParams {
+            account_id,
+            nonce: 1,
+            credentials: Credentials::signature(pubkey, signature, timestamp),
+        };
+        let result = abandon_candidate(&state, params).await;
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+        // Last metadata write must have the flag RESTORED to true.
+        let set_calls = metadata.get_set_calls();
+        assert!(!set_calls.is_empty(), "expected metadata set calls");
+        assert!(
+            set_calls.last().unwrap().has_pending_candidate,
+            "flag must be restored for the concurrently committed candidate"
+        );
     }
 }

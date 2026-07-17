@@ -100,7 +100,9 @@ impl DeltasProcessorBase {
         // a best-effort flag-clear fails after the candidate delta was
         // already deleted (e.g. in `remove_candidate`). Without this, the
         // account stays in `list_with_pending_candidates` and is rescanned
-        // on every tick forever.
+        // on every tick forever. The helper re-reads the delta store after
+        // clearing and restores the flag if a candidate was committed
+        // concurrently.
         if candidates.is_empty() && account_metadata.has_pending_candidate {
             tracing::warn!(
                 account_id = %account_id,
@@ -108,11 +110,8 @@ impl DeltasProcessorBase {
                  exists; clearing stale flag"
             );
             let now = self.state.clock.now_rfc3339();
-            if let Err(e) = self
-                .state
-                .metadata
-                .set_has_pending_candidate(account_id, false, &now)
-                .await
+            if let Err(e) =
+                super::removal::clear_pending_candidate_flag(&self.state, account_id, &now).await
             {
                 tracing::warn!(
                     account_id = %account_id,
@@ -458,10 +457,10 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to update delta as canonical: {e}"))
             })?;
 
-        // Clear the pending candidate flag
-        self.state
-            .metadata
-            .set_has_pending_candidate(&delta.account_id, false, &now)
+        // Clear the pending candidate flag (with the concurrent-commit
+        // re-check: the 409 gate opened when the delta flipped canonical
+        // above, so a new candidate may already have been committed).
+        super::removal::clear_pending_candidate_flag(&self.state, &delta.account_id, &now)
             .await
             .map_err(|e| {
                 tracing::warn!(
