@@ -204,6 +204,18 @@ impl StorageBackend for InstrumentedStorage {
         timed("delete_delta", self.inner.delete_delta(account_id, nonce)).await
     }
 
+    async fn delete_delta_if_candidate(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        timed(
+            "delete_delta_if_candidate",
+            self.inner.delete_delta_if_candidate(account_id, nonce),
+        )
+        .await
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,

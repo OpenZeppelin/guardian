@@ -269,6 +269,15 @@ pub trait StorageBackend: Send + Sync {
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;
+    /// Atomically delete the delta at `nonce` only if it is still a
+    /// candidate. Returns whether a candidate row was deleted; `Ok(false)`
+    /// means the delta is absent or no longer a candidate. This is the
+    /// linearization point for client-initiated abandons (issue #319): the
+    /// status check and the delete are a single atomic step, so a delta
+    /// the canonicalization worker concurrently flipped to canonical can
+    /// never be deleted by an abandon.
+    async fn delete_delta_if_candidate(&self, account_id: &str, nonce: u64)
+    -> Result<bool, String>;
     async fn update_delta_status(
         &self,
         account_id: &str,

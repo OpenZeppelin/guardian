@@ -16,6 +16,13 @@ use tokio::io::AsyncWriteExt;
 
 pub struct FilesystemService {
     app_path: PathBuf,
+    /// Serializes delta-status writes against the conditional candidate
+    /// delete (issue #319): the filesystem has no transactions, so
+    /// `delete_delta_if_candidate`'s read-check-delete and the status
+    /// writes it races (`submit_delta`, `update_delta_status`) take this
+    /// lock. The backend is single-process, so an in-process mutex is
+    /// sufficient.
+    delta_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FilesystemService {
@@ -26,7 +33,10 @@ impl FilesystemService {
             .await
             .map_err(|e| format!("Failed to create app directory: {e}"))?;
 
-        Ok(Self { app_path })
+        Ok(Self {
+            app_path,
+            delta_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        })
     }
 
     /// Atomically write a file
@@ -409,6 +419,7 @@ impl StorageBackend for FilesystemService {
 
         let app_path = self.get_delta_path(&delta.account_id, delta.nonce);
 
+        let _guard = self.delta_write_lock.lock().await;
         self.write(&app_path, &content).await
     }
 
@@ -612,6 +623,38 @@ impl StorageBackend for FilesystemService {
         Ok(())
     }
 
+    async fn delete_delta_if_candidate(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        let path = self.get_delta_path(account_id, nonce);
+
+        // Read-check-delete under the delta write lock: status writes
+        // (`submit_delta`, `update_delta_status`) take the same lock, so a
+        // delta the worker concurrently flips to canonical cannot be
+        // deleted here.
+        let _guard = self.delta_write_lock.lock().await;
+
+        let content = match fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("Failed to read delta file: {e}")),
+        };
+        let delta: DeltaObject = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
+
+        if !delta.status.is_candidate() {
+            return Ok(false);
+        }
+
+        fs::remove_file(&path)
+            .await
+            .map_err(|e| format!("Failed to delete delta file: {e}"))?;
+
+        Ok(true)
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -620,6 +663,7 @@ impl StorageBackend for FilesystemService {
     ) -> Result<(), String> {
         let path = self.get_delta_path(account_id, nonce);
 
+        let _guard = self.delta_write_lock.lock().await;
         let content = fs::read_to_string(&path)
             .await
             .map_err(|e| format!("Failed to read delta file: {e}"))?;
@@ -1009,6 +1053,60 @@ mod tests {
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             auth_scheme: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn test_delete_delta_if_candidate_deletes_candidate() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let deleted = storage
+            .delete_delta_if_candidate(account_id, 1)
+            .await
+            .expect("conditional delete works");
+        assert!(deleted);
+        assert!(storage.pull_delta(account_id, 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_delta_if_candidate_spares_canonical() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        // create_test_delta is canonical by default.
+        let delta = create_test_delta(account_id, 1);
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let deleted = storage
+            .delete_delta_if_candidate(account_id, 1)
+            .await
+            .expect("conditional delete works");
+        assert!(!deleted, "a canonical delta must not be deleted");
+        assert!(storage.pull_delta(account_id, 1).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_delta_if_candidate_missing_is_false() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let deleted = storage
+            .delete_delta_if_candidate("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1)
+            .await
+            .expect("conditional delete works");
+        assert!(!deleted);
     }
 
     #[tokio::test]

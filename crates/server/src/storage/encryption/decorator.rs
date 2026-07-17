@@ -247,6 +247,16 @@ impl StorageBackend for EncryptedStorage {
         self.inner.delete_delta(account_id, nonce).await
     }
 
+    async fn delete_delta_if_candidate(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        self.inner
+            .delete_delta_if_candidate(account_id, nonce)
+            .await
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,

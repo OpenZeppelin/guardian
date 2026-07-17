@@ -1147,6 +1147,31 @@ impl StorageBackend for PostgresService {
         Ok(())
     }
 
+    async fn delete_delta_if_candidate(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        // Single conditional DELETE on the typed status column: the status
+        // check and the delete are one atomic statement, so a delta the
+        // worker concurrently canonicalizes cannot be deleted here.
+        let deleted = diesel::delete(deltas::table)
+            .filter(deltas::account_id.eq(account_id))
+            .filter(deltas::nonce.eq(nonce as i64))
+            .filter(deltas::status_kind.eq("candidate"))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to delete candidate delta: {e}"))?;
+
+        Ok(deleted > 0)
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,

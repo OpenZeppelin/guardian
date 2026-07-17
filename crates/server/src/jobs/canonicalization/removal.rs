@@ -61,10 +61,15 @@ pub(crate) async fn clear_pending_candidate_flag(
 /// Delete a candidate that can never be canonicalized, delete its
 /// matching proposal, and release the account's pending-candidate lock.
 ///
-/// The `delete_delta` call is the linearization point: the 409
-/// `conflict_pending_delta` gate scans for a candidate delta row, so the
-/// account is released the moment that delete lands, even if a later
-/// cleanup step fails.
+/// The conditional `delete_delta_if_candidate` call is the linearization
+/// point: the 409 `conflict_pending_delta` gate scans for a candidate
+/// delta row, so the account is released the moment that delete lands,
+/// even if a later cleanup step fails. Because the status check and the
+/// delete are one atomic storage step, a delta the worker concurrently
+/// canonicalized is never deleted: in `Strict` mode that case maps to
+/// [`GuardianError::CandidateLanded`] (or [`GuardianError::DeltaNotFound`]
+/// if the delta vanished entirely); in `BestEffort` mode the removal is
+/// simply skipped — the concurrent actor owns the cleanup.
 pub(crate) async fn remove_candidate(
     state: &AppState,
     delta: &DeltaObject,
@@ -73,10 +78,38 @@ pub(crate) async fn remove_candidate(
 ) -> Result<()> {
     let storage_backend = state.storage.clone();
 
-    storage_backend
-        .delete_delta(&delta.account_id, delta.nonce)
+    let deleted = storage_backend
+        .delete_delta_if_candidate(&delta.account_id, delta.nonce)
         .await
         .map_err(|e| GuardianError::StorageError(format!("Failed to delete delta: {e}")))?;
+    if !deleted {
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            "Delta is no longer a pending candidate; skipping removal"
+        );
+        if mode == RemovalMode::BestEffort {
+            return Ok(());
+        }
+        return Err(
+            match storage_backend
+                .pull_delta(&delta.account_id, delta.nonce)
+                .await
+            {
+                Ok(_) => GuardianError::CandidateLanded {
+                    account_id: delta.account_id.clone(),
+                    nonce: delta.nonce,
+                },
+                Err(e) if crate::storage::is_storage_not_found(&e) => {
+                    GuardianError::DeltaNotFound {
+                        account_id: delta.account_id.clone(),
+                        nonce: delta.nonce,
+                    }
+                }
+                Err(e) => GuardianError::StorageError(format!("Failed to read delta: {e}")),
+            },
+        );
+    }
 
     // A discarded candidate can never be canonicalized, so delete its proposal:
     // leaving it would strand it as `pending` forever and let clients re-submit a
@@ -105,14 +138,13 @@ pub(crate) async fn remove_candidate(
     if let Some(ref id) = proposal_id {
         // A candidate pushed via the direct delta path legitimately has no
         // proposal, so absence must not fail the removal — but a backend
-        // read failure must not be mistaken for absence either. The
-        // single-record read reports both as an opaque error, so use the
-        // list read, which errors only on backend failure.
+        // read failure must not be mistaken for absence either.
         let proposal_exists = match storage_backend
-            .pull_all_delta_proposals(&delta.account_id)
+            .pull_delta_proposal(&delta.account_id, id)
             .await
         {
-            Ok(records) => records.iter().any(|record| &record.commitment == id),
+            Ok(_) => true,
+            Err(e) if crate::storage::is_storage_not_found(&e) => false,
             Err(e) => {
                 if mode == RemovalMode::Strict {
                     return Err(GuardianError::StorageError(format!(

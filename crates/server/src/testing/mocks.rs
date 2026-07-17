@@ -278,6 +278,7 @@ pub struct MockStorageBackend {
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
+    pub delete_delta_if_candidate_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub update_delta_status_calls:
         Arc<StdMutex<Vec<(String, u64, crate::delta_object::DeltaStatus)>>>,
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
@@ -416,6 +417,14 @@ impl MockStorageBackend {
         self.delete_delta_proposal_calls.lock().unwrap().clone()
     }
 
+    pub fn with_delete_delta_if_candidate(self, response: StdResult<bool, String>) -> Self {
+        self.delete_delta_if_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn get_delete_delta_calls(&self) -> Vec<(String, u64)> {
         self.delete_delta_calls.lock().unwrap().clone()
     }
@@ -546,7 +555,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No delta found".to_string()))
+            .unwrap_or_else(|| Err("Mock: delta not found".to_string()))
     }
 
     async fn pull_deltas_after(
@@ -590,7 +599,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("Mock: No proposal found".to_string()))
+            .unwrap_or_else(|| Err("Mock: proposal not found".to_string()))
     }
 
     async fn pull_all_delta_proposals(
@@ -652,6 +661,24 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .push((account_id.to_string(), nonce));
         Ok(())
+    }
+
+    async fn delete_delta_if_candidate(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        // Recorded alongside plain deletes so existing call asserts cover
+        // both removal paths.
+        self.delete_delta_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), nonce));
+        self.delete_delta_if_candidate_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true))
     }
 
     async fn update_delta_status(

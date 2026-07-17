@@ -809,8 +809,7 @@ mod tests {
         ))));
         let _ = storage
             .clone()
-            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
-            .with_pull_deltas_after(Ok(vec![candidate]))
+            .with_pull_delta(Ok(candidate))
             .with_pull_state(Ok(create_state_object(
                 account_id.to_string(),
                 "0x123".to_string(),
