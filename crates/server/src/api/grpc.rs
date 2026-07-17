@@ -732,10 +732,16 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.push_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
+        let status = service
+            .push_delta_proposal(request)
+            .await
+            .expect_err("missing tx summary must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert!(details["code"].is_string());
+        assert!(details["message"].is_string());
+        assert!(details["meta"]["retryable"].is_boolean());
     }
 
     #[tokio::test]
@@ -906,11 +912,16 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.get_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
-        assert!(inner.proposal.is_none());
+        let status = service
+            .get_delta_proposal(request)
+            .await
+            .expect_err("unknown proposal must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert_eq!(details["code"], "proposal_not_found");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[tokio::test]
@@ -935,12 +946,16 @@ mod tests {
         request
             .metadata_mut()
             .insert("x-signature", "0xdeadbeef".parse().unwrap());
-        let response = service.get_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
-        assert!(inner.proposal.is_none());
-        assert!(inner.message.contains("Authentication failed"));
+        let status = service
+            .get_delta_proposal(request)
+            .await
+            .expect_err("bad signature must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert_eq!(details["code"], "authentication_failed");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[tokio::test]
@@ -971,9 +986,14 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.sign_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
+        let status = service
+            .sign_delta_proposal(request)
+            .await
+            .expect_err("unknown proposal must surface as a gRPC Status");
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert!(details["code"].is_string());
+        assert!(details["message"].is_string());
+        assert!(details["meta"]["retryable"].is_boolean());
     }
 }

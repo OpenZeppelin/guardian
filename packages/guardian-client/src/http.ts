@@ -59,7 +59,10 @@ interface ParsedGuardianError {
 /**
  * Parse a GUARDIAN error body `{ code, message, meta }` (feature 009),
  * mapping the server's snake_case `meta` fields to camelCase. Returns
- * `undefined` for non-JSON or non-conforming bodies.
+ * `undefined` for non-JSON or non-conforming bodies — including a missing
+ * `meta` or a non-boolean `meta.retryable`, which the contract requires;
+ * treating those as conforming would silently misclassify retryability for
+ * bodies from older servers or intermediary proxies.
  */
 function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   let json: unknown;
@@ -72,10 +75,19 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   const obj = json as Record<string, unknown>;
   if (typeof obj.code !== 'string' || typeof obj.message !== 'string') return undefined;
 
-  const rawMeta =
-    typeof obj.meta === 'object' && obj.meta !== null ? (obj.meta as Record<string, unknown>) : {};
-  const meta: GuardianErrorMeta = { retryable: rawMeta.retryable === true };
-  if (typeof rawMeta.retry_after_secs === 'number') meta.retryAfterSecs = rawMeta.retry_after_secs;
+  if (typeof obj.meta !== 'object' || obj.meta === null || Array.isArray(obj.meta)) {
+    return undefined;
+  }
+  const rawMeta = obj.meta as Record<string, unknown>;
+  if (typeof rawMeta.retryable !== 'boolean') return undefined;
+  const meta: GuardianErrorMeta = { retryable: rawMeta.retryable };
+  if (
+    typeof rawMeta.retry_after_secs === 'number' &&
+    Number.isInteger(rawMeta.retry_after_secs) &&
+    rawMeta.retry_after_secs >= 0
+  ) {
+    meta.retryAfterSecs = rawMeta.retry_after_secs;
+  }
   if (Array.isArray(rawMeta.missing_permissions)) {
     meta.missingPermissions = rawMeta.missing_permissions.filter(
       (x): x is string => typeof x === 'string'
@@ -120,9 +132,12 @@ export class GuardianHttpError extends Error {
     public readonly statusText: string,
     public readonly body: string
   ) {
-    super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
-    this.name = 'GuardianHttpError';
+    // Only the parsed, user-safe message is folded into Error.message; the
+    // raw body (which may carry backend/proxy internals) stays on the `body`
+    // field for diagnostics only.
     const parsed = parseGuardianErrorBody(body);
+    super(`GUARDIAN HTTP error ${status}: ${statusText}${parsed ? ` - ${parsed.message}` : ''}`);
+    this.name = 'GuardianHttpError';
     this.code = parsed?.code ?? null;
     this.userMessage = parsed?.message;
     this.meta = parsed?.meta;

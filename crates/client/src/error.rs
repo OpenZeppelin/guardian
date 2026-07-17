@@ -63,20 +63,14 @@ impl ClientError {
     }
 
     /// Short, end-user-safe message safe to show in a wallet UI, when this
-    /// error originated from a Guardian gRPC `Status`. Falls back to the
-    /// `Status.message` (also the user-safe message) for Status errors
-    /// without a details object.
+    /// error originated from a Guardian gRPC `Status` carrying the structured
+    /// `{ code, message, meta }` details object. Returns `None` when the
+    /// details object is absent — a bare `Status.message` may be
+    /// developer-facing text (e.g. pre-service auth-metadata validation), so
+    /// callers substitute their own generic safe message instead.
     pub fn user_message(&self) -> Option<String> {
-        if let Some(message) = self
-            .guardian_error_details()
+        self.guardian_error_details()
             .and_then(|d| d.get("message")?.as_str().map(str::to_owned))
-        {
-            return Some(message);
-        }
-        match self {
-            ClientError::Status(status) => Some(status.message().to_owned()),
-            _ => None,
-        }
     }
 
     /// The structured `meta` block (`retryable`, `retry_after_secs`, …) from a
@@ -131,10 +125,13 @@ mod tests {
     }
 
     #[test]
-    fn user_message_falls_back_to_status_message_without_details() {
-        let err: ClientError = tonic::Status::new(tonic::Code::Unavailable, "fallback msg").into();
+    fn user_message_is_none_without_structured_details() {
+        // A bare Status.message may be developer-facing (e.g. pre-service
+        // auth-metadata validation); it must not be surfaced as user-safe.
+        let err: ClientError =
+            tonic::Status::new(tonic::Code::Unavailable, "raw internal detail").into();
         assert_eq!(err.guardian_code(), None);
-        assert_eq!(err.user_message().as_deref(), Some("fallback msg"));
+        assert_eq!(err.user_message(), None);
     }
 
     #[test]

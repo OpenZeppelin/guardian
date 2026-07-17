@@ -45,6 +45,14 @@ describe('toUserFacingError', () => {
     expect(result.userMessage).not.toContain('Failed to fetch');
   });
 
+  it('classifies timeouts and aborts as the timeout category', () => {
+    for (const m of ['request timed out', 'The operation was aborted']) {
+      const result = toUserFacingError(new Error(m));
+      expect(result.category).toBe('timeout');
+      expect(result.userMessage).toContain("Can't reach Guardian");
+    }
+  });
+
   it('treats a reachable proxy 5xx with no Guardian body as connectivity', () => {
     const result = toUserFacingError(new GuardianHttpError(502, 'Bad Gateway', '<html>nope</html>'));
     expect(result.category).toBe('unreachable');

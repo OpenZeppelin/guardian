@@ -32,12 +32,13 @@ export interface GuardianOperatorHttpErrorData {
   missingPermissions?: readonly string[];
   /**
    * Explicit retryability flag, flattened from `meta.retryable` on the
-   * feature `009-human-readable-errors` envelope. Surfaced for any code:
-   * permission denials and account-paused rejections pin this to `false`;
-   * transient server failures (rate limit, connectivity, storage) surface
-   * `true`.
+   * feature `009-human-readable-errors` envelope. Required: the parser
+   * rejects envelopes without a boolean `meta.retryable`, so it is always
+   * present here. Permission denials and account-paused rejections pin this
+   * to `false`; transient server failures (rate limit, connectivity,
+   * storage) surface `true`.
    */
-  retryable?: boolean;
+  retryable: boolean;
   /**
    * Populated only for `account_paused` responses. RFC 3339 UTC
    * timestamp of the original pause.

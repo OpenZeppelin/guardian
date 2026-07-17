@@ -16,11 +16,41 @@
  */
 import { GuardianHttpError } from '@openzeppelin/guardian-client';
 
-/** Connectivity category for a codeless transport failure. */
+/**
+ * Connectivity category for a codeless transport failure:
+ * - `network` — the browser/OS reports no connectivity at all
+ *   (`navigator.onLine === false`); the problem is on the user's side.
+ * - `timeout` — the request was sent but timed out or was aborted.
+ * - `unreachable` — everything else: Guardian (or an intermediary) could not
+ *   be reached or did not answer with a Guardian error object.
+ */
 export type ConnectivityCategory = 'network' | 'unreachable' | 'timeout';
 
 const CONNECTIVITY_MESSAGE = "Can't reach Guardian right now. Check your connection and try again.";
 const GENERIC_MESSAGE = 'Something went wrong. Please try again.';
+
+/**
+ * `navigator.onLine` is unreliable as a positive signal, but a `false` means
+ * the browser/OS is certain there is no connectivity — categorize as
+ * `network` rather than `unreachable` (mirrors the wallet's
+ * `isDefinitelyOffline`). Guarded for non-browser (Node) contexts.
+ */
+function isDefinitelyOffline(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  if (typeof navigator.onLine !== 'boolean') return false;
+  return navigator.onLine === false;
+}
+
+/** Classify a codeless transport failure into a {@link ConnectivityCategory}. */
+function classifyTransportError(err: unknown): ConnectivityCategory {
+  if (isDefinitelyOffline()) return 'network';
+  const message = (err as { message?: string } | null | undefined)?.message ?? String(err ?? '');
+  const lower = message.toLowerCase();
+  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('abort')) {
+    return 'timeout';
+  }
+  return 'unreachable';
+}
 
 /**
  * Does this error look like a codeless transport/connectivity failure (vs a
@@ -75,7 +105,7 @@ export function toUserFacingError(err: unknown): UserFacingError {
     return { userMessage: GENERIC_MESSAGE, cause: err };
   }
   if (isLikelyNetworkError(err)) {
-    return { category: 'unreachable', userMessage: CONNECTIVITY_MESSAGE, cause: err };
+    return { category: classifyTransportError(err), userMessage: CONNECTIVITY_MESSAGE, cause: err };
   }
   return { userMessage: GENERIC_MESSAGE, cause: err };
 }
