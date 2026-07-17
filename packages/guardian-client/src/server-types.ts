@@ -137,6 +137,17 @@ export interface ServerProposalsResponse {
   proposals: ServerDeltaObject[];
 }
 
+export interface ServerAbandonCandidateRequest {
+  account_id: string;
+  nonce: number;
+}
+
+export interface ServerAbandonCandidateResponse {
+  account_id: string;
+  nonce: number;
+  abandoned_at: string;
+}
+
 export interface ServerSignProposalRequest {
   account_id: string;
   commitment: string;

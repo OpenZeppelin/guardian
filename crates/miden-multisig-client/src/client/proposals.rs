@@ -556,6 +556,39 @@ impl MultisigClient {
             Err(e) => Err(e),
         }
     }
+
+    /// Abandons a pending canonicalization candidate whose transaction will
+    /// never land on-chain, releasing the account on GUARDIAN immediately.
+    ///
+    /// Call this after an approved transaction died client-side (RPC submit
+    /// failure, prover timeout, crash): from GUARDIAN's perspective such a
+    /// candidate is indistinguishable from one that is slowly proving, so
+    /// without this call the account stays locked — every new proposal
+    /// answered with `conflict_pending_delta` — until the server's
+    /// submission grace period and retry budget run out.
+    ///
+    /// `nonce` pins the exact candidate to release; it is the nonce the
+    /// proposal was pushed with (committed account nonce + 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the candidate's transaction actually landed
+    /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will canonicalize
+    /// it shortly), if no candidate exists at this nonce, or if GUARDIAN
+    /// cannot be reached.
+    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<()> {
+        let account_id = self.require_account()?.id();
+
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        guardian_client
+            .abandon_candidate(&account_id, nonce)
+            .await
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to abandon candidate: {}", e))
+            })?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

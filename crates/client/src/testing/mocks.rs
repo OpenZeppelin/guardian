@@ -1,11 +1,12 @@
 use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
-    AccountState, ConfigureRequest, ConfigureResponse, DeltaObject as ProtoDeltaObject,
-    GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse, GetDeltaProposalRequest,
-    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
-    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
-    GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
-    PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
+    AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
+    ConfigureResponse, DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
+    GetAccountByKeyCommitmentResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
+    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
+    GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest,
+    PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -26,6 +27,8 @@ pub struct MockGuardianService {
     get_state_response: Arc<StdMutex<Option<Result<GetStateResponse, Status>>>>,
     get_account_by_key_commitment_response:
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
+    abandon_delta_candidate_response:
+        Arc<StdMutex<Option<Result<AbandonDeltaCandidateResponse, Status>>>>,
 }
 
 impl MockGuardianService {
@@ -96,6 +99,14 @@ impl MockGuardianService {
         response: Result<GetAccountByKeyCommitmentResponse, Status>,
     ) -> Self {
         *self.get_account_by_key_commitment_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    pub fn with_abandon_delta_candidate(
+        self,
+        response: Result<AbandonDeltaCandidateResponse, Status>,
+    ) -> Self {
+        *self.abandon_delta_candidate_response.lock().unwrap() = Some(response);
         self
     }
 }
@@ -217,6 +228,30 @@ impl Guardian for MockGuardianService {
                     success: true,
                     message: String::new(),
                     delta: Some(create_mock_delta()),
+                })
+            });
+
+        response.map(Response::new)
+    }
+
+    async fn abandon_delta_candidate(
+        &self,
+        request: Request<AbandonDeltaCandidateRequest>,
+    ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
+        let data = request.into_inner();
+        let response = self
+            .abandon_delta_candidate_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Ok(AbandonDeltaCandidateResponse {
+                    success: true,
+                    message: String::new(),
+                    account_id: data.account_id,
+                    nonce: data.nonce,
+                    abandoned_at: "2026-07-14T12:00:00Z".to_string(),
+                    error_code: String::new(),
                 })
             });
 

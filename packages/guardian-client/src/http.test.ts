@@ -457,6 +457,88 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('abandonCandidate', () => {
+    it('should abandon a pending candidate and map the response to camelCase', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 7,
+          abandoned_at: '2026-07-14T12:00:00Z',
+        }),
+      });
+
+      const result = await client.abandonCandidate('0x' + 'a'.repeat(30), 7);
+
+      expect(result).toEqual({
+        accountId: '0x' + 'a'.repeat(30),
+        nonce: 7,
+        abandonedAt: '2026-07-14T12:00:00Z',
+      });
+
+      // Wire format is snake_case
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/delta/candidate/abandon',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 7,
+          }),
+        })
+      );
+    });
+
+    it('surfaces 409 GUARDIAN_CANDIDATE_LANDED with a parseable error envelope', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            code: 'GUARDIAN_CANDIDATE_LANDED',
+            error:
+              "Candidate at nonce 7 for account '0xabc' already landed on-chain; cannot abandon",
+          }),
+      });
+
+      const error = await client
+        .abandonCandidate('0x' + 'a'.repeat(30), 7)
+        .catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(409);
+      expect(error.code).toBe('GUARDIAN_CANDIDATE_LANDED');
+    });
+
+    it('surfaces 404 delta_not_found when no candidate exists at the nonce', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            code: 'delta_not_found',
+            error: "Delta not found for account '0xabc' at nonce 7",
+          }),
+      });
+
+      const error = await client
+        .abandonCandidate('0x' + 'a'.repeat(30), 7)
+        .catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(404);
+      expect(error.code).toBe('delta_not_found');
+    });
+  });
+
   describe('signDeltaProposal', () => {
     it('should sign a delta proposal', async () => {
       client.setSigner(mockSigner);

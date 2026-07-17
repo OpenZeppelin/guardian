@@ -1,4 +1,5 @@
 import type {
+  AbandonCandidateResponse,
   ConfigureRequest,
   ConfigureResponse,
   DeltaObject,
@@ -16,6 +17,8 @@ import type {
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
+  ServerAbandonCandidateRequest,
+  ServerAbandonCandidateResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerLookupResponse,
@@ -203,6 +206,31 @@ export class GuardianHttpClient {
     return {
       delta: fromServerDeltaObject(server.delta),
       commitment: server.commitment,
+    };
+  }
+
+  /**
+   * Abandon a pending canonicalization candidate whose transaction will
+   * never land on-chain, releasing the account immediately instead of
+   * waiting out the server's submission grace period and retry budget.
+   *
+   * `nonce` pins the exact candidate to release (the nonce the proposal
+   * was pushed with). The server refuses with `GUARDIAN_CANDIDATE_LANDED`
+   * (409) when the transaction actually landed — it will canonicalize
+   * shortly. A `delta_not_found` (404) on retry after a 5xx means the
+   * abandon already succeeded and the account is released.
+   */
+  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
+    const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, accountId, serverRequest);
+    const server = (await response.json()) as ServerAbandonCandidateResponse;
+    return {
+      accountId: server.account_id,
+      nonce: server.nonce,
+      abandonedAt: server.abandoned_at,
     };
   }
 

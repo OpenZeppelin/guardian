@@ -187,6 +187,13 @@ export interface SignProposalRequest {
   signature: ProposalSignature;
 }
 
+export interface AbandonCandidateResponse {
+  accountId: string;
+  nonce: number;
+  /** RFC 3339 UTC timestamp of the release. */
+  abandonedAt: string;
+}
+
 export interface PushDeltaResponse {
   accountId: string;
   nonce: number;
