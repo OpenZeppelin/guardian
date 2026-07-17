@@ -2538,6 +2538,146 @@ mod tests {
         assert!(candidates.iter().all(|d| d.status.is_candidate()));
     }
 
+    /// Deep-history guard for the candidate-only read. The trait default
+    /// for `pull_candidate_deltas` is `pull_deltas_after(0)` filtered in
+    /// memory — a dropped Postgres override would still return correct
+    /// results, so a small-scale test cannot catch it. This test seeds
+    /// thousands of canonical/discarded rows with ~2 KiB payloads behind
+    /// one candidate and requires the filtered read to be at least 5×
+    /// faster than the full-history read (the real ratio is orders of
+    /// magnitude; the margin absorbs timer jitter).
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn pull_candidate_deltas_stays_flat_under_deep_history() {
+        use crate::delta_object::DeltaStatus;
+        use diesel::sql_types::{BigInt, Text};
+
+        const CANONICAL_ROWS: i64 = 5_000;
+        const DISCARDED_ROWS: i64 = 2_000;
+
+        let url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .expect("DATABASE_URL must be set for this #[ignore] test");
+        run_migrations(&url).await.expect("migrations apply");
+
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xhist{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let measurement_result: Result<_, String> = async {
+            let mut conn = service
+                .pool
+                .get()
+                .await
+                .map_err(|error| error.to_string())?;
+            diesel::sql_query(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+            )
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .map_err(|error| error.to_string())?;
+            for (status_kind, from_nonce, to_nonce) in [
+                ("canonical", 1, CANONICAL_ROWS),
+                (
+                    "discarded",
+                    CANONICAL_ROWS + 1,
+                    CANONICAL_ROWS + DISCARDED_ROWS,
+                ),
+            ] {
+                diesel::sql_query(
+                    "INSERT INTO deltas \
+                     (account_id, nonce, prev_commitment, new_commitment, delta_payload, \
+                      ack_sig, status, status_kind, status_timestamp) \
+                     SELECT $1, gs, '0x123', '0x456', \
+                            jsonb_build_object('padding', repeat('x', 2048)), '0xsig', \
+                            jsonb_build_object('status', $2::text, 'timestamp', $3::text), \
+                            $2, now() \
+                     FROM generate_series($4, $5) gs",
+                )
+                .bind::<Text, _>(&account_id)
+                .bind::<Text, _>(status_kind)
+                .bind::<Text, _>(&now)
+                .bind::<BigInt, _>(from_nonce)
+                .bind::<BigInt, _>(to_nonce)
+                .execute(&mut conn)
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            drop(conn);
+
+            let candidate_nonce = (CANONICAL_ROWS + DISCARDED_ROWS + 1) as u64;
+            let mut candidate = create_test_delta(&account_id, candidate_nonce);
+            candidate.status = DeltaStatus::candidate(now.clone());
+            service.submit_delta(&candidate).await?;
+
+            service.pull_candidate_deltas(&account_id).await?;
+            service.pull_deltas_after(&account_id, 0).await?;
+
+            let started = std::time::Instant::now();
+            let candidates = service.pull_candidate_deltas(&account_id).await?;
+            let filtered_elapsed = started.elapsed();
+
+            let started = std::time::Instant::now();
+            let full_history = service.pull_deltas_after(&account_id, 0).await?;
+            let full_elapsed = started.elapsed();
+
+            Ok((
+                candidate_nonce,
+                candidates,
+                full_history,
+                filtered_elapsed,
+                full_elapsed,
+            ))
+        }
+        .await;
+
+        let cleanup_result: Result<(), String> = async {
+            let mut conn = service
+                .pool
+                .get()
+                .await
+                .map_err(|error| error.to_string())?;
+            diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+                .bind::<Text, _>(&account_id)
+                .execute(&mut conn)
+                .await
+                .map_err(|error| error.to_string())?;
+            diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+                .bind::<Text, _>(&account_id)
+                .execute(&mut conn)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        .await;
+        cleanup_result.expect("remove deep-history test rows");
+
+        let (candidate_nonce, candidates, full_history, filtered_elapsed, full_elapsed) =
+            measurement_result.expect("measure candidate-only read under deep history");
+
+        assert_eq!(
+            candidates.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![candidate_nonce],
+            "only the single candidate comes back from a deep history",
+        );
+        assert!(candidates[0].status.is_candidate());
+        assert_eq!(
+            full_history.len() as i64,
+            CANONICAL_ROWS + DISCARDED_ROWS + 1,
+            "control read must cover the full seeded history",
+        );
+        assert!(
+            filtered_elapsed * 5 < full_elapsed,
+            "candidate-only read must not scale with history depth: \
+             filtered={filtered_elapsed:?} full={full_elapsed:?}",
+        );
+    }
+
     /// End-to-end proof of the transactional fence: a superseded lease
     /// holder's retry, discard, and promotion are all refused with no row
     /// mutated; the current holder promotes atomically; and once canonical,

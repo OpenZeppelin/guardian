@@ -1,11 +1,11 @@
 use crate::cleanup_manifest::CleanupAccountRecord;
-use crate::config::RunConfig;
+use crate::config::{CanonicalizationConfig, RunConfig};
 use crate::error_classification::classify;
-use crate::model::AuthScheme;
+use crate::model::{AuthScheme, CanonicalizationOutcome, CanonicalizationSample};
 use crate::operations::{OperationKind, create_delta_payload};
 use crate::report::{LatencyReport, OperationReport};
 use crate::seed::SeededUser;
-use crate::workload::{operation_for_index, warmup_operation};
+use crate::workload::{canonicalization_sample_decision, operation_for_index, warmup_operation};
 use anyhow::{Error, Result, anyhow};
 use guardian_client::ClientError;
 use std::collections::BTreeMap;
@@ -50,12 +50,14 @@ struct WorkerResult {
     account: CleanupAccountRecord,
     metrics: BTreeMap<OperationKind, OperationAccumulator>,
     measurement_seconds: f64,
+    canonicalization_samples: Vec<CanonicalizationSample>,
 }
 
 pub struct RunOutput {
     pub operations: Vec<OperationReport>,
     pub cleanup_accounts: Vec<CleanupAccountRecord>,
     pub measurement_seconds: f64,
+    pub canonicalization_samples: Vec<CanonicalizationSample>,
 }
 
 pub async fn execute(config: &RunConfig, users: Vec<SeededUser>) -> Result<RunOutput> {
@@ -81,11 +83,13 @@ pub async fn execute(config: &RunConfig, users: Vec<SeededUser>) -> Result<RunOu
         BTreeMap::new();
     let mut cleanup_accounts = Vec::new();
     let mut actual_measurement_seconds = 0.0_f64;
+    let mut canonicalization_samples = Vec::new();
 
     while let Some(joined) = workers.join_next().await {
         let worker = joined.map_err(|error| anyhow!("worker task failed: {error}"))??;
         cleanup_accounts.push(worker.account);
         actual_measurement_seconds = actual_measurement_seconds.max(worker.measurement_seconds);
+        canonicalization_samples.extend(worker.canonicalization_samples);
         for (operation, accumulator) in worker.metrics {
             per_scheme
                 .entry((worker.scheme, operation))
@@ -120,6 +124,7 @@ pub async fn execute(config: &RunConfig, users: Vec<SeededUser>) -> Result<RunOu
         operations,
         cleanup_accounts,
         measurement_seconds: actual_measurement_seconds.max(0.001),
+        canonicalization_samples,
     })
 }
 
@@ -132,6 +137,7 @@ async fn run_worker(
     let mut metrics = BTreeMap::new();
     let mut measured_op_index = 0_u64;
     let mut worker_measurement_seconds = 0.0_f64;
+    let mut canonicalization_samples = Vec::new();
 
     while Instant::now() < end_deadline {
         let measuring = Instant::now() >= warmup_deadline;
@@ -165,6 +171,17 @@ async fn run_worker(
             );
         }
 
+        let sample_push = operation == OperationKind::PushDelta
+            && result.is_ok()
+            && canonicalization_sample_decision(
+                config.canonicalization.sample_rate,
+                rand::random::<f64>(),
+            );
+        if sample_push && let Some(nonce) = user.created_delta_nonces.last().copied() {
+            canonicalization_samples
+                .push(observe_canonicalization(&mut user, nonce, &config.canonicalization).await);
+        }
+
         let retire_after_push = operation == OperationKind::PushDelta
             && config.operation_mix.retire_after_first_successful_push
             && result.is_ok();
@@ -196,7 +213,54 @@ async fn run_worker(
         },
         metrics,
         measurement_seconds: worker_measurement_seconds,
+        canonicalization_samples,
     })
+}
+
+async fn observe_canonicalization(
+    user: &mut SeededUser,
+    nonce: u64,
+    config: &CanonicalizationConfig,
+) -> CanonicalizationSample {
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(config.timeout_seconds);
+    let poll_interval = Duration::from_millis(config.poll_interval_ms);
+    let mut polls = 0_u64;
+
+    let (outcome, observation_error) = loop {
+        polls += 1;
+        match user.client.get_delta(&user.account_id, nonce).await {
+            Ok(response) => match response.delta {
+                Some(delta) if delta.canonical_at.is_some() => {
+                    break (CanonicalizationOutcome::Canonical, None);
+                }
+                Some(delta) if delta.discarded_at.is_some() => {
+                    break (CanonicalizationOutcome::Discarded, None);
+                }
+                _ => {}
+            },
+            Err(error) => {
+                break (
+                    CanonicalizationOutcome::ObservationFailed,
+                    Some(error.to_string()),
+                );
+            }
+        }
+        if Instant::now() + poll_interval >= deadline {
+            break (CanonicalizationOutcome::TimedOut, None);
+        }
+        tokio::time::sleep(poll_interval).await;
+    };
+
+    CanonicalizationSample {
+        account_id: user.account_id.to_string(),
+        auth_scheme: user.auth_scheme,
+        nonce,
+        outcome,
+        wait_ms: started.elapsed().as_secs_f64() * 1_000.0,
+        polls,
+        observation_error,
+    }
 }
 
 async fn push_delta(user: &mut SeededUser) -> Result<()> {
@@ -245,10 +309,9 @@ fn accumulator_for_report(
 fn build_operation_report(
     operation: OperationKind,
     scope: &str,
-    mut accumulator: OperationAccumulator,
+    accumulator: OperationAccumulator,
     measurement_secs: f64,
 ) -> OperationReport {
-    accumulator.latencies_ms.sort_by(f64::total_cmp);
     OperationReport {
         operation: operation.as_str().to_string(),
         scope: scope.to_string(),
@@ -256,22 +319,9 @@ fn build_operation_report(
         succeeded: accumulator.succeeded,
         failed: accumulator.failed,
         throughput_ops_per_sec: accumulator.succeeded as f64 / measurement_secs,
-        latency_ms: LatencyReport {
-            p50: percentile(&accumulator.latencies_ms, 0.50),
-            p95: percentile(&accumulator.latencies_ms, 0.95),
-            p99: percentile(&accumulator.latencies_ms, 0.99),
-            max: accumulator.latencies_ms.last().copied().unwrap_or(0.0),
-        },
+        latency_ms: LatencyReport::from_unsorted_ms(accumulator.latencies_ms),
         failure_breakdown: accumulator.failure_breakdown,
     }
-}
-
-fn percentile(sorted: &[f64], percentile: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
-    let index = ((sorted.len() as f64 - 1.0) * percentile).round() as usize;
-    sorted[index.min(sorted.len() - 1)]
 }
 
 fn _classify_client_error(error: &ClientError) -> String {
