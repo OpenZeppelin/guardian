@@ -133,9 +133,9 @@ pub struct ProposalRecord {
 
 /// Identity of the canonicalization lease a worker holds while writing.
 /// Fenced backends (Postgres) validate this against the `worker_leases`
-/// row inside the same transaction as the protected write and hold the
-/// row locked until commit, so a superseded holder cannot commit — the
-/// fence is enforced by the store, not by a separate pre-write read.
+/// row at the protected write boundary. A write that already validated its
+/// lease may finish during a leadership transfer; account locks and conditional
+/// mutations keep overlapping work safe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseFence {
     pub lease_name: String,

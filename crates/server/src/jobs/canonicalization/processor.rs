@@ -89,11 +89,11 @@ impl DeltasProcessorBase {
     /// Fence descriptor attached to every custody-state write: the canonical
     /// promotion, the discard, and the retry / divergence-streak status
     /// updates. Fenced backends (Postgres) validate it against the lease row
-    /// inside the same transaction as the write and hold the row locked until
-    /// commit, so a superseded holder can never commit a custody transition —
-    /// there is no check-then-write window. Backends additionally require the
-    /// target delta to still be a candidate, so a delayed stale write can
-    /// neither demote nor delete a delta another owner already promoted.
+    /// at the write boundary. A transition already in progress may finish
+    /// during leadership transfer; account serialization and conditional
+    /// candidate/state updates keep that overlap safe. A holder superseded
+    /// before validation is refused, and a delayed write cannot demote or
+    /// delete a delta another owner already promoted.
     /// `None` for single-process electors, whose leases have no shared-store
     /// row. Trailing cleanup (proposal deletion, release-on-switch) is
     /// intentionally unfenced but not blind: proposal deletion is idempotent
