@@ -42,6 +42,16 @@ impl MidenNetworkClient {
         Self { client }
     }
 
+    /// True when an on-chain commitment is the empty-word digest the Miden
+    /// node reports for an account it has never seen — i.e. the account's
+    /// first transaction has not landed yet. This sentinel is a Miden
+    /// protocol detail; it is translated to [`StateVerification::Absent`]
+    /// here so shared layers never interpret raw digests.
+    fn is_empty_word_digest(on_chain: &str) -> bool {
+        let digest = on_chain.strip_prefix("0x").unwrap_or(on_chain);
+        !digest.is_empty() && digest.bytes().all(|b| b == b'0')
+    }
+
     /// Construct an Account object from JSON state representation
     fn construct_account_from_json(
         account_id: &AccountId,
@@ -133,6 +143,10 @@ impl NetworkClient for MidenNetworkClient {
             );
             format!("Failed to verify account '{account_id}' on Miden network: {e}")
         })?;
+
+        if Self::is_empty_word_digest(&on_chain_commitment) {
+            return Ok(StateVerification::Absent);
+        }
 
         if local_commitment_hex != on_chain_commitment {
             tracing::warn!(
@@ -484,6 +498,21 @@ mod tests {
     fn test_network_type_rpc_endpoint() {
         let network = NetworkType::MidenTestnet;
         assert_eq!(network.rpc_endpoint(), "https://rpc.testnet.miden.io");
+    }
+
+    #[test]
+    fn test_empty_word_digest_detection() {
+        assert!(MidenNetworkClient::is_empty_word_digest(
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ));
+        assert!(MidenNetworkClient::is_empty_word_digest(
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ));
+        assert!(!MidenNetworkClient::is_empty_word_digest(
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+        ));
+        assert!(!MidenNetworkClient::is_empty_word_digest(""));
+        assert!(!MidenNetworkClient::is_empty_word_digest("0x"));
     }
 
     #[tokio::test]

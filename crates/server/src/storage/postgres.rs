@@ -1473,6 +1473,7 @@ impl StorageBackend for PostgresService {
                             deltas::status.eq(&status_json),
                             deltas::status_kind.eq(status_kind),
                             deltas::status_timestamp.eq(status_timestamp),
+                            deltas::new_commitment.eq(&delta.new_commitment),
                         ))
                         .execute(conn)
                         .await?;
@@ -1598,6 +1599,7 @@ impl StorageBackend for PostgresService {
 
         conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
             async move {
+                lock_account_metadata(conn, &account_id).await?;
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
                 }

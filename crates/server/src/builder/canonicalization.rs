@@ -85,6 +85,10 @@ impl CanonicalizationConfig {
     /// Override how many accounts one pass processes concurrently.
     /// `1` reproduces the fully sequential pass.
     pub fn with_max_concurrent_accounts(mut self, accounts: usize) -> Self {
+        assert!(
+            accounts > 0,
+            "max_concurrent_accounts must be at least 1 (1 = fully sequential)"
+        );
         self.max_concurrent_accounts = accounts;
         self
     }
@@ -119,9 +123,11 @@ impl CanonicalizationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::env_lock::ENV_LOCK;
 
     #[test]
     fn env_override_missing_keeps_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_MISSING";
         unsafe { std::env::remove_var(var_name) };
 
@@ -134,6 +140,7 @@ mod tests {
 
     #[test]
     fn env_override_applies_parsed_value() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_PRESENT";
         unsafe { std::env::set_var(var_name, "24") };
 
@@ -147,6 +154,7 @@ mod tests {
 
     #[test]
     fn env_override_rejects_zero_and_garbage() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_INVALID";
 
         unsafe { std::env::set_var(var_name, "0") };

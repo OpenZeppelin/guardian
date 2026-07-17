@@ -226,28 +226,36 @@ async fn observe_canonicalization(
     let deadline = started + Duration::from_secs(config.timeout_seconds);
     let poll_interval = Duration::from_millis(config.poll_interval_ms);
     let mut polls = 0_u64;
+    let mut last_error: Option<String>;
 
+    // Transient poll errors never end the observation early: a delta may
+    // still reach a terminal status within the deadline. The sample is
+    // ObservationFailed only when the polling itself was failing at the
+    // deadline; TimedOut means polls succeeded but no terminal status came.
     let (outcome, observation_error) = loop {
         polls += 1;
         match user.client.get_delta(&user.account_id, nonce).await {
-            Ok(response) => match response.delta {
-                Some(delta) if delta.canonical_at.is_some() => {
-                    break (CanonicalizationOutcome::Canonical, None);
+            Ok(response) => {
+                match response.delta {
+                    Some(delta) if delta.canonical_at.is_some() => {
+                        break (CanonicalizationOutcome::Canonical, None);
+                    }
+                    Some(delta) if delta.discarded_at.is_some() => {
+                        break (CanonicalizationOutcome::Discarded, None);
+                    }
+                    _ => {}
                 }
-                Some(delta) if delta.discarded_at.is_some() => {
-                    break (CanonicalizationOutcome::Discarded, None);
-                }
-                _ => {}
-            },
+                last_error = None;
+            }
             Err(error) => {
-                break (
-                    CanonicalizationOutcome::ObservationFailed,
-                    Some(error.to_string()),
-                );
+                last_error = Some(error.to_string());
             }
         }
         if Instant::now() + poll_interval >= deadline {
-            break (CanonicalizationOutcome::TimedOut, None);
+            break match last_error.take() {
+                Some(error) => (CanonicalizationOutcome::ObservationFailed, Some(error)),
+                None => (CanonicalizationOutcome::TimedOut, None),
+            };
         }
         tokio::time::sleep(poll_interval).await;
     };

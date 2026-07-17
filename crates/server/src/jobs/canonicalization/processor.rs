@@ -66,16 +66,6 @@ fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
     .increment(1);
 }
 
-/// True when an on-chain commitment is the empty-word digest the chain
-/// node reports for an account it has never seen — i.e. the account's
-/// first transaction has not landed yet. This is the not-yet-landed case,
-/// categorically distinct from divergence (where the account moved to a
-/// *different*, non-zero state past the candidate's base).
-fn is_absent_on_chain(on_chain: &str) -> bool {
-    let digest = on_chain.strip_prefix("0x").unwrap_or(on_chain);
-    !digest.is_empty() && digest.bytes().all(|b| b == b'0')
-}
-
 struct DeltasProcessorBase {
     state: AppState,
     pass: PassLease,
@@ -306,20 +296,16 @@ impl DeltasProcessorBase {
                 self.canonicalize_verified_delta(delta, new_state_json, recomputed_commitment)
                     .await
             }
-            // The chain node has never seen this account: an all-zero
-            // on-chain commitment means the account's first transaction has
-            // not landed yet, not that it advanced past the candidate's base.
-            // A first-nonce candidate is anchored to the account's seed
-            // commitment (never zero), so it can never match the base branch
-            // below — treat it as not-yet-landed (defer/retry) and clear any
-            // divergence streak a lagging node may have started.
-            Ok(StateVerification::Mismatch { on_chain }) if is_absent_on_chain(&on_chain) => {
+            // The chain has never seen this account: its first transaction
+            // has not landed yet — the not-yet-landed case, categorically
+            // distinct from divergence (where the account moved to a
+            // *different* state past the candidate's base). Treat it as
+            // defer/retry and clear any divergence streak a lagging node
+            // may have started.
+            Ok(StateVerification::Absent) => {
                 let delta = self.reset_divergence_streak(delta).await?;
-                self.handle_unverified_candidate(
-                    delta,
-                    &format!("account not yet on chain (on-chain commitment {on_chain})"),
-                )
-                .await
+                self.handle_unverified_candidate(delta, "account not yet on chain")
+                    .await
             }
             // The account advanced past the state this candidate was built
             // on: its transaction is anchored to `prev_commitment`, so it can
@@ -670,9 +656,12 @@ impl DeltasProcessorBase {
             );
         }
 
-        // The typed `metadata` blob is populated at push time; this
-        // path just flips the status.
+        // The typed `metadata` blob is populated at push time. The
+        // commitment is the verified one: a missing or mismatched client
+        // claim must not survive on the canonical record while the state
+        // row carries the value verification proved on-chain.
         let mut canonical_delta = delta.clone();
+        canonical_delta.new_commitment = Some(updated_state.commitment.clone());
         canonical_delta.status = DeltaStatus::canonical(now.clone());
 
         // State, auth, delta status, and the pending-candidate flag commit
@@ -1449,13 +1438,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_absent_on_chain_account_is_not_discarded_as_diverged() {
-        // A first transaction that has not landed yet reads the empty-word
-        // digest on-chain: the node returns an all-zero commitment for an
-        // account it has never seen. That is the not-yet-landed case, never
-        // divergence — the account has not advanced past its base, it simply
-        // is not there yet. Even with divergence_confirmations == 1 (which
-        // would discard a genuine divergence on the first observation) the
-        // candidate must survive and take the retry path.
+        // A first transaction that has not landed yet verifies as `Absent`:
+        // the network client reports the chain has never seen the account.
+        // That is the not-yet-landed case, never divergence — the account
+        // has not advanced past its base, it simply is not there yet. Even
+        // with divergence_confirmations == 1 (which would discard a genuine
+        // divergence on the first observation) the candidate must survive
+        // and take the retry path.
         let account_id = "0xtest_account";
         let candidate = create_candidate_delta(account_id, 1);
 
@@ -1470,10 +1459,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
-                on_chain: "0x0000000000000000000000000000000000000000000000000000000000000000"
-                    .to_string(),
-            }));
+            .with_verify_state(Ok(StateVerification::Absent));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1678,6 +1664,12 @@ mod tests {
         let submitted = storage.get_submit_state_calls();
         assert_eq!(submitted.len(), 1);
         assert_eq!(submitted[0].commitment, "recomputed_commitment");
+        let deltas = storage.get_submit_delta_calls();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0].new_commitment.as_deref(),
+            Some("recomputed_commitment")
+        );
     }
 
     #[tokio::test]
@@ -1729,6 +1721,12 @@ mod tests {
         let submitted = storage.get_submit_state_calls();
         assert_eq!(submitted.len(), 1);
         assert_eq!(submitted[0].commitment, "recomputed_commitment");
+        let deltas = storage.get_submit_delta_calls();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0].new_commitment.as_deref(),
+            Some("recomputed_commitment")
+        );
     }
 
     #[tokio::test]

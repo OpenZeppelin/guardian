@@ -280,9 +280,14 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         push_result.delta.status
     );
 
-    process_canonicalizations_now(&state)
+    let pass = process_canonicalizations_now(&state)
         .await
         .expect("canonicalization run succeeds");
+    assert_eq!(
+        pass.failed_accounts, 0,
+        "no account may fail canonicalization in this pass"
+    );
+    assert!(!pass.cancelled, "pass must run to completion");
 
     let deltas = state
         .storage

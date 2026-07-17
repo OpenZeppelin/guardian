@@ -498,6 +498,14 @@ variable "guardian_canonicalization_max_concurrent_accounts" {
   EOT
   type        = number
   default     = null
+  validation {
+    condition = var.guardian_canonicalization_max_concurrent_accounts == null ? true : (
+      var.guardian_canonicalization_max_concurrent_accounts >= 1 &&
+      floor(var.guardian_canonicalization_max_concurrent_accounts) ==
+      var.guardian_canonicalization_max_concurrent_accounts
+    )
+    error_message = "guardian_canonicalization_max_concurrent_accounts must be a positive integer when provided."
+  }
 }
 
 # Resource naming

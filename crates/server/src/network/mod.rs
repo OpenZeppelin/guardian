@@ -12,6 +12,11 @@ use async_trait::async_trait;
 pub enum StateVerification {
     /// The on-chain commitment equals the locally-computed one.
     Match,
+    /// The chain has no state for this account at all — its first
+    /// transaction has not landed yet. How absence is detected is
+    /// network-specific and owned by the [`NetworkClient`] impl; callers
+    /// never see the raw sentinel the chain reports for unknown accounts.
+    Absent,
     /// The on-chain commitment differs; carries the observed on-chain
     /// value so callers can classify the mismatch.
     Mismatch { on_chain: String },

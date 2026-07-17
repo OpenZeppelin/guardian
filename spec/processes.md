@@ -231,8 +231,8 @@ sequenceDiagram
   startup.
 
 ### Worker Behavior
- - Runs every `check_interval_seconds`.
- - For each account with a pending candidate:
+- Runs every `check_interval_seconds`.
+- For each account with a pending candidate:
   - Pull candidate deltas (`pull_candidate_deltas`, a store-side status
     filter — canonical and discarded history rows never leave the store);
     process in nonce order.
@@ -282,9 +282,9 @@ sequenceDiagram
       W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)
       W->>N: verify_state(account_id, new_state)\n(on_chain_commitment)
       alt on-chain matches expected commitment
-        W->>ST: submit_state(new_state)
-        W->>W: maybe update_auth(should_update_auth)
-        W->>ST: submit_delta(canonical)
+        W->>N: should_update_auth(new_state)\n(maybe new cosigner keys)
+        W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(one lease-fenced write: state + delta status + auth + flag)
+        ST-->>W: applied | stale_base | not_candidate | stale_lease\n(rejections leave no partial write)
       else on-chain still at prev_commitment (not landed)
         W->>W: defer (grace period), then consume retry budget
       else diverged (matches neither)

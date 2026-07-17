@@ -8,7 +8,7 @@ use crate::coordination::{LeaderElector, Lease};
 use crate::error::Result;
 use crate::state::AppState;
 
-use super::processor::{DeltasProcessor, Processor, TestDeltasProcessor};
+use super::processor::{DeltasProcessor, PassSummary, Processor, TestDeltasProcessor};
 
 pub fn start_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     tokio::spawn(async move {
@@ -146,9 +146,9 @@ fn spawn_renewal(
     })
 }
 
-pub async fn process_all_accounts_now(state: &AppState) -> Result<()> {
+pub async fn process_all_accounts_now(state: &AppState) -> Result<PassSummary> {
     let processor = TestDeltasProcessor::new(state.clone());
-    processor.process_all_accounts().await.map(|_| ())
+    processor.process_all_accounts().await
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
