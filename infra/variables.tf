@@ -491,8 +491,8 @@ variable "guardian_canonicalization_max_concurrent_accounts" {
   description = <<-EOT
     Optional override for GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS, how many
     accounts one canonicalization pass processes in parallel (1 = fully sequential).
-    Keep at most ~half of guardian_db_pool_max_size so the worker never starves API
-    requests of database connections.
+    Defaults to 20 in prod, 10 otherwise. Keep it comfortably below
+    guardian_db_pool_max_size so the worker leaves connections for API requests.
   EOT
   type        = number
   default     = null

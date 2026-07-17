@@ -30,9 +30,10 @@ pub struct CanonicalizationConfig {
     /// Candidates within an account are always sequential (nonce order);
     /// this only overlaps the per-account work — dominated by the Miden
     /// RPC round trip — across accounts. `1` reproduces the fully
-    /// sequential pass and is the safe rollback value; the default stays
-    /// deliberately low because it bounds simultaneous chain RPCs and the
-    /// queue depth on the fenced lease row.
+    /// sequential pass and is the safe rollback value. The default
+    /// overlaps a moderate number of accounts; keep it comfortably below
+    /// `GUARDIAN_DB_POOL_MAX_SIZE` so the worker still leaves connections
+    /// for API requests.
     pub max_concurrent_accounts: usize,
 }
 
@@ -43,7 +44,7 @@ impl Default for CanonicalizationConfig {
             max_retries: 18,                      // 18 attempts (total: ~3 minutes)
             submission_grace_period_seconds: 600, // Allow proving/submission to settle first
             divergence_confirmations: 2,          // Two ticks to rule out a stale read
-            max_concurrent_accounts: 4,           // Bounds chain RPCs + lease-row queue depth
+            max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; keep below the DB pool
         }
     }
 }
@@ -128,7 +129,7 @@ mod tests {
             .max_concurrent_accounts_from_var(var_name)
             .expect("missing variable is not an error");
 
-        assert_eq!(config.max_concurrent_accounts, 4);
+        assert_eq!(config.max_concurrent_accounts, 10);
     }
 
     #[test]

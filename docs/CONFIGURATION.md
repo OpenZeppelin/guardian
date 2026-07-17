@@ -30,7 +30,7 @@ the runtime env vars in this document.
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
-| `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `4` | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Keep at most ~half of `GUARDIAN_DB_POOL_MAX_SIZE` so the worker never starves API requests of connections. |
+| `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `10` | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Keep it comfortably below `GUARDIAN_DB_POOL_MAX_SIZE` so the worker leaves connections for API requests. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
 
 ### Database TLS
