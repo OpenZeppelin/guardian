@@ -84,6 +84,10 @@ pub enum CandidateOutcome {
     /// Discarded because the account advanced past the candidate's base
     /// state on-chain, making verification permanently unsatisfiable.
     Diverged,
+    /// Discarded because the client abandoned it via the abandon-candidate
+    /// endpoint (issue #319): the client knows its transaction will never
+    /// land and releases the account instead of waiting out grace+retries.
+    Abandoned,
 }
 
 impl CandidateOutcome {
@@ -95,6 +99,7 @@ impl CandidateOutcome {
             Self::GraceDeferred => "grace_deferred",
             Self::DivergenceDeferred => "divergence_deferred",
             Self::Diverged => "diverged",
+            Self::Abandoned => "abandoned",
         }
     }
 }
@@ -154,6 +159,9 @@ mod tests {
             CandidateOutcome::Retried.as_str(),
             CandidateOutcome::Discarded.as_str(),
             CandidateOutcome::GraceDeferred.as_str(),
+            CandidateOutcome::DivergenceDeferred.as_str(),
+            CandidateOutcome::Diverged.as_str(),
+            CandidateOutcome::Abandoned.as_str(),
             AccountKind::Miden.as_str(),
             PoolKind::Storage.as_str(),
             PoolKind::Metadata.as_str(),

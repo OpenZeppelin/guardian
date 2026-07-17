@@ -24,8 +24,9 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    configure, get_delta, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
-    get_state, lookup, push_delta, push_delta_proposal, sign_delta_proposal, status,
+    abandon_candidate, configure, get_delta, get_delta_proposal, get_delta_proposals,
+    get_delta_since, get_pubkey, get_state, lookup, push_delta, push_delta_proposal,
+    sign_delta_proposal, status,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -234,6 +235,7 @@ impl ServerHandle {
                     .route("/delta/proposal", get(get_delta_proposals))
                     .route("/delta/proposal/single", get(get_delta_proposal))
                     .route("/delta/proposal", put(sign_delta_proposal))
+                    .route("/delta/candidate/abandon", post(abandon_candidate))
                     .route("/configure", post(configure))
                     .route("/state", get(get_state))
                     .route("/state/lookup", get(lookup))

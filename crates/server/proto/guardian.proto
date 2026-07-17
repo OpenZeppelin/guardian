@@ -34,6 +34,10 @@ service Guardian {
   // Sign a delta proposal
   rpc SignDeltaProposal(SignDeltaProposalRequest) returns (SignDeltaProposalResponse);
 
+  // Abandon a pending canonicalization candidate whose transaction will
+  // never land (issue #319), releasing the account immediately.
+  rpc AbandonDeltaCandidate(AbandonDeltaCandidateRequest) returns (AbandonDeltaCandidateResponse);
+
   // Resolve a public-key commitment to the set of account IDs whose
   // authorization set contains it. Authentication is by proof-of-possession
   // against the queried commitment, using the lookup-bound signing primitive
@@ -297,4 +301,21 @@ message GetAccountByKeyCommitmentResponse {
 // in a forward-compatible way.
 message AccountRef {
   string account_id = 1;
+}
+
+// Abandon-candidate request (issue #319): nonce pins the exact candidate
+// so a stale request cannot release a newer one.
+message AbandonDeltaCandidateRequest {
+  string account_id = 1;
+  uint64 nonce = 2;
+}
+
+message AbandonDeltaCandidateResponse {
+  bool success = 1;
+  string message = 2;
+  string account_id = 3;
+  uint64 nonce = 4;
+  // RFC 3339 UTC timestamp of the release.
+  string abandoned_at = 5;
+  string error_code = 6;
 }

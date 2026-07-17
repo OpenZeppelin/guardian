@@ -252,6 +252,105 @@
         ]
       }
     },
+    "/delta/candidate/abandon": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Abandon a pending canonicalization candidate whose transaction will\nnever land on-chain, releasing the account immediately instead of\nholding it for the full submission grace period plus retry budget\n(issue #319).",
+        "description": "The call is the client's assertion that the transaction is dead. It is\nrefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the on-chain state\nalready matches the candidate's expected state — the transaction\nlanded and the worker will canonicalize it shortly. A retry after a\n5xx that returns `delta_not_found` (404) means the abandon already\nsucceeded: the candidate delta was deleted and the account released.",
+        "operationId": "abandon_candidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonCandidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Candidate abandoned; account released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbandonCandidateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No candidate delta at this nonce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Candidate already landed on-chain, or account paused/released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "On-chain state could not be verified; retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/delta/proposal": {
       "get": {
         "tags": [
@@ -937,6 +1036,46 @@
   },
   "components": {
     "schemas": {
+      "AbandonCandidateRequest": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "nonce"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Nonce of the candidate delta to abandon. Requiring the explicit\ntarget prevents a stale request from releasing a newer candidate.",
+            "minimum": 0
+          }
+        }
+      },
+      "AbandonCandidateResponse": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "nonce",
+          "abandoned_at"
+        ],
+        "properties": {
+          "abandoned_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC timestamp of the release."
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ApiErrorResponse": {
         "type": "object",
         "description": "Wire shape of a Guardian error response body. Mirrors the envelope\nproduced by [`crate::error::GuardianError`]'s `IntoResponse` impl.\nDocumented as the body of every non-2xx response. Optional fields\nare populated only for the error codes that carry them.",

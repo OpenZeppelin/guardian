@@ -369,6 +369,42 @@ impl Guardian for GuardianService {
         }
     }
 
+    /// Abandon a pending canonicalization candidate whose transaction will
+    /// never land, releasing the account immediately (issue #319). Mirror
+    /// of HTTP `POST /delta/candidate/abandon`.
+    async fn abandon_delta_candidate(
+        &self,
+        request: Request<AbandonDeltaCandidateRequest>,
+    ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+
+        let params = services::AbandonCandidateParams {
+            account_id: data.account_id.clone(),
+            nonce: data.nonce,
+            credentials,
+        };
+
+        match services::abandon_candidate(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(AbandonDeltaCandidateResponse {
+                success: true,
+                message: "Candidate abandoned; account released".to_string(),
+                account_id: response.account_id,
+                nonce: response.nonce,
+                abandoned_at: response.abandoned_at,
+                error_code: String::new(),
+            })),
+            Err(e) => Ok(Response::new(AbandonDeltaCandidateResponse {
+                success: false,
+                message: e.to_string(),
+                account_id: data.account_id,
+                nonce: data.nonce,
+                abandoned_at: String::new(),
+                error_code: e.code().to_string(),
+            })),
+        }
+    }
+
     /// Resolve a public-key commitment to the set of account IDs that
     /// authorize it. Mirror of HTTP `GET /state/lookup`.
     async fn get_account_by_key_commitment(

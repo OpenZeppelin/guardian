@@ -3,9 +3,9 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetDeltaProposalsParams,
-    GetDeltaSinceParams, GetStateParams, LookupAccountParams, PushDeltaParams,
-    PushDeltaProposalParams, SignDeltaProposalParams,
+    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams,
+    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
+    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -92,6 +92,22 @@ pub struct DeltaProposalRequest {
     /// Opaque, schema-free multisig proposal payload.
     #[schema(value_type = Object)]
     pub delta_payload: serde_json::Value,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AbandonCandidateRequest {
+    pub account_id: String,
+    /// Nonce of the candidate delta to abandon. Requiring the explicit
+    /// target prevents a stale request from releasing a newer candidate.
+    pub nonce: u64,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AbandonCandidateResponse {
+    pub account_id: String,
+    pub nonce: u64,
+    /// RFC 3339 UTC timestamp of the release.
+    pub abandoned_at: String,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -449,6 +465,53 @@ pub async fn push_delta_proposal(
     Ok(Json(DeltaProposalResponse {
         delta: response.delta,
         commitment: response.commitment,
+    }))
+}
+
+/// Abandon a pending canonicalization candidate whose transaction will
+/// never land on-chain, releasing the account immediately instead of
+/// holding it for the full submission grace period plus retry budget
+/// (issue #319).
+///
+/// The call is the client's assertion that the transaction is dead. It is
+/// refused with `GUARDIAN_CANDIDATE_LANDED` (409) when the on-chain state
+/// already matches the candidate's expected state — the transaction
+/// landed and the worker will canonicalize it shortly. A retry after a
+/// 5xx that returns `delta_not_found` (404) means the abandon already
+/// succeeded: the candidate delta was deleted and the account released.
+#[utoipa::path(
+    post,
+    path = "/delta/candidate/abandon",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    request_body = AbandonCandidateRequest,
+    responses(
+        (status = 200, description = "Candidate abandoned; account released", body = AbandonCandidateResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
+        (status = 502, description = "On-chain state could not be verified; retry", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn abandon_candidate(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<AbandonCandidateRequest>,
+) -> Result<Json<AbandonCandidateResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
+
+    let params = AbandonCandidateParams {
+        account_id: payload.account_id,
+        nonce: payload.nonce,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    let response = services::abandon_candidate(&state, params).await?;
+    Ok(Json(AbandonCandidateResponse {
+        account_id: response.account_id,
+        nonce: response.nonce,
+        abandoned_at: response.abandoned_at,
     }))
 }
 

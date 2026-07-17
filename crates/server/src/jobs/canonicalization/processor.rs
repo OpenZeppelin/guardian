@@ -15,14 +15,7 @@ pub trait Processor: Send + Sync {
     async fn process_account(&self, account_id: &str) -> Result<()>;
 }
 
-/// Record one candidate-processing outcome.
-fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
-    metrics::counter!(
-        crate::metrics::names::CANONICALIZATION_CANDIDATES_TOTAL,
-        crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
-    )
-    .increment(1);
-}
+use super::removal::{RemovalMode, record_candidate_outcome};
 
 fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
     let mut candidates: Vec<DeltaObject> = deltas
@@ -80,7 +73,7 @@ impl DeltasProcessorBase {
     }
 
     async fn process_account(&self, account_id: &str) -> Result<()> {
-        let _account_metadata = self
+        let account_metadata = self
             .state
             .metadata
             .get(account_id)
@@ -102,6 +95,33 @@ impl DeltasProcessorBase {
         );
 
         let candidates = get_candidates(&all_deltas);
+
+        // Heal a stale pending-candidate flag: the flag can be left set when
+        // a best-effort flag-clear fails after the candidate delta was
+        // already deleted (e.g. in `remove_candidate`). Without this, the
+        // account stays in `list_with_pending_candidates` and is rescanned
+        // on every tick forever.
+        if candidates.is_empty() && account_metadata.has_pending_candidate {
+            tracing::warn!(
+                account_id = %account_id,
+                "Account flagged with pending candidate but no candidate delta \
+                 exists; clearing stale flag"
+            );
+            let now = self.state.clock.now_rfc3339();
+            if let Err(e) = self
+                .state
+                .metadata
+                .set_has_pending_candidate(account_id, false, &now)
+                .await
+            {
+                tracing::warn!(
+                    account_id = %account_id,
+                    error = %e,
+                    "Failed to clear stale has_pending_candidate flag"
+                );
+            }
+            return Ok(());
+        }
 
         tracing::info!(
             account_id = %account_id,
@@ -348,70 +368,7 @@ impl DeltasProcessorBase {
     /// Delete a candidate that can never be canonicalized, delete its
     /// matching proposal, and release the account's pending-candidate lock.
     async fn remove_candidate(&self, delta: &DeltaObject, now: &str) -> Result<()> {
-        let storage_backend = self.state.storage.clone();
-
-        storage_backend
-            .delete_delta(&delta.account_id, delta.nonce)
-            .await
-            .map_err(|e| GuardianError::StorageError(format!("Failed to delete delta: {e}")))?;
-
-        // A discarded candidate can never be canonicalized, so delete its proposal:
-        // leaving it would strand it as `pending` forever and let clients re-submit a
-        // stale intent.
-        let proposal_id = {
-            let client = self.state.network_client.lock().await;
-            match client.delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload) {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    tracing::warn!(
-                        account_id = %delta.account_id,
-                        nonce = delta.nonce,
-                        error = %e,
-                        "Could not derive proposal id for discarded delta; \
-                         its proposal may remain stranded as pending"
-                    );
-                    None
-                }
-            }
-        };
-        if let Some(ref id) = proposal_id
-            && let Ok(_existing_proposal) = storage_backend
-                .pull_delta_proposal(&delta.account_id, id)
-                .await
-        {
-            tracing::warn!(
-                account_id = %delta.account_id,
-                proposal_id = %id,
-                "Deleting matching proposal as its delta was discarded"
-            );
-            if let Err(e) = storage_backend
-                .delete_delta_proposal(&delta.account_id, id)
-                .await
-            {
-                tracing::warn!(
-                    account_id = %delta.account_id,
-                    proposal_id = %id,
-                    error = %e,
-                    "Failed to delete proposal after discard, but continuing"
-                );
-            }
-        }
-
-        // Clear the pending candidate flag after discard
-        if let Err(e) = self
-            .state
-            .metadata
-            .set_has_pending_candidate(&delta.account_id, false, now)
-            .await
-        {
-            tracing::warn!(
-                account_id = %delta.account_id,
-                error = %e,
-                "Failed to clear has_pending_candidate flag after discard"
-            );
-        }
-
-        Ok(())
+        super::removal::remove_candidate(&self.state, delta, now, RemovalMode::BestEffort).await
     }
 
     async fn canonicalize_verified_delta(
@@ -853,6 +810,66 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_account_clears_stale_pending_flag() {
+        // Account is listed with a pending candidate and its metadata flag
+        // is set, but no candidate delta exists (e.g. a best-effort
+        // flag-clear failed after the delta was deleted). The worker must
+        // heal the stale flag so the account leaves the scan list.
+        let account_id = "0xtest_account";
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![create_canonical_delta(account_id, 1)]));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata.clone()),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let set_calls = mock_metadata.get_set_calls();
+        assert_eq!(set_calls.len(), 1, "expected exactly one healing write");
+        assert!(!set_calls[0].has_pending_candidate);
+    }
+
+    #[tokio::test]
+    async fn test_process_account_no_candidates_and_clear_flag_skips_write() {
+        // Same as above but the metadata flag is already clear (the account
+        // reached the worker through a stale listing): no healing write.
+        let account_id = "0xtest_account";
+
+        let mut metadata_obj = create_test_metadata(account_id);
+        metadata_obj.has_pending_candidate = false;
+
+        let mock_storage = MockStorageBackend::new().with_pull_deltas_after(Ok(vec![]));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(metadata_obj)));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata.clone()),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        assert!(mock_metadata.get_set_calls().is_empty());
     }
 
     #[tokio::test]
