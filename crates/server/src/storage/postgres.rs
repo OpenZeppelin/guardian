@@ -784,30 +784,28 @@ fn unfenced_write_error(operation: &str) -> String {
 }
 
 #[derive(diesel::QueryableByName)]
-struct FenceHeldRow {
+struct CurrentLeaseRow {
     #[diesel(sql_type = diesel::sql_types::Integer)]
     #[allow(dead_code)]
     held: i32,
 }
 
-/// Validate the caller's lease inside the surrounding transaction and hold the
-/// `worker_leases` row locked until commit, so a steal cannot land between the
-/// check and the protected writes. Returns `false` (no row locked) when the
-/// lease was already superseded or expired.
-async fn lease_fence_held(
+/// Validate the caller's lease at the canonicalization write boundary.
+/// Already-started conditional writes may finish during a leadership transfer.
+async fn lease_fence_is_current(
     conn: &mut AsyncPgConnection,
     fence: &LeaseFence,
 ) -> Result<bool, diesel::result::Error> {
     use diesel::sql_types::{BigInt, Text};
     let row = diesel::sql_query(
         "SELECT 1 AS held FROM worker_leases \
-         WHERE lease_name = $1 AND holder_id = $2 AND fence_token = $3 AND now() < expires_at \
-         FOR UPDATE",
+         WHERE lease_name = $1 AND holder_id = $2 AND fence_token = $3 \
+           AND clock_timestamp() < expires_at",
     )
     .bind::<Text, _>(&fence.lease_name)
     .bind::<Text, _>(&fence.holder_id)
     .bind::<BigInt, _>(fence.fence_token)
-    .get_result::<FenceHeldRow>(conn)
+    .get_result::<CurrentLeaseRow>(conn)
     .await
     .optional()?;
     Ok(row.is_some())
@@ -1447,7 +1445,7 @@ impl StorageBackend for PostgresService {
         conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
             async move {
                 lock_account_metadata(conn, &state.account_id).await?;
-                if !lease_fence_held(conn, &fence).await? {
+                if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
                 }
 
@@ -1529,7 +1527,7 @@ impl StorageBackend for PostgresService {
         conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
             async move {
                 lock_account_metadata(conn, &account_id).await?;
-                if !lease_fence_held(conn, &fence).await? {
+                if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
                 }
 
@@ -1575,7 +1573,7 @@ impl StorageBackend for PostgresService {
 
         conn.transaction::<CanonicalWrite, diesel::result::Error, _>(|conn| {
             async move {
-                if !lease_fence_held(conn, &fence).await? {
+                if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
                 }
 
@@ -2463,13 +2461,212 @@ mod tests {
         assert_eq!(state.account_id, "0x123");
     }
 
-    /// End-to-end proof of the transactional fence: a superseded lease
-    /// holder's retry, discard, and promotion are all refused with no row
+    /// The non-locking fence's core safety property. An in-flight promotion
+    /// that validated its lease keeps the account-metadata row locked, so:
+    /// (1) a leadership transfer (release + steal) does not wait on it — the
+    /// fence read holds no lock; (2) the in-flight write still commits its real
+    /// candidate→canonical mutation after the transfer; and (3) the new owner's
+    /// competing promotion serializes behind the account lock and is then
+    /// neutralized by the candidate conditional (NotCandidate), so the delta is
+    /// promoted exactly once with no double-apply.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn lease_transfer_does_not_wait_for_a_validated_write_transaction() {
+        use crate::coordination::LeaderElector;
+        use crate::coordination::postgres::PgLeaseElector;
+        use crate::delta_object::DeltaStatus;
+        use diesel::sql_types::Text;
+        use std::time::Duration;
+        use tokio::sync::oneshot;
+
+        let url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .expect("DATABASE_URL must be set for this #[ignore] test");
+        run_migrations(&url).await.expect("migrations apply");
+
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xoverlap{stamp}");
+        let lease_name = format!("canon-overlap-{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let initial_state = create_test_state(&account_id);
+        let initial_commitment = initial_state.commitment.clone();
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+        let mut candidate = create_test_delta(&account_id, 1);
+        candidate.prev_commitment = initial_commitment.clone();
+        candidate.status = DeltaStatus::candidate(now.clone());
+        service
+            .submit_candidate(&metadata_store, &candidate, &now)
+            .await
+            .expect("candidate insert");
+
+        let elector_a =
+            PgLeaseElector::new(build_postgres_pool_lazy(&url, 2).unwrap(), &lease_name, "a");
+        let elector_b =
+            PgLeaseElector::new(build_postgres_pool_lazy(&url, 2).unwrap(), &lease_name, "b");
+        let lease_a = elector_a
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .expect("acquire a")
+            .expect("a owns the lease");
+        let fence = LeaseFence {
+            lease_name: lease_a.name.clone(),
+            holder_id: lease_a.holder_id.clone(),
+            fence_token: lease_a.fence_token,
+        };
+
+        let canonical_status = DeltaStatus::canonical(now.clone());
+        let status_json = serde_json::to_value(&canonical_status).expect("serialize status");
+        let (status_kind, status_timestamp) =
+            derive_status_columns(&canonical_status).expect("status columns");
+        let pool = service.pool.clone();
+        let inflight_account_id = account_id.clone();
+        let (validated_tx, validated_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+
+        // The in-flight promotion: lock the account, validate the fence (still
+        // current), park while holding the account lock, then commit the real
+        // candidate→canonical flip after being resumed post-transfer.
+        let write = tokio::spawn(async move {
+            let mut conn = pool.get().await.expect("write connection");
+            conn.transaction::<usize, diesel::result::Error, _>(|conn| {
+                async move {
+                    lock_account_metadata(conn, &inflight_account_id).await?;
+                    assert!(lease_fence_is_current(conn, &fence).await?);
+                    validated_tx.send(()).expect("signal validation");
+                    resume_rx.await.expect("resume validated transaction");
+                    let flipped = diesel::update(deltas::table)
+                        .filter(deltas::account_id.eq(&inflight_account_id))
+                        .filter(deltas::nonce.eq(1i64))
+                        .filter(deltas::status_kind.eq("candidate"))
+                        .set((
+                            deltas::status.eq(&status_json),
+                            deltas::status_kind.eq(status_kind),
+                            deltas::status_timestamp.eq(status_timestamp),
+                        ))
+                        .execute(conn)
+                        .await?;
+                    Ok(flipped)
+                }
+                .scope_boxed()
+            })
+            .await
+            .expect("validated transaction commits")
+        });
+
+        validated_rx.await.expect("write validates its lease");
+
+        // (1) The transfer must not wait for the in-flight, account-locked write.
+        tokio::time::timeout(Duration::from_secs(2), elector_a.release(lease_a))
+            .await
+            .expect("lease transfer must not wait for the validated transaction")
+            .expect("release a");
+        let lease_b = elector_b
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .expect("acquire b")
+            .expect("b takes over while the prior transaction is open");
+        let current_fence = LeaseFence {
+            lease_name: lease_b.name.clone(),
+            holder_id: lease_b.holder_id.clone(),
+            fence_token: lease_b.fence_token,
+        };
+
+        // (3) The new owner's competing promotion serializes behind the account
+        // lock the in-flight write holds; it can only run once that write commits.
+        let mut canonical = candidate.clone();
+        canonical.status = canonical_status.clone();
+        let mut newowner_state = create_test_state(&account_id);
+        newowner_state.commitment = "0xnewowner".to_string();
+        let newowner_promotion = CandidatePromotion {
+            state: newowner_state,
+            delta: canonical,
+            new_auth: None,
+            now: now.clone(),
+            fence: Some(current_fence),
+        };
+        let newowner_service = PostgresService::new(&url, 2)
+            .await
+            .expect("new-owner storage");
+        let newowner_metadata = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("new-owner metadata store");
+        let newowner = tokio::spawn(async move {
+            newowner_service
+                .promote_candidate(&newowner_metadata, newowner_promotion)
+                .await
+                .expect("new-owner promotion resolves")
+        });
+
+        resume_tx.send(()).expect("resume write");
+        let flipped = write.await.expect("write task");
+        assert_eq!(flipped, 1, "the in-flight write commits its real mutation");
+
+        // (2)+(3): the delta is canonical, promoted exactly once; the new owner's
+        // promotion found no candidate and left the state untouched.
+        let newowner_outcome = newowner.await.expect("new-owner task");
+        assert_eq!(
+            newowner_outcome,
+            CanonicalWrite::NotCandidate,
+            "the new owner cannot re-promote a delta the in-flight write already flipped",
+        );
+        assert!(
+            service
+                .pull_delta(&account_id, 1)
+                .await
+                .unwrap()
+                .status
+                .is_canonical(),
+            "the delta is canonical exactly once",
+        );
+
+        elector_b.release(lease_b).await.expect("cleanup lease");
+        let mut conn = service.pool.get().await.expect("conn");
+        for stmt in [
+            "DELETE FROM deltas WHERE account_id = $1",
+            "DELETE FROM states WHERE account_id = $1",
+            "DELETE FROM account_metadata WHERE account_id = $1",
+        ] {
+            diesel::sql_query(stmt)
+                .bind::<Text, _>(&account_id)
+                .execute(&mut conn)
+                .await
+                .expect("cleanup account rows");
+        }
+        diesel::sql_query("DELETE FROM worker_leases WHERE lease_name = $1")
+            .bind::<Text, _>(&lease_name)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup lease row");
+    }
+
+    /// End-to-end proof of lease validation: a holder superseded before its
+    /// write starts has retry, discard, and promotion refused with no row
     /// mutated; the current holder promotes atomically; and once canonical,
     /// the delta survives both a repeated promotion and a discard attempt.
     #[tokio::test]
     #[ignore = "requires DATABASE_URL with migrations applied"]
-    async fn fenced_canonicalization_writes_reject_stale_owners() {
+    async fn canonicalization_writes_reject_owners_stale_at_write_start() {
         use crate::coordination::LeaderElector;
         use crate::coordination::postgres::PgLeaseElector;
         use crate::delta_object::DeltaStatus;
@@ -2529,6 +2726,7 @@ mod tests {
             "a second submission that raced past the service gate must not commit",
         );
         let mut second_nonce = create_test_delta(&account_id, 2);
+        second_nonce.prev_commitment = initial_commitment.clone();
         second_nonce.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
@@ -2700,6 +2898,33 @@ mod tests {
             "canonical lineage survives every discard attempt",
         );
         assert!(service.pull_delta(&account_id, 1).await.is_ok());
+
+        // `update_candidate_status` takes no account lock, so the candidate
+        // conditional is its only guard: even a still-current fence cannot
+        // revive a promoted delta through a delayed retry/divergence update.
+        let current_retry = service
+            .update_candidate_status(
+                &account_id,
+                1,
+                DeltaStatus::candidate_with_retry(now.clone(), 1),
+                Some(&current_fence),
+            )
+            .await
+            .expect("current-fence retry on a canonical delta resolves");
+        assert_eq!(
+            current_retry,
+            CanonicalWrite::NotCandidate,
+            "a valid fence cannot demote a canonical delta via a status update",
+        );
+        assert!(
+            service
+                .pull_delta(&account_id, 1)
+                .await
+                .unwrap()
+                .status
+                .is_canonical(),
+            "the delta stays canonical after a refused status update",
+        );
 
         elector_b.release(lease_b).await.expect("release");
         let mut conn = service.pool.get().await.expect("conn");

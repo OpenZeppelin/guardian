@@ -55,14 +55,15 @@ start** rather than falling back to per-process state.
 - **Canonicalization** runs on exactly one replica at a time via a Postgres
   lease (`worker_leases`). Leadership transfers automatically to another replica
   within one lease TTL (≈ 3× the canonicalization check interval) if the holder
-  crashes. A superseded holder cannot commit a canonical write: every
-  canonicalization write (promotion, discard, retry bookkeeping) validates the
-  holder's fencing token against the lease row **inside the same database
-  transaction** and only touches deltas still in candidate status, so a stale
-  holder's delayed write is refused by the store rather than merely checked
-  before it. Promotion itself is atomic — account state, cosigner auth sync,
-  the candidate→canonical flip, and the pending-candidate flag release commit
-  together or not at all. A *planned* stop (deploy,
+  crashes. Every canonicalization write (promotion, discard, retry bookkeeping)
+  validates the holder's fencing token against the lease row at its database
+  write boundary and only touches deltas still in candidate status. A write
+  that validated immediately before a leadership transfer may finish afterward;
+  account-level serialization and conditional state/candidate updates make that
+  overlap safe without globally locking the lease row. Promotion itself is
+  atomic — account state, cosigner auth sync, the candidate→canonical flip, and
+  the pending-candidate flag release commit together or not at all. A *planned*
+  stop (deploy,
   scale-in) does not release the lease early today — there is no graceful
   shutdown hook yet — so after replacing the lease holder, canonicalization
   pauses for up to one TTL (~30s at the default 10s check interval) before the

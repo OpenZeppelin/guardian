@@ -18,10 +18,11 @@ pub struct Lease {
 /// own timer concurrent with the protected work; a `false` return means the lease
 /// was lost. State-mutating writes are fenced by the storage backend itself: the
 /// holder attaches its lease identity ([`crate::storage::LeaseFence`]) to each
-/// canonicalization write and a fencing backend validates and locks the lease row
-/// in the same transaction, so `verify_held` is a diagnostic read, not the write
-/// guard. `release` expires the lease in place for prompt handover on a planned
-/// stop; the server has no graceful shutdown hook yet, so nothing calls it in
+/// canonicalization write and a fencing backend validates it at the write
+/// boundary, so `verify_held` is a diagnostic read, not the write guard. An
+/// already-started conditional write may finish during leadership transfer.
+/// `release` expires the lease in place for prompt handover on a planned stop;
+/// the server has no graceful shutdown hook yet, so nothing calls it in
 /// production paths and a stopped holder hands over only after TTL expiry
 /// (documented in the horizontal-scaling runbook).
 #[async_trait]
