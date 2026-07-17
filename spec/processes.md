@@ -224,8 +224,11 @@ sequenceDiagram
 ### Configuration
 - Current server builder defaults: submission_grace_period_seconds = 600
   (10m), check_interval_seconds = 10, max_retries = 48,
-  divergence_confirmations = 2.
-- These values are configured in code, not through server env vars.
+  divergence_confirmations = 2, max_concurrent_accounts = 4.
+- These values are configured in code, not through server env vars —
+  except `max_concurrent_accounts`, which
+  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` overrides at
+  startup.
 
 ### Worker Behavior
  - Runs every `check_interval_seconds`.
@@ -299,3 +302,7 @@ sequenceDiagram
 
 ### Concurrency
 - Processing SHOULD be per-account sequential; multi-account processing MAY be parallel with bounded concurrency.
+- The server processes accounts with bounded concurrency
+  (`max_concurrent_accounts`, default 4); candidates within one account
+  remain strictly sequential in nonce order, and every custody write is
+  individually lease-fenced, so correctness does not depend on the bound.

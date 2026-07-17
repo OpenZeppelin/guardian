@@ -10,6 +10,7 @@ use crate::state_object::StateObject;
 use crate::storage::{CandidatePromotion, CanonicalWrite, LeaseFence, PromoteWrite};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 /// A leader handle for a single canonicalization pass: who we are, the fence we
@@ -71,6 +72,7 @@ struct DeltasProcessorBase {
     max_retries: u32,
     submission_grace_period_seconds: u64,
     divergence_confirmations: u32,
+    max_concurrent_accounts: usize,
 }
 
 impl DeltasProcessorBase {
@@ -141,29 +143,52 @@ impl DeltasProcessorBase {
         metrics::gauge!(crate::metrics::names::CANONICALIZATION_PASS_ACCOUNTS)
             .set(account_ids.len() as f64);
 
-        let mut failed_accounts = 0;
-        for account_id in &account_ids {
-            if self.pass.cancel.is_cancelled() {
-                tracing::warn!(
-                    "Canonicalization pass cancelled (lease lost); stopping before next account"
-                );
-                break;
-            }
-            if let Err(e) = self.process_account(account_id).await {
-                failed_accounts += 1;
+        // Accounts overlap with bounded concurrency — the per-account cost
+        // is dominated by the Miden RPC round trip, so a sequential pass
+        // wastes almost its entire wall clock waiting. Candidates within
+        // an account stay strictly sequential (nonce order) inside
+        // `process_account`, and every custody write remains individually
+        // fenced, so correctness does not depend on this bound.
+        let accounts = account_ids.len();
+        let failed_accounts = futures::stream::iter(account_ids)
+            .map(|account_id| async move { self.process_account_absorbing(&account_id).await })
+            .buffer_unordered(self.max_concurrent_accounts.max(1))
+            .fold(0, |failed, account_failed| async move {
+                failed + usize::from(account_failed)
+            })
+            .await;
+
+        if self.pass.cancel.is_cancelled() {
+            tracing::warn!(
+                "Canonicalization pass cancelled (lease lost); remaining accounts skipped"
+            );
+        }
+
+        Ok(PassSummary {
+            accounts,
+            failed_accounts,
+            cancelled: self.pass.cancel.is_cancelled(),
+        })
+    }
+
+    /// One account inside a concurrent pass: cancellation-checked at
+    /// admission (in-flight tasks stop at their own checkpoints), errors
+    /// absorbed into a failed flag so one account never sinks the pass.
+    async fn process_account_absorbing(&self, account_id: &str) -> bool {
+        if self.pass.cancel.is_cancelled() {
+            return false;
+        }
+        match self.process_account(account_id).await {
+            Ok(()) => false,
+            Err(e) => {
                 tracing::error!(
                     account_id = %account_id,
                     error = %e,
                     "Failed to process canonicalizations for account"
                 );
+                true
             }
         }
-
-        Ok(PassSummary {
-            accounts: account_ids.len(),
-            failed_accounts,
-            cancelled: self.pass.cancel.is_cancelled(),
-        })
     }
 
     async fn process_account(&self, account_id: &str) -> Result<()> {
@@ -755,6 +780,7 @@ impl DeltasProcessor {
                 max_retries: config.max_retries,
                 submission_grace_period_seconds: config.submission_grace_period_seconds,
                 divergence_confirmations: config.divergence_confirmations,
+                max_concurrent_accounts: config.max_concurrent_accounts,
             },
         }
     }
@@ -784,6 +810,7 @@ impl TestDeltasProcessor {
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
                 submission_grace_period_seconds: 0,
                 divergence_confirmations: u32::MAX, // ...nor on divergence
+                max_concurrent_accounts: 1,         // ...and stays deterministic
             },
         }
     }
@@ -1947,6 +1974,103 @@ mod tests {
             },
             tokio_util::sync::CancellationToken::new(),
         )
+    }
+
+    #[tokio::test]
+    async fn concurrent_pass_processes_every_account() {
+        // Three accounts under the default concurrency of 4: every account
+        // promotes its candidate, and the summary reflects a clean pass.
+        // All mock responses are identical, so completion order is free.
+        let account_ids: Vec<String> = (1..=3).map(|i| format!("0xtest_account_{i}")).collect();
+
+        let mut storage = MockStorageBackend::new();
+        let mut network = MockNetworkClient::new();
+        let mut metadata =
+            MockMetadataStore::new().with_list_with_pending_candidates(Ok(account_ids.clone()));
+        for account_id in &account_ids {
+            storage = storage
+                .with_pull_candidate_deltas(Ok(vec![create_candidate_delta(account_id, 1)]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(()));
+            network = network
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_state(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None));
+            metadata = metadata
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(()));
+        }
+        let storage = Arc::new(storage);
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::default());
+
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("pass completes");
+
+        assert_eq!(summary.accounts, 3);
+        assert_eq!(summary.failed_accounts, 0);
+        assert!(!summary.cancelled);
+        assert_eq!(
+            storage.get_submit_state_calls().len(),
+            3,
+            "every account's candidate must promote",
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_pass_admits_no_account_work() {
+        // A pre-cancelled token: no account task starts. The mock queues
+        // are deliberately empty — had any account been processed, its
+        // metadata read would have failed and the summary would count it.
+        let account_ids = vec![
+            "0xtest_account_1".to_string(),
+            "0xtest_account_2".to_string(),
+        ];
+
+        let storage = Arc::new(MockStorageBackend::new());
+        let metadata = MockMetadataStore::new().with_list_with_pending_candidates(Ok(account_ids));
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            Arc::new(metadata),
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let pass = PassLease::single_process();
+        let processor = DeltasProcessor::with_lease(
+            state,
+            CanonicalizationConfig::default(),
+            pass.leader,
+            pass.lease,
+            cancel,
+        );
+
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("cancelled pass still reports a summary");
+
+        assert_eq!(summary.accounts, 2);
+        assert_eq!(summary.failed_accounts, 0);
+        assert!(summary.cancelled);
+        assert!(storage.get_submit_state_calls().is_empty());
     }
 
     fn promotion_mocks(

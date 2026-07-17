@@ -618,6 +618,7 @@ mod tests {
             max_retries: 13,
             submission_grace_period_seconds: 42,
             divergence_confirmations: 2,
+            max_concurrent_accounts: 4,
         });
         let info = get_dashboard_info(&state).await.unwrap();
         let cfg = info.backend.canonicalization.expect("config present");

@@ -487,6 +487,17 @@ variable "guardian_metadata_db_pool_max_size" {
   default     = null
 }
 
+variable "guardian_canonicalization_max_concurrent_accounts" {
+  description = <<-EOT
+    Optional override for GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS, how many
+    accounts one canonicalization pass processes in parallel (1 = fully sequential).
+    Keep at most ~half of guardian_db_pool_max_size so the worker never starves API
+    requests of database connections.
+  EOT
+  type        = number
+  default     = null
+}
+
 # Resource naming
 variable "cluster_name" {
   description = "ECS cluster name"

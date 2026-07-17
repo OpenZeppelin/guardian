@@ -180,6 +180,7 @@ mod tests {
                 max_retries: 48,
                 submission_grace_period_seconds: 600,
                 divergence_confirmations: 2,
+                max_concurrent_accounts: 4,
             }),
             3,
             true,

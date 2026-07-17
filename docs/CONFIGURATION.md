@@ -30,6 +30,7 @@ the runtime env vars in this document.
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
+| `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `4` | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Keep at most ~half of `GUARDIAN_DB_POOL_MAX_SIZE` so the worker never starves API requests of connections. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
 
 ### Database TLS
@@ -328,7 +329,10 @@ this saves you from grepping:
   it, no env var will turn it on.
 - **Canonicalization knobs** (`check_interval_seconds`, `max_retries`,
   `submission_grace_period_seconds`). Currently hard-coded in the
-  canonicalization worker; require a code change to alter.
+  canonicalization worker; require a code change to alter. The exception
+  is `max_concurrent_accounts`, configurable via
+  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` (see the
+  environment table above).
 - **Auth timestamp window.** `MAX_TIMESTAMP_SKEW_MS = 300_000` (5 min) is
   hard-coded in
   [`metadata/auth/credentials.rs:6`](../crates/server/src/metadata/auth/credentials.rs#L6).
@@ -343,4 +347,4 @@ this saves you from grepping:
 | Use Secrets Manager for ACK keys | `GUARDIAN_ENV=prod` + `AWS_REGION=<region>` + secrets pre-created |
 | Run the dashboard locally | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/path/to/allowlist.json` |
 | Multi-replica (HA) | Postgres backend + `GUARDIAN_DASHBOARD_CURSOR_SECRET=<64 hex>` pinned across tasks + `GUARDIAN_MAX_REPLICAS=<steady-state max capacity>`. The prod Terraform profile sets these after `bootstrap-dashboard-cursor-secret` creates the required Secrets Manager entry. |
-| Higher throughput in prod | `GUARDIAN_RATE_BURST_PER_SEC`, `GUARDIAN_RATE_PER_MIN`, `GUARDIAN_DB_POOL_MAX_SIZE` |
+| Higher throughput in prod | `GUARDIAN_RATE_BURST_PER_SEC`, `GUARDIAN_RATE_PER_MIN`, `GUARDIAN_DB_POOL_MAX_SIZE`, `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` |
