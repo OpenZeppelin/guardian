@@ -1,27 +1,27 @@
-# Self-hosted Guardian via Docker Compose with AWS-managed ACK signers:
-# Postgres for state, AWS Secrets Manager for the Falcon ACK key, and AWS KMS
-# for the ECDSA ACK key (its private key never enters the process).
+# Self-hosted, production-parity Guardian via Docker Compose with AWS-managed
+# secret custody: Postgres for state, AWS Secrets Manager for the Falcon ACK key
+# and the storage-encryption key, AWS KMS for the ECDSA ACK key (its private key
+# never enters the process). A single server replica runs with GUARDIAN_ENV=prod,
+# so every prod-stage guard is active (filesystem backend refused, cursor secret
+# required, storage encryption validated at startup).
+#
+# Multi-replica HA is the ECS track — see ./README.md.
 #
 # Run from this directory:
 #   cp .env.example .env        # then fill in the values
 #   docker compose up
 #
-# Compose auto-loads .env from this directory for both ${VAR} interpolation and
-# the server's runtime config (env_file). Walkthrough: ./README.md
+# Compose auto-loads .env from this directory. Walkthrough: ./README.md
 # Full server config reference: ../../CONFIGURATION.md
-#
-# GUARDIAN_ENV=prod makes the server load ACK keys from Secrets Manager, so the
-# container needs AWS credentials. This file passes them through from your shell
-# (export them before `up`, e.g. from SSO); a long-lived host should use an
-# instance/task role instead of static keys.
 
 services:
   server:
-    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest}
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION in .env (pin an explicit version for production)}
     pull_policy: always
     ports:
       - "3000:3000"
       - "50051:50051"
+      - "127.0.0.1:9464:9464"
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,7 +42,14 @@ services:
       - GUARDIAN_ACK_FALCON_SECRET_ID=${GUARDIAN_ACK_FALCON_SECRET_ID:?set GUARDIAN_ACK_FALCON_SECRET_ID in .env}
       - GUARDIAN_ACK_ECDSA_BACKEND=aws-kms
       - GUARDIAN_ACK_ECDSA_KMS_KEY_ID=${GUARDIAN_ACK_ECDSA_KMS_KEY_ID:?set GUARDIAN_ACK_ECDSA_KMS_KEY_ID in .env}
+      - GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID=${GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID:?set GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID in .env}
       - GUARDIAN_DASHBOARD_CURSOR_SECRET=${GUARDIAN_DASHBOARD_CURSOR_SECRET:?set GUARDIAN_DASHBOARD_CURSOR_SECRET in .env}
+      - GUARDIAN_NETWORK_TYPE=${GUARDIAN_NETWORK_TYPE:-MidenTestnet}
+      - GUARDIAN_CORS_ALLOWED_ORIGINS=${GUARDIAN_CORS_ALLOWED_ORIGINS:-}
+      - GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID:-}
+      - GUARDIAN_METRICS_ENABLED=${GUARDIAN_METRICS_ENABLED:-false}
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
+      - GUARDIAN_METRICS_BEARER_TOKEN=${GUARDIAN_METRICS_BEARER_TOKEN:-}
 
   postgres:
     image: postgres:16-alpine
