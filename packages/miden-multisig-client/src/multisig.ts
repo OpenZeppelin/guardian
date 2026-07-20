@@ -73,7 +73,11 @@ import { AccountInspector } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
-import { getRawMidenClient, getTransactionProver, requireMidenRpcEndpoint } from './raw-client.js';
+import {
+  getRawMidenClient,
+  getTransactionProver,
+  requireMidenRpcEndpoint,
+} from './raw-client.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -138,7 +142,7 @@ export class Multisig {
   private readonly rawClientPromise: Promise<WasmWebClient>;
   private readonly transactionProver: TransactionProver | null;
   private readonly _accountId: string;
-  private readonly midenRpcEndpoint?: string;
+  private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
 
   constructor(
@@ -147,8 +151,8 @@ export class Multisig {
     guardian: GuardianHttpClient,
     signer: Signer,
     midenClient: MidenClient,
-    accountId?: string,
-    midenRpcEndpoint?: string
+    accountId: string | undefined,
+    midenRpcEndpoint: string
   ) {
     this.account = account;
     this.threshold = config.threshold;
@@ -162,13 +166,13 @@ export class Multisig {
     this.signer = signer;
     this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
-    this.midenRpcEndpoint = midenRpcEndpoint;
-    this.rawClientPromise = getRawMidenClient(midenClient, midenRpcEndpoint);
+    this.midenRpcEndpoint = requireMidenRpcEndpoint(midenRpcEndpoint);
     this.transactionProver = getTransactionProver(midenClient);
+    this.rawClientPromise = getRawMidenClient(midenClient, this.midenRpcEndpoint);
   }
 
   private getMidenRpcEndpoint(): string {
-    return requireMidenRpcEndpoint(this.midenRpcEndpoint);
+    return this.midenRpcEndpoint;
   }
 
   private async getRawClient(): Promise<WasmWebClient> {

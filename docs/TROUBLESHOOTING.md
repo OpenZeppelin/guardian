@@ -13,11 +13,12 @@ For local-dev setup see [`docs/LOCAL_DEV.md`](./LOCAL_DEV.md).
 
 Most startup failures are environment misconfiguration. Check in order:
 
-1. **`GUARDIAN_NETWORK_TYPE` unset or unrecognized.** The server exits
+1. **`GUARDIAN_NETWORK_TYPE` unset, non-Unicode, or unrecognized.** The server exits
    before binding any port with
    `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
-   (or `has unrecognized value "..."` for typos like `tesnet`). There is
-   no fallback network. Set it to `MidenLocal`, `MidenTestnet`, or
+   (or `contains non-Unicode data` / `has unrecognized value "..."` for
+   malformed values and typos like `tesnet`). There is no fallback network.
+   Replace the variable with `MidenLocal`, `MidenTestnet`, or
    `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
    case-insensitive).
 2. **`DATABASE_URL` missing under `--features postgres`.** The builder

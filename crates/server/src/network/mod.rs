@@ -127,8 +127,12 @@ impl NetworkType {
                     Self::ACCEPTED_VALUES
                 )
             }),
-            Err(_) => Err(format!(
+            Err(std::env::VarError::NotPresent) => Err(format!(
                 "{var_name} is not set; accepted values: {}",
+                Self::ACCEPTED_VALUES
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+                "{var_name} contains non-Unicode data; accepted values: {}",
                 Self::ACCEPTED_VALUES
             )),
         }
@@ -164,10 +168,13 @@ impl std::fmt::Display for NetworkType {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::env_lock::ENV_LOCK;
+
     use super::NetworkType;
 
     #[test]
     fn from_env_errors_when_var_missing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let var_name = "GUARDIAN_NETWORK_TYPE_TEST_MISSING";
         unsafe { std::env::remove_var(var_name) };
 
@@ -181,6 +188,7 @@ mod tests {
 
     #[test]
     fn from_env_errors_when_value_unrecognized() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let var_name = "GUARDIAN_NETWORK_TYPE_TEST_INVALID";
         unsafe { std::env::set_var(var_name, "tesnet") };
 
@@ -192,8 +200,25 @@ mod tests {
         unsafe { std::env::remove_var(var_name) };
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn from_env_errors_when_value_is_not_unicode() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_NOT_UNICODE";
+        unsafe { std::env::set_var(var_name, OsString::from_vec(vec![0xff])) };
+
+        let error = NetworkType::from_env(var_name).unwrap_err();
+
+        assert!(error.contains(var_name));
+        assert!(error.contains("non-Unicode"));
+        unsafe { std::env::remove_var(var_name) };
+    }
+
     #[test]
     fn from_env_parses_every_accepted_spelling() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let cases = [
             ("MidenLocal", NetworkType::MidenLocal),
             ("local", NetworkType::MidenLocal),

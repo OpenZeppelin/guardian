@@ -14,11 +14,27 @@ import {
   compileTxScript,
   getRawMidenClient,
   getTransactionProver,
+  requireConfigValue,
 } from './raw-client.js';
 
 describe('raw-client', () => {
   beforeEach(() => {
     mockCreateClient.mockReset();
+  });
+
+  it.each([undefined, null, 42, {}, []])(
+    'rejects non-string configuration value %j consistently',
+    (value) => {
+      expect(() => requireConfigValue('guardianEndpoint', value)).toThrow(
+        'missing required configuration: guardianEndpoint',
+      );
+    },
+  );
+
+  it('trims surrounding whitespace from configuration values', () => {
+    expect(requireConfigValue('guardianEndpoint', '  http://localhost:3000\n')).toBe(
+      'http://localhost:3000',
+    );
   });
 
   it('rejects shadow client creation without an RPC endpoint', async () => {

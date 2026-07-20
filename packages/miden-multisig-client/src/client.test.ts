@@ -106,7 +106,7 @@ describe('MultisigClient', () => {
       );
     });
 
-    it.each([undefined, '', '   '])(
+    it.each([undefined, null, 42, '', '   '])(
       'throws before any network or store access when midenRpcEndpoint is %j',
       (endpoint) => {
         expect(
@@ -122,7 +122,7 @@ describe('MultisigClient', () => {
       },
     );
 
-    it.each([undefined, '', '   '])(
+    it.each([undefined, null, 42, '', '   '])(
       'throws before any network or store access when guardianEndpoint is %j',
       (endpoint) => {
         expect(
