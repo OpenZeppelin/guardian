@@ -99,23 +99,19 @@ impl NetworkClient for MidenNetworkClient {
         Ok(local_commitment_hex)
     }
 
-    async fn verify_state(
+    async fn verify_commitment(
         &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> Result<StateVerification, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
                 error = %e,
-                "Invalid Miden account ID format in verify_state"
+                "Invalid Miden account ID format in verify_commitment"
             );
             format!("Invalid Miden account ID format: {e}")
         })?;
-
-        let account = Self::construct_account_from_json(&account_id, state_json)?;
-        let local_commitment = account.to_commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         // Outbound chain-node RPC — the upstream dependency this
         // server's availability hangs on, so it gets its own metric
@@ -148,10 +144,10 @@ impl NetworkClient for MidenNetworkClient {
             return Ok(StateVerification::Absent);
         }
 
-        if local_commitment_hex != on_chain_commitment {
+        if expected_commitment != on_chain_commitment {
             tracing::warn!(
                 account_id = %account_id.to_hex(),
-                local = %local_commitment_hex,
+                expected = %expected_commitment,
                 on_chain = %on_chain_commitment,
                 "Commitment mismatch during state verification"
             );
@@ -551,6 +547,22 @@ mod tests {
         let state_json = serde_json::json!({"balance": 0});
 
         let result = client.get_state_commitment(invalid_account_id, &state_json);
+        assert!(result.is_err(), "Should fail with invalid account ID");
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Invalid Miden account ID format")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_commitment_rejects_invalid_account_id_before_rpc() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+
+        let result = client
+            .verify_commitment("not_a_valid_hex", "0xexpected")
+            .await;
+
         assert!(result.is_err(), "Should fail with invalid account ID");
         assert!(
             result

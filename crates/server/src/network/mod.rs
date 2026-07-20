@@ -1,13 +1,164 @@
 pub mod miden;
 
+use crate::error::GuardianError;
 use crate::metadata::auth::{Auth, Credentials};
 use async_trait::async_trait;
+use std::sync::{Arc, LazyLock};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// Conservative process-wide cap on concurrent state reconstructions.
+///
+/// State reconstruction (`apply_delta` / `verify_delta`) is synchronous,
+/// CPU-bound work whose cost grows with account storage size — the
+/// `executed_transactions` replay map is never pruned, so it grows unbounded
+/// with account history. The `apply_delta` microbenchmark
+/// (`crate::testing::apply_delta_bench`) measures ~1 ms for a fresh account
+/// rising to ~1 s for a large, long-lived one. Without a shared bound, a
+/// canonicalization backlog (up to `max_concurrent_accounts` in flight) or a
+/// burst of concurrent `push_delta` requests could run many such jobs at once,
+/// contend for host CPU, and degrade API latency on the leader replica.
+///
+/// This bound protects runtime responsiveness; it does not reduce the
+/// O(account-size) reconstruction work or repeated full-state passes tracked in
+/// [issue #328](https://github.com/OpenZeppelin/guardian/issues/328).
+///
+/// Capacity `1` is an internal runtime-safety bound, not operator policy, so it
+/// is deliberately not configurable. Production queue-time and API-latency
+/// measurements are required before raising it or exposing an operator setting.
+const MAX_CONCURRENT_RECONSTRUCTIONS: usize = 1;
+
+/// Failure of a reconstruction dispatched through [`Reconstructor::run`].
+/// Kept distinct from [`GuardianError`] so the caller preserves the split:
+/// the operation itself failing is the client's fault, the task failing to run
+/// is the server's.
+#[derive(Debug)]
+pub enum ReconstructError {
+    /// The reconstruction operation (`apply_delta` / `verify_delta`) returned
+    /// an error — an invalid delta, i.e. a client fault.
+    Operation(String),
+    /// The blocking task did not run to completion (panic or runtime
+    /// shutdown) — a server fault, never the client's.
+    Task(String),
+}
+
+impl From<ReconstructError> for GuardianError {
+    fn from(error: ReconstructError) -> Self {
+        match error {
+            ReconstructError::Operation(message) => GuardianError::InvalidDelta(message),
+            ReconstructError::Task(message) => {
+                GuardianError::StorageError(format!("state reconstruction failed: {message}"))
+            }
+        }
+    }
+}
+
+/// A process-wide bound on concurrent, CPU-bound state reconstructions, shared
+/// by the canonicalization worker and the `push_delta` API path so neither can
+/// exceed the limit — individually or in aggregate.
+///
+/// Two gates. `cpu` is the real CPU bound both paths pass through. `admission`
+/// is a background-only gate the worker takes *before* `cpu`: because Tokio
+/// semaphores are fair (FIFO), account tasks running with
+/// `buffer_unordered(max_concurrent_accounts)` could otherwise queue many
+/// reconstructions on the `cpu` gate, and a `push_delta` arriving after them
+/// would wait behind the whole backlog. With `admission` capacity 1, only the
+/// active background reconstruction can hold or wait for `cpu`.
+#[derive(Clone)]
+pub struct Reconstructor {
+    cpu: Arc<Semaphore>,
+    admission: Arc<Semaphore>,
+}
+
+impl Reconstructor {
+    fn with_capacity(cpu_permits: usize) -> Self {
+        Self {
+            cpu: Arc::new(Semaphore::new(cpu_permits)),
+            admission: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    /// API path (`push_delta`): straight to the shared CPU gate.
+    pub async fn run<T, F>(&self, op: F) -> Result<T, ReconstructError>
+    where
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.dispatch(None, op).await
+    }
+
+    /// Background path (canonicalization worker): take the background admission
+    /// gate before the shared CPU gate. Both permits move into the blocking
+    /// closure, so cancellation cannot admit another background reconstruction
+    /// while detached work is still using the CPU slot.
+    pub async fn run_background<T, F>(&self, op: F) -> Result<T, ReconstructError>
+    where
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+        T: Send + 'static,
+    {
+        let admission = self
+            .admission
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| ReconstructError::Task(format!("admission gate closed: {e}")))?;
+        self.dispatch(Some(admission), op).await
+    }
+
+    async fn dispatch<T, F>(
+        &self,
+        admission: Option<OwnedSemaphorePermit>,
+        op: F,
+    ) -> Result<T, ReconstructError>
+    where
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+        T: Send + 'static,
+    {
+        let cpu = self
+            .cpu
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| ReconstructError::Task(format!("reconstruction gate closed: {e}")))?;
+
+        match tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            let _cpu = cpu;
+            op()
+        })
+        .await
+        {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(operation_error)) => Err(ReconstructError::Operation(operation_error)),
+            Err(join_error) => {
+                tracing::error!(error = %join_error, "state reconstruction task failed to complete");
+                Err(ReconstructError::Task(join_error.to_string()))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn available_cpu_permits(&self) -> usize {
+        self.cpu.available_permits()
+    }
+
+    #[cfg(test)]
+    fn available_admission_permits(&self) -> usize {
+        self.admission.available_permits()
+    }
+}
+
+/// The one shared reconstruction gate for the whole process.
+pub fn reconstructor() -> &'static Reconstructor {
+    static INSTANCE: LazyLock<Reconstructor> =
+        LazyLock::new(|| Reconstructor::with_capacity(MAX_CONCURRENT_RECONSTRUCTIONS));
+    &INSTANCE
+}
 
 /// Outcome of comparing a locally-computed state commitment against the
 /// on-chain one. A mismatch is a legitimate observation (the tx has not
 /// landed yet, or the account advanced past the expected state), not an
-/// error: `Err` from [`NetworkClient::verify_state`] is reserved for
-/// failures to make the comparison at all (RPC failure, malformed state).
+/// error: `Err` from [`NetworkClient::verify_commitment`] is reserved for
+/// failures to make the comparison at all, such as an RPC failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateVerification {
     /// The on-chain commitment equals the locally-computed one.
@@ -31,13 +182,12 @@ pub trait NetworkClient: Send + Sync {
         state_json: &serde_json::Value,
     ) -> Result<String, String>;
 
-    /// Compare the commitment of `state_json` against the on-chain
-    /// account commitment. Returns `Err` only when the comparison could
-    /// not be made (RPC failure, malformed state JSON).
-    async fn verify_state(
+    /// Compare an expected commitment against the on-chain account commitment.
+    /// Returns `Err` only when the comparison could not be made.
+    async fn verify_commitment(
         &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> Result<StateVerification, String>;
 
     /// Verify delta is valid for given state
@@ -163,7 +313,264 @@ impl std::fmt::Display for NetworkType {
 
 #[cfg(test)]
 mod tests {
-    use super::NetworkType;
+    use super::{
+        GuardianError, MAX_CONCURRENT_RECONSTRUCTIONS, NetworkType, ReconstructError,
+        Reconstructor, reconstructor,
+    };
+    use axum::http::StatusCode;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn process_wide_gate_capacity_is_one() {
+        assert_eq!(MAX_CONCURRENT_RECONSTRUCTIONS, 1);
+    }
+
+    #[tokio::test]
+    async fn both_paths_share_the_one_process_wide_reconstructor() {
+        assert!(
+            std::ptr::eq(reconstructor(), reconstructor()),
+            "the API and worker paths resolve to the same gate instance",
+        );
+    }
+
+    #[tokio::test]
+    async fn capacity_one_serializes_concurrent_reconstructions() {
+        let gate = Reconstructor::with_capacity(1);
+        assert_eq!(peak_concurrency(&gate).await, 1);
+    }
+
+    #[tokio::test]
+    async fn capacity_two_allows_overlap_proving_the_gate_is_the_limiter() {
+        let gate = Reconstructor::with_capacity(2);
+        assert_eq!(peak_concurrency(&gate).await, 2);
+    }
+
+    /// Run two reconstructions concurrently through `gate` and report the peak
+    /// observed overlap. Each op holds for a beat so a permitted overlap is
+    /// actually witnessed.
+    async fn peak_concurrency(gate: &Reconstructor) -> usize {
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let op = |live: Arc<AtomicUsize>, peak: Arc<AtomicUsize>| {
+            move || {
+                let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(50));
+                live.fetch_sub(1, Ordering::SeqCst);
+                Ok::<(), String>(())
+            }
+        };
+        let (a, b) = tokio::join!(
+            gate.run(op(live.clone(), peak.clone())),
+            gate.run(op(live.clone(), peak.clone())),
+        );
+        a.unwrap();
+        b.unwrap();
+        peak.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn dropped_caller_holds_permit_until_blocking_work_completes() {
+        use tokio::sync::oneshot;
+
+        let gate = Reconstructor::with_capacity(1);
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let handle = tokio::spawn({
+            let gate = gate.clone();
+            async move {
+                gate.run(move || {
+                    let _ = started_tx.send(());
+                    release_rx.blocking_recv().ok();
+                    Ok::<(), String>(())
+                })
+                .await
+            }
+        });
+
+        started_rx.await.expect("blocking op started");
+        handle.abort();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            gate.available_cpu_permits(),
+            0,
+            "the detached blocking op must keep the permit after the caller is dropped",
+        );
+
+        release_tx.send(()).expect("release the blocking op");
+        for _ in 0..200 {
+            if gate.available_cpu_permits() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            gate.available_cpu_permits(),
+            1,
+            "the permit is released once the blocking op finishes",
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_background_caller_holds_admission_until_blocking_work_completes() {
+        use tokio::sync::oneshot;
+
+        let gate = Reconstructor::with_capacity(1);
+        let second_started = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let first = tokio::spawn({
+            let gate = gate.clone();
+            async move {
+                gate.run_background(move || {
+                    let _ = started_tx.send(());
+                    release_rx.blocking_recv().ok();
+                    Ok::<(), String>(())
+                })
+                .await
+            }
+        });
+
+        started_rx.await.expect("background op started");
+        first.abort();
+        let _ = first.await;
+        assert_eq!(
+            gate.available_admission_permits(),
+            0,
+            "detached background work must retain admission after caller cancellation",
+        );
+
+        let second = tokio::spawn({
+            let gate = gate.clone();
+            let second_started = second_started.clone();
+            async move {
+                gate.run_background(move || {
+                    second_started.fetch_add(1, Ordering::SeqCst);
+                    Ok::<(), String>(())
+                })
+                .await
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            second_started.load(Ordering::SeqCst),
+            0,
+            "another background op must not be admitted while detached work is active",
+        );
+
+        release_tx.send(()).expect("release the blocking op");
+        second
+            .await
+            .expect("second task joins")
+            .expect("second op runs");
+        assert_eq!(second_started.load(Ordering::SeqCst), 1);
+        assert_eq!(gate.available_admission_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn api_push_is_served_before_a_queued_canonicalization_backlog() {
+        use std::sync::Mutex;
+        use tokio::sync::oneshot;
+
+        let gate = Reconstructor::with_capacity(1);
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let (holder_started_tx, holder_started_rx) = oneshot::channel::<()>();
+        let (release_holder_tx, release_holder_rx) = oneshot::channel::<()>();
+
+        let holder = tokio::spawn({
+            let gate = gate.clone();
+            let order = order.clone();
+            async move {
+                gate.run_background(move || {
+                    order.lock().unwrap().push("bg-holder");
+                    let _ = holder_started_tx.send(());
+                    release_holder_rx.blocking_recv().ok();
+                    Ok::<(), String>(())
+                })
+                .await
+                .unwrap();
+            }
+        });
+        holder_started_rx
+            .await
+            .expect("holder occupies the CPU gate");
+
+        let mut backlog = Vec::new();
+        for _ in 0..5 {
+            let gate = gate.clone();
+            let order = order.clone();
+            backlog.push(tokio::spawn(async move {
+                gate.run_background(move || {
+                    order.lock().unwrap().push("bg");
+                    Ok::<(), String>(())
+                })
+                .await
+                .unwrap();
+            }));
+        }
+
+        let api = tokio::spawn({
+            let gate = gate.clone();
+            let order = order.clone();
+            async move {
+                gate.run(move || {
+                    order.lock().unwrap().push("api");
+                    Ok::<(), String>(())
+                })
+                .await
+                .unwrap();
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release_holder_tx.send(()).expect("release the holder");
+
+        holder.await.unwrap();
+        api.await.unwrap();
+        for task in backlog {
+            task.await.unwrap();
+        }
+
+        let order = order.lock().unwrap();
+        assert_eq!(
+            order[1], "api",
+            "the API push runs right after the executing reconstruction, ahead of the backlog: {order:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_error_is_a_client_fault() {
+        let gate = Reconstructor::with_capacity(1);
+        let error = gate
+            .run(|| Err::<(), String>("bad delta".to_string()))
+            .await
+            .expect_err("operation error surfaces");
+        assert!(matches!(error, ReconstructError::Operation(_)));
+        assert_eq!(
+            GuardianError::from(error).http_status(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    #[tokio::test]
+    async fn task_panic_is_a_server_fault() {
+        let gate = Reconstructor::with_capacity(1);
+        let error = gate
+            .run(|| -> Result<(), String> { panic!("reconstruction boom") })
+            .await
+            .expect_err("a panic surfaces as a task failure");
+        assert!(matches!(error, ReconstructError::Task(_)));
+        assert_eq!(
+            GuardianError::from(error).http_status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
 
     #[test]
     fn from_env_or_returns_default_when_var_missing() {

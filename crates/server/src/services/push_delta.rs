@@ -1,5 +1,6 @@
 use guardian_shared::SignatureScheme;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
@@ -75,17 +76,16 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     }
 
     let (new_state_json, new_commitment) = {
-        let client = &state.network_client;
-        client
-            .verify_delta(
-                &current_state.commitment,
-                &current_state.state_json,
-                &params.delta.delta_payload,
-            )
-            .map_err(GuardianError::InvalidDelta)?;
-        client
-            .apply_delta(&current_state.state_json, &params.delta.delta_payload)
-            .map_err(GuardianError::InvalidDelta)?
+        let client = state.network_client.clone();
+        let prev_commitment = current_state.commitment.clone();
+        let prev_state_json = current_state.state_json.clone();
+        let delta_payload = Arc::new(params.delta.delta_payload.clone());
+        crate::network::reconstructor()
+            .run(move || {
+                client.verify_delta(&prev_commitment, &prev_state_json, &delta_payload)?;
+                client.apply_delta(&prev_state_json, &delta_payload)
+            })
+            .await?
     };
 
     // Unconditional lookup: for multisig pushes this lifts the

@@ -280,7 +280,7 @@ sequenceDiagram
     loop candidates
       W->>ST: pull_state(account_id)
       W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)
-      W->>N: verify_state(account_id, new_state)\n(on_chain_commitment)
+      W->>N: verify_commitment(account_id, expected_commitment)\n(on_chain_commitment)
       alt on-chain matches expected commitment
         W->>N: should_update_auth(new_state)\n(maybe new cosigner keys)
         W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(one lease-fenced write: state + delta status + auth + flag)

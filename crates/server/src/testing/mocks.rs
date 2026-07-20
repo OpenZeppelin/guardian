@@ -27,8 +27,8 @@ fn delta_to_proposal_record(proposal: DeltaObject) -> crate::storage::ProposalRe
 
 #[derive(Clone, Default)]
 pub struct MockNetworkClient {
-    pub verify_state_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
-    pub verify_state_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
+    pub verify_commitment_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
+    pub verify_commitment_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -44,8 +44,11 @@ impl MockNetworkClient {
         Self::default()
     }
 
-    pub fn with_verify_state(self, response: StdResult<StateVerification, String>) -> Self {
-        self.verify_state_responses.lock().unwrap().push(response);
+    pub fn with_verify_commitment(self, response: StdResult<StateVerification, String>) -> Self {
+        self.verify_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
@@ -105,8 +108,8 @@ impl MockNetworkClient {
         self
     }
 
-    pub fn get_verify_state_calls(&self) -> Vec<(String, serde_json::Value)> {
-        self.verify_state_calls.lock().unwrap().clone()
+    pub fn get_verify_commitment_calls(&self) -> Vec<(String, String)> {
+        self.verify_commitment_calls.lock().unwrap().clone()
     }
 
     pub fn get_state_commitment_calls(&self) -> Vec<(String, serde_json::Value)> {
@@ -136,17 +139,17 @@ impl NetworkClient for MockNetworkClient {
         Ok(commitment_hex)
     }
 
-    async fn verify_state(
+    async fn verify_commitment(
         &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> StdResult<StateVerification, String> {
-        self.verify_state_calls
+        self.verify_commitment_calls
             .lock()
             .unwrap()
-            .push((account_id.to_string(), state_json.clone()));
+            .push((account_id.to_string(), expected_commitment.to_string()));
 
-        self.verify_state_responses
+        self.verify_commitment_responses
             .lock()
             .unwrap()
             .pop()

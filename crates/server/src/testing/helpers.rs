@@ -67,28 +67,20 @@ impl NetworkClient for IntegrationMockNetworkClient {
         Ok(local_commitment_hex)
     }
 
-    async fn verify_state(
+    async fn verify_commitment(
         &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> Result<StateVerification, String> {
-        use miden_protocol::account::Account;
-
-        let account = Account::from_json(state_json)
-            .map_err(|e| format!("Failed to deserialize account: {e}"))?;
-
-        let local_commitment = account.to_commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
-
         let mut commitments = self.initial_commitments.lock().expect("commitments lock");
         if let Some(on_chain_commitment) = commitments.get(account_id) {
-            if &local_commitment_hex != on_chain_commitment {
+            if expected_commitment != on_chain_commitment {
                 return Ok(StateVerification::Mismatch {
                     on_chain: on_chain_commitment.clone(),
                 });
             }
         } else {
-            commitments.insert(account_id.to_string(), local_commitment_hex.clone());
+            commitments.insert(account_id.to_string(), expected_commitment.to_string());
         }
 
         Ok(StateVerification::Match)

@@ -143,12 +143,10 @@ impl DeltasProcessorBase {
         metrics::gauge!(crate::metrics::names::CANONICALIZATION_PASS_ACCOUNTS)
             .set(account_ids.len() as f64);
 
-        // Accounts overlap with bounded concurrency — the per-account cost
-        // is dominated by the Miden RPC round trip, so a sequential pass
-        // wastes almost its entire wall clock waiting. Candidates within
-        // an account stay strictly sequential (nonce order) inside
-        // `process_account`, and every custody write remains individually
-        // fenced, so correctness does not depend on this bound.
+        // Account concurrency overlaps independent RPC waits; synchronous
+        // reconstruction is separately bounded by `Reconstructor`. Candidates
+        // within one account stay strictly sequential (nonce order), and every
+        // custody write remains individually fenced.
         let accounts = account_ids.len();
         let failed_accounts = futures::stream::iter(account_ids)
             .map(|account_id| async move { self.process_account_absorbing(&account_id).await })
@@ -259,18 +257,19 @@ impl DeltasProcessorBase {
             })?;
 
         let (new_state_json, recomputed_commitment) = {
-            let client = &self.state.network_client;
-            client
-                .apply_delta(&current_state.state_json, &delta.delta_payload)
-                .map_err(GuardianError::InvalidDelta)?
+            let client = self.state.network_client.clone();
+            let prev_state_json = current_state.state_json;
+            let delta_payload = Arc::new(delta.delta_payload.clone());
+            crate::network::reconstructor()
+                .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+                .await?
         };
 
-        let verify_result = {
-            let client = &self.state.network_client;
-            client
-                .verify_state(&delta.account_id, &new_state_json)
-                .await
-        };
+        let verify_result = self
+            .state
+            .network_client
+            .verify_commitment(&delta.account_id, &recomputed_commitment)
+            .await;
 
         match verify_result {
             // Verification proved the recomputed commitment is what the
@@ -926,13 +925,15 @@ mod tests {
                 .with_submit_delta(Ok(())),
         );
 
-        let mock_network = MockNetworkClient::new()
-            .with_apply_delta(Ok((
-                serde_json::json!({"new": "state"}),
-                "new_commitment".to_string(),
-            )))
-            .with_verify_state(Ok(StateVerification::Match))
-            .with_should_update_auth(Ok(None));
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None)),
+        );
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -942,7 +943,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(mock_network),
+            mock_network.clone(),
             Arc::new(mock_metadata),
         );
 
@@ -952,6 +953,10 @@ mod tests {
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
         assert_eq!(storage.get_submit_state_calls().len(), 1);
+        assert_eq!(
+            mock_network.get_verify_commitment_calls(),
+            vec![(account_id.to_string(), "new_commitment".to_string())],
+        );
     }
 
     #[tokio::test]
@@ -1068,7 +1073,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1117,7 +1122,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1159,7 +1164,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1196,7 +1201,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1239,7 +1244,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "prev_commitment".to_string(),
             }));
 
@@ -1288,7 +1293,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1346,7 +1351,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1401,7 +1406,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1459,7 +1464,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Absent));
+            .with_verify_commitment(Ok(StateVerification::Absent));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1528,15 +1533,15 @@ mod tests {
 
         let mock_network = MockNetworkClient::new()
             // tick 3: diverged again
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }))
             // tick 2: back at the candidate's base
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "prev_commitment".to_string(),
             }))
             // tick 1: diverged
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1593,7 +1598,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1639,7 +1644,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "recomputed_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1696,7 +1701,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "recomputed_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1784,7 +1789,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(Some(new_auth)));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1934,7 +1939,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1976,7 +1981,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -2085,7 +2090,7 @@ mod tests {
                     serde_json::json!({"new": "state"}),
                     "new_commitment".to_string(),
                 )))
-                .with_verify_state(Ok(StateVerification::Match))
+                .with_verify_commitment(Ok(StateVerification::Match))
                 .with_should_update_auth(Ok(None));
             metadata = metadata
                 .with_get(Ok(Some(create_test_metadata(account_id))))
@@ -2174,7 +2179,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
         let metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -2308,7 +2313,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
         let metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
             .with_get(Ok(Some(create_test_metadata(account_id))))
