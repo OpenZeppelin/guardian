@@ -270,6 +270,7 @@ component schemas.
 | client | `GET /delta/proposal` | signed headers | List pending proposals |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
+| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
 | dashboard | `GET /auth/challenge` | public | Operator login challenge |
 | dashboard | `POST /auth/verify` | public | Verify challenge, establish session |
 | dashboard | `POST /auth/logout` | session | Invalidate the operator session |

@@ -278,7 +278,8 @@ pub struct MockStorageBackend {
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
-    pub delete_delta_if_candidate_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
+    pub request_candidate_abandon_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::AbandonIntent, String>>>>,
     pub update_delta_status_calls:
         Arc<StdMutex<Vec<(String, u64, crate::delta_object::DeltaStatus)>>>,
     // Canonicalization lifecycle writes. When a scripted outcome is
@@ -432,8 +433,11 @@ impl MockStorageBackend {
         self.delete_delta_proposal_calls.lock().unwrap().clone()
     }
 
-    pub fn with_delete_delta_if_candidate(self, response: StdResult<bool, String>) -> Self {
-        self.delete_delta_if_candidate_responses
+    pub fn with_request_candidate_abandon(
+        self,
+        response: StdResult<crate::storage::AbandonIntent, String>,
+    ) -> Self {
+        self.request_candidate_abandon_responses
             .lock()
             .unwrap()
             .push(response);
@@ -726,22 +730,17 @@ impl StorageBackend for MockStorageBackend {
         Ok(())
     }
 
-    async fn delete_delta_if_candidate(
+    async fn request_candidate_abandon(
         &self,
-        account_id: &str,
-        nonce: u64,
-    ) -> Result<bool, String> {
-        // Recorded alongside plain deletes so existing call asserts cover
-        // both removal paths.
-        self.delete_delta_calls
-            .lock()
-            .unwrap()
-            .push((account_id.to_string(), nonce));
-        self.delete_delta_if_candidate_responses
+        _account_id: &str,
+        _nonce: u64,
+        _now: &str,
+    ) -> Result<crate::storage::AbandonIntent, String> {
+        self.request_candidate_abandon_responses
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or(Ok(true))
+            .unwrap_or(Ok(crate::storage::AbandonIntent::Recorded))
     }
 
     async fn update_delta_status(

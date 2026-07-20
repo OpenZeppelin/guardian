@@ -250,7 +250,8 @@ impl Guardian for MockGuardianService {
                     message: String::new(),
                     account_id: data.account_id,
                     nonce: data.nonce,
-                    abandoned_at: "2026-07-14T12:00:00Z".to_string(),
+                    state: "pending".to_string(),
+                    abandon_requested_at: "2026-07-14T12:00:00Z".to_string(),
                     error_code: String::new(),
                 })
             });

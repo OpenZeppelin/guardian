@@ -155,6 +155,17 @@ pub enum CanonicalWrite {
     NotCandidate,
 }
 
+/// Outcome of recording a client abandon request on a candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbandonIntent {
+    /// The request timestamp was recorded; the delta remains a candidate.
+    Recorded,
+    /// The candidate already carries an abandon request; nothing written.
+    AlreadyRequested { requested_at: String },
+    /// The delta is absent or no longer a candidate; nothing written.
+    NotCandidate,
+}
+
 /// Outcome of a candidate submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateSubmission {
@@ -399,15 +410,19 @@ pub trait StorageBackend: Send + Sync {
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;
-    /// Atomically delete the delta at `nonce` only if it is still a
-    /// candidate. Returns whether a candidate row was deleted; `Ok(false)`
-    /// means the delta is absent or no longer a candidate. This is the
-    /// linearization point for client-initiated abandons (issue #319): the
-    /// status check and the delete are a single atomic step, so a delta
-    /// the canonicalization worker concurrently flipped to canonical can
-    /// never be deleted by an abandon.
-    async fn delete_delta_if_candidate(&self, account_id: &str, nonce: u64)
-    -> Result<bool, String>;
+    /// Atomically record a client's abandon request (issue #319) on the
+    /// candidate at `nonce`: sets `abandon_requested_at` while preserving
+    /// every worker-owned counter, only while the delta is still a
+    /// candidate. Unfenced by design — the write is a non-destructive
+    /// annotation; the lease-holding worker resolves the intent. An
+    /// existing request timestamp is kept so retries cannot restart the
+    /// abandon quarantine.
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String>;
     async fn update_delta_status(
         &self,
         account_id: &str,

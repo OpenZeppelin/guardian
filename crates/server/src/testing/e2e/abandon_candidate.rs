@@ -16,9 +16,11 @@
 //! 3. Run the canonicalization worker and assert the candidate survives
 //!    (submission grace period), then assert a new proposal is refused
 //!    with `ConflictPendingDelta` — the issue's 409 loop.
-//! 4. Abandon the candidate via the new client-initiated service and
-//!    assert the delta is deleted, the metadata flag cleared, and the
-//!    SAME proposal is accepted immediately afterwards.
+//! 4. Record the abandon intent via the client-initiated service (202
+//!    semantics: the account stays locked), run the worker to resolve the
+//!    quarantine, and assert the delta transitions to
+//!    `Discarded { reason: ClientAbandoned }` (kept as history), the flag
+//!    clears, and the SAME proposal is accepted afterwards.
 //!
 //! A second test covers the safety guard: when the registered on-chain
 //! answer equals the candidate's expected post-state (the transaction
@@ -51,9 +53,9 @@ use crate::metadata::auth::{Auth, Credentials};
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
 use crate::services::{
-    AbandonCandidateParams, ConfigureAccountParams, PushDeltaParams, PushDeltaProposalParams,
-    abandon_candidate, configure_account, process_canonicalizations_now, push_delta,
-    push_delta_proposal,
+    AbandonCandidateParams, AbandonState, ConfigureAccountParams, PushDeltaParams,
+    PushDeltaProposalParams, abandon_candidate, configure_account, process_canonicalizations_now,
+    push_delta, push_delta_proposal,
 };
 use crate::state::AppState;
 use crate::testing::helpers::{IntegrationMockNetworkClient, create_test_app_state};
@@ -330,8 +332,9 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         "expected ConflictPendingDelta, got {refused:?}"
     );
 
-    // The fix: the client knows its transaction died and abandons the
-    // candidate, releasing the account immediately.
+    // The fix: the client knows its transaction died and records the
+    // abandon intent. The account stays locked until the worker resolves
+    // the quarantine.
     let creds = setup.credentials();
     let abandoned = abandon_candidate(
         &setup.state,
@@ -342,8 +345,32 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         },
     )
     .await
-    .expect("abandon_candidate succeeds for a never-landing candidate");
+    .expect("abandon_candidate accepts the intent for a never-landing candidate");
     assert_eq!(abandoned.nonce, setup.candidate_nonce);
+    assert_eq!(abandoned.state, AbandonState::Pending);
+    assert!(abandoned.abandon_requested_at.is_some());
+
+    // Still locked: intent alone releases nothing.
+    let creds = setup.credentials();
+    let still_refused = push_delta_proposal(
+        &setup.state,
+        PushDeltaProposalParams {
+            account_id: setup.account_id_hex.clone(),
+            nonce: setup.candidate_nonce + 1,
+            delta_payload: proposal_payload.clone(),
+            credentials: creds,
+        },
+    )
+    .await
+    .expect_err("account must stay locked until the worker resolves the intent");
+    assert!(matches!(still_refused, GuardianError::ConflictPendingDelta));
+
+    // The worker resolves the intent (the e2e worker runs with a zero
+    // quarantine): the delta becomes Discarded { ClientAbandoned } —
+    // preserved as history — and the account is released.
+    process_canonicalizations_now(&setup.state)
+        .await
+        .expect("canonicalization run succeeds");
 
     let deltas = setup
         .state
@@ -351,9 +378,14 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         .pull_deltas_after(&setup.account_id_hex, 0)
         .await
         .expect("deltas readable");
+    let resolved = deltas
+        .iter()
+        .find(|d| d.nonce == setup.candidate_nonce)
+        .expect("abandoned delta must be preserved as history");
     assert!(
-        !deltas.iter().any(|d| d.nonce == setup.candidate_nonce),
-        "abandoned candidate delta must be deleted"
+        resolved.status.is_client_abandoned(),
+        "delta must be discarded as client-abandoned, got {:?}",
+        resolved.status
     );
     let metadata = setup
         .state
@@ -364,7 +396,7 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         .expect("metadata present");
     assert!(
         !metadata.has_pending_candidate,
-        "pending-candidate flag must be cleared by the abandon"
+        "pending-candidate flag must be cleared by the resolution"
     );
 
     // The SAME proposal that was refused moments ago is now accepted —

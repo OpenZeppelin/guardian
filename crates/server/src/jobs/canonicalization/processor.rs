@@ -45,7 +45,14 @@ pub trait Processor: Send + Sync {
     async fn process_account(&self, account_id: &str) -> Result<()>;
 }
 
-use super::removal::record_candidate_outcome;
+/// Record one candidate-processing outcome.
+fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
+    metrics::counter!(
+        crate::metrics::names::CANONICALIZATION_CANDIDATES_TOTAL,
+        crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
+    )
+    .increment(1);
+}
 
 fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
     let mut candidates: Vec<DeltaObject> = deltas
@@ -64,6 +71,8 @@ struct DeltasProcessorBase {
     max_retries: u32,
     submission_grace_period_seconds: u64,
     divergence_confirmations: u32,
+    abandon_quarantine_seconds: u64,
+    abandon_quarantine_checks: u32,
 }
 
 impl DeltasProcessorBase {
@@ -175,13 +184,12 @@ impl DeltasProcessorBase {
 
         let candidates = get_candidates(&all_deltas);
 
-        // Heal a stale pending-candidate flag: the flag can be left set when
-        // a best-effort flag-clear fails after the candidate delta was
-        // already deleted (e.g. in `remove_candidate`). Without this, the
-        // account stays in `list_with_pending_candidates` and is rescanned
-        // on every tick forever. The helper re-reads the delta store after
-        // clearing and restores the flag if a candidate was committed
-        // concurrently.
+        // Heal a stale pending-candidate flag: the flag can be left set
+        // when a best-effort flag-clear fails after the candidate delta
+        // was already removed. Without this, the account stays in
+        // `list_with_pending_candidates` and is rescanned on every tick
+        // forever. The conditional clear re-checks the delta store, so a
+        // candidate committed concurrently is never masked.
         if candidates.is_empty() && account_metadata.has_pending_candidate {
             tracing::warn!(
                 account_id = %account_id,
@@ -189,8 +197,11 @@ impl DeltasProcessorBase {
                  exists; clearing stale flag"
             );
             let now = self.state.clock.now_rfc3339();
-            if let Err(e) =
-                super::removal::clear_pending_candidate_flag(&self.state, account_id, &now).await
+            if let Err(e) = self
+                .state
+                .metadata
+                .clear_pending_candidate_if_none(account_id, &now)
+                .await
             {
                 tracing::warn!(
                     account_id = %account_id,
@@ -286,12 +297,18 @@ impl DeltasProcessorBase {
                 self.handle_diverged_candidate(delta, &on_chain).await
             }
             // On-chain still shows the candidate's base state: the
-            // transaction simply has not landed yet. Defer within the
-            // grace period, then consume retry budget, as before. This
-            // read also proves any earlier diverged observation was
-            // stale, so the divergence streak starts over.
+            // transaction simply has not landed yet. This read also proves
+            // any earlier diverged observation was stale, so the
+            // divergence streak starts over. A client abandon request is
+            // resolved on this arm — an at-base observation is exactly the
+            // evidence the abandon quarantine counts — and takes
+            // precedence over the grace/retry deferral, which would
+            // otherwise hold the abandon for the full grace window.
             Ok(StateVerification::Mismatch { on_chain }) => {
                 let delta = self.reset_divergence_streak(delta).await?;
+                if delta.status.abandon_requested_at().is_some() {
+                    return self.handle_abandon_confirmation(delta).await;
+                }
                 self.handle_unverified_candidate(
                     delta,
                     &format!("on-chain commitment still at candidate base {on_chain}"),
@@ -303,6 +320,172 @@ impl DeltasProcessorBase {
             // untouched and the grace/retry behavior applies.
             Err(e) => self.handle_unverified_candidate(delta, &e).await,
         }
+    }
+
+    /// Count one at-base observation toward resolving a client abandon
+    /// request (issue #319), and finalize once the quarantine is
+    /// satisfied: enough consecutive at-base observations AND enough wall
+    /// time since the request for a late-landing transaction to surface.
+    async fn handle_abandon_confirmation(&self, delta: DeltaObject) -> Result<()> {
+        let requested_at = delta
+            .status
+            .abandon_requested_at()
+            .unwrap_or_default()
+            .to_string();
+        let confirmations = delta.status.abandon_confirm_count() + 1;
+
+        let now = self.state.clock.now();
+        let request_age_seconds = DateTime::parse_from_rfc3339(&requested_at)
+            .map(|at| {
+                now.signed_duration_since(at.with_timezone(&Utc))
+                    .num_seconds()
+                    .max(0) as u64
+            })
+            .unwrap_or(u64::MAX);
+
+        if confirmations >= self.abandon_quarantine_checks
+            && request_age_seconds >= self.abandon_quarantine_seconds
+        {
+            return self.finalize_abandoned_candidate(delta).await;
+        }
+
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            confirmations,
+            abandon_quarantine_checks = self.abandon_quarantine_checks,
+            request_age_seconds,
+            abandon_quarantine_seconds = self.abandon_quarantine_seconds,
+            "Abandon requested and on-chain still at candidate base; \
+             deferring until the quarantine is satisfied"
+        );
+
+        let new_status = delta.status.with_incremented_abandon_confirm();
+        let outcome = self
+            .state
+            .storage
+            .update_candidate_status(
+                &delta.account_id,
+                delta.nonce,
+                new_status,
+                self.fence().as_ref(),
+            )
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to update delta status: {e}"))
+            })?;
+        match outcome {
+            CanonicalWrite::Applied => {}
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "abandon_confirm"),
+        }
+
+        Ok(())
+    }
+
+    /// Resolve a confirmed abandon: finalize the matching proposal first,
+    /// transition the delta to `Discarded { reason: ClientAbandoned }`
+    /// (kept as history), then release the pending-candidate flag. Any
+    /// cleanup failure leaves the candidate in place for the next worker
+    /// run to retry.
+    async fn finalize_abandoned_candidate(&self, delta: DeltaObject) -> Result<()> {
+        let storage_backend = self.state.storage.clone();
+
+        let proposal_id = {
+            let client = self.state.network_client.lock().await;
+            client.delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload)
+        };
+        match proposal_id {
+            Ok(id) => {
+                match storage_backend
+                    .pull_delta_proposal(&delta.account_id, &id)
+                    .await
+                {
+                    Ok(_existing) => {
+                        if let Err(e) = storage_backend
+                            .delete_delta_proposal(&delta.account_id, &id)
+                            .await
+                        {
+                            tracing::warn!(
+                                account_id = %delta.account_id,
+                                proposal_id = %id,
+                                error = %e,
+                                "Failed to delete proposal for abandoned candidate; \
+                                 retrying on the next worker run"
+                            );
+                            return Ok(());
+                        }
+                    }
+                    Err(e) if crate::storage::is_storage_not_found(&e) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            account_id = %delta.account_id,
+                            proposal_id = %id,
+                            error = %e,
+                            "Failed to check proposal for abandoned candidate; \
+                             retrying on the next worker run"
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %e,
+                    "Could not derive proposal id for abandoned candidate; \
+                     retrying on the next worker run"
+                );
+                return Ok(());
+            }
+        }
+
+        let now = self.state.clock.now_rfc3339();
+        let outcome = self
+            .state
+            .storage
+            .update_candidate_status(
+                &delta.account_id,
+                delta.nonce,
+                DeltaStatus::discarded_client_abandoned(now.clone()),
+                self.fence().as_ref(),
+            )
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to discard abandoned delta: {e}"))
+            })?;
+        match outcome {
+            CanonicalWrite::Applied => {}
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => {
+                Self::log_not_candidate(&delta, "abandon_finalize");
+                return Ok(());
+            }
+        }
+
+        if let Err(e) = self
+            .state
+            .metadata
+            .clear_pending_candidate_if_none(&delta.account_id, &now)
+            .await
+        {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                error = %e,
+                "Failed to clear has_pending_candidate flag after abandon; \
+                 the stale-flag heal clears it on a later run"
+            );
+        }
+
+        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Abandoned);
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            "Client-abandoned candidate discarded; account released"
+        );
+
+        Ok(())
     }
 
     /// Reset a candidate's persisted divergence streak after a read showed
@@ -749,6 +932,8 @@ impl DeltasProcessor {
                 max_retries: config.max_retries,
                 submission_grace_period_seconds: config.submission_grace_period_seconds,
                 divergence_confirmations: config.divergence_confirmations,
+                abandon_quarantine_seconds: config.abandon_quarantine_seconds,
+                abandon_quarantine_checks: config.abandon_quarantine_checks,
             },
         }
     }
@@ -778,6 +963,8 @@ impl TestDeltasProcessor {
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
                 submission_grace_period_seconds: 0,
                 divergence_confirmations: u32::MAX, // ...nor on divergence
+                abandon_quarantine_seconds: 0,      // ...and resolves abandons immediately
+                abandon_quarantine_checks: 1,
             },
         }
     }
@@ -1243,6 +1430,251 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_abandon_intent_confirms_and_bypasses_grace() {
+        // A candidate with a recorded abandon intent, observed still at
+        // its base INSIDE the submission grace period: the abandon
+        // quarantine takes precedence over the grace deferral, so a
+        // confirmation is persisted instead of nothing happening.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        // 5s after the request: age is far under the 600s grace AND under
+        // the quarantine, and only one at-base observation exists — defer,
+        // but persist the confirmation.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(
+            status_writes.len(),
+            1,
+            "the abandon confirmation must be persisted despite the grace period"
+        );
+        let (_, _, written) = &status_writes[0];
+        assert!(written.is_candidate(), "status must remain candidate");
+        assert_eq!(written.abandon_confirm_count(), 1);
+        assert_eq!(written.abandon_requested_at(), Some("2024-01-01T00:00:00Z"));
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_finalizes_after_quarantine() {
+        // Quarantine satisfied: enough consecutive at-base confirmations
+        // and enough wall time since the request. The delta transitions to
+        // Discarded { reason: ClientAbandoned } — preserved as history —
+        // and the pending-candidate flag is released.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string())
+            .with_incremented_abandon_confirm();
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        // 60s after the request: second at-base observation, age >= 30s.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 1, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1, "exactly the discard transition");
+        let (_, _, written) = &status_writes[0];
+        assert!(
+            written.is_client_abandoned(),
+            "delta must be discarded as client-abandoned, got {written:?}"
+        );
+        // History preserved, not deleted.
+        assert!(storage.get_delete_delta_calls().is_empty());
+        // The pending-candidate flag was released.
+        let set_calls = metadata.get_set_calls();
+        assert!(
+            set_calls.iter().any(|m| !m.has_pending_candidate),
+            "flag must be cleared after the abandon finalizes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_abandon_quarantine_waits_for_request_age() {
+        // Confirmation count is satisfied but the request is too fresh:
+        // the quarantine keeps waiting so a late-landing transaction can
+        // still surface.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string())
+            .with_incremented_abandon_confirm();
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        // Only 10s after the request: under the 30s quarantine.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 10).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        let (_, _, written) = &status_writes[0];
+        assert!(written.is_candidate(), "must still be a candidate");
+        assert_eq!(written.abandon_confirm_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_landed_candidate_canonicalizes_despite_abandon_intent() {
+        // The transaction landed while the abandon was pending: the landed
+        // outcome wins — the delta canonicalizes exactly as without intent.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_state(Ok(StateVerification::Match));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 1, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let submitted = storage.get_submit_delta_calls();
+        assert!(
+            submitted.iter().any(|d| d.status.is_canonical()),
+            "the landed delta must canonicalize despite the abandon intent"
+        );
+    }
+
+    #[tokio::test]
     async fn test_diverged_candidate_first_observation_defers() {
         // On-chain matches neither the candidate's base nor its expected new
         // commitment. A single observation could be a stale RPC read, so the
@@ -1307,6 +1739,8 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             retry_count: 0,
             divergence_count: 1,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         };
 
         let storage = Arc::new(
@@ -1423,6 +1857,8 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             retry_count: 0,
             divergence_count: 1,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         };
 
         // Response queues are LIFO (`Vec::pop`), so tick 3's responses are

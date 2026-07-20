@@ -487,6 +487,8 @@ await multisig.executeProposal(signedProposal.id);
 | `fetchState()` | Fetch latest state from GUARDIAN |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
 | `syncProposals()` | Sync proposals from GUARDIAN |
+| `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
+| `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, nonce?)` | Create transfer proposal |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
@@ -747,6 +749,8 @@ for note in notes {
 | `list_proposals()` | List pending proposals |
 | `sign_proposal(id)` | Sign a proposal |
 | `execute_proposal(id)` | Execute ready proposal |
+| `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
+| `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |

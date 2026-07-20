@@ -151,6 +151,23 @@ for (const p of proposals) {
 }
 ```
 
+### Recover From a Dead Transaction (Abandon)
+
+If an approved transaction died client-side after guardian approval, the
+candidate keeps the account locked on GUARDIAN. Record an abandon intent
+and poll for the resolution:
+
+```typescript
+const accepted = await multisig.abandonCandidate(nonce);
+console.log(accepted.state); // 'pending'
+
+// The guardian's worker confirms over a short quarantine (typically well
+// under a minute) that the transaction did not land, then releases the
+// account.
+const status = await multisig.abandonStatus(nonce);
+// 'waiting' | 'landed' | 'abandoned' | 'unexpected'
+```
+
 ### Check Proposal Status
 
 Returns cached proposals without making a network request:

@@ -106,8 +106,14 @@ pub struct AbandonCandidateRequest {
 pub struct AbandonCandidateResponse {
     pub account_id: String,
     pub nonce: u64,
-    /// RFC 3339 UTC timestamp of the release.
-    pub abandoned_at: String,
+    /// `"pending"` while the worker still has to resolve the intent
+    /// (the account stays locked until then); `"abandoned"` once the
+    /// delta is discarded as client-abandoned and the account released.
+    pub state: String,
+    /// RFC 3339 UTC timestamp of the recorded abandon request. Retries
+    /// return the original timestamp; absent once resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandon_requested_at: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -468,17 +474,21 @@ pub async fn push_delta_proposal(
     }))
 }
 
-/// Abandon a pending canonicalization candidate whose transaction will
-/// never land on-chain, releasing the account immediately instead of
-/// holding it for the full submission grace period plus retry budget
-/// (issue #319).
+/// Request abandonment of a pending canonicalization candidate whose
+/// transaction will never land on-chain (issue #319).
 ///
-/// The call is the client's assertion that the transaction is dead. It is
-/// refused with `GUARDIAN_CANDIDATE_LANDED` (409) when the on-chain state
-/// already matches the candidate's expected state — the transaction
-/// landed and the worker will canonicalize it shortly. A retry after a
-/// 5xx that returns `delta_not_found` (404) means the abandon already
-/// succeeded: the candidate delta was deleted and the account released.
+/// The request records an abandon *intent* and returns `202 Accepted`;
+/// the delta stays a candidate — the account stays locked — until the
+/// canonicalization worker confirms over the abandon quarantine that the
+/// transaction did not land, then discards the delta as
+/// `client_abandoned` and releases the account (typically well under a
+/// minute, versus the full submission grace + retry window).
+///
+/// Refused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction
+/// already landed. Retries are idempotent and preserve the original
+/// request timestamp. Poll `GET /delta` for the resolution: still
+/// `candidate` → waiting; `canonical` → landed after all; `discarded`
+/// with reason `client_abandoned` → abandoned.
 #[utoipa::path(
     post,
     path = "/delta/candidate/abandon",
@@ -486,18 +496,17 @@ pub async fn push_delta_proposal(
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     request_body = AbandonCandidateRequest,
     responses(
-        (status = 200, description = "Candidate abandoned; account released", body = AbandonCandidateResponse),
+        (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
         (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
-        (status = 502, description = "On-chain state could not be verified; retry", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn abandon_candidate(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<AbandonCandidateRequest>,
-) -> Result<Json<AbandonCandidateResponse>, GuardianError> {
+) -> Result<(StatusCode, Json<AbandonCandidateResponse>), GuardianError> {
     let request_payload =
         request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
 
@@ -508,11 +517,15 @@ pub async fn abandon_candidate(
     };
 
     let response = services::abandon_candidate(&state, params).await?;
-    Ok(Json(AbandonCandidateResponse {
-        account_id: response.account_id,
-        nonce: response.nonce,
-        abandoned_at: response.abandoned_at,
-    }))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AbandonCandidateResponse {
+            account_id: response.account_id,
+            nonce: response.nonce,
+            state: response.state.as_str().to_string(),
+            abandon_requested_at: response.abandon_requested_at,
+        }),
+    ))
 }
 
 /// List all in-flight multisig proposals for an account.
@@ -952,18 +965,18 @@ mod tests {
             nonce: 1,
         };
         let credentials = signed_credentials(&signer, &account_id, &request);
-        let Json(response) =
+        let (status, Json(response)) =
             abandon_candidate(State(state), AuthHeader(credentials), Json(request))
                 .await
                 .expect("abandon_candidate should succeed");
 
+        assert_eq!(status, StatusCode::ACCEPTED);
         assert_eq!(response.account_id, account_id);
         assert_eq!(response.nonce, 1);
-        assert!(!response.abandoned_at.is_empty());
-        assert_eq!(
-            storage.get_delete_delta_calls(),
-            vec![(account_id.clone(), 1)]
-        );
+        assert_eq!(response.state, "pending");
+        assert!(response.abandon_requested_at.is_some());
+        // Intent only: nothing is deleted at request time.
+        assert!(storage.get_delete_delta_calls().is_empty());
     }
 
     #[tokio::test]

@@ -26,9 +26,9 @@ use super::names::{
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
-    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
-    GlobalProposalCursor, LeaseFence, ProposalRecord, StorageBackend, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, ProposalRecord, StorageBackend, StorageType,
 };
 
 /// Record one storage operation: duration histogram plus an
@@ -204,14 +204,15 @@ impl StorageBackend for InstrumentedStorage {
         timed("delete_delta", self.inner.delete_delta(account_id, nonce)).await
     }
 
-    async fn delete_delta_if_candidate(
+    async fn request_candidate_abandon(
         &self,
         account_id: &str,
         nonce: u64,
-    ) -> Result<bool, String> {
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
         timed(
-            "delete_delta_if_candidate",
-            self.inner.delete_delta_if_candidate(account_id, nonce),
+            "request_candidate_abandon",
+            self.inner.request_candidate_abandon(account_id, nonce, now),
         )
         .await
     }

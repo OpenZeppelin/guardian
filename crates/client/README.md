@@ -23,6 +23,30 @@ let client = GuardianClient::connect("http://localhost:50051")
     .with_signer(signer);
 ```
 
+### Abandoning a Stuck Candidate
+
+If an approved transaction dies client-side after guardian approval (RPC
+submit failure, prover timeout, crash), its candidate delta keeps the
+account locked — new proposals are answered `409 conflict_pending_delta` —
+until the server's grace period and retry budget run out. Only the client
+knows the transaction will never land:
+
+```rust
+// Records an abandon intent; the guardian's worker confirms over a short
+// quarantine that the tx did not land, then releases the account.
+let response = client.abandon_candidate(&account_id, nonce).await?;
+assert_eq!(response.state, "pending");
+
+// Poll the delta for the resolution: still `candidate` -> waiting,
+// `canonical` -> the tx landed after all, `discarded` with reason
+// `client_abandoned` -> the account is released.
+let delta = client.get_delta(&account_id, nonce).await?;
+```
+
+Retries are idempotent (the original request timestamp is preserved). The
+server refuses with `GUARDIAN_CANDIDATE_LANDED` when the transaction
+demonstrably landed.
+
 ## Authentication
 
 The client uses Falcon Poseidon2 signatures for authenticated requests. Here is how to set it up:

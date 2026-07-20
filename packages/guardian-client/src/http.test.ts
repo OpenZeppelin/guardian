@@ -458,7 +458,7 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('abandonCandidate', () => {
-    it('should abandon a pending candidate and map the response to camelCase', async () => {
+    it('should record an abandon intent and map the response to camelCase', async () => {
       client.setSigner(mockSigner);
 
       mockFetch.mockResolvedValueOnce({
@@ -466,7 +466,8 @@ describe('GuardianHttpClient', () => {
         json: async () => ({
           account_id: '0x' + 'a'.repeat(30),
           nonce: 7,
-          abandoned_at: '2026-07-14T12:00:00Z',
+          state: 'pending',
+          abandon_requested_at: '2026-07-14T12:00:00Z',
         }),
       });
 
@@ -475,7 +476,8 @@ describe('GuardianHttpClient', () => {
       expect(result).toEqual({
         accountId: '0x' + 'a'.repeat(30),
         nonce: 7,
-        abandonedAt: '2026-07-14T12:00:00Z',
+        state: 'pending',
+        abandonRequestedAt: '2026-07-14T12:00:00Z',
       });
 
       // Wire format is snake_case
@@ -536,6 +538,73 @@ describe('GuardianHttpClient', () => {
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(404);
       expect(error.code).toBe('delta_not_found');
+    });
+  });
+
+  describe('abandonStatus', () => {
+    const serverDelta = (status: object) => ({
+      account_id: '0x' + 'a'.repeat(30),
+      nonce: 7,
+      prev_commitment: '0x' + 'b'.repeat(64),
+      delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [] },
+      status,
+    });
+
+    it('classifies a still-pending candidate as waiting', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({ status: 'candidate', timestamp: '2026-07-14T12:00:00Z' }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('waiting');
+    });
+
+    it('classifies a canonicalized delta as landed', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({ status: 'canonical', timestamp: '2026-07-14T12:00:00Z' }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
+    });
+
+    it('classifies a client-abandoned discard as abandoned', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({
+            status: 'discarded',
+            timestamp: '2026-07-14T12:00:00Z',
+            reason: 'client_abandoned',
+          }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('abandoned');
+    });
+
+    it('classifies a reasonless discard and a missing delta as unexpected', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({ status: 'discarded', timestamp: '2026-07-14T12:00:00Z' }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            code: 'delta_not_found',
+            error: 'missing',
+          }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
     });
   });
 

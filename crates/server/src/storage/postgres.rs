@@ -5,9 +5,9 @@ use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
-    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
-    GlobalProposalCursor, LeaseFence, ProposalRecord, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, ProposalRecord, StorageType,
 };
 use async_trait::async_trait;
 use diesel::ConnectionError;
@@ -1277,29 +1277,69 @@ impl StorageBackend for PostgresService {
         Ok(())
     }
 
-    async fn delete_delta_if_candidate(
+    async fn request_candidate_abandon(
         &self,
         account_id: &str,
         nonce: u64,
-    ) -> Result<bool, String> {
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        use diesel::OptionalExtension;
+
         let mut conn = self
             .pool
             .get()
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        // Single conditional DELETE on the typed status column: the status
-        // check and the delete are one atomic statement, so a delta the
-        // worker concurrently canonicalizes cannot be deleted here.
-        let deleted = diesel::delete(deltas::table)
-            .filter(deltas::account_id.eq(account_id))
-            .filter(deltas::nonce.eq(nonce as i64))
-            .filter(deltas::status_kind.eq("candidate"))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| format!("Failed to delete candidate delta: {e}"))?;
+        let account_id = account_id.to_string();
+        let now = now.to_string();
 
-        Ok(deleted > 0)
+        // Row-locked read + conditional in-place JSONB update: the intent
+        // annotation touches only `abandon_requested_at`, so worker-owned
+        // counters in the same status blob are never overwritten, and the
+        // `status_kind` filter guarantees a concurrently promoted or
+        // discarded delta is left untouched.
+        conn.transaction::<AbandonIntent, diesel::result::Error, _>(|conn| {
+            async move {
+                let existing: Option<Option<String>> = deltas::table
+                    .filter(deltas::account_id.eq(&account_id))
+                    .filter(deltas::nonce.eq(nonce as i64))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .select(diesel::dsl::sql::<
+                        diesel::sql_types::Nullable<diesel::sql_types::Text>,
+                    >("status->>'abandon_requested_at'"))
+                    .for_update()
+                    .first(conn)
+                    .await
+                    .optional()?;
+
+                match existing {
+                    None => Ok(AbandonIntent::NotCandidate),
+                    Some(Some(requested_at)) => {
+                        Ok(AbandonIntent::AlreadyRequested { requested_at })
+                    }
+                    Some(None) => {
+                        diesel::update(deltas::table)
+                            .filter(deltas::account_id.eq(&account_id))
+                            .filter(deltas::nonce.eq(nonce as i64))
+                            .filter(deltas::status_kind.eq("candidate"))
+                            .set(
+                                deltas::status.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
+                                    "jsonb_set(status, '{abandon_requested_at}', to_jsonb(",
+                                )
+                                .bind::<diesel::sql_types::Text, _>(now)
+                                .sql("::text))")),
+                            )
+                            .execute(conn)
+                            .await?;
+                        Ok(AbandonIntent::Recorded)
+                    }
+                }
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to record abandon request: {e}"))
     }
 
     async fn update_delta_status(

@@ -21,7 +21,7 @@ export type ServerDeltaStatus =
   | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  | { status: 'discarded'; timestamp: string };
+  | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ServerProposalType =
   | 'add_signer'
@@ -145,7 +145,8 @@ export interface ServerAbandonCandidateRequest {
 export interface ServerAbandonCandidateResponse {
   account_id: string;
   nonce: number;
-  abandoned_at: string;
+  state: 'pending' | 'abandoned';
+  abandon_requested_at?: string;
 }
 
 export interface ServerSignProposalRequest {

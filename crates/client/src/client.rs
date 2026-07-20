@@ -399,13 +399,21 @@ impl GuardianClient {
         Ok(inner)
     }
 
-    /// Abandon a pending canonicalization candidate whose transaction will
-    /// never land on-chain (issue #319), releasing the account immediately
-    /// instead of waiting out the server's grace period and retry budget.
+    /// Request abandonment of a pending canonicalization candidate whose
+    /// transaction will never land on-chain (issue #319).
     ///
-    /// `nonce` pins the exact candidate (learned from the delta feed) so a
-    /// stale request cannot release a newer one. The server refuses with
-    /// `GUARDIAN_CANDIDATE_LANDED` when the transaction actually landed.
+    /// The request records an abandon *intent*: the delta stays a
+    /// candidate — the account stays locked — until the guardian's
+    /// canonicalization worker confirms over the abandon quarantine that
+    /// the transaction did not land, then discards the delta as
+    /// `client_abandoned` and releases the account (typically well under
+    /// a minute). Poll `get_delta` for the resolution; the returned
+    /// `state` is `"pending"` or, when already resolved, `"abandoned"`.
+    ///
+    /// `nonce` pins the exact candidate (learned from the delta feed).
+    /// The server refuses with `GUARDIAN_CANDIDATE_LANDED` when the
+    /// transaction actually landed. Retries are idempotent and preserve
+    /// the original request timestamp.
     pub async fn abandon_candidate(
         &mut self,
         account_id: &AccountId,

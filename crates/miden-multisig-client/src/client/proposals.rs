@@ -9,6 +9,30 @@ use guardian_shared::{ProposalSignature, ToJson};
 use miden_client::transaction::TransactionRequest;
 
 use super::{MultisigClient, ProposalResult};
+
+/// Immediate outcome of an abandon request (issue #319).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbandonRequestState {
+    /// The intent is recorded; GUARDIAN's worker resolves it after the
+    /// abandon quarantine. Poll [`MultisigClient::abandon_status`].
+    Pending,
+    /// The abandon was already resolved; the account is released.
+    Abandoned,
+}
+
+/// Resolution of an abandon request, as observed via the delta feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbandonStatus {
+    /// The delta is still a candidate; the quarantine is running.
+    Waiting,
+    /// The transaction landed after all; the delta canonicalized.
+    Landed,
+    /// The abandon completed; the delta is discarded as client-abandoned
+    /// and the account is released.
+    Abandoned,
+    /// The delta is missing or in a state no abandon flow produces.
+    Unexpected,
+}
 use crate::error::{MultisigError, Result};
 use crate::execution::{
     SignatureAdvice, SignatureInput, build_final_transaction_request, collect_signature_advice,
@@ -557,37 +581,81 @@ impl MultisigClient {
         }
     }
 
-    /// Abandons a pending canonicalization candidate whose transaction will
-    /// never land on-chain, releasing the account on GUARDIAN immediately.
+    /// Requests abandonment of a pending canonicalization candidate whose
+    /// transaction will never land on-chain (issue #319).
     ///
-    /// Call this after an approved transaction died client-side (RPC submit
-    /// failure, prover timeout, crash): from GUARDIAN's perspective such a
-    /// candidate is indistinguishable from one that is slowly proving, so
-    /// without this call the account stays locked — every new proposal
-    /// answered with `conflict_pending_delta` — until the server's
-    /// submission grace period and retry budget run out.
+    /// Call this after an approved transaction died client-side (RPC
+    /// submit failure, prover timeout, crash). The request records an
+    /// abandon *intent* on GUARDIAN; the account stays locked until the
+    /// guardian's canonicalization worker confirms over a short
+    /// quarantine (typically well under a minute) that the transaction
+    /// did not land, then releases the account. Poll [`Self::abandon_status`]
+    /// for the resolution.
     ///
     /// `nonce` pins the exact candidate to release; it is the nonce the
-    /// proposal was pushed with (committed account nonce + 1).
+    /// proposal was pushed with (committed account nonce + 1). Retries
+    /// are idempotent and preserve the original request timestamp.
     ///
     /// # Errors
     ///
     /// Returns an error if the candidate's transaction actually landed
-    /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will canonicalize
-    /// it shortly), if no candidate exists at this nonce, or if GUARDIAN
-    /// cannot be reached.
-    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<()> {
+    /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will
+    /// canonicalize it shortly), if no candidate exists at this nonce,
+    /// or if GUARDIAN cannot be reached.
+    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<AbandonRequestState> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
-        guardian_client
+        let response = guardian_client
             .abandon_candidate(&account_id, nonce)
             .await
             .map_err(|e| {
                 MultisigError::GuardianServer(format!("failed to abandon candidate: {}", e))
             })?;
 
-        Ok(())
+        Ok(match response.state.as_str() {
+            "abandoned" => AbandonRequestState::Abandoned,
+            _ => AbandonRequestState::Pending,
+        })
+    }
+
+    /// Polls GUARDIAN for the resolution of an abandon request made with
+    /// [`Self::abandon_candidate`].
+    pub async fn abandon_status(&mut self, nonce: u64) -> Result<AbandonStatus> {
+        let account_id = self.require_account()?.id();
+
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let response = match guardian_client.get_delta(&account_id, nonce).await {
+            Ok(response) => response,
+            // A missing delta is unexpected for an abandon in flight: the
+            // worker preserves an abandoned delta as discarded history.
+            Err(e) if e.to_string().to_lowercase().contains("not found") => {
+                return Ok(AbandonStatus::Unexpected);
+            }
+            Err(e) => {
+                return Err(MultisigError::GuardianServer(format!(
+                    "failed to poll abandon status: {}",
+                    e
+                )));
+            }
+        };
+
+        let Some(delta) = response.delta else {
+            return Ok(AbandonStatus::Unexpected);
+        };
+        let Some(status) = delta.status else {
+            return Ok(AbandonStatus::Unexpected);
+        };
+
+        use guardian_client::delta_status::Status as ProtoStatus;
+        Ok(match status.status {
+            Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
+            Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Landed,
+            Some(ProtoStatus::DiscardedAt(_)) if status.discard_reason == "client_abandoned" => {
+                AbandonStatus::Abandoned
+            }
+            _ => AbandonStatus::Unexpected,
+        })
     }
 }
 

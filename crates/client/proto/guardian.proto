@@ -135,6 +135,9 @@ message DeltaStatus {
     string canonical_at = 3;
     string discarded_at = 4;
   }
+  // Why a discarded delta was discarded ("client_abandoned"); empty for
+  // other statuses and for discards without a recorded reason.
+  string discard_reason = 5;
 }
 
 // Pending status with cosigner signatures
@@ -277,7 +280,12 @@ message AbandonDeltaCandidateResponse {
   string message = 2;
   string account_id = 3;
   uint64 nonce = 4;
-  // RFC 3339 UTC timestamp of the release.
-  string abandoned_at = 5;
-  string error_code = 6;
+  // "pending" while the worker still has to resolve the intent (the
+  // account stays locked until then); "abandoned" once the delta is
+  // discarded as client-abandoned and the account released.
+  string state = 5;
+  // RFC 3339 UTC timestamp of the recorded abandon request. Retries
+  // return the original timestamp; empty once resolved.
+  string abandon_requested_at = 6;
+  string error_code = 7;
 }

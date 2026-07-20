@@ -180,6 +180,8 @@ mod tests {
                 max_retries: 48,
                 submission_grace_period_seconds: 600,
                 divergence_confirmations: 2,
+                abandon_quarantine_seconds: 30,
+                abandon_quarantine_checks: 2,
             }),
             3,
             true,

@@ -3,7 +3,7 @@ use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
     GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
 };
 use crate::utils::normalize_commitment_hex;
@@ -623,36 +623,45 @@ impl StorageBackend for FilesystemService {
         Ok(())
     }
 
-    async fn delete_delta_if_candidate(
+    async fn request_candidate_abandon(
         &self,
         account_id: &str,
         nonce: u64,
-    ) -> Result<bool, String> {
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
         let path = self.get_delta_path(account_id, nonce);
 
-        // Read-check-delete under the delta write lock: status writes
-        // (`submit_delta`, `update_delta_status`) take the same lock, so a
-        // delta the worker concurrently flips to canonical cannot be
-        // deleted here.
+        // Read-check-write under the delta write lock: status writes
+        // (`submit_delta`, `update_delta_status`) take the same lock, so
+        // the intent annotation can neither clobber a concurrent status
+        // transition nor lose worker-owned counters.
         let _guard = self.delta_write_lock.lock().await;
 
         let content = match fs::read_to_string(&path).await {
             Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AbandonIntent::NotCandidate);
+            }
             Err(e) => return Err(format!("Failed to read delta file: {e}")),
         };
-        let delta: DeltaObject = serde_json::from_str(&content)
+        let mut delta: DeltaObject = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
 
         if !delta.status.is_candidate() {
-            return Ok(false);
+            return Ok(AbandonIntent::NotCandidate);
+        }
+        if let Some(requested_at) = delta.status.abandon_requested_at() {
+            return Ok(AbandonIntent::AlreadyRequested {
+                requested_at: requested_at.to_string(),
+            });
         }
 
-        fs::remove_file(&path)
-            .await
-            .map_err(|e| format!("Failed to delete delta file: {e}"))?;
+        delta.status = delta.status.with_abandon_requested(now.to_string());
+        let updated = serde_json::to_string_pretty(&delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+        self.write(&path, &updated).await?;
 
-        Ok(true)
+        Ok(AbandonIntent::Recorded)
     }
 
     async fn update_delta_status(
@@ -1099,7 +1108,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_delta_if_candidate_deletes_candidate() {
+    async fn test_request_candidate_abandon_records_intent() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
@@ -1110,16 +1119,51 @@ mod tests {
         delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
         storage.submit_delta(&delta).await.expect("submit works");
 
-        let deleted = storage
-            .delete_delta_if_candidate(account_id, 1)
+        let intent = storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
             .await
-            .expect("conditional delete works");
-        assert!(deleted);
-        assert!(storage.pull_delta(account_id, 1).await.is_err());
+            .expect("intent recording works");
+        assert_eq!(intent, AbandonIntent::Recorded);
+
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert!(stored.status.is_candidate(), "status must stay candidate");
+        assert_eq!(
+            stored.status.abandon_requested_at(),
+            Some("2024-11-14T12:05:00Z")
+        );
     }
 
     #[tokio::test]
-    async fn test_delete_delta_if_candidate_spares_canonical() {
+    async fn test_request_candidate_abandon_is_idempotent() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .await
+            .expect("first request works");
+        let retry = storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:09:00Z")
+            .await
+            .expect("retry works");
+        assert_eq!(
+            retry,
+            AbandonIntent::AlreadyRequested {
+                requested_at: "2024-11-14T12:05:00Z".to_string()
+            },
+            "retries must preserve the original request timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_spares_non_candidates() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
@@ -1130,26 +1174,27 @@ mod tests {
         let delta = create_test_delta(account_id, 1);
         storage.submit_delta(&delta).await.expect("submit works");
 
-        let deleted = storage
-            .delete_delta_if_candidate(account_id, 1)
+        let intent = storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
             .await
-            .expect("conditional delete works");
-        assert!(!deleted, "a canonical delta must not be deleted");
-        assert!(storage.pull_delta(account_id, 1).await.is_ok());
+            .expect("call works");
+        assert_eq!(intent, AbandonIntent::NotCandidate);
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert!(stored.status.is_canonical(), "canonical delta untouched");
     }
 
     #[tokio::test]
-    async fn test_delete_delta_if_candidate_missing_is_false() {
+    async fn test_request_candidate_abandon_missing_is_not_candidate() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
             .expect("Failed to create storage");
 
-        let deleted = storage
-            .delete_delta_if_candidate("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1)
+        let intent = storage
+            .request_candidate_abandon("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1, "now")
             .await
-            .expect("conditional delete works");
-        assert!(!deleted);
+            .expect("call works");
+        assert_eq!(intent, AbandonIntent::NotCandidate);
     }
 
     #[tokio::test]

@@ -34,7 +34,9 @@ mod sign_delta_proposal;
 mod status;
 pub mod unpause_account;
 
-pub use abandon_candidate::{AbandonCandidateParams, AbandonCandidateResult, abandon_candidate};
+pub use abandon_candidate::{
+    AbandonCandidateParams, AbandonCandidateResult, AbandonState, abandon_candidate,
+};
 
 pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,

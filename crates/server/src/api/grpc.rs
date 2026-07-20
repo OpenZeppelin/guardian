@@ -369,9 +369,9 @@ impl Guardian for GuardianService {
         }
     }
 
-    /// Abandon a pending canonicalization candidate whose transaction will
-    /// never land, releasing the account immediately (issue #319). Mirror
-    /// of HTTP `POST /delta/candidate/abandon`.
+    /// Request abandonment of a pending canonicalization candidate
+    /// (issue #319): records the intent; the worker resolves it after the
+    /// abandon quarantine. Mirror of HTTP `POST /delta/candidate/abandon`.
     async fn abandon_delta_candidate(
         &self,
         request: Request<AbandonDeltaCandidateRequest>,
@@ -388,10 +388,11 @@ impl Guardian for GuardianService {
         match services::abandon_candidate(&self.app_state, params).await {
             Ok(response) => Ok(Response::new(AbandonDeltaCandidateResponse {
                 success: true,
-                message: "Candidate abandoned; account released".to_string(),
+                message: "Abandon intent accepted".to_string(),
                 account_id: response.account_id,
                 nonce: response.nonce,
-                abandoned_at: response.abandoned_at,
+                state: response.state.as_str().to_string(),
+                abandon_requested_at: response.abandon_requested_at.unwrap_or_default(),
                 error_code: String::new(),
             })),
             Err(e) => Ok(Response::new(AbandonDeltaCandidateResponse {
@@ -399,7 +400,8 @@ impl Guardian for GuardianService {
                 message: e.to_string(),
                 account_id: data.account_id,
                 nonce: data.nonce,
-                abandoned_at: String::new(),
+                state: String::new(),
+                abandon_requested_at: String::new(),
                 error_code: e.code().to_string(),
             })),
         }
@@ -455,7 +457,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
             (Some(timestamp.clone()), Some(timestamp.clone()), None)
         }
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => {
+        crate::delta_object::DeltaStatus::Discarded { timestamp, .. } => {
             (None, None, Some(timestamp.clone()))
         }
     };
@@ -484,23 +486,34 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                         cosigner_sigs: proto_cosigner_sigs,
                     },
                 )),
+                discard_reason: String::new(),
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CandidateAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
         }),
         crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CanonicalAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
         }),
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => Some(DeltaStatusGrpc {
-            status: Some(guardian::delta_status::Status::DiscardedAt(
-                timestamp.clone(),
-            )),
-        }),
+        crate::delta_object::DeltaStatus::Discarded { timestamp, reason } => {
+            Some(DeltaStatusGrpc {
+                status: Some(guardian::delta_status::Status::DiscardedAt(
+                    timestamp.clone(),
+                )),
+                discard_reason: match reason {
+                    Some(crate::delta_object::DiscardReason::ClientAbandoned) => {
+                        "client_abandoned".to_string()
+                    }
+                    None => String::new(),
+                },
+            })
+        }
     };
 
     guardian::DeltaObject {
@@ -853,9 +866,12 @@ mod tests {
         assert!(response.success, "expected success: {}", response.message);
         assert_eq!(response.account_id, account_id);
         assert_eq!(response.nonce, 1);
-        assert!(!response.abandoned_at.is_empty());
+        assert_eq!(response.state, "pending");
+        assert!(!response.abandon_requested_at.is_empty());
         assert!(response.error_code.is_empty());
-        assert_eq!(storage.get_delete_delta_calls(), vec![(account_id, 1)]);
+        // Intent only: nothing is deleted at request time.
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let _ = account_id;
     }
 
     #[tokio::test]
@@ -882,7 +898,7 @@ mod tests {
 
         assert!(!response.success);
         assert_eq!(response.error_code, "GUARDIAN_CANDIDATE_LANDED");
-        assert!(response.abandoned_at.is_empty());
+        assert!(response.state.is_empty());
         assert!(storage.get_delete_delta_calls().is_empty());
     }
 

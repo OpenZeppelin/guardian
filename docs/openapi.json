@@ -1617,8 +1617,8 @@
         "tags": [
           "client"
         ],
-        "summary": "Abandon a pending canonicalization candidate whose transaction will\nnever land on-chain, releasing the account immediately instead of\nholding it for the full submission grace period plus retry budget\n(issue #319).",
-        "description": "The call is the client's assertion that the transaction is dead. It is\nrefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the on-chain state\nalready matches the candidate's expected state — the transaction\nlanded and the worker will canonicalize it shortly. A retry after a\n5xx that returns `delta_not_found` (404) means the abandon already\nsucceeded: the candidate delta was deleted and the account released.",
+        "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
+        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned.",
         "operationId": "abandon_candidate",
         "requestBody": {
           "content": {
@@ -1631,8 +1631,8 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Candidate abandoned; account released",
+          "202": {
+            "description": "Abandon intent accepted (or already resolved)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1683,16 +1683,6 @@
           },
           "429": {
             "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "On-chain state could not be verified; retry",
             "content": {
               "application/json": {
                 "schema": {
@@ -3227,12 +3217,15 @@
         "required": [
           "account_id",
           "nonce",
-          "abandoned_at"
+          "state"
         ],
         "properties": {
-          "abandoned_at": {
-            "type": "string",
-            "description": "RFC 3339 UTC timestamp of the release."
+          "abandon_requested_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 UTC timestamp of the recorded abandon request. Retries\nreturn the original timestamp; absent once resolved."
           },
           "account_id": {
             "type": "string"
@@ -3241,6 +3234,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released."
           }
         }
       },
@@ -4734,6 +4731,19 @@
               "status"
             ],
             "properties": {
+              "abandon_confirm_count": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Consecutive worker ticks that observed the on-chain commitment\nstill at this candidate's base after the abandon was requested.\nReset on a divergent observation, so only an unbroken streak\ncounts — the same stale-RPC shield as `divergence_count`.",
+                "minimum": 0
+              },
+              "abandon_requested_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "RFC 3339 UTC timestamp of the client's abandon request\n(issue #319). While set, the status remains `candidate` — the\naccount stays locked — until the canonicalization worker\nresolves the intent after the abandon quarantine."
+              },
               "divergence_count": {
                 "type": "integer",
                 "format": "int32",
@@ -4781,6 +4791,16 @@
               "status"
             ],
             "properties": {
+              "reason": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DiscardReason"
+                  }
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -4794,6 +4814,13 @@
           }
         ],
         "description": "Delta status state machine"
+      },
+      "DiscardReason": {
+        "type": "string",
+        "description": "Why a delta ended in `Discarded`. Absent on discards that predate\nthe field (and on the worker's retry/divergence discards, which\ndelete the delta instead of transitioning it).",
+        "enum": [
+          "client_abandoned"
+        ]
       },
       "EvmProposal": {
         "type": "object",

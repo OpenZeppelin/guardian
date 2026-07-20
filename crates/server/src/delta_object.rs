@@ -9,6 +9,18 @@ pub struct CosignerSignature {
     pub signer_id: String,
 }
 
+/// Why a delta ended in `Discarded`. Absent on discards that predate
+/// the field (and on the worker's retry/divergence discards, which
+/// delete the delta instead of transitioning it).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscardReason {
+    /// The client abandoned the candidate via the abandon endpoint
+    /// (issue #319) and the worker confirmed the transaction never
+    /// landed over the abandon quarantine.
+    ClientAbandoned,
+}
+
 /// Delta status state machine
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -31,12 +43,26 @@ pub enum DeltaStatus {
         /// before discarding shields against stale RPC reads.
         #[serde(default)]
         divergence_count: u32,
+        /// RFC 3339 UTC timestamp of the client's abandon request
+        /// (issue #319). While set, the status remains `candidate` — the
+        /// account stays locked — until the canonicalization worker
+        /// resolves the intent after the abandon quarantine.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        abandon_requested_at: Option<String>,
+        /// Consecutive worker ticks that observed the on-chain commitment
+        /// still at this candidate's base after the abandon was requested.
+        /// Reset on a divergent observation, so only an unbroken streak
+        /// counts — the same stale-RPC shield as `divergence_count`.
+        #[serde(default)]
+        abandon_confirm_count: u32,
     },
     Canonical {
         timestamp: String,
     },
     Discarded {
         timestamp: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<DiscardReason>,
     },
 }
 
@@ -54,6 +80,8 @@ impl DeltaStatus {
             timestamp,
             retry_count: 0,
             divergence_count: 0,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         }
     }
 
@@ -62,6 +90,8 @@ impl DeltaStatus {
             timestamp,
             retry_count,
             divergence_count: 0,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         }
     }
 
@@ -70,7 +100,88 @@ impl DeltaStatus {
     }
 
     pub fn discarded(timestamp: String) -> Self {
-        Self::Discarded { timestamp }
+        Self::Discarded {
+            timestamp,
+            reason: None,
+        }
+    }
+
+    pub fn discarded_client_abandoned(timestamp: String) -> Self {
+        Self::Discarded {
+            timestamp,
+            reason: Some(DiscardReason::ClientAbandoned),
+        }
+    }
+
+    pub fn is_client_abandoned(&self) -> bool {
+        matches!(
+            self,
+            Self::Discarded {
+                reason: Some(DiscardReason::ClientAbandoned),
+                ..
+            }
+        )
+    }
+
+    pub fn abandon_requested_at(&self) -> Option<&str> {
+        match self {
+            Self::Candidate {
+                abandon_requested_at,
+                ..
+            } => abandon_requested_at.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn abandon_confirm_count(&self) -> u32 {
+        match self {
+            Self::Candidate {
+                abandon_confirm_count,
+                ..
+            } => *abandon_confirm_count,
+            _ => 0,
+        }
+    }
+
+    /// Record the client's abandon intent, preserving every worker-owned
+    /// counter. Idempotent: an already-set request timestamp is kept so
+    /// retries cannot restart the quarantine.
+    pub fn with_abandon_requested(&self, now: String) -> Self {
+        match self {
+            Self::Candidate {
+                timestamp,
+                retry_count,
+                divergence_count,
+                abandon_requested_at,
+                abandon_confirm_count,
+            } => Self::Candidate {
+                timestamp: timestamp.clone(),
+                retry_count: *retry_count,
+                divergence_count: *divergence_count,
+                abandon_requested_at: Some(abandon_requested_at.clone().unwrap_or(now)),
+                abandon_confirm_count: *abandon_confirm_count,
+            },
+            _ => self.clone(),
+        }
+    }
+
+    pub fn with_incremented_abandon_confirm(&self) -> Self {
+        match self {
+            Self::Candidate {
+                timestamp,
+                retry_count,
+                divergence_count,
+                abandon_requested_at,
+                abandon_confirm_count,
+            } => Self::Candidate {
+                timestamp: timestamp.clone(),
+                retry_count: *retry_count,
+                divergence_count: *divergence_count,
+                abandon_requested_at: abandon_requested_at.clone(),
+                abandon_confirm_count: abandon_confirm_count + 1,
+            },
+            _ => self.clone(),
+        }
     }
 
     pub fn is_pending(&self) -> bool {
@@ -94,7 +205,7 @@ impl DeltaStatus {
             Self::Pending { timestamp, .. } => timestamp,
             Self::Candidate { timestamp, .. } => timestamp,
             Self::Canonical { timestamp } => timestamp,
-            Self::Discarded { timestamp } => timestamp,
+            Self::Discarded { timestamp, .. } => timestamp,
         }
     }
 
@@ -120,28 +231,39 @@ impl DeltaStatus {
                 timestamp,
                 retry_count,
                 divergence_count,
+                abandon_requested_at,
+                abandon_confirm_count,
             } => {
                 let _ = new_timestamp;
                 Self::Candidate {
                     timestamp: timestamp.clone(),
                     retry_count: retry_count + 1,
                     divergence_count: *divergence_count,
+                    abandon_requested_at: abandon_requested_at.clone(),
+                    abandon_confirm_count: *abandon_confirm_count,
                 }
             }
             _ => self.clone(),
         }
     }
 
+    /// A divergent observation also resets the abandon-confirmation
+    /// streak: the account moved, so any prior "still at base" reads no
+    /// longer form consecutive evidence that the transaction is dead.
     pub fn with_incremented_divergence(&self) -> Self {
         match self {
             Self::Candidate {
                 timestamp,
                 retry_count,
                 divergence_count,
+                abandon_requested_at,
+                abandon_confirm_count: _,
             } => Self::Candidate {
                 timestamp: timestamp.clone(),
                 retry_count: *retry_count,
                 divergence_count: divergence_count + 1,
+                abandon_requested_at: abandon_requested_at.clone(),
+                abandon_confirm_count: 0,
             },
             _ => self.clone(),
         }
@@ -153,10 +275,14 @@ impl DeltaStatus {
                 timestamp,
                 retry_count,
                 divergence_count: _,
+                abandon_requested_at,
+                abandon_confirm_count,
             } => Self::Candidate {
                 timestamp: timestamp.clone(),
                 retry_count: *retry_count,
                 divergence_count: 0,
+                abandon_requested_at: abandon_requested_at.clone(),
+                abandon_confirm_count: *abandon_confirm_count,
             },
             _ => self.clone(),
         }
@@ -169,6 +295,8 @@ impl Default for DeltaStatus {
             timestamp: String::new(),
             retry_count: 0,
             divergence_count: 0,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         }
     }
 }
@@ -285,6 +413,77 @@ impl<'de> Deserialize<'de> for DeltaObject {
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
+    #[test]
+    fn candidate_json_without_abandon_fields_deserializes() {
+        // Wire/storage compatibility: candidates persisted before the
+        // abandon-intent fields existed must keep deserializing.
+        let json = serde_json::json!({
+            "status": "candidate",
+            "timestamp": "2026-07-01T00:00:00Z",
+            "retry_count": 3,
+            "divergence_count": 1
+        });
+        let status: DeltaStatus = serde_json::from_value(json).unwrap();
+        assert!(status.is_candidate());
+        assert_eq!(status.retry_count(), 3);
+        assert_eq!(status.abandon_requested_at(), None);
+        assert_eq!(status.abandon_confirm_count(), 0);
+    }
+
+    #[test]
+    fn discarded_json_without_reason_deserializes() {
+        let json = serde_json::json!({
+            "status": "discarded",
+            "timestamp": "2026-07-01T00:00:00Z"
+        });
+        let status: DeltaStatus = serde_json::from_value(json).unwrap();
+        assert!(status.is_discarded());
+        assert!(!status.is_client_abandoned());
+    }
+
+    #[test]
+    fn client_abandoned_discard_roundtrips() {
+        let status = DeltaStatus::discarded_client_abandoned("2026-07-01T00:00:00Z".to_string());
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["reason"], "client_abandoned");
+        let back: DeltaStatus = serde_json::from_value(json).unwrap();
+        assert!(back.is_client_abandoned());
+    }
+
+    #[test]
+    fn abandon_request_is_idempotent_and_preserves_counters() {
+        let status = DeltaStatus::candidate("2026-07-01T00:00:00Z".to_string())
+            .with_incremented_retry("ignored".to_string())
+            .with_abandon_requested("2026-07-01T00:01:00Z".to_string());
+        assert_eq!(status.retry_count(), 1);
+        assert_eq!(status.abandon_requested_at(), Some("2026-07-01T00:01:00Z"));
+
+        // A retried request must not restart the quarantine clock.
+        let retried = status.with_abandon_requested("2026-07-01T00:09:00Z".to_string());
+        assert_eq!(retried.abandon_requested_at(), Some("2026-07-01T00:01:00Z"));
+    }
+
+    #[test]
+    fn divergent_observation_resets_abandon_confirmations() {
+        let status = DeltaStatus::candidate("2026-07-01T00:00:00Z".to_string())
+            .with_abandon_requested("2026-07-01T00:01:00Z".to_string())
+            .with_incremented_abandon_confirm()
+            .with_incremented_abandon_confirm();
+        assert_eq!(status.abandon_confirm_count(), 2);
+
+        let diverged = status.with_incremented_divergence();
+        assert_eq!(
+            diverged.abandon_confirm_count(),
+            0,
+            "a divergent read breaks the consecutive at-base streak"
+        );
+        assert_eq!(
+            diverged.abandon_requested_at(),
+            Some("2026-07-01T00:01:00Z"),
+            "the intent itself persists across divergence"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -418,6 +617,8 @@ mod tests {
             timestamp: "2024-01-02".to_string(),
             retry_count: 0,
             divergence_count: 0,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         };
         assert!(!candidate.is_pending());
         assert!(candidate.is_candidate());
@@ -434,6 +635,7 @@ mod tests {
 
         let discarded = DeltaStatus::Discarded {
             timestamp: "2024-01-04".to_string(),
+            reason: None,
         };
         assert!(!discarded.is_pending());
         assert!(!discarded.is_candidate());

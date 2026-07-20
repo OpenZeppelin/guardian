@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -902,6 +902,38 @@ export class Multisig {
    *
   * @param proposalId - The proposal commitment/ID (this is also what gets signed)
   */
+  /**
+   * Request abandonment of a pending canonicalization candidate whose
+   * transaction will never land on-chain (issue #319) — e.g. after an
+   * approved transaction died client-side (RPC submit failure, prover
+   * timeout, crash).
+   *
+   * Records an abandon *intent* on GUARDIAN: the account stays locked
+   * until the guardian's canonicalization worker confirms over a short
+   * quarantine (typically well under a minute) that the transaction did
+   * not land, then releases the account. Poll {@link abandonStatus} for
+   * the resolution.
+   *
+   * `nonce` pins the exact candidate to release; it is the nonce the
+   * proposal was pushed with. Retries are idempotent and preserve the
+   * original request timestamp. Refused with `GUARDIAN_CANDIDATE_LANDED`
+   * (409) when the transaction actually landed.
+   */
+  async abandonCandidate(nonce: number): Promise<AbandonCandidateResponse> {
+    return this.guardian.abandonCandidate(this._accountId, nonce);
+  }
+
+  /**
+   * Poll the resolution of an abandon request made with
+   * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
+   * `'landed'` if the transaction landed after all, `'abandoned'` once
+   * the account is released, `'unexpected'` for any state no abandon
+   * flow produces.
+   */
+  async abandonStatus(nonce: number): Promise<AbandonStatus> {
+    return this.guardian.abandonStatus(this._accountId, nonce);
+  }
+
   async signProposal(proposalId: string): Promise<Proposal> {
     const normalizedProposalId = normalizeHexWord(proposalId);
     const existingProposal = await this.getProposalForSigning(proposalId, normalizedProposalId);
