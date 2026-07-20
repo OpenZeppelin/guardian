@@ -1642,7 +1642,7 @@
               "string",
               "null"
             ],
-            "description": "Bech32m encoding of the Miden `AccountId` using the network's\nHRP (e.g. `mtst...`, `mdev...`, `mm...`). `None` for EVM\naccounts (no bech32 in that addressing scheme) and for any\nMiden `account_id` that fails to parse as a 15-byte id."
+            "description": "Bech32m encoding of the Miden `AccountId` using the HRP of the\nnetwork this server is configured against (e.g. `mtst...`,\n`mdev...`, `mm...`). `None` for EVM accounts (no bech32 in that\naddressing scheme) and for any Miden `account_id` that fails to\nparse as a 15-byte id."
           },
           "auth_scheme": {
             "type": "string"
@@ -2532,7 +2532,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Bech32m encoding of the Miden `AccountId` using the network's\nHRP (e.g. `mtst...`, `mdev...`, `mm...`). `None` for EVM\naccounts (no bech32 in that addressing scheme) and for any\nMiden `account_id` that fails to parse as a 15-byte id."
+                  "description": "Bech32m encoding of the Miden `AccountId` using the HRP of the\nnetwork this server is configured against (e.g. `mtst...`,\n`mdev...`, `mm...`). `None` for EVM accounts (no bech32 in that\naddressing scheme) and for any Miden `account_id` that fails to\nparse as a 15-byte id."
                 },
                 "auth_scheme": {
                   "type": "string"

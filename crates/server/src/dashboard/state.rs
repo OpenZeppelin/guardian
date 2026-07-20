@@ -481,6 +481,14 @@ impl DashboardState {
         self.config.environment()
     }
 
+    /// The Miden network this server is configured against
+    /// (`GUARDIAN_NETWORK_TYPE`). Network-dependent rendering such as
+    /// bech32 address HRPs must derive from this, not from per-account
+    /// metadata.
+    pub fn network_type(&self) -> NetworkType {
+        self.config.network_type()
+    }
+
     /// Wall-clock time the dashboard state (and effectively the process)
     /// was initialized. Surfaced on `GET /dashboard/info` to identify
     /// the running binary instance.

@@ -54,28 +54,20 @@ describe('MidenWalletSigner', () => {
       expect(signer.publicKey).toBe('0xcommitment');
     });
 
-    it('should use explicit publicKey when provided', () => {
-      const signer = new MidenWalletSigner(
-        mockWallet,
-        '0xcommitment',
-        'ecdsa',
-        undefined,
-        '0xwalletpubkey',
-      );
-      expect(signer.publicKey).toBe('0xwalletpubkey');
+    it('throws on an invalid explicit ECDSA publicKey instead of falling back to the commitment', () => {
+      expect(
+        () => new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa', undefined, '0xwalletpubkey'),
+      ).toThrow(/invalid ECDSA public key/);
     });
 
-    it('should use localAuthSigner publicKey when provided', () => {
-      const localSigner: Signer = {
-        commitment: '0xlocal',
-        publicKey: '0xlocalpubkey',
-        scheme: 'ecdsa',
-        signAccountIdWithTimestamp: vi.fn(),
-        signCommitment: vi.fn(),
-      };
-      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa', localSigner);
-      expect(signer.publicKey).toBe('0xlocalpubkey');
+    it('does not fall back to the commitment for an ECDSA signer with no key (throws until a signature exists)', () => {
+      const signer = new MidenWalletSigner(mockWallet, '0xcommitment', 'ecdsa');
+      expect(() => signer.publicKey).toThrow(/not available yet/);
     });
+
+    // ECDSA publicKey resolution against a real commitment (explicit key and
+    // localAuthSigner, match and mismatch) needs real Poseidon2 and is covered in
+    // miden-wallet.ecdsa-recovery.test.ts, which runs the WASM SDK.
   });
 
   describe('signAccountIdWithTimestamp', () => {
