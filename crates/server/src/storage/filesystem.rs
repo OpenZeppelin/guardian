@@ -635,6 +635,49 @@ impl StorageBackend for FilesystemService {
         self.write(&path, &updated_content).await
     }
 
+    // Canonicalization lifecycle writes: the filesystem backend is
+    // single-process by construction (no shared coordination store), so
+    // the sequential helpers are exactly the pre-lease behavior and no
+    // fence applies.
+
+    async fn submit_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<crate::storage::CandidateSubmission, String> {
+        crate::storage::submit_candidate_sequential(self, metadata, delta, now).await
+    }
+
+    async fn promote_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: crate::storage::CandidatePromotion,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        crate::storage::promote_candidate_sequential(self, metadata, promotion).await
+    }
+
+    async fn discard_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+        _fence: Option<&crate::storage::LeaseFence>,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, now).await
+    }
+
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+        _fence: Option<&crate::storage::LeaseFence>,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        crate::storage::update_candidate_status_sequential(self, account_id, nonce, status).await
+    }
+
     // ----------------------------------------------------------------------
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     //

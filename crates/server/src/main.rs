@@ -17,7 +17,7 @@ async fn main() {
         .unwrap_or_else(|_| "/var/guardian/keystore".to_string())
         .into();
 
-    let (storage_backend, metadata, auditor) = StorageMetadataBuilder::from_env()
+    let (storage_backend, metadata, auditor, coordination) = StorageMetadataBuilder::from_env()
         .build()
         .await
         .expect("Failed to initialize storage backends");
@@ -44,6 +44,7 @@ async fn main() {
         .storage(storage_backend)
         .metadata(metadata)
         .auditor(auditor)
+        .coordination(coordination)
         .ack(ack)
         .http(true, 3000)
         .grpc(true, 50051)

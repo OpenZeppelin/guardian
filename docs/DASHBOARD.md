@@ -79,14 +79,13 @@ Defaults
 - Session TTL: 8 hours
 - Max outstanding challenges per operator: 8
 - Cookie name: `guardian_operator_session`
-- Pubkey-endpoint rate limit: 5 burst / 30 per minute
+- Per-commitment auth budget: 6 burst / 30 per minute, partitioned by
+  `GUARDIAN_MAX_REPLICAS` in multi-replica deployments
 
-Sessions are **in-memory per task** and there is no ALB session
-stickiness — so on multi-task deployments an operator may be routed to a
-task that did not mint their session and be asked to re-authenticate.
-The cookie is signed and can be validated cryptographically, but the
-corresponding session record only lives in the task that minted it. A
-task restart drops all sessions held by that task.
+Session records use the configured coordination backend. Postgres-backed
+deployments share sessions across replicas, so ALB stickiness is not required
+and task replacement does not invalidate an unexpired session. Filesystem-backed
+development uses the in-memory coordination backend and remains single-process.
 
 For multi-replica deployments where you want cursors to validate across
 replicas, set `GUARDIAN_DASHBOARD_CURSOR_SECRET` to a 32-byte hex value

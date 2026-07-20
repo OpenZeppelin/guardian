@@ -11,6 +11,7 @@ set -euo pipefail
 #   bootstrap-ack-keys - Create the prod ACK key secrets in Secrets Manager
 #   bootstrap-kms-ecdsa-key - Create the KMS ECDSA ACK signing key + alias (KMS backend)
 #   bootstrap-storage-encryption-key - Create the storage encryption key secret in Secrets Manager
+#   bootstrap-dashboard-cursor-secret - Create the shared dashboard cursor secret in Secrets Manager
 #   status   - Show deployment status
 #   logs     - Tail CloudWatch logs
 #   cleanup  - Remove all AWS resources
@@ -43,6 +44,7 @@ set -euo pipefail
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON - JSON array of Falcon operator public keys; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
 #   GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME - Secrets Manager secret name for the storage encryption key document. Setting it enables encryption at rest (prod): the stack wires the IAM grant and GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID. Unset leaves storage in plaintext. bootstrap-storage-encryption-key defaults to <stack-name>/server/storage-encryption-key (optional)
+#   GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME - Secrets Manager secret name for the shared dashboard cursor key. Prod defaults to <stack-name>/server/dashboard-cursor-secret and requires it to exist
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
@@ -71,6 +73,7 @@ GUARDIAN_EVM_ENTRYPOINT_ADDRESS="${GUARDIAN_EVM_ENTRYPOINT_ADDRESS:-${TF_VAR_gua
 GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON="${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON:-}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
 GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME="${GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME:-${TF_VAR_guardian_storage_encryption_secret_name:-}}"
+GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME="${GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME:-${TF_VAR_guardian_dashboard_cursor_secret_name:-}}"
 TF_DIR="${SCRIPT_DIR}/../infra"
 TF_STATE_PATH_OVERRIDE="${TF_STATE_PATH:-}"
 TF_STATE_BACKUP_PATH_OVERRIDE="${TF_STATE_BACKUP_PATH:-}"
@@ -307,6 +310,7 @@ build_tf_vars() {
   if storage_encryption_enabled; then
     TF_VARS+=("-var" "guardian_storage_encryption_secret_name=$(storage_encryption_secret_name)")
   fi
+  TF_VARS+=("-var" "guardian_dashboard_cursor_secret_name=$(dashboard_cursor_secret_name)")
 
   if [ -n "$DOMAIN_NAME" ]; then
     TF_VARS+=("-var" "domain_name=${DOMAIN_NAME}")
@@ -348,6 +352,10 @@ storage_encryption_secret_name() {
 
 storage_encryption_enabled() {
   [ -n "$GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME" ]
+}
+
+dashboard_cursor_secret_name() {
+  echo "${GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME:-${STACK_NAME}/server/dashboard-cursor-secret}"
 }
 
 ecdsa_backend_is_kms() {
@@ -439,6 +447,69 @@ validate_storage_encryption_secret_exists() {
     log_error "Storage encryption secret ${secret_name} is invalid: active key must decode to 32 bytes"
     return 1
   fi
+}
+
+validate_dashboard_cursor_secret_exists() {
+  if [ "$DEPLOY_STAGE" != "prod" ]; then
+    return 0
+  fi
+
+  local secret_name
+  local secret_value
+  secret_name=$(dashboard_cursor_secret_name)
+
+  if ! secret_exists "$secret_name"; then
+    log_error "Missing dashboard cursor secret ${secret_name}. Run ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret first."
+    return 1
+  fi
+
+  secret_value=$(aws secretsmanager get-secret-value \
+    --secret-id "$secret_name" \
+    --region "$AWS_REGION" \
+    --query SecretString \
+    --output text 2>/dev/null) || {
+    log_error "Failed to read dashboard cursor secret ${secret_name}"
+    return 1
+  }
+
+  if [[ ! "$secret_value" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    log_error "Dashboard cursor secret ${secret_name} must contain exactly 64 hexadecimal characters"
+    return 1
+  fi
+}
+
+cmd_bootstrap_dashboard_cursor_secret() {
+  local secret_name
+  local secret_value
+  local secret_file
+  secret_name=$(dashboard_cursor_secret_name)
+
+  if secret_exists "$secret_name"; then
+    log_error "Refusing to overwrite existing dashboard cursor secret ${secret_name}"
+    return 1
+  fi
+
+  log_info "Generating 32-byte dashboard cursor secret locally..."
+  secret_value=$(openssl rand -hex 32)
+  if [[ ! "$secret_value" =~ ^[0-9a-f]{64}$ ]]; then
+    log_error "Failed to generate dashboard cursor secret"
+    return 1
+  fi
+
+  secret_file=$(mktemp)
+  printf '%s' "$secret_value" >"$secret_file"
+  log_info "Creating dashboard cursor secret ${secret_name}"
+  if aws secretsmanager create-secret \
+    --name "$secret_name" \
+    --secret-string "file://$secret_file" \
+    --region "$AWS_REGION" >/dev/null; then
+    rm -f "$secret_file"
+  else
+    rm -f "$secret_file"
+    return 1
+  fi
+
+  log_info "Dashboard cursor secret bootstrap complete"
 }
 
 cmd_bootstrap_storage_encryption_key() {
@@ -624,6 +695,7 @@ cmd_plan() {
   validate_deploy_config
   validate_ack_secrets_exist || return 1
   validate_storage_encryption_secret_exists || return 1
+  validate_dashboard_cursor_secret_exists || return 1
 
   local IMAGE_URI
   IMAGE_URI=$(resolve_deploy_image_uri) || return 1
@@ -641,6 +713,7 @@ cmd_deploy() {
   validate_deploy_config
   validate_ack_secrets_exist || return 1
   validate_storage_encryption_secret_exists || return 1
+  validate_dashboard_cursor_secret_exists || return 1
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -886,6 +959,9 @@ case "${COMMAND:-}" in
   bootstrap-storage-encryption-key)
     cmd_bootstrap_storage_encryption_key
     ;;
+  bootstrap-dashboard-cursor-secret)
+    cmd_bootstrap_dashboard_cursor_secret
+    ;;
   status)
     cmd_status
     ;;
@@ -907,6 +983,7 @@ case "${COMMAND:-}" in
     echo "  bootstrap-ack-keys  Create the prod ACK key secrets in Secrets Manager"
     echo "  bootstrap-kms-ecdsa-key  Create the KMS ECDSA ACK signing key + alias (KMS backend)"
     echo "  bootstrap-storage-encryption-key  Create the storage encryption key secret in Secrets Manager"
+    echo "  bootstrap-dashboard-cursor-secret  Create the shared dashboard cursor secret in Secrets Manager"
     echo "  status   Show deployment status and URLs"
     echo "  logs     Tail CloudWatch logs"
     echo "  cleanup  Remove all AWS resources"
@@ -937,6 +1014,7 @@ case "${COMMAND:-}" in
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON= JSON array of Falcon operator public keys; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"
     echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME= Storage encryption key secret name; setting it enables encryption at rest (prod) and wires the IAM grant + env var (bootstrap default: <stack-name>/server/storage-encryption-key)"
+    echo "  GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME= Shared dashboard cursor secret name (prod default: <stack-name>/server/dashboard-cursor-secret)"
     echo ""
     echo "Examples:"
     echo "  ./scripts/aws-deploy.sh deploy"
@@ -946,6 +1024,7 @@ case "${COMMAND:-}" in
     echo "  DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys"
     echo "  STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key  # prints the ARN to set"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-storage-encryption-key  # prints the name to export"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret"
     echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"

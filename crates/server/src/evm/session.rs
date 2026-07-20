@@ -1,10 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
-use tokio::sync::Mutex;
 
+use crate::coordination::{
+    ChallengePayload, ChallengeStore, InMemoryChallengeStore, InMemorySessionStore, SessionStore,
+    SessionSubject, StoredChallenge, StoredSession,
+};
 use crate::error::{GuardianError, Result};
 use crate::metadata::network::normalize_evm_address;
 use crate::secret::session_digest;
@@ -16,8 +18,8 @@ const MAX_OUTSTANDING_CHALLENGES: usize = 8;
 
 #[derive(Clone)]
 pub struct EvmSessionState {
-    challenges: Arc<Mutex<HashMap<String, Vec<PendingEvmChallenge>>>>,
-    sessions: Arc<Mutex<HashMap<[u8; 32], EvmSessionRecord>>>,
+    session_store: Arc<dyn SessionStore>,
+    challenge_store: Arc<dyn ChallengeStore>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,27 +42,29 @@ pub struct AuthenticatedEvmSession {
     pub address: String,
 }
 
-#[derive(Clone)]
-struct PendingEvmChallenge {
-    challenge: EvmChallenge,
-}
-
-#[derive(Clone)]
-struct EvmSessionRecord {
-    address: String,
-    expires_at: DateTime<Utc>,
-}
-
 impl Default for EvmSessionState {
     fn default() -> Self {
-        Self {
-            challenges: Arc::new(Mutex::new(HashMap::new())),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::new(
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryChallengeStore::new()),
+        )
     }
 }
 
 impl EvmSessionState {
+    /// Build EVM session state over explicit, evm-realm coordination stores. The
+    /// server builder passes shared (Postgres) stores on the Postgres backend;
+    /// the default uses in-memory stores (single-process / dev).
+    pub fn new(
+        session_store: Arc<dyn SessionStore>,
+        challenge_store: Arc<dyn ChallengeStore>,
+    ) -> Self {
+        Self {
+            session_store,
+            challenge_store,
+        }
+    }
+
     pub fn cookie_name(&self) -> &'static str {
         COOKIE_NAME
     }
@@ -82,16 +86,20 @@ impl EvmSessionState {
             expires_at: now + Duration::seconds(CHALLENGE_TTL_SECS),
         };
 
-        let mut challenges = self.challenges.lock().await;
-        let pending = challenges.entry(address).or_default();
-        pending.retain(|challenge| challenge.challenge.expires_at > now);
-        pending.push(PendingEvmChallenge {
-            challenge: challenge.clone(),
-        });
-        if pending.len() > MAX_OUTSTANDING_CHALLENGES {
-            let drain_len = pending.len() - MAX_OUTSTANDING_CHALLENGES;
-            pending.drain(0..drain_len);
-        }
+        let stored = StoredChallenge {
+            key: challenge.nonce.clone(),
+            payload: ChallengePayload::EvmChallenge {
+                address: challenge.address.clone(),
+                nonce: challenge.nonce.clone(),
+                issued_at: challenge.issued_at,
+                expires_at: challenge.expires_at,
+            },
+            issued_at: challenge.issued_at,
+            expires_at: challenge.expires_at,
+        };
+        self.challenge_store
+            .issue(&address, stored, MAX_OUTSTANDING_CHALLENGES, now)
+            .await?;
 
         Ok(challenge)
     }
@@ -105,20 +113,32 @@ impl EvmSessionState {
     ) -> Result<VerifiedEvmSession> {
         let address = normalize_evm_address(address).map_err(GuardianError::InvalidInput)?;
         let signature = crate::evm::proposal::normalize_signature(signature)?;
-        let mut challenges = self.challenges.lock().await;
-        let pending = challenges.entry(address.clone()).or_default();
-        pending.retain(|challenge| challenge.challenge.expires_at > now);
 
-        let Some(index) = pending
-            .iter()
-            .position(|pending| pending.challenge.nonce.eq_ignore_ascii_case(nonce))
-        else {
+        let active = self.challenge_store.active_for(&address, now).await?;
+        let matched = active.iter().find_map(|stored| match &stored.payload {
+            ChallengePayload::EvmChallenge {
+                address: challenge_address,
+                nonce: challenge_nonce,
+                issued_at,
+                expires_at,
+            } if challenge_nonce.eq_ignore_ascii_case(nonce) => Some((
+                stored.key.clone(),
+                EvmChallenge {
+                    address: challenge_address.clone(),
+                    nonce: challenge_nonce.clone(),
+                    issued_at: *issued_at,
+                    expires_at: *expires_at,
+                },
+            )),
+            _ => None,
+        });
+
+        let Some((key, challenge)) = matched else {
             return Err(GuardianError::AuthenticationFailed(
                 "No active EVM challenge matched the nonce".to_string(),
             ));
         };
 
-        let challenge = pending[index].challenge.clone();
         let recovered = crate::evm::contracts::recover_session_address(&challenge, &signature)?;
         if recovered != address {
             return Err(GuardianError::AuthenticationFailed(
@@ -126,25 +146,28 @@ impl EvmSessionState {
             ));
         }
 
-        pending.remove(index);
-        if pending.is_empty() {
-            challenges.remove(&address);
+        if !self.challenge_store.consume(&address, &key, now).await? {
+            return Err(GuardianError::AuthenticationFailed(
+                "No active EVM challenge matched the nonce".to_string(),
+            ));
         }
-        drop(challenges);
 
         let token = random_hex_32();
         let expires_at = now + Duration::seconds(SESSION_TTL_SECS);
         let cookie_header = self.session_cookie_header(&token, expires_at);
         let session_key = session_digest(&token);
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires_at > now);
-        sessions.insert(
-            session_key,
-            EvmSessionRecord {
-                address: address.clone(),
-                expires_at,
-            },
-        );
+        self.session_store
+            .insert(
+                session_key,
+                StoredSession {
+                    subject: SessionSubject::Evm {
+                        address: address.clone(),
+                    },
+                    issued_at: now,
+                    expires_at,
+                },
+            )
+            .await?;
 
         Ok(VerifiedEvmSession {
             address,
@@ -158,25 +181,34 @@ impl EvmSessionState {
         token: &str,
         now: DateTime<Utc>,
     ) -> Result<AuthenticatedEvmSession> {
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires_at > now);
-        let session = sessions
-            .get(&session_digest(token))
-            .cloned()
+        let session = self
+            .session_store
+            .get(&session_digest(token), now)
+            .await?
             .ok_or_else(|| {
                 GuardianError::AuthenticationFailed("Invalid EVM session".to_string())
             })?;
-        Ok(AuthenticatedEvmSession {
-            address: session.address,
-        })
+        let SessionSubject::Evm { address } = session.subject else {
+            return Err(GuardianError::AuthenticationFailed(
+                "Invalid EVM session".to_string(),
+            ));
+        };
+        Ok(AuthenticatedEvmSession { address })
     }
 
-    pub async fn logout(&self, token: Option<&str>, now: DateTime<Utc>) {
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| session.expires_at > now);
+    pub async fn logout(&self, token: Option<&str>, _now: DateTime<Utc>) -> Result<()> {
         if let Some(token) = token {
-            sessions.remove(&session_digest(token));
+            self.session_store.revoke(&session_digest(token)).await?;
         }
+        Ok(())
+    }
+
+    /// Reclaim expired EVM sessions and challenges (housekeeping; expiry is also
+    /// enforced on read).
+    pub async fn sweep_expired(&self, now: DateTime<Utc>) -> Result<()> {
+        self.session_store.sweep_expired(now).await?;
+        self.challenge_store.sweep_expired(now).await?;
+        Ok(())
     }
 
     fn session_cookie_header(&self, token: &str, expires_at: DateTime<Utc>) -> String {
@@ -202,7 +234,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn challenge_is_single_use_after_manual_removal() {
+    async fn challenge_is_single_use_via_consume() {
         let state = EvmSessionState::default();
         let now = Utc::now();
         let challenge = state
@@ -210,13 +242,27 @@ mod tests {
             .await
             .expect("challenge");
 
-        let mut challenges = state.challenges.lock().await;
-        let pending = challenges
-            .get_mut(&challenge.address)
-            .expect("pending challenge");
-        assert_eq!(pending.len(), 1);
-        pending.remove(0);
-        assert!(pending.is_empty());
+        let active = state
+            .challenge_store
+            .active_for(&challenge.address, now)
+            .await
+            .expect("active challenges");
+        assert_eq!(active.len(), 1);
+
+        assert!(
+            state
+                .challenge_store
+                .consume(&challenge.address, &challenge.nonce, now)
+                .await
+                .expect("consume")
+        );
+        assert!(
+            !state
+                .challenge_store
+                .consume(&challenge.address, &challenge.nonce, now)
+                .await
+                .expect("replay consume")
+        );
     }
 
     #[test]

@@ -107,6 +107,7 @@ pub struct CancelProposalResponse {
     responses(
         (status = 200, description = "Challenge issued", body = ChallengeResponse),
         (status = 400, description = "Invalid address", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Challenge issuance failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn challenge_evm_session(
@@ -137,6 +138,7 @@ pub async fn challenge_evm_session(
     responses(
         (status = 200, description = "Session established", body = VerifySessionResponse),
         (status = 401, description = "Challenge verification failed", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Session establishment failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn verify_evm_session(
@@ -173,6 +175,7 @@ pub async fn verify_evm_session(
     security(("evm_session" = [])),
     responses(
         (status = 200, description = "Session invalidated", body = LogoutResponse),
+        (status = 500, description = "Session revocation failed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn logout_evm_session(
@@ -180,11 +183,13 @@ pub async fn logout_evm_session(
     headers: HeaderMap,
 ) -> Result<([(header::HeaderName, String); 1], Json<LogoutResponse>)> {
     let token = extract_cookie(&headers, state.evm.sessions.cookie_name());
+    // Fail closed: a revoke failure (e.g. shared store outage) is surfaced so the
+    // caller can retry rather than believing the session was invalidated.
     state
         .evm
         .sessions
         .logout(token.as_deref(), state.clock.now())
-        .await;
+        .await?;
     Ok((
         [(header::SET_COOKIE, state.evm.sessions.clear_cookie_header())],
         Json(LogoutResponse { success: true }),

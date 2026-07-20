@@ -308,6 +308,7 @@ become the only trusted ones.
 | `./scripts/aws-deploy.sh deploy --skip-build` | Resolve the existing ECR `latest` image to an immutable digest and run `terraform apply` without rebuilding. |
 | `./scripts/aws-deploy.sh bootstrap-ack-keys` | Create the prod ACK key secrets in Secrets Manager. Refuses to overwrite existing secrets. With `TF_VAR_guardian_ack_ecdsa_kms_key_arn` set, creates only the Falcon secret (ECDSA is KMS-backed). |
 | `./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key` | Create the KMS ECDSA ACK signing key (`ECC_SECG_P256K1` / `SIGN_VERIFY`) and an `alias/${STACK_NAME}-ack-ecdsa` alias, then print the ARN to set. Refuses to overwrite an existing alias. |
+| `./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret` | Create the shared 32-byte dashboard cursor secret in Secrets Manager. Refuses to overwrite an existing secret. |
 | `./scripts/aws-deploy.sh status` | Print Terraform outputs for the active `STACK_NAME` and `DEPLOY_STAGE`. |
 | `./scripts/aws-deploy.sh logs` | Tail the deployed server's CloudWatch log group. |
 | `./scripts/aws-deploy.sh cleanup` | Run Terraform destroy for the active `STACK_NAME` and `DEPLOY_STAGE`. |
@@ -337,15 +338,27 @@ Use this flow when you want to inspect Terraform changes before applying them:
 
 `build` creates the ECR repository if needed and pushes `${ECR_REPO_NAME}:latest`. Both `plan` and `deploy --skip-build` resolve that tag to an immutable digest before invoking Terraform. Do not rebuild or push a new `latest` between `plan` and `deploy --skip-build` unless you intend to apply a different image; rerun `plan` after any rebuild.
 
-For `DEPLOY_STAGE=prod`, bootstrap the ACK secrets once before the first deploy:
+For `DEPLOY_STAGE=prod`, bootstrap the ACK and dashboard cursor secrets once
+before the first deploy:
 
 ```bash
 DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
+DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret
 ```
 
-The normal deploy path does not create or rotate ACK keys. It expects the prod Secrets Manager entries to already exist, and the server reads them directly at startup before importing them into the filesystem keystore.
+The normal deploy path does not create or rotate these secrets. It expects the
+prod Secrets Manager entries to already exist. Terraform injects the cursor
+secret into every ECS task as `GUARDIAN_DASHBOARD_CURSOR_SECRET`.
 
 Secret names default to `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so distinct stacks (e.g. `guardian-prod`, `guardian-prod-eu`) automatically resolve to distinct secrets and multiple Guardian deployments can coexist in the same AWS account. Override per stack by setting `GUARDIAN_ACK_FALCON_SECRET_NAME` / `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy`; they flow into Terraform variables and the ECS task definition's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars.
+
+The cursor secret defaults to
+`${STACK_NAME}/server/dashboard-cursor-secret`. To use an existing secret, set
+`GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME` before both bootstrap and deploy.
+The deploy helper always passes this resolved name explicitly, so a stale
+`infra/terraform.tfvars` value cannot make validation and deployment select
+different secrets. For a customer-managed KMS key, its key policy must also
+allow the ECS task execution role to decrypt the secret.
 
 #### Prod with a KMS-backed ECDSA signer
 
@@ -525,6 +538,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
+| `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
 
@@ -546,6 +560,26 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
+
+#### Horizontal scaling (multiple replicas)
+
+The prod profile runs 2–6 tasks behind the ALB. Because it sets `GUARDIAN_ENV=prod`
+and the Postgres backend, the server runs **shared coordination** (sessions,
+login challenges, and the canonicalization lease live in Postgres) — so any
+request lands on any replica and canonicalization runs on exactly one replica at
+a time. Terraform also sets `GUARDIAN_MAX_REPLICAS` from
+`effective_guardian_max_replicas` (the greater of desired count and autoscaling
+max, 6 by default) so global HTTP and dashboard commitment rate limits are
+partitioned across the steady-state fleet. A rolling deployment may allow up to
+`server_deployment_maximum_percent / 100` times the configured aggregate limit
+(2× by default). The default dashboard share is 5 requests per minute on a
+keep-alive-pinned replica. In prod, Terraform requires the pre-created dashboard
+cursor secret and injects the same value into every task, so dashboard
+pagination works across replicas. The server itself still warns and uses an
+ephemeral key when run without the variable outside this managed prod profile.
+Watch the per-replica `GUARDIAN_DB_POOL_MAX_SIZE` against Postgres
+`max_connections` (RDS Proxy absorbs most of this). Full operator guidance:
+[`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md).
 
 ## HTTPS And gRPC
 

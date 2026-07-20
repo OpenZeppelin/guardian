@@ -21,10 +21,17 @@ pub struct EvmAppState {
 
 impl EvmAppState {
     pub async fn from_env() -> Result<Self, String> {
-        let chains = Arc::new(EvmChainRegistry::from_env()?);
-        let sessions = Arc::new(EvmSessionState::default());
+        Self::from_env_with_sessions(EvmSessionState::default()).await
+    }
 
-        Ok(Self { chains, sessions })
+    /// Build EVM state with explicit (evm-realm) session state. The server
+    /// builder passes shared (Postgres) stores on the Postgres backend.
+    pub async fn from_env_with_sessions(sessions: EvmSessionState) -> Result<Self, String> {
+        let chains = Arc::new(EvmChainRegistry::from_env()?);
+        Ok(Self {
+            chains,
+            sessions: Arc::new(sessions),
+        })
     }
 
     pub fn for_tests() -> Self {

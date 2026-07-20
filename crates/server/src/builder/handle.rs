@@ -42,6 +42,7 @@ use crate::state::AppState;
 /// Provides methods to run the server with the configured settings.
 pub struct ServerHandle {
     pub(crate) app_state: AppState,
+    pub(crate) leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -127,12 +128,14 @@ impl ServerHandle {
         // Start background jobs based on canonicalization config
         if self.app_state.canonicalization.is_some() {
             tracing::info!("Starting canonicalization worker");
-            start_canonicalization_worker(self.app_state.clone());
+            start_canonicalization_worker(self.app_state.clone(), self.leader.clone());
         } else {
             tracing::info!(
                 "Running in optimistic mode - deltas accepted without on-chain verification"
             );
         }
+
+        start_session_sweep_worker(self.app_state.clone());
 
         // Start HTTP server if enabled
         if self.http_enabled {
@@ -367,4 +370,34 @@ impl ServerHandle {
             let _ = task.await;
         }
     }
+}
+
+const SESSION_SWEEP_INTERVAL_SECS: u64 = 60;
+
+/// Periodically reclaim expired operator sessions/challenges from the
+/// coordination store. Expiry is enforced on read regardless; this only frees
+/// rows (Postgres) or memory (in-memory).
+fn start_session_sweep_worker(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(SESSION_SWEEP_INTERVAL_SECS));
+        loop {
+            ticker.tick().await;
+            if let Err(error) = state.dashboard.sweep_expired(state.clock.now()).await {
+                tracing::warn!(
+                    target: "dashboard.session_sweep",
+                    %error,
+                    "operator session/challenge sweep failed",
+                );
+            }
+            #[cfg(feature = "evm")]
+            if let Err(error) = state.evm.sessions.sweep_expired(state.clock.now()).await {
+                tracing::warn!(
+                    target: "evm.session_sweep",
+                    %error,
+                    "EVM session/challenge sweep failed",
+                );
+            }
+        }
+    });
 }

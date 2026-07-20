@@ -302,6 +302,89 @@ variable "guardian_rate_per_min" {
   default     = null
 }
 
+variable "guardian_dashboard_commitment_rate_burst_per_sec" {
+  description = "Optional override for the fleet-wide dashboard per-commitment burst rate limit"
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_dashboard_commitment_rate_burst_per_sec == null ||
+      (
+        var.guardian_dashboard_commitment_rate_burst_per_sec >= 1 &&
+        var.guardian_dashboard_commitment_rate_burst_per_sec <= 4294967295 &&
+        floor(var.guardian_dashboard_commitment_rate_burst_per_sec) == var.guardian_dashboard_commitment_rate_burst_per_sec
+      )
+    )
+    error_message = "guardian_dashboard_commitment_rate_burst_per_sec must be an integer between 1 and 4294967295 when set."
+  }
+}
+
+variable "guardian_dashboard_commitment_rate_per_min" {
+  description = "Optional override for the fleet-wide dashboard per-commitment sustained rate limit"
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_dashboard_commitment_rate_per_min == null ||
+      (
+        var.guardian_dashboard_commitment_rate_per_min >= 1 &&
+        var.guardian_dashboard_commitment_rate_per_min <= 4294967295 &&
+        floor(var.guardian_dashboard_commitment_rate_per_min) == var.guardian_dashboard_commitment_rate_per_min
+      )
+    )
+    error_message = "guardian_dashboard_commitment_rate_per_min must be an integer between 1 and 4294967295 when set."
+  }
+}
+
+variable "guardian_max_replicas" {
+  description = <<-EOT
+    Optional override for GUARDIAN_MAX_REPLICAS, the maximum replica capacity the
+    server divides rate limits by. Defaults to the greater of desired count and
+    autoscaling maximum when autoscaling is enabled, or the desired count
+    otherwise. Drives rate-limit partitioning only (coordination mode is
+    backend-derived). An explicit override is clamped up to that steady-state
+    capacity. Rolling deployments may temporarily allow up to
+    deployment_maximum_percent / 100 times the configured fleet-wide limit.
+  EOT
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_max_replicas == null ||
+      (var.guardian_max_replicas >= 1 && floor(var.guardian_max_replicas) == var.guardian_max_replicas)
+    )
+    error_message = "guardian_max_replicas must be an integer >= 1 when set."
+  }
+}
+
+variable "server_deployment_maximum_percent" {
+  description = <<-EOT
+    ECS deployment_maximum_percent for the server service: the ceiling, as a
+    percentage of desired count, on tasks that may run concurrently during a
+    rolling deploy. Because GUARDIAN_MAX_REPLICAS uses steady-state capacity,
+    the fleet-wide rate allowance may temporarily scale by this percentage
+    during a rollout. Must exceed 100 and, after ECS rounds the resulting task
+    count down, allow at least one task above the minimum positive desired
+    capacity (including autoscaling minimum capacity). The ECS service
+    precondition enforces this because deployment_minimum_healthy_percent is
+    100.
+  EOT
+  type        = number
+  default     = 200
+
+  validation {
+    condition = (
+      var.server_deployment_maximum_percent > 100 &&
+      var.server_deployment_maximum_percent <= 200 &&
+      floor(var.server_deployment_maximum_percent) == var.server_deployment_maximum_percent
+    )
+    error_message = "server_deployment_maximum_percent must be an integer in (100, 200]."
+  }
+}
+
 variable "guardian_rate_limit_enabled" {
   description = "Optional override to enable or disable Guardian HTTP rate limiting"
   type        = bool
@@ -358,6 +441,12 @@ variable "guardian_ack_ecdsa_secret_name" {
 
 variable "guardian_storage_encryption_secret_name" {
   description = "Secrets Manager secret name holding the storage encryption key document ({active, keys}). When set (prod only), the ECS task is granted secretsmanager:GetSecretValue on it and GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID is injected, enabling encryption at rest. Empty leaves storage in plaintext at rest."
+  type        = string
+  default     = ""
+}
+
+variable "guardian_dashboard_cursor_secret_name" {
+  description = "Secrets Manager secret name holding the 64-hex dashboard pagination cursor secret (prod only). Defaults to $${stack_name}/server/dashboard-cursor-secret when empty. The secret must exist before planning or deploying prod."
   type        = string
   default     = ""
 }
