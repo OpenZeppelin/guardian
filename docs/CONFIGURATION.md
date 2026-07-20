@@ -82,7 +82,7 @@ DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian
 |---|---|---|
 | `GUARDIAN_ENV` | _unset_ | Selects the **default** ACK secret source: `prod` → AWS Secrets Manager; anything else (or unset) → ephemeral filesystem keys, regenerated each restart. Override explicitly with `GUARDIAN_ACK_SECRET_PROVIDER` (below) — e.g. `file` for a stable identity without AWS. |
 | `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
-| `GUARDIAN_NETWORK_TYPE` | `MidenDevnet` | Miden network identifier (`MidenDevnet`, `MidenTestnet`, etc.). Required only when you need a non-default network. Pins which Miden RPC and on-chain consensus the server speaks to. |
+| `GUARDIAN_NETWORK_TYPE` | _none — **required**_ | Miden network identifier: `MidenLocal` (`local`), `MidenTestnet` (`testnet`), `MidenDevnet` (`devnet`); case-insensitive. Pins which Miden RPC and on-chain consensus the server speaks to. The server refuses to start when it is unset or unrecognized — there is no fallback network. |
 
 ACK secret IDs are configurable. The server reads two env vars at startup
 and falls back to fixed defaults when they're unset

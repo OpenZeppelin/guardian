@@ -14,7 +14,6 @@ import {
   compileTxScript,
   getRawMidenClient,
   getTransactionProver,
-  resolveMidenRpcEndpoint,
 } from './raw-client.js';
 
 describe('raw-client', () => {
@@ -22,8 +21,31 @@ describe('raw-client', () => {
     mockCreateClient.mockReset();
   });
 
-  it('defaults RPC endpoint resolution to devnet', () => {
-    expect(resolveMidenRpcEndpoint()).toBe('https://rpc.devnet.miden.io');
+  it('rejects shadow client creation without an RPC endpoint', async () => {
+    const client = {
+      accounts: {},
+      sync: vi.fn(),
+      defaultProver: null,
+      storeIdentifier: vi.fn(() => 'browser-db'),
+    };
+
+    await expect(getRawMidenClient(client as any)).rejects.toThrow(
+      'missing required configuration: midenRpcEndpoint',
+    );
+    await expect(getRawMidenClient(client as any, '   ')).rejects.toThrow(
+      'missing required configuration: midenRpcEndpoint',
+    );
+    expect(mockCreateClient).not.toHaveBeenCalled();
+  });
+
+  it('returns an injected raw web client without needing an endpoint', async () => {
+    const rawClient = {
+      executeTransaction: vi.fn(),
+      proveTransaction: vi.fn(),
+    };
+
+    await expect(getRawMidenClient(rawClient as any)).resolves.toBe(rawClient);
+    expect(mockCreateClient).not.toHaveBeenCalled();
   });
 
   it('returns the default prover from a public MidenClient', () => {

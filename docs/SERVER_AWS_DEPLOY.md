@@ -88,7 +88,8 @@ set -a && source .env && set +a
 # Optional: build/deploy ARM64 instead of X86_64
 # export CPU_ARCHITECTURE=ARM64
 
-# Optional: pin the server to a specific Miden network
+# Miden network the server runs against. The server requires this at startup;
+# the deploy script passes MidenTestnet unless you override it here.
 export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
 # Optional: allow dashboard operators and let Terraform create the secret

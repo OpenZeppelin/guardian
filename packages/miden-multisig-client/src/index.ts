@@ -20,7 +20,8 @@
  * // Create a signer
  * const signer = new FalconSigner(secretKey);
  *
- * // Create multisig client
+ * // Create multisig client. Both endpoints are required; midenRpcEndpoint
+ * // must point at the same network as the injected MidenClient.
  * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
  *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',

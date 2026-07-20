@@ -73,7 +73,7 @@ import { AccountInspector } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
-import { getRawMidenClient, getTransactionProver } from './raw-client.js';
+import { getRawMidenClient, getTransactionProver, requireMidenRpcEndpoint } from './raw-client.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -168,10 +168,7 @@ export class Multisig {
   }
 
   private getMidenRpcEndpoint(): string {
-    if (!this.midenRpcEndpoint) {
-      throw new Error('Missing Miden RPC endpoint in MultisigClient configuration');
-    }
-    return this.midenRpcEndpoint;
+    return requireMidenRpcEndpoint(this.midenRpcEndpoint);
   }
 
   private async getRawClient(): Promise<WasmWebClient> {
