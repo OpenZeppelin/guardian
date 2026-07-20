@@ -281,6 +281,21 @@ pub struct MockStorageBackend {
     pub delete_delta_if_candidate_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub update_delta_status_calls:
         Arc<StdMutex<Vec<(String, u64, crate::delta_object::DeltaStatus)>>>,
+    // Canonicalization lifecycle writes. When a scripted outcome is
+    // queued it is returned directly (the fenced-backend behaviors:
+    // `StaleLease` / `NotCandidate` / an error); otherwise the call
+    // falls through to the single-process sequential helper so
+    // existing tests keep observing the underlying submit/delete/
+    // update calls.
+    pub submit_candidate_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::CandidateSubmission, String>>>>,
+    pub promote_candidate_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+    pub promote_candidate_fences: Arc<StdMutex<Vec<Option<crate::storage::LeaseFence>>>>,
+    pub discard_candidate_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+    pub update_candidate_status_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     // Each queue is consumed LIFO via `Vec::pop`, mirroring the
     // existing helpers — callers either push N identical responses or
@@ -433,6 +448,54 @@ impl MockStorageBackend {
         &self,
     ) -> Vec<(String, u64, crate::delta_object::DeltaStatus)> {
         self.update_delta_status_calls.lock().unwrap().clone()
+    }
+
+    pub fn with_submit_candidate(
+        self,
+        response: StdResult<crate::storage::CandidateSubmission, String>,
+    ) -> Self {
+        self.submit_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_promote_candidate(
+        self,
+        response: StdResult<crate::storage::CanonicalWrite, String>,
+    ) -> Self {
+        self.promote_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_discard_candidate(
+        self,
+        response: StdResult<crate::storage::CanonicalWrite, String>,
+    ) -> Self {
+        self.discard_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_update_candidate_status(
+        self,
+        response: StdResult<crate::storage::CanonicalWrite, String>,
+    ) -> Self {
+        self.update_candidate_status_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_promote_candidate_fences(&self) -> Vec<Option<crate::storage::LeaseFence>> {
+        self.promote_candidate_fences.lock().unwrap().clone()
     }
 
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
@@ -693,6 +756,60 @@ impl StorageBackend for MockStorageBackend {
             status,
         ));
         Ok(())
+    }
+
+    async fn submit_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<crate::storage::CandidateSubmission, String> {
+        if let Some(response) = self.submit_candidate_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::submit_candidate_sequential(self, metadata, delta, now).await
+    }
+
+    async fn promote_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: crate::storage::CandidatePromotion,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        self.promote_candidate_fences
+            .lock()
+            .unwrap()
+            .push(promotion.fence.clone());
+        if let Some(response) = self.promote_candidate_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::promote_candidate_sequential(self, metadata, promotion).await
+    }
+
+    async fn discard_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+        _fence: Option<&crate::storage::LeaseFence>,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        if let Some(response) = self.discard_candidate_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, now).await
+    }
+
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: crate::delta_object::DeltaStatus,
+        _fence: Option<&crate::storage::LeaseFence>,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        if let Some(response) = self.update_candidate_status_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::update_candidate_status_sequential(self, account_id, nonce, status).await
     }
 
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).

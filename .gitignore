@@ -12,6 +12,9 @@ templates/
 .env.registry
 docs/guides/miden-dashboard/operators.json
 docs/guides/miden-dashboard/guardian-dashboard/
+docs/guides/horizontal-scaling/operators.json
+docs/guides/horizontal-scaling/ack-keys/
+docs/guides/horizontal-scaling/docker-compose.override.yml
 
 .cursor/
 .claude/

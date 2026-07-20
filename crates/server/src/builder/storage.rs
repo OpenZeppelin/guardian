@@ -100,6 +100,7 @@ impl StorageMetadataBuilder {
             Arc<dyn StorageBackend>,
             Arc<dyn MetadataStore>,
             SharedAuditor,
+            crate::coordination::CoordinationHandles,
         ),
         String,
     > {
@@ -128,11 +129,20 @@ impl StorageMetadataBuilder {
             let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
 
             let storage = wrap_with_encryption(storage).await?;
-            Ok((storage, Arc::new(metadata), auditor))
+            let holder_id = format!("{}-{:016x}", std::process::id(), rand::random::<u64>());
+            let coordination = crate::coordination::CoordinationHandles::postgres(
+                metadata.pool_handle(),
+                holder_id,
+            );
+
+            Ok((storage, Arc::new(metadata), auditor, coordination))
         }
 
         #[cfg(not(feature = "postgres"))]
         {
+            reject_filesystem_in_prod(
+                crate::config::stage::is_prod().map_err(|error| error.to_string())?,
+            )?;
             let storage_path = self
                 .storage_path
                 .ok_or_else(|| "GUARDIAN_STORAGE_PATH is required".to_string())?;
@@ -153,9 +163,27 @@ impl StorageMetadataBuilder {
             let auditor: SharedAuditor = Arc::new(LogAuditor::new());
 
             let storage = wrap_with_encryption(storage).await?;
-            Ok((storage, Arc::new(metadata), auditor))
+            let coordination = crate::coordination::CoordinationHandles::in_memory();
+
+            Ok((storage, Arc::new(metadata), auditor, coordination))
         }
     }
+}
+
+/// The filesystem backend is local to one task and cannot be shared across
+/// replicas, so it is refused in the prod stage. It remains the default for
+/// local development and tests.
+#[cfg(not(feature = "postgres"))]
+fn reject_filesystem_in_prod(is_prod: bool) -> Result<(), String> {
+    if is_prod {
+        return Err(
+            "the filesystem storage backend is not supported in the prod stage \
+                    (GUARDIAN_ENV=prod): it is single-instance only and cannot be shared across \
+                    replicas. Use the Postgres image and set DATABASE_URL."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 async fn wrap_with_encryption<S>(storage: S) -> Result<Arc<dyn StorageBackend>, String>
@@ -431,6 +459,19 @@ mod tests {
                 assert!(builder.database_url.is_none());
             }
         }
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    #[test]
+    fn filesystem_rejected_in_prod_stage() {
+        assert!(
+            reject_filesystem_in_prod(true).is_err(),
+            "prod stage must refuse the filesystem backend"
+        );
+        assert!(
+            reject_filesystem_in_prod(false).is_ok(),
+            "non-prod tolerates the filesystem backend"
+        );
     }
 
     #[cfg(not(feature = "postgres"))]

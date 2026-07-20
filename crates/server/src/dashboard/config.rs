@@ -3,6 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::dashboard::cursor::CursorSecret;
 use crate::middleware::RateLimitConfig;
+use crate::middleware::rate_limit::partition_limit;
 use crate::network::NetworkType;
 
 pub(crate) const OPEN_DASHBOARD_DOMAIN: &str = "*";
@@ -11,15 +12,20 @@ pub(crate) const DEFAULT_COOKIE_NAME: &str = "guardian_operator_session";
 pub(crate) const DEFAULT_NONCE_TTL_SECS: i64 = 300;
 pub(crate) const DEFAULT_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 pub(crate) const DEFAULT_MAX_OUTSTANDING_CHALLENGES: usize = 8;
-pub(crate) const DEFAULT_PUBKEY_RATE_BURST_PER_SEC: u32 = 5;
+pub(crate) const DEFAULT_PUBKEY_RATE_BURST_PER_SEC: u32 = 6;
 pub(crate) const DEFAULT_PUBKEY_RATE_PER_MIN: u32 = 30;
+const ENV_COMMITMENT_RATE_BURST_PER_SEC: &str = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC";
+const ENV_COMMITMENT_RATE_PER_MIN: &str = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN";
 /// Default account-count threshold above which dashboard cross-account
 /// aggregates may return a degraded marker on filesystem-backed
 /// deployments, per FR-029 of `005-operator-dashboard-metrics`.
 pub(crate) const DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD: usize = 1_000;
-/// Default deployment environment identifier exposed on
-/// `GET /dashboard/info`.
-pub(crate) const DEFAULT_ENVIRONMENT: &str = "testnet";
+/// Network used by `Default`/`for_tests()` configs only — production
+/// never reads this: every real server resolves `GUARDIAN_NETWORK_TYPE`
+/// once (in `main.rs`) and threads it here through the builder via
+/// [`DashboardConfig::from_env_for_network`], which overrides the field.
+/// Testnet matches the historical default `environment()` label.
+pub(crate) const DEFAULT_NETWORK_TYPE: NetworkType = NetworkType::MidenTestnet;
 
 #[derive(Clone, Debug)]
 pub struct DashboardConfig {
@@ -30,7 +36,13 @@ pub struct DashboardConfig {
     pub(crate) max_outstanding_challenges: usize,
     pub(crate) commitment_rate_limit: RateLimitConfig,
     pub(crate) filesystem_aggregate_threshold: usize,
-    pub(crate) environment: String,
+    /// The Miden network this server is configured against
+    /// (`GUARDIAN_NETWORK_TYPE`, threaded through the server builder).
+    /// A server talks to exactly one Miden network, so
+    /// network-dependent rendering — the `/dashboard/info` environment
+    /// label, bech32 address HRPs — derives from this, never from
+    /// per-account metadata, which clients may omit at registration.
+    pub(crate) network_type: NetworkType,
     /// Optional pre-parsed HMAC secret for the dashboard cursor codec.
     /// When `None`, [`DashboardState`] generates a fresh random secret
     /// per process — fine for single-replica deployments and unit
@@ -53,9 +65,21 @@ impl DashboardConfig {
                     "GUARDIAN_DASHBOARD_CURSOR_SECRET must be 32 hex-encoded bytes (64 chars): {e}"
                 )
             })?;
+        let max_replicas = crate::middleware::rate_limit::max_replicas_from_env().unwrap_or(1);
+        let commitment_rate_burst_per_sec = positive_u32_from_env(
+            ENV_COMMITMENT_RATE_BURST_PER_SEC,
+            DEFAULT_PUBKEY_RATE_BURST_PER_SEC,
+        )?;
+        let commitment_rate_per_min =
+            positive_u32_from_env(ENV_COMMITMENT_RATE_PER_MIN, DEFAULT_PUBKEY_RATE_PER_MIN)?;
+        let commitment_rate_limit = RateLimitConfig::new(
+            partition_limit(commitment_rate_burst_per_sec, max_replicas).max(1),
+            partition_limit(commitment_rate_per_min, max_replicas).max(1),
+        );
         Ok(Self {
-            environment: environment_for_network(network_type).to_string(),
+            network_type,
             cursor_secret,
+            commitment_rate_limit,
             ..Self::default()
         })
     }
@@ -68,12 +92,28 @@ impl DashboardConfig {
         self.filesystem_aggregate_threshold
     }
 
-    pub(crate) fn environment(&self) -> &str {
-        &self.environment
+    pub(crate) fn environment(&self) -> &'static str {
+        environment_for_network(self.network_type)
+    }
+
+    pub(crate) fn network_type(&self) -> NetworkType {
+        self.network_type
     }
 
     pub(crate) fn take_cursor_secret(&mut self) -> Option<CursorSecret> {
         self.cursor_secret.take()
+    }
+}
+
+fn positive_u32_from_env(key: &str, default: u32) -> std::result::Result<u32, String> {
+    match std::env::var(key) {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(0) => Err(format!("{key} must be a positive integer, got 0")),
+            Ok(value) => Ok(value),
+            Err(_) => Err(format!("{key} must be a positive integer, got {raw:?}")),
+        },
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{key} must contain valid UTF-8")),
     }
 }
 
@@ -99,7 +139,7 @@ impl Default for DashboardConfig {
                 per_min: DEFAULT_PUBKEY_RATE_PER_MIN,
             },
             filesystem_aggregate_threshold: DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD,
-            environment: DEFAULT_ENVIRONMENT.to_string(),
+            network_type: DEFAULT_NETWORK_TYPE,
             cursor_secret: None,
         }
     }
@@ -107,37 +147,41 @@ impl Default for DashboardConfig {
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
-    use std::sync::{LazyLock, Mutex};
-
     use super::*;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    // Crate-wide env lock (not module-local): `GUARDIAN_MAX_REPLICAS` is also
+    // mutated by the rate-limit middleware tests, and the process environment
+    // is one shared global.
+    use crate::testing::env_lock::ENV_LOCK;
 
     struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
+        previous: Vec<(&'static str, Option<String>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvVarGuard {
         // secret-fields-allow: test-only env mutation guarded by ENV_LOCK
         fn set(key: &'static str, value: &str) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
-            let previous = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) };
-            Self {
-                key,
-                previous,
-                _lock: lock,
-            }
+            Self::set_all(&[(key, Some(value))])
         }
 
         fn remove(key: &'static str) -> Self {
+            Self::set_all(&[(key, None)])
+        }
+
+        // secret-fields-allow: test-only env mutation guarded by ENV_LOCK
+        fn set_all(values: &[(&'static str, Option<&str>)]) -> Self {
             let lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
-            let previous = std::env::var(key).ok();
-            unsafe { std::env::remove_var(key) };
+            let previous = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect();
+            for (key, value) in values {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
             Self {
-                key,
                 previous,
                 _lock: lock,
             }
@@ -146,9 +190,11 @@ mod tests {
 
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
+            for (key, previous) in &self.previous {
+                match previous {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
             }
         }
     }
@@ -175,6 +221,72 @@ mod tests {
             config.filesystem_aggregate_threshold(),
             DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD
         );
+    }
+
+    #[test]
+    fn commitment_rate_limit_unpartitioned_for_single_replica() {
+        let _guard = EnvVarGuard::remove("GUARDIAN_MAX_REPLICAS");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        assert_eq!(
+            config.commitment_rate_limit.burst_per_sec,
+            DEFAULT_PUBKEY_RATE_BURST_PER_SEC
+        );
+        assert_eq!(
+            config.commitment_rate_limit.per_min,
+            DEFAULT_PUBKEY_RATE_PER_MIN
+        );
+    }
+
+    #[test]
+    fn commitment_rate_limit_is_partitioned_by_max_replicas() {
+        let _guard = EnvVarGuard::set("GUARDIAN_MAX_REPLICAS", "5");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        assert_eq!(config.commitment_rate_limit.burst_per_sec, 1); // 6 / 5
+        assert_eq!(config.commitment_rate_limit.per_min, 6); // 30 / 5
+    }
+
+    #[test]
+    fn commitment_rate_limit_is_partitioned_by_six_replicas() {
+        let _guard = EnvVarGuard::set("GUARDIAN_MAX_REPLICAS", "6");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        assert_eq!(config.commitment_rate_limit.burst_per_sec, 1);
+        assert_eq!(config.commitment_rate_limit.per_min, 5);
+    }
+
+    #[test]
+    fn commitment_rate_limit_budgets_can_be_overridden() {
+        let _guard = EnvVarGuard::set_all(&[
+            ("GUARDIAN_MAX_REPLICAS", Some("6")),
+            (ENV_COMMITMENT_RATE_BURST_PER_SEC, Some("12")),
+            (ENV_COMMITMENT_RATE_PER_MIN, Some("60")),
+        ]);
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        assert_eq!(config.commitment_rate_limit.burst_per_sec, 2);
+        assert_eq!(config.commitment_rate_limit.per_min, 10);
+    }
+
+    #[test]
+    fn commitment_rate_limit_rejects_invalid_overrides() {
+        let _guard = EnvVarGuard::set(ENV_COMMITMENT_RATE_PER_MIN, "not-a-number");
+        let error = DashboardConfig::from_env_for_network(NetworkType::MidenTestnet)
+            .expect_err("invalid rate must fail");
+        assert!(error.contains(ENV_COMMITMENT_RATE_PER_MIN));
+    }
+
+    #[test]
+    fn commitment_rate_limit_partition_clamps_to_at_least_one() {
+        let _guard = EnvVarGuard::set("GUARDIAN_MAX_REPLICAS", "50");
+        let config =
+            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet).expect("config");
+        // Floor would be 0 (deny every login on this replica); the ≥1 clamp
+        // keeps operator login alive at the cost of a replica-count-bounded
+        // aggregate for a single commitment.
+        assert_eq!(config.commitment_rate_limit.burst_per_sec, 1);
+        assert_eq!(config.commitment_rate_limit.per_min, 1);
     }
 
     #[test]

@@ -129,6 +129,11 @@ output "storage_encryption_secret_name" {
   value       = local.storage_encryption_secret_name
 }
 
+output "dashboard_cursor_secret_name" {
+  description = "Secrets Manager name for the shared dashboard pagination cursor secret"
+  value       = local.dashboard_cursor_secret_name
+}
+
 output "deployment_stage" {
   description = "Active deployment stage"
   value       = local.stage_name
@@ -177,6 +182,21 @@ output "guardian_rate_limit_enabled" {
 output "guardian_rate_per_min" {
   description = "Effective Guardian HTTP sustained rate limit"
   value       = local.effective_guardian_rate_per_min
+}
+
+output "guardian_max_replicas" {
+  description = "Effective GUARDIAN_MAX_REPLICAS rate-limit divisor after clamping to the steady-state ECS capacity"
+  value       = local.effective_guardian_max_replicas
+}
+
+output "guardian_dashboard_commitment_rate_burst_per_sec" {
+  description = "Effective fleet-wide dashboard per-commitment burst rate limit"
+  value       = local.dashboard_rate_burst_per_sec
+}
+
+output "guardian_dashboard_commitment_rate_per_min" {
+  description = "Effective fleet-wide dashboard per-commitment sustained rate limit"
+  value       = local.dashboard_rate_per_min
 }
 
 output "guardian_db_pool_max_size" {

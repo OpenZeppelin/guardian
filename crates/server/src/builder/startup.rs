@@ -19,6 +19,7 @@ use std::net::SocketAddr;
 pub(crate) struct StartupInfo {
     network: NetworkType,
     storage: StorageType,
+    coordination_mode: &'static str,
     ecdsa_backend: &'static str,
     falcon_commitment: String,
     ecdsa_commitment: String,
@@ -35,6 +36,7 @@ impl StartupInfo {
     pub(crate) fn new(
         network: NetworkType,
         storage: StorageType,
+        coordination_mode: &'static str,
         ecdsa_backend: &'static str,
         falcon_commitment: String,
         ecdsa_commitment: String,
@@ -48,6 +50,7 @@ impl StartupInfo {
         Self {
             network,
             storage,
+            coordination_mode,
             ecdsa_backend,
             falcon_commitment,
             ecdsa_commitment,
@@ -74,6 +77,25 @@ impl StartupInfo {
             "network"
         );
         tracing::info!(storage = %self.storage, "storage backend");
+        tracing::info!(
+            mode = self.coordination_mode,
+            backend = backend_label(&self.storage),
+            stage = if crate::config::stage::is_prod().unwrap_or(false) {
+                "prod"
+            } else {
+                "non-prod"
+            },
+            // Resolved value (FR-019), matching the rate limiter's fallback —
+            // never the raw env string, which could disagree with what is
+            // actually enforced.
+            max_replicas = crate::middleware::rate_limit::max_replicas_from_env().unwrap_or(1),
+            cursor_secret = if self.cursor_secret_configured {
+                "configured"
+            } else {
+                "ephemeral"
+            },
+            "coordination",
+        );
         tracing::info!(
             falcon = "enabled",
             falcon_commitment = %self.falcon_commitment,
@@ -115,6 +137,13 @@ impl StartupInfo {
     }
 }
 
+fn backend_label(storage: &StorageType) -> &'static str {
+    match storage {
+        StorageType::Postgres => "postgres",
+        StorageType::Filesystem => "filesystem",
+    }
+}
+
 fn port_label(port: Option<u16>) -> String {
     match port {
         Some(port) => port.to_string(),
@@ -142,6 +171,7 @@ mod tests {
         let info = StartupInfo::new(
             NetworkType::MidenDevnet,
             StorageType::Postgres,
+            "shared",
             "aws-kms",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
@@ -160,6 +190,7 @@ mod tests {
 
         assert_eq!(info.network, NetworkType::MidenDevnet);
         assert_eq!(info.storage, StorageType::Postgres);
+        assert_eq!(info.coordination_mode, "shared");
         assert_eq!(info.ecdsa_backend, "aws-kms");
         assert_eq!(info.falcon_commitment, "0xfalcon");
         assert_eq!(info.ecdsa_commitment, "0xecdsa");
@@ -179,6 +210,7 @@ mod tests {
         let info = StartupInfo::new(
             NetworkType::MidenLocal,
             StorageType::Filesystem,
+            "single-process",
             "in-memory",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
@@ -197,6 +229,33 @@ mod tests {
         assert!(!info.cursor_secret_configured);
         assert_eq!(info.http_port, None);
         assert_eq!(info.grpc_port, None);
+    }
+
+    #[test]
+    fn backend_label_maps_storage_type() {
+        assert_eq!(backend_label(&StorageType::Postgres), "postgres");
+        assert_eq!(backend_label(&StorageType::Filesystem), "filesystem");
+    }
+
+    #[test]
+    fn coordination_mode_label_is_logged_as_resolved() {
+        let info = StartupInfo::new(
+            NetworkType::MidenDevnet,
+            StorageType::Postgres,
+            "single-process",
+            "in-memory",
+            "0xfalcon".to_string(),
+            "0xecdsa".to_string(),
+            None,
+            0,
+            false,
+            None,
+            None,
+            None,
+        );
+        // Mode reflects the resolved coordination backing passed in, not the
+        // storage type — so it cannot claim "shared" while actually in-memory.
+        assert_eq!(info.coordination_mode, "single-process");
     }
 
     #[test]

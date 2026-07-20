@@ -157,7 +157,7 @@ impl AckSecretProviderKind {
                 )));
             }
         };
-        Self::resolve(raw.as_deref(), is_prod_environment()?)
+        Self::resolve(raw.as_deref(), crate::config::stage::is_prod()?)
     }
 
     /// Pure resolution of the provider kind, split out from [`from_env`] so it is
@@ -200,19 +200,10 @@ impl AckSecretProviderKind {
     }
 }
 
-fn is_prod_environment() -> Result<bool> {
-    match std::env::var(ENV_GUARDIAN_ENV) {
-        Ok(value) => Ok(value.eq_ignore_ascii_case(PROD_ENV)),
-        Err(std::env::VarError::NotPresent) => Ok(false),
-        Err(std::env::VarError::NotUnicode(_)) => Err(GuardianError::ConfigurationError(format!(
-            "{ENV_GUARDIAN_ENV} must contain valid UTF-8"
-        ))),
-    }
-}
-
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use crate::error::GuardianError;
     use async_trait::async_trait;
     use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, FilesystemKeyStore, KeyStore};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;

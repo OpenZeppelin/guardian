@@ -1,0 +1,28 @@
+# Local-build override for testing UNRELEASED changes — e.g. a feature branch the
+# published `ghcr.io/openzeppelin/guardian` image does not yet contain. Builds
+# both replicas from the repo-root Dockerfile (the `postgres` feature, like the
+# published image) instead of pulling from the registry.
+#
+# Copy it into place; Compose then auto-merges it onto docker-compose.yml with no
+# -f flags to remember (so every command in README.md works unchanged):
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose up -d --build
+#
+# Once the changes ship in a published image, delete docker-compose.override.yml
+# and `docker compose up -d` uses the registry image again.
+
+x-local-build: &local-build
+  image: guardian-server:local
+  pull_policy: build
+  build:
+    context: ../../..
+    dockerfile: Dockerfile
+    target: server-runner
+    args:
+      GUARDIAN_SERVER_FEATURES: postgres
+
+services:
+  server-a:
+    <<: *local-build
+  server-b:
+    <<: *local-build

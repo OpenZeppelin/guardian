@@ -27,6 +27,10 @@ const DEFAULT_BURST_PER_SEC: u32 = 10;
 const DEFAULT_PER_MIN: u32 = 60;
 /// Environment variable for enabling or disabling rate limiting
 const ENV_RATE_LIMIT_ENABLED: &str = "GUARDIAN_RATE_LIMIT_ENABLED";
+/// Deployment's steady-state replica capacity; configured limits are divided
+/// by it so per-process enforcement keeps the steady-state fleet aggregate at
+/// or below the fleet-wide limit (issue #242). Drives rate limiting only.
+const ENV_MAX_REPLICAS: &str = "GUARDIAN_MAX_REPLICAS";
 /// Cleanup interval for stale entries
 const CLEANUP_INTERVAL_SECS: u64 = 60;
 
@@ -41,19 +45,72 @@ pub struct RateLimitConfig {
     pub per_min: u32,
 }
 
+/// Resolved `GUARDIAN_MAX_REPLICAS`: unset means a single replica (`1`); a set
+/// value must parse to an integer ≥ 1. A set-but-invalid value is an error
+/// rather than a silent `1`: falling back would disable partitioning and let
+/// the fleet aggregate reach `max_replicas ×` the global limit — the exact
+/// fail-open FR-009 exists to prevent. The prod builder guard turns this error
+/// into a startup failure; non-prod callers warn and fall back.
+pub(crate) fn max_replicas_from_env() -> Result<u32, String> {
+    match env::var(ENV_MAX_REPLICAS) {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(0) => Err(format!(
+                "{ENV_MAX_REPLICAS} must be a positive integer, got 0"
+            )),
+            Ok(value) => Ok(value),
+            Err(_) => Err(format!(
+                "{ENV_MAX_REPLICAS} must be a positive integer (the autoscaling max \
+                 capacity), got {raw:?}"
+            )),
+        },
+        Err(env::VarError::NotPresent) => Ok(1),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(format!("{ENV_MAX_REPLICAS} must contain valid UTF-8"))
+        }
+    }
+}
+
 impl RateLimitConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Self {
         let enabled = env_flag(ENV_RATE_LIMIT_ENABLED, true);
-        let burst_per_sec = env::var("GUARDIAN_RATE_BURST_PER_SEC")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_BURST_PER_SEC);
+        let max_replicas = match max_replicas_from_env() {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "invalid GUARDIAN_MAX_REPLICAS; treating as 1 (no rate-limit \
+                     partitioning — the fleet aggregate can exceed the global limit). \
+                     The prod stage refuses to start on this instead."
+                );
+                1
+            }
+        };
+        let burst_per_sec = partition_limit(
+            env::var("GUARDIAN_RATE_BURST_PER_SEC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_BURST_PER_SEC),
+            max_replicas,
+        );
+        let per_min = partition_limit(
+            env::var("GUARDIAN_RATE_PER_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_PER_MIN),
+            max_replicas,
+        );
 
-        let per_min = env::var("GUARDIAN_RATE_PER_MIN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_PER_MIN);
+        if enabled && (burst_per_sec == 0 || per_min == 0) {
+            tracing::warn!(
+                max_replicas,
+                burst_per_sec,
+                per_min,
+                "rate limit partitions to 0 per replica (global limit is below GUARDIAN_MAX_REPLICAS); \
+                 this replica will throttle all traffic. Raise the global rate limit or lower \
+                 GUARDIAN_MAX_REPLICAS."
+            );
+        }
 
         Self {
             enabled,
@@ -62,7 +119,11 @@ impl RateLimitConfig {
         }
     }
 
-    /// Create a new config with custom values
+    /// Create a new config with custom values.
+    ///
+    /// Values are enforced per process, as-is: unlike [`Self::from_env`], no
+    /// `GUARDIAN_MAX_REPLICAS` division is applied. Callers wiring explicit
+    /// limits into a multi-replica deployment must pass per-replica values.
     pub fn new(burst_per_sec: u32, per_min: u32) -> Self {
         Self {
             enabled: true,
@@ -80,6 +141,16 @@ impl Default for RateLimitConfig {
             per_min: DEFAULT_PER_MIN,
         }
     }
+}
+
+/// Per-replica share of a global limit: `global / max_replicas` (floor), with
+/// `max_replicas` clamped to ≥ 1. The floor — not a round-up or a ≥1 clamp —
+/// guarantees the fleet aggregate (`max_replicas × share`) never exceeds the
+/// global limit (FR-009). A share of `0` means this replica denies all requests;
+/// that only happens when the global limit is below the replica count (an
+/// extreme misconfiguration), and it still never exceeds the global limit.
+pub(crate) fn partition_limit(global_limit: u32, max_replicas: u32) -> u32 {
+    global_limit / max_replicas.max(1)
 }
 
 /// Parse a boolean env flag: unset → `default_value`; `0`/`false`/
@@ -426,11 +497,86 @@ mod tests {
     use axum::http::header::HeaderValue;
     use std::net::{IpAddr, SocketAddr};
 
+    // Serializes the env-mutating `from_env` tests so they don't race the
+    // shared process environment under the multi-threaded test runner. The
+    // crate-wide lock (not a module-local one) because `GUARDIAN_MAX_REPLICAS`
+    // is also mutated by the dashboard-config tests.
+    use crate::testing::env_lock::ENV_LOCK;
+
     fn request_with_peer_ip(peer_ip: IpAddr) -> Request<Body> {
         let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         req.extensions_mut()
             .insert(ConnectInfo(SocketAddr::new(peer_ip, 12345)));
         req
+    }
+
+    #[test]
+    fn max_replicas_unset_is_one_and_invalid_is_rejected() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var(ENV_MAX_REPLICAS);
+        }
+        assert_eq!(max_replicas_from_env(), Ok(1), "unset means one replica");
+
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::set_var(ENV_MAX_REPLICAS, " 6 ");
+        }
+        assert_eq!(max_replicas_from_env(), Ok(6), "whitespace is tolerated");
+
+        for invalid in ["0", "six", "", "-2", "2.5"] {
+            // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+            unsafe {
+                env::set_var(ENV_MAX_REPLICAS, invalid);
+            }
+            assert!(
+                max_replicas_from_env().is_err(),
+                "{invalid:?} must be rejected, not silently treated as 1"
+            );
+        }
+
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var(ENV_MAX_REPLICAS);
+        }
+    }
+
+    #[test]
+    fn from_env_falls_back_to_no_partitioning_on_invalid_max_replicas() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::set_var("GUARDIAN_RATE_BURST_PER_SEC", "600");
+            env::set_var("GUARDIAN_RATE_PER_MIN", "6000");
+            env::set_var(ENV_MAX_REPLICAS, "not-a-number");
+        }
+
+        let config = RateLimitConfig::from_env();
+
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
+            env::remove_var("GUARDIAN_RATE_PER_MIN");
+            env::remove_var(ENV_MAX_REPLICAS);
+        }
+
+        // Non-prod behavior: warn and serve the unpartitioned global limit.
+        // The prod builder guard refuses to start on the same input.
+        assert_eq!(config.burst_per_sec, 600);
+        assert_eq!(config.per_min, 6000);
+    }
+
+    #[test]
+    fn partition_divides_global_limit_by_max_replicas() {
+        assert_eq!(partition_limit(600, 6), 100);
+        assert_eq!(partition_limit(600, 1), 600);
+        assert_eq!(partition_limit(600, 0), 600, "zero replicas treated as one");
+        // global < max_replicas: floor is 0 (deny) so the fleet aggregate
+        // (6 x 0 = 0) never exceeds the global limit (FR-009).
+        assert_eq!(partition_limit(5, 6), 0);
+        // 6 x 100 = 600 == global; never exceeds.
+        assert!(partition_limit(600, 6) * 6 <= 600);
     }
 
     #[test]
@@ -451,12 +597,13 @@ mod tests {
 
     #[test]
     fn test_rate_limit_config_from_env_defaults() {
-        // Clear any existing env vars
-        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
         unsafe {
             env::remove_var(ENV_RATE_LIMIT_ENABLED);
             env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
             env::remove_var("GUARDIAN_RATE_PER_MIN");
+            env::remove_var(ENV_MAX_REPLICAS);
         }
 
         let config = RateLimitConfig::from_env();
@@ -467,7 +614,8 @@ mod tests {
 
     #[test]
     fn test_rate_limit_config_from_env_disabled() {
-        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
         unsafe {
             env::set_var(ENV_RATE_LIMIT_ENABLED, "false");
         }
@@ -475,10 +623,33 @@ mod tests {
         let config = RateLimitConfig::from_env();
         assert!(!config.enabled);
 
-        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
         unsafe {
             env::remove_var(ENV_RATE_LIMIT_ENABLED);
         }
+    }
+
+    #[test]
+    fn from_env_partitions_limits_by_max_replicas() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::set_var("GUARDIAN_RATE_BURST_PER_SEC", "600");
+            env::set_var("GUARDIAN_RATE_PER_MIN", "6000");
+            env::set_var(ENV_MAX_REPLICAS, "6");
+        }
+
+        let config = RateLimitConfig::from_env();
+
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
+            env::remove_var("GUARDIAN_RATE_PER_MIN");
+            env::remove_var(ENV_MAX_REPLICAS);
+        }
+
+        assert_eq!(config.burst_per_sec, 100);
+        assert_eq!(config.per_min, 1000);
     }
 
     #[test]
@@ -623,7 +794,8 @@ mod tests {
 
     #[test]
     fn test_rate_limit_layer_from_env() {
-        // SAFETY: This test runs single-threaded and these env vars are test-specific
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
         unsafe {
             env::remove_var(ENV_RATE_LIMIT_ENABLED);
             env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");

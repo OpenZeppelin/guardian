@@ -110,6 +110,51 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Representation of the `auth_sessions` table.
+    ///
+    /// Shared operator/EVM session store for horizontal scaling (issue #242).
+    auth_sessions (realm, token_digest) {
+        realm -> Text,
+        token_digest -> Bytea,
+        subject -> Jsonb,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        revoked_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `auth_challenges` table.
+    ///
+    /// Shared operator/EVM login-challenge store for horizontal scaling
+    /// (issue #242). Composite key `(realm, challenge_key)`.
+    auth_challenges (realm, challenge_key) {
+        realm -> Text,
+        challenge_key -> Text,
+        principal -> Text,
+        payload -> Jsonb,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        consumed_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `worker_leases` table.
+    ///
+    /// Single-owner background-worker coordination for horizontal scaling
+    /// (issue #242).
+    worker_leases (lease_name) {
+        lease_name -> Text,
+        holder_id -> Text,
+        acquired_at -> Timestamptz,
+        renewed_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        fence_token -> Int8,
+    }
+}
+
+diesel::table! {
     /// Single-row store-level encryption marker. Its presence indicates the
     /// store is encrypted.
     storage_encryption_marker (id) {

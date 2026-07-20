@@ -3,6 +3,7 @@ use crate::error::GuardianError;
 use crate::services::ResolvedAccount;
 use crate::state::AppState;
 use crate::state_object::StateObject;
+use crate::storage::CandidateSubmission;
 use tracing::{debug, error, info, warn};
 
 pub struct CommitContext<'a> {
@@ -37,9 +38,17 @@ impl DeltaCommitStrategy {
         match self {
             DeltaCommitStrategy::Candidate => {
                 delta.status = DeltaStatus::candidate(ctx.now.clone());
-                ctx.resolved
+                // One storage write covers the candidate row and the
+                // pending-candidate flag: a failure between the two can
+                // otherwise leave a candidate the worker never selects
+                // while new submissions stay rejected. A Conflict is the
+                // race-proof form of the pre-commit pending-candidate
+                // gate: the losing side of two concurrent submissions
+                // gets the same 409 it would have gotten arriving late.
+                let outcome = ctx
+                    .resolved
                     .storage
-                    .submit_delta(delta)
+                    .submit_candidate(ctx.state.metadata.as_ref(), delta, &ctx.now)
                     .await
                     .map_err(|e| {
                         error!(
@@ -50,20 +59,23 @@ impl DeltaCommitStrategy {
                         );
                         GuardianError::StorageError(format!("Failed to submit delta: {e}"))
                     })?;
-
-                // Set flag indicating account has a pending candidate
-                ctx.state
-                    .metadata
-                    .set_has_pending_candidate(&delta.account_id, true, &ctx.now)
-                    .await
-                    .map_err(|e| {
+                match outcome {
+                    CandidateSubmission::Submitted => Ok(()),
+                    CandidateSubmission::Conflict => {
                         warn!(
                             account_id = %delta.account_id,
-                            error = %e,
-                            "Failed to set has_pending_candidate flag"
+                            nonce = delta.nonce,
+                            "Candidate submission lost the commit race; rejecting as pending-delta conflict"
                         );
-                        GuardianError::StorageError(format!("Failed to update metadata: {e}"))
-                    })
+                        Err(GuardianError::ConflictPendingDelta)
+                    }
+                    CandidateSubmission::CommitmentMismatch { expected } => {
+                        Err(GuardianError::CommitmentMismatch {
+                            expected,
+                            actual: delta.prev_commitment.clone(),
+                        })
+                    }
+                }
             }
             DeltaCommitStrategy::Optimistic => {
                 delta.status = DeltaStatus::canonical(ctx.now.clone());
@@ -278,6 +290,51 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, GuardianError::StorageError(_)));
         assert!(err.to_string().contains("Storage unavailable"));
+    }
+
+    #[tokio::test]
+    async fn candidate_commit_maps_transactional_commitment_mismatch() {
+        let mock_storage = MockStorageBackend::new().with_submit_candidate(Ok(
+            CandidateSubmission::CommitmentMismatch {
+                expected: "current_commitment".to_string(),
+            },
+        ));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_metadata),
+        );
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            storage: state.storage.clone(),
+        };
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+        let mut delta = create_test_delta();
+
+        let result = DeltaCommitStrategy::Candidate
+            .commit(
+                ctx,
+                &mut delta,
+                serde_json::json!({"new": "state"}),
+                "new_commitment",
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(GuardianError::CommitmentMismatch {
+                expected,
+                actual,
+            }) if expected == "current_commitment" && actual == "prev_commitment"
+        ));
     }
 
     #[tokio::test]
