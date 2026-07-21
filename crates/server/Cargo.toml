@@ -32,7 +32,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-process = "2.4"
 pin-project-lite = "0.2"
 sha2 = "0.10"
-rand = "0.9"
+rand = { workspace = true }
 rand_chacha = { workspace = true }
 secrecy = { version = "0.10", default-features = false }
 serde = { workspace = true }

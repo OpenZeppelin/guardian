@@ -372,19 +372,19 @@ impl MultisigClient {
                     ))
                 })?;
 
-            let account_delta = tx_result.account_delta();
-            let rebuilt: Account = if account_delta.is_full_state() {
-                Account::try_from(account_delta).map_err(|e| {
+            let account_patch = tx_result.account_patch();
+            let rebuilt: Account = if account_patch.is_full_state() {
+                Account::try_from(account_patch).map_err(|e| {
                     MultisigError::MidenClient(format!(
-                        "failed to build account from full state delta: {}",
+                        "failed to build account from full state patch: {}",
                         e
                     ))
                 })?
             } else {
                 let mut acc = base_account;
-                acc.apply_delta(account_delta).map_err(|e| {
+                acc.apply_patch(account_patch).map_err(|e| {
                     MultisigError::MidenClient(format!(
-                        "failed to apply transaction delta to account: {}",
+                        "failed to apply transaction patch to account: {}",
                         e
                     ))
                 })?;
@@ -494,7 +494,8 @@ mod tests {
     use guardian_shared::FromJson;
     use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word};
 
@@ -504,8 +505,9 @@ mod tests {
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .unwrap();

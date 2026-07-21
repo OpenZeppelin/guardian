@@ -5,7 +5,7 @@
 # It can be used standalone or in conjunction with other auth components like multisig.
 
 use miden::protocol::active_account
-use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
+use {AUTH_UNAUTHORIZED_EVENT} from miden::protocol::auth
 use miden::protocol::native_account
 
 # IMPORTANT SECURITY NOTES
@@ -121,6 +121,7 @@ end
 #!      [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
 #! - To update the key without requiring GUARDIAN signature, ensure
 #!   GUARDIAN_SELECTOR_SLOT = 0 (OFF) before calling this.
+@account_procedure
 pub proc update_guardian_public_key
     exec.disable_guardian
     # ------ Update the GUARDIAN public key ------
@@ -172,6 +173,7 @@ end
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
 #! - If selector is OFF (0), GUARDIAN verification is skipped
 #! - Selector value is read from initial storage state
+@account_procedure
 pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item

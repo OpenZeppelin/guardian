@@ -6,15 +6,14 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use miden_protocol::{
-    CoreLibrary, ProtocolLib,
     account::{AccountComponent, AccountComponentMetadata, StorageSlot},
     assembly::{
-        Assembler, DefaultSourceManager, Library, Module, ModuleKind, Path as LibraryPath,
-        SourceManager,
+        Assembler, DefaultSourceManager, Library, Linkage, Module, ModuleKind, ModuleParser,
+        Path as LibraryPath, SourceManagerSync,
     },
     transaction::TransactionKernel,
 };
-use miden_standards::StandardsLib;
+use miden_standards::{StandardsLib, code_builder::CodeBuilder};
 
 /// MASM root set by build.rs
 fn masm_root() -> PathBuf {
@@ -70,94 +69,106 @@ fn openzeppelin_library_path(path: &Path, root: &Path) -> Result<String> {
     Ok(format!("openzeppelin::{path_segments}"))
 }
 
+/// CodeBuilder with every `openzeppelin::auth` module statically linked.
+fn auth_code_builder() -> Result<CodeBuilder> {
+    let mut builder = CodeBuilder::new();
+
+    for path in collect_all_masm_files(&auth_dir())? {
+        let lib_path = openzeppelin_library_path(&path, &masm_root())?;
+        let code = fs::read_to_string(&path)
+            .map_err(|e| anyhow!("failed to read {}: {e}", path.display()))?;
+        builder
+            .link_module(&lib_path, code)
+            .map_err(|e| anyhow!("failed to link auth module {lib_path}: {e}"))?;
+    }
+
+    Ok(builder)
+}
+
 fn compile_component(path: &Path, slots: Vec<StorageSlot>) -> Result<AccountComponent> {
-    let asm = build_component_assembler()?;
+    let builder = auth_code_builder()?;
     let code = fs::read_to_string(path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-    let library = compile_to_library(&code, &asm)?;
-    let metadata = AccountComponentMetadata::new(openzeppelin_library_path(path, &masm_root())?);
-    let component = AccountComponent::new(library, slots, metadata)
+    let component_path = openzeppelin_library_path(path, &masm_root())?;
+
+    let component_code = builder
+        .compile_component_code(&component_path, code)
+        .map_err(|e| anyhow!("failed to compile component {component_path}: {e}"))?;
+
+    let metadata = AccountComponentMetadata::new(component_path);
+    let component = AccountComponent::new(component_code, slots, metadata)
         .map_err(|e| anyhow!("failed to create component: {e}"))?;
 
     Ok(component)
 }
 
-fn build_component_assembler() -> Result<Assembler> {
-    let oz_lib = build_openzeppelin_library()?;
-    let standards_lib: Library = StandardsLib::default().into();
-
-    let mut asm = build_library_assembler()?;
-    let _ = asm.link_static_library(oz_lib);
-    let _ = asm.link_static_library(standards_lib);
-
-    Ok(asm)
+fn kernel_assembler(source_manager: Arc<dyn SourceManagerSync>) -> Result<Assembler> {
+    let mut assembler = TransactionKernel::assembler_with_source_manager(source_manager);
+    assembler
+        .link_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
+        .map_err(|e| anyhow!("failed to link Miden standards library: {e}"))?;
+    Ok(assembler)
 }
 
-fn build_library_assembler() -> Result<Assembler> {
-    Assembler::default()
-        .with_dynamic_library(CoreLibrary::default())
-        .map_err(|e| anyhow!("failed to load Miden core library: {e}"))?
-        .with_dynamic_library(ProtocolLib::default())
-        .map_err(|e| anyhow!("failed to load Miden protocol library: {e}"))
+fn parse_module(
+    parser_path: &str,
+    code: String,
+    source_manager: Arc<dyn SourceManagerSync>,
+) -> Result<Box<Module>> {
+    let mut parser = ModuleParser::new(Some(ModuleKind::Library));
+    parser
+        .parse_str(Some(LibraryPath::new(parser_path)), code, source_manager)
+        .map_err(|e| anyhow!("failed to parse module {parser_path}: {e}"))
+}
+
+/// Parses all `openzeppelin::auth` modules with the given source manager.
+fn parse_auth_modules(source_manager: Arc<dyn SourceManagerSync>) -> Result<Vec<Module>> {
+    let mut modules = Vec::new();
+
+    for path in collect_all_masm_files(&auth_dir())? {
+        let lib_path = openzeppelin_library_path(&path, &masm_root())?;
+        let code = fs::read_to_string(&path)
+            .map_err(|e| anyhow!("failed to read {}: {e}", path.display()))?;
+        modules.push(*parse_module(&lib_path, code, source_manager.clone())?);
+    }
+
+    Ok(modules)
+}
+
+/// Assembles a single-root library with the `openzeppelin::auth` modules available as support.
+fn assemble_with_auth_support(
+    package_name: &str,
+    root_path: &str,
+    code: String,
+) -> Result<Library> {
+    let source_manager: Arc<dyn SourceManagerSync> = Arc::new(DefaultSourceManager::default());
+    let assembler = kernel_assembler(source_manager.clone())?;
+
+    let root = parse_module(root_path, code, source_manager.clone())?;
+    let support = parse_auth_modules(source_manager)?;
+
+    let library = assembler
+        .assemble_library(package_name, root, support)
+        .map_err(|e| anyhow!("failed to assemble {package_name} library: {e:?}"))?;
+
+    Ok(*library)
 }
 
 /// Builds the reusable OpenZeppelin auth library from canonical MASM sources.
 fn build_openzeppelin_library() -> Result<Library> {
-    let root = auth_dir();
-    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
+    let source_manager: Arc<dyn SourceManagerSync> = Arc::new(DefaultSourceManager::default());
+    let assembler = kernel_assembler(source_manager.clone())?;
 
-    let masm_files = collect_all_masm_files(&root)?;
-    let mut modules = Vec::new();
-
-    for path in &masm_files {
-        let lib_path = openzeppelin_library_path(path, &masm_root())?;
-        let code = fs::read_to_string(path)?;
-
-        let module = Module::parser(ModuleKind::Library)
-            .parse_str(LibraryPath::new(&lib_path), code, source_manager.clone())
-            .map_err(|e| anyhow!("failed to parse module {lib_path}: {e}"))?;
-
-        modules.push(module);
-    }
-
-    // Assemble library with miden-standards library linked (provides miden::standards::auth::*)
-    let mut assembler = build_library_assembler()?;
-    let standards_lib: Library = StandardsLib::default().into();
-    let _ = assembler.link_dynamic_library(&standards_lib);
-
-    for (path, module) in masm_files.iter().zip(modules.iter().cloned()) {
-        assembler
-            .clone()
-            .assemble_library([module])
-            .map_err(|e| anyhow!("failed to assemble auth module {}: {e:?}", path.display()))?;
-    }
+    let modules = parse_auth_modules(source_manager)?;
+    let mut modules = modules.into_iter();
+    let root = modules
+        .next()
+        .ok_or_else(|| anyhow!("no MASM modules found under {}", auth_dir().display()))?;
 
     let library = assembler
-        .clone()
-        .assemble_library(modules)
+        .assemble_library("openzeppelin", root, modules)
         .map_err(|e| anyhow!("failed to assemble openzeppelin library: {e:?}"))?;
 
-    Ok((*library).clone())
-}
-
-// Builds the assembler with the openzeppelin library and miden-standards library linked.
-fn build_assembler() -> Result<Assembler> {
-    let oz_lib = build_openzeppelin_library()?;
-    let standards_lib: Library = StandardsLib::default().into();
-
-    let mut asm = build_library_assembler()?;
-    let _ = asm.link_dynamic_library(&oz_lib);
-    let _ = asm.link_dynamic_library(&standards_lib);
-
-    Ok(asm)
-}
-
-/// Compiles MASM code into a Library using the given assembler
-fn compile_to_library(code: &str, assembler: &Assembler) -> Result<Library> {
-    let library = assembler
-        .clone()
-        .assemble_library([code])
-        .map_err(|e| anyhow!("failed to assemble library: {e}"))?;
-    Ok((*library).clone())
+    Ok(*library)
 }
 
 // ============================================================================
@@ -220,15 +231,13 @@ pub fn create_library(
     account_code: String,
     library_path: &str,
 ) -> Result<Library, Box<dyn std::error::Error>> {
-    let assembler: Assembler = TransactionKernel::assembler();
-    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-    let module = Module::parser(ModuleKind::Library).parse_str(
-        LibraryPath::new(library_path),
-        account_code,
-        source_manager,
-    )?;
-    let library = assembler.clone().assemble_library([module])?;
-    Ok((*library).clone())
+    let source_manager: Arc<dyn SourceManagerSync> = Arc::new(DefaultSourceManager::default());
+    let assembler = TransactionKernel::assembler_with_source_manager(source_manager.clone());
+    let module = parse_module(library_path, account_code, source_manager)?;
+    let library = assembler
+        .assemble_library(library_path, module, None::<Box<Module>>)
+        .map_err(|e| anyhow!("failed to assemble {library_path} library: {e:?}"))?;
+    Ok(*library)
 }
 
 /// Builds the OpenZeppelin library for use in transaction scripts.
@@ -242,24 +251,7 @@ pub fn get_openzeppelin_library() -> Result<Library> {
 pub fn get_multisig_library() -> Result<Library> {
     let path = auth_dir().join("multisig.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    // Build with openzeppelin library linked (for guardian dependency)
-    let asm = build_assembler()?;
-
-    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            LibraryPath::new("oz_multisig::multisig"),
-            code,
-            source_manager,
-        )
-        .map_err(|e| anyhow!("failed to parse multisig module: {e}"))?;
-
-    let library = asm
-        .assemble_library([module])
-        .map_err(|e| anyhow!("failed to assemble multisig library: {e}"))?;
-
-    Ok((*library).clone())
+    assemble_with_auth_support("oz_multisig", "oz_multisig::multisig", code)
 }
 
 /// Builds an ECDSA multisig library for use in transaction scripts.
@@ -267,23 +259,7 @@ pub fn get_multisig_library() -> Result<Library> {
 pub fn get_multisig_ecdsa_library() -> Result<Library> {
     let path = auth_dir().join("multisig_ecdsa.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    let asm = build_assembler()?;
-
-    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            LibraryPath::new("oz_multisig::multisig"),
-            code,
-            source_manager,
-        )
-        .map_err(|e| anyhow!("failed to parse multisig ecdsa module: {e}"))?;
-
-    let library = asm
-        .assemble_library([module])
-        .map_err(|e| anyhow!("failed to assemble multisig ecdsa library: {e}"))?;
-
-    Ok((*library).clone())
+    assemble_with_auth_support("oz_multisig", "oz_multisig::multisig", code)
 }
 
 /// Builds a library for GUARDIAN procedures for use in transaction scripts.
@@ -291,22 +267,5 @@ pub fn get_multisig_ecdsa_library() -> Result<Library> {
 pub fn get_guardian_library() -> Result<Library> {
     let path = auth_dir().join("guardian.masm");
     let code = fs::read_to_string(&path).map_err(|e| anyhow!("failed to read {path:?}: {e}"))?;
-
-    // Build with openzeppelin library and miden-standards linked
-    let asm = build_assembler()?;
-
-    let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            LibraryPath::new("oz_guardian::guardian"),
-            code,
-            source_manager,
-        )
-        .map_err(|e| anyhow!("failed to parse guardian module: {e}"))?;
-
-    let library = asm
-        .assemble_library([module])
-        .map_err(|e| anyhow!("failed to assemble GUARDIAN library: {e}"))?;
-
-    Ok((*library).clone())
+    assemble_with_auth_support("oz_guardian", "oz_guardian::guardian", code)
 }

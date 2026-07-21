@@ -929,8 +929,8 @@ async fn action_create_custom_proposal(
         .ok_or_else(|| "No account loaded".to_string())?
         .clone();
 
-    let asset = build_transfer_asset(account.inner(), faucet_id, amount)
-        .map_err(|e| format!("invalid asset: {}", e))?;
+    let asset =
+        build_transfer_asset(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
     let salt = generate_salt();
     let transaction_request_bytes = build_p2id_transaction_request(
         account.inner(),
@@ -992,7 +992,7 @@ async fn action_execute_custom_proposal(
         .account()
         .ok_or_else(|| "No account loaded".to_string())?
         .clone();
-    let asset = build_transfer_asset(account.inner(), recipe.faucet_id, recipe.amount)
+    let asset = build_transfer_asset(recipe.faucet_id, recipe.amount)
         .map_err(|e| format!("invalid asset: {}", e))?;
 
     let mut request = build_p2id_transaction_request(

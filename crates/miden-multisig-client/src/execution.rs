@@ -6,7 +6,7 @@ use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, AssetCallbackFlag, FungibleAsset};
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::{Felt, Word};
 
 use crate::MidenSdkClient;
@@ -85,38 +85,13 @@ pub fn collect_signature_advice(
     Ok(advice)
 }
 
-/// Builds the fungible asset to transfer, sourcing the callback flag from the held asset.
+/// Builds the fungible asset to transfer.
 ///
-/// In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
-/// `faucet_id`/`amount` with the default flag would not match the held asset and the transfer would
-/// abort. When the faucet is absent the default flag is used, surfacing the missing-asset error.
-pub fn build_transfer_asset(
-    account: &Account,
-    faucet_id: AccountId,
-    amount: u64,
-) -> Result<FungibleAsset> {
-    let callbacks = held_callback_flag(account.vault().assets(), faucet_id);
-
+/// Since Miden 0.16 the asset-callback flag derives from the faucet account ID,
+/// so the asset no longer needs to be reconciled against the sender's vault.
+pub fn build_transfer_asset(faucet_id: AccountId, amount: u64) -> Result<FungibleAsset> {
     FungibleAsset::new(faucet_id, amount)
-        .map(|asset| asset.with_callbacks(callbacks))
         .map_err(|e| MultisigError::InvalidConfig(format!("failed to create asset: {}", e)))
-}
-
-/// Returns the callback flag of the held fungible asset issued by `faucet_id`,
-/// defaulting to `Disabled` when the faucet's asset is not present in the vault.
-fn held_callback_flag(
-    held_assets: impl IntoIterator<Item = Asset>,
-    faucet_id: AccountId,
-) -> AssetCallbackFlag {
-    held_assets
-        .into_iter()
-        .find_map(|asset| match asset {
-            Asset::Fungible(fungible) if fungible.faucet_id() == faucet_id => {
-                Some(fungible.callbacks())
-            }
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 /// Builds the final transaction request based on transaction type.
@@ -140,7 +115,7 @@ pub async fn build_final_transaction_request(
             faucet_id,
             amount,
         } => {
-            let asset = build_transfer_asset(account, *faucet_id, *amount)?;
+            let asset = build_transfer_asset(*faucet_id, *amount)?;
 
             crate::transaction::build_p2id_transaction_request(
                 account,
@@ -336,47 +311,5 @@ mod tests {
 
         let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");
         assert_eq!(advice.len(), 1);
-    }
-
-    fn faucet(id: u128) -> AccountId {
-        AccountId::try_from(id).expect("valid faucet id")
-    }
-
-    #[test]
-    fn held_callback_flag_preserves_enabled_flag_from_vault() {
-        use miden_client::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1;
-
-        let faucet_id = faucet(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1);
-        let held = FungibleAsset::new(faucet_id, 100)
-            .unwrap()
-            .with_callbacks(AssetCallbackFlag::Enabled);
-
-        let flag = held_callback_flag([Asset::Fungible(held)], faucet_id);
-        assert_eq!(flag, AssetCallbackFlag::Enabled);
-    }
-
-    #[test]
-    fn held_callback_flag_defaults_to_disabled_when_faucet_absent() {
-        use miden_client::testing::account_id::{
-            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        };
-
-        let held = FungibleAsset::new(faucet(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1), 100)
-            .unwrap()
-            .with_callbacks(AssetCallbackFlag::Enabled);
-
-        let flag = held_callback_flag(
-            [Asset::Fungible(held)],
-            faucet(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2),
-        );
-        assert_eq!(flag, AssetCallbackFlag::Disabled);
-    }
-
-    #[test]
-    fn held_callback_flag_defaults_to_disabled_on_empty_vault() {
-        use miden_client::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1;
-
-        let flag = held_callback_flag([], faucet(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1));
-        assert_eq!(flag, AssetCallbackFlag::Disabled);
     }
 }

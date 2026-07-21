@@ -5,8 +5,8 @@ export const MULTISIG_ACCOUNT_COMPONENT_MASM = `# Multi-Signature RPO Falcon 512
 
 use openzeppelin::auth::multisig
 
-pub use multisig::update_signers_and_threshold
-pub use multisig::update_procedure_threshold
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig
 
 @auth_script
 pub proc auth_tx_multisig(salt: word)
@@ -20,10 +20,10 @@ export const MULTISIG_GUARDIAN_ACCOUNT_COMPONENT_MASM = `# Multi-Signature RPO F
 use openzeppelin::auth::multisig
 use openzeppelin::auth::guardian
 
-pub use multisig::update_signers_and_threshold
-pub use multisig::update_procedure_threshold
-pub use guardian::update_guardian_public_key
-pub use guardian::verify_guardian_signature
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig
+pub use {update_guardian_public_key} from openzeppelin::auth::guardian
+pub use {verify_guardian_signature} from openzeppelin::auth::guardian
 
 @auth_script
 pub proc auth_tx_multisig_guardian(salt: word)
@@ -37,8 +37,8 @@ export const MULTISIG_ECDSA_ACCOUNT_COMPONENT_MASM = `# Multi-Signature ECDSA se
 
 use openzeppelin::auth::multisig_ecdsa
 
-pub use multisig_ecdsa::update_signers_and_threshold
-pub use multisig_ecdsa::update_procedure_threshold
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig_ecdsa
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig_ecdsa
 
 @auth_script
 pub proc auth_tx_multisig_ecdsa(salt: word)
@@ -52,10 +52,10 @@ export const MULTISIG_GUARDIAN_ECDSA_ACCOUNT_COMPONENT_MASM = `# Multi-Signature
 use openzeppelin::auth::multisig_ecdsa
 use openzeppelin::auth::guardian_ecdsa
 
-pub use multisig_ecdsa::update_signers_and_threshold
-pub use multisig_ecdsa::update_procedure_threshold
-pub use guardian_ecdsa::update_guardian_public_key
-pub use guardian_ecdsa::verify_guardian_signature
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig_ecdsa
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig_ecdsa
+pub use {update_guardian_public_key} from openzeppelin::auth::guardian_ecdsa
+pub use {verify_guardian_signature} from openzeppelin::auth::guardian_ecdsa
 
 @auth_script
 pub proc auth_tx_multisig_guardian_ecdsa(salt: word)

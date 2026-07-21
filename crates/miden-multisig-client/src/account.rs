@@ -69,7 +69,10 @@ impl MultisigAccount {
 
     fn get_map_item_by_name(&self, slot_name: &str, key: Word) -> Option<Word> {
         let slot_name = StorageSlotName::new(slot_name).ok()?;
-        self.account.storage().get_map_item(&slot_name, key).ok()
+        self.account
+            .storage()
+            .get_map_item(&slot_name, StorageMapKey::new(key))
+            .ok()
     }
 
     /// Returns the multisig threshold from storage.
@@ -166,7 +169,11 @@ impl MultisigAccount {
         let mut index = 0u32;
         loop {
             let key = Word::from([index, 0, 0, 0]);
-            match self.account.storage().get_map_item(&slot_name, key) {
+            match self
+                .account
+                .storage()
+                .get_map_item(&slot_name, StorageMapKey::new(key))
+            {
                 Ok(value) if value != Word::default() => {
                     commitments.push(value);
                     index += 1;

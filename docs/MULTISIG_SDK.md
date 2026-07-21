@@ -33,8 +33,8 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.15.1"
-miden-client = "0.15.0"
+miden-multisig-client = "0.16.0"
+miden-client = "=0.16.0-alpha.1"
 ```
 
 ### 5-Minute Example
@@ -944,6 +944,7 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
+| 0.16.x | =0.16.0-alpha.1 | 0.16.0-alpha.1 (exact) | Miden 0.16 pre-release protocol in both SDKs; releases wait for upstream 0.16 to stabilize; Para wallet packages still on 0.15 via npm overrides |
 | 0.15.x | 0.15.0 | ^0.15.0 | Miden 0.15 protocol; v1 account IDs, bech32m addresses |
 | 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
 | 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
@@ -1041,8 +1042,8 @@ cd packages/miden-multisig-client && npm publish --access public
 1. Tag the release:
 
 ```bash
-git tag v0.15.1
-git push origin v0.15.1
+git tag v0.16.0
+git push origin v0.16.0
 ```
 
 2. Create a GitHub release from the tag with release notes.

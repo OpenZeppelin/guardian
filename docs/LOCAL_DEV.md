@@ -28,7 +28,11 @@ Three decisions when running Guardian locally:
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
   Miden Devnet endpoint or run one locally; configure via
-  `GUARDIAN_NETWORK_TYPE`.
+  `GUARDIAN_NETWORK_TYPE`. The node's Miden line must match the
+  workspace baseline (currently the 0.16 pre-release line; devnet
+  already runs the 0.16 node) — a mismatched node is rejected at the
+  RPC boundary (see
+  [Troubleshooting](./TROUBLESHOOTING.md#client-and-node-disagree-about-the-network-version)).
 
 ## Environment file
 

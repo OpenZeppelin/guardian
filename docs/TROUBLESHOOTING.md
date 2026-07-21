@@ -9,6 +9,27 @@ For local-dev setup see [`docs/LOCAL_DEV.md`](./LOCAL_DEV.md).
 
 ## By symptom
 
+### Client and node disagree about the network version
+
+A Guardian server or SDK built on the Miden 0.16 line rejects a 0.15 node
+(and vice versa) at the RPC boundary: the Miden client sends the genesis
+commitment with every request, so a version mismatch surfaces as a gRPC
+rejection when connecting or syncing, not as silent corruption. Point the
+client at a node running the matching Miden line (devnet runs the 0.16
+node; for local work run a matching `miden-node`).
+
+### State created on Miden 0.15 fails to load after the 0.16 upgrade
+
+Deserialization errors such as `Unsupported version. Got '[0, 0, 3]'`, a
+local client store that errors on open, or a demo that panics on stale
+`~/.guardian` metadata all mean the same thing: state serialized under
+Miden 0.15 is not readable under 0.16, and the 0.16 devnet is a fresh
+chain, so 0.15-era accounts and notes no longer exist on-chain. There is
+no migration: delete local miden-client stores (`store.sqlite3`),
+`~/.guardian` metadata, and browser IndexedDB state, then recreate
+accounts. Guardian server records for 0.15 accounts remain readable as
+history but do not interoperate with 0.16 networks.
+
 ### Server fails to start
 
 Most startup failures are environment misconfiguration. Check in order:

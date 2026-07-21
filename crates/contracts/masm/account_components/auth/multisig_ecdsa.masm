@@ -2,8 +2,8 @@
 
 use openzeppelin::auth::multisig_ecdsa
 
-pub use multisig_ecdsa::update_signers_and_threshold
-pub use multisig_ecdsa::update_procedure_threshold
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig_ecdsa
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig_ecdsa
 
 @auth_script
 pub proc auth_tx_multisig_ecdsa(salt: word)

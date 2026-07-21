@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miden_client::DebugMode;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
@@ -180,7 +179,6 @@ pub(crate) async fn create_miden_client(
     configured_client_builder(endpoint)
         .store(store)
         .rng(rng)
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()

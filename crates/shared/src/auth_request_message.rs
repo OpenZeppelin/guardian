@@ -72,12 +72,16 @@ impl AuthRequestMessage {
 mod tests {
     use super::AuthRequestMessage;
     use crate::auth_request_payload::AuthRequestPayload;
-    use miden_protocol::account::{AccountId, AccountIdVersion, AccountType};
+    use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
 
     #[test]
     fn request_message_digest_changes_with_payload() {
-        let account_id =
-            AccountId::dummy([0x8a; 15], AccountIdVersion::Version1, AccountType::Private);
+        let account_id = AccountId::dummy(
+            [0x8a; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            AssetCallbackFlag::Disabled,
+        );
         let timestamp = 1_700_000_000i64;
         let left_payload =
             AuthRequestPayload::from_json_bytes(br#"{"op":"get_state"}"#).expect("left payload");

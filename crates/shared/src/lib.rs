@@ -8,6 +8,7 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Hasher, Word};
 use serde::{Deserialize, Serialize};
 
+pub mod account_delta;
 pub mod auth;
 pub mod auth_request_message;
 pub mod auth_request_payload;
@@ -278,7 +279,10 @@ mod tests {
         crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey,
         crypto::dsa::falcon512_poseidon2::SecretKey,
     };
-    use miden_standards::account::{auth::AuthSingleSig, wallets::BasicWallet};
+    use miden_standards::account::{
+        auth::{Approver, AuthSingleSig},
+        wallets::BasicWallet,
+    };
 
     #[test]
     fn test_account_json_round_trip() {
@@ -287,10 +291,10 @@ mod tests {
         let public_key_commitment =
             PublicKeyCommitment::from(secret_key.public_key().to_commitment());
         let account = AccountBuilder::new([0xff; 32])
-            .with_auth_component(AuthSingleSig::new(
+            .with_auth_component(AuthSingleSig::new(Approver::new(
                 public_key_commitment,
                 AuthScheme::Falcon512Poseidon2,
-            ))
+            )))
             .with_component(BasicWallet)
             .build()
             .unwrap();

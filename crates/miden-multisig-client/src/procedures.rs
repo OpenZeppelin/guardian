@@ -14,6 +14,7 @@ pub enum ProcedureName {
     VerifyGuardian,
     SendAsset,
     ReceiveAsset,
+    CreateNote,
 }
 
 impl ProcedureName {
@@ -23,25 +24,28 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x34963b067dbba634e57b416bc2f2a9a8d4ac24147f40b2900148c9ba44774274",
+                "0x4317e9e5026f51d0eb0fa45a38e24b4c974e136b3f031705307dc1a595caa83e",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
                 "0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67",
             ),
             ProcedureName::AuthTx => procedure_root_word(
-                "0x0708020dce7b91b61116e3eb27e5d686e129a83df3c540e0a7693b4523814e72",
+                "0x9926033d18d5cbb93367002d429bdc869d0156ecb67d53e8b033c99b983b1c22",
             ),
             ProcedureName::UpdateGuardian => procedure_root_word(
                 "0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96",
             ),
             ProcedureName::VerifyGuardian => procedure_root_word(
-                "0xe6a8a62d37117f55a79b5345aa3d263ab16e973d486bac9a1612663dfdecf82d",
+                "0x6a3105ef57d14ca460bb013a8887e626e92476090fc09b56cd370eff39dad8f5",
             ),
             ProcedureName::SendAsset => procedure_root_word(
-                "0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4",
+                "0x6f6abe6b4cc278b411af4abb43754a490b7361f85acbabec8ee6e109908a9340",
             ),
             ProcedureName::ReceiveAsset => procedure_root_word(
-                "0x6170fd6d682d91777b551fd866258f43cc657f1291f8f071500f4e56e9c153da",
+                "0x34a56dd18f6fe5aab63198b9dcfc6467e793ebabb37d56b994b902504635da13",
+            ),
+            ProcedureName::CreateNote => procedure_root_word(
+                "0xa185681459a0a2bbb32f9982e5bb764a52f8cfdfd74c777d2002104d2a25b931",
             ),
         }
     }
@@ -56,6 +60,7 @@ impl ProcedureName {
             ProcedureName::VerifyGuardian,
             ProcedureName::SendAsset,
             ProcedureName::ReceiveAsset,
+            ProcedureName::CreateNote,
         ]
     }
 }
@@ -101,6 +106,7 @@ impl std::fmt::Display for ProcedureName {
             ProcedureName::VerifyGuardian => write!(f, "verify_guardian"),
             ProcedureName::SendAsset => write!(f, "send_asset"),
             ProcedureName::ReceiveAsset => write!(f, "receive_asset"),
+            ProcedureName::CreateNote => write!(f, "create_note"),
         }
     }
 }
@@ -117,6 +123,7 @@ impl std::str::FromStr for ProcedureName {
             "verify_guardian" => Ok(ProcedureName::VerifyGuardian),
             "send_asset" => Ok(ProcedureName::SendAsset),
             "receive_asset" => Ok(ProcedureName::ReceiveAsset),
+            "create_note" => Ok(ProcedureName::CreateNote),
             _ => Err(format!("unknown procedure name: {}", s)),
         }
     }
@@ -179,10 +186,11 @@ mod tests {
             roots[4],
             "verify_guardian"
         );
-        assert_eq!(ProcedureName::SendAsset.root(), roots[5], "send_asset");
+        assert_eq!(ProcedureName::CreateNote.root(), roots[5], "create_note");
+        assert_eq!(ProcedureName::SendAsset.root(), roots[6], "send_asset");
         assert_eq!(
             ProcedureName::ReceiveAsset.root(),
-            roots[6],
+            roots[7],
             "receive_asset"
         );
     }

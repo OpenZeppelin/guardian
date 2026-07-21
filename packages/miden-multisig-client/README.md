@@ -20,6 +20,14 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 ```
 
+> **Miden version note**: this package targets the Miden 0.16 pre-release
+> line (`@miden-sdk/miden-sdk 0.16.0-alpha.1`, exact-pinned while alphas
+> churn), matching the Rust workspace. Package releases wait for upstream
+> 0.16 to stabilize.
+
+```bash
+```
+
 ## Setup
 
 ```typescript

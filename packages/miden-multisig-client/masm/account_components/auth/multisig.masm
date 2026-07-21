@@ -2,8 +2,8 @@
 
 use openzeppelin::auth::multisig
 
-pub use multisig::update_signers_and_threshold
-pub use multisig::update_procedure_threshold
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig
 
 @auth_script
 pub proc auth_tx_multisig(salt: word)

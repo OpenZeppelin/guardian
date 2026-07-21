@@ -129,7 +129,8 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
 
     let tx_script_code = "
         use oz_multisig::multisig
-        begin
+        @transaction_script
+        pub proc main
             call.multisig::update_signers_and_threshold
         end
     ";
