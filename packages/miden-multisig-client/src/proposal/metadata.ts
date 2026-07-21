@@ -1,6 +1,7 @@
 import type { ProposalMetadata as GuardianProposalMetadata } from '@openzeppelin/guardian-client';
 import type { ProposalMetadata } from '../types.js';
 import { isProcedureName } from '../procedures.js';
+import { isP2idNoteVisibility } from '../types/proposal.js';
 
 export class ProposalMetadataCodec {
   static toGuardian(metadata: ProposalMetadata): GuardianProposalMetadata {
@@ -25,6 +26,7 @@ export class ProposalMetadataCodec {
           recipientId: metadata.recipientId,
           faucetId: metadata.faucetId,
           amount: metadata.amount,
+          noteType: metadata.noteType,
         };
       case 'switch_guardian':
         return {
@@ -70,12 +72,18 @@ export class ProposalMetadataCodec {
         if (!guardian.recipientId || !guardian.faucetId || !guardian.amount) {
           throw new Error('p2id proposal is missing required metadata fields');
         }
+        if (guardian.noteType !== undefined && !isP2idNoteVisibility(guardian.noteType)) {
+          throw new Error(
+            `p2id proposal has unsupported noteType '${guardian.noteType}': expected 'public' or 'private'`,
+          );
+        }
         return {
           ...base,
           proposalType: 'p2id',
           recipientId: guardian.recipientId,
           faucetId: guardian.faucetId,
           amount: guardian.amount,
+          noteType: guardian.noteType,
         };
       case 'consume_notes':
         if (!guardian.noteIds || guardian.noteIds.length === 0) {
@@ -167,6 +175,9 @@ export class ProposalMetadataCodec {
       case 'p2id':
         if (!metadata.recipientId || !metadata.faucetId || !metadata.amount) {
           throw new Error('p2id proposal metadata is incomplete');
+        }
+        if (metadata.noteType !== undefined && !isP2idNoteVisibility(metadata.noteType)) {
+          throw new Error(`p2id proposal has unsupported noteType '${metadata.noteType}'`);
         }
         return metadata;
       case 'custom':

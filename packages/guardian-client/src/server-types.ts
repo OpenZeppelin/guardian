@@ -54,6 +54,8 @@ export interface ServerProposalMetadata {
   recipient_id?: string;
   faucet_id?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  note_type?: string;
 }
 
 export interface ServerDeltaObject {

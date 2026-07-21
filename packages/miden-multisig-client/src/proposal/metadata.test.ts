@@ -4,6 +4,7 @@ import { ProposalMetadataCodec } from './metadata.js';
 import type {
   ConsumeNotesProposalMetadata,
   CustomProposalMetadata,
+  P2IdProposalMetadata,
 } from '../types/proposal.js';
 
 describe('ProposalMetadataCodec consume_notes v2 round-trip (issue #229)', () => {
@@ -95,5 +96,49 @@ describe('ProposalMetadataCodec custom proposal types (issue #266)', () => {
     expect(back.proposalType).toBe('update_procedure_threshold');
     expect(back.targetProcedure).toBe('send_asset');
     expect(back.targetThreshold).toBe(2);
+  });
+});
+
+describe('ProposalMetadataCodec p2id noteType (issue #322)', () => {
+  const baseWire: GuardianProposalMetadata = {
+    proposalType: 'p2id',
+    recipientId: '0xrecipient',
+    faucetId: '0xfaucet',
+    amount: '1000',
+  };
+
+  it('round-trips a private noteType through the codec', () => {
+    const md = ProposalMetadataCodec.fromGuardian({
+      ...baseWire,
+      noteType: 'private',
+    }) as P2IdProposalMetadata;
+    expect(md.noteType).toBe('private');
+
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.noteType).toBe('private');
+  });
+
+  it('leaves noteType absent for legacy proposals (=> public)', () => {
+    const md = ProposalMetadataCodec.fromGuardian(baseWire) as P2IdProposalMetadata;
+    expect(md.noteType).toBeUndefined();
+    expect(ProposalMetadataCodec.toGuardian(md).noteType).toBeUndefined();
+  });
+
+  it('fromGuardian rejects an unsupported noteType', () => {
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, noteType: 'encrypted' }),
+    ).toThrow(/unsupported noteType/);
+  });
+
+  it('validate rejects an unsupported noteType', () => {
+    const md = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+      noteType: 'encrypted',
+    } as unknown as P2IdProposalMetadata;
+    expect(() => ProposalMetadataCodec.validate(md)).toThrow(/unsupported noteType/);
   });
 });

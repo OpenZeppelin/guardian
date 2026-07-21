@@ -29,6 +29,7 @@ import {
   Endpoint,
   FeltArray,
   Note,
+  NoteType,
   RpcClient,
   Signature,
   TransactionRequest,
@@ -42,6 +43,8 @@ import {
   buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
+  parseP2idNoteType,
+  p2idNoteTypeToMetadata,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
 import {
@@ -808,12 +811,15 @@ export class Multisig {
    * @param faucetId - Faucet/token account ID (hex string)
    * @param amount - Amount to send
    * @param nonce - Optional proposal nonce (defaults to Date.now())
+   * @param options - Optional settings; `noteType` selects the created note's
+   *   visibility (defaults to `NoteType.Public`, issue #322)
    */
   async createP2idProposal(
     recipientId: string,
     faucetId: string,
     amount: bigint,
     nonce?: number,
+    options: { noteType?: NoteType } = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     if (amount <= 0n) {
@@ -825,6 +831,7 @@ export class Multisig {
       recipientId,
       faucetId,
       amount,
+      { noteType: options.noteType },
     );
 
     const summary = await executeForSummary(webClient, this._accountId, request);
@@ -838,6 +845,8 @@ export class Multisig {
       recipientId,
       faucetId,
       amount: amount.toString(),
+      // Omitted for public notes so the wire shape matches pre-#322 proposals.
+      noteType: p2idNoteTypeToMetadata(options.noteType),
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
@@ -1684,7 +1693,7 @@ export class Multisig {
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
-          { salt, signatureAdviceMap }
+          { salt, signatureAdviceMap, noteType: parseP2idNoteType(metadata.noteType) }
         );
         return request;
       }

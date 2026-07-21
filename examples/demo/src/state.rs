@@ -5,6 +5,7 @@ use miden_client::rpc::Endpoint;
 use miden_multisig_client::{ExportedProposal, MultisigClient, SignatureScheme};
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
+use miden_protocol::note::NoteType;
 use miden_protocol::Word;
 use tempfile::TempDir;
 
@@ -15,6 +16,7 @@ pub struct CustomProposalRecipe {
     pub recipient: AccountId,
     pub faucet_id: AccountId,
     pub amount: u64,
+    pub note_type: NoteType,
     pub salt: Word,
 }
 

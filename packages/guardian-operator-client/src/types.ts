@@ -288,6 +288,8 @@ export interface DashboardDeltaProposalMetadata {
   recipientId?: string;
   faucetId?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  noteType?: string;
   noteIds?: string[];
   consumeNotesMetadataVersion?: number;
   consumeNotesNotes?: string[];
