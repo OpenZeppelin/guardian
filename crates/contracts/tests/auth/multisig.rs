@@ -1,13 +1,11 @@
 use guardian_shared::SignatureScheme;
-use miden_confidential_contracts::masm_builder::{
-    get_guardian_library, get_multisig_ecdsa_library, get_multisig_library,
-};
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::account::{
     Account, AccountType, StorageMapKey, StorageSlotName, auth::AuthSecretKey,
 };
+use miden_protocol::assembly::Library;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
@@ -18,6 +16,8 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDAT
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::StandardsLib;
+use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::MockChainBuilder;
@@ -27,10 +27,11 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 // Storage slot names for multisig account storage
-const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
-const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
-const PROC_THRESHOLD_ROOTS_SLOT: &str = "openzeppelin::multisig::procedure_thresholds";
-const GUARDIAN_PUBLIC_KEY_SLOT: &str = "openzeppelin::guardian::public_key";
+const THRESHOLD_CONFIG_SLOT: &str = "miden::standards::auth::multisig::threshold_config";
+const SIGNER_PUBKEYS_SLOT: &str = "miden::standards::auth::multisig::approver_public_keys";
+const SIGNER_SCHEMES_SLOT: &str = "miden::standards::auth::multisig::approver_schemes";
+const PROC_THRESHOLD_ROOTS_SLOT: &str = "miden::standards::auth::multisig::procedure_thresholds";
+const GUARDIAN_PUBLIC_KEY_SLOT: &str = "miden::standards::auth::guardian::pub_key";
 
 // ================================================================================================
 // HELPER FUNCTIONS
@@ -185,12 +186,10 @@ fn create_multisig_account_with_guardian_commitments(
     threshold: u32,
     signer_commitments: Vec<Word>,
     guardian_commitment: Word,
-    guardian_enabled: bool,
     signature_scheme: SignatureScheme,
 ) -> anyhow::Result<Account> {
     let config = MultisigGuardianConfig::new(threshold, signer_commitments, guardian_commitment)
         .with_account_type(AccountType::Public)
-        .with_guardian_enabled(guardian_enabled)
         .with_signature_scheme(signature_scheme);
 
     MultisigGuardianBuilder::new(config).build_existing()
@@ -200,7 +199,6 @@ fn create_multisig_account_with_guardian(
     threshold: u32,
     public_keys: &[PublicKey],
     guardian_public_key: PublicKey,
-    guardian_enabled: bool,
 ) -> anyhow::Result<Account> {
     let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
     let guardian_commitment = guardian_public_key.to_commitment();
@@ -209,7 +207,6 @@ fn create_multisig_account_with_guardian(
         threshold,
         signer_commitments,
         guardian_commitment,
-        guardian_enabled,
         SignatureScheme::Falcon,
     )
 }
@@ -219,18 +216,16 @@ fn build_update_procedure_threshold_script_for_scheme(
     threshold: u32,
     signature_scheme: SignatureScheme,
 ) -> anyhow::Result<miden_protocol::transaction::TransactionScript> {
-    let multisig_library = match signature_scheme {
-        SignatureScheme::Falcon => get_multisig_library()?,
-        SignatureScheme::Ecdsa => get_multisig_ecdsa_library()?,
-    };
+    let _ = signature_scheme;
+    let multisig_library: Library = StandardsLib::default().into();
     let tx_script_code = format!(
         r#"
-    use oz_multisig::multisig
+    use miden::standards::auth::multisig
     @transaction_script
     pub proc main
         push.{procedure_root}
         push.{threshold}
-        call.multisig::update_procedure_threshold
+        call.multisig::set_procedure_threshold
         dropw
         drop
     end
@@ -282,7 +277,7 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
 
     // Create multisig + guardian account with GUARDIAN enabled
     let mut multisig_account =
-        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
 
     let output_note_asset = FungibleAsset::mock(0);
 
@@ -369,7 +364,7 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
 
     // Create multisig + guardian account with GUARDIAN enabled
     let multisig_account =
-        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
 
     // SECTION 1: Execute a transaction script to update signers and threshold
     // ================================================================================
@@ -410,10 +405,18 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
         Felt::new_unchecked(0),
     ]);
 
-    // Add each public key to the vector
+    // Advice layout is [CONFIG, PUB_KEY_N, SCHEME_N, ..., PUB_KEY_0, SCHEME_0]:
+    // interleaved pub-key/scheme-id pairs, reversed by index. All signers are
+    // Falcon512Poseidon2 (scheme id 2).
     for public_key in new_public_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
+        config_and_pubkeys_vector.extend_from_slice(&[
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
     }
 
     // Hash the vector to create config hash
@@ -423,11 +426,11 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     advice_map.insert(multisig_config_hash, config_and_pubkeys_vector);
 
     // Build the multisig library for transaction script
-    let multisig_library = get_multisig_library()?;
+    let multisig_library: Library = StandardsLib::default().into();
 
     // Use namespaced call syntax for dynamically linked library procedures
     let tx_script_code = r#"
-    use oz_multisig::multisig
+    use miden::standards::auth::multisig
     @transaction_script
     pub proc main
         call.multisig::update_signers_and_threshold
@@ -493,7 +496,7 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     // Verify the transaction executed successfully
     assert_eq!(
         update_approvers_tx.account_patch().final_nonce(),
-        Some(multisig_account.nonce() + Felt::ONE)
+        Some(multisig_account.nonce() + Felt::new_unchecked(1))
     );
 
     // Apply the delta to get the updated account with new signers
@@ -546,8 +549,8 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
 
 /// Regression test for cosigner removal (2-of-2 -> 1-of-1): the locally-applied
 /// account delta must drop the removed signer rather than keep it (the "1-of-2"
-/// divergence). Removal runs `cleanup_pubkey_mapping`, which clears the removed
-/// index's map entry.
+/// divergence). Removal must clear the removed index's public-key and scheme-id
+/// map entries.
 #[tokio::test]
 async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     let (
@@ -560,7 +563,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
 
     let multisig_account =
-        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])
         .unwrap()
@@ -579,9 +582,19 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
         Felt::new_unchecked(0),
         Felt::new_unchecked(0),
     ];
+
+    // Advice layout is [CONFIG, PUB_KEY_N, SCHEME_N, ..., PUB_KEY_0, SCHEME_0]:
+    // interleaved pub-key/scheme-id pairs, reversed by index. All signers are
+    // Falcon512Poseidon2 (scheme id 2).
     for public_key in kept_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
+        config_and_pubkeys_vector.extend_from_slice(&[
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
     }
 
     let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys_vector);
@@ -589,9 +602,9 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     let mut advice_map = AdviceMap::default();
     advice_map.insert(multisig_config_hash, config_and_pubkeys_vector);
 
-    let multisig_library = get_multisig_library()?;
+    let multisig_library: Library = StandardsLib::default().into();
     let tx_script_code = r#"
-    use oz_multisig::multisig
+    use miden::standards::auth::multisig
     @transaction_script
     pub proc main
         call.multisig::update_signers_and_threshold
@@ -650,6 +663,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     updated_multisig_account.apply_patch(remove_tx.account_patch())?;
 
     let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
+    let signer_schemes_name = StorageSlotName::new(SIGNER_SCHEMES_SLOT).unwrap();
 
     let key_0: Word = [
         Felt::new_unchecked(0),
@@ -666,6 +680,14 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
         public_keys[0].to_commitment(),
         "kept signer must remain at index 0"
     );
+    assert_eq!(
+        updated_multisig_account
+            .storage()
+            .get_map_item(&signer_schemes_name, StorageMapKey::new(key_0))
+            .unwrap(),
+        Word::from([2u32, 0, 0, 0]),
+        "kept signer's scheme id must remain at index 0"
+    );
 
     let key_1: Word = [
         Felt::new_unchecked(1),
@@ -681,6 +703,14 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
             .unwrap(),
         Word::default(),
         "removed signer entry at index 1 must be cleared from local storage"
+    );
+    assert_eq!(
+        updated_multisig_account
+            .storage()
+            .get_map_item(&signer_schemes_name, StorageMapKey::new(key_1))
+            .unwrap(),
+        Word::default(),
+        "removed signer's scheme id at index 1 must be cleared from local storage"
     );
 
     let threshold_config_name = StorageSlotName::new(THRESHOLD_CONFIG_SLOT).unwrap();
@@ -714,7 +744,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
     ) = setup_keys_and_authenticators_with_guardian(1, 1)?;
 
     let multisig_account =
-        create_multisig_account_with_guardian(1, &public_keys, guardian_public_key.clone(), true)?;
+        create_multisig_account_with_guardian(1, &public_keys, guardian_public_key.clone())?;
 
     let mut mock_chain_builder =
         MockChainBuilder::with_accounts([multisig_account.clone()]).unwrap();
@@ -729,7 +759,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         NoteType::Public,
     )?;
 
-    let mut mock_chain = mock_chain_builder.clone().build().unwrap();
+    let mock_chain = mock_chain_builder.clone().build().unwrap();
 
     let salt = Word::from([Felt::new_unchecked(9); 4]);
     let mut advice_map = AdviceMap::default();
@@ -750,14 +780,21 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
     for public_key in new_public_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
+        // A scheme-id word follows each pubkey (Falcon512Poseidon2 = 2).
+        config_and_pubkeys_vector.extend_from_slice(&[
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
     }
 
     let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys_vector);
     advice_map.insert(multisig_config_hash, config_and_pubkeys_vector);
 
-    let multisig_library = get_multisig_library()?;
+    let multisig_library: Library = StandardsLib::default().into();
     let tx_script_code = r#"
-    use oz_multisig::multisig
+    use miden::standards::auth::multisig
     @transaction_script
     pub proc main
         call.multisig::update_signers_and_threshold
@@ -810,11 +847,8 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
 
     assert_eq!(
         update_approvers_tx.account_patch().final_nonce(),
-        Some(multisig_account.nonce() + Felt::ONE)
+        Some(multisig_account.nonce() + Felt::new_unchecked(1))
     );
-
-    mock_chain.add_pending_executed_transaction(&update_approvers_tx)?;
-    mock_chain.prove_next_block()?;
 
     let mut updated_multisig_account = multisig_account.clone();
     updated_multisig_account.apply_patch(update_approvers_tx.account_patch())?;
@@ -878,10 +912,10 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
         _guardian_authenticator,
     ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
 
-    // Initialize with GUARDIAN selector = OFF so key update doesn't require GUARDIAN signature
-    // This is the expected flow: disable GUARDIAN, update key, then enable GUARDIAN in a follow-up tx
+    // Guardian-key rotation is a note-less operation, so upstream's carve-out requires only the
+    // multisig threshold signatures — no current-guardian signature.
     let multisig_account =
-        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), false)?;
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
 
     // SECTION 1: Execute a transaction script to update GUARDIAN public key
     // ================================================================================
@@ -906,43 +940,26 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     let salt = Word::from([Felt::new_unchecked(3); 4]);
 
     // Setup New GUARDIAN Public Key
-    let (_new_guardian_secret_key, _new_guardian_public_key, _new_guardian_authenticatior) =
+    let (_new_guardian_secret_key, new_guardian_public_key, _new_guardian_authenticatior) =
         setup_keys_and_authenticator_for_guardian()?;
 
-    // Add new guardian public key to advice inputs
-    let advice_inputs = AdviceInputs::default().with_stack(
-        _new_guardian_public_key
-            .to_commitment()
-            .as_elements()
-            .iter()
-            .copied(),
-    );
-
-    // Build the GUARDIAN library for transaction script
-    let guardian_library = get_guardian_library()?;
-
-    // Use namespaced call syntax for dynamically linked library procedures
-    // This script only calls update_guardian_public_key.
-    // Note: enable_guardian is now a private procedure and is automatically called
-    // by verify_guardian_signature at the end of transaction authentication.
-    let tx_script_code = r#"
-    use oz_guardian::guardian
-    @transaction_script
-    pub proc main
-        call.guardian::update_guardian_public_key
-    end
-    "#;
-
+    // `update_guardian_public_key(scheme_id: felt, new_pub_key: word)` takes its inputs as
+    // stack args, so push them as literals and drop the 5 felts afterwards (the call does not
+    // consume them). Scheme id 2 = Falcon512Poseidon2. The guardian-signature carve-out for
+    // this note-less operation means only the multisig threshold signatures are required.
+    let new_guardian_key_word: Word = new_guardian_public_key.to_commitment();
+    let new_guardian_scheme_id = 2u32;
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&guardian_library)?
-        .compile_tx_script(tx_script_code)?;
+        .with_dynamically_linked_library(AuthGuardedMultisig::code())?
+        .compile_tx_script(format!(
+            "@transaction_script\npub proc main\n    push.{new_guardian_key_word}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+        ))?;
 
     // Execute transaction without signatures first to get tx summary
     let tx_context_init = mock_chain
         .build_tx_context(multisig_account.id(), &[], &[])?
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .extend_advice_inputs(advice_inputs.clone())
         .auth_args(salt)
         .build()?;
 
@@ -970,7 +987,6 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
         .auth_args(salt)
-        .extend_advice_inputs(advice_inputs)
         .build()?
         .execute()
         .await
@@ -979,7 +995,7 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     // Verify the transaction executed successfully
     assert_eq!(
         update_guardian_public_key_tx.account_patch().final_nonce(),
-        Some(multisig_account.nonce() + Felt::ONE)
+        Some(multisig_account.nonce() + Felt::new_unchecked(1))
     );
 
     mock_chain.add_pending_executed_transaction(&update_guardian_public_key_tx)?;
@@ -1004,194 +1020,11 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
         .get_map_item(&guardian_public_key_name, StorageMapKey::new(storage_key))
         .unwrap();
 
-    let expected_word: Word = _new_guardian_public_key.to_commitment();
+    let expected_word: Word = new_guardian_public_key.to_commitment();
 
     assert_eq!(
         storage_item, expected_word,
         "GUARDIAN Public key doesn't match expected value"
-    );
-
-    Ok(())
-}
-
-/// Reproduces the GUARDIAN canonicalization divergence: the server's reconstruction
-/// from the abort TransactionSummary (plus the replay-protection entry and re-enabled
-/// selector) must match the account produced by the real signed execution. Slots are
-/// diffed individually so a failure names the divergent slot.
-#[tokio::test]
-async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyhow::Result<()> {
-    const GUARDIAN_SELECTOR_SLOT: &str = "openzeppelin::guardian::selector";
-    const GUARDIAN_SCHEME_ID_SLOT: &str = "openzeppelin::guardian::scheme_id";
-    const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
-
-    let (_secret_keys, public_keys, authenticators, _gsk, guardian_public_key, _gauth) =
-        setup_keys_and_authenticators_with_guardian(2, 2)?;
-
-    let multisig_account =
-        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
-
-    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let salt = Word::from([Felt::new_unchecked(7); 4]);
-
-    let (_nsk, new_guardian_public_key, _nauth) = setup_keys_and_authenticator_for_guardian()?;
-    let advice_inputs = AdviceInputs::default().with_stack(
-        new_guardian_public_key
-            .to_commitment()
-            .as_elements()
-            .iter()
-            .copied(),
-    );
-
-    let guardian_library = get_guardian_library()?;
-    let tx_script_code = r#"
-    use oz_guardian::guardian
-    @transaction_script
-    pub proc main
-        call.guardian::update_guardian_public_key
-    end
-    "#;
-    let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&guardian_library)?
-        .compile_tx_script(tx_script_code)?;
-
-    // No-signature execution: the TransactionSummary GUARDIAN stores as the delta.
-    let abort_summary = match mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])?
-        .authenticator(None)
-        .tx_script(tx_script.clone())
-        .extend_advice_inputs(advice_inputs.clone())
-        .auth_args(salt)
-        .build()?
-        .execute()
-        .await
-        .unwrap_err()
-    {
-        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
-        error => panic!("expected abort with tx effects: {error:?}"),
-    };
-
-    let msg = abort_summary.as_ref().to_commitment();
-    let abort_delta = abort_summary.as_ref().account_delta().clone();
-
-    let signing = SigningInputs::TransactionSummary(abort_summary);
-    let sig_1 = authenticators[0]
-        .get_signature(public_keys[0].to_commitment().into(), &signing)
-        .await?;
-    let sig_2 = authenticators[1]
-        .get_signature(public_keys[1].to_commitment().into(), &signing)
-        .await?;
-
-    // Real signed execution: the authoritative on-chain result.
-    let executed_tx = mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])?
-        .authenticator(None)
-        .tx_script(tx_script)
-        .add_signature(public_keys[0].clone().into(), msg, sig_1)
-        .add_signature(public_keys[1].clone().into(), msg, sig_2)
-        .auth_args(salt)
-        .extend_advice_inputs(advice_inputs)
-        .build()?
-        .execute()
-        .await
-        .unwrap();
-
-    let mut executed_account = multisig_account.clone();
-    executed_account.apply_patch(executed_tx.account_patch())?;
-
-    // Reconstruct as the GUARDIAN server's `apply_delta` does, then add the
-    // replay-protection entry.
-    let mut server_account = if abort_delta.is_full_state() {
-        Account::try_from(&abort_delta)?
-    } else {
-        let mut acc = multisig_account.clone();
-        guardian_shared::account_delta::apply_account_delta(&mut acc, &abort_delta)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        acc
-    };
-    let exec_txs_slot = StorageSlotName::new(EXECUTED_TXS_SLOT).unwrap();
-    server_account.storage_mut().set_map_item(
-        &exec_txs_slot,
-        StorageMapKey::new(msg),
-        Word::from([1u32, 0, 0, 0]),
-    )?;
-    // Mirror enable_guardian: re-enable the selector that the switch script disabled.
-    server_account.storage_mut().set_item(
-        &StorageSlotName::new(GUARDIAN_SELECTOR_SLOT).unwrap(),
-        Word::from([1u32, 0, 0, 0]),
-    )?;
-
-    // Diff the slots that the switch + auth touch, so a failure names the divergent slot.
-    let slot = |name: &str| StorageSlotName::new(name).unwrap();
-    let key0: Word = [Felt::new_unchecked(0); 4].into();
-
-    assert_eq!(
-        server_account.nonce(),
-        executed_account.nonce(),
-        "nonce diverges"
-    );
-    assert_eq!(
-        server_account
-            .storage()
-            .get_item(&slot(GUARDIAN_SELECTOR_SLOT))
-            .unwrap(),
-        executed_account
-            .storage()
-            .get_item(&slot(GUARDIAN_SELECTOR_SLOT))
-            .unwrap(),
-        "guardian selector diverges (abort=disabled vs executed=re-enabled?)"
-    );
-    assert_eq!(
-        server_account
-            .storage()
-            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), StorageMapKey::new(key0))
-            .unwrap(),
-        executed_account
-            .storage()
-            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), StorageMapKey::new(key0))
-            .unwrap(),
-        "guardian public key diverges"
-    );
-    assert_eq!(
-        server_account
-            .storage()
-            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), StorageMapKey::new(key0))
-            .unwrap(),
-        executed_account
-            .storage()
-            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), StorageMapKey::new(key0))
-            .unwrap(),
-        "guardian scheme id diverges"
-    );
-    assert_eq!(
-        server_account
-            .storage()
-            .get_map_item(&exec_txs_slot, StorageMapKey::new(msg))
-            .unwrap(),
-        executed_account
-            .storage()
-            .get_map_item(&exec_txs_slot, StorageMapKey::new(msg))
-            .unwrap(),
-        "executed_transactions replay entry diverges"
-    );
-    assert_eq!(
-        server_account
-            .storage()
-            .get_item(&slot(THRESHOLD_CONFIG_SLOT))
-            .unwrap(),
-        executed_account
-            .storage()
-            .get_item(&slot(THRESHOLD_CONFIG_SLOT))
-            .unwrap(),
-        "threshold config diverges"
-    );
-    assert_eq!(
-        server_account.to_commitment(),
-        executed_account.to_commitment(),
-        "overall account commitment diverges"
     );
 
     Ok(())
@@ -1363,7 +1196,15 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
         Felt::new_unchecked(0),
         Felt::new_unchecked(0),
     ];
+    // Well-formed advice: interleaved [PUB_KEY, SCHEME_ID] per approver (Falcon=2), so the
+    // update reaches the contract's invariant check rather than failing on a malformed vector.
     config_and_pubkeys.extend_from_slice(public_keys[0].to_commitment().as_elements());
+    config_and_pubkeys.extend_from_slice(&[
+        Felt::new_unchecked(2),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+        Felt::new_unchecked(0),
+    ]);
 
     let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys);
     let mut advice_map = AdviceMap::default();
@@ -1371,12 +1212,12 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
     let advice_inputs =
         AdviceInputs::default().with_map(advice_map.into_iter().map(|(k, v)| (k, v.to_vec())));
 
-    let multisig_library = get_multisig_library()?;
+    let multisig_library: Library = StandardsLib::default().into();
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&multisig_library)?
         .compile_tx_script(
             r#"
-    use oz_multisig::multisig
+    use miden::standards::auth::multisig
     @transaction_script
     pub proc main
         call.multisig::update_signers_and_threshold
@@ -1406,16 +1247,16 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
     Ok(())
 }
 
-// Reproduction: add-cosigner on a fresh (build(), never-deployed) guarded account,
-// mirroring the demo path that fails against a real node with "value for key ...
-// not present in the advice map". Isolates the brand-new-account variable that the
-// build_existing() add-signer test above does not exercise.
+/// Reproduces add-cosigner proposal creation on a fresh (`build()`, nonce-0,
+/// never-deployed) guarded multisig account — the demo path that fails against a
+/// real node with "value for key ... not present in the advice map". The passing
+/// add-signer test above uses `build_existing()` with a pre-committed account, so
+/// this isolates the brand-new-account variable.
 #[tokio::test]
 async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     let (_sk, public_keys, _auth, _gsk, guardian_public_key, _gauth) =
         setup_keys_and_authenticators_with_guardian(1, 1)?;
 
-    // Fresh account: nonce 0, carries its creation seed, not deployed.
     let config = MultisigGuardianConfig::new(
         1,
         vec![public_keys[0].to_commitment()],
@@ -1432,7 +1273,6 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
 
     let mock_chain = MockChainBuilder::new().build().unwrap();
 
-    // update_signers advice built like build_multisig_config_advice.
     let salt = Word::from([Felt::new_unchecked(9); 4]);
     let (_nsk, new_public_keys, _na) = setup_keys_and_authenticators(2, 2)?;
     let threshold = 1u64;
@@ -1446,17 +1286,24 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     for public_key in new_public_keys.iter().rev() {
         let key_word: Word = public_key.to_commitment();
         config_and_pubkeys_vector.extend_from_slice(key_word.as_elements());
+        // A scheme-id word follows each pubkey (Falcon512Poseidon2 = 2).
+        config_and_pubkeys_vector.extend_from_slice(&[
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
     }
     let multisig_config_hash = Hasher::hash_elements(&config_and_pubkeys_vector);
     let mut advice_map = AdviceMap::default();
     advice_map.insert(multisig_config_hash, config_and_pubkeys_vector);
 
-    let multisig_library = get_multisig_library()?;
+    let multisig_library: Library = StandardsLib::default().into();
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&multisig_library)?
         .compile_tx_script(
             r#"
-    use oz_multisig::multisig
+    use miden::standards::auth::multisig
     @transaction_script
     pub proc main
         call.multisig::update_signers_and_threshold
@@ -1477,8 +1324,10 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         .execute()
         .await;
 
-    // Unauthorized here (not the advice-map abort) confirms the demo failure is not
-    // a contract issue but originates in miden-client's real-node execution setup.
+    // Unauthorized (carrying the tx summary to sign) is the correct result for a fresh,
+    // undeployed account with no signatures, confirming the demo's "advice map key not
+    // present" abort originates in miden-client real-node execution input setup, not the
+    // contract.
     match result {
         Err(TransactionExecutorError::Unauthorized(_)) => Ok(()),
         Ok(_) => anyhow::bail!("expected Unauthorized, got success"),

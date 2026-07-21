@@ -1,19 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AccountInspector } from './inspector.js';
 
-// Storage slot names matching the MASM definitions
-const MULTISIG_SLOT_NAMES = {
-  THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
-  SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
-  EXECUTED_TRANSACTIONS: 'openzeppelin::multisig::executed_transactions',
-  PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
-} as const;
-
-const GUARDIAN_SLOT_NAMES = {
-  SELECTOR: 'openzeppelin::guardian::selector',
-  PUBLIC_KEY: 'openzeppelin::guardian::public_key',
-} as const;
-
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => {
   const createMockWord = (values: bigint[]) => ({
@@ -46,7 +33,6 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         // Return different mocked accounts based on test scenario
         // Default: 2-of-3 multisig with GUARDIAN enabled
         const slot0 = createMockWord([2n, 3n, 0n, 0n]); // threshold=2, numSigners=3
-        const slot4 = createMockWord([1n, 0n, 0n, 0n]); // GUARDIAN enabled
 
         const signerMap = new Map<string, any>();
         signerMap.set('0', createMockWord([BigInt('0x1111111111111111'), BigInt('0x2222222222222222'), BigInt('0x3333333333333333'), BigInt('0x4444444444444444')]));
@@ -57,15 +43,16 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         guardianMap.set('0', createMockWord([BigInt('0xeeeeeeeeeeeeeeee'), BigInt('0xffffffffffffffff'), BigInt('0x0000000000000001'), BigInt('0x0000000000000002')]));
 
         const slots = new Map<string, any>();
-        slots.set('openzeppelin::multisig::threshold_config', slot0);
-        slots.set('openzeppelin::guardian::selector', slot4);
+        slots.set('miden::standards::auth::multisig::threshold_config', slot0);
 
         const maps = new Map<string, Map<string, any>>();
-        maps.set('openzeppelin::multisig::signer_public_keys', signerMap);
-        maps.set('openzeppelin::guardian::public_key', guardianMap);
+        maps.set('miden::standards::auth::multisig::approver_public_keys', signerMap);
+        maps.set('miden::standards::auth::guardian::pub_key', guardianMap);
 
         return {
           storage: () => createMockStorage(slots, maps),
+          // The contract-version guard checks for the pinned auth procedure.
+          code: () => ({ hasProcedure: () => true }),
           vault: () => createMockVault([
             { faucetId: '0xfaucet1', amount: 1000n },
             { faucetId: '0xfaucet2', amount: 500n },
@@ -73,10 +60,18 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         };
       }),
     },
-    Word: vi.fn().mockImplementation((arr: BigUint64Array) => ({
-      toU64s: () => Array.from(arr),
-      toHex: () => '0x' + Array.from(arr).map(v => v.toString(16).padStart(16, '0')).join(''),
-    })),
+    Word: Object.assign(
+      vi.fn().mockImplementation((arr: BigUint64Array) => ({
+        toU64s: () => Array.from(arr),
+        toHex: () => '0x' + Array.from(arr).map(v => v.toString(16).padStart(16, '0')).join(''),
+      })),
+      {
+        fromHex: vi.fn((hex: string) => ({
+          toU64s: () => [0n, 0n, 0n, 0n],
+          toHex: () => hex,
+        })),
+      },
+    ),
   };
 });
 
@@ -94,11 +89,10 @@ describe('AccountInspector', () => {
       expect(config.numSigners).toBe(3);
     });
 
-    it('extracts GUARDIAN status', () => {
+    it('extracts the GUARDIAN commitment', () => {
       const base64 = btoa(String.fromCharCode(...new Uint8Array([1, 2, 3])));
       const config = AccountInspector.fromBase64(base64);
 
-      expect(config.guardianEnabled).toBe(true);
       expect(config.guardianCommitment).toMatch(/^0x[a-f0-9]+$/);
     });
 
@@ -138,6 +132,21 @@ describe('AccountInspector', () => {
 
       expect(config.numSigners).toBe(3);
     });
+
+    it('rejects accounts built from a different contract version', async () => {
+      const { Account } = await import('@miden-sdk/miden-sdk');
+      const account = Account.deserialize(new Uint8Array([1, 2, 3]));
+      // Same account shape, but its code lacks the pinned auth procedure —
+      // root-keyed reads against it would silently miss its stored overrides.
+      const foreign = {
+        ...account,
+        code: () => ({ hasProcedure: () => false }),
+      };
+
+      expect(() => AccountInspector.fromAccount(foreign as never)).toThrow(
+        /unsupported contract version/,
+      );
+    });
   });
 });
 
@@ -146,19 +155,19 @@ describe('AccountInspector edge cases', () => {
     vi.clearAllMocks();
   });
 
-  it('handles account with GUARDIAN disabled', async () => {
+  it('returns a null GUARDIAN commitment when the guardian pub_key slot is absent', async () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
-    // Override mock for this test
+    // Override mock for this test: no guardian pub_key entry present.
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: (slotName: string) => {
-          if (slotName === 'openzeppelin::multisig::threshold_config') return { toU64s: () => [1n, 1n, 0n, 0n] };
-          if (slotName === 'openzeppelin::guardian::selector') return { toU64s: () => [0n, 0n, 0n, 0n] }; // GUARDIAN disabled
+          if (slotName === 'miden::standards::auth::multisig::threshold_config') return { toU64s: () => [1n, 1n, 0n, 0n] };
           return { toU64s: () => [0n, 0n, 0n, 0n] };
         },
         getMapItem: (slotName: string, key: any) => {
-          if (slotName === 'openzeppelin::multisig::signer_public_keys' && key.toU64s?.()[0] === 0n) {
+          if (slotName === 'miden::standards::auth::multisig::approver_public_keys' && key.toU64s?.()[0] === 0n) {
             return {
               toHex: () => '0x' + 'a'.repeat(64),
               toU64s: () => [1n, 2n, 3n, 4n],
@@ -175,7 +184,6 @@ describe('AccountInspector edge cases', () => {
     const account = Account.deserialize(new Uint8Array([1, 2, 3]));
     const config = AccountInspector.fromAccount(account);
 
-    expect(config.guardianEnabled).toBe(false);
     expect(config.guardianCommitment).toBeNull();
   });
 
@@ -183,6 +191,7 @@ describe('AccountInspector edge cases', () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: () => ({ toU64s: () => [1n, 1n, 0n, 0n] }),
         getMapItem: () => {
@@ -204,10 +213,10 @@ describe('AccountInspector edge cases', () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: (slotName: string) => {
-          if (slotName === 'openzeppelin::multisig::threshold_config') return { toU64s: () => [2n, 5n, 0n, 0n] }; // threshold=2, numSigners=5
-          if (slotName === 'openzeppelin::guardian::selector') return { toU64s: () => [0n, 0n, 0n, 0n] };
+          if (slotName === 'miden::standards::auth::multisig::threshold_config') return { toU64s: () => [2n, 5n, 0n, 0n] }; // threshold=2, numSigners=5
           return { toU64s: () => [0n, 0n, 0n, 0n] };
         },
         getMapItem: () => {
@@ -231,6 +240,7 @@ describe('AccountInspector edge cases', () => {
     const { Account } = await import('@miden-sdk/miden-sdk');
 
     vi.mocked(Account.deserialize).mockReturnValueOnce({
+      code: () => ({ hasProcedure: () => true }),
       storage: () => ({
         getItem: () => ({ toU64s: () => [1n, 1n, 0n, 0n] }),
         getMapItem: () => {

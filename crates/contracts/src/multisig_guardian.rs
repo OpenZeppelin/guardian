@@ -1,21 +1,24 @@
 //! MultisigGuardian Account Builder
 //!
-//! This module provides a high-level API for creating accounts with multisig + GUARDIAN authentication.
-//! It serves as the single source of truth for MultisigGuardian account creation across the codebase.
+//! High-level API for creating accounts with multisig + GUARDIAN authentication,
+//! and the single source of truth for MultisigGuardian account creation.
+//!
+//! Builds the upstream `miden-standards` `AuthGuardedMultisig` component plus a
+//! `BasicWallet`. The guardian is always present (no enable/disable selector) and
+//! guardian-key rotation uses the account's default multisig threshold with no
+//! current-guardian co-signature, matching `docs/CONCEPTS.md`.
 
 use anyhow::{Result, anyhow};
-use miden_protocol::{
-    Word,
-    account::{
-        Account, AccountBuilder, AccountType, StorageMap, StorageMapKey, StorageSlot,
-        StorageSlotName,
-    },
+use miden_protocol::Word;
+use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
+use miden_protocol::account::{
+    Account, AccountBuilder, AccountComponent, AccountProcedureRoot, AccountType,
+};
+use miden_standards::account::auth::{
+    Approver, ApproverSet, AuthGuardedMultisig, AuthGuardedMultisigConfig, GuardianConfig,
 };
 use miden_standards::account::wallets::BasicWallet;
 
-use crate::masm_builder::{
-    build_multisig_guardian_component, build_multisig_guardian_ecdsa_component,
-};
 use guardian_shared::SignatureScheme;
 
 /// Configuration for creating a MultisigGuardian account.
@@ -27,46 +30,27 @@ pub struct MultisigGuardianConfig {
     pub signer_commitments: Vec<Word>,
     /// GUARDIAN public key commitment.
     pub guardian_commitment: Word,
-    /// Whether GUARDIAN verification is enabled (true = ON, false = OFF).
-    pub guardian_enabled: bool,
     /// Signature scheme for the account (Falcon or ECDSA).
     pub signature_scheme: SignatureScheme,
     /// Account type, which also determines on-chain storage visibility
     /// (`Private` keeps state off-chain; defaults to `Private`).
     pub account_type: AccountType,
-    /// Optional procedure-specific threshold overrides.
-    /// Map from procedure root to threshold.
+    /// Optional procedure-specific threshold overrides (procedure root -> threshold).
+    /// Guardian rotation deliberately carries no override and uses the default threshold.
     pub proc_threshold_overrides: Vec<(Word, u32)>,
 }
 
 impl MultisigGuardianConfig {
     /// Creates a new MultisigGuardian configuration.
-    ///
-    /// # Arguments
-    /// * `threshold` - Minimum number of signatures required
-    /// * `signer_commitments` - Public key commitments of all signers
-    /// * `guardian_commitment` - GUARDIAN server public key commitment
-    ///
-    /// # Example
-    /// ```ignore
-    /// let config = MultisigGuardianConfig::new(2, vec![pk1, pk2, pk3], guardian_pk);
-    /// ```
     pub fn new(threshold: u32, signer_commitments: Vec<Word>, guardian_commitment: Word) -> Self {
         Self {
             threshold,
             signer_commitments,
             guardian_commitment,
-            guardian_enabled: true,
             signature_scheme: SignatureScheme::Falcon,
             account_type: AccountType::Private,
             proc_threshold_overrides: Vec::new(),
         }
-    }
-
-    /// Sets whether GUARDIAN verification is enabled.
-    pub fn with_guardian_enabled(mut self, enabled: bool) -> Self {
-        self.guardian_enabled = enabled;
-        self
     }
 
     /// Sets the signature scheme for the account.
@@ -88,47 +72,27 @@ impl MultisigGuardianConfig {
     }
 }
 
-/// Builder for creating MultisigGuardian accounts.
-///
-/// This builder provides a fluent API for creating accounts with multisig + GUARDIAN authentication.
-///
-/// # Storage Layout
-///
-/// The account uses a single auth component with the following storage layout:
-///
-/// **Combined Auth Component (6 slots):**
-/// - Slot 0: Threshold config `[threshold, num_signers, 0, 0]`
-/// - Slot 1: Signer public keys map `[index, 0, 0, 0] => COMMITMENT`
-/// - Slot 2: Signer scheme IDs map `[index, 0, 0, 0] => [scheme_id, 0, 0, 0]`
-/// - Slot 3: Executed transactions map (for replay protection)
-/// - Slot 4: Procedure threshold overrides map
-/// - Slot 5: GUARDIAN selector `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
-/// - Slot 6: GUARDIAN public key map `[0, 0, 0, 0] => GUARDIAN_COMMITMENT`
-/// - Slot 7: GUARDIAN scheme ID map `[0, 0, 0, 0] => [scheme_id, 0, 0, 0]`
+/// Builder for creating MultisigGuardian accounts from the upstream
+/// `AuthGuardedMultisig` component plus a `BasicWallet`.
 ///
 /// # Example
 /// ```ignore
 /// use miden_confidential_contracts::multisig_guardian::{MultisigGuardianConfig, MultisigGuardianBuilder};
 ///
 /// let config = MultisigGuardianConfig::new(2, vec![pk1, pk2], guardian_pk);
-/// let account = MultisigGuardianBuilder::new(config)
-///     .with_seed([0u8; 32])
-///     .build()?;
+/// let account = MultisigGuardianBuilder::new(config).with_seed([0u8; 32]).build()?;
 /// ```
 pub struct MultisigGuardianBuilder {
     config: MultisigGuardianConfig,
     seed: [u8; 32],
-    account_type: AccountType,
 }
 
 impl MultisigGuardianBuilder {
     /// Creates a new MultisigGuardian builder with the given configuration.
     pub fn new(config: MultisigGuardianConfig) -> Self {
-        let account_type = config.account_type;
         Self {
             config,
             seed: [0u8; 32],
-            account_type,
         }
     }
 
@@ -140,54 +104,83 @@ impl MultisigGuardianBuilder {
 
     /// Sets the account type (also controls on-chain storage visibility).
     pub fn with_account_type(mut self, account_type: AccountType) -> Self {
-        self.account_type = account_type;
+        self.config.account_type = account_type;
         self
     }
 
-    /// Builds the MultisigGuardian account.
-    ///
-    /// This creates a new account with:
-    /// - Multisig authentication component with GUARDIAN procedures
-    /// - BasicWallet component for asset management
+    /// Builds the MultisigGuardian account (fresh, undeployed).
     pub fn build(self) -> Result<Account> {
-        self.validate_config()?;
-
-        let auth_slots = self.build_auth_slots()?;
-
-        let auth_component = match self.config.signature_scheme {
-            SignatureScheme::Falcon => build_multisig_guardian_component(auth_slots)?,
-            SignatureScheme::Ecdsa => build_multisig_guardian_ecdsa_component(auth_slots)?,
-        };
-
-        let account = AccountBuilder::new(self.seed)
-            .with_auth_component(auth_component)
+        let (seed, account_type, component) = self.into_parts()?;
+        AccountBuilder::new(seed)
+            .with_auth_component(component)
             .with_component(BasicWallet)
-            .account_type(self.account_type)
+            .account_type(account_type)
             .build()
-            .map_err(|e| anyhow!("failed to build account: {e}"))?;
-
-        Ok(account)
+            .map_err(|e| anyhow!("failed to build account: {e}"))
     }
 
     /// Builds the account using `build_existing()` (for testing with pre-set account state).
+    #[cfg(feature = "testing")]
     pub fn build_existing(self) -> Result<Account> {
-        self.validate_config()?;
-
-        let auth_slots = self.build_auth_slots()?;
-
-        let auth_component = match self.config.signature_scheme {
-            SignatureScheme::Falcon => build_multisig_guardian_component(auth_slots)?,
-            SignatureScheme::Ecdsa => build_multisig_guardian_ecdsa_component(auth_slots)?,
-        };
-
-        let account = AccountBuilder::new(self.seed)
-            .with_auth_component(auth_component)
+        let (seed, account_type, component) = self.into_parts()?;
+        AccountBuilder::new(seed)
+            .with_auth_component(component)
             .with_component(BasicWallet)
-            .account_type(self.account_type)
+            .account_type(account_type)
             .build_existing()
-            .map_err(|e| anyhow!("failed to build existing account: {e}"))?;
+            .map_err(|e| anyhow!("failed to build existing account: {e}"))
+    }
 
-        Ok(account)
+    /// Validates the config and assembles the upstream guarded-multisig component.
+    fn into_parts(self) -> Result<([u8; 32], AccountType, AccountComponent)> {
+        self.validate_config()?;
+        let component = self.build_guarded_multisig_component()?;
+        Ok((self.seed, self.config.account_type, component))
+    }
+
+    fn auth_scheme(&self) -> AuthScheme {
+        match self.config.signature_scheme {
+            SignatureScheme::Falcon => AuthScheme::Falcon512Poseidon2,
+            SignatureScheme::Ecdsa => AuthScheme::EcdsaK256Keccak,
+        }
+    }
+
+    fn build_guarded_multisig_component(&self) -> Result<AccountComponent> {
+        let scheme = self.auth_scheme();
+
+        let approvers: Vec<Approver> = self
+            .config
+            .signer_commitments
+            .iter()
+            .map(|commitment| Approver::new(PublicKeyCommitment::from(*commitment), scheme))
+            .collect();
+
+        let approver_set = ApproverSet::new(approvers, self.config.threshold)
+            .map_err(|e| anyhow!("invalid approver set: {e}"))?;
+
+        let guardian = GuardianConfig::new(Approver::new(
+            PublicKeyCommitment::from(self.config.guardian_commitment),
+            scheme,
+        ));
+
+        let mut cfg = AuthGuardedMultisigConfig::new(approver_set, guardian)
+            .map_err(|e| anyhow!("invalid guarded-multisig config: {e}"))?;
+
+        if !self.config.proc_threshold_overrides.is_empty() {
+            let overrides: Vec<(AccountProcedureRoot, u32)> = self
+                .config
+                .proc_threshold_overrides
+                .iter()
+                .map(|(root, threshold)| (AccountProcedureRoot::from_raw(*root), *threshold))
+                .collect();
+            cfg = cfg
+                .with_proc_thresholds(overrides)
+                .map_err(|e| anyhow!("invalid procedure thresholds: {e}"))?;
+        }
+
+        let component = AuthGuardedMultisig::new(cfg)
+            .map_err(|e| anyhow!("failed to build guarded-multisig component: {e}"))?;
+        Ok(component.into())
     }
 
     fn validate_config(&self) -> Result<()> {
@@ -206,140 +199,11 @@ impl MultisigGuardianBuilder {
         }
         Ok(())
     }
-
-    fn build_multisig_slots(&self) -> Result<Vec<StorageSlot>> {
-        let num_signers = self.config.signer_commitments.len() as u32;
-        let scheme_id = match self.config.signature_scheme {
-            SignatureScheme::Falcon => 2u32,
-            SignatureScheme::Ecdsa => 1u32,
-        };
-
-        // Slot 0: Threshold config
-        let threshold_config_name =
-            StorageSlotName::new("openzeppelin::multisig::threshold_config")
-                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let slot_0 = StorageSlot::with_value(
-            threshold_config_name,
-            Word::from([self.config.threshold, num_signers, 0, 0]),
-        );
-
-        // Slot 1: Signer public keys map
-        let signer_keys_name = StorageSlotName::new("openzeppelin::multisig::signer_public_keys")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let map_entries = self
-            .config
-            .signer_commitments
-            .iter()
-            .enumerate()
-            .map(|(i, commitment)| (StorageMapKey::from_index(i as u32), *commitment));
-        let slot_1 = StorageSlot::with_map(
-            signer_keys_name,
-            StorageMap::with_entries(map_entries)
-                .map_err(|e| anyhow!("failed to create signer keys map: {e}"))?,
-        );
-
-        // Slot 2: Signer scheme IDs map
-        let signer_scheme_ids_name =
-            StorageSlotName::new("openzeppelin::multisig::signer_scheme_ids")
-                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let scheme_entries = (0..num_signers).map(|i| {
-            (
-                StorageMapKey::from_index(i),
-                Word::from([scheme_id, 0, 0, 0]),
-            )
-        });
-        let slot_2 = StorageSlot::with_map(
-            signer_scheme_ids_name,
-            StorageMap::with_entries(scheme_entries)
-                .map_err(|e| anyhow!("failed to create signer scheme map: {e}"))?,
-        );
-
-        // Slot 3: Executed transactions map (empty)
-        let executed_txs_name =
-            StorageSlotName::new("openzeppelin::multisig::executed_transactions")
-                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let slot_3 = StorageSlot::with_map(executed_txs_name, StorageMap::default());
-
-        // Slot 4: Procedure threshold overrides
-        let proc_thresholds_name =
-            StorageSlotName::new("openzeppelin::multisig::procedure_thresholds")
-                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let proc_overrides =
-            self.config
-                .proc_threshold_overrides
-                .iter()
-                .map(|(proc_root, threshold)| {
-                    (
-                        StorageMapKey::new(*proc_root),
-                        Word::from([*threshold, 0, 0, 0]),
-                    )
-                });
-        let slot_4 = StorageSlot::with_map(
-            proc_thresholds_name,
-            StorageMap::with_entries(proc_overrides)
-                .map_err(|e| anyhow!("failed to create proc threshold map: {e}"))?,
-        );
-
-        Ok(vec![slot_0, slot_1, slot_2, slot_3, slot_4])
-    }
-
-    fn build_auth_slots(&self) -> Result<Vec<StorageSlot>> {
-        let mut slots = self.build_multisig_slots()?;
-        slots.extend(self.build_guardian_slots()?);
-        Ok(slots)
-    }
-
-    fn build_guardian_slots(&self) -> Result<Vec<StorageSlot>> {
-        let scheme_id = match self.config.signature_scheme {
-            SignatureScheme::Falcon => 2u32,
-            SignatureScheme::Ecdsa => 1u32,
-        };
-
-        // Slot 0: GUARDIAN selector
-        let guardian_selector_name = StorageSlotName::new("openzeppelin::guardian::selector")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let selector = if self.config.guardian_enabled {
-            1u32
-        } else {
-            0u32
-        };
-        let slot_0 =
-            StorageSlot::with_value(guardian_selector_name, Word::from([selector, 0, 0, 0]));
-
-        // Slot 1: GUARDIAN public key map
-        let guardian_public_key_name =
-            StorageSlotName::new("openzeppelin::guardian::public_key")
-                .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let guardian_key_entries = vec![(
-            StorageMapKey::from_index(0),
-            self.config.guardian_commitment,
-        )];
-        let slot_1 = StorageSlot::with_map(
-            guardian_public_key_name,
-            StorageMap::with_entries(guardian_key_entries)
-                .map_err(|e| anyhow!("failed to create GUARDIAN key map: {e}"))?,
-        );
-
-        let guardian_scheme_id_name = StorageSlotName::new("openzeppelin::guardian::scheme_id")
-            .map_err(|e| anyhow!("failed to create storage slot name: {e}"))?;
-        let guardian_scheme_entries = vec![(
-            StorageMapKey::from_index(0),
-            Word::from([scheme_id, 0, 0, 0]),
-        )];
-        let slot_2 = StorageSlot::with_map(
-            guardian_scheme_id_name,
-            StorageMap::with_entries(guardian_scheme_entries)
-                .map_err(|e| anyhow!("failed to create GUARDIAN scheme map: {e}"))?,
-        );
-
-        Ok(vec![slot_0, slot_1, slot_2])
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::masm_builder::build_multisig_guardian_component;
     use guardian_shared::hex::{FromHex, IntoHex};
 
     fn mock_commitment(seed: u8) -> Word {
@@ -361,22 +225,12 @@ mod tests {
 
         assert_eq!(config.threshold, 2);
         assert_eq!(config.signer_commitments.len(), 3);
-        assert!(config.guardian_enabled);
         assert!(config.proc_threshold_overrides.is_empty());
-    }
-
-    #[test]
-    fn test_config_with_guardian_disabled() {
-        let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10))
-            .with_guardian_enabled(false);
-
-        assert!(!config.guardian_enabled);
     }
 
     #[test]
     fn test_validation_zero_threshold() {
         let config = MultisigGuardianConfig::new(0, vec![mock_commitment(1)], mock_commitment(10));
-
         let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(
@@ -390,7 +244,6 @@ mod tests {
     #[test]
     fn test_validation_empty_signers() {
         let config = MultisigGuardianConfig::new(1, vec![], mock_commitment(10));
-
         let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(
@@ -408,7 +261,6 @@ mod tests {
             vec![mock_commitment(1), mock_commitment(2)],
             mock_commitment(10),
         );
-
         let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot exceed"));
@@ -421,39 +273,33 @@ mod tests {
             vec![mock_commitment(1), mock_commitment(2)],
             mock_commitment(10),
         );
-
         let account = MultisigGuardianBuilder::new(config)
             .with_seed([42u8; 32])
             .build();
-
         assert!(account.is_ok());
     }
 
     #[test]
-    fn test_guardian_auth_procedure_is_first_in_account_code() {
+    fn test_auth_procedure_is_first_in_account_code() {
         let config = MultisigGuardianConfig::new(
             2,
             vec![mock_commitment(1), mock_commitment(2)],
             mock_commitment(10),
-        )
-        .with_account_type(AccountType::Public);
+        );
 
-        let builder = MultisigGuardianBuilder::new(config.clone());
-        let auth_slots = builder.build_auth_slots().expect("auth slots");
-        let component = build_multisig_guardian_component(auth_slots).expect("guardian component");
+        let component = MultisigGuardianBuilder::new(config.clone())
+            .build_guarded_multisig_component()
+            .expect("component");
         let auth_procedures = component
             .procedures()
             .filter_map(|(root, is_auth)| is_auth.then_some(root))
             .collect::<Vec<_>>();
-
         assert_eq!(auth_procedures.len(), 1);
-
         let auth_root = auth_procedures[0];
 
         let account = MultisigGuardianBuilder::new(config)
             .build_existing()
-            .expect("guardian account");
-
+            .expect("account");
         assert_eq!(account.code().procedures()[0], auth_root);
     }
 
@@ -472,13 +318,13 @@ mod tests {
             .build()
             .expect("account");
 
-        // Cross-SDK parity contract: the TypeScript builder must produce these
-        // same identity values for the same inputs. Re-verify it against these
-        // when validating smoke-web.
-        assert_eq!(account.id().to_hex(), "0x249e2f760a7ace015f223ed697269e");
+        // Cross-SDK parity: the TypeScript builder must derive these same identity
+        // values from the same pinned miden-standards version; regenerate both if
+        // the pin changes.
+        assert_eq!(account.id().to_hex(), "0xe3c3a6ae3a996ec149a75ee89b2e7c");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0xc774f5210eecde60d29a11d6fb46a4b60760a97f35ad9a70c73ffa035410a3b5"
+            "0x63f135e5f0777e66f18e079888c5fcea40428e59427596aed53de0a84b1c1bf4"
         );
     }
 }

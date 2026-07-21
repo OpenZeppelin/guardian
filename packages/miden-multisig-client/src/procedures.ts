@@ -11,14 +11,12 @@
  * human-readable encoding and should not be copied into this table.
  */
 export const PROCEDURE_ROOTS = {
-  update_signers: '0x4317e9e5026f51d0eb0fa45a38e24b4c974e136b3f031705307dc1a595caa83e',
-  update_procedure_threshold: '0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67',
-  auth_tx: '0x9926033d18d5cbb93367002d429bdc869d0156ecb67d53e8b033c99b983b1c22',
-  update_guardian: '0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96',
-  verify_guardian: '0x6a3105ef57d14ca460bb013a8887e626e92476090fc09b56cd370eff39dad8f5',
+  update_signers: '0x72b547cec3f786c77759ec213a6048678be84f7ed2e8381b80a4ab548fd25524',
+  update_procedure_threshold: '0x97587c61d49313b1d5a3c8b7437e0080e67ed9bd9d3e7206bcae562f934ccd03',
+  auth_tx: '0x0704fb1b9c30eec5d4aa3da8a9afddfaf38b090f7d9daffb6fd6ce4a5d14a02a',
+  update_guardian: '0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675',
   send_asset: '0x6f6abe6b4cc278b411af4abb43754a490b7361f85acbabec8ee6e109908a9340',
   receive_asset: '0x34a56dd18f6fe5aab63198b9dcfc6467e793ebabb37d56b994b902504635da13',
-  create_note: '0xa185681459a0a2bbb32f9982e5bb764a52f8cfdfd74c777d2002104d2a25b931',
 } as const;
 
 /**

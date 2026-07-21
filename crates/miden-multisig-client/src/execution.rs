@@ -190,6 +190,7 @@ pub async fn build_final_transaction_request(
         TransactionType::SwitchGuardian { new_commitment, .. } => {
             crate::transaction::build_update_guardian_transaction_request(
                 *new_commitment,
+                scheme,
                 salt,
                 signature_advice,
             )
@@ -198,13 +199,12 @@ pub async fn build_final_transaction_request(
             procedure,
             new_threshold,
         } => {
-            let (tx_request, _) =
+            let tx_request =
                 crate::transaction::build_update_procedure_threshold_transaction_request(
                     *procedure,
                     *new_threshold,
                     salt,
                     signature_advice,
-                    scheme,
                 )?;
 
             Ok(tx_request)

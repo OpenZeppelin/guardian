@@ -1,5 +1,6 @@
 use base64::Engine;
 use miden_protocol::account::Account;
+use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as FalconSignature;
@@ -40,6 +41,19 @@ impl SignatureScheme {
             Self::Falcon => "falcon",
             Self::Ecdsa => "ecdsa",
         }
+    }
+
+    /// Maps to the upstream `AuthScheme` used by the `AuthGuardedMultisig` component.
+    pub const fn auth_scheme(self) -> AuthScheme {
+        match self {
+            Self::Falcon => AuthScheme::Falcon512Poseidon2,
+            Self::Ecdsa => AuthScheme::EcdsaK256Keccak,
+        }
+    }
+
+    /// Numeric identifier the guarded-multisig MASM stores alongside each public key.
+    pub const fn auth_scheme_id(self) -> u64 {
+        self.auth_scheme() as u64
     }
 
     pub fn parse_signature_hex(self, signature_hex: &str) -> Result<AccountSignature, String> {

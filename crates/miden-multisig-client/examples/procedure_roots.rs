@@ -11,16 +11,14 @@
 
 use std::env;
 
-use miden_confidential_contracts::multisig_guardian::{
-    MultisigGuardianBuilder, MultisigGuardianConfig,
-};
-use miden_protocol::{Felt, Word};
+use miden_protocol::Word;
+use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::account::wallets::BasicWallet;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 struct ProcedureRootRecord {
-    name: &'static str,
+    name: String,
     component: &'static str,
     index: usize,
     rust_hex: String,
@@ -49,75 +47,69 @@ fn word_to_typescript_hex(word: &Word) -> String {
     hex::encode(bytes)
 }
 
-fn procedure_name_and_component(
-    idx: usize,
+fn record(
+    index: usize,
+    name: String,
+    component: &'static str,
     root_word: Word,
-    receive_asset: Word,
-    send_asset: Word,
-    create_note: Word,
-) -> (&'static str, &'static str) {
-    if root_word == receive_asset {
-        ("receive_asset", "BasicWallet")
-    } else if root_word == send_asset {
-        ("send_asset", "BasicWallet")
-    } else if root_word == create_note {
-        ("create_note", "BasicWallet")
-    } else {
-        match idx {
-            0 => ("update_signers", "Multisig"),
-            1 => ("update_procedure_threshold", "Multisig"),
-            2 => ("update_guardian", "Multisig"),
-            3 => ("auth_tx", "Multisig"),
-            4 => ("verify_guardian", "GUARDIAN"),
-            _ => ("unknown", "unknown"),
-        }
+) -> ProcedureRootRecord {
+    ProcedureRootRecord {
+        name,
+        component,
+        index,
+        rust_hex: format!("0x{}", word_to_rust_hex(&root_word)),
+        typescript_hex: format!("0x{}", word_to_typescript_hex(&root_word)),
     }
 }
 
-fn mock_commitment(seed: u64) -> Word {
-    Word::from([
-        Felt::new_unchecked(seed),
-        Felt::new_unchecked(seed + 1),
-        Felt::new_unchecked(seed + 2),
-        Felt::new_unchecked(seed + 3),
-    ])
-}
-
 fn main() {
-    let receive_asset: Word = BasicWallet::receive_asset_root().into();
-    let send_asset: Word = BasicWallet::move_asset_to_note_root().into();
-    let create_note: Word = BasicWallet::create_note_root().into();
+    let auth_code = AuthGuardedMultisig::code();
+    let auth_root = |masm_name: &str| -> Word {
+        let export = auth_code
+            .exports()
+            .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
+            .unwrap_or_else(|| panic!("upstream procedure `{masm_name}` not found"));
+        auth_code
+            .get_procedure_root_by_path(&*export.path)
+            .expect("auth procedure root by path")
+            .into()
+    };
 
-    let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
-    let account = MultisigGuardianBuilder::new(config)
-        .with_seed([42u8; 32])
-        .build()
-        .expect("Failed to build account");
+    let auth_procedures = [
+        ("update_signers", "update_signers_and_threshold"),
+        ("update_procedure_threshold", "set_procedure_threshold"),
+        ("auth_tx", "auth_tx_guarded_multisig"),
+        ("update_guardian", "update_guardian_public_key"),
+    ];
 
-    let procedure_roots: Vec<ProcedureRootRecord> = account
-        .code()
-        .procedures()
+    let mut procedure_roots: Vec<ProcedureRootRecord> = auth_procedures
         .iter()
         .enumerate()
-        .map(|(idx, procedure)| {
-            let root_word: Word = *procedure.mast_root();
-            let (name, component) = procedure_name_and_component(
-                idx,
-                root_word,
-                receive_asset,
-                send_asset,
-                create_note,
-            );
-
-            ProcedureRootRecord {
-                name,
-                component,
-                index: idx,
-                rust_hex: format!("0x{}", word_to_rust_hex(&root_word)),
-                typescript_hex: format!("0x{}", word_to_typescript_hex(&root_word)),
-            }
+        .map(|(index, (facing, masm))| {
+            record(
+                index,
+                facing.to_string(),
+                "Multisig + GUARDIAN (auth)",
+                auth_root(masm),
+            )
         })
         .collect();
+
+    let next = procedure_roots.len();
+    let send_asset: Word = BasicWallet::move_asset_to_note_root().into();
+    let receive_asset: Word = BasicWallet::receive_asset_root().into();
+    procedure_roots.push(record(
+        next,
+        "send_asset".to_string(),
+        "BasicWallet",
+        send_asset,
+    ));
+    procedure_roots.push(record(
+        next + 1,
+        "receive_asset".to_string(),
+        "BasicWallet",
+        receive_asset,
+    ));
 
     if env::args().any(|arg| arg == "--json") {
         let output = ProcedureRootOutput {
@@ -132,10 +124,6 @@ fn main() {
     }
 
     println!("\n=== PROCEDURE ROOTS ===\n");
-    println!("BasicWallet procedures (from miden_standards):");
-    println!("  receive_asset: {}", procedure_roots[6].rust_hex);
-    println!("  send_asset:    {}", procedure_roots[5].rust_hex);
-
     println!("\nAll account procedures (ordered by component):");
     println!("  Component order: Multisig + GUARDIAN (auth) -> BasicWallet\n");
 

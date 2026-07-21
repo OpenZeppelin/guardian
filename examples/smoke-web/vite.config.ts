@@ -18,7 +18,6 @@ export default defineConfig({
       '@solana/wallet-adapter-react',
       '@solana-mobile/wallet-adapter-mobile',
       '@miden-sdk/react',
-      '@miden-sdk/miden-sdk',
     ],
     alias: [
       {

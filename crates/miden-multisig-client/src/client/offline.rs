@@ -68,9 +68,11 @@ impl MultisigClient {
 
         let tx_request = crate::transaction::build_update_guardian_transaction_request(
             new_commitment,
+            self.key_manager.scheme(),
             salt,
             std::iter::empty(),
         )?;
+
         let metadata = ExportedMetadata {
             proposal_type: "switch_guardian".to_string(),
             salt_hex: Some(crate::transaction::word_to_hex(&salt)),

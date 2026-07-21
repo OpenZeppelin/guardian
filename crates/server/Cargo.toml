@@ -106,4 +106,10 @@ postgres = [
     "tokio-postgres-rustls",
 ]
 integration = []
-e2e = ["miden-client", "miden-confidential-contracts", "miden-testing", "miden-tx"]
+e2e = [
+    "miden-client",
+    "miden-confidential-contracts",
+    "miden-confidential-contracts/testing",
+    "miden-testing",
+    "miden-tx",
+]
