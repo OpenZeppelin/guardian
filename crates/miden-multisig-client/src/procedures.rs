@@ -27,7 +27,7 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x72b547cec3f786c77759ec213a6048678be84f7ed2e8381b80a4ab548fd25524",
+                "0xa261cfd3c8791ac5abe1e78e14eade2f20789d73ab1c23c430418de59bc3380e",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
                 "0x97587c61d49313b1d5a3c8b7437e0080e67ed9bd9d3e7206bcae562f934ccd03",

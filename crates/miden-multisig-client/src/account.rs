@@ -307,6 +307,7 @@ mod tests {
                 (ProcedureName::SendAsset.root(), 1),
                 (ProcedureName::UpdateSigners.root(), 3),
                 (ProcedureName::UpdateGuardian.root(), 1),
+                (ProcedureName::UpdateProcedureThreshold.root(), 3),
             ]);
 
         let account = MultisigGuardianBuilder::new(config)

@@ -65,10 +65,18 @@ chrono = "0.4"
 utoipa = { version = "5", features = ["axum_extras"] }
 
 # Miden — 0.16 pre-release line: exact pins only, no caret drift while alphas churn
-miden-protocol = "=0.16.0-alpha.4"
-miden-standards = "=0.16.0-alpha.4"
-miden-tx = "=0.16.0-alpha.4"
+miden-protocol = "=0.16.0-beta.1"
+miden-standards = "=0.16.0-beta.1"
+miden-tx = "=0.16.0-beta.1"
 miden-node-proto-build = { version = "=0.16.0-alpha.2", default-features = false }
-miden-testing = "=0.16.0-alpha.2"
+miden-testing = "=0.16.0-beta.1"
 miden-client = "=0.16.0-alpha.1"
 miden-client-sqlite-store = "=0.16.0-alpha.1"
+
+# Temporary: crates.io miden-client 0.16.0-alpha.1 does not compile against
+# miden-protocol/standards 0.16.0-beta.1 (import paths moved). Vendored copies
+# carry the minimal source fixes until upstream publishes a beta-compatible
+# client. Remove when miden-client 0.16.0-beta.x ships.
+[patch.crates-io]
+miden-client = { path = "vendor/miden-client" }
+miden-client-sqlite-store = { path = "vendor/miden-client-sqlite-store" }

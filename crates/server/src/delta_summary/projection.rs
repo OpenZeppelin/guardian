@@ -150,7 +150,10 @@ fn classify_note_tag(note: &Note) -> NoteTag {
         Some(StandardNote::FAUCET_POLICY_ACTION)
         | Some(StandardNote::PAUSE_ACTION)
         | Some(StandardNote::OWNER_ACTION)
-        | Some(StandardNote::RBAC_ACTION) => NoteTag::Custom,
+        | Some(StandardNote::RBAC_ACTION)
+        | Some(StandardNote::NETWORK_ACCOUNT_CONFIG)
+        | Some(StandardNote::FEE_SPONSORSHIP)
+        | Some(StandardNote::TX_FEE) => NoteTag::Custom,
         None => NoteTag::Custom,
     }
 }

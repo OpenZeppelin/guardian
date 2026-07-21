@@ -135,7 +135,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     // threshold signatures — mirroring the SDK's `build_update_guardian_script`.
     let new_guardian_scheme_id = SignatureScheme::Falcon.auth_scheme_id();
     let tx_script_code = format!(
-        "begin\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+        "@transaction_script\npub proc main\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
     );
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(AuthGuardedMultisig::code())
