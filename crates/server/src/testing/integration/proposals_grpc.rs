@@ -298,16 +298,15 @@ async fn test_grpc_sign_delta_proposal_not_found() {
     let request = create_signed_request_with_auth(sign_proposal_req, &account_id_hex, &signer);
     let sign_response = service.sign_delta_proposal(request).await;
 
-    assert!(sign_response.is_ok(), "gRPC call should succeed");
-    let sign_response = sign_response.unwrap().into_inner();
-    assert!(
-        !sign_response.success,
-        "Sign should fail for nonexistent proposal"
-    );
-    assert!(
-        sign_response.message.contains("not found") || sign_response.message.contains("Proposal"),
-        "Error message should mention proposal not found"
-    );
+    // Errors now surface as a gRPC Status (feature 009).
+    let status = sign_response.expect_err("signing a missing proposal must be a gRPC error");
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    assert!(!status.message().is_empty());
+    let details: serde_json::Value =
+        serde_json::from_slice(status.details()).expect("Status.details is JSON");
+    assert_eq!(details["code"], "proposal_not_found");
+    assert!(details["message"].is_string());
+    assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
 }
 
 #[tokio::test]
@@ -362,16 +361,14 @@ async fn test_grpc_push_delta_proposal_unauthorized() {
         create_signed_request_with_auth(push_proposal_req, &account_id_hex, &unauthorized_signer);
     let push_response = service.push_delta_proposal(request).await;
 
-    assert!(push_response.is_ok(), "gRPC call should succeed");
-    let push_response = push_response.unwrap().into_inner();
-    assert!(
-        !push_response.success,
-        "Push should fail with unauthorized cosigner"
-    );
-    assert!(
-        push_response.message.contains("not authorized"),
-        "Error message should mention authorization"
-    );
+    // Errors now surface as a gRPC Status (feature 009).
+    let status = push_response.expect_err("unauthorized proposal push must be a gRPC error");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    assert!(!status.message().is_empty());
+    let details: serde_json::Value =
+        serde_json::from_slice(status.details()).expect("Status.details is JSON");
+    assert_eq!(details["code"], "authentication_failed");
+    assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
 }
 
 #[tokio::test]
