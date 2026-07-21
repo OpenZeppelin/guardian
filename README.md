@@ -101,12 +101,13 @@ cargo run -p guardian-server --features evm --bin server
 
 #### Running with Docker Compose
 
-The default compose file sets the container paths it needs and pins
-`GUARDIAN_NETWORK_TYPE` to `MidenTestnet` (override via `.env` or the shell
-environment), so a root `.env` is not required for this path. Start the
-server:
+The default compose file sets the container paths it needs, but you must
+choose a network explicitly: `GUARDIAN_NETWORK_TYPE` has no default and the
+server refuses to start without it. Set it in a root `.env` or export it in
+your shell before starting:
 
 ```bash
+echo "GUARDIAN_NETWORK_TYPE=MidenTestnet" > .env
 docker compose up --build -d
 ```
 
