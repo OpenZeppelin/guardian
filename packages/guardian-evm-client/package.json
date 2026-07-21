@@ -2,6 +2,15 @@
   "name": "@openzeppelin/guardian-evm-client",
   "version": "0.15.2",
   "description": "TypeScript EVM client for Guardian server proposal workflows",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenZeppelin/guardian.git",
+    "directory": "packages/guardian-evm-client"
+  },
+  "homepage": "https://github.com/OpenZeppelin/guardian/tree/main/packages/guardian-evm-client#readme",
+  "bugs": {
+    "url": "https://github.com/OpenZeppelin/guardian/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

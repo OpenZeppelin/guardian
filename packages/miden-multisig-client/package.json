@@ -2,6 +2,15 @@
   "name": "@openzeppelin/miden-multisig-client",
   "version": "0.15.2",
   "description": "TypeScript SDK for Miden multisig accounts with GUARDIAN integration",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenZeppelin/guardian.git",
+    "directory": "packages/miden-multisig-client"
+  },
+  "homepage": "https://github.com/OpenZeppelin/guardian/tree/main/packages/miden-multisig-client#readme",
+  "bugs": {
+    "url": "https://github.com/OpenZeppelin/guardian/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

@@ -2,6 +2,15 @@
   "name": "@openzeppelin/guardian-operator-client",
   "version": "0.15.2",
   "description": "TypeScript HTTP client for Guardian operator dashboard endpoints",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenZeppelin/guardian.git",
+    "directory": "packages/guardian-operator-client"
+  },
+  "homepage": "https://github.com/OpenZeppelin/guardian/tree/main/packages/guardian-operator-client#readme",
+  "bugs": {
+    "url": "https://github.com/OpenZeppelin/guardian/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
