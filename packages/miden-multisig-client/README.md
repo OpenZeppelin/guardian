@@ -25,9 +25,6 @@ npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
 > churn), matching the Rust workspace. Package releases wait for upstream
 > 0.16 to stabilize.
 
-```bash
-```
-
 ## Setup
 
 ```typescript

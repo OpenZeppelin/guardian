@@ -6,7 +6,10 @@ use crate::network::{NetworkClient, NetworkType, StateVerification};
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
-use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{
+    Account, AccountId, AccountStoragePatch, StorageMapKey, StorageMapPatch,
+    StorageMapPatchEntries, StorageSlotName, StorageSlotPatch, StorageValuePatch,
+};
 use miden_protocol::transaction::{
     InputNote, InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
 };
@@ -183,47 +186,33 @@ impl NetworkClient for MidenNetworkClient {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account_delta = tx_summary.account_delta();
 
-        // Check if this is a full state delta (new account deployment) or partial delta (update)
-        let mut guardian_enabled_pre_tx = false;
-        let mut account = if account_delta.is_full_state() {
-            // For new accounts, convert the full state delta directly to an Account
+        let is_full_state = account_delta.is_full_state();
+        let (base_account, guardian_enabled_pre_tx) = if is_full_state {
             tracing::debug!(
                 account_id = %account_delta.id().to_hex(),
                 "Processing full state delta for new account deployment"
             );
-            Account::try_from(account_delta).map_err(|e| {
-                tracing::error!(
-                    account_id = %account_delta.id().to_hex(),
-                    error = %e,
-                    "Failed to convert full state delta to account"
-                );
-                format!("Failed to convert full state delta to account: {e}")
-            })?
+            let account =
+                guardian_shared::account_delta::account_from_full_delta_with_storage_patch(
+                    account_delta,
+                    AccountStoragePatch::new(),
+                )?;
+            (account, false)
         } else {
-            // For existing accounts, apply the partial delta
-            let mut account = Account::from_json(prev_state_json)?;
-            // Capture whether GUARDIAN was enabled *before* this tx, while the prior state is
-            // still intact. `enable_guardian` runs only on a guardian-verified tx, so only then is
-            // the selector guaranteed ON on-chain afterwards; see the re-enable gate below.
-            guardian_enabled_pre_tx = MidenAccountInspector::new(&account).has_guardian_auth();
-            guardian_shared::account_delta::apply_account_delta(&mut account, account_delta)
-                .map_err(|e| {
-                    tracing::error!(
-                        account_id = %account.id().to_hex(),
-                        error = %e,
-                        "Failed to apply delta to account"
-                    );
-                    format!("Failed to apply delta to account: {e}")
-                })?;
-            account
+            let account = Account::from_json(prev_state_json)?;
+            let guardian_enabled = MidenAccountInspector::new(&account).has_guardian_auth();
+            (account, guardian_enabled)
         };
 
-        let inspector = MidenAccountInspector::new(&account);
-        // Gate on multisig, not GUARDIAN: the replay-protection map is populated by the multisig
-        // auth regardless of GUARDIAN state, and a SwitchGuardian clears the GUARDIAN selector, so
-        // a GUARDIAN-gated check would skip the adjustment and omit the executed-transactions entry
-        // the chain recorded.
-        let is_multisig = inspector.has_multisig_auth();
+        let mut preview_account = base_account.clone();
+        if !is_full_state {
+            guardian_shared::account_delta::apply_account_delta(
+                &mut preview_account,
+                account_delta,
+            )?;
+        }
+        let is_multisig = MidenAccountInspector::new(&preview_account).has_multisig_auth();
+        let mut storage_entries = Vec::new();
 
         if guardian_enabled_pre_tx {
             // A guardian-verified tx always ends with `enable_guardian`, so the on-chain selector
@@ -242,20 +231,15 @@ impl NetworkClient for MidenNetworkClient {
             let slot_name = StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME)
                 .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
 
-            account
-                .storage_mut()
-                .set_item(&slot_name, Word::from(GUARDIAN_ON))
-                .map_err(|e| {
-                    tracing::error!(
-                        account_id = %account.id().to_hex(),
-                        error = %e,
-                        "Failed to re-enable GUARDIAN selector"
-                    );
-                    format!("Failed to re-enable GUARDIAN selector: {e}")
-                })?;
+            storage_entries.push((
+                slot_name,
+                StorageSlotPatch::Value(StorageValuePatch::Update {
+                    value: Word::from(GUARDIAN_ON),
+                }),
+            ));
 
             tracing::debug!(
-                account_id = %account.id().to_hex(),
+                account_id = %base_account.id().to_hex(),
                 "Re-enabled GUARDIAN selector to mirror enable_guardian"
             );
         }
@@ -277,24 +261,37 @@ impl NetworkClient for MidenNetworkClient {
             let slot_name = StorageSlotName::new(EXECUTED_TXS_SLOT_NAME)
                 .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
 
-            account
-                .storage_mut()
-                .set_map_item(&slot_name, StorageMapKey::new(tx_commitment), flag_word)
-                .map_err(|e| {
-                    tracing::error!(
-                        account_id = %account.id().to_hex(),
-                        error = %e,
-                        "Failed to apply replay protection storage update"
-                    );
-                    format!("Failed to apply replay protection storage update: {e}")
-                })?;
+            let entries =
+                StorageMapPatchEntries::from_iter([(StorageMapKey::new(tx_commitment), flag_word)]);
+            storage_entries.push((
+                slot_name,
+                StorageSlotPatch::Map(StorageMapPatch::Update { entries }),
+            ));
 
             tracing::debug!(
-                account_id = %account.id().to_hex(),
+                account_id = %base_account.id().to_hex(),
                 tx_commitment = %format!("0x{}", hex::encode(tx_commitment.as_bytes())),
                 "Applied replay protection adjustment for multisig account"
             );
         }
+
+        let additional_storage = AccountStoragePatch::from_entries(storage_entries)
+            .map_err(|error| format!("Failed to build storage adjustment patch: {error}"))?;
+
+        let account = if is_full_state {
+            guardian_shared::account_delta::account_from_full_delta_with_storage_patch(
+                account_delta,
+                additional_storage,
+            )?
+        } else {
+            let mut account = base_account;
+            guardian_shared::account_delta::apply_account_delta_with_storage_patch(
+                &mut account,
+                account_delta,
+                additional_storage,
+            )?;
+            account
+        };
 
         let new_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
         let new_state_json = account.to_json();

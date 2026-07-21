@@ -3,7 +3,7 @@
 //! at read time by [`decode_full`] for the detail endpoint.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::Asset;
+use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::note::Note;
 use miden_protocol::note::PartialNote;
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
@@ -251,14 +251,14 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     for asset in vault.added_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            let id = format!("0x{}", hex::encode(a.id().to_word().as_bytes()));
+            let id = canonical_non_fungible_asset_id_hex(a);
             nf_added.entry(faucet).or_default().push(id);
         }
     }
     for asset in vault.removed_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            let id = format!("0x{}", hex::encode(a.id().to_word().as_bytes()));
+            let id = canonical_non_fungible_asset_id_hex(a);
             nf_removed.entry(faucet).or_default().push(id);
         }
     }
@@ -274,6 +274,10 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     }
 
     out
+}
+
+fn canonical_non_fungible_asset_id_hex(asset: NonFungibleAsset) -> String {
+    format!("0x{}", hex::encode(asset.id().to_word().as_bytes()))
 }
 
 fn project_storage_changes(
@@ -447,5 +451,39 @@ mod tests {
             Some("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
         );
         assert!(c.after.is_some());
+    }
+
+    #[test]
+    fn project_vault_changes_uses_canonical_non_fungible_asset_id() {
+        let account_id = AccountId::from_hex(CONSUMER).expect("acct");
+        let asset = NonFungibleAsset::mock(b"guardian-dashboard-canonical-id");
+        let faucet_id = match asset {
+            Asset::NonFungible(asset) => asset.faucet_id().to_hex(),
+            Asset::Fungible(_) => unreachable!("mock should create a non-fungible asset"),
+        };
+        let mut vault = AccountVaultDelta::default();
+        vault.add_asset(asset).expect("asset delta");
+        let delta = AccountDelta::new(
+            account_id,
+            miden_protocol::account::AccountStoragePatch::default(),
+            vault,
+            None,
+            Felt::ONE,
+        )
+        .expect("account delta");
+
+        let changes = project_vault_changes(&delta);
+
+        assert_eq!(
+            changes,
+            vec![VaultChange::NonFungible {
+                asset_id: faucet_id,
+                added: vec![
+                    "0xf1433e1e588f04cbcbee98fc5f0c2ab600ef000000dd000011ca0000000000bc"
+                        .to_string(),
+                ],
+                removed: Vec::new(),
+            }]
+        );
     }
 }
