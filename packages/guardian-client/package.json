@@ -2,6 +2,15 @@
   "name": "@openzeppelin/guardian-client",
   "version": "0.15.2",
   "description": "TypeScript HTTP client for Guardian server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenZeppelin/guardian.git",
+    "directory": "packages/guardian-client"
+  },
+  "homepage": "https://github.com/OpenZeppelin/guardian/tree/main/packages/guardian-client#readme",
+  "bugs": {
+    "url": "https://github.com/OpenZeppelin/guardian/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
