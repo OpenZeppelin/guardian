@@ -563,7 +563,8 @@ mod tests {
     use guardian_client::DeltaObject;
     use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
 
@@ -574,8 +575,9 @@ mod tests {
         let account_id = AccountId::from_hex(account_id).expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");

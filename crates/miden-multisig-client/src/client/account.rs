@@ -117,7 +117,7 @@ impl MultisigClient {
 
         // Generate a random seed for account ID
         let mut seed = [0u8; 32];
-        rand::Rng::fill(&mut rand::rng(), &mut seed);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut seed);
 
         let account = MultisigGuardianBuilder::new(guardian_config)
             .with_seed(seed)
@@ -436,9 +436,8 @@ impl MultisigClient {
             })?
         } else {
             let mut acc: Account = account.into_inner();
-            acc.apply_delta(account_delta).map_err(|e| {
-                MultisigError::MidenClient(format!("failed to apply delta to account: {}", e))
-            })?;
+            guardian_shared::account_delta::apply_account_delta(&mut acc, account_delta)
+                .map_err(MultisigError::MidenClient)?;
             acc
         };
 

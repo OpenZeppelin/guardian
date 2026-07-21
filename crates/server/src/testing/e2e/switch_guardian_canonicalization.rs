@@ -137,7 +137,8 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     let guardian_library = get_guardian_library().expect("guardian library compiles");
     let tx_script_code = r#"
     use oz_guardian::guardian
-    begin
+    @transaction_script
+    pub proc main
         call.guardian::update_guardian_public_key
     end
     "#;
@@ -203,7 +204,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
 
     let mut executed_account = multisig_account.clone();
     executed_account
-        .apply_delta(executed_tx.account_delta())
+        .apply_patch(executed_tx.account_patch())
         .expect("executed delta applies");
     let executed_commitment_hex = commitment_hex(&executed_account);
     let executed_nonce = executed_account.nonce().as_canonical_u64();

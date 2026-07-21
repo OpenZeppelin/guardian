@@ -226,7 +226,8 @@ fn build_update_procedure_threshold_script_for_scheme(
     let tx_script_code = format!(
         r#"
     use oz_multisig::multisig
-    begin
+    @transaction_script
+    pub proc main
         push.{procedure_root}
         push.{threshold}
         call.multisig::update_procedure_threshold
@@ -347,7 +348,7 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
         .execute()
         .await?;
 
-    multisig_account.apply_delta(tx_context_execute.account_delta())?;
+    multisig_account.apply_patch(tx_context_execute.account_patch())?;
 
     Ok(())
 }
@@ -427,7 +428,8 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     // Use namespaced call syntax for dynamically linked library procedures
     let tx_script_code = r#"
     use oz_multisig::multisig
-    begin
+    @transaction_script
+    pub proc main
         call.multisig::update_signers_and_threshold
     end
     "#;
@@ -490,18 +492,18 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
 
     // Verify the transaction executed successfully
     assert_eq!(
-        update_approvers_tx.account_delta().nonce_delta(),
-        Felt::new_unchecked(1)
+        update_approvers_tx.account_patch().final_nonce(),
+        Some(multisig_account.nonce() + Felt::ONE)
     );
 
     // Apply the delta to get the updated account with new signers
     let mut updated_multisig_account = multisig_account.clone();
-    updated_multisig_account.apply_delta(update_approvers_tx.account_delta())?;
+    updated_multisig_account.apply_patch(update_approvers_tx.account_patch())?;
 
     // Verify that the public keys were actually updated in storage
     let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
     for (i, expected_key) in new_public_keys.iter().enumerate() {
-        let storage_key = [
+        let storage_key: Word = [
             Felt::new_unchecked(i as u64),
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
@@ -510,7 +512,7 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
         .into();
         let storage_item = updated_multisig_account
             .storage()
-            .get_map_item(&signer_pubkeys_name, storage_key)
+            .get_map_item(&signer_pubkeys_name, StorageMapKey::new(storage_key))
             .unwrap();
 
         let expected_word: Word = expected_key.to_commitment();
@@ -590,7 +592,8 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     let multisig_library = get_multisig_library()?;
     let tx_script_code = r#"
     use oz_multisig::multisig
-    begin
+    @transaction_script
+    pub proc main
         call.multisig::update_signers_and_threshold
     end
     "#;
@@ -644,7 +647,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
         .unwrap();
 
     let mut updated_multisig_account = multisig_account.clone();
-    updated_multisig_account.apply_delta(remove_tx.account_delta())?;
+    updated_multisig_account.apply_patch(remove_tx.account_patch())?;
 
     let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
 
@@ -658,7 +661,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     assert_eq!(
         updated_multisig_account
             .storage()
-            .get_map_item(&signer_pubkeys_name, key_0)
+            .get_map_item(&signer_pubkeys_name, StorageMapKey::new(key_0))
             .unwrap(),
         public_keys[0].to_commitment(),
         "kept signer must remain at index 0"
@@ -674,7 +677,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
     assert_eq!(
         updated_multisig_account
             .storage()
-            .get_map_item(&signer_pubkeys_name, key_1)
+            .get_map_item(&signer_pubkeys_name, StorageMapKey::new(key_1))
             .unwrap(),
         Word::default(),
         "removed signer entry at index 1 must be cleared from local storage"
@@ -755,7 +758,8 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
     let multisig_library = get_multisig_library()?;
     let tx_script_code = r#"
     use oz_multisig::multisig
-    begin
+    @transaction_script
+    pub proc main
         call.multisig::update_signers_and_threshold
     end
     "#;
@@ -805,19 +809,19 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         .await?;
 
     assert_eq!(
-        update_approvers_tx.account_delta().nonce_delta(),
-        Felt::new_unchecked(1)
+        update_approvers_tx.account_patch().final_nonce(),
+        Some(multisig_account.nonce() + Felt::ONE)
     );
 
     mock_chain.add_pending_executed_transaction(&update_approvers_tx)?;
     mock_chain.prove_next_block()?;
 
     let mut updated_multisig_account = multisig_account.clone();
-    updated_multisig_account.apply_delta(update_approvers_tx.account_delta())?;
+    updated_multisig_account.apply_patch(update_approvers_tx.account_patch())?;
 
     let signer_pubkeys_name = StorageSlotName::new(SIGNER_PUBKEYS_SLOT).unwrap();
     for (i, expected_key) in new_public_keys.iter().enumerate() {
-        let storage_key = [
+        let storage_key: Word = [
             Felt::new_unchecked(i as u64),
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
@@ -826,7 +830,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         .into();
         let storage_item = updated_multisig_account
             .storage()
-            .get_map_item(&signer_pubkeys_name, storage_key)
+            .get_map_item(&signer_pubkeys_name, StorageMapKey::new(storage_key))
             .unwrap();
 
         let expected_word: Word = expected_key.to_commitment();
@@ -923,7 +927,8 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     // by verify_guardian_signature at the end of transaction authentication.
     let tx_script_code = r#"
     use oz_guardian::guardian
-    begin
+    @transaction_script
+    pub proc main
         call.guardian::update_guardian_public_key
     end
     "#;
@@ -973,8 +978,8 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
 
     // Verify the transaction executed successfully
     assert_eq!(
-        update_guardian_public_key_tx.account_delta().nonce_delta(),
-        Felt::new_unchecked(1)
+        update_guardian_public_key_tx.account_patch().final_nonce(),
+        Some(multisig_account.nonce() + Felt::ONE)
     );
 
     mock_chain.add_pending_executed_transaction(&update_guardian_public_key_tx)?;
@@ -982,9 +987,9 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
 
     // Apply the delta to get the updated account with new guardian public key
     let mut updated_multisig_account = multisig_account.clone();
-    updated_multisig_account.apply_delta(update_guardian_public_key_tx.account_delta())?;
+    updated_multisig_account.apply_patch(update_guardian_public_key_tx.account_patch())?;
 
-    let storage_key = [
+    let storage_key: Word = [
         Felt::new_unchecked(0),
         Felt::new_unchecked(0),
         Felt::new_unchecked(0),
@@ -996,7 +1001,7 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
     let guardian_public_key_name = StorageSlotName::new(GUARDIAN_PUBLIC_KEY_SLOT).unwrap();
     let storage_item = updated_multisig_account
         .storage()
-        .get_map_item(&guardian_public_key_name, storage_key)
+        .get_map_item(&guardian_public_key_name, StorageMapKey::new(storage_key))
         .unwrap();
 
     let expected_word: Word = _new_guardian_public_key.to_commitment();
@@ -1044,7 +1049,8 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
     let guardian_library = get_guardian_library()?;
     let tx_script_code = r#"
     use oz_guardian::guardian
-    begin
+    @transaction_script
+    pub proc main
         call.guardian::update_guardian_public_key
     end
     "#;
@@ -1094,7 +1100,7 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
         .unwrap();
 
     let mut executed_account = multisig_account.clone();
-    executed_account.apply_delta(executed_tx.account_delta())?;
+    executed_account.apply_patch(executed_tx.account_patch())?;
 
     // Reconstruct as the GUARDIAN server's `apply_delta` does, then add the
     // replay-protection entry.
@@ -1102,7 +1108,8 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
         Account::try_from(&abort_delta)?
     } else {
         let mut acc = multisig_account.clone();
-        acc.apply_delta(&abort_delta)?;
+        guardian_shared::account_delta::apply_account_delta(&mut acc, &abort_delta)
+            .map_err(|e| anyhow::anyhow!(e))?;
         acc
     };
     let exec_txs_slot = StorageSlotName::new(EXECUTED_TXS_SLOT).unwrap();
@@ -1140,33 +1147,33 @@ async fn test_switch_guardian_server_reconstruction_matches_execution() -> anyho
     assert_eq!(
         server_account
             .storage()
-            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), key0)
+            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), StorageMapKey::new(key0))
             .unwrap(),
         executed_account
             .storage()
-            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), key0)
+            .get_map_item(&slot(GUARDIAN_PUBLIC_KEY_SLOT), StorageMapKey::new(key0))
             .unwrap(),
         "guardian public key diverges"
     );
     assert_eq!(
         server_account
             .storage()
-            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), key0)
+            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), StorageMapKey::new(key0))
             .unwrap(),
         executed_account
             .storage()
-            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), key0)
+            .get_map_item(&slot(GUARDIAN_SCHEME_ID_SLOT), StorageMapKey::new(key0))
             .unwrap(),
         "guardian scheme id diverges"
     );
     assert_eq!(
         server_account
             .storage()
-            .get_map_item(&exec_txs_slot, msg)
+            .get_map_item(&exec_txs_slot, StorageMapKey::new(msg))
             .unwrap(),
         executed_account
             .storage()
-            .get_map_item(&exec_txs_slot, msg)
+            .get_map_item(&exec_txs_slot, StorageMapKey::new(msg))
             .unwrap(),
         "executed_transactions replay entry diverges"
     );
@@ -1245,12 +1252,12 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
         .await?;
 
     let mut updated_account = multisig_account.clone();
-    updated_account.apply_delta(executed_tx.account_delta())?;
+    updated_account.apply_patch(executed_tx.account_patch())?;
 
     let proc_thresholds_name = StorageSlotName::new(PROC_THRESHOLD_ROOTS_SLOT).unwrap();
     let stored_threshold = updated_account
         .storage()
-        .get_map_item(&proc_thresholds_name, send_asset_root)
+        .get_map_item(&proc_thresholds_name, StorageMapKey::new(send_asset_root))
         .unwrap();
 
     assert_eq!(stored_threshold[0], Felt::new_unchecked(1));
@@ -1318,12 +1325,12 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
         .await?;
 
     let mut updated_account = multisig_account.clone();
-    updated_account.apply_delta(executed_tx.account_delta())?;
+    updated_account.apply_patch(executed_tx.account_patch())?;
 
     let proc_thresholds_name = StorageSlotName::new(PROC_THRESHOLD_ROOTS_SLOT).unwrap();
     let stored_threshold = updated_account
         .storage()
-        .get_map_item(&proc_thresholds_name, send_asset_root)
+        .get_map_item(&proc_thresholds_name, StorageMapKey::new(send_asset_root))
         .unwrap();
 
     assert_eq!(stored_threshold[0], Felt::new_unchecked(1));
@@ -1370,7 +1377,8 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
         .compile_tx_script(
             r#"
     use oz_multisig::multisig
-    begin
+    @transaction_script
+    pub proc main
         call.multisig::update_signers_and_threshold
     end
     "#,
@@ -1449,7 +1457,8 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         .compile_tx_script(
             r#"
     use oz_multisig::multisig
-    begin
+    @transaction_script
+    pub proc main
         call.multisig::update_signers_and_threshold
     end
     "#,

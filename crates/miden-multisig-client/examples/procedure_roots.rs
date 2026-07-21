@@ -54,11 +54,14 @@ fn procedure_name_and_component(
     root_word: Word,
     receive_asset: Word,
     send_asset: Word,
+    create_note: Word,
 ) -> (&'static str, &'static str) {
     if root_word == receive_asset {
         ("receive_asset", "BasicWallet")
     } else if root_word == send_asset {
         ("send_asset", "BasicWallet")
+    } else if root_word == create_note {
+        ("create_note", "BasicWallet")
     } else {
         match idx {
             0 => ("update_signers", "Multisig"),
@@ -83,6 +86,7 @@ fn mock_commitment(seed: u64) -> Word {
 fn main() {
     let receive_asset: Word = BasicWallet::receive_asset_root().into();
     let send_asset: Word = BasicWallet::move_asset_to_note_root().into();
+    let create_note: Word = BasicWallet::create_note_root().into();
 
     let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10));
     let account = MultisigGuardianBuilder::new(config)
@@ -97,8 +101,13 @@ fn main() {
         .enumerate()
         .map(|(idx, procedure)| {
             let root_word: Word = *procedure.mast_root();
-            let (name, component) =
-                procedure_name_and_component(idx, root_word, receive_asset, send_asset);
+            let (name, component) = procedure_name_and_component(
+                idx,
+                root_word,
+                receive_asset,
+                send_asset,
+                create_note,
+            );
 
             ProcedureRootRecord {
                 name,

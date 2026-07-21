@@ -26,7 +26,10 @@ impl<'a> MidenAccountInspector<'a> {
     /// Try to get a map item from storage by slot name, returning None if not found or invalid
     fn get_map_item_by_name(&self, slot_name: &str, key: Word) -> Option<Word> {
         let name = StorageSlotName::new(slot_name).ok()?;
-        self.account.storage().get_map_item(&name, key).ok()
+        self.account
+            .storage()
+            .get_map_item(&name, miden_protocol::account::StorageMapKey::new(key))
+            .ok()
     }
 
     /// Extract public key from threshold config slot (single signer case)
@@ -157,8 +160,12 @@ mod tests {
             signer_slot(OZ_MULTISIG_SIGNER_PUBKEYS, oz_pubkeys),
         ])
         .expect("valid storage");
-        let account_id =
-            AccountId::dummy([3u8; 15], AccountIdVersion::Version1, AccountType::Private);
+        let account_id = AccountId::dummy(
+            [3u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            miden_protocol::account::AssetCallbackFlag::Disabled,
+        );
 
         Account::new_existing(
             account_id,

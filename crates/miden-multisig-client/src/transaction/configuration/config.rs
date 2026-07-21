@@ -71,7 +71,8 @@ pub fn build_update_signers_script(scheme: SignatureScheme) -> Result<Transactio
 
     let tx_script_code = "
         use oz_multisig::multisig
-        begin
+        @transaction_script
+        pub proc main
             call.multisig::update_signers_and_threshold
         end
     ";
@@ -132,7 +133,8 @@ pub fn build_update_procedure_threshold_script(
     let tx_script_code = format!(
         r#"
         use oz_multisig::multisig
-        begin
+        @transaction_script
+        pub proc main
             push.{procedure_root}
             push.{threshold}
             call.multisig::update_procedure_threshold

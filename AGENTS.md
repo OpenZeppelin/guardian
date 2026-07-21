@@ -227,7 +227,7 @@ When docs are not updated after a visible behavior change, note why in the final
 ## 11) Versioning Policy
 
 - Keep crate/package versions aligned with the active Miden dependency line.
-- Current baseline is Miden `0.14.x`; changes must remain compatible with that line unless migration is explicit.
+- Current baseline is the Miden `0.16` pre-release line (exact-pinned alphas) across the Rust workspace and `packages/miden-multisig-client`. Changes must remain compatible with that line unless migration is explicit.
 - If a change requires moving to a new Miden line, treat it as a coordinated release task:
   1. Update workspace/dependency constraints.
   2. Update both multisig SDKs and both base clients as needed.

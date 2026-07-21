@@ -3,10 +3,10 @@
 use openzeppelin::auth::multisig_ecdsa
 use openzeppelin::auth::guardian_ecdsa
 
-pub use multisig_ecdsa::update_signers_and_threshold
-pub use multisig_ecdsa::update_procedure_threshold
-pub use guardian_ecdsa::update_guardian_public_key
-pub use guardian_ecdsa::verify_guardian_signature
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig_ecdsa
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig_ecdsa
+pub use {update_guardian_public_key} from openzeppelin::auth::guardian_ecdsa
+pub use {verify_guardian_signature} from openzeppelin::auth::guardian_ecdsa
 
 @auth_script
 pub proc auth_tx_multisig_guardian_ecdsa(salt: word)

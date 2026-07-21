@@ -54,7 +54,7 @@ pub async fn execute_for_summary(
 /// Generates a random salt word.
 pub fn generate_salt() -> Word {
     let mut bytes = [0u8; 32];
-    rand::Rng::fill(&mut rand::rng(), &mut bytes);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
 
     let mut felts = [Felt::ZERO; 4];
     for (i, chunk) in bytes.chunks(8).enumerate() {
@@ -108,7 +108,7 @@ mod tests {
         use miden_protocol::transaction::TransactionKernel;
 
         const EXPECTED_KERNEL_COMMITMENT: &str =
-            "0x8cd42f3f2c023c2632ceb982f3d3cf2952f5a1655915c9525a04b510c53fbd20";
+            "0x60e15da40818dc87d8a04daee51e98ff4d6af6b2a24819a56abacefc09adb730";
 
         let actual = word_to_hex(&TransactionKernel.to_commitment());
         assert_eq!(

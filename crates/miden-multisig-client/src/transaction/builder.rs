@@ -363,7 +363,7 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
-        let asset = build_transfer_asset(account.inner(), faucet_id, amount)?;
+        let asset = build_transfer_asset(faucet_id, amount)?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
@@ -703,7 +703,8 @@ impl ProposalBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, ZERO};
 
@@ -712,8 +713,9 @@ mod tests {
             AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");

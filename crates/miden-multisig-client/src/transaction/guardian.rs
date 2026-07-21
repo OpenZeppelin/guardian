@@ -18,7 +18,8 @@ pub fn build_update_guardian_script() -> Result<TransactionScript> {
 
     let tx_script_code = r#"
         use oz_guardian::guardian
-        begin
+        @transaction_script
+        pub proc main
             # The script_arg (key) is already on the operand stack
             # Push the value from advice map to advice stack
             adv.push_mapval

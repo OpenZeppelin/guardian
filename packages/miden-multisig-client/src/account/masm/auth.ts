@@ -6,7 +6,7 @@ export const MULTISIG_MASM = `# Multi-Signature RPO Falcon 512 Authentication Co
 # This library provides the reusable multisig procedures used by account wrappers.
 
 use miden::protocol::active_account
-use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
+use {AUTH_UNAUTHORIZED_EVENT} from miden::protocol::auth
 use miden::protocol::native_account
 use miden::standards::auth
 
@@ -163,7 +163,7 @@ end
 
 proc get_threshold_and_num_approvers
     push.THRESHOLD_CONFIG_SLOT[0..2]
-    exec.active_account::get_initial_item
+    exec.native_account::get_initial_item
     # => [threshold, num_approvers]
 
     movup.2 drop movup.2 drop
@@ -257,6 +257,7 @@ end
 #! 0: new_num_of_approvers
 #! 1: init_num_of_approvers
 @locals(2)
+@account_procedure
 pub proc update_signers_and_threshold(multisig_config_hash: word)
     adv.push_mapval
     # => [MULTISIG_CONFIG_HASH, pad(12)]
@@ -375,6 +376,7 @@ end
 #! Outputs:
 #!   Operand stack: []
 #! Invocation: call
+@account_procedure
 pub proc update_procedure_threshold(proc_threshold: u32, proc_root: word)
     exec.set_procedure_threshold
 end
@@ -430,7 +432,7 @@ proc compute_transaction_threshold(default_threshold: u32) -> u32
 
             # 2b. get the override proc_threshold of that procedure
             # if the procedure has no override threshold, the returned map item will be [0, 0, 0, 0]
-            exec.active_account::get_initial_map_item
+            exec.native_account::get_initial_map_item
             # => [[proc_threshold, 0, 0, 0], num_procedures-1, transaction_threshold]
 
             movdn.3 drop drop drop dup dup.3
@@ -562,7 +564,7 @@ export const MULTISIG_ECDSA_MASM = `# Multi-Signature ECDSA secp256k1 Authentica
 # This library provides the reusable multisig procedures used by account wrappers.
 
 use miden::protocol::active_account
-use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
+use {AUTH_UNAUTHORIZED_EVENT} from miden::protocol::auth
 use miden::protocol::native_account
 use miden::standards::auth
 
@@ -719,7 +721,7 @@ end
 
 proc get_threshold_and_num_approvers
     push.THRESHOLD_CONFIG_SLOT[0..2]
-    exec.active_account::get_initial_item
+    exec.native_account::get_initial_item
     # => [threshold, num_approvers]
 
     movup.2 drop movup.2 drop
@@ -813,6 +815,7 @@ end
 #! 0: new_num_of_approvers
 #! 1: init_num_of_approvers
 @locals(2)
+@account_procedure
 pub proc update_signers_and_threshold(multisig_config_hash: word)
     adv.push_mapval
     # => [MULTISIG_CONFIG_HASH, pad(12)]
@@ -931,6 +934,7 @@ end
 #! Outputs:
 #!   Operand stack: []
 #! Invocation: call
+@account_procedure
 pub proc update_procedure_threshold(proc_threshold: u32, proc_root: word)
     exec.set_procedure_threshold
 end
@@ -986,7 +990,7 @@ proc compute_transaction_threshold(default_threshold: u32) -> u32
 
             # 2b. get the override proc_threshold of that procedure
             # if the procedure has no override threshold, the returned map item will be [0, 0, 0, 0]
-            exec.active_account::get_initial_map_item
+            exec.native_account::get_initial_map_item
             # => [[proc_threshold, 0, 0, 0], num_procedures-1, transaction_threshold]
 
             movdn.3 drop drop drop dup dup.3
@@ -1119,7 +1123,7 @@ export const GUARDIAN_MASM = `# Guardian Authentication Component
 # It can be used standalone or in conjunction with other auth components like multisig.
 
 use miden::protocol::active_account
-use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
+use {AUTH_UNAUTHORIZED_EVENT} from miden::protocol::auth
 use miden::protocol::native_account
 
 # IMPORTANT SECURITY NOTES
@@ -1240,6 +1244,7 @@ end
 #!      [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
 #! - To update the key without requiring GUARDIAN signature, ensure
 #!   GUARDIAN_SELECTOR_SLOT = 0 (OFF) before calling this.
+@account_procedure
 pub proc update_guardian_public_key
     exec.disable_guardian
     # ------ Update the GUARDIAN public key ------
@@ -1291,6 +1296,7 @@ end
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
 #! - If selector is OFF (0), GUARDIAN verification is skipped
 #! - Selector value is read from initial storage state
+@account_procedure
 pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
@@ -1321,7 +1327,7 @@ export const GUARDIAN_ECDSA_MASM = `# Guardian Authentication Component (ECDSA)
 # It can be used standalone or in conjunction with other auth components like multisig.
 
 use miden::protocol::active_account
-use miden::protocol::auth::AUTH_UNAUTHORIZED_EVENT
+use {AUTH_UNAUTHORIZED_EVENT} from miden::protocol::auth
 use miden::protocol::native_account
 
 # IMPORTANT SECURITY NOTES
@@ -1437,6 +1443,7 @@ end
 #!      [0, 0, 0, 0] => GUARDIAN_PUBLIC_KEY
 #! - To update the key without requiring GUARDIAN signature, ensure
 #!   GUARDIAN_SELECTOR_SLOT = 0 (OFF) before calling this.
+@account_procedure
 pub proc update_guardian_public_key
     exec.disable_guardian
     # ------ Update the GUARDIAN public key ------
@@ -1488,6 +1495,7 @@ end
 #! - MSG is TX_SUMMARY_COMMITMENT provided by auth procedure
 #! - If selector is OFF (0), GUARDIAN verification is skipped
 #! - Selector value is read from initial storage state
+@account_procedure
 pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item

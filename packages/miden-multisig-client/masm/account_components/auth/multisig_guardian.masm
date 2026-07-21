@@ -3,10 +3,10 @@
 use openzeppelin::auth::multisig
 use openzeppelin::auth::guardian
 
-pub use multisig::update_signers_and_threshold
-pub use multisig::update_procedure_threshold
-pub use guardian::update_guardian_public_key
-pub use guardian::verify_guardian_signature
+pub use {update_signers_and_threshold} from openzeppelin::auth::multisig
+pub use {update_procedure_threshold} from openzeppelin::auth::multisig
+pub use {update_guardian_public_key} from openzeppelin::auth::guardian
+pub use {verify_guardian_signature} from openzeppelin::auth::guardian
 
 @auth_script
 pub proc auth_tx_multisig_guardian(salt: word)

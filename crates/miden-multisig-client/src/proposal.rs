@@ -763,7 +763,8 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{InputNotes, RawOutputNotes};
 
     fn create_test_tx_summary() -> TransactionSummary {
@@ -771,8 +772,9 @@ mod tests {
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("Valid empty delta");

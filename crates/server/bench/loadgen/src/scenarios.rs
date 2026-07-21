@@ -10,7 +10,8 @@ use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::Word;
-use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+use miden_protocol::account::AccountStoragePatch;
+use miden_protocol::account::delta::AccountVaultDelta;
 use miden_protocol::account::{AccountDelta, AccountId};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
@@ -803,8 +804,9 @@ fn create_account_seed(
 fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
     let account_delta = AccountDelta::new(
         account_id.to_owned(),
-        AccountStorageDelta::default(),
+        AccountStoragePatch::default(),
         AccountVaultDelta::default(),
+        None,
         Felt::new_unchecked(nonce),
     )
     .map_err(|e| anyhow!("failed to build account delta: {e}"))?;
