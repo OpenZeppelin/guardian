@@ -13,7 +13,7 @@ import { GUARDIAN_ECDSA_MASM, GUARDIAN_MASM } from '../account/masm/auth.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
-import type { SignatureOptions } from './options.js';
+import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 async function buildUpdateGuardianScript(
@@ -42,6 +42,16 @@ end
   );
 }
 
+export function buildUpdateGuardianTransactionRequest(
+  client: MidenClient,
+  newGuardianPubkey: string,
+  options: MidenClientSignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
+export function buildUpdateGuardianTransactionRequest(
+  client: WasmWebClient,
+  newGuardianPubkey: string,
+  options?: SignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildUpdateGuardianTransactionRequest(
   client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,

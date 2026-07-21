@@ -81,14 +81,19 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 #### Running with Cargo
 
 ```bash
-cargo run --bin server
+GUARDIAN_NETWORK_TYPE=MidenTestnet cargo run --bin server
 ```
+
+`GUARDIAN_NETWORK_TYPE` (`MidenLocal`, `MidenTestnet`, or `MidenDevnet`) is
+required — the server refuses to start without it. A root `.env` file works
+too; see [`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md#environment-file).
 
 EVM proposal support is feature-gated. Default builds do not register EVM
 routes. EVM-enabled servers use the domain-separated `/evm/auth/*`,
 `/evm/accounts`, and `/evm/proposals*` routes.
 
 ```bash
+GUARDIAN_NETWORK_TYPE=MidenTestnet \
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
 GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x... \
 cargo run -p guardian-server --features evm --bin server
@@ -96,10 +101,13 @@ cargo run -p guardian-server --features evm --bin server
 
 #### Running with Docker Compose
 
-The default compose file sets the container paths it needs, so a root `.env`
-is not required for this path. Start the server:
+The default compose file sets the container paths it needs, but you must
+choose a network explicitly: `GUARDIAN_NETWORK_TYPE` has no default and the
+server refuses to start without it. Set it in a root `.env` or export it in
+your shell before starting:
 
 ```bash
+echo "GUARDIAN_NETWORK_TYPE=MidenTestnet" > .env
 docker compose up --build -d
 ```
 

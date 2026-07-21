@@ -119,6 +119,8 @@ vi.mock('./inspector.js', () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+const MIDEN_RPC_ENDPOINT = 'https://rpc.devnet.miden.io';
+
 function mockedAccount(commitmentHex: string, nonce = 0): any {
   return {
     commitment: () => ({
@@ -138,6 +140,22 @@ describe('Multisig', () => {
   let mockSigner: Signer;
   let mockAccount: any;
   let mockWebClient: any;
+
+  function createTestMultisig(
+    config: ConstructorParameters<typeof Multisig>[1],
+    signer: Signer = mockSigner,
+    accountId?: string
+  ): Multisig {
+    return new Multisig(
+      mockAccount,
+      config,
+      guardian,
+      signer,
+      mockWebClient,
+      accountId,
+      MIDEN_RPC_ENDPOINT
+    );
+  }
 
   beforeEach(() => {
     mockFetch.mockReset();
@@ -213,7 +231,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual(config.signerCommitments);
@@ -229,10 +247,30 @@ describe('Multisig', () => {
       };
 
       const accountId = '0x' + 'd'.repeat(30);
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient, accountId);
+      const multisig = createTestMultisig(config, mockSigner, accountId);
 
       expect(multisig.account).toBe(mockAccount);
       expect(multisig.accountId).toBe(accountId);
+    });
+
+    it('should reject a missing Miden RPC endpoint immediately', () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      expect(
+        () => new Multisig(
+          mockAccount,
+          config,
+          guardian,
+          mockSigner,
+          mockWebClient,
+          undefined,
+          undefined as unknown as string
+        )
+      ).toThrow('missing required configuration: midenRpcEndpoint');
     });
   });
 
@@ -244,7 +282,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.accountId).toBe('0x' + 'a'.repeat(30));
     });
 
@@ -256,7 +294,7 @@ describe('Multisig', () => {
       };
 
       const accountId = '0x' + 'e'.repeat(30);
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient, accountId);
+      const multisig = createTestMultisig(config, mockSigner, accountId);
       expect(multisig.accountId).toBe(accountId);
     });
   });
@@ -269,7 +307,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
     });
   });
@@ -282,7 +320,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -662,7 +700,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -690,7 +728,7 @@ describe('Multisig', () => {
       };
 
       guardian.setSigner(ecdsaSigner);
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -726,6 +764,7 @@ describe('Multisig', () => {
         mockSigner,
         mockWebClient,
         '0x' + 'e'.repeat(30),
+        MIDEN_RPC_ENDPOINT,
       );
 
       mockFetch.mockResolvedValueOnce({
@@ -746,7 +785,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -768,7 +807,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockProposals = [
         {
@@ -819,7 +858,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockProposals = [
         {
@@ -868,7 +907,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -917,7 +956,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockProposals = [
         {
@@ -964,7 +1003,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockProposals = [
         {
@@ -1018,7 +1057,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.listProposals()).toEqual([]);
     });
   });
@@ -1031,7 +1070,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1075,7 +1114,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1120,7 +1159,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1179,7 +1218,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1269,7 +1308,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
       await multisig.createChangeThresholdProposal(2, 1);
 
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
@@ -1293,7 +1332,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const newGuardianPubkey = '0x' + '1'.repeat(64);
 
       mockFetch.mockResolvedValueOnce({
@@ -1342,7 +1381,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -1372,7 +1411,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
       const newGuardianCommitment = '0x' + '1'.repeat(64);
 
       mockFetch.mockResolvedValueOnce({
@@ -1427,7 +1466,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1495,7 +1534,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1546,7 +1585,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // First create a proposal
       const mockDelta = {
@@ -1624,7 +1663,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -1675,7 +1714,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'd'.repeat(64);
 
       mockFetch.mockResolvedValueOnce({
@@ -1722,7 +1761,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       vi.mocked(executeForSummary).mockResolvedValueOnce({
         toCommitment: () => ({
@@ -1758,7 +1797,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       vi.mocked(executeForSummary).mockResolvedValueOnce({
         toCommitment: () => ({
@@ -1809,7 +1848,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockProposals = [
         {
@@ -1862,7 +1901,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const publicKey = '0x' + 'd'.repeat(66);
 
       mockFetch.mockResolvedValueOnce({
@@ -1920,7 +1959,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -1943,7 +1982,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const exported = {
         accountId: multisig.accountId,
@@ -1976,7 +2015,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const publicKey = '0x' + 'd'.repeat(66);
 
       const proposal = await multisig.importProposal(
@@ -2023,7 +2062,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       await expect(
         multisig.importProposal(
@@ -2057,7 +2096,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const exported = {
         accountId: multisig.accountId,
@@ -2102,7 +2141,7 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
       const cachedProposalId = '0x' + 'c'.repeat(64);
       const requestedProposalId = '0x' + 'C'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
@@ -2225,7 +2264,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
       const newGuardianPubkey = '0x' + '1'.repeat(64);
       const finalRequest = { kind: 'final-switch-guardian-request' };
@@ -2280,7 +2319,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       await expect(
         multisig.createTransactionProposalRequest('0x' + 'nonexistent'.repeat(5))
@@ -2294,7 +2333,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockProposals = [
         {
@@ -2345,7 +2384,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       vi.mocked(executeForSummary).mockResolvedValueOnce({
@@ -2388,7 +2427,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -2430,7 +2469,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -2502,7 +2541,7 @@ describe('Multisig', () => {
           guardianCommitment: '0x' + 'c'.repeat(64),
         };
 
-        const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+        const multisig = createTestMultisig(config);
         const proposalId = '0x' + 'c'.repeat(64);
         const finalRequest = { kind: 'fresh-message-word-request' };
 
@@ -2601,7 +2640,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -2644,7 +2683,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       await expect(
         multisig.executeProposal('0x' + 'nonexistent'.repeat(5))
@@ -2658,7 +2697,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // Sync with pending proposal (only 1 signature)
       const mockProposals = [
@@ -2711,7 +2750,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const readyDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -2784,7 +2823,7 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
       const proposalId = '0x' + 'c'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
       const ackPubkey = '0x' + '4'.repeat(66);
@@ -2900,7 +2939,7 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, ecdsaSigner, mockWebClient);
+      const multisig = createTestMultisig(config, ecdsaSigner);
       const proposalId = '0x' + 'c'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
       const ackPubkey = '0x' + '4'.repeat(66);
@@ -3003,7 +3042,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
       const newGuardianPubkey = '0x' + '1'.repeat(64);
 
@@ -3086,7 +3125,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
       const newGuardianPubkey = '0x' + '1'.repeat(64);
 
@@ -3137,7 +3176,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -3179,7 +3218,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -3231,7 +3270,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
       (multisig as any).proposals.set(proposalId, {
@@ -3308,7 +3347,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const builtinDelta = {
         ...customDelta('change_threshold', [falconSig('0x' + 'a'.repeat(64))]),
@@ -3336,7 +3375,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -3354,7 +3393,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // Signed commitment comes from TransactionSummary.deserialize -> 'c' * 64.
       // Make the binding request derive a different commitment so the check fails.
@@ -3381,7 +3420,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const ready = customDelta('b2agg', [falconSig('0x' + 'a'.repeat(64))]);
 
@@ -3410,7 +3449,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // Create a proposal with metadata
       const mockDelta = {
@@ -3472,7 +3511,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // Sync proposals - no local proposals exist
       const mockProposals = [
@@ -3519,7 +3558,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -3567,7 +3606,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -3617,7 +3656,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const mockDelta = {
         account_id: '0x' + 'a'.repeat(30),
@@ -3668,7 +3707,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // First sync with 1 signature (pending)
       const mockProposalsPending = [
@@ -3760,7 +3799,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.threshold).toBe(3);
     });
 
@@ -3772,7 +3811,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.signerCommitments).toEqual(signerCommitments);
     });
 
@@ -3784,7 +3823,7 @@ describe('Multisig', () => {
         guardianCommitment,
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.guardianCommitment).toBe(guardianCommitment);
     });
 
@@ -3795,7 +3834,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'd'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
       expect(multisig.account).toBe(mockAccount);
     });
   });
@@ -3808,7 +3847,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // Simulates a GUARDIAN response with canonical snake_case metadata
       const rustProposals = [
@@ -3858,7 +3897,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       // P2ID proposal with canonical snake_case fields
       const p2idProposals = [
@@ -3915,7 +3954,7 @@ describe('Multisig', () => {
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
 
-      const multisig = new Multisig(mockAccount, config, guardian, mockSigner, mockWebClient);
+      const multisig = createTestMultisig(config);
 
       const switchGuardianProposals = [
         {

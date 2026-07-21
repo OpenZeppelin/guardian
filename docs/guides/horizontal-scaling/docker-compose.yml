@@ -30,7 +30,7 @@ x-guardian-server: &guardian-server
       condition: service_healthy
   environment:
     RUST_LOG: info
-    GUARDIAN_NETWORK_TYPE: ${GUARDIAN_NETWORK_TYPE:-MidenDevnet}
+    GUARDIAN_NETWORK_TYPE: ${GUARDIAN_NETWORK_TYPE:?set GUARDIAN_NETWORK_TYPE in .env}
     DATABASE_URL: postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
     GUARDIAN_KEYSTORE_PATH: /var/guardian/keystore
     GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE: /etc/guardian/operators.json
