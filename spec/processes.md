@@ -248,7 +248,7 @@ sequenceDiagram
       abandon quarantine instead — this takes precedence over the grace
       deferral. After `abandon_quarantine_checks` consecutive at-base
       observations (default 2) AND `abandon_quarantine_seconds` since the
-      request (default 30, so a late-landing transaction can surface),
+      request (default 15, so a late-landing transaction can surface),
       delete the matching proposal, transition the delta to
       `discarded` with reason `client_abandoned` (preserved as history),
       and clear the pending-candidate flag. A divergent observation resets

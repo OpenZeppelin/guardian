@@ -728,7 +728,35 @@ impl StorageBackend for FilesystemService {
         status: DeltaStatus,
         _fence: Option<&crate::storage::LeaseFence>,
     ) -> Result<crate::storage::CanonicalWrite, String> {
-        crate::storage::update_candidate_status_sequential(self, account_id, nonce, status).await
+        let path = self.get_delta_path(account_id, nonce);
+
+        // Read-modify-write under the delta write lock (the same lock
+        // `request_candidate_abandon` takes): the new status is computed
+        // from the worker's tick-start snapshot, so a concurrently
+        // recorded abandon request must be carried into the overwrite.
+        let _guard = self.delta_write_lock.lock().await;
+
+        let content = match fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(crate::storage::CanonicalWrite::NotCandidate);
+            }
+            Err(e) => return Err(format!("Failed to read delta file: {e}")),
+        };
+        let mut delta: DeltaObject = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
+
+        if !delta.status.is_candidate() {
+            return Ok(crate::storage::CanonicalWrite::NotCandidate);
+        }
+
+        delta.status =
+            status.with_abandon_request_preserved_from(delta.status.abandon_requested_at());
+        let updated = serde_json::to_string_pretty(&delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+        self.write(&path, &updated).await?;
+
+        Ok(crate::storage::CanonicalWrite::Applied)
     }
 
     // ----------------------------------------------------------------------
@@ -1179,6 +1207,73 @@ mod tests {
             .await
             .expect("call works");
         assert_eq!(intent, AbandonIntent::NotCandidate);
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert!(stored.status.is_canonical(), "canonical delta untouched");
+    }
+
+    #[tokio::test]
+    async fn test_stale_counter_write_preserves_concurrent_abandon_intent() {
+        // The clobber race: the worker computes a counter write from its
+        // tick-start snapshot (no intent), a client records the intent in
+        // between, then the worker's write lands. The stored intent must
+        // survive.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        // Worker snapshot taken here (no intent yet).
+        let stale_counter_write = delta.status.with_incremented_divergence();
+
+        // Client records the intent.
+        storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .await
+            .expect("intent recording works");
+
+        // Worker's stale write lands.
+        let outcome = storage
+            .update_candidate_status(account_id, 1, stale_counter_write, None)
+            .await
+            .expect("status update works");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::Applied);
+
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert_eq!(
+            stored.status.abandon_requested_at(),
+            Some("2024-11-14T12:05:00Z"),
+            "the concurrently recorded intent must survive the counter write"
+        );
+        assert_eq!(stored.status.divergence_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_candidate_status_spares_non_candidates() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        // create_test_delta is canonical by default.
+        let delta = create_test_delta(account_id, 1);
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let outcome = storage
+            .update_candidate_status(
+                account_id,
+                1,
+                DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+                None,
+            )
+            .await
+            .expect("call works");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::NotCandidate);
         let stored = storage.pull_delta(account_id, 1).await.expect("readable");
         assert!(stored.status.is_canonical(), "canonical delta untouched");
     }

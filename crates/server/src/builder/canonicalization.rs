@@ -43,7 +43,7 @@ impl Default for CanonicalizationConfig {
             max_retries: 18,                      // 18 attempts (total: ~3 minutes)
             submission_grace_period_seconds: 600, // Allow proving/submission to settle first
             divergence_confirmations: 2,          // Two ticks to rule out a stale read
-            abandon_quarantine_seconds: 30,       // Let a late-landing tx surface first
+            abandon_quarantine_seconds: 15,       // Let a late-landing tx surface first
             abandon_quarantine_checks: 2,         // Two ticks to rule out a stale read
         }
     }

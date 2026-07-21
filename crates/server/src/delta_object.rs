@@ -165,6 +165,35 @@ impl DeltaStatus {
         }
     }
 
+    /// Carry a concurrently-recorded abandon request into a status that is
+    /// about to overwrite the stored row. Worker counter writes are
+    /// computed from a tick-start snapshot, so without this a client
+    /// intent recorded mid-tick would be silently wiped. Only
+    /// `abandon_requested_at` is preserved — confirmation-streak resets
+    /// are legitimate worker writes, and non-candidate statuses drop the
+    /// intent by design (terminal states resolve it).
+    pub fn with_abandon_request_preserved_from(&self, stored_requested_at: Option<&str>) -> Self {
+        match (self, stored_requested_at) {
+            (
+                Self::Candidate {
+                    timestamp,
+                    retry_count,
+                    divergence_count,
+                    abandon_requested_at: None,
+                    abandon_confirm_count,
+                },
+                Some(stored),
+            ) => Self::Candidate {
+                timestamp: timestamp.clone(),
+                retry_count: *retry_count,
+                divergence_count: *divergence_count,
+                abandon_requested_at: Some(stored.to_string()),
+                abandon_confirm_count: *abandon_confirm_count,
+            },
+            _ => self.clone(),
+        }
+    }
+
     pub fn with_incremented_abandon_confirm(&self) -> Self {
         match self {
             Self::Candidate {
@@ -461,6 +490,31 @@ mod tests {
         // A retried request must not restart the quarantine clock.
         let retried = status.with_abandon_requested("2026-07-01T00:09:00Z".to_string());
         assert_eq!(retried.abandon_requested_at(), Some("2026-07-01T00:01:00Z"));
+    }
+
+    #[test]
+    fn stored_abandon_request_is_preserved_into_stale_counter_writes() {
+        // A worker counter write computed before the intent existed must
+        // carry the stored request forward instead of wiping it.
+        let stale_write = DeltaStatus::candidate("2026-07-01T00:00:00Z".to_string())
+            .with_incremented_divergence();
+        let merged = stale_write.with_abandon_request_preserved_from(Some("2026-07-01T00:01:00Z"));
+        assert_eq!(merged.abandon_requested_at(), Some("2026-07-01T00:01:00Z"));
+        assert_eq!(merged.divergence_count(), 1, "counter write still applies");
+
+        // A write that already carries its own intent keeps it.
+        let with_own = DeltaStatus::candidate("2026-07-01T00:00:00Z".to_string())
+            .with_abandon_requested("2026-07-01T00:02:00Z".to_string())
+            .with_abandon_request_preserved_from(Some("2026-07-01T00:01:00Z"));
+        assert_eq!(
+            with_own.abandon_requested_at(),
+            Some("2026-07-01T00:02:00Z")
+        );
+
+        // Terminal statuses drop the intent by design.
+        let discarded = DeltaStatus::discarded_client_abandoned("2026-07-01T00:03:00Z".to_string())
+            .with_abandon_request_preserved_from(Some("2026-07-01T00:01:00Z"));
+        assert_eq!(discarded.abandon_requested_at(), None);
     }
 
     #[test]
