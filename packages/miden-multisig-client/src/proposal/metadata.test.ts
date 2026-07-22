@@ -124,6 +124,21 @@ describe('ProposalMetadataCodec p2id noteType (issue #322)', () => {
     expect(ProposalMetadataCodec.toGuardian(md).noteType).toBeUndefined();
   });
 
+  it('canonicalizes an explicit public noteType to absent on encode', () => {
+    const md = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+      noteType: 'public',
+    } as P2IdProposalMetadata;
+
+    // toGuardian omits the field so a public note keeps the pre-#322 wire
+    // shape and matches the Rust encoder, even if handed an explicit 'public'.
+    expect(ProposalMetadataCodec.toGuardian(md).noteType).toBeUndefined();
+  });
+
   it('fromGuardian rejects an unsupported noteType', () => {
     expect(() =>
       ProposalMetadataCodec.fromGuardian({ ...baseWire, noteType: 'encrypted' }),

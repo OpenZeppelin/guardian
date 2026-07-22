@@ -26,7 +26,10 @@ export class ProposalMetadataCodec {
           recipientId: metadata.recipientId,
           faucetId: metadata.faucetId,
           amount: metadata.amount,
-          noteType: metadata.noteType,
+          // Canonicalize: emit note_type only when private, so a public note
+          // keeps the pre-#322 wire shape and matches the Rust encoder (which
+          // round-trips through the NoteType enum). Absent => public.
+          noteType: metadata.noteType === 'private' ? 'private' : undefined,
         };
       case 'switch_guardian':
         return {
