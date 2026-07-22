@@ -376,13 +376,10 @@ export class Multisig {
       const localNonce = localAccount.nonce().asInt();
       const incomingNonce = incomingAccount.nonce().asInt();
 
-      // GUARDIAN is behind local: keep the (on-chain-verifiable) local state.
       if (incomingNonce < localNonce) {
         return false;
       }
 
-      // Same nonce but divergent state — this method is only reached when the
-      // commitments already differ — is a genuine fork, not GUARDIAN lag.
       if (incomingNonce === localNonce) {
         throw new Error(
           `Refusing to overwrite local state: incoming nonce ${incomingNonce.toString()} equals local nonce ${localNonce.toString()} but commitments differ for account ${this._accountId}`
