@@ -615,6 +615,9 @@ mod tests {
         .await;
         state.canonicalization = Some(crate::canonicalization::CanonicalizationConfig {
             check_interval_seconds: 7,
+            fast_promotion_enabled: true,
+            fast_promotion_interval_seconds: 3,
+            fast_promotion_window_seconds: 30,
             max_retries: 13,
             submission_grace_period_seconds: 42,
             divergence_confirmations: 2,

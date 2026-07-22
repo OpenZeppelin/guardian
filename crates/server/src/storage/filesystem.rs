@@ -526,6 +526,42 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: DateTime<Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut deltas = Vec::new();
+        for account_id in self.fanout_account_ids().await? {
+            for delta in self.pull_candidate_deltas(&account_id).await? {
+                if let Some(at) =
+                    parse_status_timestamp(delta.status.timestamp()).filter(|at| *at > since)
+                {
+                    deltas.push((at, delta));
+                }
+            }
+        }
+        deltas.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.account_id.cmp(&right.1.account_id))
+                .then_with(|| left.1.nonce.cmp(&right.1.nonce))
+        });
+        if let Some(cursor) = cursor {
+            deltas.retain(|(at, delta)| {
+                (*at, delta.account_id.as_str(), delta.nonce)
+                    > (
+                        cursor.last_status_timestamp,
+                        cursor.last_account_id.as_str(),
+                        cursor.last_nonce,
+                    )
+            });
+        }
+        deltas.truncate(limit as usize);
+        Ok(deltas.into_iter().map(|(_, delta)| delta).collect())
+    }
+
     // Delta proposal methods - stored separately from executed deltas
     async fn submit_delta_proposal(
         &self,
@@ -1047,6 +1083,7 @@ mod tests {
     use super::*;
     use crate::delta_object::{DeltaObject, DeltaStatus};
     use crate::state_object::StateObject;
+    use chrono::TimeZone;
     use std::env;
 
     fn create_test_delta(account_id: &str, nonce: u64) -> DeltaObject {
@@ -1208,6 +1245,63 @@ mod tests {
         assert!(candidates.iter().all(|d| d.status.is_candidate()));
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_recent_candidate_deltas_filters_across_accounts() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let cutoff = Utc.with_ymd_and_hms(2024, 11, 14, 12, 0, 0).unwrap();
+
+        for (account_id, nonce, timestamp) in [
+            ("account-b", 3, "2024-11-14T12:00:01Z"),
+            ("account-a", 2, "2024-11-14T12:00:30Z"),
+            ("account-a", 1, "2024-11-14T12:00:00Z"),
+            ("account-c", 4, "2024-11-14T11:59:59Z"),
+        ] {
+            let mut delta = create_test_delta(account_id, nonce);
+            delta.status = DeltaStatus::candidate(timestamp.to_string());
+            storage
+                .submit_delta(&delta)
+                .await
+                .expect("Submit delta failed");
+        }
+
+        let candidates = storage
+            .pull_recent_candidate_deltas(cutoff, None, 10)
+            .await
+            .expect("Pull recent candidate deltas failed");
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|delta| (delta.account_id.as_str(), delta.nonce))
+                .collect::<Vec<_>>(),
+            vec![("account-b", 3), ("account-a", 2)]
+        );
+
+        let limited = storage
+            .pull_recent_candidate_deltas(cutoff, None, 1)
+            .await
+            .expect("Pull bounded recent candidate deltas failed");
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].account_id, "account-b");
+
+        let cursor = crate::storage::RecentCandidateCursor {
+            last_status_timestamp: Utc.with_ymd_and_hms(2024, 11, 14, 12, 0, 1).unwrap(),
+            last_account_id: "account-b".to_string(),
+            last_nonce: 3,
+        };
+        let next_page = storage
+            .pull_recent_candidate_deltas(cutoff, Some(&cursor), 10)
+            .await
+            .expect("Pull next recent candidate page failed");
+        assert_eq!(next_page.len(), 1);
+        assert_eq!(next_page[0].account_id, "account-a");
+
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

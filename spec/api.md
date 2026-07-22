@@ -463,6 +463,8 @@ behavior.
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
+| `guardian_canonicalization_fast_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
+| `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
@@ -484,8 +486,9 @@ behavior.
 | `process_*` (CPU, RSS, fds, start time) | standard | — |
 
 Durations use seconds with explicit buckets from 1ms to 10s, except
-`guardian_canonicalization_run_duration_seconds` (a full pass over all
-accounts) which uses extended buckets up to 5 minutes, and
+`guardian_canonicalization_run_duration_seconds` and
+`guardian_canonicalization_fast_run_duration_seconds`, which use extended
+buckets up to 5 minutes, and
 `guardian_canonicalization_candidate_age_seconds` which spans 1 second
 to 24 hours so stuck candidates stay visible. The
 authoritative taxonomy (including help text and the enforced label

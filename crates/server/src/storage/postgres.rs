@@ -10,6 +10,7 @@ use crate::storage::{
     GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageType,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Timelike, Utc};
 use diesel::ConnectionError;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -33,6 +34,12 @@ use url::Url;
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 const MIGRATION_ADVISORY_LOCK_KEY: i64 = 0x4755_4152_4449_414E;
+
+fn postgres_timestamp_precision(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
+    timestamp
+        .with_nanosecond(timestamp.nanosecond() / 1_000 * 1_000)
+        .ok_or_else(|| "Failed to normalize timestamp to Postgres precision".to_string())
+}
 const MIGRATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const MIGRATION_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -1117,6 +1124,55 @@ impl StorageBackend for PostgresService {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let mut query = deltas::table
+            .filter(deltas::status_kind.eq("candidate"))
+            .filter(deltas::status_timestamp.gt(since))
+            .into_boxed();
+
+        if let Some(cursor) = cursor {
+            let last_nonce = i64::try_from(cursor.last_nonce)
+                .map_err(|_| "Recent candidate cursor nonce exceeds i64".to_string())?;
+            let last_status_timestamp = postgres_timestamp_precision(cursor.last_status_timestamp)?;
+            query = query.filter(
+                deltas::status_timestamp
+                    .gt(last_status_timestamp)
+                    .or(deltas::status_timestamp
+                        .eq(last_status_timestamp)
+                        .and(deltas::account_id.gt(cursor.last_account_id.clone())))
+                    .or(deltas::status_timestamp
+                        .eq(last_status_timestamp)
+                        .and(deltas::account_id.eq(cursor.last_account_id.clone()))
+                        .and(deltas::nonce.gt(last_nonce))),
+            );
+        }
+
+        let rows: Vec<DeltaRow> = query
+            .order((
+                deltas::status_timestamp.asc(),
+                deltas::account_id.asc(),
+                deltas::nonce.asc(),
+            ))
+            .limit(i64::from(limit))
+            .select(DeltaRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull recent candidate deltas: {e}"))?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -1935,6 +1991,20 @@ impl StorageBackend for PostgresService {
 mod tests {
     use super::*;
 
+    #[test]
+    fn postgres_timestamp_precision_truncates_sub_microseconds() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-07-22T12:34:56.123456789Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            postgres_timestamp_precision(timestamp).expect("normalization succeeds"),
+            DateTime::parse_from_rfc3339("2026-07-22T12:34:56.123456Z")
+                .expect("valid timestamp")
+                .with_timezone(&Utc)
+        );
+    }
+
     fn url_with_mode(query: &str) -> String {
         if query.is_empty() {
             "postgres://guardian:pw@db.example.com:5432/guardian".to_string()
@@ -2503,7 +2573,8 @@ mod tests {
         let service = PostgresService::new(&url, 4).await.expect("storage");
         let stamp = chrono::Utc::now().timestamp_micros();
         let account_id = format!("0xcand{stamp}");
-        let now = chrono::Utc::now().to_rfc3339();
+        let now_at = chrono::Utc::now();
+        let now = now_at.to_rfc3339();
 
         let mut conn = service.pool.get().await.expect("conn");
         diesel::sql_query(
@@ -2525,6 +2596,13 @@ mod tests {
             candidate.status = DeltaStatus::candidate(now.clone());
             service.submit_delta(&candidate).await.expect("candidate");
         }
+        let mut old_candidate = create_test_delta(&account_id, 4);
+        old_candidate.status =
+            DeltaStatus::candidate((now_at - chrono::TimeDelta::seconds(60)).to_rfc3339());
+        service
+            .submit_delta(&old_candidate)
+            .await
+            .expect("old candidate");
 
         let candidates = service
             .pull_candidate_deltas(&account_id)
@@ -2532,10 +2610,39 @@ mod tests {
             .expect("filtered read");
         assert_eq!(
             candidates.iter().map(|d| d.nonce).collect::<Vec<_>>(),
-            vec![2, 3],
+            vec![2, 3, 4],
             "only candidate rows come back, nonce-ascending",
         );
         assert!(candidates.iter().all(|d| d.status.is_candidate()));
+
+        let recent = service
+            .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), None, 10)
+            .await
+            .expect("recent filtered read");
+        assert_eq!(
+            recent
+                .iter()
+                .filter(|delta| delta.account_id == account_id)
+                .map(|delta| delta.nonce)
+                .collect::<Vec<_>>(),
+            vec![2, 3],
+            "the timestamp cutoff is applied in the store",
+        );
+
+        let first_page = service
+            .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), None, 1)
+            .await
+            .expect("first recent page");
+        let cursor = crate::storage::RecentCandidateCursor {
+            last_status_timestamp: now_at,
+            last_account_id: account_id.clone(),
+            last_nonce: first_page[0].nonce,
+        };
+        let second_page = service
+            .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), Some(&cursor), 1)
+            .await
+            .expect("second recent page");
+        assert_eq!(second_page[0].nonce, 3, "cursor advances the SQL page");
     }
 
     /// Deep-history guard for the candidate-only read. The trait default

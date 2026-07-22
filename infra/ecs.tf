@@ -169,6 +169,10 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(local.effective_guardian_canonicalization_max_concurrent_accounts)
           },
           {
+            name  = "GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED"
+            value = tostring(var.guardian_canonicalization_fast_promotion_enabled)
+          },
+          {
             name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
             value = local.operator_public_keys_secret_arn
           },

@@ -271,6 +271,16 @@ pub struct MockStorageBackend {
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub pull_recent_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub pull_recent_candidate_deltas_calls: Arc<
+        StdMutex<
+            Vec<(
+                chrono::DateTime<chrono::Utc>,
+                Option<crate::storage::RecentCandidateCursor>,
+                u32,
+            )>,
+        >,
+    >,
     pub submit_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
     pub pull_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
@@ -370,6 +380,30 @@ impl MockStorageBackend {
             .unwrap()
             .push(response);
         self
+    }
+
+    pub fn with_pull_recent_candidate_deltas(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.pull_recent_candidate_deltas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_pull_recent_candidate_deltas_calls(
+        &self,
+    ) -> Vec<(
+        chrono::DateTime<chrono::Utc>,
+        Option<crate::storage::RecentCandidateCursor>,
+        u32,
+    )> {
+        self.pull_recent_candidate_deltas_calls
+            .lock()
+            .unwrap()
+            .clone()
     }
 
     pub fn get_submit_state_calls(&self) -> Vec<StateObject> {
@@ -651,6 +685,23 @@ impl StorageBackend for MockStorageBackend {
             .collect();
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
+    }
+
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> StdResult<Vec<DeltaObject>, String> {
+        self.pull_recent_candidate_deltas_calls
+            .lock()
+            .unwrap()
+            .push((since, cursor.cloned(), limit));
+        self.pull_recent_candidate_deltas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn submit_delta_proposal(

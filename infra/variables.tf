@@ -508,6 +508,12 @@ variable "guardian_canonicalization_max_concurrent_accounts" {
   }
 }
 
+variable "guardian_canonicalization_fast_promotion_enabled" {
+  description = "Whether ECS enables the recent-candidate fast promotion pass"
+  type        = bool
+  default     = true
+}
+
 # Resource naming
 variable "cluster_name" {
   description = "ECS cluster name"

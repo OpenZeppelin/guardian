@@ -74,6 +74,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_rate_per_min = 5000
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
+# guardian_canonicalization_fast_promotion_enabled = false
 
 # Optional: Resource naming (defaults match the original bash script)
 # cluster_name                 = "guardian-cluster"

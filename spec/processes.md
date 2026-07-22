@@ -222,16 +222,35 @@ sequenceDiagram
 - Optimistic mode (disabled): `push_delta` marks deltas as `canonical` immediately and updates state.
 
 ### Configuration
-- Current server builder defaults: submission_grace_period_seconds = 600
-  (10m), check_interval_seconds = 10, max_retries = 48,
+- Shipped server builder configuration: submission_grace_period_seconds = 600
+  (10m), check_interval_seconds = 10, fast_promotion_enabled = true,
+  fast_promotion_interval_seconds = 3,
+  fast_promotion_window_seconds = 30, max_retries = 48,
   divergence_confirmations = 2, max_concurrent_accounts = 10.
-- These values are configured in code, not through server env vars —
-  except `max_concurrent_accounts`, which
-  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` overrides at
-  startup.
+- These values are configured in code, not through server env vars. The
+  exceptions are `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED=false`,
+  which disables the promotion-only pass, and
+  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS`, which overrides account
+  concurrency at startup.
 
 ### Worker Behavior
-- Runs every `check_interval_seconds`.
+- A full pass runs every `check_interval_seconds` and owns all retry,
+  divergence, and discard decisions.
+- Between full passes, a promotion-only pass runs every
+  `fast_promotion_interval_seconds` for candidates younger than
+  `fast_promotion_window_seconds`. It scans candidates directly in storage in
+  bounded, oldest-first pages, carrying a cursor across passes so bursts are
+  visited fairly. The pass stops admitting new work when its next cadence tick
+  or the next full-pass tick is due; already-started candidate work finishes.
+  It first compares each stored `new_commitment` with the chain and reconstructs
+  state only after that cheap probe matches. Promotion still requires the
+  reconstructed commitment to equal the claimed commitment before the normal
+  auth refresh and fenced write. Missing, incorrect, or not-yet-landed claims
+  are left unchanged for the next full pass.
+- The fast pass never increments `retry_count` or `divergence_count`, applies
+  `submission_grace_period_seconds`, or discards a candidate. Those behaviors
+  belong exclusively to full passes. Both pass types use
+  `max_concurrent_accounts`; candidates within one account remain sequential.
 - For each account with a pending candidate:
   - Pull candidate deltas (`pull_candidate_deltas`, a store-side status
     filter — canonical and discarded history rows never leave the store);
@@ -252,8 +271,8 @@ sequenceDiagram
       re-verifies against the new base.
     - Matches the candidate's `prev_commitment` (its transaction has not
       landed yet), or the comparison itself failed (RPC error): defer within
-      `submission_grace_period_seconds`, then consume retry budget each tick
-      and discard after `max_retries`.
+      `submission_grace_period_seconds`, then consume retry budget on each
+      full-pass tick and discard after `max_retries`.
     - Matches neither — the account advanced past the candidate's base
       state, so the candidate can never verify: after
       `divergence_confirmations` consecutive such observations (default 2,
@@ -273,14 +292,32 @@ sequenceDiagram
   participant M as Metadata
   participant ST as Storage
   participant N as Network
-  T->>W: tick(check_interval)
-  W->>M: list_with_pending_candidates()
-  loop accounts
-    W->>ST: pull_candidate_deltas(account_id)\n(store-side status filter, nonce order)
-    loop candidates
+  T->>W: tick(full interval or fast promotion interval)
+  alt full pass
+    W->>M: list_with_pending_candidates()
+    W->>ST: pull_candidate_deltas(account_id)\n(per account, nonce order)
+  else promotion-only pass
+    W->>ST: pull_recent_candidate_deltas(cutoff, cursor, page size)\n(oldest first, paginated until deadline)
+  end
+  loop selected candidates
+    alt promotion-only pass
+      W->>N: verify_commitment(account_id, stored new_commitment)
+      alt claim matches on-chain
+        W->>ST: pull_state(account_id)
+        W->>N: apply_delta(prev_state, delta)\n(new_state, recomputed_commitment)
+        alt recomputed commitment equals stored claim
+          W->>N: should_update_auth(new_state)
+          W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(lease-fenced write)
+        else reconstruction differs
+          W->>W: leave candidate for full pass
+        end
+      else missing, wrong, or not landed
+        W->>W: leave candidate for full pass
+      end
+    else full pass
       W->>ST: pull_state(account_id)
       W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)
-      W->>N: verify_commitment(account_id, expected_commitment)\n(on_chain_commitment)
+      W->>N: verify_commitment(account_id, expected_commitment)
       alt on-chain matches expected commitment
         W->>N: should_update_auth(new_state)\n(maybe new cosigner keys)
         W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(one lease-fenced write: state + delta status + auth + flag)
