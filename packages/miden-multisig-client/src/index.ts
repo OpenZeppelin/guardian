@@ -59,6 +59,14 @@ export {
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
+// Typed error-code vocabulary (issue #318): branch on GuardianErrorCode,
+// never on message text; unknown wire codes surface via rawCode.
+export {
+  GUARDIAN_ERROR_CODES,
+  isGuardianErrorCode,
+  normalizeGuardianErrorCode,
+} from '@openzeppelin/guardian-client';
+export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
 
 // Codeless transport-failure classification (feature 009, User Story 3).
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';

@@ -90,7 +90,8 @@ describe('GuardianHttpClient', () => {
       const error = await client.getPubkey().catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(409);
-      expect(error.code).toBe('GUARDIAN_ACCOUNT_RELEASED');
+      expect(error.code).toBe('account_released');
+      expect(error.rawCode).toBe('GUARDIAN_ACCOUNT_RELEASED');
       expect(error.releasedAt).toBe('2026-07-06T10:00:00Z');
     });
 
@@ -890,7 +891,8 @@ describe('GuardianHttpError', () => {
       expect(e.status).toBe(409);
 
       // Structured accessors parsed from { code, message, meta } (feature 009).
-      expect(e.code).toBe('GUARDIAN_ACCOUNT_PAUSED');
+      expect(e.code).toBe('account_paused');
+      expect(e.rawCode).toBe('GUARDIAN_ACCOUNT_PAUSED');
       expect(typeof e.userMessage).toBe('string');
       expect(e.userMessage).not.toContain('compliance review'); // sanitized
       expect(e.meta?.retryable).toBe(false);

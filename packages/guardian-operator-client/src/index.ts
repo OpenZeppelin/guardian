@@ -42,6 +42,7 @@ export type {
   DeltaAssetKind,
   DeltaCounterpartyDirection,
   DashboardErrorCode,
+  DashboardErrorCodeOrRaw,
   DashboardGlobalDeltaEntry,
   DashboardGlobalDeltaStatusFilter,
   DashboardGlobalProposalEntry,
