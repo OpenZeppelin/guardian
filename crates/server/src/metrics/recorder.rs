@@ -32,6 +32,13 @@ const CANONICALIZATION_RUN_BUCKETS: &[f64] = &[
     0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
 ];
 
+/// Candidate age spans from sub-tick freshness through the submission
+/// grace period (default 600s) out to a day, so stuck candidates stay
+/// visible instead of saturating at +Inf.
+const CANDIDATE_AGE_BUCKETS: &[f64] = &[
+    1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 14400.0, 86400.0,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -48,6 +55,11 @@ pub fn build_recorder() -> PrometheusRecorder {
             CANONICALIZATION_RUN_BUCKETS,
         )
         .expect("static canonicalization buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
+            CANDIDATE_AGE_BUCKETS,
+        )
+        .expect("static age buckets are non-empty")
         .build_recorder()
 }
 

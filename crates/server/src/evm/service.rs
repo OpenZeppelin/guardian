@@ -501,7 +501,6 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     fn paused_evm_metadata(account_id: &str) -> AccountMetadata {
         AccountMetadata {
@@ -534,7 +533,7 @@ mod tests {
         let metadata = MockMetadataStore::new().with_get(Ok(Some(paused_evm_metadata(account_id))));
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         (state, storage)

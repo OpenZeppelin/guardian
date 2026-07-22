@@ -291,7 +291,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let mut metadata_store = MockMetadataStore::new();
         for _ in 0..repeat {
@@ -322,7 +321,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -436,7 +435,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata =
             MockMetadataStore::new().with_get(Ok(Some(account_metadata(falcon_auth_with(vec![
@@ -453,7 +451,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

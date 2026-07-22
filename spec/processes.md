@@ -224,13 +224,18 @@ sequenceDiagram
 ### Configuration
 - Current server builder defaults: submission_grace_period_seconds = 600
   (10m), check_interval_seconds = 10, max_retries = 48,
-  divergence_confirmations = 2.
-- These values are configured in code, not through server env vars.
+  divergence_confirmations = 2, max_concurrent_accounts = 10.
+- These values are configured in code, not through server env vars —
+  except `max_concurrent_accounts`, which
+  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` overrides at
+  startup.
 
 ### Worker Behavior
- - Runs every `check_interval_seconds`.
- - For each account:
-  - Pull all deltas and select ready candidates (candidate_at >= delay_seconds); process in nonce order.
+- Runs every `check_interval_seconds`.
+- For each account with a pending candidate:
+  - Pull candidate deltas (`pull_candidate_deltas`, a store-side status
+    filter — canonical and discarded history rows never leave the store);
+    process in nonce order.
   - Apply delta locally to compute expected state and commitment.
   - Fetch the on-chain commitment and classify:
     - Matches the expected new commitment: canonicalize —
@@ -238,6 +243,13 @@ sequenceDiagram
       optionally update auth from chain via `should_update_auth`, set delta
       status to `canonical`, and delete the matching Miden delta proposal
       identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
+      The persisted commitment is the recomputed one the verification
+      proved on-chain; a client-supplied `new_commitment` that differs (or
+      is absent) is logged and counted but never blocks promotion.
+      Promotion is additionally gated on the stored state still sitting at
+      the candidate's `prev_commitment` — if a concurrent write moved it,
+      the promotion rolls back (`stale_base`) and the next tick
+      re-verifies against the new base.
     - Matches the candidate's `prev_commitment` (its transaction has not
       landed yet), or the comparison itself failed (RPC error): defer within
       `submission_grace_period_seconds`, then consume retry budget each tick
@@ -262,18 +274,17 @@ sequenceDiagram
   participant ST as Storage
   participant N as Network
   T->>W: tick(check_interval)
-  W->>M: list()
+  W->>M: list_with_pending_candidates()
   loop accounts
-    W->>ST: pull_deltas_after(account_id, 0)
-    W->>W: filter ready candidates (>= delay_seconds)\nsort by nonce
+    W->>ST: pull_candidate_deltas(account_id)\n(store-side status filter, nonce order)
     loop candidates
       W->>ST: pull_state(account_id)
       W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)
-      W->>N: verify_state(account_id, new_state)\n(on_chain_commitment)
+      W->>N: verify_commitment(account_id, expected_commitment)\n(on_chain_commitment)
       alt on-chain matches expected commitment
-        W->>ST: submit_state(new_state)
-        W->>W: maybe update_auth(should_update_auth)
-        W->>ST: submit_delta(canonical)
+        W->>N: should_update_auth(new_state)\n(maybe new cosigner keys)
+        W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(one lease-fenced write: state + delta status + auth + flag)
+        ST-->>W: applied | stale_base | not_candidate | stale_lease\n(rejections leave no partial write)
       else on-chain still at prev_commitment (not landed)
         W->>W: defer (grace period), then consume retry budget
       else diverged (matches neither)
@@ -291,3 +302,7 @@ sequenceDiagram
 
 ### Concurrency
 - Processing SHOULD be per-account sequential; multi-account processing MAY be parallel with bounded concurrency.
+- The server processes accounts with bounded concurrency
+  (`max_concurrent_accounts`, default 10); candidates within one account
+  remain strictly sequential in nonce order, and every custody write is
+  individually lease-fenced, so correctness does not depend on the bound.

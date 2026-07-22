@@ -61,7 +61,7 @@ pub async fn get_delta_since(
         deltas.iter().map(|d| d.delta_payload.clone()).collect();
 
     let merged_payload = {
-        let client = state.network_client.lock().await;
+        let client = &state.network_client;
         client
             .merge_deltas(delta_payloads)
             .map_err(GuardianError::InvalidDelta)?
