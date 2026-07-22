@@ -33,10 +33,11 @@ Three decisions when running Guardian locally:
 ## Environment file
 
 The server calls `dotenvy::dotenv()` on startup, so `cargo run --bin server`
-automatically reads a root `.env` file when one exists. A `.env` file is not
-strictly required for the default filesystem server, but it is recommended for
-local `cargo run` because the built-in filesystem defaults live under
-`/var/guardian`, which may not exist or be writable on a developer machine.
+automatically reads a root `.env` file when one exists. In practice a `.env`
+file (or exported variables) is required: `GUARDIAN_NETWORK_TYPE` has no
+default and the server refuses to start without it, and the built-in
+filesystem paths live under `/var/guardian`, which may not exist or be
+writable on a developer machine.
 
 Minimal local `.env`:
 
@@ -74,7 +75,7 @@ Useful env:
 | `GUARDIAN_METADATA_PATH` | Local path for accounts, auth, network. Defaults to `/var/guardian/metadata`. |
 | `GUARDIAN_KEYSTORE_PATH` | ACK key files, auto-generated on first run. Defaults to `/var/guardian/keystore`. |
 | `RUST_LOG` (`info`) | `info`, `debug`, or e.g. `server::jobs::canonicalization=debug`. |
-| `GUARDIAN_NETWORK_TYPE` (`MidenDevnet`) | Miden network name. |
+| `GUARDIAN_NETWORK_TYPE` (**required**) | Miden network name: `MidenLocal`, `MidenTestnet`, or `MidenDevnet`. The server refuses to start when it is unset or unrecognized. |
 
 At startup the server emits a warning that audit events will **not** be
 persisted — that's expected for filesystem mode

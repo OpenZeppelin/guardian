@@ -271,15 +271,25 @@ pub enum NetworkType {
 }
 
 impl NetworkType {
-    pub fn from_env(var_name: &str) -> Self {
-        let value = std::env::var(var_name).unwrap_or_else(|_| "MidenDevnet".to_string());
-        Self::from_name(&value).unwrap_or(Self::MidenDevnet)
-    }
+    const ACCEPTED_VALUES: &str =
+        "MidenLocal (local), MidenTestnet (testnet), MidenDevnet (devnet); case-insensitive";
 
-    pub fn from_env_or(var_name: &str, default: Self) -> Self {
+    pub fn from_env(var_name: &str) -> Result<Self, String> {
         match std::env::var(var_name) {
-            Ok(value) => Self::from_name(&value).unwrap_or(default),
-            Err(_) => default,
+            Ok(value) => Self::from_name(&value).ok_or_else(|| {
+                format!(
+                    "{var_name} has unrecognized value \"{value}\"; accepted values: {}",
+                    Self::ACCEPTED_VALUES
+                )
+            }),
+            Err(std::env::VarError::NotPresent) => Err(format!(
+                "{var_name} is not set; accepted values: {}",
+                Self::ACCEPTED_VALUES
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+                "{var_name} contains non-Unicode data; accepted values: {}",
+                Self::ACCEPTED_VALUES
+            )),
         }
     }
 
@@ -317,6 +327,7 @@ mod tests {
         GuardianError, MAX_CONCURRENT_RECONSTRUCTIONS, NetworkType, ReconstructError,
         Reconstructor, reconstructor,
     };
+    use crate::testing::env_lock::ENV_LOCK;
     use axum::http::StatusCode;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -573,34 +584,68 @@ mod tests {
     }
 
     #[test]
-    fn from_env_or_returns_default_when_var_missing() {
+    fn from_env_errors_when_var_missing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let var_name = "GUARDIAN_NETWORK_TYPE_TEST_MISSING";
         unsafe { std::env::remove_var(var_name) };
 
-        let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
+        let error = NetworkType::from_env(var_name).unwrap_err();
 
-        assert_eq!(network, NetworkType::MidenTestnet);
+        assert!(error.contains(var_name));
+        assert!(error.contains("MidenLocal"));
+        assert!(error.contains("MidenTestnet"));
+        assert!(error.contains("MidenDevnet"));
     }
 
     #[test]
-    fn from_env_or_returns_parsed_value_when_var_present() {
-        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_PRESENT";
-        unsafe { std::env::set_var(var_name, "devnet") };
+    fn from_env_errors_when_value_unrecognized() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_INVALID";
+        unsafe { std::env::set_var(var_name, "tesnet") };
 
-        let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
+        let error = NetworkType::from_env(var_name).unwrap_err();
 
-        assert_eq!(network, NetworkType::MidenDevnet);
+        assert!(error.contains(var_name));
+        assert!(error.contains("tesnet"));
+        assert!(error.contains("MidenTestnet"));
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_env_errors_when_value_is_not_unicode() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_NOT_UNICODE";
+        unsafe { std::env::set_var(var_name, OsString::from_vec(vec![0xff])) };
+
+        let error = NetworkType::from_env(var_name).unwrap_err();
+
+        assert!(error.contains(var_name));
+        assert!(error.contains("non-Unicode"));
         unsafe { std::env::remove_var(var_name) };
     }
 
     #[test]
-    fn from_env_or_falls_back_to_default_when_value_invalid() {
-        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_INVALID";
-        unsafe { std::env::set_var(var_name, "not-a-network") };
+    fn from_env_parses_every_accepted_spelling() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let cases = [
+            ("MidenLocal", NetworkType::MidenLocal),
+            ("local", NetworkType::MidenLocal),
+            ("LOCAL", NetworkType::MidenLocal),
+            ("MidenTestnet", NetworkType::MidenTestnet),
+            ("testnet", NetworkType::MidenTestnet),
+            ("MidenDevnet", NetworkType::MidenDevnet),
+            ("devnet", NetworkType::MidenDevnet),
+            ("DEVNET", NetworkType::MidenDevnet),
+        ];
 
-        let network = NetworkType::from_env_or(var_name, NetworkType::MidenTestnet);
-
-        assert_eq!(network, NetworkType::MidenTestnet);
+        let var_name = "GUARDIAN_NETWORK_TYPE_TEST_PRESENT";
+        for (value, expected) in cases {
+            unsafe { std::env::set_var(var_name, value) };
+            assert_eq!(NetworkType::from_env(var_name).unwrap(), expected);
+        }
         unsafe { std::env::remove_var(var_name) };
     }
 }

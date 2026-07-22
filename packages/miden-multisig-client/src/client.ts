@@ -11,7 +11,7 @@ import type { StateObject } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
 import { AccountInspector } from './inspector.js';
-import { getRawMidenClient, resolveMidenRpcEndpoint } from './raw-client.js';
+import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
 import type { MultisigConfig, Signer } from './types.js';
 
 interface AccountKeyBindingSigner {
@@ -33,10 +33,14 @@ async function bindSignerAccountKey(
  * Configuration for MultisigClient.
  */
 export interface MultisigClientConfig {
-  /** GUARDIAN server endpoint */
-  guardianEndpoint?: string;
-  /** Miden node RPC endpoint used for state commitment verification */
-  midenRpcEndpoint?: string;
+  /** GUARDIAN server endpoint. Required — there is no default. */
+  guardianEndpoint: string;
+  /**
+   * Miden node RPC endpoint used for proposal execution and state
+   * commitment verification. Required — must point at the same network as
+   * the injected `MidenClient`; there is no default.
+   */
+  midenRpcEndpoint: string;
 }
 
 /**
@@ -81,19 +85,23 @@ export class MultisigClient {
   private readonly midenRpcEndpoint: string;
   private _guardianClient: GuardianHttpClient;
 
-  constructor(midenClient: MidenClient, config: MultisigClientConfig = {}) {
+  constructor(midenClient: MidenClient, config: MultisigClientConfig) {
     this.midenClient = midenClient;
-    this.midenRpcEndpoint = resolveMidenRpcEndpoint(config.midenRpcEndpoint);
-    this._guardianClient = new GuardianHttpClient(config.guardianEndpoint ?? 'http://localhost:3000');
+    this.midenRpcEndpoint = requireMidenRpcEndpoint(config?.midenRpcEndpoint);
+    this._guardianClient = new GuardianHttpClient(
+      requireConfigValue('guardianEndpoint', config?.guardianEndpoint),
+    );
   }
 
   /**
    * Change the GUARDIAN endpoint.
-   * 
+   *
    * @param endpoint - The new GUARDIAN server endpoint URL
    */
   setGuardianEndpoint(endpoint: string): void {
-    this._guardianClient = new GuardianHttpClient(endpoint);
+    this._guardianClient = new GuardianHttpClient(
+      requireConfigValue('guardianEndpoint', endpoint),
+    );
   }
 
   /**

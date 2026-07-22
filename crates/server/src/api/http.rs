@@ -112,13 +112,6 @@ pub struct ConfigureResponse {
     pub code: Option<&'static str>,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct ErrorResponse {
-    pub success: bool,
-    pub code: &'static str,
-    pub error: String,
-}
-
 /// Configure (register) an account with its authorization set and
 /// initial state. Requires the signed `x-pubkey` / `x-signature` /
 /// `x-timestamp` auth headers.
@@ -141,14 +134,18 @@ pub async fn configure(
     let request_payload = match request_payload_from_serializable(&payload) {
         Ok(request_payload) => request_payload,
         Err(e) => {
+            // Log the raw detail; return only the user-safe message + stable
+            // code (feature 009-human-readable-errors).
+            let err = GuardianError::InvalidInput(e);
+            tracing::debug!(code = err.code(), detail = %err, "configure request invalid");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ConfigureResponse {
                     success: false,
-                    message: e,
+                    message: err.user_message().to_string(),
                     ack_pubkey: None,
                     ack_commitment: None,
-                    code: None,
+                    code: Some(err.code()),
                 }),
             );
         }
@@ -168,16 +165,25 @@ pub async fn configure(
                 code: None,
             }),
         ),
-        Err(e) => (
-            e.http_status(),
-            Json(ConfigureResponse {
-                success: false,
-                message: e.to_string(),
-                ack_pubkey: None,
-                ack_commitment: None,
-                code: Some(e.code()),
-            }),
-        ),
+        Err(e) => {
+            // The diagnostic Display string is logged, not returned; the wire
+            // carries only the user-safe message + stable code (feature 009).
+            if e.http_status().is_server_error() {
+                tracing::error!(code = e.code(), detail = %e, "configure failed (5xx)");
+            } else {
+                tracing::debug!(code = e.code(), detail = %e, "configure rejected (4xx)");
+            }
+            (
+                e.http_status(),
+                Json(ConfigureResponse {
+                    success: false,
+                    message: e.user_message().to_string(),
+                    ack_pubkey: None,
+                    ack_commitment: None,
+                    code: Some(e.code()),
+                }),
+            )
+        }
     }
 }
 

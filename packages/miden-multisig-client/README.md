@@ -32,7 +32,9 @@ const midenClient = await MidenClient.createDevnet();
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 
-// Create MultisigClient
+// Create MultisigClient. Both endpoints are required; construction throws
+// when either is omitted. midenRpcEndpoint must point at the same network as
+// the injected MidenClient.
 const client = new MultisigClient(midenClient, {
   guardianEndpoint: 'http://localhost:3000',
   midenRpcEndpoint: 'https://rpc.devnet.miden.io',

@@ -22,7 +22,8 @@ function formatJson(value: unknown): string {
 function normalizeError(error: unknown): string {
   if (error instanceof GuardianOperatorHttpError) {
     const data = error.data;
-    const base = data?.error ?? error.message;
+    // Feature 009: the user-safe message moved from `error` to `message`.
+    const base = data?.message ?? error.message;
     // Surface the normalized code + paused-specific details so the
     // smoke makes the wire→client mapping visible (e.g. server emits
     // `GUARDIAN_ACCOUNT_PAUSED`, client surfaces `account_paused`

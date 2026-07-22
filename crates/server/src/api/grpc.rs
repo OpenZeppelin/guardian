@@ -72,13 +72,7 @@ impl Guardian for GuardianService {
                 ack_commitment: response.ack_commitment,
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(ConfigureResponse {
-                success: false,
-                message: e.to_string(),
-                ack_pubkey: String::new(),
-                ack_commitment: String::new(),
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -122,13 +116,7 @@ impl Guardian for GuardianService {
                 ack_sig: Some(response.delta.ack_sig),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(PushDeltaResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                ack_sig: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -154,12 +142,7 @@ impl Guardian for GuardianService {
                 delta: Some(delta_to_proto(&response.delta)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -185,12 +168,7 @@ impl Guardian for GuardianService {
                 merged_delta: Some(delta_to_proto(&response.merged_delta)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaSinceResponse {
-                success: false,
-                message: e.to_string(),
-                merged_delta: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -215,12 +193,7 @@ impl Guardian for GuardianService {
                 state: Some(state_to_proto(&response.state)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetStateResponse {
-                success: false,
-                message: e.to_string(),
-                state: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -268,13 +241,7 @@ impl Guardian for GuardianService {
                 commitment: response.commitment,
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(PushDeltaProposalResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                commitment: String::new(),
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -297,12 +264,7 @@ impl Guardian for GuardianService {
                 proposals: response.proposals.iter().map(delta_to_proto).collect(),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaProposalsResponse {
-                success: false,
-                message: e.to_string(),
-                proposals: vec![],
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -326,12 +288,7 @@ impl Guardian for GuardianService {
                 proposal: Some(delta_to_proto(&response.proposal)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaProposalResponse {
-                success: false,
-                message: e.to_string(),
-                proposal: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -360,12 +317,7 @@ impl Guardian for GuardianService {
                 delta: Some(delta_to_proto(&response.delta)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(SignDeltaProposalResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -780,10 +732,16 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.push_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
+        let status = service
+            .push_delta_proposal(request)
+            .await
+            .expect_err("missing tx summary must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert!(details["code"].is_string());
+        assert!(details["message"].is_string());
+        assert!(details["meta"]["retryable"].is_boolean());
     }
 
     #[tokio::test]
@@ -954,11 +912,16 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.get_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
-        assert!(inner.proposal.is_none());
+        let status = service
+            .get_delta_proposal(request)
+            .await
+            .expect_err("unknown proposal must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert_eq!(details["code"], "proposal_not_found");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[tokio::test]
@@ -983,12 +946,16 @@ mod tests {
         request
             .metadata_mut()
             .insert("x-signature", "0xdeadbeef".parse().unwrap());
-        let response = service.get_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
-        assert!(inner.proposal.is_none());
-        assert!(inner.message.contains("Authentication failed"));
+        let status = service
+            .get_delta_proposal(request)
+            .await
+            .expect_err("bad signature must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert_eq!(details["code"], "authentication_failed");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[tokio::test]
@@ -1019,9 +986,14 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.sign_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
+        let status = service
+            .sign_delta_proposal(request)
+            .await
+            .expect_err("unknown proposal must surface as a gRPC Status");
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert!(details["code"].is_string());
+        assert!(details["message"].is_string());
+        assert!(details["meta"]["retryable"].is_boolean());
     }
 }

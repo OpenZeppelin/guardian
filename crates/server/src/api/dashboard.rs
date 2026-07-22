@@ -1287,11 +1287,11 @@ mod tests {
                 "expected stable code on {path}",
             );
             assert_eq!(
-                body["missing_permissions"],
+                body["meta"]["missing_permissions"],
                 serde_json::json!(["dashboard:read"]),
                 "expected missing_permissions on {path}",
             );
-            assert_eq!(body["retryable"], serde_json::Value::Bool(false));
+            assert_eq!(body["meta"]["retryable"], serde_json::Value::Bool(false));
         }
     }
 
@@ -1445,7 +1445,7 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
             assert_eq!(
-                body["missing_permissions"],
+                body["meta"]["missing_permissions"],
                 serde_json::json!(["accounts:pause"])
             );
 
@@ -1924,7 +1924,7 @@ mod tests {
         let body: serde_json::Value = read_json(response).await;
         assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
         assert_eq!(
-            body["missing_permissions"],
+            body["meta"]["missing_permissions"],
             serde_json::json!(["accounts:pause"])
         );
     }

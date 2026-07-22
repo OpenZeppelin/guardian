@@ -22,6 +22,7 @@ services:
       - GUARDIAN_STORAGE_PATH=/var/guardian/storage
       - GUARDIAN_METADATA_PATH=/var/guardian/metadata
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - GUARDIAN_NETWORK_TYPE
 
 volumes:
   guardian-storage:
