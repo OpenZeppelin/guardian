@@ -81,11 +81,9 @@ describe('GuardianHttpClient', () => {
         statusText: 'Conflict',
         text: async () =>
           JSON.stringify({
-            success: false,
             code: 'GUARDIAN_ACCOUNT_RELEASED',
-            error: 'Account was released',
-            retryable: false,
-            released_at: '2026-07-06T10:00:00Z',
+            message: 'This account has moved to a different guardian. Reconnect it to continue.',
+            meta: { retryable: false, released_at: '2026-07-06T10:00:00Z' },
           }),
       });
 
@@ -103,9 +101,9 @@ describe('GuardianHttpClient', () => {
         statusText: 'Not Found',
         text: async () =>
           JSON.stringify({
-            success: false,
             code: 'account_not_found',
-            error: "Account '0xabc' not found",
+            message: "We couldn't find that. It may have been completed or removed.",
+            meta: { retryable: false },
           }),
       });
 
@@ -502,10 +500,9 @@ describe('GuardianHttpClient', () => {
         statusText: 'Conflict',
         text: async () =>
           JSON.stringify({
-            success: false,
             code: 'GUARDIAN_CANDIDATE_LANDED',
-            error:
-              "Candidate at nonce 7 for account '0xabc' already landed on-chain; cannot abandon",
+            message: "This transaction already went through, so it can't be abandoned.",
+            meta: { retryable: false },
           }),
       });
 
@@ -526,9 +523,9 @@ describe('GuardianHttpClient', () => {
         statusText: 'Not Found',
         text: async () =>
           JSON.stringify({
-            success: false,
             code: 'delta_not_found',
-            error: "Delta not found for account '0xabc' at nonce 7",
+            message: "We couldn't find that. It may have been completed or removed.",
+            meta: { retryable: false },
           }),
       });
 
@@ -599,9 +596,9 @@ describe('GuardianHttpClient', () => {
         statusText: 'Not Found',
         text: async () =>
           JSON.stringify({
-            success: false,
             code: 'delta_not_found',
-            error: 'missing',
+            message: "We couldn't find that. It may have been completed or removed.",
+            meta: { retryable: false },
           }),
       });
       expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
@@ -976,6 +973,27 @@ describe('GuardianHttpError', () => {
     expect(error.name).toBe('GuardianHttpError');
   });
 
+  it('parses a { code, message, meta } body into structured accessors (feature 009)', () => {
+    const body = JSON.stringify({
+      code: 'rate_limit_exceeded',
+      message: 'Too many requests — please try again shortly.',
+      meta: { retryable: true, retry_after_secs: 30 },
+    });
+    const error = new GuardianHttpError(429, 'Too Many Requests', body);
+    expect(error.code).toBe('rate_limit_exceeded');
+    expect(error.userMessage).toBe('Too many requests — please try again shortly.');
+    expect(error.meta?.retryable).toBe(true);
+    expect(error.meta?.retryAfterSecs).toBe(30); // snake_case → camelCase
+  });
+
+  it('leaves accessors undefined for a non-JSON / non-conforming body', () => {
+    const plain = new GuardianHttpError(502, 'Bad Gateway', 'upstream exploded');
+    expect(plain.code).toBeNull();
+    expect(plain.releasedAt).toBeNull();
+    expect(plain.userMessage).toBeUndefined();
+    expect(plain.meta).toBeUndefined();
+  });
+
   describe('error envelope contract (account-paused path)', () => {
     let client: GuardianHttpClient;
     beforeEach(() => {
@@ -986,15 +1004,18 @@ describe('GuardianHttpError', () => {
     it('surfaces 409 GUARDIAN_ACCOUNT_PAUSED with a parseable error envelope on pushDeltaProposal', async () => {
       client.setSigner(mockSigner);
 
-      // The server's GuardianError::AccountPaused → IntoResponse contract.
-      // Locks client/server in lockstep: a regression to the legacy
+      // The server's GuardianError::AccountPaused → IntoResponse contract,
+      // reshaped to { code, message, meta } (feature 009). Locks client/server
+      // in lockstep: a regression to the legacy { success, error, paused_* } or
       // "(400, {delta: {account_id: 'error text'}})" shape would break this.
       const envelope = {
-        success: false,
         code: 'GUARDIAN_ACCOUNT_PAUSED',
-        error: 'Account is paused: compliance review',
-        paused_at: '2026-05-20T10:00:00Z',
-        paused_reason: 'compliance review',
+        message: "This account is paused and can't approve transactions right now.",
+        meta: {
+          retryable: false,
+          paused_at: '2026-05-20T10:00:00Z',
+          paused_reason: 'compliance review',
+        },
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -1015,26 +1036,36 @@ describe('GuardianHttpError', () => {
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
-      expect((error as GuardianHttpError).status).toBe(409);
+      const e = error as GuardianHttpError;
+      expect(e.status).toBe(409);
 
-      const parsed = JSON.parse((error as GuardianHttpError).body);
-      expect(parsed.success).toBe(false);
-      expect(parsed.code).toBe('GUARDIAN_ACCOUNT_PAUSED');
-      expect(typeof parsed.error).toBe('string');
-      expect(parsed.paused_at).toBe('2026-05-20T10:00:00Z');
-      expect(parsed.paused_reason).toBe('compliance review');
-      // Negative assertion: legacy "stuff error into delta.account_id" shape.
+      // Structured accessors parsed from { code, message, meta } (feature 009).
+      expect(e.code).toBe('GUARDIAN_ACCOUNT_PAUSED');
+      expect(typeof e.userMessage).toBe('string');
+      expect(e.userMessage).not.toContain('compliance review'); // sanitized
+      expect(e.meta?.retryable).toBe(false);
+      expect(e.meta?.pausedAt).toBe('2026-05-20T10:00:00Z');
+      expect(e.meta?.pausedReason).toBe('compliance review');
+
+      const parsed = JSON.parse(e.body);
+      // Legacy fields gone; not a domain object.
+      expect(parsed.success).toBeUndefined();
+      expect(parsed.error).toBeUndefined();
       expect(parsed.delta).toBeUndefined();
     });
 
     it('surfaces 401 AUTHENTICATION_FAILED with a parseable error envelope', async () => {
       client.setSigner(mockSigner);
       const envelope = {
-        success: false,
         code: 'authentication_failed',
-        error: 'Invalid signature',
+        message: 'Your session has expired. Please sign in again.',
+        meta: { retryable: false },
       };
-      mockFetch.mockResolvedValueOnce({
+      // `authentication_failed` triggers the replay-retry path (the specific
+      // "Replay attack" detail is sanitized off the wire in feature 009, so we
+      // retry on the auth code). Use a persistent mock so the retries resolve
+      // and the final attempt throws the typed error.
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 401,
         statusText: 'Unauthorized',
@@ -1050,10 +1081,12 @@ describe('GuardianHttpError', () => {
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
-      expect((error as GuardianHttpError).status).toBe(401);
-      const parsed = JSON.parse((error as GuardianHttpError).body);
-      expect(parsed.success).toBe(false);
-      expect(parsed.code).toBe('authentication_failed');
+      const e = error as GuardianHttpError;
+      expect(e.status).toBe(401);
+      expect(e.code).toBe('authentication_failed');
+      expect(typeof e.userMessage).toBe('string');
+      const parsed = JSON.parse(e.body);
+      expect(parsed.success).toBeUndefined();
       expect(parsed.delta).toBeUndefined();
     });
   });

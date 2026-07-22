@@ -94,6 +94,7 @@ fn run_report_roundtrip() {
             },
             failure_breakdown: Default::default(),
         }],
+        canonicalization: None,
         capacity_estimate: CapacityEstimate {
             target_push_tps: 500.0,
             sustained_push_tps: 42.0,

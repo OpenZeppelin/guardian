@@ -18,7 +18,7 @@ import {
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
-import type { SignatureOptions } from './options.js';
+import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 function buildMultisigConfigFelts(threshold: number, signerCommitments: string[]): Felt[] {
@@ -73,6 +73,18 @@ end
   );
 }
 
+export function buildUpdateSignersTransactionRequest(
+  client: MidenClient,
+  threshold: number,
+  signerCommitments: string[],
+  options: MidenClientSignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
+export function buildUpdateSignersTransactionRequest(
+  client: WasmWebClient,
+  threshold: number,
+  signerCommitments: string[],
+  options?: SignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
 export async function buildUpdateSignersTransactionRequest(
   client: MidenClient | WasmWebClient,
   threshold: number,

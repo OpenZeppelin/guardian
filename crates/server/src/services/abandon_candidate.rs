@@ -133,22 +133,28 @@ pub async fn abandon_candidate(
         .await
         .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
 
-    let (new_state_json, _) = {
-        let client = state.network_client.lock().await;
-        client
-            .apply_delta(&current_state.state_json, &delta.delta_payload)
-            .map_err(GuardianError::InvalidDelta)?
+    let (_, expected_commitment) = {
+        let client = state.network_client.clone();
+        let prev_state_json = current_state.state_json;
+        let delta_payload = std::sync::Arc::new(delta.delta_payload.clone());
+        crate::network::reconstructor()
+            .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+            .await?
     };
 
-    let verify_result = {
-        let mut client = state.network_client.lock().await;
-        client.verify_state(&account_id, &new_state_json).await
-    };
+    let verify_result = state
+        .network_client
+        .verify_commitment(&account_id, &expected_commitment)
+        .await;
     match verify_result {
         Ok(StateVerification::Match) => {
             return Err(GuardianError::CandidateLanded { account_id, nonce });
         }
-        Ok(StateVerification::Mismatch { .. }) => {}
+        // Mismatch: on-chain differs from the candidate's expected state
+        // (tx not landed, or the account diverged). Absent: the account
+        // has no on-chain state at all, so the tx certainly did not land.
+        // Abandoning is safe in both cases.
+        Ok(StateVerification::Mismatch { .. }) | Ok(StateVerification::Absent) => {}
         Err(e) => {
             tracing::warn!(
                 account_id = %account_id,
@@ -217,7 +223,6 @@ mod tests {
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     fn create_account_metadata(account_id: String, auth: Auth) -> AccountMetadata {
         AccountMetadata {
@@ -277,7 +282,7 @@ mod tests {
         let metadata = MockMetadataStore::new();
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -321,9 +326,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_abandon_records_intent_and_deletes_nothing() {
-        let network = MockNetworkClient::new().with_verify_state(Ok(StateVerification::Mismatch {
-            on_chain: "0x123".to_string(),
-        }));
+        let network =
+            MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            }));
         let t = setup(network);
 
         let result = abandon_candidate(&t.state, t.params.clone()).await;
@@ -343,9 +349,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_abandon_retry_preserves_original_request_timestamp() {
-        let network = MockNetworkClient::new().with_verify_state(Ok(StateVerification::Mismatch {
-            on_chain: "0x123".to_string(),
-        }));
+        let network =
+            MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            }));
         let t = setup(network);
         let _ = t.storage.clone().with_request_candidate_abandon(Ok(
             crate::storage::AbandonIntent::AlreadyRequested {
@@ -364,7 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_abandon_refused_when_candidate_landed_on_chain() {
-        let network = MockNetworkClient::new().with_verify_state(Ok(StateVerification::Match));
+        let network = MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Match));
         let t = setup(network);
 
         let result = abandon_candidate(&t.state, t.params).await;
@@ -379,7 +386,8 @@ mod tests {
         // The intent write is non-destructive and the worker re-verifies
         // against chain before finalizing, so an RPC failure must not
         // block the request.
-        let network = MockNetworkClient::new().with_verify_state(Err("rpc timeout".to_string()));
+        let network =
+            MockNetworkClient::new().with_verify_commitment(Err("rpc timeout".to_string()));
         let t = setup(network);
 
         let result = abandon_candidate(&t.state, t.params).await;
@@ -396,7 +404,7 @@ mod tests {
         let metadata = MockMetadataStore::new();
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -478,7 +486,7 @@ mod tests {
         let metadata = MockMetadataStore::new();
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -517,9 +525,10 @@ mod tests {
     async fn test_abandon_race_resolved_as_abandoned_between_read_and_write() {
         // The worker resolves the candidate between the service's read and
         // the intent write: classify via re-read.
-        let network = MockNetworkClient::new().with_verify_state(Ok(StateVerification::Mismatch {
-            on_chain: "0x123".to_string(),
-        }));
+        let network =
+            MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            }));
         let t = setup(network);
         let mut resolved = create_candidate_delta(&t.params.account_id, 1);
         resolved.status =
@@ -545,9 +554,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_abandon_race_canonicalized_between_read_and_write() {
-        let network = MockNetworkClient::new().with_verify_state(Ok(StateVerification::Mismatch {
-            on_chain: "0x123".to_string(),
-        }));
+        let network =
+            MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            }));
         let t = setup(network);
         let mut canonical = create_candidate_delta(&t.params.account_id, 1);
         canonical.status = DeltaStatus::canonical("2024-11-14T12:05:00Z".to_string());

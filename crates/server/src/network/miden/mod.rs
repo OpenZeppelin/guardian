@@ -42,6 +42,16 @@ impl MidenNetworkClient {
         Self { client }
     }
 
+    /// True when an on-chain commitment is the empty-word digest the Miden
+    /// node reports for an account it has never seen — i.e. the account's
+    /// first transaction has not landed yet. This sentinel is a Miden
+    /// protocol detail; it is translated to [`StateVerification::Absent`]
+    /// here so shared layers never interpret raw digests.
+    fn is_empty_word_digest(on_chain: &str) -> bool {
+        let digest = on_chain.strip_prefix("0x").unwrap_or(on_chain);
+        !digest.is_empty() && digest.bytes().all(|b| b == b'0')
+    }
+
     /// Construct an Account object from JSON state representation
     fn construct_account_from_json(
         account_id: &AccountId,
@@ -89,23 +99,19 @@ impl NetworkClient for MidenNetworkClient {
         Ok(local_commitment_hex)
     }
 
-    async fn verify_state(
-        &mut self,
+    async fn verify_commitment(
+        &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> Result<StateVerification, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
                 error = %e,
-                "Invalid Miden account ID format in verify_state"
+                "Invalid Miden account ID format in verify_commitment"
             );
             format!("Invalid Miden account ID format: {e}")
         })?;
-
-        let account = Self::construct_account_from_json(&account_id, state_json)?;
-        let local_commitment = account.to_commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
         // Outbound chain-node RPC — the upstream dependency this
         // server's availability hangs on, so it gets its own metric
@@ -134,10 +140,14 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to verify account '{account_id}' on Miden network: {e}")
         })?;
 
-        if local_commitment_hex != on_chain_commitment {
+        if Self::is_empty_word_digest(&on_chain_commitment) {
+            return Ok(StateVerification::Absent);
+        }
+
+        if expected_commitment != on_chain_commitment {
             tracing::warn!(
                 account_id = %account_id.to_hex(),
-                local = %local_commitment_hex,
+                expected = %expected_commitment,
                 on_chain = %on_chain_commitment,
                 "Commitment mismatch during state verification"
             );
@@ -459,7 +469,7 @@ impl NetworkClient for MidenNetworkClient {
     }
 
     async fn should_update_auth(
-        &mut self,
+        &self,
         state_json: &serde_json::Value,
         current_auth: &Auth,
     ) -> Result<Option<Auth>, String> {
@@ -484,6 +494,21 @@ mod tests {
     fn test_network_type_rpc_endpoint() {
         let network = NetworkType::MidenTestnet;
         assert_eq!(network.rpc_endpoint(), "https://rpc.testnet.miden.io");
+    }
+
+    #[test]
+    fn test_empty_word_digest_detection() {
+        assert!(MidenNetworkClient::is_empty_word_digest(
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ));
+        assert!(MidenNetworkClient::is_empty_word_digest(
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ));
+        assert!(!MidenNetworkClient::is_empty_word_digest(
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+        ));
+        assert!(!MidenNetworkClient::is_empty_word_digest(""));
+        assert!(!MidenNetworkClient::is_empty_word_digest("0x"));
     }
 
     #[tokio::test]
@@ -522,6 +547,22 @@ mod tests {
         let state_json = serde_json::json!({"balance": 0});
 
         let result = client.get_state_commitment(invalid_account_id, &state_json);
+        assert!(result.is_err(), "Should fail with invalid account ID");
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Invalid Miden account ID format")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_commitment_rejects_invalid_account_id_before_rpc() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+
+        let result = client
+            .verify_commitment("not_a_valid_hex", "0xexpected")
+            .await;
+
         assert!(result.is_err(), "Should fail with invalid account ID");
         assert!(
             result

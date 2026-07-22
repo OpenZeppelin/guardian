@@ -7,6 +7,18 @@ import type {
 import { AccountId } from '@miden-sdk/miden-sdk';
 import { getRawMidenClient } from '../raw-client.js';
 
+export function executeForSummary(
+  client: MidenClient,
+  accountId: string,
+  txRequest: TransactionRequest,
+  midenRpcEndpoint: string,
+): Promise<TransactionSummary>;
+export function executeForSummary(
+  client: WasmWebClient,
+  accountId: string,
+  txRequest: TransactionRequest,
+  midenRpcEndpoint?: string,
+): Promise<TransactionSummary>;
 export async function executeForSummary(
   client: MidenClient | WasmWebClient,
   accountId: string,

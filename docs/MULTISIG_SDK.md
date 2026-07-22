@@ -55,6 +55,8 @@ const client = new MultisigClient(midenClient, {
   guardianEndpoint: 'http://localhost:3000',
   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
 });
+// Both endpoints are required; construction throws when either is omitted.
+// midenRpcEndpoint must point at the same network as the injected MidenClient.
 
 // 2. Get GUARDIAN server public key
 const guardianCommitment = await client.guardianClient.getPubkey();

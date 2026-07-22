@@ -30,7 +30,6 @@ use crate::state::AppState;
 use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
@@ -593,7 +592,7 @@ impl ServerBuilder {
         let app_state = AppState {
             storage,
             metadata,
-            network_client: Arc::new(Mutex::new(network_client)),
+            network_client: Arc::new(network_client),
             ack,
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),

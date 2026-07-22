@@ -165,6 +165,10 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(local.effective_guardian_metadata_db_pool_max_size)
           },
           {
+            name  = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS"
+            value = tostring(local.effective_guardian_canonicalization_max_concurrent_accounts)
+          },
+          {
             name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
             value = local.operator_public_keys_secret_arn
           },

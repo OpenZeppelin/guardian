@@ -98,7 +98,6 @@ mod tests {
     use chrono::TimeZone;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::sync::Mutex;
 
     fn meta(account_id: &str, paused: Option<(DateTime<Utc>, Option<&str>)>) -> AccountMetadata {
         AccountMetadata {
@@ -129,7 +128,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

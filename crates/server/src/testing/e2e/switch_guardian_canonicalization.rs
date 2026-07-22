@@ -213,7 +213,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     let miden_client = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
     let mut integration_client = IntegrationMockNetworkClient::new(miden_client);
     integration_client.register_account(account_id_hex.clone(), executed_commitment_hex.clone());
-    state.network_client = Arc::new(tokio::sync::Mutex::new(integration_client));
+    state.network_client = Arc::new(integration_client);
 
     // Capture audit emissions so the release event can be asserted.
     let auditor = CapturingAuditor::new();
@@ -280,9 +280,14 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         push_result.delta.status
     );
 
-    process_canonicalizations_now(&state)
+    let pass = process_canonicalizations_now(&state)
         .await
         .expect("canonicalization run succeeds");
+    assert_eq!(
+        pass.failed_accounts, 0,
+        "no account may fail canonicalization in this pass"
+    );
+    assert!(!pass.cancelled, "pass must run to completion");
 
     let deltas = state
         .storage

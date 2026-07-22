@@ -1,3 +1,5 @@
+#[cfg(all(test, feature = "e2e"))]
+pub mod apply_delta_bench;
 pub mod e2e;
 pub mod env_lock;
 pub mod fixtures;

@@ -46,7 +46,7 @@ pub async fn release_if_guardian_switched(
     let own_commitment = state.ack.commitment(&metadata.auth.scheme());
 
     let extracted = {
-        let client = state.network_client.lock().await;
+        let client = &state.network_client;
         client.extract_guardian_commitment(new_state_json)
     };
 
@@ -120,7 +120,6 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient};
     use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::sync::Mutex;
 
     fn miden_meta(account_id: &str) -> AccountMetadata {
         AccountMetadata {
@@ -155,7 +154,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(network)),
+            network_client: Arc::new(network),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

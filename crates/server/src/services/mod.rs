@@ -406,7 +406,6 @@ mod tests {
     use crate::metadata::auth::Auth;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::{TimeZone, Utc};
-    use tokio::sync::Mutex;
 
     async fn create_test_state_with_mocks_and_clock(
         metadata: MockMetadataStore,
@@ -425,7 +424,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(network)),
+            network_client: Arc::new(network),
             ack,
             canonicalization: None,
             clock: Arc::new(clock),

@@ -318,7 +318,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata_store = MockMetadataStore::new().with_list(Ok(account_ids));
         let storage = MockStorageBackend::new()
@@ -334,7 +333,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -352,7 +351,6 @@ mod tests {
         use crate::metadata::auth::Auth;
         use crate::metadata::{AccountMetadata, NetworkConfig};
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let account_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
 
@@ -402,7 +400,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -430,7 +428,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         // List has two accounts; the first metadata.get returns Err.
         // The aggregator should bail and mark the aggregate degraded
@@ -450,7 +447,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -562,7 +559,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         // Override the mock to report Filesystem; verifies that the
         // dashboard handler dispatches off the *runtime* storage kind
@@ -581,7 +577,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -624,6 +620,7 @@ mod tests {
             max_retries: 13,
             submission_grace_period_seconds: 42,
             divergence_confirmations: 2,
+            max_concurrent_accounts: 4,
         });
         let info = get_dashboard_info(&state).await.unwrap();
         let cfg = info.backend.canonicalization.expect("config present");
@@ -650,7 +647,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata = MockMetadataStore::new().with_list(Ok(vec!["0xa".into()]));
         // count_deltas_by_status fails; the other two aggregates
@@ -669,7 +665,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -713,7 +709,7 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
+
         let keystore_dir =
             std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
@@ -721,7 +717,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

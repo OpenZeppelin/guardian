@@ -150,12 +150,14 @@ locals {
   effective_guardian_max_replicas              = var.guardian_max_replicas != null ? max(var.guardian_max_replicas, local.effective_server_steady_capacity) : local.effective_server_steady_capacity
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
-  managed_evm_allowed_chain_ids_secret_enabled = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
-  evm_allowed_chain_ids_secret_arn             = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
-  managed_evm_rpc_urls_secret_enabled          = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
-  evm_rpc_urls_secret_arn                      = var.guardian_evm_rpc_urls_secret_arn != "" ? var.guardian_evm_rpc_urls_secret_arn : (local.managed_evm_rpc_urls_secret_enabled ? aws_secretsmanager_secret.evm_rpc_urls[0].arn : "")
-  managed_operator_public_keys_secret_enabled  = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
-  operator_public_keys_secret_arn              = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
+
+  effective_guardian_canonicalization_max_concurrent_accounts = var.guardian_canonicalization_max_concurrent_accounts != null ? var.guardian_canonicalization_max_concurrent_accounts : (local.is_prod ? 50 : 10)
+  managed_evm_allowed_chain_ids_secret_enabled                = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
+  evm_allowed_chain_ids_secret_arn                            = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
+  managed_evm_rpc_urls_secret_enabled                         = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
+  evm_rpc_urls_secret_arn                                     = var.guardian_evm_rpc_urls_secret_arn != "" ? var.guardian_evm_rpc_urls_secret_arn : (local.managed_evm_rpc_urls_secret_enabled ? aws_secretsmanager_secret.evm_rpc_urls[0].arn : "")
+  managed_operator_public_keys_secret_enabled                 = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
+  operator_public_keys_secret_arn                             = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 
   direct_database_endpoint = aws_db_instance.postgres.address
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""

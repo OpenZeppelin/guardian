@@ -18,7 +18,7 @@ import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
-import type { SignatureOptions } from './options.js';
+import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: number): Felt[] {
@@ -76,6 +76,18 @@ end
   );
 }
 
+export function buildUpdateProcedureThresholdTransactionRequest(
+  client: MidenClient,
+  procedure: ProcedureName,
+  threshold: number,
+  options: MidenClientSignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
+export function buildUpdateProcedureThresholdTransactionRequest(
+  client: WasmWebClient,
+  procedure: ProcedureName,
+  threshold: number,
+  options?: SignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
 export async function buildUpdateProcedureThresholdTransactionRequest(
   client: MidenClient | WasmWebClient,
   procedure: ProcedureName,

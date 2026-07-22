@@ -28,7 +28,8 @@ use crate::state_object::StateObject;
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, ProposalRecord, StorageBackend, StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend,
+    StorageType,
 };
 
 /// Record one storage operation: duration histogram plus an
@@ -126,6 +127,14 @@ impl StorageBackend for InstrumentedStorage {
             "pull_canonical_deltas_after",
             self.inner
                 .pull_canonical_deltas_after(account_id, from_nonce),
+        )
+        .await
+    }
+
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_candidate_deltas",
+            self.inner.pull_candidate_deltas(account_id),
         )
         .await
     }
@@ -234,7 +243,7 @@ impl StorageBackend for InstrumentedStorage {
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: CandidatePromotion,
-    ) -> Result<CanonicalWrite, String> {
+    ) -> Result<PromoteWrite, String> {
         timed(
             "promote_candidate",
             self.inner.promote_candidate(metadata, promotion),

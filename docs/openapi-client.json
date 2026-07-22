@@ -1073,23 +1073,13 @@
           }
         }
       },
-      "ApiErrorResponse": {
+      "ApiErrorMeta": {
         "type": "object",
-        "description": "Wire shape of a Guardian error response body. Mirrors the envelope\nproduced by [`crate::error::GuardianError`]'s `IntoResponse` impl.\nDocumented as the body of every non-2xx response. Optional fields\nare populated only for the error codes that carry them.",
+        "description": "Structured machine-readable side-data on the error wire object\n(feature `009-human-readable-errors`). `retryable` is always present;\nthe rest appear only for the codes that carry them.",
         "required": [
-          "success",
-          "code",
-          "error"
+          "retryable"
         ],
         "properties": {
-          "code": {
-            "type": "string",
-            "description": "Stable, machine-readable error code (e.g. `account_not_found`)."
-          },
-          "error": {
-            "type": "string",
-            "description": "Human-readable error message."
-          },
           "missing_permissions": {
             "type": [
               "array",
@@ -1105,7 +1095,7 @@
               "string",
               "null"
             ],
-            "description": "RFC 3339 pause timestamp. Present only for\n`GUARDIAN_ACCOUNT_PAUSED`."
+            "description": "RFC 3339 pause timestamp. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
           },
           "paused_reason": {
             "type": [
@@ -1127,19 +1117,35 @@
               "null"
             ],
             "format": "int32",
-            "description": "Seconds to wait before retrying. Present only for\n`rate_limit_exceeded`.",
+            "description": "Seconds to wait before retrying. Present only for\n`rate_limit_exceeded` (the `Retry-After` header carries the same value).",
             "minimum": 0
           },
           "retryable": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "`false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`, and\n`GUARDIAN_ACCOUNT_RELEASED`."
-          },
-          "success": {
             "type": "boolean",
-            "description": "Always `false` for error responses."
+            "description": "Whether retrying the same request could plausibly succeed."
+          }
+        }
+      },
+      "ApiErrorResponse": {
+        "type": "object",
+        "description": "Wire shape of a Guardian error response body: `{ code, message, meta }`\n(feature `009-human-readable-errors`). Mirrors the object produced by\n[`crate::error::GuardianError`]'s `IntoResponse` impl and carried\nidentically on the gRPC `Status.details`. The legacy `success`/`error`\nfields are gone; the diagnostic detail is logged server-side only.\nDocumented as the body of every non-2xx response.",
+        "required": [
+          "code",
+          "message",
+          "meta"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable, machine-readable error code (e.g. `account_not_found`). The\nclient branch + i18n key. Branch on this, never on `message`."
+          },
+          "message": {
+            "type": "string",
+            "description": "Short, user-safe message; safe to display verbatim. Wording is not\npart of the stable contract."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ApiErrorMeta",
+            "description": "Structured machine-readable side-data."
           }
         }
       },

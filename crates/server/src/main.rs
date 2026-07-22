@@ -31,13 +31,17 @@ async fn main() {
         .expect("Failed to initialize CORS config")
         .layer();
 
-    let network_type = NetworkType::from_env_or("GUARDIAN_NETWORK_TYPE", NetworkType::MidenDevnet);
+    let network_type =
+        NetworkType::from_env("GUARDIAN_NETWORK_TYPE").expect("Failed to resolve network type");
 
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
         .with_canonicalization(Some(
-            CanonicalizationConfig::new(10, 48).with_submission_grace_period_seconds(600),
+            CanonicalizationConfig::new(10, 48)
+                .with_submission_grace_period_seconds(600)
+                .with_max_concurrent_accounts_from_env()
+                .expect("Invalid canonicalization concurrency configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

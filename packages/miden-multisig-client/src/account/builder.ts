@@ -30,12 +30,13 @@ import { normalizeSignerCommitment } from '../utils/signature.js';
  *
  * @param midenClient - Initialized MidenClient
  * @param config - Multisig configuration
+ * @param midenRpcEndpoint - RPC endpoint for the MidenClient's network
  * @returns The created account and seed
  */
 export async function createMultisigAccount(
   midenClient: MidenClient,
   config: MultisigConfig,
-  midenRpcEndpoint?: string,
+  midenRpcEndpoint: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const signatureScheme = config.signatureScheme ?? 'falcon';

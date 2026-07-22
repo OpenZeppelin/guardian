@@ -487,6 +487,27 @@ variable "guardian_metadata_db_pool_max_size" {
   default     = null
 }
 
+variable "guardian_canonicalization_max_concurrent_accounts" {
+  description = <<-EOT
+    Optional override for GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS, how many
+    accounts one canonicalization pass processes in parallel (1 = fully sequential).
+    Defaults to 50 in prod (which runs behind RDS Proxy), 10 otherwise. Most
+    of each account's wall clock is a chain RPC that holds no DB connection,
+    so this may exceed guardian_db_pool_max_size; write bursts queue briefly
+    at the pool instead of failing.
+  EOT
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_canonicalization_max_concurrent_accounts == null ? true : (
+      var.guardian_canonicalization_max_concurrent_accounts >= 1 &&
+      floor(var.guardian_canonicalization_max_concurrent_accounts) ==
+      var.guardian_canonicalization_max_concurrent_accounts
+    )
+    error_message = "guardian_canonicalization_max_concurrent_accounts must be a positive integer when provided."
+  }
+}
+
 # Resource naming
 variable "cluster_name" {
   description = "ECS cluster name"

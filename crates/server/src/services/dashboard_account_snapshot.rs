@@ -168,7 +168,6 @@ mod tests {
     use guardian_shared::FromJson;
     use miden_protocol::account::Account;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     async fn build_state(
         metadata: Option<AccountMetadata>,
@@ -185,7 +184,7 @@ mod tests {
         AppState {
             storage: Arc::new(mock_storage),
             metadata: Arc::new(mock_metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

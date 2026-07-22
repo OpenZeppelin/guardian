@@ -42,20 +42,90 @@ import {
 } from './conversion.js';
 
 /**
- * Error thrown by the GUARDIAN HTTP client.
+ * Structured machine-readable side-data on a GUARDIAN error
+ * (feature `009-human-readable-errors`). `retryable` is always present.
+ */
+export interface GuardianErrorMeta {
+  retryable: boolean;
+  retryAfterSecs?: number;
+  missingPermissions?: string[];
+  pausedAt?: string;
+  pausedReason?: string | null;
+  releasedAt?: string;
+}
+
+interface ParsedGuardianError {
+  code: string;
+  message: string;
+  meta: GuardianErrorMeta;
+}
+
+/**
+ * Parse a GUARDIAN error body `{ code, message, meta }` (feature 009),
+ * mapping the server's snake_case `meta` fields to camelCase. Returns
+ * `undefined` for non-JSON or non-conforming bodies — including a missing
+ * `meta` or a non-boolean `meta.retryable`, which the contract requires;
+ * treating those as conforming would silently misclassify retryability for
+ * bodies from older servers or intermediary proxies.
+ */
+function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
+  let json: unknown;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof json !== 'object' || json === null) return undefined;
+  const obj = json as Record<string, unknown>;
+  if (typeof obj.code !== 'string' || typeof obj.message !== 'string') return undefined;
+
+  if (typeof obj.meta !== 'object' || obj.meta === null || Array.isArray(obj.meta)) {
+    return undefined;
+  }
+  const rawMeta = obj.meta as Record<string, unknown>;
+  if (typeof rawMeta.retryable !== 'boolean') return undefined;
+  const meta: GuardianErrorMeta = { retryable: rawMeta.retryable };
+  if (
+    typeof rawMeta.retry_after_secs === 'number' &&
+    Number.isInteger(rawMeta.retry_after_secs) &&
+    rawMeta.retry_after_secs >= 0
+  ) {
+    meta.retryAfterSecs = rawMeta.retry_after_secs;
+  }
+  if (Array.isArray(rawMeta.missing_permissions)) {
+    meta.missingPermissions = rawMeta.missing_permissions.filter(
+      (x): x is string => typeof x === 'string'
+    );
+  }
+  if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
+  if (typeof rawMeta.released_at === 'string') meta.releasedAt = rawMeta.released_at;
+  if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
+    meta.pausedReason = rawMeta.paused_reason as string | null;
+  }
+  return { code: obj.code, message: obj.message, meta };
+}
+
+/**
+ * Error thrown by the GUARDIAN HTTP client. Parses the `{ code, message, meta }`
+ * error body (feature 009): branch on {@link code}, display {@link userMessage}.
  */
 export class GuardianHttpError extends Error {
   /**
-   * Stable machine-readable error code from the server's JSON error
-   * envelope (e.g. `GUARDIAN_ACCOUNT_RELEASED`, `GUARDIAN_ACCOUNT_PAUSED`,
-   * `commitment_mismatch`), or `null` when the body is not a JSON
-   * envelope. Callers SHOULD branch on this rather than on `body` text
-   * or the HTTP status alone.
+   * Stable machine-readable error code from the server's `{ code, message,
+   * meta }` error object (e.g. `GUARDIAN_ACCOUNT_RELEASED`,
+   * `GUARDIAN_ACCOUNT_PAUSED`, `commitment_mismatch`), or `null` when the
+   * body is not a conforming JSON envelope. Callers SHOULD branch on this
+   * rather than on `body` text or the HTTP status alone.
    */
   public readonly code: string | null;
+  /** Short, user-safe message — safe to display verbatim in a wallet UI. */
+  readonly userMessage?: string;
+  /** Structured side-data (`retryable`, `retryAfterSecs`, …). */
+  readonly meta?: GuardianErrorMeta;
   /**
    * RFC 3339 UTC timestamp at which the guardian released the account
-   * after it switched to a different guardian. Present only when
+   * after it switched to a different guardian. Convenience accessor for
+   * `meta.releasedAt`; present only when
    * `code === 'GUARDIAN_ACCOUNT_RELEASED'` (HTTP 409); the account is
    * terminal on this server until re-onboarded via `configure`.
    */
@@ -66,26 +136,16 @@ export class GuardianHttpError extends Error {
     public readonly statusText: string,
     public readonly body: string
   ) {
-    super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
+    // Only the parsed, user-safe message is folded into Error.message; the
+    // raw body (which may carry backend/proxy internals) stays on the `body`
+    // field for diagnostics only.
+    const parsed = parseGuardianErrorBody(body);
+    super(`GUARDIAN HTTP error ${status}: ${statusText}${parsed ? ` - ${parsed.message}` : ''}`);
     this.name = 'GuardianHttpError';
-    let code: string | null = null;
-    let releasedAt: string | null = null;
-    try {
-      const parsed: unknown = JSON.parse(body);
-      if (parsed !== null && typeof parsed === 'object') {
-        const record = parsed as Record<string, unknown>;
-        if (typeof record['code'] === 'string') {
-          code = record['code'];
-        }
-        if (typeof record['released_at'] === 'string') {
-          releasedAt = record['released_at'];
-        }
-      }
-    } catch {
-      // Non-JSON body (e.g. proxy HTML error page): keep raw `body` only.
-    }
-    this.code = code;
-    this.releasedAt = releasedAt;
+    this.code = parsed?.code ?? null;
+    this.userMessage = parsed?.message;
+    this.meta = parsed?.meta;
+    this.releasedAt = parsed?.meta.releasedAt ?? null;
   }
 }
 
@@ -415,7 +475,16 @@ export class GuardianHttpClient {
         },
       });
     } catch (err) {
-      if (retries > 0 && err instanceof GuardianHttpError && err.body.includes('Replay attack')) {
+      // Replay rejections (stale timestamp) are transient: retry once with a
+      // fresh timestamp. The specific "Replay attack" detail is now sanitized
+      // off the wire (feature 009), so branch on the stable auth code instead.
+      // Retrying a genuine auth failure is harmless — one extra attempt that
+      // also fails — and only happens when a retry budget remains.
+      if (
+        retries > 0 &&
+        err instanceof GuardianHttpError &&
+        err.code === 'authentication_failed'
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);
       }

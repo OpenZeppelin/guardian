@@ -214,54 +214,60 @@ export async function parseErrorBody(
     typeof codeRaw === 'string' ? codeRaw : null,
   );
 
-  const messageRaw = record['error'];
+  // Feature 009-human-readable-errors reshaped the body to
+  // `{ code, message, meta }`: the user-safe message moved from `error` to
+  // `message`, and the structured side-data (retry/permissions/pause) moved
+  // from top-level fields into `meta`.
+  const messageRaw = record['message'];
   const message = typeof messageRaw === 'string' ? messageRaw : null;
 
-  const retryRaw = record['retry_after_secs'];
+  const meta =
+    typeof record['meta'] === 'object' && record['meta'] !== null
+      ? (record['meta'] as Record<string, unknown>)
+      : {};
+
+  const retryRaw = meta['retry_after_secs'];
   const retryAfterSecs =
     typeof retryRaw === 'number' && Number.isInteger(retryRaw)
       ? retryRaw
       : undefined;
 
-  // Feature 006-operator-authz FR-016: populate `missingPermissions`
-  // and `retryable` only when the server emitted the permission-denial
-  // code. Every other code path leaves both fields undefined so the
-  // additive envelope extension is invisible to existing parsers. The
-  // contract pins `retryable=false` for this code; surface that
-  // unconditionally so a non-compliant server can't mislead retry
-  // policy code into retrying a permission denial.
+  // `meta.retryable` is always present on the new wire shape; surface it
+  // whenever the server sent a boolean (the contract still pins `false` for
+  // permission denials and account-paused rejections).
+  const retryable =
+    typeof meta['retryable'] === 'boolean' ? (meta['retryable'] as boolean) : undefined;
+
+  // `missingPermissions` / pause fields are populated only for the codes
+  // that carry them, now read out of `meta`.
   let missingPermissions: readonly string[] | undefined;
-  let retryable: boolean | undefined;
   let pausedAt: string | undefined;
   let pausedReason: string | null | undefined;
   let releasedAt: string | undefined;
   if (code === 'insufficient_operator_permission') {
-    const missingRaw = record['missing_permissions'];
+    const missingRaw = meta['missing_permissions'];
     if (
       Array.isArray(missingRaw) &&
       missingRaw.every((v): v is string => typeof v === 'string')
     ) {
       missingPermissions = missingRaw as readonly string[];
     }
-    retryable = false;
   } else if (code === 'account_paused') {
-    const pausedAtRaw = record['paused_at'];
+    const pausedAtRaw = meta['paused_at'];
     if (typeof pausedAtRaw === 'string') {
       pausedAt = pausedAtRaw;
     }
-    const reasonRaw = record['paused_reason'];
+    const reasonRaw = meta['paused_reason'];
     if (typeof reasonRaw === 'string') {
       pausedReason = reasonRaw;
     } else if (reasonRaw === null) {
       pausedReason = null;
     }
-    retryable = false;
   } else if (code === 'account_released') {
-    const releasedAtRaw = record['released_at'];
+    const releasedAtRaw = meta['released_at'];
     if (typeof releasedAtRaw === 'string') {
       releasedAt = releasedAtRaw;
     }
-    retryable = false;
   }
 
   return {
@@ -295,9 +301,10 @@ export class GuardianOperatorHttpError extends Error {
     public readonly data: GuardianOperatorHttpErrorData | null,
   ) {
     super(
-      `Guardian operator HTTP error ${status}: ${statusText}${
-        data ? ` - ${data.error}` : body ? ` - ${body}` : ''
-      }`,
+      // Only the user-safe `message` is appended; the raw `body` (which may
+      // contain backend/transport detail) stays on the `body` field for
+      // diagnostics but is never folded into the Error message (feature 009).
+      `Guardian operator HTTP error ${status}: ${statusText}${data ? ` - ${data.message}` : ''}`,
     );
     this.name = 'GuardianOperatorHttpError';
     this.retryAfterSecs = data?.retryAfterSecs;
@@ -1067,30 +1074,11 @@ function parseUnpauseResponse(value: unknown): UnpauseAccountResponse {
 
 function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
   const record = asRecord(value, 'error response');
-  const success = requireBoolean(record, 'success', 'error response');
-  if (success) {
-    throw new GuardianOperatorContractError(
-      'error response',
-      'expected success to be false',
-    );
-  }
 
-  const retryAfterValue = record.retry_after_secs;
-  let retryAfterSecs: number | undefined;
-  if (retryAfterValue !== undefined) {
-    if (typeof retryAfterValue !== 'number' || !Number.isInteger(retryAfterValue)) {
-      throw new GuardianOperatorContractError(
-        'error response',
-        'retry_after_secs must be an integer when present',
-      );
-    }
-    retryAfterSecs = retryAfterValue;
-  }
-
-  // Optional stable machine-readable error code added by feature
-  // `005-operator-dashboard-metrics` and required for the dashboard
-  // error taxonomy (FR-028). Older servers may omit it; tolerate that
-  // by leaving the field undefined.
+  // Feature 009-human-readable-errors: the body is `{ code, message, meta }`.
+  // `success` is gone (HTTP status is the discriminator), the user-safe
+  // message moved from `error` to `message`, and the structured side-data
+  // moved into `meta`.
   const codeValue = record.code;
   let code: string | undefined;
   if (codeValue !== undefined) {
@@ -1103,17 +1091,43 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     code = mapDashboardErrorCode(codeValue) ?? undefined;
   }
 
-  // Feature 006-operator-authz FR-016: populate `missingPermissions`
-  // and `retryable` only on the permission-denial code. Tolerate
-  // either ordering or omission on every other code so legacy 5xx /
-  // 4xx errors continue to parse byte-for-byte as before.
+  const message = requireString(record, 'message', 'error response');
+
+  // `meta` (with a boolean `retryable`) is required on the feature 009
+  // envelope; a missing/malformed meta is contract drift, surfaced loudly so
+  // callers never silently lose retry classification.
+  const metaRaw = record.meta;
+  if (typeof metaRaw !== 'object' || metaRaw === null || Array.isArray(metaRaw)) {
+    throw new GuardianOperatorContractError('error response', 'meta must be an object');
+  }
+  const meta = metaRaw as Record<string, unknown>;
+
+  const retryAfterValue = meta.retry_after_secs;
+  let retryAfterSecs: number | undefined;
+  if (retryAfterValue !== undefined) {
+    if (typeof retryAfterValue !== 'number' || !Number.isInteger(retryAfterValue)) {
+      throw new GuardianOperatorContractError(
+        'error response',
+        'meta.retry_after_secs must be an integer when present',
+      );
+    }
+    retryAfterSecs = retryAfterValue;
+  }
+
+  // `meta.retryable` is required and pins retry classification (the server
+  // sets `false` for permission denials and account-paused rejections).
+  const retryableRaw = meta.retryable;
+  if (typeof retryableRaw !== 'boolean') {
+    throw new GuardianOperatorContractError('error response', 'meta.retryable must be a boolean');
+  }
+  const retryable = retryableRaw;
+
   let missingPermissions: readonly string[] | undefined;
-  let retryable: boolean | undefined;
   let pausedAt: string | undefined;
   let pausedReason: string | null | undefined;
   let releasedAt: string | undefined;
   if (code === 'insufficient_operator_permission') {
-    const missingRaw = record.missing_permissions;
+    const missingRaw = meta.missing_permissions;
     if (missingRaw !== undefined) {
       if (
         !Array.isArray(missingRaw) ||
@@ -1121,73 +1135,43 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
       ) {
         throw new GuardianOperatorContractError(
           'error response',
-          'missing_permissions must be an array of strings',
+          'meta.missing_permissions must be an array of strings',
         );
       }
       missingPermissions = missingRaw as readonly string[];
     }
-    const retryableRaw = record.retryable;
-    if (retryableRaw !== undefined) {
-      if (retryableRaw !== false) {
-        // FR-016 pins `retryable: false` for permission denials.
-        // Surface server contract drift loudly rather than letting
-        // retry policy code retry an unretryable failure.
-        throw new GuardianOperatorContractError(
-          'error response',
-          'retryable must be false for insufficient_operator_permission',
-        );
-      }
-      retryable = false;
-    }
   } else if (code === 'account_paused') {
-    const pausedAtRaw = record.paused_at;
+    const pausedAtRaw = meta.paused_at;
     if (typeof pausedAtRaw !== 'string') {
       throw new GuardianOperatorContractError(
         'error response',
-        'paused_at must be a string for account_paused',
+        'meta.paused_at must be a string for account_paused',
       );
     }
     pausedAt = pausedAtRaw;
-    const reasonRaw = record.paused_reason;
+    const reasonRaw = meta.paused_reason;
     if (typeof reasonRaw === 'string' || reasonRaw === null) {
       pausedReason = reasonRaw;
     } else if (reasonRaw !== undefined) {
       throw new GuardianOperatorContractError(
         'error response',
-        'paused_reason must be a string or null for account_paused',
+        'meta.paused_reason must be a string or null for account_paused',
       );
     }
-    const retryableRaw = record.retryable;
-    if (retryableRaw !== undefined && retryableRaw !== false) {
-      throw new GuardianOperatorContractError(
-        'error response',
-        'retryable must be false for account_paused',
-      );
-    }
-    retryable = false;
   } else if (code === 'account_released') {
-    const releasedAtRaw = record.released_at;
+    const releasedAtRaw = meta.released_at;
     if (typeof releasedAtRaw !== 'string') {
       throw new GuardianOperatorContractError(
         'error response',
-        'released_at must be a string for account_released',
+        'meta.released_at must be a string for account_released',
       );
     }
     releasedAt = releasedAtRaw;
-    const retryableRaw = record.retryable;
-    if (retryableRaw !== undefined && retryableRaw !== false) {
-      throw new GuardianOperatorContractError(
-        'error response',
-        'retryable must be false for account_released',
-      );
-    }
-    retryable = false;
   }
 
   return {
-    success: false,
     code,
-    error: requireString(record, 'error', 'error response'),
+    message,
     retryAfterSecs,
     missingPermissions,
     retryable,

@@ -347,7 +347,6 @@ mod tests {
         use crate::metadata::AccountMetadata;
         use crate::metadata::auth::Auth;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata_response = if has_metadata {
             Ok(Some(AccountMetadata {
@@ -386,7 +385,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -466,7 +465,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata =
             MockMetadataStore::new().with_get(Ok(Some(crate::metadata::AccountMetadata {
@@ -492,7 +490,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -528,7 +526,6 @@ mod tests {
         use crate::storage::filesystem::FilesystemService;
         use crate::testing::mocks::MockNetworkClient;
         use tempfile::TempDir;
-        use tokio::sync::Mutex;
 
         let dir = TempDir::new().expect("tempdir");
         let svc = FilesystemService::new(dir.path().to_path_buf())
@@ -582,7 +579,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(svc),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

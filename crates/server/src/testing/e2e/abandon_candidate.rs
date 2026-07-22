@@ -222,7 +222,7 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     };
     let mut integration_client = IntegrationMockNetworkClient::new(miden_client);
     integration_client.register_account(account_id_hex.clone(), registered_commitment);
-    state.network_client = Arc::new(tokio::sync::Mutex::new(integration_client));
+    state.network_client = Arc::new(integration_client);
 
     let api_pubkey_hex = cosigner_pubkeys[0].clone().into_hex();
     let api_commitment_hex = format!(

@@ -134,13 +134,6 @@ pub struct ConfigureResponse {
     pub code: Option<&'static str>,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct ErrorResponse {
-    pub success: bool,
-    pub code: &'static str,
-    pub error: String,
-}
-
 /// Configure (register) an account with its authorization set and
 /// initial state. Requires the signed `x-pubkey` / `x-signature` /
 /// `x-timestamp` auth headers.
@@ -163,14 +156,18 @@ pub async fn configure(
     let request_payload = match request_payload_from_serializable(&payload) {
         Ok(request_payload) => request_payload,
         Err(e) => {
+            // Log the raw detail; return only the user-safe message + stable
+            // code (feature 009-human-readable-errors).
+            let err = GuardianError::InvalidInput(e);
+            tracing::debug!(code = err.code(), detail = %err, "configure request invalid");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ConfigureResponse {
                     success: false,
-                    message: e,
+                    message: err.user_message().to_string(),
                     ack_pubkey: None,
                     ack_commitment: None,
-                    code: None,
+                    code: Some(err.code()),
                 }),
             );
         }
@@ -190,16 +187,25 @@ pub async fn configure(
                 code: None,
             }),
         ),
-        Err(e) => (
-            e.http_status(),
-            Json(ConfigureResponse {
-                success: false,
-                message: e.to_string(),
-                ack_pubkey: None,
-                ack_commitment: None,
-                code: Some(e.code()),
-            }),
-        ),
+        Err(e) => {
+            // The diagnostic Display string is logged, not returned; the wire
+            // carries only the user-safe message + stable code (feature 009).
+            if e.http_status().is_server_error() {
+                tracing::error!(code = e.code(), detail = %e, "configure failed (5xx)");
+            } else {
+                tracing::debug!(code = e.code(), detail = %e, "configure rejected (4xx)");
+            }
+            (
+                e.http_status(),
+                Json(ConfigureResponse {
+                    success: false,
+                    message: e.user_message().to_string(),
+                    ack_pubkey: None,
+                    ack_commitment: None,
+                    code: Some(e.code()),
+                }),
+            )
+        }
     }
 }
 
@@ -688,7 +694,6 @@ mod tests {
     use crate::testing::helpers::{TestSigner, create_test_app_state_with_mocks};
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     fn create_test_state() -> (
         AppState,
@@ -702,7 +707,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -950,7 +955,7 @@ mod tests {
         let _ = network
             .clone()
             .with_apply_delta(Ok((serde_json::json!({"new": true}), "0xnew".to_string())))
-            .with_verify_state(verify);
+            .with_verify_commitment(verify);
     }
 
     #[tokio::test]
@@ -1005,7 +1010,11 @@ mod tests {
             .expect("body bytes");
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON envelope");
         assert_eq!(parsed["code"], "GUARDIAN_CANDIDATE_LANDED");
-        assert_eq!(parsed["success"], serde_json::Value::Bool(false));
+        assert!(
+            parsed["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "user-safe message present"
+        );
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(false));
         assert!(storage.get_delete_delta_calls().is_empty());
     }
 

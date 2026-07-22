@@ -182,6 +182,7 @@ mod tests {
                 divergence_confirmations: 2,
                 abandon_quarantine_seconds: 15,
                 abandon_quarantine_checks: 2,
+                max_concurrent_accounts: 4,
             }),
             3,
             true,
