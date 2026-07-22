@@ -22,10 +22,20 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// O(account-size) reconstruction work or repeated full-state passes tracked in
 /// [issue #328](https://github.com/OpenZeppelin/guardian/issues/328).
 ///
-/// Capacity `1` is an internal runtime-safety bound, not operator policy, so it
-/// is deliberately not configurable. Production queue-time and API-latency
-/// measurements are required before raising it or exposing an operator setting.
-const MAX_CONCURRENT_RECONSTRUCTIONS: usize = 1;
+/// The capacity is half the host's cores (minimum 1): reconstructions may use
+/// at most half the machine, leaving the rest for the async runtime, signature
+/// verification, and storage I/O, and concurrent `push_delta` requests don't
+/// serialize behind a single slow (large-account) reconstruction on hosts with
+/// more than two cores. Background work is further capped at one slot by the
+/// [`Reconstructor::run_background`] admission gate. A runtime-safety bound
+/// derived from the host, not operator policy, so deliberately not
+/// configurable.
+fn max_concurrent_reconstructions() -> usize {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get() / 2)
+        .unwrap_or(1)
+        .max(1)
+}
 
 /// Failure of a reconstruction dispatched through [`Reconstructor::run`].
 /// Kept distinct from [`GuardianError`] so the caller preserves the split:
@@ -150,7 +160,7 @@ impl Reconstructor {
 /// The one shared reconstruction gate for the whole process.
 pub fn reconstructor() -> &'static Reconstructor {
     static INSTANCE: LazyLock<Reconstructor> =
-        LazyLock::new(|| Reconstructor::with_capacity(MAX_CONCURRENT_RECONSTRUCTIONS));
+        LazyLock::new(|| Reconstructor::with_capacity(max_concurrent_reconstructions()));
     &INSTANCE
 }
 
@@ -324,8 +334,8 @@ impl std::fmt::Display for NetworkType {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuardianError, MAX_CONCURRENT_RECONSTRUCTIONS, NetworkType, ReconstructError,
-        Reconstructor, reconstructor,
+        GuardianError, NetworkType, ReconstructError, Reconstructor,
+        max_concurrent_reconstructions, reconstructor,
     };
     use crate::testing::env_lock::ENV_LOCK;
     use axum::http::StatusCode;
@@ -334,8 +344,12 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn process_wide_gate_capacity_is_one() {
-        assert_eq!(MAX_CONCURRENT_RECONSTRUCTIONS, 1);
+    fn process_wide_gate_capacity_is_half_the_cores_with_a_floor_of_one() {
+        let capacity = max_concurrent_reconstructions();
+        let cores = std::thread::available_parallelism()
+            .expect("test host reports its parallelism")
+            .get();
+        assert_eq!(capacity, (cores / 2).max(1));
     }
 
     #[tokio::test]
