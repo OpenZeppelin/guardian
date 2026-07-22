@@ -162,6 +162,25 @@ impl TransactionType {
         Self::AddCosigner { new_commitment }
     }
 
+    /// Returns the signer-set size this transaction produces, given the
+    /// current size, or `None` when the transaction does not change the
+    /// signer set. Used to detect growth that dilutes per-procedure
+    /// threshold overrides (absolute counts, never re-scaled on-chain).
+    pub fn target_signer_count(&self, current_num_signers: u32) -> Option<u32> {
+        match self {
+            Self::AddCosigner { .. } => Some(current_num_signers + 1),
+            Self::RemoveCosigner { .. } => Some(current_num_signers.saturating_sub(1)),
+            Self::UpdateSigners {
+                signer_commitments, ..
+            } => Some(signer_commitments.len() as u32),
+            Self::P2ID { .. }
+            | Self::ConsumeNotes { .. }
+            | Self::SwitchGuardian { .. }
+            | Self::UpdateProcedureThreshold { .. }
+            | Self::Custom => None,
+        }
+    }
+
     /// Creates a RemoveCosigner transaction.
     pub fn remove_cosigner(commitment: Word) -> Self {
         Self::RemoveCosigner { commitment }

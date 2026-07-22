@@ -162,6 +162,25 @@ impl MultisigAccount {
         Ok(overrides)
     }
 
+    /// Returns the per-procedure threshold overrides whose effective signing
+    /// ratio is diluted by growing the signer set to `new_num_signers`.
+    ///
+    /// Overrides are absolute signature counts, not ratios, and the on-chain
+    /// `update_signers_and_threshold` procedure does not re-scale them: growing
+    /// the approver set silently lowers every override's effective signing
+    /// ratio (a 2-of-2 override becomes 2-of-n). Callers creating a proposal
+    /// that grows the signer set should surface these overrides and suggest
+    /// raising them via `update_procedure_threshold` alongside the growth.
+    pub fn overrides_diluted_by_signer_growth(
+        &self,
+        new_num_signers: u32,
+    ) -> Result<Vec<(ProcedureName, u32)>> {
+        if new_num_signers <= self.num_signers()? {
+            return Ok(Vec::new());
+        }
+        self.procedure_threshold_overrides()
+    }
+
     /// Returns the effective threshold for a procedure (override if present, else default).
     pub fn effective_threshold_for_procedure(&self, procedure: ProcedureName) -> Result<u32> {
         Ok(self
@@ -392,6 +411,67 @@ mod tests {
                 .expect("threshold"),
             2
         );
+    }
+
+    #[test]
+    fn overrides_diluted_by_signer_growth_lists_overrides_only_on_growth() {
+        let account = build_test_account();
+        let num_signers = account.num_signers().expect("num signers");
+
+        let diluted = account
+            .overrides_diluted_by_signer_growth(num_signers + 1)
+            .expect("diluted overrides");
+        assert_eq!(
+            diluted,
+            account
+                .procedure_threshold_overrides()
+                .expect("configured overrides"),
+            "growth must report every configured override"
+        );
+
+        assert!(
+            account
+                .overrides_diluted_by_signer_growth(num_signers)
+                .expect("same size")
+                .is_empty(),
+            "unchanged signer count must report nothing"
+        );
+        assert!(
+            account
+                .overrides_diluted_by_signer_growth(num_signers - 1)
+                .expect("shrink")
+                .is_empty(),
+            "shrinking must report nothing"
+        );
+    }
+
+    #[test]
+    fn target_signer_count_grows_only_for_signer_set_changes() {
+        use crate::proposal::TransactionType;
+
+        let commitment = word(42);
+        assert_eq!(
+            TransactionType::add_cosigner(commitment).target_signer_count(3),
+            Some(4)
+        );
+        assert_eq!(
+            TransactionType::remove_cosigner(commitment).target_signer_count(3),
+            Some(2)
+        );
+        assert_eq!(
+            TransactionType::UpdateSigners {
+                new_threshold: 2,
+                signer_commitments: vec![word(1), word(2), word(3), word(4), word(5)],
+            }
+            .target_signer_count(3),
+            Some(5)
+        );
+        assert_eq!(
+            TransactionType::switch_guardian("https://g.example", commitment)
+                .target_signer_count(3),
+            None
+        );
+        assert_eq!(TransactionType::Custom.target_signer_count(3), None);
     }
 
     #[test]

@@ -10,7 +10,10 @@ fn digest_hex(d0: u64, d1: u64, d2: u64, d3: u64) -> String {
 
 #[tokio::main]
 async fn main() {
-    for endpoint in ["https://rpc.devnet.miden.io", "https://rpc.testnet.miden.io"] {
+    for endpoint in [
+        "https://rpc.devnet.miden.io",
+        "https://rpc.testnet.miden.io",
+    ] {
         match MidenRpcClient::connect(endpoint).await {
             Ok(mut client) => match client.get_block_header(None, false).await {
                 Ok(resp) => match resp.block_header.and_then(|h| h.tx_kernel_commitment) {

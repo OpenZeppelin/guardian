@@ -490,6 +490,7 @@ impl MultisigClient {
         self.sync().await?;
 
         let account = self.require_account()?.clone();
+        warn_on_override_dilution(&account, &transaction_type);
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         ProposalBuilder::new(transaction_type)
@@ -555,6 +556,35 @@ impl MultisigClient {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+/// Warns when a signer-set-growing transaction would dilute per-procedure
+/// threshold overrides. Overrides are absolute signature counts and the
+/// on-chain update never re-scales them, so growth silently lowers every
+/// override's effective signing ratio; the fix is raising the override via
+/// `update_procedure_threshold` alongside the growth.
+fn warn_on_override_dilution(
+    account: &crate::account::MultisigAccount,
+    transaction_type: &TransactionType,
+) {
+    let current = account.cosigner_commitments().len() as u32;
+    let Some(target) = transaction_type.target_signer_count(current) else {
+        return;
+    };
+    let Ok(diluted) = account.overrides_diluted_by_signer_growth(target) else {
+        return;
+    };
+    for (procedure, threshold) in diluted {
+        tracing::warn!(
+            %procedure,
+            threshold,
+            current_signers = current,
+            target_signers = target,
+            "growing the signer set dilutes this procedure threshold override \
+             ({threshold}-of-{current} becomes {threshold}-of-{target}); consider raising it \
+             via update_procedure_threshold alongside the signer update"
+        );
     }
 }
 

@@ -138,6 +138,14 @@ const proposal = await multisig.createAddSignerProposal(
 console.log('Proposal ID:', proposal.id);
 ```
 
+Per-procedure threshold overrides are absolute signature counts and are never
+re-scaled on-chain, so growing the signer set silently lowers every override's
+effective signing ratio (a 2-of-2 override becomes 2-of-n).
+`createAddSignerProposal` logs a `console.warn` per affected override, and
+`multisig.overridesDilutedBySignerGrowth(newNumSigners)` returns them for UIs
+that want to prompt before proposing. Raise the affected overrides via an
+update-procedure-threshold proposal alongside the growth.
+
 ### Sign a Proposal
 
 ```typescript

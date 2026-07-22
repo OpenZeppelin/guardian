@@ -398,6 +398,17 @@ const proposal = await multisig.createAddSignerProposal(
 );
 ```
 
+> **Override dilution on signer growth**: per-procedure threshold overrides
+> are absolute signature counts, and the on-chain update never re-scales
+> them — growing the signer set silently lowers every override's effective
+> signing ratio (a 2-of-2 override becomes 2-of-n). Both SDKs surface this:
+> the TypeScript SDK logs a `console.warn` per affected override and exposes
+> `multisig.overridesDilutedBySignerGrowth(newNumSigners)`; the Rust SDK
+> emits a `tracing::warn!` in `propose_transaction` and exposes
+> `MultisigAccount::overrides_diluted_by_signer_growth(new_num_signers)`.
+> To keep the intended security level, raise the affected overrides via an
+> update-procedure-threshold proposal alongside the growth.
+
 #### Remove Signer
 
 ```typescript

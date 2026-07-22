@@ -15,7 +15,7 @@ use rustyline::DefaultEditor;
 
 use crate::display::{
     print_error, print_full_hex, print_info, print_section, print_success, print_waiting,
-    shorten_hex,
+    print_warning, shorten_hex,
 };
 use crate::menu::prompt_input;
 use crate::state::{CustomProposalRecipe, SessionState};
@@ -147,6 +147,11 @@ async fn action_create_proposal(
         "b" | "B" => return Ok(()),
         _ => return Err("Invalid choice".to_string()),
     };
+
+    if !confirm_override_dilution(state, &transaction_type, editor)? {
+        print_info("Proposal cancelled.");
+        return Ok(());
+    }
 
     print_waiting("Creating proposal on GUARDIAN");
 
@@ -1021,6 +1026,46 @@ async fn action_execute_custom_proposal(
 
     print_success("Custom proposal executed");
     Ok(())
+}
+
+/// Surfaces the upstream `AuthMultisig` security note before a signer-set-growing
+/// proposal: per-procedure threshold overrides are absolute counts and the on-chain
+/// update never re-scales them, so growth silently lowers every override's
+/// effective signing ratio. Returns whether the user chose to proceed.
+fn confirm_override_dilution(
+    state: &SessionState,
+    transaction_type: &TransactionType,
+    editor: &mut DefaultEditor,
+) -> Result<bool, String> {
+    let client = state.get_client()?;
+    let account = client
+        .account()
+        .ok_or_else(|| "No account loaded".to_string())?;
+    let current = account.cosigner_commitments().len() as u32;
+    let Some(target) = transaction_type.target_signer_count(current) else {
+        return Ok(true);
+    };
+    let diluted = account
+        .overrides_diluted_by_signer_growth(target)
+        .map_err(|e| format!("Failed to read procedure threshold overrides: {}", e))?;
+    if diluted.is_empty() {
+        return Ok(true);
+    }
+
+    print_warning("Growing the signer set dilutes existing procedure threshold overrides.");
+    print_info("Overrides are absolute signature counts and are never re-scaled on-chain:");
+    for (procedure, threshold) in &diluted {
+        println!(
+            "    {}: {}-of-{} becomes {}-of-{}",
+            procedure, threshold, current, threshold, target
+        );
+    }
+    print_info(
+        "To keep the intended security level, raise the affected overrides via\n  \
+         [6] Update procedure threshold override after (or alongside) this change.",
+    );
+    let answer = prompt_input(editor, "Proceed anyway? [y/N]: ")?;
+    Ok(matches!(answer.trim(), "y" | "Y"))
 }
 
 fn prompt_add_cosigner(editor: &mut DefaultEditor) -> Result<TransactionType, String> {

@@ -10,6 +10,8 @@ homepage.workspace = true
 description = "High-level SDK for interacting with multisig accounts on Miden via GUARDIAN"
 
 [dependencies]
+tracing = "0.1"
+
 # Internal crates
 guardian-client = { version = "=0.16.0", path = "../client" }
 guardian-shared = { version = "=0.16.0", path = "../shared" }
