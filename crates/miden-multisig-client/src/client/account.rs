@@ -7,8 +7,7 @@ use std::collections::HashSet;
 
 use base64::Engine;
 use guardian_client::{
-    AuthConfig, ClientError as GuardianClientError, MidenEcdsaAuth, MidenFalconRpoAuth,
-    TryIntoTxSummary, auth_config::AuthType,
+    AuthConfig, MidenEcdsaAuth, MidenFalconRpoAuth, TryIntoTxSummary, auth_config::AuthType,
 };
 use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
@@ -393,10 +392,9 @@ impl MultisigClient {
             .await
         {
             Ok(resp) => resp,
-            Err(GuardianClientError::ServerError(msg)) if msg.contains("not found") => {
-                // No new deltas since current nonce - this is not an error
-                return Ok(());
-            }
+            // A not-found result means there are no new deltas since the current
+            // nonce — a normal sync outcome, not a failure.
+            Err(e) if e.is_not_found() => return Ok(()),
             Err(e) => {
                 return Err(MultisigError::GuardianServer(format!(
                     "failed to pull deltas from GUARDIAN: {}",

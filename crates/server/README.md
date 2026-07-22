@@ -69,6 +69,7 @@ The JSON payload is a plain array of serialized Falcon public key hex strings:
 Local example:
 
 ```bash
+GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```
@@ -76,6 +77,7 @@ cargo run -p guardian-server --bin server
 Deployed example:
 
 ```bash
+GUARDIAN_NETWORK_TYPE=MidenTestnet \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID=arn:aws:secretsmanager:us-east-1:123456789012:secret:guardian/operators \
 cargo run -p guardian-server --bin server
 ```
@@ -98,6 +100,7 @@ with the `evm` feature for local EVM proposal coordination through
 `/evm/auth/*`, `/evm/accounts`, and `/evm/proposals*`:
 
 ```bash
+GUARDIAN_NETWORK_TYPE=MidenTestnet \
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
 GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 cargo run -p guardian-server --features evm --bin server

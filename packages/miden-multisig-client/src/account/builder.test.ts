@@ -107,11 +107,15 @@ describe('createMultisigAccount', () => {
   it('compiles the guarded component without re-linking SDK-provided modules (Falcon)', async () => {
     const { authBuilder, webClient } = makeClient();
 
-    await createMultisigAccount(webClient as never, {
-      threshold: 1,
-      signerCommitments: ['0x' + '1'.repeat(64)],
-      guardianCommitment: '0x' + '2'.repeat(64),
-    });
+    await createMultisigAccount(
+      webClient as never,
+      {
+        threshold: 1,
+        signerCommitments: ['0x' + '1'.repeat(64)],
+        guardianCommitment: '0x' + '2'.repeat(64),
+      },
+      'http://localhost:57291',
+    );
 
     // The web SDK assembler already provides `miden::standards::auth::*`; re-linking would
     // raise a duplicate-definition error, so the builder must NOT call linkModule.
@@ -125,12 +129,16 @@ describe('createMultisigAccount', () => {
   it('uses the same scheme-agnostic component for ECDSA', async () => {
     const { authBuilder, webClient } = makeClient();
 
-    await createMultisigAccount(webClient as never, {
-      threshold: 1,
-      signerCommitments: ['0x' + '1'.repeat(64)],
-      guardianCommitment: '0x' + '2'.repeat(64),
-      signatureScheme: 'ecdsa',
-    });
+    await createMultisigAccount(
+      webClient as never,
+      {
+        threshold: 1,
+        signerCommitments: ['0x' + '1'.repeat(64)],
+        guardianCommitment: '0x' + '2'.repeat(64),
+        signatureScheme: 'ecdsa',
+      },
+      'http://localhost:57291',
+    );
 
     expect(authBuilder.linkModule).not.toHaveBeenCalled();
     expect(authBuilder.compileAccountComponentCode).toHaveBeenCalledWith(

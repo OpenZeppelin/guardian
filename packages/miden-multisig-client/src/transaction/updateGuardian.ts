@@ -11,7 +11,7 @@ import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import { authSchemeId } from '../utils/signature.js';
-import type { SignatureOptions } from './options.js';
+import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 // `update_guardian_public_key(new_guardian_scheme_id, new_guardian_public_key)` takes its
@@ -42,6 +42,16 @@ end
   return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
 }
 
+export function buildUpdateGuardianTransactionRequest(
+  client: MidenClient,
+  newGuardianPubkey: string,
+  options: MidenClientSignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
+export function buildUpdateGuardianTransactionRequest(
+  client: WasmWebClient,
+  newGuardianPubkey: string,
+  options?: SignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildUpdateGuardianTransactionRequest(
   client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,

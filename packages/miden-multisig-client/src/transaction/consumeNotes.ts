@@ -15,7 +15,7 @@ import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErro
 import { getRawMidenClient } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
-import type { SignatureOptions } from './options.js';
+import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 
 /**
  * Build a consume-notes request from loaded `Note` objects (no local-store
@@ -57,6 +57,16 @@ export function buildConsumeNotesTransactionRequestFromNotes(
  * Legacy/creation adapter: fetches notes from the local store and delegates
  * to the from-notes variant. v2 verification MUST NOT call this.
  */
+export function buildConsumeNotesTransactionRequest(
+  client: MidenClient,
+  noteIds: string[],
+  options: MidenClientSignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
+export function buildConsumeNotesTransactionRequest(
+  client: WasmWebClient,
+  noteIds: string[],
+  options?: SignatureOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildConsumeNotesTransactionRequest(
   client: MidenClient | WasmWebClient,
   noteIds: string[],

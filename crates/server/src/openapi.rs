@@ -20,32 +20,22 @@ use utoipa::{
     openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
 };
 
-/// Wire shape of a Guardian error response body. Mirrors the envelope
-/// produced by [`crate::error::GuardianError`]'s `IntoResponse` impl.
-/// Documented as the body of every non-2xx response. Optional fields
-/// are populated only for the error codes that carry them.
+/// Structured machine-readable side-data on the error wire object
+/// (feature `009-human-readable-errors`). `retryable` is always present;
+/// the rest appear only for the codes that carry them.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct ApiErrorResponse {
-    /// Always `false` for error responses.
-    pub success: bool,
-    /// Stable, machine-readable error code (e.g. `account_not_found`).
-    pub code: String,
-    /// Human-readable error message.
-    pub error: String,
+pub struct ApiErrorMeta {
+    /// Whether retrying the same request could plausibly succeed.
+    pub retryable: bool,
     /// Seconds to wait before retrying. Present only for
-    /// `rate_limit_exceeded`.
+    /// `rate_limit_exceeded` (the `Retry-After` header carries the same value).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<u32>,
     /// Lex-sorted permissions the operator lacks. Present only for
     /// `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub missing_permissions: Option<Vec<String>>,
-    /// `false` for permission denials, `GUARDIAN_ACCOUNT_PAUSED`, and
-    /// `GUARDIAN_ACCOUNT_RELEASED`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retryable: Option<bool>,
-    /// RFC 3339 pause timestamp. Present only for
-    /// `GUARDIAN_ACCOUNT_PAUSED`.
+    /// RFC 3339 pause timestamp. Present only for `GUARDIAN_ACCOUNT_PAUSED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_at: Option<String>,
     /// Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`.
@@ -55,6 +45,24 @@ pub struct ApiErrorResponse {
     /// for `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
+}
+
+/// Wire shape of a Guardian error response body: `{ code, message, meta }`
+/// (feature `009-human-readable-errors`). Mirrors the object produced by
+/// [`crate::error::GuardianError`]'s `IntoResponse` impl and carried
+/// identically on the gRPC `Status.details`. The legacy `success`/`error`
+/// fields are gone; the diagnostic detail is logged server-side only.
+/// Documented as the body of every non-2xx response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ApiErrorResponse {
+    /// Stable, machine-readable error code (e.g. `account_not_found`). The
+    /// client branch + i18n key. Branch on this, never on `message`.
+    pub code: String,
+    /// Short, user-safe message; safe to display verbatim. Wording is not
+    /// part of the stable contract.
+    pub message: String,
+    /// Structured machine-readable side-data.
+    pub meta: ApiErrorMeta,
 }
 
 /// Security scheme name for the signed-request public key header.
@@ -191,7 +199,7 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::get_delta_proposal,
         crate::api::http::sign_delta_proposal,
     ),
-    components(schemas(ApiErrorResponse, crate::services::StatusResponse)),
+    components(schemas(ApiErrorResponse, ApiErrorMeta, crate::services::StatusResponse)),
     modifiers(&ClientSecurityAddon, &CommonResponsesAddon),
     tags((name = "client", description = "Client-facing API consumed by SDKs and packages.")),
 )]
@@ -222,7 +230,7 @@ pub struct ClientApiDoc;
         crate::api::dashboard_feeds::list_global_deltas_handler,
         crate::api::dashboard_feeds::list_global_proposals_handler,
     ),
-    components(schemas(ApiErrorResponse)),
+    components(schemas(ApiErrorResponse, ApiErrorMeta)),
     modifiers(&DashboardSecurityAddon, &CommonResponsesAddon),
     tags((name = "dashboard", description = "Operator dashboard API.")),
 )]
@@ -249,7 +257,7 @@ pub struct DashboardApiDoc;
         crate::api::evm::get_executable_evm_proposal,
         crate::api::evm::cancel_evm_proposal,
     ),
-    components(schemas(ApiErrorResponse)),
+    components(schemas(ApiErrorResponse, ApiErrorMeta)),
     modifiers(&EvmSecurityAddon, &CommonResponsesAddon),
     tags((name = "evm", description = "EVM smart-account API.")),
 )]

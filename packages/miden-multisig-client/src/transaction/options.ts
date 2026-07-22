@@ -7,3 +7,7 @@ export interface SignatureOptions {
   signatureScheme?: SignatureScheme;
   midenRpcEndpoint?: string;
 }
+
+export interface MidenClientSignatureOptions extends SignatureOptions {
+  midenRpcEndpoint: string;
+}

@@ -34,10 +34,18 @@ history but do not interoperate with 0.16 networks.
 
 Most startup failures are environment misconfiguration. Check in order:
 
-1. **`DATABASE_URL` missing under `--features postgres`.** The builder
+1. **`GUARDIAN_NETWORK_TYPE` unset, non-Unicode, or unrecognized.** The server exits
+   before binding any port with
+   `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
+   (or `contains non-Unicode data` / `has unrecognized value "..."` for
+   malformed values and typos like `tesnet`). There is no fallback network.
+   Replace the variable with `MidenLocal`, `MidenTestnet`, or
+   `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
+   case-insensitive).
+2. **`DATABASE_URL` missing under `--features postgres`.** The builder
    panics with `"DATABASE_URL environment variable is required"`. Either
    set it or rebuild without the `postgres` feature.
-2. **Filesystem paths not writable.** Filesystem builds use
+3. **Filesystem paths not writable.** Filesystem builds use
    `GUARDIAN_STORAGE_PATH`, `GUARDIAN_METADATA_PATH`, and
    `GUARDIAN_KEYSTORE_PATH` when set, defaulting to
    `/var/guardian/storage`, `/var/guardian/metadata`, and
@@ -47,18 +55,18 @@ Most startup failures are environment misconfiguration. Check in order:
    Either set the env vars to a writable location or `mkdir -p`
    `/var/guardian/{storage,metadata,keystore}` with the right
    permissions.
-3. **Postgres migrations fail.** The Postgres path runs migrations at
+4. **Postgres migrations fail.** The Postgres path runs migrations at
    startup. If the DB user lacks `CREATE` permissions, startup fails.
    Grant `CREATE` on the schema or run migrations as a privileged user.
-4. **ACK secrets missing in prod.**
+5. **ACK secrets missing in prod.**
    `scripts/aws-deploy.sh deploy` refuses to apply if either ACK secret
    is missing. Run `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`
    first (see [Secrets runbook](./runbooks/secrets.md#bootstrap-first-prod-deploy)).
-5. **Operator allowlist source not set.** If you intend to use the
+6. **Operator allowlist source not set.** If you intend to use the
    dashboard, set `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` (prod) or
    `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` (local). Without either, the
    dashboard is unreachable.
-6. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
+7. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
    closed before migrations run. Map the error:
    - error naming `sslmode` (`allow`/`prefer` or an unknown value) → choose an
      explicit mode: `disable`, `require`, `verify-ca`, or `verify-full`.

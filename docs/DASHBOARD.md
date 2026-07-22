@@ -269,6 +269,7 @@ cat > /tmp/operators.json <<'EOF'
    "permissions": ["dashboard:read", "accounts:pause"] }]
 EOF
 
+GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/operators.json \
 GUARDIAN_STORAGE_PATH=.guardian/storage \
 GUARDIAN_METADATA_PATH=.guardian/metadata \

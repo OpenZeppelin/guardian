@@ -26,6 +26,7 @@ Create a local operator public keys file and start Guardian with that path:
 mkdir -p /tmp/guardian-operator-smoke
 printf '[]\n' > /tmp/guardian-operator-smoke/operator-public-keys.json
 
+GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-smoke/operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```

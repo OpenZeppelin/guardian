@@ -8,14 +8,18 @@ read [`docs/LOCAL_DEV.md`](./LOCAL_DEV.md). For the *why* before the *how*,
 read [`docs/CONCEPTS.md`](./CONCEPTS.md). For production readiness, start
 with [`docs/PRODUCTION.md`](./PRODUCTION.md).
 
-No `.env` file is required for this Docker Compose quickstart. The compose
-file sets the container paths it needs. If you run the server directly with
-`cargo run`, set up a local `.env` first; see
+The compose file sets the container paths it needs, but you must choose a
+network explicitly — `GUARDIAN_NETWORK_TYPE` has no default and the server
+refuses to start without it (there is no fallback network). Set it in a
+local `.env` file or export it in your shell; accepted values are
+`MidenLocal`, `MidenTestnet`, and `MidenDevnet`. The same requirement
+applies when you run the server directly with `cargo run`; see
 [`LOCAL_DEV.md`](./LOCAL_DEV.md#environment-file).
 
 ## Run
 
 ```bash
+echo "GUARDIAN_NETWORK_TYPE=MidenTestnet" > .env
 docker compose up --build -d
 ```
 

@@ -20,7 +20,8 @@
  * // Create a signer
  * const signer = new FalconSigner(secretKey);
  *
- * // Create multisig client
+ * // Create multisig client. Both endpoints are required; midenRpcEndpoint
+ * // must point at the same network as the injected MidenClient.
  * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
  *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
@@ -57,6 +58,11 @@ export {
 } from './transaction.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
+export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
+
+// Codeless transport-failure classification (feature 009, User Story 3).
+export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
+export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
 
 export {
   FalconSigner,
