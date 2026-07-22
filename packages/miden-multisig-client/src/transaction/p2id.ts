@@ -1,4 +1,4 @@
-import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import type { Account, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   FeltArray,
@@ -61,6 +61,7 @@ export function buildP2idTransactionRequest(
   recipientId: string,
   faucetId: string,
   amount: bigint,
+  account: Account,
   options: SignatureOptions = {},
 ): { request: TransactionRequest; salt: Word } {
   const sender = AccountId.fromHex(senderId);
@@ -69,7 +70,17 @@ export function buildP2idTransactionRequest(
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  const asset = new FungibleAsset(faucet, amount);
+  // Build the asset from the vault entry rather than `new FungibleAsset(faucet, amount)`:
+  // assets with `AssetCallbackFlag::Enabled` encode the flag in their vault key, so a
+  // directly constructed asset would not match the vault entry even for the same faucet id.
+  const faucetHex = faucet.toString();
+  const assetFromVault = account
+    .vault()
+    .fungibleAssets()
+    .find(asset => asset.faucetId().toString() === faucetHex);
+  if (!assetFromVault) throw new Error('Asset not found in vault, cannot do P2ID transaction');
+  const asset = FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
+
   const noteAssets = new NoteAssets([asset]);
 
   const note = buildP2idNote(

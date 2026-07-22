@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
+  mockFromVaultKey,
   mockHashElements,
   mockNormalizeHexWord,
   mockRandomWord,
@@ -16,6 +17,11 @@ const {
   ];
 
   return {
+    mockFromVaultKey: vi.fn((vaultKey: unknown, amount: bigint) => ({
+      kind: 'asset-from-vault-key',
+      vaultKey,
+      amount,
+    })),
     mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
     mockRandomWord: vi.fn().mockReturnValue({
@@ -90,6 +96,8 @@ vi.mock('@miden-sdk/miden-sdk', () => {
 
   class FungibleAsset {
     constructor(_faucet: unknown, _amount: bigint) {}
+
+    static fromVaultKey = mockFromVaultKey;
   }
 
   class NoteArray {
@@ -120,6 +128,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         hex,
         prefix: () => 1,
         suffix: () => 2,
+        toString: () => hex,
       })),
     },
     Felt,
@@ -164,9 +173,24 @@ vi.mock('../utils/random.js', () => ({
 }));
 
 import { buildP2idTransactionRequest } from './p2id.js';
+import type { Account } from '@miden-sdk/miden-sdk';
+
+const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
+
+const mockAccount = {
+  vault: () => ({
+    fungibleAssets: () => [
+      {
+        faucetId: () => ({ toString: () => FAUCET_ID }),
+        vaultKey: () => ({ kind: 'vault-key' }),
+      },
+    ],
+  }),
+} as unknown as Account;
 
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
+    mockFromVaultKey.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
     mockRandomWord.mockClear();
@@ -179,8 +203,9 @@ describe('buildP2idTransactionRequest', () => {
     buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      '0x7bfb0f38b0fafa103f86a805594171',
+      FAUCET_ID,
       10n,
+      mockAccount,
       { salt },
     );
 
@@ -196,5 +221,38 @@ describe('buildP2idTransactionRequest', () => {
     for (const felt of values.slice(4)) {
       expect((felt as { value: bigint }).value).toBe(0n);
     }
+  });
+
+  it('builds the asset from the matching vault entry via fromVaultKey', () => {
+    const salt = { toHex: () => '0x' + '11'.repeat(32) } as unknown as Word;
+
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      mockAccount,
+      { salt },
+    );
+
+    expect(mockFromVaultKey).toHaveBeenCalledTimes(1);
+    expect(mockFromVaultKey).toHaveBeenCalledWith({ kind: 'vault-key' }, 10n);
+  });
+
+  it('throws when the faucet has no entry in the account vault', () => {
+    const salt = { toHex: () => '0x' + '11'.repeat(32) } as unknown as Word;
+    const emptyVaultAccount = {
+      vault: () => ({ fungibleAssets: () => [] }),
+    } as unknown as Account;
+
+    expect(() => buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      emptyVaultAccount,
+      { salt },
+    )).toThrow('Asset not found in vault, cannot do P2ID transaction');
+    expect(mockFromVaultKey).not.toHaveBeenCalled();
   });
 });

@@ -395,6 +395,7 @@ export interface CustomProposalRecipe {
 }
 
 function buildRequestFromRecipe(
+  multisig: Multisig,
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
 ): TransactionRequest {
@@ -403,6 +404,7 @@ function buildRequestFromRecipe(
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
+    multisig.account,
     { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
   ).request;
 }
@@ -420,6 +422,7 @@ export async function createCustomP2idProposal(
     recipientId,
     faucetId,
     amount,
+    multisig.account,
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -442,10 +445,10 @@ export async function prepareAndSubmitCustomProposal(
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
+  const bindingRequestBytes = buildRequestFromRecipe(multisig, recipe).serialize();
   const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
 
-  const finalRequest = buildRequestFromRecipe(recipe, advice);
+  const finalRequest = buildRequestFromRecipe(multisig, recipe, advice);
 
   try {
     await multisig.submitTransaction(finalRequest);

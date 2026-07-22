@@ -825,6 +825,7 @@ export class Multisig {
       recipientId,
       faucetId,
       amount,
+      this.account,
     );
 
     const summary = await executeForSummary(webClient, this._accountId, request);
@@ -1684,6 +1685,7 @@ export class Multisig {
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
+          this.account,
           { salt, signatureAdviceMap }
         );
         return request;
