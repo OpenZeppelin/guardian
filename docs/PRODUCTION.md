@@ -143,7 +143,7 @@ Operator actions:
 
 - **Back up the database before deploying 0.15** if any pre-0.15 record must
   be retained for audit outside `admin_actions`.
-- After the upgrade, existing Miden accounts must be **recreated** on 0.15;
+- After the upgrade, existing Miden accounts must be **recreated** using Miden 0.16;
   there is no in-place account migration. Users re-establish custody accounts
   (new v1 IDs) and re-register them on the Guardian. EVM accounts continue
   operating unchanged.

@@ -310,7 +310,7 @@ fn project_storage_changes(
                 slot_name: slot_name.as_str().to_string(),
                 key: Some(format!("0x{}", hex::encode(map_key.as_bytes()))),
                 before: None,
-                after: Some(format!("0x{}", hex::encode(word.as_bytes()))),
+                after: (!word.is_empty()).then(|| format!("0x{}", hex::encode(word.as_bytes()))),
             });
         }
     }
@@ -451,6 +451,43 @@ mod tests {
             Some("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
         );
         assert!(c.after.is_some());
+    }
+
+    #[test]
+    fn project_storage_changes_represents_cleared_map_entry_as_removal() {
+        use miden_protocol::account::{
+            AccountStoragePatch, StorageMapKey, StorageMapPatch, StorageSlotName, StorageSlotPatch,
+        };
+
+        let proc_root =
+            Word::parse("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
+                .expect("proc root");
+        let no_updates: [(StorageMapKey, Word); 0] = [];
+
+        let map_patch = StorageMapPatch::from_iters([StorageMapKey::new(proc_root)], no_updates);
+
+        let slot_name =
+            StorageSlotName::new("miden::standards::auth::multisig::procedure_thresholds").unwrap();
+        let storage =
+            AccountStoragePatch::from_raw([(slot_name, StorageSlotPatch::Map(map_patch))].into())
+                .expect("storage patch");
+        let delta = AccountDelta::new(
+            AccountId::from_hex(CONSUMER).expect("acct"),
+            storage,
+            AccountVaultDelta::default(),
+            None,
+            Felt::new_unchecked(1),
+        )
+        .expect("delta");
+
+        let changes = project_storage_changes(&delta);
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(
+            c.key.as_deref(),
+            Some("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
+        );
+        assert!(c.after.is_none());
     }
 
     #[test]

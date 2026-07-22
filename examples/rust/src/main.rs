@@ -480,14 +480,12 @@ async fn main() -> ClientResult<()> {
                     }
                 };
 
-                println!(
-                    "  ✓ Transaction executed (final nonce: {})",
-                    tx_result
-                        .account_patch()
-                        .final_nonce()
-                        .map(|nonce| nonce.as_canonical_u64())
-                        .unwrap_or_default()
-                );
+                let final_nonce = tx_result
+                    .account_patch()
+                    .final_nonce()
+                    .map(|nonce| nonce.as_canonical_u64().to_string())
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                println!("  ✓ Transaction executed (final nonce: {final_nonce})");
             }
             Ok(false) => {
                 println!("  ✗ Invalid GUARDIAN signature");

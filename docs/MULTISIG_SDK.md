@@ -27,7 +27,7 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-alpha.1
 ```
 
 **Rust (Cargo.toml)**
@@ -968,9 +968,9 @@ Accounts are built from the audited upstream `AuthGuardedMultisig` component, pi
 exactly in both SDKs so a TypeScript-built account is byte-identical to a Rust-built
 one:
 
-- **Rust**: `miden-standards = "=0.15.3"` (workspace `Cargo.toml`)
-- **TypeScript**: `@miden-sdk/miden-sdk 0.15.2`, which embeds miden-standards 0.15.3
-  in its WASM
+- **Rust**: `miden-standards = "=0.16.0-alpha.4"` (workspace `Cargo.toml`)
+- **TypeScript**: `@miden-sdk/miden-sdk 0.16.0-alpha.1`, whose bundled WASM embeds the
+  matching upstream `miden-standards` guarded-multisig component
 
 The pins are deliberate and must move together: nothing at build time verifies the
 npm SDK's embedded miden-standards matches the Rust pin — the CI parity gates
