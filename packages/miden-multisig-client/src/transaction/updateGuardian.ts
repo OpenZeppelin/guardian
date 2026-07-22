@@ -14,9 +14,6 @@ import { authSchemeId } from '../utils/signature.js';
 import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-// `update_guardian_public_key(new_guardian_scheme_id, new_guardian_public_key)` takes its
-// args on the operand stack: push the key word first, then the scheme id on top, and drop the
-// five leftover elements after the call. Rotation needs only the multisig threshold signatures.
 async function buildUpdateGuardianScript(
   client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,

@@ -53,9 +53,10 @@ test('TS account reproduces the Rust storage layout and override-target procedur
   }
 });
 
-// `@miden-sdk/miden-sdk` 0.15.2 bundles `miden-standards 0.15.3`, matching the Rust pin
-// (`miden-standards = "=0.15.3"`), so `auth_tx_guarded_multisig` compiles to the same MAST and a
-// TS-built account is byte-identical to the Rust/server account.
+// `@miden-sdk/miden-sdk` 0.16.0-alpha.1 bundles the upstream `miden-standards` guarded-multisig
+// component matching the Rust pin (`miden-standards = "=0.16.0-alpha.4"`), so
+// `auth_tx_guarded_multisig` compiles to the same MAST and a TS-built account is byte-identical to
+// the Rust/server account.
 test(
   'TS account id + commitment match the Rust builder',
   async ({ page }) => {
