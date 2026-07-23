@@ -28,6 +28,32 @@ export function deriveP2idSerialNumber(salt: Word): Word {
   ]));
 }
 
+/**
+ * Builds the fungible asset to transfer, sourcing the callback flag from the held asset.
+ *
+ * In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
+ * `faucet`/`amount` with the default flag would not match the held asset and the transfer
+ * would abort. When the faucet is absent the default flag is used, surfacing the
+ * missing-asset error during execution.
+ */
+function resolveFungibleAssetFromVault(
+  account: Account,
+  faucet: AccountId,
+  amount: bigint,
+): FungibleAsset {
+  const faucetHex = faucet.toString();
+  const assetFromVault = account
+    .vault()
+    .fungibleAssets()
+    .find(asset => asset.faucetId().toString() === faucetHex);
+
+  if (!assetFromVault) {
+    return new FungibleAsset(faucet, amount);
+  }
+
+  return FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
+}
+
 function buildP2idNote(
   sender: AccountId,
   recipient: AccountId,
@@ -70,16 +96,7 @@ export function buildP2idTransactionRequest(
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  // Build the asset from the vault entry rather than `new FungibleAsset(faucet, amount)`:
-  // assets with `AssetCallbackFlag::Enabled` encode the flag in their vault key, so a
-  // directly constructed asset would not match the vault entry even for the same faucet id.
-  const faucetHex = faucet.toString();
-  const assetFromVault = account
-    .vault()
-    .fungibleAssets()
-    .find(asset => asset.faucetId().toString() === faucetHex);
-  if (!assetFromVault) throw new Error('Asset not found in vault, cannot do P2ID transaction');
-  const asset = FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
+  const asset = resolveFungibleAssetFromVault(account, faucet, amount);
 
   const noteAssets = new NoteAssets([asset]);
 

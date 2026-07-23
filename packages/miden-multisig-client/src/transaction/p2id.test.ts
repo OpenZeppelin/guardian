@@ -3,6 +3,7 @@ import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
   mockFromVaultKey,
+  mockFungibleAssetConstructor,
   mockHashElements,
   mockNormalizeHexWord,
   mockRandomWord,
@@ -22,6 +23,7 @@ const {
       vaultKey,
       amount,
     })),
+    mockFungibleAssetConstructor: vi.fn(),
     mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
     mockRandomWord: vi.fn().mockReturnValue({
@@ -95,7 +97,9 @@ vi.mock('@miden-sdk/miden-sdk', () => {
   }
 
   class FungibleAsset {
-    constructor(_faucet: unknown, _amount: bigint) {}
+    constructor(faucet: unknown, amount: bigint) {
+      mockFungibleAssetConstructor(faucet, amount);
+    }
 
     static fromVaultKey = mockFromVaultKey;
   }
@@ -191,6 +195,7 @@ const mockAccount = {
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
     mockFromVaultKey.mockClear();
+    mockFungibleAssetConstructor.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
     mockRandomWord.mockClear();
@@ -239,20 +244,29 @@ describe('buildP2idTransactionRequest', () => {
     expect(mockFromVaultKey).toHaveBeenCalledWith({ kind: 'vault-key' }, 10n);
   });
 
-  it('throws when the faucet has no entry in the account vault', () => {
+  it('falls back to direct construction when the faucet has no entry in the account vault', () => {
     const salt = { toHex: () => '0x' + '11'.repeat(32) } as unknown as Word;
     const emptyVaultAccount = {
       vault: () => ({ fungibleAssets: () => [] }),
     } as unknown as Account;
 
-    expect(() => buildP2idTransactionRequest(
+    buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       FAUCET_ID,
       10n,
       emptyVaultAccount,
       { salt },
-    )).toThrow('Asset not found in vault, cannot do P2ID transaction');
+    );
+
     expect(mockFromVaultKey).not.toHaveBeenCalled();
+    expect(mockFungibleAssetConstructor).toHaveBeenCalledTimes(1);
+
+    const [faucetArg, amountArg] = mockFungibleAssetConstructor.mock.calls[0] as [
+      { toString: () => string },
+      bigint,
+    ];
+    expect(faucetArg.toString()).toBe(FAUCET_ID);
+    expect(amountArg).toBe(10n);
   });
 });
