@@ -7,7 +7,8 @@ use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite, ProposalRecord,
+    StorageType,
 };
 use async_trait::async_trait;
 use diesel::ConnectionError;
@@ -1586,6 +1587,7 @@ impl StorageBackend for PostgresService {
             new_auth,
             now,
             fence,
+            source,
         } = promotion;
 
         let state_updated_at: chrono::DateTime<chrono::Utc> = state
@@ -1614,19 +1616,33 @@ impl StorageBackend for PostgresService {
 
                     // Retained rows (issue #345) and client-abandoned
                     // discards (issue #319, the late-landing recovery
-                    // net) are promotable too: the reconcile pass runs
-                    // the same verification as the candidate pass, and
-                    // the base gate below protects the state either way.
+                    // net) are promotable too — but the gate is the
+                    // EXACT kind the pass verified, never the union: a
+                    // client submission can supersede a retained or
+                    // abandoned row at this nonce between the reconcile
+                    // read and this write, and a union gate would stamp
+                    // the client's fresh candidate canonical with the
+                    // old delta's commitment. The exact gate turns a
+                    // superseded promotion into a no-op instead.
+                    let source_gate: Box<
+                        dyn diesel::BoxableExpression<
+                                deltas::table,
+                                diesel::pg::Pg,
+                                SqlType = diesel::sql_types::Bool,
+                            >,
+                    > = match source {
+                        PromotableKind::Candidate => Box::new(deltas::status_kind.eq("candidate")),
+                        PromotableKind::Retained => Box::new(deltas::status_kind.eq("retained")),
+                        PromotableKind::ClientAbandoned => Box::new(
+                            deltas::status_kind
+                                .eq("discarded")
+                                .and(client_abandoned_reason()),
+                        ),
+                    };
                     let flipped = diesel::update(deltas::table)
                         .filter(deltas::account_id.eq(&delta.account_id))
                         .filter(deltas::nonce.eq(delta.nonce as i64))
-                        .filter(
-                            deltas::status_kind.eq_any(["candidate", "retained"]).or(
-                                deltas::status_kind
-                                    .eq("discarded")
-                                    .and(client_abandoned_reason()),
-                            ),
-                        )
+                        .filter(source_gate)
                         .set((
                             deltas::status.eq(&status_json),
                             deltas::status_kind.eq(status_kind),
@@ -1784,6 +1800,15 @@ impl StorageBackend for PostgresService {
                 let Some(stored_requested_at) = stored_requested_at else {
                     return Ok(CanonicalWrite::NotCandidate);
                 };
+
+                // A concurrently recorded abandon intent must not be
+                // wiped into a retained status, which has no field to
+                // carry it: refuse the flip — the next worker tick sees
+                // the intent in its snapshot and resolves the abandon
+                // instead of retaining.
+                if status_kind == "retained" && stored_requested_at.is_some() {
+                    return Ok(CanonicalWrite::NotCandidate);
+                }
 
                 let mut status_json = status_json;
                 if status_kind == "candidate"
@@ -3029,6 +3054,7 @@ mod tests {
             new_auth: None,
             now: now.clone(),
             fence: Some(current_fence.clone()),
+            source: PromotableKind::Candidate,
         };
 
         let stale_promotion = service
@@ -3323,6 +3349,7 @@ mod tests {
             new_auth: None,
             now: now.clone(),
             fence: Some(current_fence),
+            source: PromotableKind::Candidate,
         };
         let newowner_service = PostgresService::new(&url, 2)
             .await

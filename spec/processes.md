@@ -256,8 +256,11 @@ sequenceDiagram
       landed yet), or the comparison itself failed (RPC error): defer within
       `submission_grace_period_seconds`, then consume retry budget each tick.
       After `max_retries` the candidate is parked as `retained` with reason
-      `retry_exhausted` (issue #345) — not deleted — and the account's
-      pending-candidate flag is cleared. The proposal is kept.
+      `retry_exhausted` (issue #345) — not deleted — the account's
+      pending-candidate flag is cleared, and the matching proposal is
+      deleted (the delta row carries everything reconciliation needs;
+      a proposal left `pending` would be stranded forever the moment a
+      resubmission supersedes the retained row).
     - Matches the candidate's `prev_commitment` AND the candidate carries a
       client abandon intent (`abandon_requested_at`, recorded by
       `POST /delta/candidate/abandon`): count the observation toward the

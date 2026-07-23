@@ -645,6 +645,29 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     );
   });
 
+  it('decodes a retained delta on the feed (issue #345)', async () => {
+    // A single retained row must not fail the whole page: the runtime
+    // parser has to accept every status the server can emit.
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 5,
+            status: 'retained',
+            status_timestamp: '2026-07-23T10:00:00Z',
+            prev_commitment: '0x7e8f',
+            new_commitment: '0xa3b4',
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const page = await client.listAccountDeltas('0xacc');
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0].status).toBe('retained');
+  });
+
   it('passes limit and cursor query params for delta listing', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({ items: [], next_cursor: null }),

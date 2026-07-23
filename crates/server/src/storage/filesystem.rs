@@ -414,13 +414,8 @@ impl StorageBackend for FilesystemService {
     }
 
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(delta)
-            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
-
-        let app_path = self.get_delta_path(&delta.account_id, delta.nonce);
-
         let _guard = self.delta_write_lock.lock().await;
-        self.write(&app_path, &content).await
+        self.write_delta_holding_lock(delta).await
     }
 
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String> {
@@ -567,12 +562,23 @@ impl StorageBackend for FilesystemService {
         let account_ids = self.fanout_account_ids().await?;
         let mut with_recoverable = Vec::new();
         for account_id in account_ids {
-            if !self
+            // Per-account tolerance: one unreadable delta file must not
+            // silently disable reconciliation (and TTL expiry) for every
+            // other account in the store.
+            match self
                 .pull_recoverable_deltas(&account_id, abandoned_since)
-                .await?
-                .is_empty()
+                .await
             {
-                with_recoverable.push(account_id);
+                Ok(recoverable) if !recoverable.is_empty() => with_recoverable.push(account_id),
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        account_id = %account_id,
+                        error = %e,
+                        "Skipping account in recoverable-delta scan; \
+                         its rows wait until the read heals"
+                    );
+                }
             }
         }
         Ok(with_recoverable)
@@ -754,8 +760,15 @@ impl StorageBackend for FilesystemService {
 
     // Canonicalization lifecycle writes: the filesystem backend is
     // single-process by construction (no shared coordination store), so
-    // the sequential helpers are exactly the pre-lease behavior and no
-    // fence applies.
+    // no fence applies. It is NOT single-task, though: API handlers and
+    // the canonicalization worker interleave as tokio tasks in the same
+    // process, and retained/abandoned rows (issue #345) are precisely
+    // the rows a client submission may supersede while the worker
+    // reconciles or expires them. Every read-check-act sequence below
+    // therefore holds `delta_write_lock` end to end — the single-process
+    // equivalent of the Postgres account-locked transaction — so a kind
+    // guard checked by one task can never be invalidated by another
+    // before its write lands.
 
     async fn submit_candidate(
         &self,
@@ -763,7 +776,17 @@ impl StorageBackend for FilesystemService {
         delta: &DeltaObject,
         now: &str,
     ) -> Result<crate::storage::CandidateSubmission, String> {
-        crate::storage::submit_candidate_sequential(self, metadata, delta, now).await
+        let _guard = self.delta_write_lock.lock().await;
+        if let Ok(existing) = self.pull_delta(&delta.account_id, delta.nonce).await
+            && (existing.status.is_retained() || existing.status.is_client_abandoned())
+        {
+            self.delete_delta(&delta.account_id, delta.nonce).await?;
+        }
+        self.write_delta_holding_lock(delta).await?;
+        metadata
+            .set_has_pending_candidate(&delta.account_id, true, now)
+            .await?;
+        Ok(crate::storage::CandidateSubmission::Submitted)
     }
 
     async fn promote_candidate(
@@ -771,7 +794,34 @@ impl StorageBackend for FilesystemService {
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: crate::storage::CandidatePromotion,
     ) -> Result<crate::storage::PromoteWrite, String> {
-        crate::storage::promote_candidate_sequential(self, metadata, promotion).await
+        let _guard = self.delta_write_lock.lock().await;
+
+        // Source-kind gate under the lock: a superseded row cannot be
+        // stamped canonical, and a promoted row cannot be superseded
+        // mid-promotion.
+        if let Ok(existing) = self
+            .pull_delta(&promotion.state.account_id, promotion.delta.nonce)
+            .await
+            && !promotion.source.matches(&existing.status)
+        {
+            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        }
+
+        let current_state = self.pull_state(&promotion.state.account_id).await?;
+        if current_state.commitment != promotion.delta.prev_commitment {
+            return Ok(crate::storage::PromoteWrite::StaleBase);
+        }
+        self.submit_state(&promotion.state).await?;
+        if let Some(new_auth) = promotion.new_auth {
+            metadata
+                .update_auth(&promotion.state.account_id, new_auth, &promotion.now)
+                .await?;
+        }
+        self.write_delta_holding_lock(&promotion.delta).await?;
+        metadata
+            .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied)
     }
 
     async fn discard_candidate(
@@ -783,6 +833,10 @@ impl StorageBackend for FilesystemService {
         now: &str,
         _fence: Option<&crate::storage::LeaseFence>,
     ) -> Result<crate::storage::CanonicalWrite, String> {
+        // The sequential helper only calls lock-free primitives
+        // (`pull_delta`, `delete_delta`, metadata flag ops), so holding
+        // the guard across it is deadlock-free.
+        let _guard = self.delta_write_lock.lock().await;
         crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, kind, now)
             .await
     }
@@ -813,6 +867,14 @@ impl StorageBackend for FilesystemService {
             .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
 
         if !delta.status.is_candidate() {
+            return Ok(crate::storage::CanonicalWrite::NotCandidate);
+        }
+
+        // A concurrently recorded abandon intent must not be wiped into
+        // a retained status, which has no field to carry it: refuse the
+        // flip — the next worker tick sees the intent in its snapshot
+        // and resolves the abandon instead.
+        if status.is_retained() && delta.status.abandon_requested_at().is_some() {
             return Ok(crate::storage::CanonicalWrite::NotCandidate);
         }
 
@@ -1090,6 +1152,18 @@ impl StorageBackend for FilesystemService {
 /// fan-out methods. Used by the dashboard global feed and aggregate
 /// implementations.
 impl FilesystemService {
+    /// Serialize and write a delta row WITHOUT taking `delta_write_lock`.
+    /// Callers must already hold the lock — this exists so the lifecycle
+    /// writes (`submit_candidate`, `promote_candidate`) can compose the
+    /// row write into a larger guarded read-check-act sequence without
+    /// deadlocking on the non-reentrant mutex.
+    async fn write_delta_holding_lock(&self, delta: &DeltaObject) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+        let app_path = self.get_delta_path(&delta.account_id, delta.nonce);
+        self.write(&app_path, &content).await
+    }
+
     async fn fanout_account_ids(&self) -> Result<Vec<String>, String> {
         if !self.app_path.exists() {
             return Ok(Vec::new());

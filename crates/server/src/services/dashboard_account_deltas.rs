@@ -51,7 +51,7 @@ pub struct DashboardDeltaEntry {
     /// discarded delta that did not produce a resulting commitment).
     pub new_commitment: Option<String>,
     /// Always `Some(_)` on candidate entries (default `0` per FR-015);
-    /// `None` and skipped on `canonical` / `discarded`.
+    /// `None` and skipped on `canonical` / `retained` / `discarded`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
 

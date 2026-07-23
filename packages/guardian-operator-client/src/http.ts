@@ -1976,11 +1976,16 @@ function parseDeltaStatus(
   value: string,
   context: string,
 ): DashboardDeltaStatus {
-  if (value === 'candidate' || value === 'canonical' || value === 'discarded') {
+  if (
+    value === 'candidate' ||
+    value === 'canonical' ||
+    value === 'retained' ||
+    value === 'discarded'
+  ) {
     return value;
   }
   throw new GuardianOperatorContractError(
     context,
-    `expected status to be "candidate" / "canonical" / "discarded", got ${JSON.stringify(value)}`,
+    `expected status to be "candidate" / "canonical" / "retained" / "discarded", got ${JSON.stringify(value)}`,
   );
 }

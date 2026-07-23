@@ -340,6 +340,12 @@ export class GuardianHttpClient {
         return 'waiting';
       case 'canonical':
         return 'landed';
+      // The Guardian gave up verifying and released the account (issue
+      // #345): nothing is locked anymore, which is what the abandon was
+      // for — mirrors the server reporting `abandoned` for an abandon
+      // request against a retained candidate.
+      case 'retained':
+        return 'abandoned';
       case 'discarded':
         return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
       default:

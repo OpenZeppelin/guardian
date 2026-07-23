@@ -270,6 +270,13 @@ impl DeltasProcessorBase {
         // reconcile promotion moves the stored base, and doing that under
         // an in-flight candidate would strand a signed proposal — the
         // exact race issue #345 rejects for a syncState-driven write.
+        // The check is read-then-act, so a candidate submitted after it
+        // can still see the base move under it — but such a candidate
+        // was never viable: a reconcile only promotes when the chain
+        // already sits past the stored base, so any candidate built on
+        // that base was doomed on-chain before it was submitted, and
+        // the promotion moves the base to where the client must rebuild
+        // anyway.
         if candidates.is_empty() {
             return self.reconcile_recoverable_deltas(account_id).await;
         }
@@ -679,6 +686,17 @@ impl DeltasProcessorBase {
 
         let now = self.state.clock.now().to_rfc3339();
 
+        // A client abandon intent resolves here instead of being wiped
+        // into a retained status (whose write drops the annotation): a
+        // confirmed divergence is exactly the "this transaction can
+        // never land anymore" evidence the abandon quarantine waits
+        // for, so the abandon finalizes immediately — the delta becomes
+        // `Discarded { client_abandoned }` history and the account is
+        // released, which is what the client asked for.
+        if delta.status.abandon_requested_at().is_some() {
+            return self.finalize_abandoned_candidate(delta).await;
+        }
+
         // A confirmed divergence is still only an observation, and it
         // has been wrong before: the pre-#326 empty-digest misread
         // condemned new accounts' first transactions as diverged while
@@ -896,6 +914,18 @@ impl DeltasProcessorBase {
         // A discarded candidate can never be canonicalized, so delete its proposal:
         // leaving it would strand it as `pending` forever and let clients re-submit a
         // stale intent.
+        self.delete_matching_proposal(delta).await;
+
+        Ok(CanonicalWrite::Applied)
+    }
+
+    /// Best-effort deletion of the multisig proposal matching a delta
+    /// that left the active candidate path (discarded, expired, or
+    /// retained). Failures only warn: the delete is idempotent cleanup
+    /// after a committed status transition.
+    async fn delete_matching_proposal(&self, delta: &DeltaObject) {
+        let storage_backend = self.state.storage.clone();
+
         let proposal_id = {
             let client = &self.state.network_client;
             match client.delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload) {
@@ -905,7 +935,7 @@ impl DeltasProcessorBase {
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
                         error = %e,
-                        "Could not derive proposal id for discarded delta; \
+                        "Could not derive proposal id; \
                          its proposal may remain stranded as pending"
                     );
                     None
@@ -920,7 +950,7 @@ impl DeltasProcessorBase {
             tracing::warn!(
                 account_id = %delta.account_id,
                 proposal_id = %id,
-                "Deleting matching proposal as its delta was discarded"
+                "Deleting matching proposal as its delta left the candidate path"
             );
             if let Err(e) = storage_backend
                 .delete_delta_proposal(&delta.account_id, id)
@@ -930,20 +960,21 @@ impl DeltasProcessorBase {
                     account_id = %delta.account_id,
                     proposal_id = %id,
                     error = %e,
-                    "Failed to delete proposal after discard, but continuing"
+                    "Failed to delete proposal, but continuing"
                 );
             }
         }
-
-        Ok(CanonicalWrite::Applied)
     }
 
     /// Keep a retry-exhausted candidate as `retained` (issue #345) and
     /// release the account: the status flip drops the row out of the
     /// pending-candidate lock scan, and the conditional flag clear
     /// re-checks the delta store so a candidate committed concurrently
-    /// is never masked. The matching proposal is deliberately kept — a
-    /// later reconcile promotion or the TTL expiry resolves it.
+    /// is never masked. The matching proposal is deleted here: the delta
+    /// row itself carries everything reconciliation needs, and a
+    /// proposal left `pending` would be stranded forever the moment a
+    /// resubmission supersedes the retained row (nothing else would
+    /// ever clean it up).
     async fn retain_candidate(
         &self,
         delta: &DeltaObject,
@@ -978,6 +1009,8 @@ impl DeltasProcessorBase {
                  the stale-flag heal clears it on a later run"
             );
         }
+
+        self.delete_matching_proposal(delta).await;
 
         Ok(CanonicalWrite::Applied)
     }
@@ -1015,6 +1048,14 @@ impl DeltasProcessorBase {
     /// while the account has no candidate in flight. A successful
     /// reconcile advances the stored base, so consecutive recoverable
     /// nonces can chain within one pass.
+    ///
+    /// Deliberately NOT gated on `paused_at` / `released_at`, matching
+    /// the candidate pass: pause and release gate *client* mutations at
+    /// the API chokepoint, while the worker records chain truth — a
+    /// promotion only happens when the chain already holds the delta's
+    /// commitment. Gating on `released_at` would also strand a retained
+    /// switch-guardian delta, whose reconciliation is exactly what
+    /// releases the account correctly.
     async fn reconcile_recoverable_deltas(&self, account_id: &str) -> Result<()> {
         let cutoff = self.abandoned_cutoff(self.state.clock.now());
         let recoverable = self
@@ -1270,6 +1311,10 @@ impl DeltasProcessorBase {
                     new_auth,
                     now: now.clone(),
                     fence: self.fence(),
+                    // Derived from the status the verification read: the
+                    // write must only flip a row still in that exact
+                    // lifecycle kind (see `PromotableKind`).
+                    source: crate::storage::PromotableKind::of(&delta.status),
                 },
             )
             .await
@@ -2256,7 +2301,8 @@ mod tests {
 
         let storage = Arc::new(
             MockStorageBackend::new()
-                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+                .with_pull_delta_proposal(Ok(candidate))
                 .with_pull_state(Ok(create_test_state(account_id))),
         );
 
@@ -2302,19 +2348,79 @@ mod tests {
             status_writes[0].2.retain_reason(),
             Some(crate::delta_object::RetainReason::Diverged)
         );
-        assert!(
-            storage
-                .delete_delta_proposal_calls
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "the proposal survives retention for a possible reconcile"
+        assert_eq!(
+            storage.delete_delta_proposal_calls.lock().unwrap().len(),
+            1,
+            "the matching proposal is deleted at retain time — left pending \
+             it would be stranded forever once the row is superseded"
         );
         assert!(
             metadata
                 .get_set_calls()
                 .iter()
                 .any(|m| !m.has_pending_candidate)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_diverged_candidate_with_abandon_intent_finalizes_abandon() {
+        // A confirmed divergence is exactly the "this transaction can
+        // never land anymore" evidence an abandon request waits for, so
+        // the intent resolves as Discarded{client_abandoned} instead of
+        // being silently wiped into a retained status.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = DeltaStatus::Candidate {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            retry_count: 0,
+            divergence_count: 1,
+            abandon_requested_at: Some("2024-01-01T00:00:01Z".to_string()),
+            abandon_confirm_count: 0,
+        };
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        assert!(
+            status_writes[0].2.is_client_abandoned(),
+            "the abandon intent resolves, it is not wiped into retention; got {:?}",
+            status_writes[0].2
         );
     }
 
@@ -2623,7 +2729,8 @@ mod tests {
         // (issue #345) instead of deleting it: the delta was never proven
         // wrong, and deleting it is what left stored state permanently
         // behind the on-chain nonce. The account lock is released and the
-        // proposal survives for a possible reconcile.
+        // matching proposal is cleaned up (the delta row carries
+        // everything a reconcile needs).
         let account_id = "0xtest_account";
         let mut candidate = create_candidate_delta(account_id, 1);
         candidate.status =
@@ -2631,7 +2738,8 @@ mod tests {
 
         let storage = Arc::new(
             MockStorageBackend::new()
-                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+                .with_pull_delta_proposal(Ok(candidate))
                 .with_pull_state(Ok(create_test_state(account_id))),
         );
 
@@ -2670,13 +2778,10 @@ mod tests {
             status_writes[0].2.retain_reason(),
             Some(crate::delta_object::RetainReason::RetryExhausted)
         );
-        assert!(
-            storage
-                .delete_delta_proposal_calls
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "the proposal survives retention"
+        assert_eq!(
+            storage.delete_delta_proposal_calls.lock().unwrap().len(),
+            1,
+            "the matching proposal is deleted at retain time"
         );
         assert!(
             metadata
@@ -2806,6 +2911,73 @@ mod tests {
             "the wrongly-condemned delta ends canonical, not deleted"
         );
         assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_superseded_retained_row_is_never_promoted() {
+        // Between the reconcile read and the promotion write, a client
+        // submission can supersede the retained row with a brand-new
+        // candidate at the same nonce. The promotion's source-kind gate
+        // must then make the write a no-op — a union gate would stamp
+        // the client's fresh candidate canonical with the old delta's
+        // commitment.
+        let account_id = "0xtest_account";
+        let retained = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+        // What the store holds by promotion time: a fresh candidate.
+        let superseding = create_candidate_delta(account_id, 1);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_recoverable_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_recoverable_deltas(Ok(vec![retained]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                // The sequential promotion re-reads the row for the
+                // source-kind gate and finds the superseding candidate.
+                .with_pull_delta(Ok(superseding)),
+        );
+
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None)),
+        );
+
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(
+            storage.get_submit_state_calls().is_empty(),
+            "a superseded promotion must not advance the state"
+        );
+        assert!(
+            storage.get_submit_delta_calls().is_empty(),
+            "the superseding candidate must not be stamped canonical"
+        );
     }
 
     #[tokio::test]
@@ -3866,7 +4038,12 @@ mod tests {
             Arc::new(network),
             Arc::new(metadata),
         );
-        let processor = fenced_processor(state, CanonicalizationConfig::new(10, 18));
+        // Retention disabled: this test pins the refused-DISCARD path;
+        // the retained twin below pins the refused-retain path.
+        let processor = fenced_processor(
+            state,
+            CanonicalizationConfig::new(10, 18).with_retained_ttl_seconds(0),
+        );
 
         processor
             .process_all_accounts()
@@ -3879,6 +4056,52 @@ mod tests {
         assert!(
             storage.get_pull_delta_proposal_calls().is_empty(),
             "proposal cleanup must not follow a refused discard",
+        );
+    }
+
+    #[tokio::test]
+    async fn superseded_retain_writes_nothing_and_skips_cleanup() {
+        // The retain-path twin of the refused-discard test above: when
+        // the fenced status flip refuses (row no longer a candidate),
+        // neither the flag clear nor the proposal cleanup may follow.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status =
+            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 17);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_update_candidate_status(Ok(crate::storage::CanonicalWrite::NotCandidate)),
+        );
+        let network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Err("Verification failed".to_string()));
+        let metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(metadata);
+
+        let state =
+            create_test_app_state_with_mocks(storage.clone(), Arc::new(network), metadata.clone());
+        let processor = fenced_processor(state, CanonicalizationConfig::new(10, 18));
+
+        processor
+            .process_all_accounts()
+            .await
+            .expect("a refused retain is skipped without error");
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(
+            storage.get_pull_delta_proposal_calls().is_empty(),
+            "proposal cleanup must not follow a refused retain",
+        );
+        assert!(
+            metadata.get_set_calls().is_empty(),
+            "the flag clear must not follow a refused retain",
         );
     }
 }

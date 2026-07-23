@@ -480,7 +480,7 @@
         "tags": [
           "dashboard"
         ],
-        "summary": "`GET /dashboard/accounts/{account_id}/deltas`. Returns the\nper-account delta feed paginated newest-first by `nonce DESC`,\nsurfacing only `candidate` / `canonical` / `discarded` statuses\n(pending lives on the proposal queue endpoint).",
+        "summary": "`GET /dashboard/accounts/{account_id}/deltas`. Returns the\nper-account delta feed paginated newest-first by `nonce DESC`,\nsurfacing only `candidate` / `canonical` / `retained` / `discarded`\nstatuses (pending lives on the proposal queue endpoint).",
         "operationId": "list_account_deltas_handler",
         "parameters": [
           {
@@ -1123,7 +1123,7 @@
         "tags": [
           "dashboard"
         ],
-        "summary": "`GET /dashboard/deltas`. Cross-account delta feed paginated\nnewest-first by `status_timestamp DESC`. Optional comma-separated\n`status` filter restricts to a subset of `{candidate, canonical,\ndiscarded}`. Pending entries live on the proposal feed.",
+        "summary": "`GET /dashboard/deltas`. Cross-account delta feed paginated\nnewest-first by `status_timestamp DESC`. Optional comma-separated\n`status` filter restricts to a subset of `{candidate, canonical,\nretained, discarded}`. Pending entries live on the proposal feed.",
         "description": "Spec reference: `005-operator-dashboard-metrics` US6, FR-031..FR-035.",
         "operationId": "list_global_deltas_handler",
         "parameters": [
@@ -4102,7 +4102,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `discarded`.",
+            "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `retained` / `discarded`.",
             "minimum": 0
           },
           "status": {
@@ -5348,7 +5348,7 @@
                     "null"
                   ],
                   "format": "int32",
-                  "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `discarded`.",
+                  "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `retained` / `discarded`.",
                   "minimum": 0
                 },
                 "status": {
