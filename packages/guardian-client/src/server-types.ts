@@ -21,7 +21,7 @@ export type ServerDeltaStatus =
   | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  | { status: 'discarded'; timestamp: string };
+  | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ServerProposalType =
   | 'add_signer'
@@ -54,6 +54,8 @@ export interface ServerProposalMetadata {
   recipient_id?: string;
   faucet_id?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  note_type?: string;
 }
 
 export interface ServerDeltaObject {
@@ -135,6 +137,18 @@ export interface ServerDeltaProposalResponse {
 
 export interface ServerProposalsResponse {
   proposals: ServerDeltaObject[];
+}
+
+export interface ServerAbandonCandidateRequest {
+  account_id: string;
+  nonce: number;
+}
+
+export interface ServerAbandonCandidateResponse {
+  account_id: string;
+  nonce: number;
+  state: 'pending' | 'abandoned';
+  abandon_requested_at?: string;
 }
 
 export interface ServerSignProposalRequest {

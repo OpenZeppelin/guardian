@@ -321,6 +321,44 @@ impl Guardian for GuardianService {
         }
     }
 
+    /// Request abandonment of a pending canonicalization candidate
+    /// (issue #319): records the intent; the worker resolves it after the
+    /// abandon quarantine. Mirror of HTTP `POST /delta/candidate/abandon`.
+    async fn abandon_delta_candidate(
+        &self,
+        request: Request<AbandonDeltaCandidateRequest>,
+    ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+
+        let params = services::AbandonCandidateParams {
+            account_id: data.account_id.clone(),
+            nonce: data.nonce,
+            credentials,
+        };
+
+        match services::abandon_candidate(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(AbandonDeltaCandidateResponse {
+                success: true,
+                message: "Abandon intent accepted".to_string(),
+                account_id: response.account_id,
+                nonce: response.nonce,
+                state: response.state.as_str().to_string(),
+                abandon_requested_at: response.abandon_requested_at.unwrap_or_default(),
+                error_code: String::new(),
+            })),
+            Err(e) => Ok(Response::new(AbandonDeltaCandidateResponse {
+                success: false,
+                message: e.to_string(),
+                account_id: data.account_id,
+                nonce: data.nonce,
+                state: String::new(),
+                abandon_requested_at: String::new(),
+                error_code: e.code().to_string(),
+            })),
+        }
+    }
+
     /// Resolve a public-key commitment to the set of account IDs that
     /// authorize it. Mirror of HTTP `GET /state/lookup`.
     async fn get_account_by_key_commitment(
@@ -371,7 +409,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
             (Some(timestamp.clone()), Some(timestamp.clone()), None)
         }
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => {
+        crate::delta_object::DeltaStatus::Discarded { timestamp, .. } => {
             (None, None, Some(timestamp.clone()))
         }
     };
@@ -400,23 +438,34 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                         cosigner_sigs: proto_cosigner_sigs,
                     },
                 )),
+                discard_reason: String::new(),
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CandidateAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
         }),
         crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CanonicalAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
         }),
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => Some(DeltaStatusGrpc {
-            status: Some(guardian::delta_status::Status::DiscardedAt(
-                timestamp.clone(),
-            )),
-        }),
+        crate::delta_object::DeltaStatus::Discarded { timestamp, reason } => {
+            Some(DeltaStatusGrpc {
+                status: Some(guardian::delta_status::Status::DiscardedAt(
+                    timestamp.clone(),
+                )),
+                discard_reason: match reason {
+                    Some(crate::delta_object::DiscardReason::ClientAbandoned) => {
+                        "client_abandoned".to_string()
+                    }
+                    None => String::new(),
+                },
+            })
+        }
     };
 
     guardian::DeltaObject {
@@ -693,6 +742,116 @@ mod tests {
         assert!(inner.delta.is_some());
         assert!(!inner.commitment.is_empty());
         assert_eq!(inner.delta.unwrap().nonce, 1);
+    }
+
+    fn abandon_grpc_fixtures(
+        storage: &MockStorageBackend,
+        network: &MockNetworkClient,
+        metadata: &MockMetadataStore,
+        account_id: &str,
+        signer: &TestSigner,
+        landed: bool,
+    ) {
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let candidate = crate::delta_object::DeltaObject {
+            account_id: account_id.to_string(),
+            nonce: 1,
+            prev_commitment: "0x123".to_string(),
+            new_commitment: Some("0x456".to_string()),
+            delta_payload: delta_fixture["delta_payload"].clone(),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+            metadata: None,
+        };
+
+        let _ = metadata.clone().with_get(Ok(Some(create_account_metadata(
+            account_id.to_string(),
+            vec![signer.commitment_hex.clone()],
+        ))));
+        let _ = storage
+            .clone()
+            .with_pull_delta(Ok(candidate))
+            .with_pull_state(Ok(create_state_object(
+                account_id.to_string(),
+                "0x123".to_string(),
+                account_json,
+            )));
+        let verify = if landed {
+            Ok(crate::network::StateVerification::Match)
+        } else {
+            Ok(crate::network::StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            })
+        };
+        let _ = network
+            .clone()
+            .with_apply_delta(Ok((serde_json::json!({"new": true}), "0x456".to_string())))
+            .with_verify_commitment(verify);
+    }
+
+    #[tokio::test]
+    async fn test_grpc_abandon_delta_candidate_success() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        abandon_grpc_fixtures(&storage, &network, &metadata, &account_id, &signer, false);
+        let service = create_service(state);
+
+        let request = create_request_with_auth(
+            AbandonDeltaCandidateRequest {
+                account_id: account_id.clone(),
+                nonce: 1,
+            },
+            &signer,
+            &account_id,
+        );
+        let response = service
+            .abandon_delta_candidate(request)
+            .await
+            .expect("gRPC call should succeed")
+            .into_inner();
+
+        assert!(response.success, "expected success: {}", response.message);
+        assert_eq!(response.account_id, account_id);
+        assert_eq!(response.nonce, 1);
+        assert_eq!(response.state, "pending");
+        assert!(!response.abandon_requested_at.is_empty());
+        assert!(response.error_code.is_empty());
+        // Intent only: nothing is deleted at request time.
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let _ = account_id;
+    }
+
+    #[tokio::test]
+    async fn test_grpc_abandon_delta_candidate_landed_error_code() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        abandon_grpc_fixtures(&storage, &network, &metadata, &account_id, &signer, true);
+        let service = create_service(state);
+
+        let request = create_request_with_auth(
+            AbandonDeltaCandidateRequest {
+                account_id: account_id.clone(),
+                nonce: 1,
+            },
+            &signer,
+            &account_id,
+        );
+        let response = service
+            .abandon_delta_candidate(request)
+            .await
+            .expect("gRPC transport should not error")
+            .into_inner();
+
+        assert!(!response.success);
+        assert_eq!(response.error_code, "GUARDIAN_CANDIDATE_LANDED");
+        assert!(response.state.is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
     }
 
     #[tokio::test]

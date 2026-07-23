@@ -111,6 +111,15 @@ pub enum GuardianError {
     AccountReleased {
         released_at: DateTime<Utc>,
     },
+    /// A candidate abandon was refused because the candidate's transaction
+    /// already landed on-chain (or the candidate already canonicalized);
+    /// the worker will canonicalize it shortly. Abandoning it would leave
+    /// guardian state behind chain. Stable code `GUARDIAN_CANDIDATE_LANDED`.
+    /// HTTP 409 Conflict, gRPC `FAILED_PRECONDITION`. Issue #319.
+    CandidateLanded {
+        account_id: String,
+        nonce: u64,
+    },
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -167,6 +176,7 @@ impl GuardianError {
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::AccountPaused { .. } => StatusCode::CONFLICT,
             GuardianError::AccountReleased { .. } => StatusCode::CONFLICT,
+            GuardianError::CandidateLanded { .. } => StatusCode::CONFLICT,
         }
     }
 
@@ -213,6 +223,7 @@ impl GuardianError {
             GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::AccountPaused { .. } => tonic::Code::FailedPrecondition,
             GuardianError::AccountReleased { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::CandidateLanded { .. } => tonic::Code::FailedPrecondition,
         }
     }
 
@@ -258,6 +269,7 @@ impl GuardianError {
             GuardianError::DataUnavailable(_) => "data_unavailable",
             GuardianError::AccountPaused { .. } => "GUARDIAN_ACCOUNT_PAUSED",
             GuardianError::AccountReleased { .. } => "GUARDIAN_ACCOUNT_RELEASED",
+            GuardianError::CandidateLanded { .. } => "GUARDIAN_CANDIDATE_LANDED",
         }
     }
 
@@ -331,6 +343,9 @@ impl GuardianError {
             }
             GuardianError::AccountReleased { .. } => {
                 "This account has moved to a different guardian. Reconnect it to continue."
+            }
+            GuardianError::CandidateLanded { .. } => {
+                "This transaction already went through, so it can't be abandoned."
             }
             GuardianError::AccountDataUnavailable(_) => {
                 "This account's data is temporarily unavailable. Please try again."
@@ -475,6 +490,11 @@ impl fmt::Display for GuardianError {
                 f,
                 "Account was released: it switched to a different guardian. \
                  Re-onboard via /configure to reactivate"
+            ),
+            GuardianError::CandidateLanded { account_id, nonce } => write!(
+                f,
+                "Candidate at nonce {nonce} for account '{account_id}' already \
+                 landed on-chain; cannot abandon"
             ),
         }
     }
@@ -1253,6 +1273,21 @@ mod tests {
         assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
+    // -- Issue #319: CandidateLanded --
+
+    #[test]
+    fn candidate_landed_pins_http_grpc_and_code() {
+        let err = GuardianError::CandidateLanded {
+            account_id: "0xabc".into(),
+            nonce: 7,
+        };
+        assert_eq!(err.http_status(), StatusCode::CONFLICT);
+        assert_eq!(err.grpc_status(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.code(), "GUARDIAN_CANDIDATE_LANDED");
+        assert!(err.to_string().contains("0xabc"));
+        assert!(err.to_string().contains("nonce 7"));
+    }
+
     #[test]
     fn plain_error_body_has_code_message_meta_and_no_legacy_fields() {
         use axum::body::to_bytes;
@@ -1344,6 +1379,13 @@ mod tests {
             GuardianError::AccountPaused {
                 paused_at,
                 paused_reason: Some("0xSIGNER compromise".into()),
+            },
+            GuardianError::AccountReleased {
+                released_at: paused_at,
+            },
+            GuardianError::CandidateLanded {
+                account_id: "0xDEADBEEFACCOUNT".into(),
+                nonce: 42,
             },
         ]
     }

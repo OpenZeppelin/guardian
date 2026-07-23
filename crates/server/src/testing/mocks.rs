@@ -282,6 +282,8 @@ pub struct MockStorageBackend {
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
+    pub request_candidate_abandon_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::AbandonIntent, String>>>>,
     pub update_delta_status_calls:
         Arc<StdMutex<Vec<(String, u64, crate::delta_object::DeltaStatus)>>>,
     // Canonicalization lifecycle writes. When a scripted outcome is
@@ -441,6 +443,17 @@ impl MockStorageBackend {
 
     pub fn get_delete_delta_proposal_calls(&self) -> Vec<(String, String)> {
         self.delete_delta_proposal_calls.lock().unwrap().clone()
+    }
+
+    pub fn with_request_candidate_abandon(
+        self,
+        response: StdResult<crate::storage::AbandonIntent, String>,
+    ) -> Self {
+        self.request_candidate_abandon_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
     }
 
     pub fn get_delete_delta_calls(&self) -> Vec<(String, u64)> {
@@ -621,7 +634,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No delta found".to_string()))
+            .unwrap_or_else(|| Err("Mock: delta not found".to_string()))
     }
 
     async fn pull_deltas_after(
@@ -682,7 +695,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("Mock: No proposal found".to_string()))
+            .unwrap_or_else(|| Err("Mock: proposal not found".to_string()))
     }
 
     async fn pull_all_delta_proposals(
@@ -744,6 +757,19 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .push((account_id.to_string(), nonce));
         Ok(())
+    }
+
+    async fn request_candidate_abandon(
+        &self,
+        _account_id: &str,
+        _nonce: u64,
+        _now: &str,
+    ) -> Result<crate::storage::AbandonIntent, String> {
+        self.request_candidate_abandon_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::AbandonIntent::Recorded))
     }
 
     async fn update_delta_status(

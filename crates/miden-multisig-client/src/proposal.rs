@@ -13,7 +13,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2FalconSignature;
-use miden_protocol::note::{Note, NoteId};
+use miden_protocol::note::{Note, NoteId, NoteType};
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
@@ -94,6 +94,9 @@ pub enum TransactionType {
         recipient: AccountId,
         faucet_id: AccountId,
         amount: u64,
+        /// Visibility of the created note (issue #322). Absent in legacy
+        /// proposal metadata, which maps to [`NoteType::Public`].
+        note_type: NoteType,
     },
     ConsumeNotes {
         note_ids: Vec<NoteId>,
@@ -130,12 +133,24 @@ pub enum TransactionType {
 }
 
 impl TransactionType {
-    /// Creates a P2ID transfer transaction.
+    /// Creates a P2ID transfer transaction with a public output note.
     pub fn transfer(recipient: AccountId, faucet_id: AccountId, amount: u64) -> Self {
+        Self::transfer_with_note_type(recipient, faucet_id, amount, NoteType::Public)
+    }
+
+    /// Creates a P2ID transfer transaction with an explicit note visibility
+    /// (issue #322).
+    pub fn transfer_with_note_type(
+        recipient: AccountId,
+        faucet_id: AccountId,
+        amount: u64,
+        note_type: NoteType,
+    ) -> Self {
         Self::P2ID {
             recipient,
             faucet_id,
             amount,
+            note_type,
         }
     }
 
@@ -261,6 +276,9 @@ pub struct ProposalMetadata {
     pub recipient_hex: Option<String>,
     pub faucet_id_hex: Option<String>,
     pub amount: Option<u64>,
+    /// P2ID note visibility, `"public"` or `"private"` (issue #322).
+    /// `None` => public, the wire shape of pre-#322 proposals.
+    pub note_type: Option<String>,
 
     pub note_ids_hex: Vec<String>,
 
@@ -314,6 +332,22 @@ impl ProposalMetadata {
         }
 
         Ok(commitments)
+    }
+
+    /// Parses `note_type` for a P2ID proposal. Absent => public (the only
+    /// behavior before issue #322); an unrecognized value is rejected rather
+    /// than silently rebuilt as a public note that could never match the
+    /// signed tx_summary commitment.
+    pub fn p2id_note_type(&self) -> Result<NoteType> {
+        match self.note_type.as_deref() {
+            None => Ok(NoteType::Public),
+            Some(value) => value.parse().map_err(|_| {
+                MultisigError::InvalidConfig(format!(
+                    "unsupported metadata.note_type '{}': expected 'public' or 'private'",
+                    value
+                ))
+            }),
+        }
     }
 
     /// Converts note ID hex strings to NoteIds.
@@ -373,6 +407,7 @@ impl ProposalMetadata {
                     recipient,
                     faucet_id,
                     amount: parsed_amount,
+                    note_type: self.p2id_note_type()?,
                 })
             }
             "switch_guardian" => {
@@ -579,6 +614,7 @@ impl Proposal {
             Some(parsed) => Some(parsed?),
             None => None,
         };
+        let note_type = metadata_payload.note_type;
         let note_ids_hex = metadata_payload.note_ids;
         let consume_notes_metadata_version = metadata_payload.consume_notes_metadata_version;
         let consume_notes_notes = metadata_payload
@@ -600,6 +636,7 @@ impl Proposal {
             recipient_hex: recipient_hex.clone(),
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
+            note_type,
             note_ids_hex: note_ids_hex.clone(),
             consume_notes_metadata_version,
             consume_notes_notes,
@@ -826,7 +863,8 @@ mod tests {
             TransactionType::P2ID {
                 recipient,
                 faucet_id,
-                amount
+                amount,
+                note_type: NoteType::Public,
             }
         );
     }
@@ -1256,6 +1294,59 @@ mod tests {
             .to_transaction_type("")
             .expect_err("empty proposal type must be rejected");
         assert!(err.to_string().contains("proposal_type is required"));
+    }
+
+    // ---------- p2id note_type (issue #322) ----------
+
+    fn p2id_metadata(note_type: Option<&str>) -> ProposalMetadata {
+        ProposalMetadata {
+            recipient_hex: Some("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string()),
+            faucet_id_hex: Some("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c".to_string()),
+            amount: Some(1000),
+            note_type: note_type.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// Absent `note_type` must keep mapping to a public note — the only
+    /// behavior that existed before the field, so pre-#322 proposals
+    /// rebuild identically.
+    #[test]
+    fn to_transaction_type_p2id_defaults_to_public_note() {
+        let tx_type = p2id_metadata(None)
+            .to_transaction_type("p2id")
+            .expect("to_transaction_type");
+        assert!(matches!(
+            tx_type,
+            TransactionType::P2ID {
+                note_type: NoteType::Public,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn to_transaction_type_p2id_threads_private_note_type() {
+        let tx_type = p2id_metadata(Some("private"))
+            .to_transaction_type("p2id")
+            .expect("to_transaction_type");
+        assert!(matches!(
+            tx_type,
+            TransactionType::P2ID {
+                note_type: NoteType::Private,
+                ..
+            }
+        ));
+    }
+
+    /// An unknown `note_type` must be rejected, not silently rebuilt as a
+    /// public note that could never match the signed tx_summary commitment.
+    #[test]
+    fn to_transaction_type_p2id_rejects_unknown_note_type() {
+        let err = p2id_metadata(Some("encrypted"))
+            .to_transaction_type("p2id")
+            .expect_err("unknown note_type must be rejected");
+        assert!(err.to_string().contains("unsupported metadata.note_type"));
     }
 
     #[test]

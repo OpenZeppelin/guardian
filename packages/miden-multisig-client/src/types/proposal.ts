@@ -82,11 +82,20 @@ export function isConsumeNotesV1(md: ConsumeNotesProposalMetadata): boolean {
   return md.metadataVersion === undefined || md.metadataVersion === 1;
 }
 
+/** Wire values for a P2ID note's visibility (issue #322). */
+export type P2idNoteVisibility = 'public' | 'private';
+
+export function isP2idNoteVisibility(value: string): value is P2idNoteVisibility {
+  return value === 'public' || value === 'private';
+}
+
 export interface P2IdProposalMetadata extends BaseProposalMetadata {
   proposalType: 'p2id';
   recipientId: string;
   faucetId: string;
   amount: string;
+  /** Visibility of the created note. Absent on the wire => 'public' (pre-#322 proposals). */
+  noteType?: P2idNoteVisibility;
 }
 
 export interface CustomProposalMetadata extends BaseProposalMetadata {

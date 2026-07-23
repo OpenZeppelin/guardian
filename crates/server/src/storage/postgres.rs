@@ -5,9 +5,9 @@ use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
-    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
-    GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageType,
 };
 use async_trait::async_trait;
 use diesel::ConnectionError;
@@ -1296,6 +1296,71 @@ impl StorageBackend for PostgresService {
         Ok(())
     }
 
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        use diesel::OptionalExtension;
+
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let account_id = account_id.to_string();
+        let now = now.to_string();
+
+        // Row-locked read + conditional in-place JSONB update: the intent
+        // annotation touches only `abandon_requested_at`, so worker-owned
+        // counters in the same status blob are never overwritten, and the
+        // `status_kind` filter guarantees a concurrently promoted or
+        // discarded delta is left untouched.
+        conn.transaction::<AbandonIntent, diesel::result::Error, _>(|conn| {
+            async move {
+                let existing: Option<Option<String>> = deltas::table
+                    .filter(deltas::account_id.eq(&account_id))
+                    .filter(deltas::nonce.eq(nonce as i64))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .select(diesel::dsl::sql::<
+                        diesel::sql_types::Nullable<diesel::sql_types::Text>,
+                    >("status->>'abandon_requested_at'"))
+                    .for_update()
+                    .first(conn)
+                    .await
+                    .optional()?;
+
+                match existing {
+                    None => Ok(AbandonIntent::NotCandidate),
+                    Some(Some(requested_at)) => {
+                        Ok(AbandonIntent::AlreadyRequested { requested_at })
+                    }
+                    Some(None) => {
+                        diesel::update(deltas::table)
+                            .filter(deltas::account_id.eq(&account_id))
+                            .filter(deltas::nonce.eq(nonce as i64))
+                            .filter(deltas::status_kind.eq("candidate"))
+                            .set(
+                                deltas::status.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
+                                    "jsonb_set(status, '{abandon_requested_at}', to_jsonb(",
+                                )
+                                .bind::<diesel::sql_types::Text, _>(now)
+                                .sql("::text))")),
+                            )
+                            .execute(conn)
+                            .await?;
+                        Ok(AbandonIntent::Recorded)
+                    }
+                }
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to record abandon request: {e}"))
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -1602,6 +1667,38 @@ impl StorageBackend for PostgresService {
                 lock_account_metadata(conn, &account_id).await?;
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
+                }
+
+                // Row-locked read of the stored abandon request: the new
+                // status is computed from the worker's tick-start snapshot,
+                // so an intent recorded concurrently by
+                // `request_candidate_abandon` (which takes the same row
+                // lock) must be carried into the overwrite or it would be
+                // silently wiped.
+                use diesel::OptionalExtension;
+                let stored_requested_at: Option<Option<String>> = deltas::table
+                    .filter(deltas::account_id.eq(&account_id))
+                    .filter(deltas::nonce.eq(nonce as i64))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .select(diesel::dsl::sql::<
+                        diesel::sql_types::Nullable<diesel::sql_types::Text>,
+                    >("status->>'abandon_requested_at'"))
+                    .for_update()
+                    .first(conn)
+                    .await
+                    .optional()?;
+                let Some(stored_requested_at) = stored_requested_at else {
+                    return Ok(CanonicalWrite::NotCandidate);
+                };
+
+                let mut status_json = status_json;
+                if status_kind == "candidate"
+                    && status_json
+                        .get("abandon_requested_at")
+                        .is_none_or(serde_json::Value::is_null)
+                    && let Some(stored) = stored_requested_at
+                {
+                    status_json["abandon_requested_at"] = serde_json::Value::String(stored);
                 }
 
                 let updated = diesel::update(deltas::table)

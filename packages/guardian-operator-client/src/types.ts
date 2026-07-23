@@ -11,7 +11,7 @@ export interface GuardianOperatorHttpErrorData {
    * other codes (e.g. `account_not_found`, `authentication_failed`) are
    * forwarded as raw strings.
    */
-  code?: string;
+  code?: DashboardErrorCodeOrRaw;
   /**
    * Short, user-safe message (feature `009-human-readable-errors`) — safe to
    * display verbatim. Wording is not part of the stable contract; branch on
@@ -243,6 +243,16 @@ export type DashboardErrorCode =
   // string is `GUARDIAN_ACCOUNT_RELEASED`.
   | 'account_released';
 
+/**
+ * A dashboard error code with the union members preserved for autocomplete
+ * and literal narrowing. The bare `DashboardErrorCode | string` form is
+ * defeated by TypeScript's union widening — it collapses to plain `string`,
+ * making the literals documentation-only (issue #318). The `string & {}`
+ * intersection keeps arbitrary raw codes assignable (the server can emit
+ * codes outside the dashboard taxonomy) without collapsing the union.
+ */
+export type DashboardErrorCodeOrRaw = DashboardErrorCode | (string & {});
+
 export interface PagedResult<T> {
   items: T[];
   nextCursor: string | null;
@@ -298,6 +308,8 @@ export interface DashboardDeltaProposalMetadata {
   recipientId?: string;
   faucetId?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  noteType?: string;
   noteIds?: string[];
   consumeNotesMetadataVersion?: number;
   consumeNotesNotes?: string[];

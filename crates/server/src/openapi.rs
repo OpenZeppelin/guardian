@@ -198,6 +198,7 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::get_delta_proposals,
         crate::api::http::get_delta_proposal,
         crate::api::http::sign_delta_proposal,
+        crate::api::http::abandon_candidate,
     ),
     components(schemas(ApiErrorResponse, ApiErrorMeta, crate::services::StatusResponse)),
     modifiers(&ClientSecurityAddon, &CommonResponsesAddon),
